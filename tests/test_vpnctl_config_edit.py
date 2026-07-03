@@ -54,7 +54,7 @@ def seed_client_files(tmp_path: Path, client: str = "alpha") -> tuple[Path, Path
         "client\nremote vpn.example 1194\n<key>\nprivate-key\n</key>\n",
         encoding="utf-8",
     )
-    ccd.write_text('ifconfig-push 10.8.0.10 255.255.255.0\npush "route 192.168.100.10 255.255.255.255"\n', encoding="utf-8")
+    ccd.write_text('ifconfig-push 192.168.50.10 255.255.255.0\npush "route 192.168.100.10 255.255.255.255"\n', encoding="utf-8")
     return ovpn, ccd
 
 
@@ -85,7 +85,7 @@ def test_config_view_returns_ovpn_and_ccd_content(tmp_path):
     assert data["status"] == "ok"
     assert data["client"] == "alpha"
     assert "private-key" in data["ovpn"]["content"]
-    assert "ifconfig-push 10.8.0.10" in data["ccd"]["content"]
+    assert "ifconfig-push 192.168.50.10" in data["ccd"]["content"]
 
 
 def test_ccd_update_writes_backup_and_updates_registry(tmp_path):
@@ -103,12 +103,12 @@ def test_ccd_update_writes_backup_and_updates_registry(tmp_path):
 def test_profile_apply_rewrites_ccd_from_template(tmp_path):
     _, ccd = seed_client_files(tmp_path)
 
-    data = run_vpnctl(tmp_path, "profile-apply", "alpha", "directum17", "10.8.0.55", "--reason", "profile change")
+    data = run_vpnctl(tmp_path, "profile-apply", "alpha", "directum17", "192.168.50.55", "--reason", "profile change")
 
     text = ccd.read_text(encoding="utf-8")
     assert data["status"] == "ok"
     assert data["profile"] == "directum17"
-    assert "ifconfig-push 10.8.0.55 255.255.255.0" in text
+    assert "ifconfig-push 192.168.50.55 255.255.255.0" in text
     assert "192.168.100.10" in text
     assert "192.168.100.17" in text
 

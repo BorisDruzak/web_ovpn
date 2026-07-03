@@ -16,3 +16,8 @@
 - Alternate SSH alias: `ssh openvpn-100-30`.
 - Make code changes in the local copy first, then deploy or sync them to `192.168.100.30` when requested.
 - When reporting status, distinguish clearly between the local copy and the deployed copy.
+
+## Git publishing
+
+- For this project, publish completed and verified work to `main` by default.
+- Use short-lived feature branches only for implementation staging; after successful merge to `main`, remove the old feature branch locally and from GitHub.

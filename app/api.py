@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import re
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -25,6 +25,9 @@ class ClientProfileRequest(BaseModel):
     profile: str
     vpn_ip: str = ""
     comment: str = ""
+    client_type: Literal["user", "router_nat", "router_site_to_site"] = "user"
+    remote_lan_cidr: str = ""
+    create_server_route: bool = False
 
 
 class DisableClientRequest(BaseModel):
@@ -87,6 +90,12 @@ class VipnetNetworkRequest(BaseModel):
     restart_nat: bool = True
 
 
+class SiteRouteRequest(BaseModel):
+    cidr: str
+    client: str = ""
+    restart: bool = False
+
+
 def api_response(data: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "data": data}
 
@@ -122,6 +131,18 @@ def call_vpnctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
         return run_vpnctl(args, timeout=timeout)
     except VpnctlError as exc:
         raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+
+
+def profile_command_args(command: str, client: str, payload: ClientProfileRequest) -> list[str]:
+    args = [command, client, payload.profile]
+    if payload.vpn_ip:
+        args.append(payload.vpn_ip)
+    args.extend(["--client-type", payload.client_type])
+    if payload.remote_lan_cidr:
+        args.extend(["--remote-lan", payload.remote_lan_cidr])
+    if payload.create_server_route:
+        args.append("--create-server-route")
+    return args
 
 
 def require_confirm_client(payload_confirm: str, client: str) -> None:
@@ -172,6 +193,17 @@ def api_status(actor: str = Depends(require_api_actor)):
 @router.get("/openvpn/server-config")
 def api_openvpn_server_config(actor: str = Depends(require_api_actor)):
     return api_response(call_vpnctl(["server-config", "inspect"]))
+
+
+@router.get("/openvpn/addressing")
+def api_openvpn_addressing(actor: str = Depends(require_api_actor)):
+    data = call_vpnctl(["validate-network-plan"])
+    return api_response(data.get("addressing", {}))
+
+
+@router.post("/openvpn/validate-network-plan")
+def api_openvpn_validate_network_plan(actor: str = Depends(require_api_actor)):
+    return api_response(call_vpnctl(["validate-network-plan"]))
 
 
 @router.post("/openvpn/status-interval")
@@ -277,10 +309,7 @@ def api_client_preview(
     actor: str = Depends(require_api_actor),
 ):
     client = require_client_name(client)
-    args = ["preview", client, payload.profile]
-    if payload.vpn_ip:
-        args.append(payload.vpn_ip)
-    return api_response(call_vpnctl(args))
+    return api_response(call_vpnctl(profile_command_args("preview", client, payload)))
 
 
 @router.post("/clients/{client}/generate")
@@ -292,9 +321,7 @@ def api_client_generate(
     db: Session = Depends(get_db),
 ):
     client = require_client_name(client)
-    args = ["generate", client, payload.profile]
-    if payload.vpn_ip:
-        args.append(payload.vpn_ip)
+    args = profile_command_args("generate", client, payload)
     args.extend(["--comment", payload.comment])
     try:
         data = run_vpnctl(args, timeout=180)
@@ -304,6 +331,19 @@ def api_client_generate(
     write_audit(db, request, actor, "api-generate", "ok", f"profile={payload.profile}", target_client=client)
     attach_sync_status(data, request, db, actor, f"after API generate {client}")
     return api_response(data)
+
+
+@router.get("/clients/{client}/router-instructions")
+def api_client_router_instructions(client: str, actor: str = Depends(require_api_actor)):
+    data = call_vpnctl(["inspect", require_client_name(client)])
+    return api_response(
+        {
+            "client": client,
+            "client_type": data.get("client_type") or (data.get("registry") or {}).get("client_type") or "user",
+            "remote_lan_cidr": data.get("remote_lan_cidr") or (data.get("registry") or {}).get("remote_lan_cidr"),
+            "router_instructions": data.get("router_instructions", []),
+        }
+    )
 
 
 @router.post("/clients/{client}/disable")
@@ -592,6 +632,52 @@ def api_vipnet_remove(
 @router.get("/nat-status")
 def api_nat_status(actor: str = Depends(require_api_actor)):
     return api_response(call_vpnctl(["nat-status"]))
+
+
+@router.get("/site-routes")
+def api_site_routes(actor: str = Depends(require_api_actor)):
+    return api_response(call_vpnctl(["site-routes", "list"]))
+
+
+@router.post("/site-routes")
+def api_site_route_add(
+    payload: SiteRouteRequest,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    args = ["site-routes", "add", payload.cidr]
+    if payload.client:
+        args.extend(["--client", payload.client])
+    if payload.restart:
+        args.append("--restart")
+    try:
+        data = run_vpnctl(args, timeout=180)
+    except VpnctlError as exc:
+        write_audit(db, request, actor, "api-site-route-add", "error", error_detail(exc))
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+    write_audit(db, request, actor, "api-site-route-add", "ok", payload.cidr)
+    return api_response(data)
+
+
+@router.delete("/site-routes/{cidr:path}")
+def api_site_route_remove(
+    cidr: str,
+    request: Request,
+    restart: bool = Query(default=False),
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    args = ["site-routes", "remove", cidr]
+    if restart:
+        args.append("--restart")
+    try:
+        data = run_vpnctl(args, timeout=180)
+    except VpnctlError as exc:
+        write_audit(db, request, actor, "api-site-route-remove", "error", error_detail(exc))
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+    write_audit(db, request, actor, "api-site-route-remove", "ok", cidr)
+    return api_response(data)
 
 
 @router.get("/logs")

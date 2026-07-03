@@ -255,11 +255,19 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
     client = require_client_name(str(form.get("client") or "").strip())
     profile = str(form.get("profile") or "").strip()
     vpn_ip = str(form.get("vpn_ip") or "").strip()
+    client_type = str(form.get("client_type") or "user").strip()
+    remote_lan_cidr = str(form.get("remote_lan_cidr") or "").strip()
+    create_server_route = bool(form.get("create_server_route"))
     comment = str(form.get("comment") or "").strip()
     profiles_data, profiles_error = cli_call(request, ["profiles"])
     args = [action, client, profile]
     if vpn_ip:
         args.append(vpn_ip)
+    args.extend(["--client-type", client_type])
+    if remote_lan_cidr:
+        args.extend(["--remote-lan", remote_lan_cidr])
+    if create_server_route:
+        args.append("--create-server-route")
     if action == "generate":
         args.extend(["--comment", comment])
     if action not in {"preview", "generate"}:
@@ -288,7 +296,15 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             "profiles": profiles_list(profiles_data),
             "error": error or profiles_error or sync_error,
             "result": result,
-            "form_values": {"client": client, "profile": profile, "vpn_ip": vpn_ip, "comment": comment},
+            "form_values": {
+                "client": client,
+                "profile": profile,
+                "vpn_ip": vpn_ip,
+                "client_type": client_type,
+                "remote_lan_cidr": remote_lan_cidr,
+                "create_server_route": create_server_route,
+                "comment": comment,
+            },
         },
         db,
     )
@@ -646,6 +662,7 @@ def openvpn_settings(request: Request, db: Session = Depends(get_db)):
     server_config, config_error = cli_call(request, ["server-config", "inspect"])
     status, status_error = cli_call(request, ["status"])
     management, management_error = cli_call(request, ["management", "test"])
+    validation, validation_error = cli_call(request, ["validate-network-plan"])
     return render(
         request,
         "settings_openvpn.html",
@@ -653,10 +670,25 @@ def openvpn_settings(request: Request, db: Session = Depends(get_db)):
             "server_config": server_config,
             "services": status.get("services", {}),
             "management": management,
-            "error": config_error or status_error or management_error,
+            "validation": validation,
+            "addressing": validation.get("addressing", {}),
+            "error": config_error or status_error or management_error or validation_error,
         },
         db,
     )
+
+
+@app.post("/settings/openvpn/validate-network-plan")
+async def openvpn_settings_validate_network_plan(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    data, error = cli_call(request, ["validate-network-plan"], timeout=60)
+    write_audit(db, request, user, "openvpn-validate-network-plan", "error" if error else "ok", error or data.get("status", ""))
+    if error:
+        add_flash(request, "bad", error)
+    else:
+        add_flash(request, "ok" if data.get("status") == "ok" else "bad", f"Проверка сети: {data.get('status')}")
+    return redirect("/settings/openvpn")
 
 
 @app.post("/settings/openvpn/status-interval")

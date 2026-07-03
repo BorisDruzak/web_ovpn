@@ -133,7 +133,46 @@ sudo vpnctl --json reconnect CLIENT
 
 `disable` в web UI и API вызывает `vpnctl --json disable CLIENT --reason REASON --kill-active`: профиль отключается и активная сессия сразу выбивается, если management socket доступен. Client delete по-прежнему не опубликован в API/MCP.
 
-Site-to-site режим пока подготовлен как модель/preview на уровне профилей и CCD-шаблонов. Серверные `route` для удаленных LAN нужно включать только контролируемым managed block и после проверки конфликтов CIDR.
+## Адресация, роутеры и site-to-site
+
+Текущая целевая схема:
+
+- `192.168.50.0/24` - OpenVPN tunnel pool.
+- `192.168.50.1` - OpenVPN server tunnel IP.
+- `192.168.50.2-199` - обычные пользователи.
+- `192.168.50.200-249` - фиксированные VPN-IP для роутеров.
+- `192.168.51.0/24`, `192.168.52.0/24` - remote LAN за site-to-site роутерами.
+
+Новые профили создаются через `client_type`:
+
+```bash
+sudo vpnctl --json preview test_user directum
+
+sudo vpnctl --json preview test_router_nat router_vipnet 192.168.50.200 \
+  --client-type router_nat
+
+sudo vpnctl --json preview test_router_s2s router_vipnet 192.168.50.201 \
+  --client-type router_site_to_site \
+  --remote-lan 192.168.51.0/24 \
+  --create-server-route
+```
+
+Для `router_site_to_site` CCD получает `ifconfig-push` и `iroute`, а серверный `route` добавляется только в управляемый блок:
+
+```bash
+sudo vpnctl --json site-routes list
+sudo vpnctl --json site-routes add 192.168.51.0/24 --client router_site_001 --restart
+sudo vpnctl --json validate-network-plan
+```
+
+Ожидаемый режим ViPNet - маршрутизация без SNAT. Проверка legacy NAT:
+
+```bash
+sudo vpnctl --json nat-status
+sudo vpnctl --json nat disable-legacy
+```
+
+`validate-network-plan` ловит старые CCD с legacy pool, пересечения remote LAN, дубли VPN-IP, отсутствующие server routes и активные legacy NAT-правила.
 
 ## Локальный запуск
 

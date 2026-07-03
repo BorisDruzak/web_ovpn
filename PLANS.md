@@ -34,6 +34,18 @@ server 192.168.50.0 255.255.255.0
 
 ---
 
+## Статус выполнения в ветке `codex/openvpn-network-upgrade`
+
+- [x] План подтянут из GitHub `origin/main` и применяется в локальной ветке.
+- [x] `vpnctl` переведен на централизованную адресацию `192.168.50.0/24`, user/router ranges и legacy detection.
+- [x] Добавлены `client_type=user|router_nat|router_site_to_site`, `remote_lan_cidr`, preview/generate, `iroute` и управляемый блок server routes.
+- [x] Добавлены `validate-network-plan`, `site-routes`, no-NAT oriented `nat-status` и `nat disable-legacy`.
+- [x] API, Web UI и MCP расширены под addressing, router/site-to-site preview/generate, site-routes и router instructions.
+- [x] Документация обновлена под новый пул, route behavior, remote verification и no-NAT checks.
+- [x] Локальная полная проверка, remote deploy и smoke validation на `192.168.100.30`.
+
+---
+
 ## 1. Главные архитектурные правила
 
 1. Web UI не должен напрямую редактировать OpenVPN, CCD, PKI, CRL, iptables, systemd и файлы `.ovpn`.

@@ -76,9 +76,31 @@ ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpn
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json logs -n 50"
 ```
 
+OpenVPN addressing and site-to-site checks:
+
+```bash
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json server-config inspect"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json validate-network-plan"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json nat-status"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json site-routes list"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json preview test_router_s2s router_vipnet 192.168.50.201 --client-type router_site_to_site --remote-lan 192.168.51.0/24 --create-server-route"
+```
+
+Expected addressing:
+
+- OpenVPN tunnel pool: `192.168.50.0/24`.
+- OpenVPN server tunnel IP: `192.168.50.1`.
+- User VPN-IP range: `192.168.50.2-199`.
+- Router VPN-IP range: `192.168.50.200-249`.
+- Remote LANs behind site-to-site routers: `192.168.51.0/24`, `192.168.52.0/24`.
+
+The expected production design is routing without SNAT from OpenVPN to ViPNet. `nat-status` should report `mode=disabled_expected`; legacy `vipnet-openvpn-nat.service` and `VIPNET_OPENVPN_SNAT` should be inactive or absent.
+
 ## Route Update Behavior
 
 When client networks are changed from the web UI or API, the app writes CCD through `vpnctl`, runs auto sync, then calls `reconnect-client`. If the client is connected and OpenVPN management is available, the session is dropped so the client reconnects and receives fresh pushed routes. If the client is offline, the new CCD is applied at the next connection.
+
+For `router_site_to_site` clients, `vpnctl` writes an `iroute` into the CCD and can add the matching server `route` only inside its managed block. Do not add remote LAN routes by hand outside the managed block; use `vpnctl --json site-routes add ...` and run `vpnctl --json validate-network-plan` before and after changes.
 
 ## Safety Rules
 

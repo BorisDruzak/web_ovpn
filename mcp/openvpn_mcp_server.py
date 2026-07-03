@@ -49,6 +49,9 @@ TOOLS: dict[str, dict[str, Any]] = {
             "client": {"type": "string"},
             "profile": {"type": "string"},
             "vpn_ip": {"type": "string", "default": ""},
+            "client_type": {"type": "string", "enum": ["user", "router_nat", "router_site_to_site"], "default": "user"},
+            "remote_lan_cidr": {"type": "string", "default": ""},
+            "create_server_route": {"type": "boolean", "default": False},
         },
         ["client", "profile"],
     ),
@@ -58,6 +61,9 @@ TOOLS: dict[str, dict[str, Any]] = {
             "client": {"type": "string"},
             "profile": {"type": "string"},
             "vpn_ip": {"type": "string", "default": ""},
+            "client_type": {"type": "string", "enum": ["user", "router_nat", "router_site_to_site"], "default": "user"},
+            "remote_lan_cidr": {"type": "string", "default": ""},
+            "create_server_route": {"type": "boolean", "default": False},
             "comment": {"type": "string", "default": ""},
         },
         ["client", "profile"],
@@ -152,6 +158,14 @@ TOOLS: dict[str, dict[str, Any]] = {
     ),
     "openvpn_connections": tool_schema("List current OpenVPN connections."),
     "openvpn_nat_status": tool_schema("Show ViPNet NAT counters."),
+    "openvpn_addressing": tool_schema("Show OpenVPN tunnel addressing plan."),
+    "openvpn_validate_network_plan": tool_schema("Validate OpenVPN pool, CCDs, site routes and legacy NAT state."),
+    "openvpn_site_routes": tool_schema("List managed OpenVPN site-to-site server routes."),
+    "openvpn_router_instructions": tool_schema(
+        "Get mode-specific router setup instructions for one client.",
+        {"client": {"type": "string"}},
+        ["client"],
+    ),
     "openvpn_logs": tool_schema(
         "Read recent OpenVPN/vpnctl logs.",
         {"n": {"type": "integer", "enum": [30, 80, 150], "default": 80}},
@@ -213,13 +227,22 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", _client_path(str(arguments.get("client", ""))))
     if name == "openvpn_preview_client":
         client = str(arguments.get("client", ""))
-        payload = {"profile": arguments.get("profile", ""), "vpn_ip": arguments.get("vpn_ip", "")}
+        payload = {
+            "profile": arguments.get("profile", ""),
+            "vpn_ip": arguments.get("vpn_ip", ""),
+            "client_type": arguments.get("client_type", "user"),
+            "remote_lan_cidr": arguments.get("remote_lan_cidr", ""),
+            "create_server_route": arguments.get("create_server_route", False),
+        }
         return api_request("POST", _client_path(client, "/preview"), payload)
     if name == "openvpn_generate_client":
         client = str(arguments.get("client", ""))
         payload = {
             "profile": arguments.get("profile", ""),
             "vpn_ip": arguments.get("vpn_ip", ""),
+            "client_type": arguments.get("client_type", "user"),
+            "remote_lan_cidr": arguments.get("remote_lan_cidr", ""),
+            "create_server_route": arguments.get("create_server_route", False),
             "comment": arguments.get("comment", ""),
         }
         return api_request("POST", _client_path(client, "/generate"), payload)
@@ -298,6 +321,14 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", "/api/v1/connections")
     if name == "openvpn_nat_status":
         return api_request("GET", "/api/v1/nat-status")
+    if name == "openvpn_addressing":
+        return api_request("GET", "/api/v1/openvpn/addressing")
+    if name == "openvpn_validate_network_plan":
+        return api_request("POST", "/api/v1/openvpn/validate-network-plan", {})
+    if name == "openvpn_site_routes":
+        return api_request("GET", "/api/v1/site-routes")
+    if name == "openvpn_router_instructions":
+        return api_request("GET", _client_path(str(arguments.get("client", "")), "/router-instructions"))
     if name == "openvpn_logs":
         n = int(arguments.get("n", 80))
         return api_request("GET", f"/api/v1/logs?n={n}")

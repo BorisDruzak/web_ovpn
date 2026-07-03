@@ -38,6 +38,8 @@
     <dl class="details">
       <dt>cert_status</dt><dd><span class="badge {{ detail.cert_status|status_class }}">{{ detail.cert_status or '-' }}</span></dd>
       <dt>detected_profile</dt><dd>{{ detail.detected_profile or '-' }}</dd>
+      <dt>client_type</dt><dd>{{ detail.client_type or (detail.registry.client_type if detail.registry else '-') }}</dd>
+      <dt>remote_lan_cidr</dt><dd>{{ detail.remote_lan_cidr or (detail.registry.remote_lan_cidr if detail.registry else '-') }}</dd>
       {% if detail.registry %}
       {% for key, value in detail.registry.items() %}
       <dt>{{ key }}</dt><dd>{{ value }}</dd>
@@ -85,6 +87,7 @@
     <dt>DNS</dt><dd>{{ detail.ccd.dns }}</dd>
     <dt>DOMAIN</dt><dd>{{ detail.ccd.domain }}</dd>
     <dt>Routes</dt><dd>{{ detail.ccd.routes|join(', ') }}</dd>
+    <dt>IRoutes</dt><dd>{{ detail.ccd.iroutes|join(', ') if detail.ccd.iroutes else '-' }}</dd>
   </dl>
   <pre class="code">{% for line in detail.ccd.raw_lines %}{{ line }}
 {% endfor %}</pre>
@@ -92,6 +95,17 @@
   <p class="empty">CCD не найден.</p>
   {% endif %}
 </section>
+
+{% if detail.router_instructions %}
+<section class="panel">
+  <h2>Инструкция для роутера</h2>
+  <ol>
+    {% for line in detail.router_instructions %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ol>
+</section>
+{% endif %}
 
 <section class="panel danger">
   <h2>Отключить доступ</h2>

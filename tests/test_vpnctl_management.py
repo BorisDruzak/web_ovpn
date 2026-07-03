@@ -176,7 +176,7 @@ def test_management_status_parser(tmp_path):
             "alpha,1.2.3.4:50000,123,456,Thu Jul  2 11:59:00 2026",
             "ROUTING TABLE",
             "Virtual Address,Common Name,Real Address,Last Ref",
-            "10.8.0.10,alpha,1.2.3.4:50000,Thu Jul  2 12:00:00 2026",
+            "192.168.50.10,alpha,1.2.3.4:50000,Thu Jul  2 12:00:00 2026",
             "GLOBAL STATS",
             "END",
         ]
@@ -188,7 +188,7 @@ def test_management_status_parser(tmp_path):
         {
             "common_name": "alpha",
             "real_address": "1.2.3.4:50000",
-            "virtual_address": "10.8.0.10",
+            "virtual_address": "192.168.50.10",
             "bytes_received": 123,
             "bytes_sent": 456,
             "connected_since": "Thu Jul  2 11:59:00 2026",
@@ -202,9 +202,9 @@ def test_management_status_parser_handles_openvpn_26_csv_sections(tmp_path):
             "TITLE,OpenVPN 2.6.19",
             "TIME,2026-07-02 15:33:02,1783006382",
             "HEADER,CLIENT_LIST,Common Name,Real Address,Virtual Address,Virtual IPv6 Address,Bytes Received,Bytes Sent,Connected Since,Connected Since (time_t),Username,Client ID,Peer ID,Data Channel Cipher",
-            "CLIENT_LIST,alpha,1.2.3.4:50000,10.8.0.10,,123,456,2026-07-02 15:32:10,1783006330,UNDEF,3,2,AES-128-GCM",
+            "CLIENT_LIST,alpha,1.2.3.4:50000,192.168.50.10,,123,456,2026-07-02 15:32:10,1783006330,UNDEF,3,2,AES-128-GCM",
             "HEADER,ROUTING_TABLE,Virtual Address,Common Name,Real Address,Last Ref,Last Ref (time_t)",
-            "ROUTING_TABLE,10.8.0.10,alpha,1.2.3.4:50000,2026-07-02 15:33:01,1783006381",
+            "ROUTING_TABLE,192.168.50.10,alpha,1.2.3.4:50000,2026-07-02 15:33:01,1783006381",
             "GLOBAL_STATS,Max bcast/mcast queue length,6",
             "GLOBAL_STATS,dco_enabled,0",
             "END",
@@ -217,7 +217,7 @@ def test_management_status_parser_handles_openvpn_26_csv_sections(tmp_path):
         {
             "common_name": "alpha",
             "real_address": "1.2.3.4:50000",
-            "virtual_address": "10.8.0.10",
+            "virtual_address": "192.168.50.10",
             "bytes_received": 123,
             "bytes_sent": 456,
             "connected_since": "2026-07-02 15:32:10",
@@ -228,7 +228,7 @@ def test_management_status_parser_handles_openvpn_26_csv_sections(tmp_path):
 def test_connected_fallback_when_management_unavailable(tmp_path):
     status_log = tmp_path / "status.log"
     status_log.write_text(
-        "CLIENT_LIST,alpha,1.2.3.4:50000,10.8.0.10,123,456,Thu Jul 2 12:00:00 2026,,,,,,\n",
+        "CLIENT_LIST,alpha,1.2.3.4:50000,192.168.50.10,123,456,Thu Jul 2 12:00:00 2026,,,,,,\n",
         encoding="utf-8",
     )
 
@@ -272,7 +272,7 @@ def test_management_kill_command(tmp_path):
                                 b"alpha,1.2.3.4:50000,1,2,now\n"
                                 b"ROUTING TABLE\n"
                                 b"Virtual Address,Common Name,Real Address,Last Ref\n"
-                                b"10.8.0.10,alpha,1.2.3.4:50000,now\n"
+                                b"192.168.50.10,alpha,1.2.3.4:50000,now\n"
                                 b"END\n"
                             )
                         elif command == "kill alpha":

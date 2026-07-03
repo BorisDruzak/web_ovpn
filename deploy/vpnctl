@@ -68,8 +68,19 @@ DEFAULTS = {
     "NETWORK_TEMPLATES_DB": "/var/lib/openvpn-client-manager/network-templates.json",
     "OPERATION_LOG": "/var/log/openvpn/vpnctl.log",
     "LOCK_FILE": "/run/openvpn-client-generator.lock",
-    "VPN_NETWORK": "10.8.0.0/24",
-    "VPN_SERVER_IP": "10.8.0.1",
+    "OPENVPN_TUNNEL_CIDR": "192.168.50.0/24",
+    "OPENVPN_SERVER_TUNNEL_IP": "192.168.50.1",
+    "OPENVPN_USER_POOL_START": "192.168.50.2",
+    "OPENVPN_USER_POOL_END": "192.168.50.199",
+    "OPENVPN_ROUTER_POOL_START": "192.168.50.200",
+    "OPENVPN_ROUTER_POOL_END": "192.168.50.249",
+    "OPENVPN_LEGACY_CIDRS": "10.8.0.0/24",
+    "REMOTE_SITE_CIDRS": "192.168.51.0/24,192.168.52.0/24",
+    "CENTRAL_LAN_CIDRS": "192.168.100.0/23,10.10.10.0/23,10.83.1.0/24",
+    "VIPNET_TARGET_CIDRS": "172.153.153.0/24,172.153.155.0/24,172.153.159.0/24,172.20.59.0/24,192.168.241.0/24",
+    # Backward-compatible names. New code should use OPENVPN_* names.
+    "VPN_NETWORK": "192.168.50.0/24",
+    "VPN_SERVER_IP": "192.168.50.1",
     "NAT_SERVICE": "vipnet-openvpn-nat.service",
     "NAT_CHAIN": "VIPNET_OPENVPN_SNAT",
     "MANAGEMENT_SOCKET": "/run/openvpn/server.sock",
@@ -108,6 +119,9 @@ PROFILE_DESCRIPTIONS = {
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 CCD_FILE_MODE = 0o644
+CLIENT_TYPES = {"user", "router_nat", "router_site_to_site"}
+SITE_ROUTES_BEGIN = "# BEGIN VPNCTL SITE ROUTES"
+SITE_ROUTES_END = "# END VPNCTL SITE ROUTES"
 
 # -----------------------------
 # Utility
@@ -219,18 +233,81 @@ def validate_profile(profile: str) -> None:
         raise SystemExit(f"Ошибка: неизвестный профиль: {profile}. Выполните: vpnctl profiles")
 
 
-def validate_vpn_ip(ip: str) -> None:
+def cidr_list(value: str) -> List[str]:
+    return [normalize_cidr(item.strip()) for item in (value or "").split(",") if item.strip()]
+
+
+def tunnel_network() -> ipaddress.IPv4Network:
+    return ipaddress.ip_network(CFG.OPENVPN_TUNNEL_CIDR or CFG.VPN_NETWORK, strict=False)
+
+
+def legacy_networks() -> List[ipaddress.IPv4Network]:
+    return [ipaddress.ip_network(cidr, strict=False) for cidr in cidr_list(CFG.OPENVPN_LEGACY_CIDRS)]
+
+
+def ip_range_contains(start: str, end: str, addr: ipaddress.IPv4Address) -> bool:
+    return ipaddress.ip_address(start) <= addr <= ipaddress.ip_address(end)
+
+
+def normalize_client_type(client_type: str) -> str:
+    value = (client_type or "user").strip()
+    if value not in CLIENT_TYPES:
+        raise SystemExit(f"Ошибка: неизвестный тип клиента: {value}")
+    return value
+
+
+def validate_vpn_ip(ip: str, client_type: str = "user") -> None:
+    client_type = normalize_client_type(client_type)
     try:
         addr = ipaddress.ip_address(ip)
-        net = ipaddress.ip_network(CFG.VPN_NETWORK, strict=False)
     except ValueError as e:
         raise SystemExit(f"Ошибка: неверный VPN IP: {ip}: {e}")
     if addr.version != 4:
         raise SystemExit("Ошибка: VPN IP должен быть IPv4.")
+    net = tunnel_network()
     if addr not in net:
-        raise SystemExit(f"Ошибка: VPN IP {ip} должен быть внутри {CFG.VPN_NETWORK}.")
-    if str(addr) == CFG.VPN_SERVER_IP:
-        raise SystemExit(f"Ошибка: {CFG.VPN_SERVER_IP} зарезервирован за OpenVPN-сервером.")
+        raise SystemExit(f"Ошибка: VPN IP {ip} должен быть внутри {net}.")
+    if str(addr) == CFG.OPENVPN_SERVER_TUNNEL_IP:
+        raise SystemExit(f"Ошибка: {CFG.OPENVPN_SERVER_TUNNEL_IP} зарезервирован за OpenVPN-сервером.")
+    if client_type == "user" and not ip_range_contains(CFG.OPENVPN_USER_POOL_START, CFG.OPENVPN_USER_POOL_END, addr):
+        raise SystemExit(
+            f"Ошибка: VPN IP пользователя должен быть в диапазоне {CFG.OPENVPN_USER_POOL_START}-{CFG.OPENVPN_USER_POOL_END}."
+        )
+    if client_type in {"router_nat", "router_site_to_site"} and not ip_range_contains(CFG.OPENVPN_ROUTER_POOL_START, CFG.OPENVPN_ROUTER_POOL_END, addr):
+        raise SystemExit(
+            f"Ошибка: VPN IP роутера должен быть в диапазоне {CFG.OPENVPN_ROUTER_POOL_START}-{CFG.OPENVPN_ROUTER_POOL_END}."
+        )
+
+
+def validate_remote_lan_cidr(cidr: str) -> str:
+    normalized = normalize_cidr(cidr)
+    remote = ipaddress.ip_network(normalized, strict=False)
+    blocked = [tunnel_network()]
+    blocked.extend(ipaddress.ip_network(c, strict=False) for c in cidr_list(CFG.CENTRAL_LAN_CIDRS))
+    blocked.extend(ipaddress.ip_network(c, strict=False) for c in cidr_list(CFG.VIPNET_TARGET_CIDRS))
+    blocked.extend(legacy_networks())
+    for other in blocked:
+        if remote.overlaps(other):
+            raise SystemExit(f"Ошибка: remote LAN {normalized} пересекается с {other}.")
+    return normalized
+
+
+def validate_client_network_plan(client_type: str, vpn_ip: str = "", remote_lan_cidr: str = "") -> str:
+    client_type = normalize_client_type(client_type)
+    if client_type == "user":
+        if vpn_ip:
+            validate_vpn_ip(vpn_ip, client_type)
+        if remote_lan_cidr:
+            raise SystemExit("Ошибка: remote LAN допустим только для роутеров.")
+        return ""
+    if not vpn_ip:
+        raise SystemExit("Ошибка: для роутера нужен фиксированный VPN IP.")
+    validate_vpn_ip(vpn_ip, client_type)
+    if client_type == "router_site_to_site":
+        if not remote_lan_cidr:
+            raise SystemExit("Ошибка: для router_site_to_site нужен remote LAN CIDR.")
+        return validate_remote_lan_cidr(remote_lan_cidr)
+    return normalize_cidr(remote_lan_cidr) if remote_lan_cidr else ""
 
 
 def ensure_dirs() -> None:
@@ -343,6 +420,8 @@ def init_db(con: sqlite3.Connection) -> None:
             profile TEXT,
             detected_profile TEXT,
             vpn_ip TEXT,
+            client_type TEXT NOT NULL DEFAULT 'user',
+            remote_lan_cidr TEXT,
             status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT,
             updated_at TEXT,
@@ -368,6 +447,11 @@ def init_db(con: sqlite3.Connection) -> None:
         );
         """
     )
+    cols = {row[1] for row in con.execute("PRAGMA table_info(clients)").fetchall()}
+    if "client_type" not in cols:
+        con.execute("ALTER TABLE clients ADD COLUMN client_type TEXT NOT NULL DEFAULT 'user'")
+    if "remote_lan_cidr" not in cols:
+        con.execute("ALTER TABLE clients ADD COLUMN remote_lan_cidr TEXT")
     con.commit()
 
 
@@ -394,12 +478,13 @@ def upsert_client(row: Dict[str, Any]) -> None:
     row.setdefault("updated_at", now_iso())
     row.setdefault("created_at", row["updated_at"])
     cols = [
-        "name", "profile", "detected_profile", "vpn_ip", "status", "created_at", "updated_at",
+        "name", "profile", "detected_profile", "vpn_ip", "client_type", "remote_lan_cidr", "status", "created_at", "updated_at",
         "ovpn_path", "ccd_path", "tlscrypt_path", "bat_path", "share_ovpn_path", "comment",
         "cert_exists", "key_exists", "ccd_exists", "ovpn_exists",
     ]
     for col in cols:
         row.setdefault(col, None)
+    row["client_type"] = row.get("client_type") or "user"
     with db() as con:
         existing = con.execute("SELECT created_at FROM clients WHERE name=?", (row["name"],)).fetchone()
         if existing and existing["created_at"]:
@@ -571,12 +656,21 @@ def route_line(cidr_or_ip: str) -> str:
     return f'push "route {network.network_address} {network.netmask}"'
 
 
-def profile_ccd_lines(profile: str, vpn_ip: str = "") -> List[str]:
+def profile_ccd_lines(
+    profile: str,
+    vpn_ip: str = "",
+    client_type: str = "user",
+    remote_lan_cidr: str = "",
+) -> List[str]:
     validate_profile(profile)
+    client_type = normalize_client_type(client_type)
+    remote_lan_cidr = validate_client_network_plan(client_type, vpn_ip, remote_lan_cidr)
     lines: List[str] = []
     if vpn_ip:
-        validate_vpn_ip(vpn_ip)
         lines.append(f"ifconfig-push {vpn_ip} 255.255.255.0")
+    if client_type == "router_site_to_site" and remote_lan_cidr:
+        remote = ipaddress.ip_network(remote_lan_cidr, strict=False)
+        lines.append(f"iroute {remote.network_address} {remote.netmask}")
 
     def directum() -> None:
         lines.append(route_line(CFG.DIRECTUM_IP))
@@ -625,8 +719,13 @@ def profile_ccd_lines(profile: str, vpn_ip: str = "") -> List[str]:
     return lines
 
 
-def ccd_content(profile: str, vpn_ip: str = "") -> str:
-    return "\n".join(profile_ccd_lines(profile, vpn_ip)) + "\n"
+def ccd_content(
+    profile: str,
+    vpn_ip: str = "",
+    client_type: str = "user",
+    remote_lan_cidr: str = "",
+) -> str:
+    return "\n".join(profile_ccd_lines(profile, vpn_ip, client_type=client_type, remote_lan_cidr=remote_lan_cidr)) + "\n"
 
 
 def unique_cidrs(cidrs: Iterable[str]) -> List[str]:
@@ -660,6 +759,106 @@ def ccd_content_from_networks(cidrs: Iterable[str], vpn_ip: str = "", dns: bool 
         lines.append(f'push "dhcp-option DNS {CFG.DNS_IP}"')
         lines.append(f'push "dhcp-option DOMAIN {CFG.DNS_DOMAIN}"')
     return "\n".join(lines) + "\n"
+
+
+def server_route_line(cidr: str) -> str:
+    net = ipaddress.ip_network(normalize_cidr(cidr), strict=False)
+    return f"route {net.network_address} {net.netmask}"
+
+
+def read_site_routes_from_text(text: str) -> List[Dict[str, str]]:
+    in_block = False
+    rows: List[Dict[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line == SITE_ROUTES_BEGIN:
+            in_block = True
+            continue
+        if line == SITE_ROUTES_END:
+            in_block = False
+            continue
+        if not in_block or not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "route":
+            try:
+                net = ipaddress.ip_network(f"{parts[1]}/{parts[2]}", strict=False)
+            except ValueError:
+                continue
+            rows.append({"cidr": str(net), "line": f"route {net.network_address} {net.netmask}"})
+    return rows
+
+
+def site_routes() -> List[Dict[str, str]]:
+    path = CFG.path("SERVER_CONF")
+    text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    return read_site_routes_from_text(text)
+
+
+def write_site_routes(routes: Iterable[str]) -> Dict[str, Any]:
+    path = CFG.path("SERVER_CONF")
+    current = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    route_lines = [server_route_line(cidr) for cidr in unique_cidrs(routes)]
+    output: List[str] = []
+    in_block = False
+    block_written = False
+    for raw in current.splitlines():
+        stripped = raw.strip()
+        if stripped == SITE_ROUTES_BEGIN:
+            if not block_written:
+                output.append(SITE_ROUTES_BEGIN)
+                output.extend(route_lines)
+                output.append(SITE_ROUTES_END)
+                block_written = True
+            in_block = True
+            continue
+        if stripped == SITE_ROUTES_END:
+            in_block = False
+            continue
+        if not in_block:
+            output.append(raw)
+    if not block_written:
+        if output and output[-1].strip():
+            output.append("")
+        output.append(SITE_ROUTES_BEGIN)
+        output.extend(route_lines)
+        output.append(SITE_ROUTES_END)
+    new_text = "\n".join(output).rstrip() + "\n"
+    changed = new_text != current
+    backup = None
+    if changed:
+        backup = backup_server_conf(path)
+        atomic_write(path, new_text, 0o644)
+    return {
+        "changed": changed,
+        "backup_path": str(backup) if backup else None,
+        "site_routes": site_routes(),
+    }
+
+
+def add_site_route(cidr: str, client: str = "", restart: bool = False) -> Dict[str, Any]:
+    if client:
+        validate_client(client)
+    normalized = validate_remote_lan_cidr(cidr)
+    existing = [row["cidr"] for row in site_routes()]
+    before = set(existing)
+    result = write_site_routes(existing + [normalized])
+    result.update({"status": "ok", "cidr": normalized, "client": client or None, "changed": normalized not in before})
+    if restart:
+        result["restart"] = restart_openvpn_service()
+    record_operation("site-route-add", client or None, "ok", f"cidr={normalized} changed={result['changed']}")
+    return result
+
+
+def remove_site_route(cidr: str, restart: bool = False) -> Dict[str, Any]:
+    normalized = normalize_cidr(cidr)
+    existing = [row["cidr"] for row in site_routes()]
+    result = write_site_routes([row for row in existing if row != normalized])
+    result.update({"status": "ok", "cidr": normalized, "changed": normalized in set(existing)})
+    if restart:
+        result["restart"] = restart_openvpn_service()
+    record_operation("site-route-remove", None, "ok", f"cidr={normalized} changed={result['changed']}")
+    return result
 
 
 def builtin_network_templates() -> List[Dict[str, Any]]:
@@ -771,7 +970,7 @@ def get_network_template(name: str) -> Dict[str, Any]:
 
 
 def parse_ccd(path: Path) -> Dict[str, Any]:
-    data = {"routes": set(), "dns": False, "domain": False, "vpn_ip": None, "raw": ""}
+    data = {"routes": set(), "iroutes": set(), "dns": False, "domain": False, "vpn_ip": None, "raw": ""}
     if not path.exists():
         return data
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -789,11 +988,33 @@ def parse_ccd(path: Path) -> Dict[str, Any]:
                 data["routes"].add(str(net))
             except ValueError:
                 pass
+        m = re.match(r"iroute\s+(\S+)\s+(\S+)", line)
+        if m:
+            ip, mask = m.group(1), m.group(2)
+            try:
+                net = ipaddress.ip_network(f"{ip}/{mask}", strict=False)
+                data["iroutes"].add(str(net))
+            except ValueError:
+                pass
         if 'dhcp-option DNS' in line:
             data["dns"] = True
         if 'dhcp-option DOMAIN' in line:
             data["domain"] = True
     return data
+
+
+def infer_client_type_from_ccd(parsed: Dict[str, Any]) -> str:
+    if parsed.get("iroutes"):
+        return "router_site_to_site"
+    vpn_ip = parsed.get("vpn_ip")
+    if vpn_ip:
+        try:
+            addr = ipaddress.ip_address(str(vpn_ip))
+            if ip_range_contains(CFG.OPENVPN_ROUTER_POOL_START, CFG.OPENVPN_ROUTER_POOL_END, addr):
+                return "router_nat"
+        except ValueError:
+            pass
+    return "user"
 
 
 def infer_profile(name: str, ccd_path: Path, bat_path: Optional[Path] = None) -> str:
@@ -940,10 +1161,10 @@ pause
 """
 
 
-def check_vpn_ip_collision(client: str, vpn_ip: str) -> None:
+def check_vpn_ip_collision(client: str, vpn_ip: str, client_type: str = "user") -> None:
     if not vpn_ip:
         return
-    validate_vpn_ip(vpn_ip)
+    validate_vpn_ip(vpn_ip, client_type)
     ccd = CFG.path("CCD_DIR")
     if not ccd.exists():
         return
@@ -958,19 +1179,55 @@ def check_vpn_ip_collision(client: str, vpn_ip: str) -> None:
             continue
 
 
-def generate_client(client: str, profile: str, vpn_ip: str = "", dry_run: bool = False, comment: str = "") -> Dict[str, Any]:
+def router_instructions(client_type: str, remote_lan_cidr: str = "") -> List[str]:
+    client_type = normalize_client_type(client_type)
+    if client_type == "router_nat":
+        return [
+            "Import OVPN profile into router.",
+            "Enable NAT/MASQUERADE from router LAN to OpenVPN tunnel.",
+            "Route central and ViPNet target networks through OpenVPN.",
+            "OpenVPN server will see only router VPN IP.",
+        ]
+    if client_type == "router_site_to_site":
+        return [
+            "Import OVPN profile into router.",
+            "Disable NAT/MASQUERADE from remote LAN to OpenVPN tunnel.",
+            f"Ensure remote LAN is exactly: {remote_lan_cidr}.",
+            f"OpenVPN CCD contains iroute for {remote_lan_cidr}.",
+            f"OpenVPN server.conf contains route for {remote_lan_cidr}.",
+            f"MikroTik must route {remote_lan_cidr} to 192.168.100.30 and include it in vipnet2corp.",
+            f"ViPNet Coordinator tunnel ranges must include {remote_lan_cidr}.",
+        ]
+    return []
+
+
+def generate_client(
+    client: str,
+    profile: str,
+    vpn_ip: str = "",
+    dry_run: bool = False,
+    comment: str = "",
+    client_type: str = "user",
+    remote_lan_cidr: str = "",
+    create_server_route: bool = False,
+) -> Dict[str, Any]:
     validate_client(client)
     validate_profile(profile)
-    if vpn_ip:
-        validate_vpn_ip(vpn_ip)
+    client_type = normalize_client_type(client_type)
+    remote_lan_cidr = validate_client_network_plan(client_type, vpn_ip, remote_lan_cidr)
     ensure_dirs()
     paths = client_paths(client)
-    check_vpn_ip_collision(client, vpn_ip)
-    ccd = ccd_content(profile, vpn_ip)
+    check_vpn_ip_collision(client, vpn_ip, client_type)
+    ccd = ccd_content(profile, vpn_ip, client_type=client_type, remote_lan_cidr=remote_lan_cidr)
+    planned_server_routes = [server_route_line(remote_lan_cidr)] if client_type == "router_site_to_site" and create_server_route else []
     result: Dict[str, Any] = {
         "status": "preview" if dry_run else "ok",
         "client": client,
         "profile": profile,
+        "access_profile": profile,
+        "client_type": client_type,
+        "remote_lan_cidr": remote_lan_cidr or None,
+        "create_server_route": bool(create_server_route),
         "vpn_ip": vpn_ip or None,
         "ccd_path": str(paths["ccd"]),
         "ovpn_path": str(paths["ovpn"]),
@@ -983,6 +1240,8 @@ def generate_client(client: str, profile: str, vpn_ip: str = "", dry_run: bool =
         "ccd_exists_before": paths["ccd"].exists(),
         "ovpn_exists_before": paths["ovpn"].exists(),
         "ccd_preview": ccd.splitlines(),
+        "server_routes_preview": planned_server_routes,
+        "router_instructions": router_instructions(client_type, remote_lan_cidr),
         "actions": [],
     }
 
@@ -995,6 +1254,7 @@ def generate_client(client: str, profile: str, vpn_ip: str = "", dry_run: bool =
             "write CCD",
             "write OVPN",
             "write hosts BAT if profile ends with _hosts",
+            "add site route managed block if requested",
             "copy OVPN/BAT to share if mounted",
             "write/update SQLite registry",
         ]
@@ -1031,6 +1291,10 @@ def generate_client(client: str, profile: str, vpn_ip: str = "", dry_run: bool =
 
     write_ccd_file(paths["ccd"], ccd)
     result["actions"].append("ccd_written")
+    if planned_server_routes:
+        route_result = add_site_route(remote_lan_cidr, client=client, restart=False)
+        result["site_route"] = route_result
+        result["actions"].append("site_route_written")
 
     ovpn_content = build_ovpn(client)
     atomic_write(paths["ovpn"], ovpn_content, 0o600)
@@ -1062,6 +1326,8 @@ def generate_client(client: str, profile: str, vpn_ip: str = "", dry_run: bool =
         "profile": profile,
         "detected_profile": infer_profile(client, paths["ccd"], paths["bat"]),
         "vpn_ip": vpn_ip or parse_ccd(paths["ccd"]).get("vpn_ip"),
+        "client_type": client_type,
+        "remote_lan_cidr": remote_lan_cidr or None,
         "status": "active" if cert_status(client) != "revoked" else "revoked",
         "updated_at": now_iso(),
         "ovpn_path": str(paths["ovpn"]),
@@ -1229,6 +1495,8 @@ def validate_management_socket_path(value: str) -> str:
 
 def parse_server_config_text(text: str) -> Dict[str, Any]:
     settings: Dict[str, Any] = {
+        "server_network": "",
+        "server_tunnel_ip": CFG.OPENVPN_SERVER_TUNNEL_IP,
         "status_path": "",
         "status_interval": None,
         "status_version": None,
@@ -1246,7 +1514,17 @@ def parse_server_config_text(text: str) -> Dict[str, Any]:
         if not parts:
             continue
         key = parts[0]
-        if key == "status" and len(parts) >= 2:
+        if key == "server" and len(parts) >= 3:
+            try:
+                net = ipaddress.ip_network(f"{parts[1]}/{parts[2]}", strict=False)
+                settings["server_network"] = str(net)
+                if any(net == legacy for legacy in legacy_networks()):
+                    warnings.append(f"legacy OpenVPN server pool is configured: {net}")
+                elif net != tunnel_network():
+                    warnings.append(f"OpenVPN server pool {net} differs from expected {tunnel_network()}")
+            except ValueError:
+                warnings.append(f"invalid server directive: {line}")
+        elif key == "status" and len(parts) >= 2:
             settings["status_path"] = parts[1]
             if len(parts) >= 3:
                 try:
@@ -1279,6 +1557,8 @@ def inspect_server_config() -> Dict[str, Any]:
     text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
     parsed = parse_server_config_text(text)
     settings = parsed["settings"]
+    settings["server_network"] = settings["server_network"] or str(tunnel_network())
+    settings["server_tunnel_ip"] = settings["server_tunnel_ip"] or CFG.OPENVPN_SERVER_TUNNEL_IP
     settings["status_path"] = settings["status_path"] or CFG.STATUS_LOG
     settings["status_interval"] = settings["status_interval"] or 10
     settings["status_version"] = settings["status_version"] or 2
@@ -1365,6 +1645,34 @@ def patch_server_config(
     if restart_result is not None:
         result["restart"] = restart_result
     record_operation("server-config-apply", None, "ok", f"changed={changed} restart={restart}")
+    return result
+
+
+def migrate_server_pool(from_cidr: str, to_cidr: str, backup: bool = False, restart: bool = False) -> Dict[str, Any]:
+    from_net = ipaddress.ip_network(normalize_cidr(from_cidr), strict=False)
+    to_net = ipaddress.ip_network(normalize_cidr(to_cidr), strict=False)
+    path = CFG.path("SERVER_CONF")
+    current_text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    from_line = f"server {from_net.network_address} {from_net.netmask}"
+    to_line = f"server {to_net.network_address} {to_net.netmask}"
+    changed = from_line in current_text
+    backup_path = None
+    if changed:
+        if backup:
+            backup_path = backup_server_conf(path)
+        atomic_write(path, current_text.replace(from_line, to_line), 0o644)
+    restart_result = restart_openvpn_service() if restart and changed else None
+    result = {
+        "status": "ok",
+        "server_conf": str(path),
+        "from": str(from_net),
+        "to": str(to_net),
+        "changed": changed,
+        "backup_path": str(backup_path) if backup_path else None,
+        "restart": restart_result,
+        "settings": inspect_server_config()["settings"],
+    }
+    record_operation("server-config-migrate-pool", None, "ok", f"{from_net}->{to_net} changed={changed} restart={restart}")
     return result
 
 
@@ -1700,6 +2008,8 @@ def scan_existing() -> List[Dict[str, Any]]:
         paths = client_paths(name)
         detected = infer_profile(name, paths["ccd"], paths["bat"]) if paths["ccd"].exists() else "unknown"
         parsed = parse_ccd(paths["ccd"])
+        client_type = infer_client_type_from_ccd(parsed)
+        remote_lan = sorted(parsed.get("iroutes", []))[0] if parsed.get("iroutes") else None
         status = cert_status(name)
         if status == "valid":
             reg_status = "active"
@@ -1712,6 +2022,8 @@ def scan_existing() -> List[Dict[str, Any]]:
             "profile": detected if detected in PROFILE_DESCRIPTIONS else None,
             "detected_profile": detected,
             "vpn_ip": parsed.get("vpn_ip"),
+            "client_type": client_type,
+            "remote_lan_cidr": remote_lan,
             "status": reg_status,
             "updated_at": now_iso(),
             "ovpn_path": str(paths["ovpn"]),
@@ -1765,17 +2077,24 @@ def inspect_client(client: str) -> Dict[str, Any]:
         "files": {k: {"path": str(v), "exists": v.exists(), "size": v.stat().st_size if v.exists() else None} for k, v in paths.items()},
         "ccd": None,
         "detected_profile": None,
+        "client_type": registry_value(row, "client_type", "user"),
+        "remote_lan_cidr": registry_value(row, "remote_lan_cidr", None),
+        "router_instructions": [],
     }
     if paths["ccd"].exists():
         parsed = parse_ccd(paths["ccd"])
         data["ccd"] = {
             "vpn_ip": parsed.get("vpn_ip"),
             "routes": sorted(parsed.get("routes", [])),
+            "iroutes": sorted(parsed.get("iroutes", [])),
             "dns": parsed.get("dns"),
             "domain": parsed.get("domain"),
             "raw_lines": parsed.get("raw", "").splitlines(),
         }
         data["detected_profile"] = infer_profile(client, paths["ccd"], paths["bat"])
+        data["client_type"] = registry_value(row, "client_type", infer_client_type_from_ccd(parsed))
+        data["remote_lan_cidr"] = registry_value(row, "remote_lan_cidr", sorted(parsed.get("iroutes", []))[0] if parsed.get("iroutes") else None)
+    data["router_instructions"] = router_instructions(str(data.get("client_type") or "user"), str(data.get("remote_lan_cidr") or ""))
     return data
 
 # -----------------------------
@@ -1804,6 +2123,8 @@ def current_file_registry_row(client: str, profile: Optional[str] = None, commen
     paths = client_paths(client)
     existing = get_client_row(client)
     parsed = parse_ccd(paths["ccd"])
+    client_type = infer_client_type_from_ccd(parsed)
+    remote_lan = sorted(parsed.get("iroutes", []))[0] if parsed.get("iroutes") else None
     detected = infer_profile(client, paths["ccd"], paths["bat"]) if paths["ccd"].exists() else None
     cert = cert_status(client)
     if cert == "valid":
@@ -1820,6 +2141,8 @@ def current_file_registry_row(client: str, profile: Optional[str] = None, commen
         "profile": selected_profile,
         "detected_profile": detected,
         "vpn_ip": parsed.get("vpn_ip") or registry_value(existing, "vpn_ip"),
+        "client_type": registry_value(existing, "client_type", client_type),
+        "remote_lan_cidr": registry_value(existing, "remote_lan_cidr", remote_lan),
         "status": status,
         "updated_at": now_iso(),
         "ovpn_path": str(paths["ovpn"]),
@@ -2068,9 +2391,134 @@ def remove_vipnet_net(cidr: str, restart_nat: bool = False) -> Dict[str, Any]:
     return result
 
 
+def run_optional(cmd: List[str]) -> subprocess.CompletedProcess:
+    try:
+        return run(cmd, check=False)
+    except FileNotFoundError as exc:
+        return subprocess.CompletedProcess(cmd, 127, "", str(exc))
+
+
+def service_active_enabled(service: str) -> Dict[str, Any]:
+    active = run_optional(["systemctl", "is-active", service])
+    enabled = run_optional(["systemctl", "is-enabled", service])
+    return {
+        "name": service,
+        "active": active.returncode == 0 and active.stdout.strip() == "active",
+        "enabled": enabled.returncode == 0 and enabled.stdout.strip() == "enabled",
+        "active_raw": (active.stdout or active.stderr).strip(),
+        "enabled_raw": (enabled.stdout or enabled.stderr).strip(),
+    }
+
+
+def nat_chain_status() -> Dict[str, Any]:
+    proc = run_optional(["iptables", "-t", "nat", "-L", CFG.NAT_CHAIN, "-n", "-v", "--line-numbers"])
+    output = (proc.stdout or proc.stderr).splitlines()
+    return {
+        "name": CFG.NAT_CHAIN,
+        "exists": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "output": output,
+    }
+
+
 def nat_status() -> Dict[str, Any]:
-    proc = run(["iptables", "-t", "nat", "-L", CFG.NAT_CHAIN, "-n", "-v", "--line-numbers"], check=False)
-    return {"chain": CFG.NAT_CHAIN, "returncode": proc.returncode, "output": (proc.stdout or proc.stderr).splitlines()}
+    service = service_active_enabled(CFG.NAT_SERVICE)
+    chain = nat_chain_status()
+    warnings: List[str] = []
+    if service["active"] or service["enabled"] or chain["exists"]:
+        warnings.append("Legacy SNAT is active. Current routing design expects no NAT for 192.168.50.0/24.")
+    return {
+        "status": "ok",
+        "mode": "disabled_expected",
+        "legacy_nat_service": service,
+        "legacy_chain": chain,
+        "warnings": warnings,
+    }
+
+
+def disable_legacy_nat() -> Dict[str, Any]:
+    actions: List[Dict[str, Any]] = []
+    service = run_optional(["systemctl", "disable", "--now", CFG.NAT_SERVICE])
+    actions.append({"command": service.args, "returncode": service.returncode, "stdout": service.stdout, "stderr": service.stderr})
+    jump = run_optional(["iptables", "-t", "nat", "-D", "POSTROUTING", "-j", CFG.NAT_CHAIN])
+    actions.append({"command": jump.args, "returncode": jump.returncode, "stdout": jump.stdout, "stderr": jump.stderr})
+    flush = run_optional(["iptables", "-t", "nat", "-F", CFG.NAT_CHAIN])
+    actions.append({"command": flush.args, "returncode": flush.returncode, "stdout": flush.stdout, "stderr": flush.stderr})
+    delete = run_optional(["iptables", "-t", "nat", "-X", CFG.NAT_CHAIN])
+    actions.append({"command": delete.args, "returncode": delete.returncode, "stdout": delete.stdout, "stderr": delete.stderr})
+    status = nat_status()
+    record_operation("nat-disable-legacy", None, "ok", f"chain={CFG.NAT_CHAIN} service={CFG.NAT_SERVICE}")
+    return {"status": "ok", "actions": actions, "nat_status": status}
+
+
+def route_exists_for_cidr(cidr: str, routes: Optional[List[Dict[str, str]]] = None) -> bool:
+    normalized = normalize_cidr(cidr)
+    rows = routes if routes is not None else site_routes()
+    return any(row["cidr"] == normalized for row in rows)
+
+
+def validate_network_plan() -> Dict[str, Any]:
+    warnings: List[str] = []
+    errors: List[str] = []
+    server = inspect_server_config()
+    warnings.extend(server.get("warnings", []))
+    nat = nat_status()
+    warnings.extend(nat.get("warnings", []))
+
+    fixed_ips: Dict[str, str] = {}
+    remote_lans: Dict[str, str] = {}
+    routes = site_routes()
+    ccd_dir = CFG.path("CCD_DIR")
+    if ccd_dir.exists():
+        for path in sorted(ccd_dir.iterdir()):
+            if not path.is_file() or ".backup." in path.name:
+                continue
+            parsed = parse_ccd(path)
+            raw = parsed.get("raw", "")
+            legacy_hits = sorted(set(re.findall(r"\b10\.8\.\d{1,3}\.\d{1,3}\b", raw)))
+            for hit in legacy_hits:
+                warnings.append(f"legacy VPN IP {hit} found in CCD {path}")
+            vpn_ip = parsed.get("vpn_ip")
+            if vpn_ip:
+                try:
+                    addr = ipaddress.ip_address(str(vpn_ip))
+                    if any(addr in legacy for legacy in legacy_networks()):
+                        warnings.append(f"legacy fixed VPN IP {vpn_ip} found in CCD {path}")
+                    elif addr not in tunnel_network():
+                        errors.append(f"fixed VPN IP {vpn_ip} in {path} is outside {tunnel_network()}")
+                    if str(addr) in fixed_ips:
+                        errors.append(f"duplicate fixed VPN IP {addr}: {fixed_ips[str(addr)]} and {path}")
+                    fixed_ips[str(addr)] = str(path)
+                except ValueError:
+                    errors.append(f"invalid fixed VPN IP {vpn_ip} in {path}")
+            for remote in sorted(parsed.get("iroutes", [])):
+                try:
+                    validate_remote_lan_cidr(remote)
+                except SystemExit as exc:
+                    errors.append(f"{path}: {exc.code}")
+                if remote in remote_lans:
+                    errors.append(f"duplicate remote LAN {remote}: {remote_lans[remote]} and {path}")
+                remote_lans[remote] = str(path)
+                if not route_exists_for_cidr(remote, routes):
+                    warnings.append(f"remote LAN {remote} from {path} has no managed server route")
+
+    status = "error" if errors else ("warning" if warnings else "ok")
+    return {
+        "status": status,
+        "addressing": {
+            "openvpn_tunnel_cidr": str(tunnel_network()),
+            "server_tunnel_ip": CFG.OPENVPN_SERVER_TUNNEL_IP,
+            "user_pool": {"start": CFG.OPENVPN_USER_POOL_START, "end": CFG.OPENVPN_USER_POOL_END},
+            "router_pool": {"start": CFG.OPENVPN_ROUTER_POOL_START, "end": CFG.OPENVPN_ROUTER_POOL_END},
+            "remote_site_cidrs": cidr_list(CFG.REMOTE_SITE_CIDRS),
+            "legacy_cidrs": cidr_list(CFG.OPENVPN_LEGACY_CIDRS),
+        },
+        "server_config": server,
+        "nat_status": nat,
+        "site_routes": routes,
+        "warnings": warnings,
+        "errors": errors,
+    }
 
 
 def reconnect_client(client: str, reason: str = "") -> Dict[str, Any]:
@@ -2109,12 +2557,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("profile")
     p.add_argument("vpn_ip", nargs="?", default="")
     p.add_argument("--dry-run", action="store_true", help="preview only; do not change files")
+    p.add_argument("--client-type", choices=sorted(CLIENT_TYPES), default="user")
+    p.add_argument("--remote-lan", default="")
+    p.add_argument("--create-server-route", action="store_true")
     p.add_argument("--comment", default="")
 
     p = sub.add_parser("preview", help="alias for generate --dry-run")
     p.add_argument("client")
     p.add_argument("profile")
     p.add_argument("vpn_ip", nargs="?", default="")
+    p.add_argument("--client-type", choices=sorted(CLIENT_TYPES), default="user")
+    p.add_argument("--remote-lan", default="")
+    p.add_argument("--create-server-route", action="store_true")
+    p.add_argument("--comment", default="")
 
     p = sub.add_parser("sync", help="scan existing CCD/output files and update SQLite registry")
 
@@ -2199,6 +2654,12 @@ def build_parser() -> argparse.ArgumentParser:
     sca.add_argument("--restart", action="store_true")
     server_cfg.add_parser("restart-openvpn")
 
+    scm = server_cfg.add_parser("migrate-pool")
+    scm.add_argument("--from", dest="from_cidr", required=True)
+    scm.add_argument("--to", dest="to_cidr", required=True)
+    scm.add_argument("--backup", action="store_true")
+    scm.add_argument("--restart", action="store_true")
+
     p = sub.add_parser("management", help="use OpenVPN management Unix socket")
     mgmt = p.add_subparsers(dest="management_cmd", required=True)
     mgmt.add_parser("test")
@@ -2252,6 +2713,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("nat-status", help="show ViPNet NAT chain counters")
 
+    p = sub.add_parser("nat", help="manage legacy NAT compatibility")
+    nat = p.add_subparsers(dest="nat_cmd", required=True)
+    nat.add_parser("disable-legacy")
+
+    p = sub.add_parser("site-routes", help="manage OpenVPN server.conf site-to-site route block")
+    site = p.add_subparsers(dest="site_routes_cmd", required=True)
+    site.add_parser("list")
+    sa = site.add_parser("add")
+    sa.add_argument("cidr")
+    sa.add_argument("--client", default="")
+    sa.add_argument("--restart", action="store_true")
+    sr = site.add_parser("remove")
+    sr.add_argument("cidr")
+    sr.add_argument("--restart", action="store_true")
+
+    sub.add_parser("validate-network-plan", help="validate OpenVPN tunnel, CCDs, site routes and legacy NAT")
+
     return parser
 
 
@@ -2271,10 +2749,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.cmd in {"generate", "preview"}:
             dry = bool(getattr(args, "dry_run", False) or args.cmd == "preview")
             if dry:
-                data = generate_client(args.client, args.profile, args.vpn_ip, dry_run=True, comment=getattr(args, "comment", ""))
+                data = generate_client(
+                    args.client,
+                    args.profile,
+                    args.vpn_ip,
+                    dry_run=True,
+                    comment=getattr(args, "comment", ""),
+                    client_type=args.client_type,
+                    remote_lan_cidr=args.remote_lan,
+                    create_server_route=args.create_server_route,
+                )
             else:
                 with lock_exclusive():
-                    data = generate_client(args.client, args.profile, args.vpn_ip, dry_run=False, comment=getattr(args, "comment", ""))
+                    data = generate_client(
+                        args.client,
+                        args.profile,
+                        args.vpn_ip,
+                        dry_run=False,
+                        comment=getattr(args, "comment", ""),
+                        client_type=args.client_type,
+                        remote_lan_cidr=args.remote_lan,
+                        create_server_route=args.create_server_route,
+                    )
             if args.json:
                 emit(data, args)
             else:
@@ -2428,6 +2924,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
             elif args.server_config_cmd == "restart-openvpn":
                 data = {"status": "ok", "restart": restart_openvpn_service()}
+            elif args.server_config_cmd == "migrate-pool":
+                data = migrate_server_pool(args.from_cidr, args.to_cidr, backup=args.backup, restart=args.restart)
             else:
                 raise SystemExit("unknown server-config command")
             emit(data, args)
@@ -2499,6 +2997,31 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         if args.cmd == "nat-status":
             data = nat_status()
+            emit(data, args)
+            return 0
+
+        if args.cmd == "nat":
+            if args.nat_cmd == "disable-legacy":
+                data = disable_legacy_nat()
+            else:
+                raise SystemExit("unknown nat command")
+            emit(data, args)
+            return 0
+
+        if args.cmd == "site-routes":
+            if args.site_routes_cmd == "list":
+                data = {"status": "ok", "server_conf": CFG.SERVER_CONF, "site_routes": site_routes()}
+            elif args.site_routes_cmd == "add":
+                data = add_site_route(args.cidr, client=args.client, restart=args.restart)
+            elif args.site_routes_cmd == "remove":
+                data = remove_site_route(args.cidr, restart=args.restart)
+            else:
+                raise SystemExit("unknown site-routes command")
+            emit(data, args)
+            return 0
+
+        if args.cmd == "validate-network-plan":
+            data = validate_network_plan()
             emit(data, args)
             return 0
 

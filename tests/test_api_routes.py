@@ -44,7 +44,7 @@ elif cmd == "management":
 elif cmd == "profiles":
     print(json.dumps({"profiles": [{"name": "directum", "description": "Directum"}]}))
 elif cmd == "list":
-    print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": "10.8.0.10", "connected": False}]}))
+    print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": "192.168.50.10", "connected": False}]}))
 elif cmd == "inspect":
     print(json.dumps({"client": args[2], "registry": {"name": args[2], "status": "active"}, "cert_status": "valid", "connected": None, "files": {}, "ccd": {"raw_lines": []}}))
 elif cmd == "disable":
@@ -53,6 +53,8 @@ elif cmd == "sync":
     print(json.dumps({"status": "ok", "imported_or_updated": 1}))
 elif cmd == "generate":
     print(json.dumps({"status": "ok", "client": args[2], "profile": args[3]}))
+elif cmd == "preview":
+    print(json.dumps({"status": "preview", "client": args[2], "profile": args[3], "ccd_preview": [], "server_routes_preview": []}))
 elif cmd == "config-view":
     print(json.dumps({"status": "ok", "client": args[2], "ovpn": {"path": "/tmp/alpha.ovpn", "exists": True, "content": "client\\n"}, "ccd": {"path": "/tmp/ccd/alpha", "exists": True, "content": "push route\\n"}}))
 elif cmd == "profile-apply":
@@ -72,7 +74,11 @@ elif cmd == "reconnect-client":
 elif cmd == "connected":
     print(json.dumps({"connected": []}))
 elif cmd == "nat-status":
-    print(json.dumps({"chain": "VIPNET_OPENVPN_SNAT", "returncode": 0, "output": []}))
+    print(json.dumps({"status": "ok", "mode": "disabled_expected", "legacy_nat_service": {"name": "vipnet-openvpn-nat.service", "active": False, "enabled": False}, "legacy_chain": {"name": "VIPNET_OPENVPN_SNAT", "exists": False}, "warnings": []}))
+elif cmd == "validate-network-plan":
+    print(json.dumps({"status": "ok", "warnings": [], "errors": [], "addressing": {"openvpn_tunnel_cidr": "192.168.50.0/24"}}))
+elif cmd == "site-routes":
+    print(json.dumps({"status": "ok", "site_routes": [{"cidr": "192.168.51.0/24"}]}))
 elif cmd == "vipnet-nets":
     print(json.dumps({"networks": []}))
 elif cmd == "logs":
@@ -180,7 +186,7 @@ def test_api_client_safe_network_edit_routes_require_confirm_and_reason(tmp_path
     profile = client.post(
         "/api/v1/clients/alpha/network-template",
         headers=headers,
-        json={"confirm_client": "alpha", "reason": "template", "template": "directum", "vpn_ip": "10.8.0.55"},
+        json={"confirm_client": "alpha", "reason": "template", "template": "directum", "vpn_ip": "192.168.50.55"},
     )
     ovpn = client.post(
         "/api/v1/clients/alpha/ovpn",
@@ -219,6 +225,65 @@ def test_api_client_safe_network_edit_routes_require_confirm_and_reason(tmp_path
     ]
     reconnect_calls = [call for call in calls if call[1:3] == ["reconnect-client", "alpha"]]
     assert len(reconnect_calls) >= 3
+
+
+def test_api_preview_and_generate_pass_router_network_fields(tmp_path, monkeypatch):
+    client, headers = make_api_client(tmp_path, monkeypatch)
+
+    preview = client.post(
+        "/api/v1/clients/router_site_001/preview",
+        headers=headers,
+        json={
+            "profile": "router_vipnet",
+            "vpn_ip": "192.168.50.201",
+            "client_type": "router_site_to_site",
+            "remote_lan_cidr": "192.168.51.0/24",
+            "create_server_route": True,
+        },
+    )
+    generated = client.post(
+        "/api/v1/clients/router_site_001/generate",
+        headers=headers,
+        json={
+            "profile": "router_vipnet",
+            "vpn_ip": "192.168.50.201",
+            "client_type": "router_site_to_site",
+            "remote_lan_cidr": "192.168.51.0/24",
+            "create_server_route": True,
+            "comment": "branch router",
+        },
+    )
+
+    assert preview.status_code == 200
+    assert generated.status_code == 200
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "vpnctl-calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    preview_call = next(call for call in calls if call[1:4] == ["preview", "router_site_001", "router_vipnet"])
+    generate_call = next(call for call in calls if call[1:4] == ["generate", "router_site_001", "router_vipnet"])
+    for call in (preview_call, generate_call):
+        assert "--client-type" in call
+        assert "router_site_to_site" in call
+        assert "--remote-lan" in call
+        assert "192.168.51.0/24" in call
+        assert "--create-server-route" in call
+
+
+def test_api_openvpn_addressing_validation_and_site_routes(tmp_path, monkeypatch):
+    client, headers = make_api_client(tmp_path, monkeypatch)
+
+    addressing = client.get("/api/v1/openvpn/addressing", headers=headers)
+    validation = client.post("/api/v1/openvpn/validate-network-plan", headers=headers)
+    site_routes = client.get("/api/v1/site-routes", headers=headers)
+    instructions = client.get("/api/v1/clients/router_site_001/router-instructions", headers=headers)
+
+    assert addressing.status_code == 200
+    assert addressing.json()["data"]["openvpn_tunnel_cidr"] == "192.168.50.0/24"
+    assert validation.status_code == 200
+    assert site_routes.status_code == 200
+    assert instructions.status_code == 200
 
 
 def test_api_has_no_client_delete_route(tmp_path, monkeypatch):
