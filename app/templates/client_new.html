@@ -22,8 +22,24 @@
       </select>
     </label>
     <label>
+      Тип клиента
+      <select name="client_type" required>
+        <option value="user" {{ 'selected' if not form_values or form_values.client_type == 'user' else '' }}>Обычный пользователь</option>
+        <option value="router_nat" {{ 'selected' if form_values and form_values.client_type == 'router_nat' else '' }}>Роутер с NAT</option>
+        <option value="router_site_to_site" {{ 'selected' if form_values and form_values.client_type == 'router_site_to_site' else '' }}>Роутер site-to-site без NAT</option>
+      </select>
+    </label>
+    <label>
       VPN IP
-      <input name="vpn_ip" placeholder="необязательно" value="{{ form_values.vpn_ip if form_values else '' }}">
+      <input name="vpn_ip" placeholder="192.168.50.X или пусто" value="{{ form_values.vpn_ip if form_values else '' }}">
+    </label>
+    <label>
+      Remote LAN CIDR
+      <input name="remote_lan_cidr" placeholder="192.168.51.0/24" value="{{ form_values.remote_lan_cidr if form_values else '' }}">
+    </label>
+    <label class="checkbox">
+      <input type="checkbox" name="create_server_route" value="1" {{ 'checked' if form_values and form_values.create_server_route else '' }}>
+      Создать route в server.conf
     </label>
     <label>
       Комментарий
@@ -43,6 +59,8 @@
     <dt>Статус</dt><dd>{{ result.status or '-' }}</dd>
     <dt>Клиент</dt><dd>{{ result.client or '-' }}</dd>
     <dt>Профиль</dt><dd>{{ result.profile or '-' }}</dd>
+    <dt>Тип клиента</dt><dd>{{ result.client_type or '-' }}</dd>
+    <dt>Remote LAN</dt><dd>{{ result.remote_lan_cidr or '-' }}</dd>
     <dt>VPN IP</dt><dd>{{ result.vpn_ip or '-' }}</dd>
     <dt>CCD</dt><dd>{{ result.ccd_path or '-' }}</dd>
     <dt>OVPN</dt><dd>{{ result.ovpn_path or '-' }}</dd>
@@ -52,6 +70,19 @@
   <h3>CCD preview</h3>
   <pre class="code">{% for line in result.ccd_preview %}{{ line }}
 {% endfor %}</pre>
+  {% endif %}
+  {% if result.server_routes_preview %}
+  <h3>Server route preview</h3>
+  <pre class="code">{% for line in result.server_routes_preview %}{{ line }}
+{% endfor %}</pre>
+  {% endif %}
+  {% if result.router_instructions %}
+  <h3>Инструкция для роутера</h3>
+  <ol>
+    {% for line in result.router_instructions %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ol>
   {% endif %}
   {% if result.status and result.client %}
   <div class="toolbar">

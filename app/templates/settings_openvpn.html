@@ -10,6 +10,8 @@
     {% set cfg = server_config.settings or {} %}
     <dl class="details">
       <dt>server.conf</dt><dd class="mono">{{ server_config.server_conf or '-' }}</dd>
+      <dt>server network</dt><dd>{{ cfg.server_network or '-' }}</dd>
+      <dt>server tunnel IP</dt><dd>{{ cfg.server_tunnel_ip or '-' }}</dd>
       <dt>status file</dt><dd class="mono">{{ cfg.status_path or '-' }}</dd>
       <dt>status interval</dt><dd>{{ cfg.status_interval or '-' }} sec</dd>
       <dt>status-version</dt><dd>{{ cfg.status_version or '-' }}</dd>
@@ -33,6 +35,30 @@
       <button class="button" type="submit">Сохранить и применить</button>
     </form>
   </article>
+</section>
+
+<section class="panel">
+  <h2>Адресация</h2>
+  {% set addr = addressing or {} %}
+  <dl class="details">
+    <dt>OpenVPN tunnel CIDR</dt><dd>{{ addr.openvpn_tunnel_cidr or cfg.server_network or '-' }}</dd>
+    <dt>Server tunnel IP</dt><dd>{{ addr.server_tunnel_ip or cfg.server_tunnel_ip or '-' }}</dd>
+    <dt>User dynamic range</dt><dd>{{ addr.user_pool.start if addr.user_pool else '-' }} - {{ addr.user_pool.end if addr.user_pool else '-' }}</dd>
+    <dt>Router fixed range</dt><dd>{{ addr.router_pool.start if addr.router_pool else '-' }} - {{ addr.router_pool.end if addr.router_pool else '-' }}</dd>
+    <dt>Remote site LANs</dt><dd>{{ addr.remote_site_cidrs|join(', ') if addr.remote_site_cidrs else '-' }}</dd>
+    <dt>Legacy CIDRs</dt><dd>{{ addr.legacy_cidrs|join(', ') if addr.legacy_cidrs else '-' }}</dd>
+    <dt>Validation</dt><dd><span class="badge {{ validation.status|status_class }}">{{ validation.status or '-' }}</span></dd>
+  </dl>
+  {% if validation.warnings %}
+  <div class="alert bad">{{ validation.warnings|join('; ') }}</div>
+  {% endif %}
+  {% if validation.errors %}
+  <div class="alert bad">{{ validation.errors|join('; ') }}</div>
+  {% endif %}
+  <form method="post" action="/settings/openvpn/validate-network-plan">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="button secondary" type="submit">Проверить сетевой план</button>
+  </form>
 </section>
 
 <section class="panel">

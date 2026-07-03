@@ -111,7 +111,7 @@ def test_client_template_apply_writes_ccd_from_selected_networks(tmp_path):
         "client-template-apply",
         "alpha",
         "branch_directum",
-        "10.8.0.44",
+        "192.168.50.44",
         "--reason",
         "access change",
     )
@@ -119,7 +119,7 @@ def test_client_template_apply_writes_ccd_from_selected_networks(tmp_path):
     text = (tmp_path / "ccd" / "alpha").read_text(encoding="utf-8")
     assert data["status"] == "ok"
     assert data["template"] == "branch_directum"
-    assert "ifconfig-push 10.8.0.44 255.255.255.0" in text
+    assert "ifconfig-push 192.168.50.44 255.255.255.0" in text
     assert 'push "route 192.168.100.10 255.255.255.255"' in text
     assert 'push "route 10.83.1.0 255.255.255.0"' in text
     assert 'push "dhcp-option DNS 192.168.100.1"' in text

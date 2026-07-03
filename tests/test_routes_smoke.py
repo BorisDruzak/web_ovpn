@@ -24,13 +24,13 @@ if log_path:
 if cmd == "status":
     print(json.dumps({"services": {"openvpn": {"active": "active"}, "nat": {"active": "active"}}, "connected": []}))
 elif cmd == "list":
-    print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": "10.8.0.10", "connected": False}]}))
+    print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": "192.168.50.10", "connected": False}]}))
 elif cmd == "connected":
-    print(json.dumps({"connected": [{"common_name": "alpha", "virtual_address": "10.8.0.10", "real_address": "1.2.3.4:1000", "bytes_received": 10, "bytes_sent": 20, "connected_since": "hidden"}]}))
+    print(json.dumps({"connected": [{"common_name": "alpha", "virtual_address": "192.168.50.10", "real_address": "1.2.3.4:1000", "bytes_received": 10, "bytes_sent": 20, "connected_since": "hidden"}]}))
 elif cmd == "server-config":
     sub = args[2]
     if sub == "inspect":
-        print(json.dumps({"status": "ok", "server_conf": "/etc/openvpn/server/server.conf", "settings": {"status_path": "/var/log/openvpn/status.log", "status_interval": 10, "status_version": 2, "management_enabled": True, "management_socket": "/run/openvpn/server.sock", "management_client_group": "openvpn-web", "management_log_cache": 300}, "warnings": []}))
+        print(json.dumps({"status": "ok", "server_conf": "/etc/openvpn/server/server.conf", "settings": {"server_network": "192.168.50.0/24", "server_tunnel_ip": "192.168.50.1", "status_path": "/var/log/openvpn/status.log", "status_interval": 10, "status_version": 2, "management_enabled": True, "management_socket": "/run/openvpn/server.sock", "management_client_group": "openvpn-web", "management_log_cache": 300}, "warnings": []}))
     elif sub == "apply":
         print(json.dumps({"status": "ok", "changed": True, "settings": {"status_interval": 10, "status_version": 2}}))
     elif sub == "restart-openvpn":
@@ -42,7 +42,7 @@ elif cmd == "management":
     elif sub == "kill":
         print(json.dumps({"status": "ok", "client": args[3], "killed": True}))
 elif cmd == "profiles":
-    print(json.dumps({"profiles": [{"name": "directum", "description": "Directum"}]}))
+    print(json.dumps({"profiles": [{"name": "directum", "description": "Directum"}, {"name": "router_vipnet", "description": "Router"}]}))
 elif cmd == "inspect":
     client = args[2]
     ovpn_path = os.path.join(out_dir, f"{client}.ovpn")
@@ -51,6 +51,8 @@ elif cmd == "sync":
     print(json.dumps({"status": "ok", "imported_or_updated": 1}))
 elif cmd == "generate":
     print(json.dumps({"status": "ok", "client": args[2], "profile": args[3], "vpn_ip": None, "ccd_path": "/tmp/ccd", "ovpn_path": "/tmp/alpha.ovpn"}))
+elif cmd == "preview":
+    print(json.dumps({"status": "preview", "client": args[2], "profile": args[3], "client_type": "router_site_to_site" if "router_site_to_site" in args else "user", "remote_lan_cidr": "192.168.51.0/24" if "192.168.51.0/24" in args else None, "vpn_ip": args[4] if len(args) > 4 and not args[4].startswith("--") else None, "ccd_path": "/tmp/ccd", "ovpn_path": "/tmp/alpha.ovpn", "ccd_preview": ["ifconfig-push 192.168.50.201 255.255.255.0", "iroute 192.168.51.0 255.255.255.0"], "server_routes_preview": ["route 192.168.51.0 255.255.255.0"], "router_instructions": ["Disable NAT/MASQUERADE"]}))
 elif cmd == "repair-artifacts":
     client = args[2]
     os.makedirs(out_dir, exist_ok=True)
@@ -59,7 +61,7 @@ elif cmd == "repair-artifacts":
         f.write("client\\n")
     print(json.dumps({"status": "ok", "client": client, "ovpn_path": ovpn_path, "actions": ["ovpn_written"]}))
 elif cmd == "config-view":
-    print(json.dumps({"status": "ok", "client": args[2], "vpn_ip": "10.8.0.10", "detected_profile": "directum", "ovpn": {"path": "/tmp/alpha.ovpn", "exists": True, "content": "client\\n"}, "ccd": {"path": "/tmp/ccd/alpha", "exists": True, "content": "push route\\n"}}))
+    print(json.dumps({"status": "ok", "client": args[2], "vpn_ip": "192.168.50.10", "detected_profile": "directum", "ovpn": {"path": "/tmp/alpha.ovpn", "exists": True, "content": "client\\n"}, "ccd": {"path": "/tmp/ccd/alpha", "exists": True, "content": "push route\\n"}}))
 elif cmd == "networks":
     print(json.dumps({"networks": [{"cidr": "192.168.100.10/32", "tag": "directum", "nat": False}, {"cidr": "10.83.1.0/24", "tag": "vipnet", "nat": True}]}))
 elif cmd == "network-templates":
@@ -205,6 +207,67 @@ def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
         assert "sync" in commands[commands.index("generate") + 1 :]
 
 
+def test_new_client_form_supports_router_site_to_site_preview(tmp_path, monkeypatch):
+    fake = make_fake_vpnctl(tmp_path / "vpnctl")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+    monkeypatch.setenv("VPNCTL_PATH", str(fake))
+    monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
+    monkeypatch.setenv("OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("SHARE_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("FAKE_VPNCTL_LOG", str(tmp_path / "vpnctl-calls.jsonl"))
+
+    import app.db
+    import app.main
+
+    app.db.reset_engine_cache()
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login = client.get("/login")
+        csrf = login.text.split('name="csrf_token" value="')[1].split('"')[0]
+        assert client.post(
+            "/login",
+            data={"username": "admin", "password": "admin-pass", "csrf_token": csrf},
+            follow_redirects=False,
+        ).status_code == 303
+
+        form = client.get("/clients/new")
+        assert 'name="client_type"' in form.text
+        assert "router_site_to_site" in form.text
+        csrf = form.text.split('name="csrf_token" value="')[1].split('"')[0]
+        preview = client.post(
+            "/clients/new",
+            data={
+                "csrf_token": csrf,
+                "action": "preview",
+                "client": "router_site_001",
+                "profile": "router_vipnet",
+                "client_type": "router_site_to_site",
+                "vpn_ip": "192.168.50.201",
+                "remote_lan_cidr": "192.168.51.0/24",
+                "create_server_route": "1",
+                "comment": "branch router",
+            },
+        )
+
+        assert preview.status_code == 200
+        assert "iroute 192.168.51.0" in preview.text
+        assert "route 192.168.51.0" in preview.text
+        calls = [
+            json.loads(line)
+            for line in (tmp_path / "vpnctl-calls.jsonl").read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        preview_call = next(call for call in calls if call[1:4] == ["preview", "router_site_001", "router_vipnet"])
+        assert "--client-type" in preview_call
+        assert "--remote-lan" in preview_call
+        assert "--create-server-route" in preview_call
+
+
 def test_download_button_repairs_missing_ovpn_and_returns_file(tmp_path, monkeypatch):
     fake = make_fake_vpnctl(tmp_path / "vpnctl")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
@@ -287,6 +350,9 @@ def test_openvpn_settings_page_applies_status_interval(tmp_path, monkeypatch):
         assert page.status_code == 200
         assert "server.conf" in page.text
         assert "/run/openvpn/server.sock" in page.text
+        assert "Адресация" in page.text
+        assert "192.168.50.0/24" in page.text
+        assert "/settings/openvpn/validate-network-plan" in page.text
 
         csrf = page.text.split('name="csrf_token" value="')[1].split('"')[0]
         saved = client.post(

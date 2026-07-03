@@ -13,6 +13,10 @@ def test_mcp_tools_list_has_no_delete_tool():
     assert "openvpn_enable_management" in names
     assert "openvpn_management_test" in names
     assert "openvpn_management_status" in names
+    assert "openvpn_addressing" in names
+    assert "openvpn_validate_network_plan" in names
+    assert "openvpn_site_routes" in names
+    assert "openvpn_router_instructions" in names
     assert "openvpn_disable_client" in names
     assert "openvpn_view_config" in names
     assert "openvpn_networks" in names
@@ -157,7 +161,7 @@ def test_mcp_network_template_call_uses_confirm_and_reason(monkeypatch):
                     "confirm_client": "alpha",
                     "reason": "change access",
                     "template": "directum17",
-                    "vpn_ip": "10.8.0.55",
+                    "vpn_ip": "192.168.50.55",
                 },
             },
         }
@@ -171,12 +175,107 @@ def test_mcp_network_template_call_uses_confirm_and_reason(monkeypatch):
                 "confirm_client": "alpha",
                 "reason": "change access",
                 "template": "directum17",
-                "vpn_ip": "10.8.0.55",
+                "vpn_ip": "192.168.50.55",
             },
         )
     ]
     payload = json.loads(response["result"]["content"][0]["text"])
     assert payload["data"]["template"] == "directum17"
+
+
+def test_mcp_preview_and_generate_pass_router_fields(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"status": "ok", "data": {"client": "router_site_001"}}
+
+    monkeypatch.setattr(server, "api_request", fake_api_request)
+
+    for idx, name in enumerate(["openvpn_preview_client", "openvpn_generate_client"], start=20):
+        arguments = {
+            "client": "router_site_001",
+            "profile": "router_vipnet",
+            "vpn_ip": "192.168.50.201",
+            "client_type": "router_site_to_site",
+            "remote_lan_cidr": "192.168.51.0/24",
+            "create_server_route": True,
+        }
+        if name == "openvpn_generate_client":
+            arguments["comment"] = "branch router"
+        server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": idx,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        )
+
+    assert calls == [
+        (
+            "POST",
+            "/api/v1/clients/router_site_001/preview",
+            {
+                "profile": "router_vipnet",
+                "vpn_ip": "192.168.50.201",
+                "client_type": "router_site_to_site",
+                "remote_lan_cidr": "192.168.51.0/24",
+                "create_server_route": True,
+            },
+        ),
+        (
+            "POST",
+            "/api/v1/clients/router_site_001/generate",
+            {
+                "profile": "router_vipnet",
+                "vpn_ip": "192.168.50.201",
+                "client_type": "router_site_to_site",
+                "remote_lan_cidr": "192.168.51.0/24",
+                "create_server_route": True,
+                "comment": "branch router",
+            },
+        ),
+    ]
+
+
+def test_mcp_addressing_tools_call_api(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"status": "ok", "data": {"ok": True}}
+
+    monkeypatch.setattr(server, "api_request", fake_api_request)
+
+    for idx, (name, arguments) in enumerate(
+        [
+            ("openvpn_addressing", {}),
+            ("openvpn_validate_network_plan", {}),
+            ("openvpn_site_routes", {}),
+            ("openvpn_router_instructions", {"client": "router_site_001"}),
+        ],
+        start=30,
+    ):
+        server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": idx,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        )
+
+    assert calls == [
+        ("GET", "/api/v1/openvpn/addressing", None),
+        ("POST", "/api/v1/openvpn/validate-network-plan", {}),
+        ("GET", "/api/v1/site-routes", None),
+        ("GET", "/api/v1/clients/router_site_001/router-instructions", None),
+    ]
 
 
 def test_mcp_apply_networks_call_uses_safe_network_list(monkeypatch):
