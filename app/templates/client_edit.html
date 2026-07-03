@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Изменить {{ client }} - OpenVPN Web{% endblock %}
+{% block page_title %}Изменить {{ client }}{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="toolbar">
+  <a class="button secondary" href="/clients/{{ client }}">Назад к клиенту</a>
+  <a class="button secondary" href="/clients">К списку</a>
+</section>
+
+<section class="panel">
+  <h2>Применить шаблон сетей</h2>
+  <form method="post" action="/clients/{{ client }}/edit/template" class="form grid-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>
+      Шаблон
+      <select name="template" required>
+        {% for item in network_templates %}
+        <option value="{{ item.name }}" {{ 'selected' if config.detected_profile == item.name else '' }}>
+          {{ item.name }} - {{ item.description }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      VPN IP
+      <input name="vpn_ip" placeholder="необязательно" value="{{ config.vpn_ip or '' }}">
+    </label>
+    <label>
+      Причина
+      <input name="reason" value="network template applied from web UI" required>
+    </label>
+    <label>
+      Подтвердите клиента
+      <input name="confirm_name" required placeholder="{{ client }}">
+    </label>
+    <div class="form-actions">
+      <button class="button primary" type="submit">Применить шаблон</button>
+    </div>
+  </form>
+</section>
+
+<section class="columns">
+  <article class="panel">
+    <h2>Сети клиента</h2>
+    <dl class="details compact">
+      <dt>Путь</dt><dd class="mono">{{ config.ccd.path if config.ccd else '-' }}</dd>
+      <dt>Файл</dt><dd><span class="badge {{ 'ok' if config.ccd and config.ccd.exists else 'muted' }}">{{ 'есть' if config.ccd and config.ccd.exists else 'нет' }}</span></dd>
+    </dl>
+    <form method="post" action="/clients/{{ client }}/edit/networks" class="form editor-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label>VPN IP<input name="vpn_ip" placeholder="необязательно" value="{{ config.vpn_ip or '' }}"></label>
+      <label class="checkbox"><input type="checkbox" name="dns" value="1" {{ 'checked' if config.ccd and 'dhcp-option DNS' in config.ccd.content else '' }}> добавить DNS/DOMAIN</label>
+      <div class="check-grid">
+        {% for row in networks %}
+        <label class="checkbox option-line">
+          <input type="checkbox" name="cidr" value="{{ row.cidr }}" {{ 'checked' if config.ccd and row.cidr.split('/')[0] in config.ccd.content else '' }}>
+          <span class="mono">{{ row.cidr }}</span>
+          <span class="badge muted">{{ row.tag }}</span>
+          {% if row.nat %}<span class="badge ok">NAT</span>{% endif %}
+        </label>
+        {% endfor %}
+      </div>
+      <label>Причина<input name="reason" value="selected networks applied from web UI" required></label>
+      <label>Подтвердите клиента<input name="confirm_name" required placeholder="{{ client }}"></label>
+      <button class="button primary" type="submit">Применить сети</button>
+    </form>
+    <h3>Текущий CCD</h3>
+    <pre class="code">{% if config.ccd %}{{ config.ccd.content }}{% endif %}</pre>
+  </article>
+
+  <article class="panel danger">
+    <h2>OVPN</h2>
+    <p class="warning-text">Здесь показан полный клиентский конфиг, включая приватные блоки. Содержимое не пишется в аудит, но сохранение полностью перезаписывает файл.</p>
+    <dl class="details compact">
+      <dt>Путь</dt><dd class="mono">{{ config.ovpn.path if config.ovpn else '-' }}</dd>
+      <dt>Файл</dt><dd><span class="badge {{ 'ok' if config.ovpn and config.ovpn.exists else 'muted' }}">{{ 'есть' if config.ovpn and config.ovpn.exists else 'нет' }}</span></dd>
+    </dl>
+    <form method="post" action="/clients/{{ client }}/edit/ovpn" class="form editor-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label>Содержимое OVPN<textarea name="content" class="textarea-code tall" spellcheck="false">{{ config.ovpn.content if config.ovpn else '' }}</textarea></label>
+      <label>Причина<input name="reason" value="ovpn edit from web UI" required></label>
+      <label>Подтвердите клиента<input name="confirm_name" required placeholder="{{ client }}"></label>
+      <button class="button danger" type="submit">Сохранить OVPN</button>
+    </form>
+  </article>
+</section>
+{% endblock %}

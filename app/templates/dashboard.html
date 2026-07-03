@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Панель - OpenVPN Web{% endblock %}
+{% block page_title %}Панель состояния{% endblock %}
+{% block content %}
+{% if errors %}
+<section class="alerts">
+  {% for error in errors %}<div class="alert bad">{{ error }}</div>{% endfor %}
+</section>
+{% endif %}
+
+{% set services = status.get('services', {}) if status else {} %}
+{% set openvpn_service = services.get('openvpn', {}) %}
+{% set nat_service = services.get('nat', {}) %}
+
+<section class="metrics">
+  <article class="metric">
+    <span>OpenVPN</span>
+    <strong class="badge {{ openvpn_service.get('active', 'unknown')|status_class }}">
+      {{ openvpn_service.get('active', 'unknown') }}
+    </strong>
+  </article>
+  <article class="metric">
+    <span>NAT</span>
+    <strong class="badge {{ nat_service.get('active', 'unknown')|status_class }}">
+      {{ nat_service.get('active', 'unknown') }}
+    </strong>
+  </article>
+  <article class="metric">
+    <span>Клиенты</span>
+    <strong>{{ clients_count }}</strong>
+  </article>
+  <article class="metric">
+    <span>Подключено сейчас</span>
+    <strong>{{ connected_count }}</strong>
+  </article>
+</section>
+
+<section class="toolbar">
+  <a class="button primary" href="/clients/new">Создать профиль</a>
+  <a class="button secondary" href="/clients">Клиенты</a>
+  <a class="button secondary" href="/connections">Подключения</a>
+  <a class="button secondary" href="/networks">Сети</a>
+  <a class="button secondary" href="/network-templates">Шаблоны</a>
+  <a class="button secondary" href="/logs">Логи</a>
+</section>
+{% endblock %}

@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenVPN Web Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=openvpn-web
+Group=openvpn-web
+WorkingDirectory=/opt/openvpn-web
+EnvironmentFile=/etc/openvpn-web/openvpn-web.env
+ExecStart=/opt/openvpn-web/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8088
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

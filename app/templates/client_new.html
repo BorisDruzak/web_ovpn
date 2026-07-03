@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Создать профиль - OpenVPN Web{% endblock %}
+{% block page_title %}Создание профиля{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="panel">
+  <form method="post" action="/clients/new" class="form grid-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>
+      Client name
+      <input name="client" required pattern="[A-Za-z0-9._-]+" value="{{ form_values.client if form_values else '' }}">
+    </label>
+    <label>
+      Профиль
+      <select name="profile" required>
+        {% for profile in profiles %}
+        <option value="{{ profile.name }}" {{ 'selected' if form_values and form_values.profile == profile.name else '' }}>
+          {{ profile.name }} - {{ profile.description }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      VPN IP
+      <input name="vpn_ip" placeholder="необязательно" value="{{ form_values.vpn_ip if form_values else '' }}">
+    </label>
+    <label>
+      Комментарий
+      <input name="comment" value="{{ form_values.comment if form_values else '' }}">
+    </label>
+    <div class="form-actions">
+      <button class="button secondary" name="action" value="preview" type="submit">Предпросмотр</button>
+      <button class="button primary" name="action" value="generate" type="submit">Создать</button>
+    </div>
+  </form>
+</section>
+
+{% if result %}
+<section class="panel">
+  <h2>Результат</h2>
+  <dl class="details">
+    <dt>Статус</dt><dd>{{ result.status or '-' }}</dd>
+    <dt>Клиент</dt><dd>{{ result.client or '-' }}</dd>
+    <dt>Профиль</dt><dd>{{ result.profile or '-' }}</dd>
+    <dt>VPN IP</dt><dd>{{ result.vpn_ip or '-' }}</dd>
+    <dt>CCD</dt><dd>{{ result.ccd_path or '-' }}</dd>
+    <dt>OVPN</dt><dd>{{ result.ovpn_path or '-' }}</dd>
+    {% if result.bat_path %}<dt>BAT</dt><dd>{{ result.bat_path }}</dd>{% endif %}
+  </dl>
+  {% if result.ccd_preview %}
+  <h3>CCD preview</h3>
+  <pre class="code">{% for line in result.ccd_preview %}{{ line }}
+{% endfor %}</pre>
+  {% endif %}
+  {% if result.status and result.client %}
+  <div class="toolbar">
+    <form method="post" action="/clients/{{ result.client }}/download-link">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="file_type" value="ovpn">
+      <button class="button secondary" type="submit">Скачать .ovpn</button>
+    </form>
+    {% if result.bat_path %}
+    <form method="post" action="/clients/{{ result.client }}/download-link">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="file_type" value="bat">
+      <button class="button secondary" type="submit">Скачать .bat</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

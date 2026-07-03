@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Сети - OpenVPN Web{% endblock %}
+{% block page_title %}Сети{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="panel">
+  <h2>Добавить сеть</h2>
+  <form method="post" action="/networks/add" class="form grid-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>CIDR<input name="cidr" placeholder="10.0.0.0/24" required></label>
+    <label>Тэг<input name="tag" placeholder="directum, vipnet, branch" required></label>
+    <label>Комментарий<input name="comment" placeholder="необязательно"></label>
+    <label class="checkbox"><input type="checkbox" name="nat" value="1"> NAT/ViPNet</label>
+    <label class="checkbox"><input type="checkbox" name="restart_nat" value="1"> перезапустить NAT после изменения</label>
+    <div class="form-actions">
+      <button class="button primary" type="submit">Добавить</button>
+    </div>
+  </form>
+</section>
+
+<section class="columns">
+  <article class="panel">
+    <h2>Каталог сетей</h2>
+    <table>
+      <thead><tr><th>CIDR</th><th>Тэг</th><th>NAT</th><th>Комментарий</th><th class="actions">Действие</th></tr></thead>
+      <tbody>
+        {% for row in networks %}
+        <tr>
+          <td class="mono">{{ row.cidr }}</td>
+          <td>{{ row.tag }}</td>
+          <td><span class="badge {{ 'ok' if row.nat else 'muted' }}">{{ 'NAT' if row.nat else 'нет' }}</span></td>
+          <td>{{ row.comment or '-' }}</td>
+          <td class="actions">
+            <form method="post" action="/networks/remove">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <input type="hidden" name="cidr" value="{{ row.cidr }}">
+              <input type="hidden" name="restart_nat" value="1">
+              <button class="button small danger" type="submit">Удалить</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="empty">Список пуст</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+  <article class="panel">
+    <h2>NAT counters</h2>
+    <pre class="code">{% for line in nat.output or nat.lines or [] %}{{ line }}
+{% endfor %}</pre>
+  </article>
+</section>
+{% endblock %}

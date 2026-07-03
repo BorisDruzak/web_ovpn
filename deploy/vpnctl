@@ -1,0 +1,2545 @@
+#!/usr/bin/env python3
+"""
+vpnctl — OpenVPN client/profile manager for a single OpenVPN server.
+
+Designed to be both a safe CLI and a future web-backend command.
+- Generates .ovpn profiles, CCD files and optional hosts .bat.
+- Keeps a small SQLite registry of clients and operations.
+- Lists current OpenVPN connections from status.log.
+- Disables/deletes clients safely by revoking certs and updating CRL.
+- Manages ViPNet destination networks used by NAT and route generation.
+
+No third-party Python dependencies.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import datetime as dt
+import ipaddress
+import json
+import os
+import re
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+try:
+    import fcntl  # type: ignore
+except ImportError:  # pragma: no cover - used only for local Windows tests.
+    fcntl = None
+
+try:
+    import grp  # type: ignore
+except ImportError:  # pragma: no cover - Windows local tests.
+    grp = None
+
+# -----------------------------
+# Defaults. Can be overridden by /etc/openvpn/vpnctl.env or environment variables.
+# -----------------------------
+DEFAULTS = {
+    "OPENVPN_DIR": "/etc/openvpn/server",
+    "EASYRSA_DIR": "/etc/openvpn/server/easy-rsa",
+    "PKI_DIR": "/etc/openvpn/server/easy-rsa/pki",
+    "CCD_DIR": "/etc/openvpn/server/ccd",
+    "GEN_DIR": "/etc/openvpn/client-generator",
+    "OUT_DIR": "/etc/openvpn/client-generator/output",
+    "SHARE_OUT_DIR": "/mnt/antares_soft/vpn_config",
+    "ARCHIVE_DIR": "/etc/openvpn/client-generator/archive",
+    "REMOTE_HOST": "78.29.35.68",
+    "REMOTE_PORT": "1194",
+    "PROTO": "udp",
+    "SERVER_VERIFY_NAME": "server_zqaDR5gSKwTNtBqt",
+    "DIRECTUM_IP": "192.168.100.10",
+    "EXTRA_DIRECTUM_IP": "192.168.100.17",
+    "DNS_IP": "192.168.100.1",
+    "DNS_DOMAIN": "sosnadmin.local",
+    "VIPNET_NETS_FILE": "/etc/openvpn/vipnet-nets.conf",
+    "SERVER_CONF": "/etc/openvpn/server/server.conf",
+    "STATUS_LOG": "/var/log/openvpn/status.log",
+    "SERVICE_NAME": "openvpn-server@server",
+    "REGISTRY_DB": "/var/lib/openvpn-client-manager/openvpn-manager.sqlite",
+    "NETWORKS_DB": "/var/lib/openvpn-client-manager/networks.json",
+    "NETWORK_TEMPLATES_DB": "/var/lib/openvpn-client-manager/network-templates.json",
+    "OPERATION_LOG": "/var/log/openvpn/vpnctl.log",
+    "LOCK_FILE": "/run/openvpn-client-generator.lock",
+    "VPN_NETWORK": "10.8.0.0/24",
+    "VPN_SERVER_IP": "10.8.0.1",
+    "NAT_SERVICE": "vipnet-openvpn-nat.service",
+    "NAT_CHAIN": "VIPNET_OPENVPN_SNAT",
+    "MANAGEMENT_SOCKET": "/run/openvpn/server.sock",
+    "MANAGEMENT_CLIENT_GROUP": "openvpn-web",
+    "MANAGEMENT_LOG_CACHE": "300",
+    "MANAGEMENT_HOST": "",
+    "MANAGEMENT_PORT": "",
+    "MANAGEMENT_PASSWORD_FILE": "",
+    "DOWNLOAD_FILE_GROUP": "openvpn-web",
+}
+
+PROFILE_DESCRIPTIONS = {
+    "directum": "Только Directum 192.168.100.10/32, без DNS и hosts.bat",
+    "directum_hosts": "Directum 192.168.100.10/32 + hosts.bat, DNS не меняем",
+    "directum_dns": "Directum 192.168.100.10/32 + DNS 192.168.100.1 + DOMAIN sosnadmin.local",
+
+    "directum17": "Directum 192.168.100.10/32 + 192.168.100.17/32, без DNS и hosts.bat",
+    "directum17_hosts": "Directum + 192.168.100.17 + hosts.bat, DNS не меняем",
+    "directum17_dns": "Directum + 192.168.100.17 + DNS + DOMAIN",
+
+    "vipnet_only": "Только маршруты ViPNet-сетей из vipnet-nets.conf, без DNS",
+    "vipnet_only_dns": "ViPNet-сети + DNS + DOMAIN",
+
+    "directum_vipnet": "Directum + ViPNet-сети, без DNS",
+    "directum_vipnet_dns": "Directum + DNS + ViPNet-сети",
+
+    "directum17_vipnet": "Directum + 192.168.100.17 + ViPNet-сети, без DNS",
+    "directum17_vipnet_dns": "Directum + 192.168.100.17 + DNS + ViPNet-сети",
+
+    # Backward-compatible aliases used in the current workflow.
+    "vipnet": "Совместимый профиль: Directum + DNS + ViPNet-сети",
+    "router_vipnet": "Профиль для роутера: Directum + DNS + ViPNet-сети; маршруты на роутерах часто задаются вручную",
+
+    "lan_full": "Полный служебный доступ: 192.168.100.0/23, 10.83.1.0/24, 10.10.10.0/23 + DNS",
+}
+
+CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+CCD_FILE_MODE = 0o644
+
+# -----------------------------
+# Utility
+# -----------------------------
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def timestamp() -> str:
+    return dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def load_env_file(path: Path) -> Dict[str, str]:
+    data: Dict[str, str] = {}
+    if not path.exists():
+        return data
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except PermissionError:
+        return data
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key:
+            data[key] = val
+    return data
+
+
+class Cfg:
+    def __init__(self) -> None:
+        cfg = dict(DEFAULTS)
+        cfg.update(load_env_file(Path("/etc/openvpn/vpnctl.env")))
+        for key in list(cfg.keys()):
+            if key in os.environ:
+                cfg[key] = os.environ[key]
+        self.values = cfg
+
+    def __getattr__(self, name: str) -> str:
+        if name in self.values:
+            return self.values[name]
+        raise AttributeError(name)
+
+    def path(self, name: str) -> Path:
+        return Path(self.values[name])
+
+
+CFG = Cfg()
+
+
+def is_json_mode(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "json", False))
+
+
+def emit(data: Any, args: argparse.Namespace, human: Optional[str] = None) -> None:
+    if is_json_mode(args):
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    else:
+        if human is not None:
+            print(human)
+        else:
+            print_human(data)
+
+
+def print_human(data: Any) -> None:
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if isinstance(v, (dict, list)):
+                print(f"{k}:")
+                print_human(v)
+            else:
+                print(f"{k}: {v}")
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                print("- " + ", ".join(f"{k}={v}" for k, v in item.items()))
+            else:
+                print(f"- {item}")
+    else:
+        print(data)
+
+
+def run(cmd: List[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None, check: bool = True) -> subprocess.CompletedProcess:
+    proc_env = os.environ.copy()
+    if env:
+        proc_env.update(env)
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=proc_env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=check,
+    )
+
+
+def validate_client(name: str) -> None:
+    if not name or not CLIENT_RE.match(name):
+        raise SystemExit("Ошибка: имя клиента должно содержать только латиницу, цифры, точку, дефис или подчёркивание.")
+
+
+def validate_profile(profile: str) -> None:
+    if profile not in PROFILE_DESCRIPTIONS:
+        raise SystemExit(f"Ошибка: неизвестный профиль: {profile}. Выполните: vpnctl profiles")
+
+
+def validate_vpn_ip(ip: str) -> None:
+    try:
+        addr = ipaddress.ip_address(ip)
+        net = ipaddress.ip_network(CFG.VPN_NETWORK, strict=False)
+    except ValueError as e:
+        raise SystemExit(f"Ошибка: неверный VPN IP: {ip}: {e}")
+    if addr.version != 4:
+        raise SystemExit("Ошибка: VPN IP должен быть IPv4.")
+    if addr not in net:
+        raise SystemExit(f"Ошибка: VPN IP {ip} должен быть внутри {CFG.VPN_NETWORK}.")
+    if str(addr) == CFG.VPN_SERVER_IP:
+        raise SystemExit(f"Ошибка: {CFG.VPN_SERVER_IP} зарезервирован за OpenVPN-сервером.")
+
+
+def ensure_dirs() -> None:
+    for p in [
+        CFG.path("OUT_DIR"),
+        CFG.path("CCD_DIR"),
+        CFG.path("ARCHIVE_DIR"),
+        Path(CFG.REGISTRY_DB).parent,
+        Path(CFG.NETWORKS_DB).parent,
+        Path(CFG.NETWORK_TEMPLATES_DB).parent,
+    ]:
+        p.mkdir(parents=True, exist_ok=True)
+
+
+def lock_exclusive() -> Any:
+    lock_path = Path(CFG.LOCK_FILE)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fh = lock_path.open("w")
+    if fcntl is not None:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+    return fh
+
+
+def atomic_write(path: Path, content: str, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".tmp.", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def make_download_file_readable(path: Path) -> None:
+    group_name = str(CFG.values.get("DOWNLOAD_FILE_GROUP") or CFG.values.get("MANAGEMENT_CLIENT_GROUP") or "")
+    if grp is not None and group_name:
+        try:
+            os.chown(path, -1, grp.getgrnam(group_name).gr_gid)
+        except (KeyError, PermissionError, OSError):
+            pass
+    os.chmod(path, 0o640)
+
+
+def write_ccd_file(path: Path, content: str) -> None:
+    atomic_write(path, content, CCD_FILE_MODE)
+
+
+def read_json_file(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return default
+
+
+def write_json_file(path: Path, data: Any, mode: int = 0o600) -> None:
+    atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", mode)
+
+
+def backup_file(path: Path) -> Optional[Path]:
+    if not path.exists():
+        return None
+    backup = path.with_name(path.name + f".backup.{timestamp()}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def backup_server_conf(path: Path) -> Optional[Path]:
+    if not path.exists():
+        return None
+    backup = path.with_name(path.name + f".bak.{timestamp()}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def append_operation_log(line: str) -> None:
+    try:
+        log_path = Path(CFG.OPERATION_LOG)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(line.rstrip() + "\n")
+    except Exception:
+        pass
+
+# -----------------------------
+# Registry
+# -----------------------------
+
+def db() -> sqlite3.Connection:
+    ensure_dirs()
+    con = sqlite3.connect(CFG.REGISTRY_DB)
+    con.row_factory = sqlite3.Row
+    init_db(con)
+    return con
+
+
+def init_db(con: sqlite3.Connection) -> None:
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS clients (
+            name TEXT PRIMARY KEY,
+            profile TEXT,
+            detected_profile TEXT,
+            vpn_ip TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT,
+            updated_at TEXT,
+            ovpn_path TEXT,
+            ccd_path TEXT,
+            tlscrypt_path TEXT,
+            bat_path TEXT,
+            share_ovpn_path TEXT,
+            comment TEXT,
+            cert_exists INTEGER DEFAULT 0,
+            key_exists INTEGER DEFAULT 0,
+            ccd_exists INTEGER DEFAULT 0,
+            ovpn_exists INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            time TEXT NOT NULL,
+            actor TEXT,
+            action TEXT NOT NULL,
+            client TEXT,
+            result TEXT NOT NULL,
+            message TEXT
+        );
+        """
+    )
+    con.commit()
+
+
+def actor() -> str:
+    return os.environ.get("SUDO_USER") or os.environ.get("USER") or "unknown"
+
+
+def record_operation(action: str, client: Optional[str], result: str, message: str = "") -> None:
+    line = f"{now_iso()} actor={actor()} action={action} client={client or '-'} result={result} message={message}"
+    append_operation_log(line)
+    try:
+        with db() as con:
+            con.execute(
+                "INSERT INTO operations(time, actor, action, client, result, message) VALUES (?, ?, ?, ?, ?, ?)",
+                (now_iso(), actor(), action, client, result, message),
+            )
+            con.commit()
+    except Exception:
+        pass
+
+
+def upsert_client(row: Dict[str, Any]) -> None:
+    row = dict(row)
+    row.setdefault("updated_at", now_iso())
+    row.setdefault("created_at", row["updated_at"])
+    cols = [
+        "name", "profile", "detected_profile", "vpn_ip", "status", "created_at", "updated_at",
+        "ovpn_path", "ccd_path", "tlscrypt_path", "bat_path", "share_ovpn_path", "comment",
+        "cert_exists", "key_exists", "ccd_exists", "ovpn_exists",
+    ]
+    for col in cols:
+        row.setdefault(col, None)
+    with db() as con:
+        existing = con.execute("SELECT created_at FROM clients WHERE name=?", (row["name"],)).fetchone()
+        if existing and existing["created_at"]:
+            row["created_at"] = existing["created_at"]
+        placeholders = ",".join("?" for _ in cols)
+        updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "name")
+        con.execute(
+            f"INSERT INTO clients({','.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(name) DO UPDATE SET {updates}",
+            [row[c] for c in cols],
+        )
+        con.commit()
+
+
+def get_client_row(name: str) -> Optional[sqlite3.Row]:
+    with db() as con:
+        return con.execute("SELECT * FROM clients WHERE name=?", (name,)).fetchone()
+
+# -----------------------------
+# Networks, templates, profiles and CCD
+# -----------------------------
+
+def normalize_cidr(cidr: str) -> str:
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as e:
+        raise SystemExit(f"Ошибка: неверный CIDR {cidr}: {e}")
+    if net.version != 4:
+        raise SystemExit(f"Ошибка: поддерживается только IPv4: {cidr}")
+    return str(net)
+
+
+def normalize_tag(tag: str) -> str:
+    value = (tag or "default").strip()
+    if not value:
+        value = "default"
+    return value[:80]
+
+
+def normalize_template_name(name: str) -> str:
+    value = (name or "").strip()
+    if not value or not CLIENT_RE.match(value):
+        raise SystemExit("Ошибка: имя шаблона должно содержать только латиницу, цифры, точку, дефис или подчёркивание.")
+    return value
+
+
+def read_legacy_vipnet_nets() -> List[str]:
+    p = CFG.path("VIPNET_NETS_FILE")
+    if not p.exists():
+        return []
+    nets: List[str] = []
+    for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        nets.append(normalize_cidr(line))
+    return nets
+
+
+def default_network_rows() -> List[Dict[str, Any]]:
+    rows: Dict[str, Dict[str, Any]] = {}
+
+    def add(cidr: str, tag: str, nat: bool = False, comment: str = "") -> None:
+        normalized = normalize_cidr(cidr)
+        rows[normalized] = {
+            "cidr": normalized,
+            "tag": normalize_tag(tag),
+            "nat": bool(nat),
+            "comment": comment,
+            "source": "builtin",
+        }
+
+    add(CFG.DIRECTUM_IP, "directum", False, "Directum")
+    add(CFG.EXTRA_DIRECTUM_IP, "directum", False, "Directum 17")
+    add(CFG.DNS_IP, "dns", False, "DNS")
+    add("192.168.100.0/23", "lan", False, "LAN")
+    add("10.83.1.0/24", "lan", False, "LAN")
+    add("10.10.10.0/23", "lan", False, "LAN")
+    for cidr in read_legacy_vipnet_nets():
+        add(cidr, "vipnet", True, "Imported from vipnet-nets.conf")
+    return sorted(rows.values(), key=lambda row: (row["tag"], row["cidr"]))
+
+
+def normalize_network_row(row: Dict[str, Any], source_default: str = "custom") -> Dict[str, Any]:
+    return {
+        "cidr": normalize_cidr(str(row.get("cidr") or "")),
+        "tag": normalize_tag(str(row.get("tag") or "default")),
+        "nat": bool(row.get("nat", False)),
+        "comment": str(row.get("comment") or ""),
+        "source": str(row.get("source") or source_default),
+    }
+
+
+def list_networks() -> List[Dict[str, Any]]:
+    raw = read_json_file(CFG.path("NETWORKS_DB"), None)
+    if raw is None:
+        rows = default_network_rows()
+    elif isinstance(raw, dict):
+        rows = [normalize_network_row(item) for item in raw.get("networks", []) if isinstance(item, dict)]
+    elif isinstance(raw, list):
+        rows = [normalize_network_row(item) for item in raw if isinstance(item, dict)]
+    else:
+        rows = default_network_rows()
+    dedup: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        dedup[row["cidr"]] = row
+    return sorted(dedup.values(), key=lambda row: (row["tag"], row["cidr"]))
+
+
+def sync_nat_file_from_networks(rows: List[Dict[str, Any]]) -> None:
+    nat_nets = [row["cidr"] for row in rows if row.get("nat")]
+    content = "\n".join(sorted(nat_nets)) + ("\n" if nat_nets else "")
+    atomic_write(CFG.path("VIPNET_NETS_FILE"), content, 0o644)
+
+
+def save_networks(rows: List[Dict[str, Any]], sync_nat: bool = True) -> None:
+    normalized = [normalize_network_row(row) for row in rows]
+    write_json_file(CFG.path("NETWORKS_DB"), {"networks": sorted(normalized, key=lambda row: (row["tag"], row["cidr"]))})
+    if sync_nat:
+        sync_nat_file_from_networks(normalized)
+
+
+def add_or_update_network(cidr: str, tag: str, nat: bool, comment: str = "", restart_nat: bool = False) -> Dict[str, Any]:
+    normalized = normalize_cidr(cidr)
+    rows = list_networks()
+    updated = False
+    for row in rows:
+        if row["cidr"] == normalized:
+            row.update({"tag": normalize_tag(tag), "nat": bool(nat), "comment": comment, "source": "custom"})
+            updated = True
+            network = row
+            break
+    else:
+        network = {"cidr": normalized, "tag": normalize_tag(tag), "nat": bool(nat), "comment": comment, "source": "custom"}
+        rows.append(network)
+    save_networks(rows)
+    result = {"status": "ok", "changed": True, "updated": updated, "network": network}
+    if restart_nat:
+        proc = run(["systemctl", "restart", CFG.NAT_SERVICE], check=False)
+        result["restart_nat"] = {"returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+    record_operation("network-upsert", None, "ok", f"network={normalized} tag={tag} nat={nat}")
+    return result
+
+
+def remove_network(cidr: str, restart_nat: bool = False) -> Dict[str, Any]:
+    normalized = normalize_cidr(cidr)
+    rows = list_networks()
+    new_rows = [row for row in rows if row["cidr"] != normalized]
+    changed = len(new_rows) != len(rows)
+    if changed:
+        save_networks(new_rows)
+    result = {"status": "ok", "network": normalized, "changed": changed}
+    if restart_nat:
+        proc = run(["systemctl", "restart", CFG.NAT_SERVICE], check=False)
+        result["restart_nat"] = {"returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr}
+    record_operation("network-remove", None, "ok", f"network={normalized} changed={changed}")
+    return result
+
+
+def read_vipnet_nets() -> List[str]:
+    return [row["cidr"] for row in list_networks() if row.get("nat")]
+
+
+def route_line(cidr_or_ip: str) -> str:
+    if "/" not in cidr_or_ip:
+        network = ipaddress.ip_network(cidr_or_ip + "/32", strict=False)
+    else:
+        network = ipaddress.ip_network(cidr_or_ip, strict=False)
+    return f'push "route {network.network_address} {network.netmask}"'
+
+
+def profile_ccd_lines(profile: str, vpn_ip: str = "") -> List[str]:
+    validate_profile(profile)
+    lines: List[str] = []
+    if vpn_ip:
+        validate_vpn_ip(vpn_ip)
+        lines.append(f"ifconfig-push {vpn_ip} 255.255.255.0")
+
+    def directum() -> None:
+        lines.append(route_line(CFG.DIRECTUM_IP))
+
+    def directum17() -> None:
+        directum()
+        lines.append(route_line(CFG.EXTRA_DIRECTUM_IP))
+
+    def dns() -> None:
+        lines.append(route_line(CFG.DNS_IP))
+        lines.append(f'push "dhcp-option DNS {CFG.DNS_IP}"')
+        lines.append(f'push "dhcp-option DOMAIN {CFG.DNS_DOMAIN}"')
+
+    def vipnet_routes() -> None:
+        for net in read_vipnet_nets():
+            lines.append(route_line(net))
+
+    if profile in {"directum", "directum_hosts"}:
+        directum()
+    elif profile == "directum_dns":
+        directum(); dns()
+    elif profile in {"directum17", "directum17_hosts"}:
+        directum17()
+    elif profile == "directum17_dns":
+        directum17(); dns()
+    elif profile == "vipnet_only":
+        vipnet_routes()
+    elif profile == "vipnet_only_dns":
+        dns(); vipnet_routes()
+    elif profile == "directum_vipnet":
+        directum(); vipnet_routes()
+    elif profile in {"directum_vipnet_dns", "vipnet", "router_vipnet"}:
+        directum(); dns(); vipnet_routes()
+    elif profile == "directum17_vipnet":
+        directum17(); vipnet_routes()
+    elif profile == "directum17_vipnet_dns":
+        directum17(); dns(); vipnet_routes()
+    elif profile == "lan_full":
+        lines.append(route_line("192.168.100.0/23"))
+        lines.append(route_line("10.83.1.0/24"))
+        lines.append(route_line("10.10.10.0/23"))
+        dns()
+    else:
+        # Should be unreachable because validate_profile was already called.
+        raise SystemExit(f"Ошибка: неизвестный профиль: {profile}")
+    return lines
+
+
+def ccd_content(profile: str, vpn_ip: str = "") -> str:
+    return "\n".join(profile_ccd_lines(profile, vpn_ip)) + "\n"
+
+
+def unique_cidrs(cidrs: Iterable[str]) -> List[str]:
+    seen = set()
+    result = []
+    for cidr in cidrs:
+        normalized = normalize_cidr(str(cidr))
+        if normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def available_network_cidrs() -> set[str]:
+    return {row["cidr"] for row in list_networks()}
+
+
+def ccd_content_from_networks(cidrs: Iterable[str], vpn_ip: str = "", dns: bool = False) -> str:
+    if vpn_ip:
+        validate_vpn_ip(vpn_ip)
+    selected = unique_cidrs(cidrs)
+    lines: List[str] = []
+    if vpn_ip:
+        lines.append(f"ifconfig-push {vpn_ip} 255.255.255.0")
+    for cidr in selected:
+        lines.append(route_line(cidr))
+    dns_cidr = normalize_cidr(CFG.DNS_IP)
+    if dns and dns_cidr not in selected:
+        lines.append(route_line(CFG.DNS_IP))
+    if dns:
+        lines.append(f'push "dhcp-option DNS {CFG.DNS_IP}"')
+        lines.append(f'push "dhcp-option DOMAIN {CFG.DNS_DOMAIN}"')
+    return "\n".join(lines) + "\n"
+
+
+def builtin_network_templates() -> List[Dict[str, Any]]:
+    directum = [normalize_cidr(CFG.DIRECTUM_IP)]
+    directum17 = [normalize_cidr(CFG.DIRECTUM_IP), normalize_cidr(CFG.EXTRA_DIRECTUM_IP)]
+    vipnet = read_vipnet_nets()
+    lan_full = [normalize_cidr("192.168.100.0/23"), normalize_cidr("10.83.1.0/24"), normalize_cidr("10.10.10.0/23")]
+
+    def tpl(name: str, cidrs: List[str], dns: bool, description: str) -> Dict[str, Any]:
+        return {
+            "name": name,
+            "description": description,
+            "cidrs": unique_cidrs(cidrs),
+            "dns": dns,
+            "builtin": True,
+        }
+
+    return [
+        tpl("directum", directum, False, PROFILE_DESCRIPTIONS["directum"]),
+        tpl("directum_hosts", directum, False, PROFILE_DESCRIPTIONS["directum_hosts"]),
+        tpl("directum_dns", directum, True, PROFILE_DESCRIPTIONS["directum_dns"]),
+        tpl("directum17", directum17, False, PROFILE_DESCRIPTIONS["directum17"]),
+        tpl("directum17_hosts", directum17, False, PROFILE_DESCRIPTIONS["directum17_hosts"]),
+        tpl("directum17_dns", directum17, True, PROFILE_DESCRIPTIONS["directum17_dns"]),
+        tpl("vipnet_only", vipnet, False, PROFILE_DESCRIPTIONS["vipnet_only"]),
+        tpl("vipnet_only_dns", vipnet, True, PROFILE_DESCRIPTIONS["vipnet_only_dns"]),
+        tpl("directum_vipnet", directum + vipnet, False, PROFILE_DESCRIPTIONS["directum_vipnet"]),
+        tpl("directum_vipnet_dns", directum + vipnet, True, PROFILE_DESCRIPTIONS["directum_vipnet_dns"]),
+        tpl("directum17_vipnet", directum17 + vipnet, False, PROFILE_DESCRIPTIONS["directum17_vipnet"]),
+        tpl("directum17_vipnet_dns", directum17 + vipnet, True, PROFILE_DESCRIPTIONS["directum17_vipnet_dns"]),
+        tpl("vipnet", directum + vipnet, True, PROFILE_DESCRIPTIONS["vipnet"]),
+        tpl("router_vipnet", directum + vipnet, True, PROFILE_DESCRIPTIONS["router_vipnet"]),
+        tpl("lan_full", lan_full, True, PROFILE_DESCRIPTIONS["lan_full"]),
+    ]
+
+
+def normalize_template_row(row: Dict[str, Any], builtin: bool = False) -> Dict[str, Any]:
+    cidrs = unique_cidrs(row.get("cidrs", []) if isinstance(row.get("cidrs"), list) else [])
+    return {
+        "name": normalize_template_name(str(row.get("name") or "")),
+        "description": str(row.get("description") or ""),
+        "cidrs": cidrs,
+        "dns": bool(row.get("dns", False)),
+        "builtin": bool(row.get("builtin", builtin)),
+    }
+
+
+def custom_network_templates() -> List[Dict[str, Any]]:
+    raw = read_json_file(CFG.path("NETWORK_TEMPLATES_DB"), [])
+    if isinstance(raw, dict):
+        raw = raw.get("templates", [])
+    if not isinstance(raw, list):
+        return []
+    rows = []
+    for item in raw:
+        if isinstance(item, dict):
+            rows.append(normalize_template_row(item, builtin=False))
+    return rows
+
+
+def list_network_templates() -> List[Dict[str, Any]]:
+    rows: Dict[str, Dict[str, Any]] = {row["name"]: row for row in builtin_network_templates()}
+    for row in custom_network_templates():
+        rows[row["name"]] = row
+    return sorted(rows.values(), key=lambda row: (row.get("builtin") is False, row["name"]))
+
+
+def save_custom_network_templates(rows: List[Dict[str, Any]]) -> None:
+    normalized = [normalize_template_row({**row, "builtin": False}, builtin=False) for row in rows]
+    write_json_file(CFG.path("NETWORK_TEMPLATES_DB"), {"templates": sorted(normalized, key=lambda row: row["name"])})
+
+
+def add_network_template(name: str, cidrs: List[str], description: str = "", dns: bool = False) -> Dict[str, Any]:
+    name = normalize_template_name(name)
+    if name in {row["name"] for row in builtin_network_templates()}:
+        raise SystemExit(f"Ошибка: встроенный шаблон нельзя заменить: {name}")
+    selected = unique_cidrs(cidrs)
+    available = available_network_cidrs()
+    missing = [cidr for cidr in selected if cidr not in available]
+    if missing:
+        raise SystemExit(f"Ошибка: сети нет в каталоге: {', '.join(missing)}")
+    rows = [row for row in custom_network_templates() if row["name"] != name]
+    template = {"name": name, "description": description, "cidrs": selected, "dns": bool(dns), "builtin": False}
+    rows.append(template)
+    save_custom_network_templates(rows)
+    record_operation("network-template-add", None, "ok", f"template={name} networks={len(selected)}")
+    return {"status": "ok", "template": template}
+
+
+def remove_network_template(name: str) -> Dict[str, Any]:
+    name = normalize_template_name(name)
+    if name in {row["name"] for row in builtin_network_templates()}:
+        raise SystemExit(f"Ошибка: встроенный шаблон нельзя удалить: {name}")
+    rows = custom_network_templates()
+    new_rows = [row for row in rows if row["name"] != name]
+    changed = len(new_rows) != len(rows)
+    if changed:
+        save_custom_network_templates(new_rows)
+    record_operation("network-template-remove", None, "ok", f"template={name} changed={changed}")
+    return {"status": "ok", "template": name, "changed": changed}
+
+
+def get_network_template(name: str) -> Dict[str, Any]:
+    name = normalize_template_name(name)
+    for row in list_network_templates():
+        if row["name"] == name:
+            return row
+    raise SystemExit(f"Ошибка: шаблон сетей не найден: {name}")
+
+
+def parse_ccd(path: Path) -> Dict[str, Any]:
+    data = {"routes": set(), "dns": False, "domain": False, "vpn_ip": None, "raw": ""}
+    if not path.exists():
+        return data
+    text = path.read_text(encoding="utf-8", errors="replace")
+    data["raw"] = text
+    for line in text.splitlines():
+        line = line.strip()
+        m = re.match(r"ifconfig-push\s+(\S+)\s+255\.255\.255\.0", line)
+        if m:
+            data["vpn_ip"] = m.group(1)
+        m = re.match(r'push\s+"route\s+(\S+)\s+(\S+)"', line)
+        if m:
+            ip, mask = m.group(1), m.group(2)
+            try:
+                net = ipaddress.ip_network(f"{ip}/{mask}", strict=False)
+                data["routes"].add(str(net))
+            except ValueError:
+                pass
+        if 'dhcp-option DNS' in line:
+            data["dns"] = True
+        if 'dhcp-option DOMAIN' in line:
+            data["domain"] = True
+    return data
+
+
+def infer_profile(name: str, ccd_path: Path, bat_path: Optional[Path] = None) -> str:
+    parsed = parse_ccd(ccd_path)
+    routes = parsed["routes"]
+    has_dns = bool(parsed["dns"])
+    has_bat = bool(bat_path and bat_path.exists())
+    d = str(ipaddress.ip_network(CFG.DIRECTUM_IP + "/32", strict=False))
+    d17 = str(ipaddress.ip_network(CFG.EXTRA_DIRECTUM_IP + "/32", strict=False))
+    dns_net = str(ipaddress.ip_network(CFG.DNS_IP + "/32", strict=False))
+    vipnets = set(read_vipnet_nets())
+    has_vip = bool(routes.intersection(vipnets))
+    has_d = d in routes
+    has_d17 = d17 in routes
+    has_lan_full = {"192.168.100.0/23", "10.83.1.0/24", "10.10.10.0/23"}.issubset(routes)
+
+    if has_lan_full:
+        return "lan_full"
+    if has_vip:
+        if has_d17:
+            return "directum17_vipnet_dns" if has_dns else "directum17_vipnet"
+        if has_d:
+            # Preserve current backward-compatible profile name.
+            return "vipnet" if has_dns else "directum_vipnet"
+        return "vipnet_only_dns" if has_dns else "vipnet_only"
+    if has_d17:
+        return "directum17_dns" if has_dns else ("directum17_hosts" if has_bat else "directum17")
+    if has_d:
+        return "directum_dns" if has_dns else ("directum_hosts" if has_bat else "directum")
+    if dns_net in routes and has_dns:
+        return "dns_only"
+    return "unknown"
+
+# -----------------------------
+# OpenVPN artifacts
+# -----------------------------
+
+def client_paths(client: str) -> Dict[str, Path]:
+    out = CFG.path("OUT_DIR")
+    share = CFG.path("SHARE_OUT_DIR")
+    return {
+        "crt": CFG.path("PKI_DIR") / "issued" / f"{client}.crt",
+        "key": CFG.path("PKI_DIR") / "private" / f"{client}.key",
+        "req": CFG.path("PKI_DIR") / "reqs" / f"{client}.req",
+        "tlscrypt": out / f"{client}.tls-crypt-v2.key",
+        "ovpn": out / f"{client}.ovpn",
+        "bat": out / f"{client}-install-hosts-as-admin.bat",
+        "ccd": CFG.path("CCD_DIR") / client,
+        "share_ovpn": share / f"{client}.ovpn",
+        "share_bat": share / f"{client}-install-hosts-as-admin.bat",
+    }
+
+
+def cert_status(client: str) -> str:
+    index = CFG.path("PKI_DIR") / "index.txt"
+    if not index.exists():
+        return "unknown"
+    # Easy-RSA index format: V/R/E\t...\t/CN=name
+    for line in index.read_text(encoding="utf-8", errors="replace").splitlines():
+        if f"/CN={client}" in line or line.rstrip().endswith(f"CN={client}") or f"\t{client}" in line:
+            first = line.split("\t", 1)[0]
+            if first == "V":
+                return "valid"
+            if first == "R":
+                return "revoked"
+            if first == "E":
+                return "expired"
+    return "missing"
+
+
+def extract_cert(path: Path) -> str:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", text, re.S)
+    if not m:
+        raise SystemExit(f"Ошибка: не удалось извлечь сертификат из {path}")
+    return m.group(0).strip() + "\n"
+
+
+def build_ovpn(client: str) -> str:
+    paths = client_paths(client)
+    for req in [CFG.path("PKI_DIR") / "ca.crt", paths["crt"], paths["key"], paths["tlscrypt"]]:
+        if not req.exists():
+            raise SystemExit(f"Ошибка: не найден файл для .ovpn: {req}")
+    parts = [
+        "client",
+        f"proto {CFG.PROTO}",
+        "explicit-exit-notify",
+        f"remote {CFG.REMOTE_HOST} {CFG.REMOTE_PORT}",
+        "dev tun",
+        "resolv-retry infinite",
+        "nobind",
+        "persist-key",
+        "persist-tun",
+        "remote-cert-tls server",
+        f"verify-x509-name {CFG.SERVER_VERIFY_NAME} name",
+        "auth SHA256",
+        "auth-nocache",
+        "cipher AES-128-GCM",
+        "ignore-unknown-option data-ciphers",
+        "data-ciphers AES-128-GCM",
+        "ncp-ciphers AES-128-GCM",
+        "tls-client",
+        "tls-version-min 1.2",
+        "tls-cipher TLS-ECDHE-ECDSA-WITH-AES-128-GCM-SHA256",
+        "tls-ciphersuites TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256",
+        "verb 3",
+        "",
+        "<ca>",
+        (CFG.path("PKI_DIR") / "ca.crt").read_text(encoding="utf-8", errors="replace").strip(),
+        "</ca>",
+        "",
+        "<cert>",
+        extract_cert(paths["crt"]).strip(),
+        "</cert>",
+        "",
+        "<key>",
+        paths["key"].read_text(encoding="utf-8", errors="replace").strip(),
+        "</key>",
+        "",
+        "<tls-crypt-v2>",
+        paths["tlscrypt"].read_text(encoding="utf-8", errors="replace").strip(),
+        "</tls-crypt-v2>",
+        "",
+    ]
+    return "\n".join(parts)
+
+
+def build_hosts_bat() -> str:
+    return f"""@echo off
+echo This script must be run as Administrator.
+set HOSTS=%SystemRoot%\\System32\\drivers\\etc\\hosts
+
+findstr /I /C:"directumserver" "%HOSTS%" >nul
+if %errorlevel%==0 (
+  echo Entry for directumserver already exists:
+  findstr /I /C:"directumserver" "%HOSTS%"
+) else (
+  echo {CFG.DIRECTUM_IP} directumserver directumserver.{CFG.DNS_DOMAIN}>> "%HOSTS%"
+  echo Added: {CFG.DIRECTUM_IP} directumserver directumserver.{CFG.DNS_DOMAIN}
+)
+
+ipconfig /flushdns
+pause
+"""
+
+
+def check_vpn_ip_collision(client: str, vpn_ip: str) -> None:
+    if not vpn_ip:
+        return
+    validate_vpn_ip(vpn_ip)
+    ccd = CFG.path("CCD_DIR")
+    if not ccd.exists():
+        return
+    needle = f"ifconfig-push {vpn_ip} "
+    for path in ccd.iterdir():
+        if not path.is_file() or path.name == client or ".backup." in path.name:
+            continue
+        try:
+            if needle in path.read_text(encoding="utf-8", errors="replace"):
+                raise SystemExit(f"Ошибка: VPN IP {vpn_ip} уже используется в CCD-файле {path}")
+        except UnicodeDecodeError:
+            continue
+
+
+def generate_client(client: str, profile: str, vpn_ip: str = "", dry_run: bool = False, comment: str = "") -> Dict[str, Any]:
+    validate_client(client)
+    validate_profile(profile)
+    if vpn_ip:
+        validate_vpn_ip(vpn_ip)
+    ensure_dirs()
+    paths = client_paths(client)
+    check_vpn_ip_collision(client, vpn_ip)
+    ccd = ccd_content(profile, vpn_ip)
+    result: Dict[str, Any] = {
+        "status": "preview" if dry_run else "ok",
+        "client": client,
+        "profile": profile,
+        "vpn_ip": vpn_ip or None,
+        "ccd_path": str(paths["ccd"]),
+        "ovpn_path": str(paths["ovpn"]),
+        "tlscrypt_path": str(paths["tlscrypt"]),
+        "bat_path": str(paths["bat"]) if profile.endswith("_hosts") else None,
+        "share_ovpn_path": str(paths["share_ovpn"]),
+        "cert_exists_before": paths["crt"].exists(),
+        "key_exists_before": paths["key"].exists(),
+        "tlscrypt_exists_before": paths["tlscrypt"].exists(),
+        "ccd_exists_before": paths["ccd"].exists(),
+        "ovpn_exists_before": paths["ovpn"].exists(),
+        "ccd_preview": ccd.splitlines(),
+        "actions": [],
+    }
+
+    if dry_run:
+        result["actions"] = [
+            "validate profile and client name",
+            "issue certificate if missing",
+            "generate tls-crypt-v2 if missing",
+            "backup existing CCD/OVPN if present",
+            "write CCD",
+            "write OVPN",
+            "write hosts BAT if profile ends with _hosts",
+            "copy OVPN/BAT to share if mounted",
+            "write/update SQLite registry",
+        ]
+        return result
+
+    if not CFG.path("EASYRSA_DIR").is_dir():
+        raise SystemExit(f"Ошибка: не найден Easy-RSA: {CFG.EASYRSA_DIR}")
+    if not (CFG.path("OPENVPN_DIR") / "tls-crypt-v2.key").exists():
+        raise SystemExit(f"Ошибка: не найден {CFG.OPENVPN_DIR}/tls-crypt-v2.key")
+
+    if not paths["crt"].exists() or not paths["key"].exists():
+        proc = run(["./easyrsa", "build-client-full", client, "nopass"], cwd=CFG.path("EASYRSA_DIR"), env={"EASYRSA_BATCH": "1"})
+        result["actions"].append("certificate_issued")
+        if proc.stdout:
+            result["easyrsa_stdout"] = proc.stdout[-4000:]
+        if proc.stderr:
+            result["easyrsa_stderr"] = proc.stderr[-4000:]
+    else:
+        result["actions"].append("certificate_reused")
+
+    if not paths["tlscrypt"].exists():
+        run(["openvpn", "--tls-crypt-v2", str(CFG.path("OPENVPN_DIR") / "tls-crypt-v2.key"), "--genkey", "tls-crypt-v2-client", str(paths["tlscrypt"])])
+        os.chmod(paths["tlscrypt"], 0o600)
+        result["actions"].append("tlscrypt_generated")
+    else:
+        result["actions"].append("tlscrypt_reused")
+
+    backups = []
+    for p in [paths["ccd"], paths["ovpn"], paths["bat"]]:
+        b = backup_file(p)
+        if b:
+            backups.append(str(b))
+    result["backups"] = backups
+
+    write_ccd_file(paths["ccd"], ccd)
+    result["actions"].append("ccd_written")
+
+    ovpn_content = build_ovpn(client)
+    atomic_write(paths["ovpn"], ovpn_content, 0o600)
+    make_download_file_readable(paths["ovpn"])
+    result["actions"].append("ovpn_written")
+
+    if profile.endswith("_hosts"):
+        atomic_write(paths["bat"], build_hosts_bat(), 0o600)
+        make_download_file_readable(paths["bat"])
+        result["actions"].append("bat_written")
+    elif paths["bat"].exists():
+        # Do not delete BAT automatically on profile change; archive it for safety.
+        archive_one(client, paths["bat"], purge=False)
+        result["actions"].append("old_bat_archived")
+
+    # Preserve old behavior: copy to share if mounted.
+    share = CFG.path("SHARE_OUT_DIR")
+    if is_mountpoint(Path("/mnt/antares_soft")) and share.is_dir():
+        shutil.copy2(paths["ovpn"], paths["share_ovpn"])
+        result["actions"].append("ovpn_copied_to_share")
+        if profile.endswith("_hosts") and paths["bat"].exists():
+            shutil.copy2(paths["bat"], paths["share_bat"])
+            result["actions"].append("bat_copied_to_share")
+    else:
+        result["share_warning"] = f"Сетевая шара не смонтирована или папка недоступна: {share}"
+
+    row = {
+        "name": client,
+        "profile": profile,
+        "detected_profile": infer_profile(client, paths["ccd"], paths["bat"]),
+        "vpn_ip": vpn_ip or parse_ccd(paths["ccd"]).get("vpn_ip"),
+        "status": "active" if cert_status(client) != "revoked" else "revoked",
+        "updated_at": now_iso(),
+        "ovpn_path": str(paths["ovpn"]),
+        "ccd_path": str(paths["ccd"]),
+        "tlscrypt_path": str(paths["tlscrypt"]),
+        "bat_path": str(paths["bat"]) if paths["bat"].exists() else None,
+        "share_ovpn_path": str(paths["share_ovpn"]) if paths["share_ovpn"].exists() else None,
+        "comment": comment,
+        "cert_exists": int(paths["crt"].exists()),
+        "key_exists": int(paths["key"].exists()),
+        "ccd_exists": int(paths["ccd"].exists()),
+        "ovpn_exists": int(paths["ovpn"].exists()),
+    }
+    upsert_client(row)
+    record_operation("generate", client, "ok", f"profile={profile} vpn_ip={vpn_ip or '-'}")
+    return result
+
+
+def is_mountpoint(path: Path) -> bool:
+    try:
+        return path.is_dir() and os.path.ismount(str(path))
+    except OSError:
+        return False
+
+# -----------------------------
+# Revoke / delete
+# -----------------------------
+
+def is_revoked(client: str) -> bool:
+    return cert_status(client) == "revoked"
+
+
+def update_crl() -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    proc = run(["./easyrsa", "gen-crl"], cwd=CFG.path("EASYRSA_DIR"), env={"EASYRSA_BATCH": "1"})
+    result["gen_crl_stdout"] = proc.stdout[-4000:]
+    result["gen_crl_stderr"] = proc.stderr[-4000:]
+    src = CFG.path("PKI_DIR") / "crl.pem"
+    dst = CFG.path("OPENVPN_DIR") / "crl.pem"
+    if src.exists():
+        shutil.copy2(src, dst)
+        os.chmod(dst, 0o644)
+        result["crl_installed"] = str(dst)
+    else:
+        result["crl_warning"] = f"{src} не найден после gen-crl"
+    return result
+
+
+def revoke_cert(client: str) -> Dict[str, Any]:
+    validate_client(client)
+    status_before = cert_status(client)
+    result: Dict[str, Any] = {"client": client, "cert_status_before": status_before, "actions": []}
+    if status_before == "missing":
+        result["warning"] = "сертификат не найден в PKI index.txt"
+        return result
+    if status_before == "revoked":
+        result["actions"].append("already_revoked")
+        result.update(update_crl())
+        return result
+    proc = run(["./easyrsa", "revoke", client], cwd=CFG.path("EASYRSA_DIR"), env={"EASYRSA_BATCH": "1"})
+    result["actions"].append("revoked")
+    result["revoke_stdout"] = proc.stdout[-4000:]
+    result["revoke_stderr"] = proc.stderr[-4000:]
+    result.update(update_crl())
+    result["cert_status_after"] = cert_status(client)
+    return result
+
+
+def archive_one(client: str, path: Path, purge: bool = False, archive_root: Optional[Path] = None) -> Optional[str]:
+    if not path.exists():
+        return None
+    if purge:
+        path.unlink()
+        return f"purged:{path}"
+    root = archive_root or (CFG.path("ARCHIVE_DIR") / f"{client}_{timestamp()}")
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / path.name
+    # Avoid overwrite inside same archive.
+    if dest.exists():
+        dest = root / f"{path.name}.{timestamp()}"
+    shutil.move(str(path), str(dest))
+    os.chmod(dest, 0o600)
+    return str(dest)
+
+
+def disable_or_delete(client: str, mode: str, purge: bool = False, reason: str = "", kill_active: bool = False) -> Dict[str, Any]:
+    validate_client(client)
+    paths = client_paths(client)
+    result: Dict[str, Any] = {"client": client, "mode": mode, "purge": purge, "actions": []}
+    result["revoke"] = revoke_cert(client)
+    result["actions"].append("certificate_revoked_or_already_revoked")
+
+    archive_root = CFG.path("ARCHIVE_DIR") / f"{client}_{mode}_{timestamp()}"
+    moved: List[str] = []
+    active_files = [paths["ccd"], paths["ovpn"], paths["tlscrypt"], paths["bat"], paths["share_ovpn"], paths["share_bat"]]
+    for p in active_files:
+        archived = archive_one(client, p, purge=purge, archive_root=archive_root)
+        if archived:
+            moved.append(archived)
+    result["files"] = moved
+
+    status = "disabled" if mode == "disable" else "deleted"
+    row = {
+        "name": client,
+        "profile": (get_client_row(client) or {}).get("profile") if get_client_row(client) else None,
+        "detected_profile": None,
+        "vpn_ip": parse_ccd(paths["ccd"]).get("vpn_ip") if paths["ccd"].exists() else None,
+        "status": status,
+        "updated_at": now_iso(),
+        "ovpn_path": str(paths["ovpn"]),
+        "ccd_path": str(paths["ccd"]),
+        "tlscrypt_path": str(paths["tlscrypt"]),
+        "bat_path": str(paths["bat"]),
+        "share_ovpn_path": str(paths["share_ovpn"]),
+        "comment": reason,
+        "cert_exists": int(paths["crt"].exists()),
+        "key_exists": int(paths["key"].exists()),
+        "ccd_exists": int(paths["ccd"].exists()),
+        "ovpn_exists": int(paths["ovpn"].exists()),
+    }
+    upsert_client(row)
+    if kill_active:
+        try:
+            result["kill_active"] = management_kill_client(client, reason=reason or mode)
+        except Exception as exc:
+            result["kill_active"] = {
+                "status": "warning",
+                "killed": False,
+                "message": "profile disabled, but active session could not be killed because management interface is unavailable",
+                "detail": repr(exc),
+            }
+            result.setdefault("warnings", []).append(result["kill_active"]["message"])
+    record_operation(mode, client, "ok", f"purge={purge} kill_active={kill_active} reason={reason}")
+    return result
+
+# -----------------------------
+# OpenVPN server config / management interface
+# -----------------------------
+
+SERVER_DIRECTIVES = {"status", "status-version", "management", "management-client-group", "management-log-cache"}
+
+
+def validate_status_interval(value: int) -> int:
+    if value < 5 or value > 300:
+        raise SystemExit("Ошибка: status interval должен быть в диапазоне 5-300 секунд.")
+    return value
+
+
+def validate_status_version(value: int) -> int:
+    if value not in {2, 3}:
+        raise SystemExit("Ошибка: status-version может быть только 2 или 3.")
+    return value
+
+
+def validate_management_socket_path(value: str) -> str:
+    path = (value or "").strip()
+    if not path:
+        raise SystemExit("Ошибка: management socket path не может быть пустым.")
+    if re.match(r"^(?:\d{1,3}\.){3}\d{1,3}:\d+$", path) or path.lower().startswith(("tcp:", "localhost:", "0.0.0.0:")):
+        raise SystemExit("Ошибка: TCP management interface запрещён; используйте Unix socket.")
+    if not (Path(path).is_absolute() or path.startswith("/")):
+        raise SystemExit("Ошибка: management socket должен быть абсолютным Unix path.")
+    return path
+
+
+def parse_server_config_text(text: str) -> Dict[str, Any]:
+    settings: Dict[str, Any] = {
+        "status_path": "",
+        "status_interval": None,
+        "status_version": None,
+        "management_enabled": False,
+        "management_socket": "",
+        "management_client_group": "",
+        "management_log_cache": None,
+    }
+    warnings: List[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        key = parts[0]
+        if key == "status" and len(parts) >= 2:
+            settings["status_path"] = parts[1]
+            if len(parts) >= 3:
+                try:
+                    settings["status_interval"] = int(parts[2])
+                except ValueError:
+                    warnings.append(f"invalid status interval: {parts[2]}")
+        elif key == "status-version" and len(parts) >= 2:
+            try:
+                settings["status_version"] = int(parts[1])
+            except ValueError:
+                warnings.append(f"invalid status-version: {parts[1]}")
+        elif key == "management":
+            if len(parts) >= 3 and parts[2] == "unix":
+                settings["management_enabled"] = True
+                settings["management_socket"] = parts[1]
+            else:
+                warnings.append("TCP management directive is present and ignored by vpnctl")
+        elif key == "management-client-group" and len(parts) >= 2:
+            settings["management_client_group"] = parts[1]
+        elif key == "management-log-cache" and len(parts) >= 2:
+            try:
+                settings["management_log_cache"] = int(parts[1])
+            except ValueError:
+                warnings.append(f"invalid management-log-cache: {parts[1]}")
+    return {"settings": settings, "warnings": warnings}
+
+
+def inspect_server_config() -> Dict[str, Any]:
+    path = CFG.path("SERVER_CONF")
+    text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    parsed = parse_server_config_text(text)
+    settings = parsed["settings"]
+    settings["status_path"] = settings["status_path"] or CFG.STATUS_LOG
+    settings["status_interval"] = settings["status_interval"] or 10
+    settings["status_version"] = settings["status_version"] or 2
+    settings["management_socket"] = settings["management_socket"] or CFG.MANAGEMENT_SOCKET
+    settings["management_client_group"] = settings["management_client_group"] or CFG.MANAGEMENT_CLIENT_GROUP
+    settings["management_log_cache"] = settings["management_log_cache"] or int(CFG.MANAGEMENT_LOG_CACHE)
+    return {
+        "status": "ok",
+        "server_conf": str(path),
+        "settings": settings,
+        "warnings": parsed["warnings"],
+    }
+
+
+def patch_server_config(
+    status_interval: Optional[int] = None,
+    status_version: Optional[int] = None,
+    enable_management: bool = False,
+    management_socket: str = "",
+    management_client_group: str = "",
+    management_log_cache: Optional[int] = None,
+    restart: bool = False,
+) -> Dict[str, Any]:
+    path = CFG.path("SERVER_CONF")
+    current_text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    current = inspect_server_config()["settings"]
+    desired = dict(current)
+    desired["status_interval"] = validate_status_interval(int(status_interval if status_interval is not None else desired["status_interval"]))
+    desired["status_version"] = validate_status_version(int(status_version if status_version is not None else desired["status_version"]))
+    if enable_management:
+        desired["management_enabled"] = True
+    if management_socket:
+        desired["management_socket"] = validate_management_socket_path(management_socket)
+        desired["management_enabled"] = True
+    elif desired.get("management_enabled"):
+        desired["management_socket"] = validate_management_socket_path(str(desired["management_socket"]))
+    if management_client_group:
+        desired["management_client_group"] = normalize_tag(management_client_group)
+        desired["management_enabled"] = True
+    if management_log_cache is not None:
+        if management_log_cache < 1:
+            raise SystemExit("Ошибка: management-log-cache должен быть положительным числом.")
+        desired["management_log_cache"] = int(management_log_cache)
+        desired["management_enabled"] = True
+
+    kept_lines = []
+    for raw in current_text.splitlines():
+        stripped = raw.strip()
+        key = stripped.split(None, 1)[0] if stripped else ""
+        if key in SERVER_DIRECTIVES:
+            continue
+        kept_lines.append(raw)
+    if kept_lines and kept_lines[-1].strip():
+        kept_lines.append("")
+    managed_lines = [
+        f"status {desired['status_path']} {desired['status_interval']}",
+        f"status-version {desired['status_version']}",
+    ]
+    if desired.get("management_enabled"):
+        managed_lines.extend(
+            [
+                f"management {desired['management_socket']} unix",
+                f"management-client-group {desired['management_client_group']}",
+                f"management-log-cache {desired['management_log_cache']}",
+            ]
+        )
+    new_text = "\n".join(kept_lines + managed_lines).rstrip() + "\n"
+    changed = new_text != current_text
+    backup = None
+    if changed:
+        backup = backup_server_conf(path)
+        atomic_write(path, new_text, 0o644)
+    restart_result = None
+    if restart:
+        restart_result = restart_openvpn_service()
+    result = {
+        "status": "ok",
+        "server_conf": str(path),
+        "changed": changed,
+        "backup_path": str(backup) if backup else None,
+        "settings": desired,
+        "changed_directives": managed_lines if changed else [],
+    }
+    if restart_result is not None:
+        result["restart"] = restart_result
+    record_operation("server-config-apply", None, "ok", f"changed={changed} restart={restart}")
+    return result
+
+
+def restart_openvpn_service() -> Dict[str, Any]:
+    proc = run(["systemctl", "restart", CFG.SERVICE_NAME], check=False)
+    active = run(["systemctl", "is-active", CFG.SERVICE_NAME], check=False)
+    result = {
+        "service": CFG.SERVICE_NAME,
+        "restart_returncode": proc.returncode,
+        "restart_stdout": proc.stdout,
+        "restart_stderr": proc.stderr,
+        "active": active.stdout.strip(),
+        "active_returncode": active.returncode,
+    }
+    record_operation("server-config-restart-openvpn", None, "ok" if active.returncode == 0 else "error", result["active"])
+    return result
+
+
+def management_socket_path() -> str:
+    inspected = inspect_server_config()["settings"]
+    return str(inspected.get("management_socket") or CFG.MANAGEMENT_SOCKET)
+
+
+def parse_management_status(text: str) -> List[Dict[str, Any]]:
+    rows: Dict[str, Dict[str, Any]] = {}
+    lines = text.splitlines()
+    for line in lines:
+        if line.startswith("CLIENT_LIST,"):
+            parts = list(csv.reader([line]))[0]
+            common_name = parts[1] if len(parts) > 1 else ""
+            if not common_name:
+                continue
+            if len(parts) > 12 and not parts[4].isdigit():
+                rx_idx, tx_idx, since_idx = 5, 6, 7
+            else:
+                rx_idx, tx_idx, since_idx = 4, 5, 6
+            rows[common_name] = {
+                "common_name": common_name,
+                "real_address": parts[2] if len(parts) > 2 else "",
+                "virtual_address": parts[3] if len(parts) > 3 else "",
+                "bytes_received": int(parts[rx_idx]) if len(parts) > rx_idx and parts[rx_idx].isdigit() else None,
+                "bytes_sent": int(parts[tx_idx]) if len(parts) > tx_idx and parts[tx_idx].isdigit() else None,
+                "connected_since": parts[since_idx] if len(parts) > since_idx else "",
+            }
+        elif line.startswith("ROUTING_TABLE,"):
+            parts = list(csv.reader([line]))[0]
+            if len(parts) >= 3:
+                virtual_address, common_name = parts[1], parts[2]
+                if common_name in rows:
+                    rows[common_name]["virtual_address"] = virtual_address
+    client_headers = {"Common Name", "Real Address", "Bytes Received", "Bytes Sent", "Connected Since"}
+    route_headers = {"Virtual Address", "Common Name", "Real Address", "Last Ref"}
+    mode = ""
+    for line in lines:
+        parts = next(csv.reader([line]))
+        if parts and parts[0] in {"TITLE", "TIME", "HEADER", "CLIENT_LIST", "ROUTING_TABLE", "GLOBAL_STATS"}:
+            continue
+        header = set(parts)
+        if client_headers.issubset(header):
+            mode = "clients"
+            continue
+        if route_headers.issubset(header):
+            mode = "routes"
+            continue
+        if line in {"ROUTING TABLE", "GLOBAL STATS", "END"}:
+            if line in {"GLOBAL STATS", "END"}:
+                mode = ""
+            continue
+        if not parts or len(parts) < 2:
+            continue
+        if mode == "clients" and len(parts) >= 5:
+            common_name = parts[0]
+            rows.setdefault(common_name, {})
+            rows[common_name].update(
+                {
+                    "common_name": common_name,
+                    "real_address": parts[1],
+                    "bytes_received": int(parts[2]) if parts[2].isdigit() else None,
+                    "bytes_sent": int(parts[3]) if parts[3].isdigit() else None,
+                    "connected_since": parts[4],
+                }
+            )
+        elif mode == "routes" and len(parts) >= 2:
+            virtual_address, common_name = parts[0], parts[1]
+            rows.setdefault(common_name, {"common_name": common_name})
+            rows[common_name]["virtual_address"] = virtual_address
+            if len(parts) >= 3 and not rows[common_name].get("real_address"):
+                rows[common_name]["real_address"] = parts[2]
+    result = []
+    for row in rows.values():
+        result.append(
+            {
+                "common_name": row.get("common_name", ""),
+                "real_address": row.get("real_address", ""),
+                "virtual_address": row.get("virtual_address", ""),
+                "bytes_received": row.get("bytes_received"),
+                "bytes_sent": row.get("bytes_sent"),
+                "connected_since": row.get("connected_since", ""),
+            }
+        )
+    return sorted(result, key=lambda item: item["common_name"])
+
+
+def recv_available(sock: socket.socket, max_bytes: int = 65536) -> str:
+    chunks = []
+    while True:
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if sum(len(part) for part in chunks) >= max_bytes:
+            break
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def recv_until(sock: socket.socket, markers: Iterable[str], timeout_chunks: int = 8) -> str:
+    text = ""
+    markers = list(markers)
+    for _ in range(timeout_chunks):
+        try:
+            chunk = sock.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        text += chunk.decode("utf-8", errors="replace")
+        if any(marker in text for marker in markers):
+            break
+    return text
+
+
+def open_management_socket(socket_path: Optional[str] = None) -> socket.socket:
+    path = validate_management_socket_path(socket_path or management_socket_path())
+    if not hasattr(socket, "AF_UNIX"):
+        raise OSError("Unix domain sockets are not available on this platform")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(2)
+    original_egid = None
+    try:
+        group_name = str(inspect_server_config()["settings"].get("management_client_group") or "")
+        if grp is not None and hasattr(os, "geteuid") and os.geteuid() == 0 and group_name:
+            original_egid = os.getegid()
+            os.setegid(grp.getgrnam(group_name).gr_gid)
+        sock.connect(path)
+    finally:
+        if original_egid is not None:
+            os.setegid(original_egid)
+    return sock
+
+
+def management_status_clients(socket_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    with open_management_socket(socket_path) as sock:
+        sock.sendall(b"status\n")
+        text = recv_until(sock, ["\nEND", "END\r\n"], timeout_chunks=16)
+        try:
+            sock.sendall(b"quit\n")
+        except OSError:
+            pass
+    return parse_management_status(text)
+
+
+def management_test(socket_path: Optional[str] = None) -> Dict[str, Any]:
+    path = socket_path or management_socket_path()
+    try:
+        clients = management_status_clients(path)
+    except Exception as exc:
+        record_operation("management-test", None, "error", repr(exc))
+        return {"status": "ok", "socket": path, "available": False, "message": repr(exc)}
+    record_operation("management-test", None, "ok", f"socket={path}")
+    return {"status": "ok", "socket": path, "available": True, "clients_seen": len(clients)}
+
+
+def management_status() -> Dict[str, Any]:
+    clients = management_status_clients()
+    add_registry_to_connected(clients)
+    record_operation("management-status", None, "ok", f"clients={len(clients)}")
+    return {"status": "ok", "source": "management", "clients": clients}
+
+
+def management_kill_client(client: str, reason: str = "") -> Dict[str, Any]:
+    validate_client(client)
+    path = management_socket_path()
+    with open_management_socket(path) as sock:
+        sock.sendall(b"status\n")
+        status_text = recv_until(sock, ["\nEND", "END\r\n"], timeout_chunks=16)
+        clients = parse_management_status(status_text)
+        if client not in {row.get("common_name") for row in clients}:
+            try:
+                sock.sendall(b"quit\n")
+            except OSError:
+                pass
+            record_operation("management-kill", client, "ok", "not connected")
+            return {"status": "ok", "client": client, "killed": False, "message": "not connected"}
+        sock.sendall((f"kill {client}\n").encode("utf-8"))
+        kill_text = recv_until(sock, ["SUCCESS:", "ERROR:", "client-kill"], timeout_chunks=8)
+        try:
+            sock.sendall(b"quit\n")
+        except OSError:
+            pass
+    killed = "SUCCESS" in kill_text.upper() or "CLIENT-KILL" in kill_text.upper()
+    result = {
+        "status": "ok" if killed else "error",
+        "client": client,
+        "killed": killed,
+        "message": "client will reconnect and reload CCD" if killed else kill_text.strip()[:500],
+    }
+    record_operation("management-kill", client, result["status"], reason or result["message"])
+    return result
+
+
+def add_registry_to_connected(rows: List[Dict[str, Any]]) -> None:
+    with db() as con:
+        for row in rows:
+            reg = con.execute("SELECT profile,status,vpn_ip FROM clients WHERE name=?", (row["common_name"],)).fetchone()
+            if reg:
+                row["profile"] = reg["profile"]
+                row["registry_status"] = reg["status"]
+                row["registry_vpn_ip"] = reg["vpn_ip"]
+
+
+# -----------------------------
+# Status / connected / logs
+# -----------------------------
+
+def parse_status_log() -> List[Dict[str, Any]]:
+    path = CFG.path("STATUS_LOG")
+    if not path.exists():
+        return []
+    return parse_status_log_text(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def parse_status_log_text(text: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for line in text.splitlines():
+        if line.startswith("CLIENT_LIST,"):
+            parts = list(csv.reader([line]))[0]
+            # status-version 2 usually has 13 fields.
+            row = {
+                "common_name": parts[1] if len(parts) > 1 else "",
+                "real_address": parts[2] if len(parts) > 2 else "",
+                "virtual_address": parts[3] if len(parts) > 3 else "",
+                "bytes_received": int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else None,
+                "bytes_sent": int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else None,
+                "connected_since": parts[6] if len(parts) > 6 else "",
+                "username": parts[8] if len(parts) > 8 else "",
+                "client_id": parts[9] if len(parts) > 9 else "",
+                "peer_id": parts[10] if len(parts) > 10 else "",
+                "cipher": parts[12] if len(parts) > 12 else "",
+            }
+            rows.append(row)
+    # Legacy status without CLIENT_LIST CSV: intentionally minimal.
+    return rows
+
+
+def connected_clients_result(source: str = "auto", include_registry: bool = True) -> Dict[str, Any]:
+    if source not in {"auto", "management", "status-log", "status_log"}:
+        raise SystemExit("Ошибка: source должен быть auto, management или status-log.")
+    if source in {"auto", "management"}:
+        try:
+            rows = management_status_clients()
+            if include_registry:
+                add_registry_to_connected(rows)
+            return {"status": "ok", "source": "management", "connected": rows}
+        except Exception as exc:
+            if source == "management":
+                return {"status": "error", "source": "management", "connected": [], "message": repr(exc)}
+    rows = parse_status_log()
+    if include_registry:
+        add_registry_to_connected(rows)
+    return {"status": "ok", "source": "status_log", "connected": rows}
+
+
+def connected_clients(include_registry: bool = True) -> List[Dict[str, Any]]:
+    return connected_clients_result(source="auto", include_registry=include_registry)["connected"]
+
+
+def connected_clients_from_status_log(include_registry: bool = True) -> List[Dict[str, Any]]:
+    rows = parse_status_log()
+    if include_registry:
+        add_registry_to_connected(rows)
+    return rows
+
+
+def service_status() -> Dict[str, Any]:
+    data: Dict[str, Any] = {}
+    for svc_key, svc in [("openvpn", CFG.SERVICE_NAME), ("nat", CFG.NAT_SERVICE)]:
+        proc = run(["systemctl", "is-active", svc], check=False)
+        data[svc_key] = {"service": svc, "active": proc.stdout.strip(), "returncode": proc.returncode}
+    return data
+
+
+def journal_lines(n: int) -> List[str]:
+    proc = run(["journalctl", "-u", CFG.SERVICE_NAME, "-n", str(n), "--no-pager"], check=False)
+    return (proc.stdout or proc.stderr).splitlines()
+
+
+def operation_lines(n: int) -> List[Dict[str, Any]]:
+    with db() as con:
+        rows = con.execute("SELECT time,actor,action,client,result,message FROM operations ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        return [dict(r) for r in rows]
+
+# -----------------------------
+# List / sync / inspect
+# -----------------------------
+
+def scan_existing() -> List[Dict[str, Any]]:
+    ensure_dirs()
+    names = set()
+    for d in [CFG.path("CCD_DIR"), CFG.path("OUT_DIR")]:
+        if not d.exists():
+            continue
+        for p in d.iterdir():
+            if not p.is_file():
+                continue
+            name = None
+            if d == CFG.path("CCD_DIR"):
+                if ".backup." in p.name or p.name.startswith("."):
+                    continue
+                name = p.name
+            elif p.name.endswith(".ovpn"):
+                name = p.stem
+            elif p.name.endswith(".tls-crypt-v2.key"):
+                name = p.name[: -len(".tls-crypt-v2.key")]
+            elif p.name.endswith("-install-hosts-as-admin.bat"):
+                name = p.name[: -len("-install-hosts-as-admin.bat")]
+            if name and CLIENT_RE.match(name):
+                names.add(name)
+    rows: List[Dict[str, Any]] = []
+    for name in sorted(names):
+        paths = client_paths(name)
+        detected = infer_profile(name, paths["ccd"], paths["bat"]) if paths["ccd"].exists() else "unknown"
+        parsed = parse_ccd(paths["ccd"])
+        status = cert_status(name)
+        if status == "valid":
+            reg_status = "active"
+        elif status == "revoked":
+            reg_status = "revoked"
+        else:
+            reg_status = status
+        row = {
+            "name": name,
+            "profile": detected if detected in PROFILE_DESCRIPTIONS else None,
+            "detected_profile": detected,
+            "vpn_ip": parsed.get("vpn_ip"),
+            "status": reg_status,
+            "updated_at": now_iso(),
+            "ovpn_path": str(paths["ovpn"]),
+            "ccd_path": str(paths["ccd"]),
+            "tlscrypt_path": str(paths["tlscrypt"]),
+            "bat_path": str(paths["bat"]) if paths["bat"].exists() else None,
+            "share_ovpn_path": str(paths["share_ovpn"]) if paths["share_ovpn"].exists() else None,
+            "comment": "imported-from-files",
+            "cert_exists": int(paths["crt"].exists()),
+            "key_exists": int(paths["key"].exists()),
+            "ccd_exists": int(paths["ccd"].exists()),
+            "ovpn_exists": int(paths["ovpn"].exists()),
+        }
+        rows.append(row)
+    return rows
+
+
+def sync_registry() -> Dict[str, Any]:
+    rows = scan_existing()
+    for row in rows:
+        upsert_client(row)
+    record_operation("sync", None, "ok", f"count={len(rows)}")
+    return {"status": "ok", "imported_or_updated": len(rows), "clients": rows}
+
+
+def list_clients() -> List[Dict[str, Any]]:
+    with db() as con:
+        rows = con.execute("SELECT * FROM clients ORDER BY name").fetchall()
+        connected = {r["common_name"]: r for r in connected_clients(include_registry=False)}
+        data = []
+        for r in rows:
+            d = dict(r)
+            d["connected"] = r["name"] in connected
+            if d["connected"]:
+                d["virtual_address"] = connected[r["name"]].get("virtual_address")
+                d["real_address"] = connected[r["name"]].get("real_address")
+            data.append(d)
+        return data
+
+
+def inspect_client(client: str) -> Dict[str, Any]:
+    validate_client(client)
+    paths = client_paths(client)
+    row = get_client_row(client)
+    conn = [r for r in connected_clients(include_registry=False) if r["common_name"] == client]
+    data: Dict[str, Any] = {
+        "client": client,
+        "registry": dict(row) if row else None,
+        "cert_status": cert_status(client),
+        "connected": conn[0] if conn else None,
+        "files": {k: {"path": str(v), "exists": v.exists(), "size": v.stat().st_size if v.exists() else None} for k, v in paths.items()},
+        "ccd": None,
+        "detected_profile": None,
+    }
+    if paths["ccd"].exists():
+        parsed = parse_ccd(paths["ccd"])
+        data["ccd"] = {
+            "vpn_ip": parsed.get("vpn_ip"),
+            "routes": sorted(parsed.get("routes", [])),
+            "dns": parsed.get("dns"),
+            "domain": parsed.get("domain"),
+            "raw_lines": parsed.get("raw", "").splitlines(),
+        }
+        data["detected_profile"] = infer_profile(client, paths["ccd"], paths["bat"])
+    return data
+
+# -----------------------------
+# Config edit
+# -----------------------------
+
+def registry_value(row: Optional[sqlite3.Row], key: str, default: Any = None) -> Any:
+    if row is None:
+        return default
+    return row[key] if key in row.keys() else default
+
+
+def normalized_content(content: str) -> str:
+    return content if content.endswith("\n") else content + "\n"
+
+
+def file_payload(path: Path) -> Dict[str, Any]:
+    data: Dict[str, Any] = {"path": str(path), "exists": path.exists(), "size": None, "content": ""}
+    if path.exists():
+        data["size"] = path.stat().st_size
+        data["content"] = path.read_text(encoding="utf-8", errors="replace")
+    return data
+
+
+def current_file_registry_row(client: str, profile: Optional[str] = None, comment: str = "") -> Dict[str, Any]:
+    paths = client_paths(client)
+    existing = get_client_row(client)
+    parsed = parse_ccd(paths["ccd"])
+    detected = infer_profile(client, paths["ccd"], paths["bat"]) if paths["ccd"].exists() else None
+    cert = cert_status(client)
+    if cert == "valid":
+        status = "active"
+    elif cert == "revoked":
+        status = "revoked"
+    else:
+        status = registry_value(existing, "status", cert)
+    selected_profile = profile or registry_value(existing, "profile")
+    if not selected_profile and detected in PROFILE_DESCRIPTIONS:
+        selected_profile = detected
+    return {
+        "name": client,
+        "profile": selected_profile,
+        "detected_profile": detected,
+        "vpn_ip": parsed.get("vpn_ip") or registry_value(existing, "vpn_ip"),
+        "status": status,
+        "updated_at": now_iso(),
+        "ovpn_path": str(paths["ovpn"]),
+        "ccd_path": str(paths["ccd"]),
+        "tlscrypt_path": str(paths["tlscrypt"]),
+        "bat_path": str(paths["bat"]) if paths["bat"].exists() else registry_value(existing, "bat_path"),
+        "share_ovpn_path": str(paths["share_ovpn"]) if paths["share_ovpn"].exists() else registry_value(existing, "share_ovpn_path"),
+        "comment": comment or registry_value(existing, "comment", ""),
+        "cert_exists": int(paths["crt"].exists()),
+        "key_exists": int(paths["key"].exists()),
+        "ccd_exists": int(paths["ccd"].exists()),
+        "ovpn_exists": int(paths["ovpn"].exists()),
+    }
+
+
+def refresh_client_registry(client: str, profile: Optional[str] = None, comment: str = "") -> Dict[str, Any]:
+    row = current_file_registry_row(client, profile=profile, comment=comment)
+    upsert_client(row)
+    return row
+
+
+def view_client_config(client: str) -> Dict[str, Any]:
+    validate_client(client)
+    paths = client_paths(client)
+    parsed = parse_ccd(paths["ccd"])
+    return {
+        "status": "ok",
+        "client": client,
+        "detected_profile": infer_profile(client, paths["ccd"], paths["bat"]) if paths["ccd"].exists() else None,
+        "vpn_ip": parsed.get("vpn_ip"),
+        "ovpn": file_payload(paths["ovpn"]),
+        "ccd": file_payload(paths["ccd"]),
+    }
+
+
+def update_ccd(client: str, content: str, reason: str = "") -> Dict[str, Any]:
+    validate_client(client)
+    paths = client_paths(client)
+    ensure_dirs()
+    backup = backup_file(paths["ccd"])
+    write_ccd_file(paths["ccd"], normalized_content(content))
+    row = refresh_client_registry(client, comment=reason)
+    result = {
+        "status": "ok",
+        "client": client,
+        "ccd_path": str(paths["ccd"]),
+        "backup_path": str(backup) if backup else None,
+        "detected_profile": row.get("detected_profile"),
+        "vpn_ip": row.get("vpn_ip"),
+    }
+    record_operation("ccd-update", client, "ok", f"reason={reason}")
+    return result
+
+
+def apply_profile_to_client(client: str, profile: str, vpn_ip: str = "", reason: str = "") -> Dict[str, Any]:
+    validate_client(client)
+    validate_profile(profile)
+    if vpn_ip:
+        check_vpn_ip_collision(client, vpn_ip)
+    paths = client_paths(client)
+    ensure_dirs()
+    ccd = ccd_content(profile, vpn_ip)
+    backups = []
+    for path in [paths["ccd"], paths["bat"]]:
+        backup = backup_file(path)
+        if backup:
+            backups.append(str(backup))
+    write_ccd_file(paths["ccd"], ccd)
+    actions = ["ccd_written"]
+    if profile.endswith("_hosts"):
+        atomic_write(paths["bat"], build_hosts_bat(), 0o600)
+        actions.append("bat_written")
+    elif paths["bat"].exists():
+        archived = archive_one(client, paths["bat"], purge=False)
+        if archived:
+            actions.append("old_bat_archived")
+            backups.append(archived)
+    row = refresh_client_registry(client, profile=profile, comment=reason)
+    result = {
+        "status": "ok",
+        "client": client,
+        "profile": profile,
+        "vpn_ip": vpn_ip or row.get("vpn_ip"),
+        "ccd_path": str(paths["ccd"]),
+        "backups": backups,
+        "actions": actions,
+        "detected_profile": row.get("detected_profile"),
+    }
+    record_operation("profile-apply", client, "ok", f"profile={profile} vpn_ip={vpn_ip or '-'} reason={reason}")
+    return result
+
+
+def apply_networks_to_client(
+    client: str,
+    cidrs: List[str],
+    vpn_ip: str = "",
+    dns: bool = False,
+    reason: str = "",
+    template_name: str = "",
+) -> Dict[str, Any]:
+    validate_client(client)
+    selected = unique_cidrs(cidrs)
+    if not selected:
+        raise SystemExit("Ошибка: выберите хотя бы одну сеть.")
+    available = available_network_cidrs()
+    missing = [cidr for cidr in selected if cidr not in available]
+    if missing:
+        raise SystemExit(f"Ошибка: сети нет в каталоге: {', '.join(missing)}")
+    if vpn_ip:
+        check_vpn_ip_collision(client, vpn_ip)
+    paths = client_paths(client)
+    ensure_dirs()
+    ccd = ccd_content_from_networks(selected, vpn_ip=vpn_ip, dns=dns)
+    backups = []
+    for path in [paths["ccd"], paths["bat"]]:
+        backup = backup_file(path)
+        if backup:
+            backups.append(str(backup))
+    write_ccd_file(paths["ccd"], ccd)
+    actions = ["ccd_written"]
+    if paths["bat"].exists():
+        archived = archive_one(client, paths["bat"], purge=False)
+        if archived:
+            actions.append("old_bat_archived")
+            backups.append(archived)
+    row = refresh_client_registry(client, profile=template_name or None, comment=reason)
+    result = {
+        "status": "ok",
+        "client": client,
+        "template": template_name or None,
+        "networks": selected,
+        "dns": bool(dns),
+        "vpn_ip": vpn_ip or row.get("vpn_ip"),
+        "ccd_path": str(paths["ccd"]),
+        "backups": backups,
+        "actions": actions,
+        "detected_profile": row.get("detected_profile"),
+    }
+    record_operation("client-networks-apply", client, "ok", f"template={template_name or '-'} networks={len(selected)} reason={reason}")
+    return result
+
+
+def apply_network_template_to_client(client: str, template_name: str, vpn_ip: str = "", reason: str = "") -> Dict[str, Any]:
+    template = get_network_template(template_name)
+    result = apply_networks_to_client(
+        client,
+        list(template["cidrs"]),
+        vpn_ip=vpn_ip,
+        dns=bool(template.get("dns")),
+        reason=reason,
+        template_name=template["name"],
+    )
+    return result
+
+
+def update_ovpn(client: str, content: str, reason: str = "") -> Dict[str, Any]:
+    validate_client(client)
+    paths = client_paths(client)
+    ensure_dirs()
+    if not paths["ovpn"].exists():
+        raise SystemExit(f"Ошибка: .ovpn не найден: {paths['ovpn']}")
+    backup = backup_file(paths["ovpn"])
+    atomic_write(paths["ovpn"], normalized_content(content), 0o600)
+    make_download_file_readable(paths["ovpn"])
+    actions = ["ovpn_written"]
+    share = CFG.path("SHARE_OUT_DIR")
+    if is_mountpoint(Path("/mnt/antares_soft")) and share.is_dir():
+        shutil.copy2(paths["ovpn"], paths["share_ovpn"])
+        actions.append("ovpn_copied_to_share")
+    row = refresh_client_registry(client, comment=reason)
+    result = {
+        "status": "ok",
+        "client": client,
+        "ovpn_path": str(paths["ovpn"]),
+        "backup_path": str(backup) if backup else None,
+        "actions": actions,
+        "detected_profile": row.get("detected_profile"),
+    }
+    record_operation("ovpn-update", client, "ok", f"reason={reason}")
+    return result
+
+
+def repair_client_artifacts(client: str, reason: str = "") -> Dict[str, Any]:
+    validate_client(client)
+    ensure_dirs()
+    paths = client_paths(client)
+    cert = cert_status(client)
+    if cert != "valid":
+        raise SystemExit(f"Ошибка: сертификат клиента не valid: {cert}")
+    required = [CFG.path("PKI_DIR") / "ca.crt", paths["crt"], paths["key"]]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        raise SystemExit("Ошибка: не хватает файлов для восстановления .ovpn: " + ", ".join(missing))
+
+    actions: List[str] = []
+    server_tls = CFG.path("OPENVPN_DIR") / "tls-crypt-v2.key"
+    if not paths["tlscrypt"].exists():
+        if not server_tls.exists():
+            raise SystemExit(f"Ошибка: не найден {server_tls}")
+        run(["openvpn", "--tls-crypt-v2", str(server_tls), "--genkey", "tls-crypt-v2-client", str(paths["tlscrypt"])])
+        os.chmod(paths["tlscrypt"], 0o600)
+        actions.append("tlscrypt_generated")
+    else:
+        actions.append("tlscrypt_reused")
+
+    if not paths["ovpn"].exists():
+        atomic_write(paths["ovpn"], build_ovpn(client), 0o600)
+        actions.append("ovpn_written")
+    else:
+        actions.append("ovpn_reused")
+    make_download_file_readable(paths["ovpn"])
+    actions.append("ovpn_permissions_fixed")
+
+    share = CFG.path("SHARE_OUT_DIR")
+    if is_mountpoint(Path("/mnt/antares_soft")) and share.is_dir():
+        shutil.copy2(paths["ovpn"], paths["share_ovpn"])
+        actions.append("ovpn_copied_to_share")
+
+    row = refresh_client_registry(client, comment=reason)
+    result = {
+        "status": "ok",
+        "client": client,
+        "actions": actions,
+        "ovpn_path": str(paths["ovpn"]),
+        "tlscrypt_path": str(paths["tlscrypt"]),
+        "share_ovpn_path": str(paths["share_ovpn"]) if paths["share_ovpn"].exists() else None,
+        "detected_profile": row.get("detected_profile"),
+    }
+    record_operation("repair-artifacts", client, "ok", reason)
+    return result
+
+# -----------------------------
+# ViPNet nets
+# -----------------------------
+
+def add_vipnet_net(cidr: str, restart_nat: bool = False) -> Dict[str, Any]:
+    result = add_or_update_network(cidr, tag="vipnet", nat=True, comment="VIPNet NAT network", restart_nat=restart_nat)
+    result["network"] = result["network"]["cidr"]
+    record_operation("add-vipnet-net", None, "ok", f"network={result['network']}")
+    return result
+
+
+def remove_vipnet_net(cidr: str, restart_nat: bool = False) -> Dict[str, Any]:
+    result = remove_network(cidr, restart_nat=restart_nat)
+    record_operation("remove-vipnet-net", None, "ok", f"network={result['network']} changed={result['changed']}")
+    return result
+
+
+def nat_status() -> Dict[str, Any]:
+    proc = run(["iptables", "-t", "nat", "-L", CFG.NAT_CHAIN, "-n", "-v", "--line-numbers"], check=False)
+    return {"chain": CFG.NAT_CHAIN, "returncode": proc.returncode, "output": (proc.stdout or proc.stderr).splitlines()}
+
+
+def reconnect_client(client: str, reason: str = "") -> Dict[str, Any]:
+    validate_client(client)
+    try:
+        result = management_kill_client(client, reason=reason)
+    except Exception as exc:
+        result = {
+            "status": "not_configured",
+            "client": client,
+            "killed": False,
+            "message": f"OpenVPN management interface is unavailable: {exc!r}",
+        }
+        record_operation("reconnect-client", client, "warning", repr(exc))
+        return result
+    if result.get("killed"):
+        result["message"] = "client will reconnect and reload CCD"
+    else:
+        result["status"] = "not_connected"
+    record_operation("reconnect-client", client, "ok", reason or result.get("message", ""))
+    return result
+
+# -----------------------------
+# CLI
+# -----------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="vpnctl", description="OpenVPN client/profile manager")
+    parser.add_argument("--json", action="store_true", help="machine-readable JSON output")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("profiles", help="list available access profiles")
+
+    p = sub.add_parser("generate", help="generate or update client profile")
+    p.add_argument("client")
+    p.add_argument("profile")
+    p.add_argument("vpn_ip", nargs="?", default="")
+    p.add_argument("--dry-run", action="store_true", help="preview only; do not change files")
+    p.add_argument("--comment", default="")
+
+    p = sub.add_parser("preview", help="alias for generate --dry-run")
+    p.add_argument("client")
+    p.add_argument("profile")
+    p.add_argument("vpn_ip", nargs="?", default="")
+
+    p = sub.add_parser("sync", help="scan existing CCD/output files and update SQLite registry")
+
+    p = sub.add_parser("list", help="list registered clients")
+
+    p = sub.add_parser("connected", help="show current connected clients")
+    p.add_argument("--source", choices=["auto", "management", "status-log"], default="auto")
+
+    p = sub.add_parser("inspect", help="inspect one client")
+    p.add_argument("client")
+
+    p = sub.add_parser("config-view", help="show raw OVPN and CCD content for one client")
+    p.add_argument("client")
+
+    p = sub.add_parser("ccd-update", help="replace one client CCD file")
+    p.add_argument("client")
+    p.add_argument("--content", required=True)
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("profile-apply", help="rewrite one client CCD from an existing profile template")
+    p.add_argument("client")
+    p.add_argument("profile")
+    p.add_argument("vpn_ip", nargs="?", default="")
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("ovpn-update", help="replace one client OVPN file")
+    p.add_argument("client")
+    p.add_argument("--content", required=True)
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("repair-artifacts", help="rebuild missing OVPN/tls-crypt artifacts for an existing valid client")
+    p.add_argument("client")
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("client-networks-apply", help="rewrite one client CCD from selected catalog networks")
+    p.add_argument("client")
+    p.add_argument("--cidr", action="append", default=[])
+    p.add_argument("vpn_ip", nargs="?", default="")
+    p.add_argument("--dns", action="store_true")
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("client-template-apply", help="rewrite one client CCD from a network template")
+    p.add_argument("client")
+    p.add_argument("template")
+    p.add_argument("vpn_ip", nargs="?", default="")
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("reconnect-client", help="disconnect one connected client through OpenVPN management")
+    p.add_argument("client")
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("reconnect", help="disconnect one connected client through OpenVPN management")
+    p.add_argument("client")
+    p.add_argument("--reason", default="")
+
+    p = sub.add_parser("disable", help="revoke certificate and archive active config files")
+    p.add_argument("client")
+    p.add_argument("--reason", default="")
+    p.add_argument("--kill-active", action="store_true")
+
+    p = sub.add_parser("delete", help="revoke certificate and delete/archive active config files")
+    p.add_argument("client")
+    p.add_argument("--purge", action="store_true", help="physically remove active files instead of archiving them")
+    p.add_argument("--reason", default="")
+    p.add_argument("--kill-active", action="store_true")
+
+    p = sub.add_parser("logs", help="show minimal logs/errors")
+    p.add_argument("-n", "--lines", type=int, default=80)
+
+    p = sub.add_parser("status", help="service status and current connections")
+
+    p = sub.add_parser("server-config", help="inspect and apply OpenVPN server.conf settings")
+    server_cfg = p.add_subparsers(dest="server_config_cmd", required=True)
+    server_cfg.add_parser("inspect")
+    sca = server_cfg.add_parser("apply")
+    sca.add_argument("--status-interval", type=int)
+    sca.add_argument("--status-version", type=int, default=2)
+    sca.add_argument("--enable-management", action="store_true")
+    sca.add_argument("--management-socket", default="")
+    sca.add_argument("--management-client-group", default="")
+    sca.add_argument("--management-log-cache", type=int)
+    sca.add_argument("--restart", action="store_true")
+    server_cfg.add_parser("restart-openvpn")
+
+    p = sub.add_parser("management", help="use OpenVPN management Unix socket")
+    mgmt = p.add_subparsers(dest="management_cmd", required=True)
+    mgmt.add_parser("test")
+    mgmt.add_parser("status")
+    mk = mgmt.add_parser("kill")
+    mk.add_argument("client")
+    ps = mgmt.add_parser("parse-status-sample")
+    ps.add_argument("--content", required=True)
+
+    p = sub.add_parser("vipnet-nets", help="manage ViPNet destination networks")
+    vip = p.add_subparsers(dest="vipnet_cmd", required=True)
+    vip.add_parser("list")
+    pa = vip.add_parser("add")
+    pa.add_argument("cidr")
+    pa.add_argument("--restart-nat", action="store_true")
+    pr = vip.add_parser("remove")
+    pr.add_argument("cidr")
+    pr.add_argument("--restart-nat", action="store_true")
+
+    p = sub.add_parser("networks", help="manage tagged route networks")
+    nets = p.add_subparsers(dest="networks_cmd", required=True)
+    nets.add_parser("list")
+    na = nets.add_parser("add")
+    na.add_argument("cidr")
+    na.add_argument("--tag", default="default")
+    na.add_argument("--nat", dest="nat", action="store_true", default=False)
+    na.add_argument("--no-nat", dest="nat", action="store_false")
+    na.add_argument("--comment", default="")
+    na.add_argument("--restart-nat", action="store_true")
+    nu = nets.add_parser("update")
+    nu.add_argument("cidr")
+    nu.add_argument("--tag", default="default")
+    nu.add_argument("--nat", dest="nat", action="store_true", default=False)
+    nu.add_argument("--no-nat", dest="nat", action="store_false")
+    nu.add_argument("--comment", default="")
+    nu.add_argument("--restart-nat", action="store_true")
+    nr = nets.add_parser("remove")
+    nr.add_argument("cidr")
+    nr.add_argument("--restart-nat", action="store_true")
+
+    p = sub.add_parser("network-templates", help="manage route network templates")
+    tmpl = p.add_subparsers(dest="templates_cmd", required=True)
+    tmpl.add_parser("list")
+    ta = tmpl.add_parser("add")
+    ta.add_argument("name")
+    ta.add_argument("--description", default="")
+    ta.add_argument("--cidr", action="append", default=[])
+    ta.add_argument("--dns", action="store_true")
+    tr = tmpl.add_parser("remove")
+    tr.add_argument("name")
+
+    p = sub.add_parser("nat-status", help="show ViPNet NAT chain counters")
+
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.cmd == "profiles":
+            data = {"profiles": [{"name": k, "description": v} for k, v in PROFILE_DESCRIPTIONS.items()]}
+            if args.json:
+                emit(data, args)
+            else:
+                for item in data["profiles"]:
+                    print(f"{item['name']:<24} {item['description']}")
+            return 0
+
+        if args.cmd in {"generate", "preview"}:
+            dry = bool(getattr(args, "dry_run", False) or args.cmd == "preview")
+            if dry:
+                data = generate_client(args.client, args.profile, args.vpn_ip, dry_run=True, comment=getattr(args, "comment", ""))
+            else:
+                with lock_exclusive():
+                    data = generate_client(args.client, args.profile, args.vpn_ip, dry_run=False, comment=getattr(args, "comment", ""))
+            if args.json:
+                emit(data, args)
+            else:
+                print(f"status: {data['status']}")
+                print(f"client: {data['client']}")
+                print(f"profile: {data['profile']}")
+                if data.get("vpn_ip"):
+                    print(f"vpn_ip: {data['vpn_ip']}")
+                print(f"CCD: {data['ccd_path']}")
+                print(f"OVPN: {data['ovpn_path']}")
+                if data.get("bat_path"):
+                    print(f"BAT: {data['bat_path']}")
+                if dry:
+                    print("\nCCD preview:")
+                    for line in data["ccd_preview"]:
+                        print(line)
+                if data.get("share_warning"):
+                    print("warning:", data["share_warning"])
+            return 0
+
+        if args.cmd == "sync":
+            with lock_exclusive():
+                data = sync_registry()
+            emit(data, args)
+            return 0
+
+        if args.cmd == "list":
+            data = {"clients": list_clients()}
+            if args.json:
+                emit(data, args)
+            else:
+                print(f"{'client':<28} {'profile':<24} {'status':<10} {'vpn_ip':<14} {'connected':<9}")
+                for r in data["clients"]:
+                    print(f"{r['name']:<28} {(r.get('profile') or r.get('detected_profile') or '-'):<24} {r.get('status','-'):<10} {(r.get('vpn_ip') or '-'):<14} {str(r.get('connected')):<9}")
+            return 0
+
+        if args.cmd == "connected":
+            data = connected_clients_result(source=args.source)
+            if args.json:
+                emit(data, args)
+            else:
+                if not data["connected"]:
+                    print("Нет текущих подключений.")
+                else:
+                    print(f"{'client':<28} {'vpn_ip':<14} {'real_address':<28} {'rx':<12} {'tx':<12}")
+                    for r in data["connected"]:
+                        print(f"{r.get('common_name',''):<28} {r.get('virtual_address',''):<14} {r.get('real_address',''):<28} {str(r.get('bytes_received','')):<12} {str(r.get('bytes_sent','')):<12}")
+            return 0
+
+        if args.cmd == "inspect":
+            data = inspect_client(args.client)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "config-view":
+            data = view_client_config(args.client)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "ccd-update":
+            with lock_exclusive():
+                data = update_ccd(args.client, args.content, reason=args.reason)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "profile-apply":
+            with lock_exclusive():
+                data = apply_profile_to_client(args.client, args.profile, args.vpn_ip, reason=args.reason)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "ovpn-update":
+            with lock_exclusive():
+                data = update_ovpn(args.client, args.content, reason=args.reason)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "repair-artifacts":
+            with lock_exclusive():
+                data = repair_client_artifacts(args.client, reason=args.reason)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "client-networks-apply":
+            with lock_exclusive():
+                data = apply_networks_to_client(
+                    args.client,
+                    list(args.cidr),
+                    vpn_ip=args.vpn_ip,
+                    dns=args.dns,
+                    reason=args.reason,
+                )
+            emit(data, args)
+            return 0
+
+        if args.cmd == "client-template-apply":
+            with lock_exclusive():
+                data = apply_network_template_to_client(args.client, args.template, args.vpn_ip, reason=args.reason)
+            emit(data, args)
+            return 0
+
+        if args.cmd in {"reconnect-client", "reconnect"}:
+            with lock_exclusive():
+                data = reconnect_client(args.client, reason=args.reason)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "disable":
+            with lock_exclusive():
+                data = disable_or_delete(args.client, "disable", purge=False, reason=args.reason, kill_active=args.kill_active)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "delete":
+            with lock_exclusive():
+                data = disable_or_delete(args.client, "delete", purge=args.purge, reason=args.reason, kill_active=args.kill_active)
+            emit(data, args)
+            return 0
+
+        if args.cmd == "logs":
+            data = {"services": service_status(), "operations": operation_lines(args.lines), "journal": journal_lines(args.lines)}
+            if args.json:
+                emit(data, args)
+            else:
+                print("===== SERVICES =====")
+                print_human(data["services"])
+                print("===== OPERATIONS =====")
+                print_human(data["operations"])
+                print("===== OPENVPN JOURNAL =====")
+                for line in data["journal"]:
+                    print(line)
+            return 0
+
+        if args.cmd == "status":
+            data = {"services": service_status(), "connected": connected_clients()}
+            emit(data, args)
+            return 0
+
+        if args.cmd == "server-config":
+            if args.server_config_cmd == "inspect":
+                data = inspect_server_config()
+            elif args.server_config_cmd == "apply":
+                data = patch_server_config(
+                    status_interval=args.status_interval,
+                    status_version=args.status_version,
+                    enable_management=args.enable_management,
+                    management_socket=args.management_socket,
+                    management_client_group=args.management_client_group,
+                    management_log_cache=args.management_log_cache,
+                    restart=args.restart,
+                )
+            elif args.server_config_cmd == "restart-openvpn":
+                data = {"status": "ok", "restart": restart_openvpn_service()}
+            else:
+                raise SystemExit("unknown server-config command")
+            emit(data, args)
+            return 0
+
+        if args.cmd == "management":
+            if args.management_cmd == "test":
+                data = management_test()
+            elif args.management_cmd == "status":
+                data = management_status()
+            elif args.management_cmd == "kill":
+                data = management_kill_client(args.client)
+            elif args.management_cmd == "parse-status-sample":
+                data = {"status": "ok", "source": "sample", "clients": parse_management_status(args.content)}
+            else:
+                raise SystemExit("unknown management command")
+            emit(data, args)
+            return 0
+
+        if args.cmd == "vipnet-nets":
+            if args.vipnet_cmd == "list":
+                data = {"vipnet_nets_file": CFG.VIPNET_NETS_FILE, "networks": read_vipnet_nets()}
+            elif args.vipnet_cmd == "add":
+                data = add_vipnet_net(args.cidr, restart_nat=args.restart_nat)
+            elif args.vipnet_cmd == "remove":
+                data = remove_vipnet_net(args.cidr, restart_nat=args.restart_nat)
+            else:
+                raise SystemExit("unknown vipnet-nets command")
+            emit(data, args)
+            return 0
+
+        if args.cmd == "networks":
+            if args.networks_cmd == "list":
+                data = {
+                    "networks_file": CFG.NETWORKS_DB,
+                    "nat_file": CFG.VIPNET_NETS_FILE,
+                    "networks": list_networks(),
+                }
+            elif args.networks_cmd in {"add", "update"}:
+                data = add_or_update_network(
+                    args.cidr,
+                    tag=args.tag,
+                    nat=args.nat,
+                    comment=args.comment,
+                    restart_nat=args.restart_nat,
+                )
+            elif args.networks_cmd == "remove":
+                data = remove_network(args.cidr, restart_nat=args.restart_nat)
+            else:
+                raise SystemExit("unknown networks command")
+            emit(data, args)
+            return 0
+
+        if args.cmd == "network-templates":
+            if args.templates_cmd == "list":
+                data = {
+                    "templates_file": CFG.NETWORK_TEMPLATES_DB,
+                    "templates": list_network_templates(),
+                    "networks": list_networks(),
+                }
+            elif args.templates_cmd == "add":
+                data = add_network_template(args.name, list(args.cidr), description=args.description, dns=args.dns)
+            elif args.templates_cmd == "remove":
+                data = remove_network_template(args.name)
+            else:
+                raise SystemExit("unknown network-templates command")
+            emit(data, args)
+            return 0
+
+        if args.cmd == "nat-status":
+            data = nat_status()
+            emit(data, args)
+            return 0
+
+        parser.print_help()
+        return 2
+    except subprocess.CalledProcessError as e:
+        msg = {
+            "status": "error",
+            "command": e.cmd,
+            "returncode": e.returncode,
+            "stdout": e.stdout,
+            "stderr": e.stderr,
+        }
+        record_operation(args.cmd, getattr(args, "client", None), "error", e.stderr or str(e))
+        if args.json:
+            print(json.dumps(msg, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print("Ошибка выполнения команды:", e.cmd, file=sys.stderr)
+            if e.stdout:
+                print(e.stdout, file=sys.stderr)
+            if e.stderr:
+                print(e.stderr, file=sys.stderr)
+        return e.returncode or 1
+    except SystemExit as e:
+        # argparse also raises SystemExit; pass numeric codes through.
+        if isinstance(e.code, int):
+            raise
+        record_operation(args.cmd, getattr(args, "client", None), "error", str(e.code))
+        if args.json:
+            print(json.dumps({"status": "error", "message": str(e.code)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(str(e.code), file=sys.stderr)
+        return 1
+    except Exception as e:
+        record_operation(args.cmd, getattr(args, "client", None), "error", repr(e))
+        if args.json:
+            print(json.dumps({"status": "error", "message": repr(e)}, ensure_ascii=False, indent=2), file=sys.stderr)
+        else:
+            print(f"Ошибка: {e!r}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Логи - OpenVPN Web{% endblock %}
+{% block page_title %}Логи{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="toolbar">
+  <form method="get" class="filters">
+    <select name="n">
+      {% for n in [30,80,150] %}
+      <option value="{{ n }}" {{ 'selected' if lines == n else '' }}>{{ n }} строк</option>
+      {% endfor %}
+    </select>
+    <button class="button secondary" type="submit">Обновить</button>
+  </form>
+</section>
+
+<section class="columns">
+  <article class="panel">
+    <h2>Services</h2>
+    <pre class="code">{{ logs.services }}</pre>
+  </article>
+  <article class="panel">
+    <h2>Recent operations</h2>
+    <table>
+      <thead><tr><th>time</th><th>actor</th><th>action</th><th>client</th><th>result</th><th>message</th></tr></thead>
+      <tbody>
+        {% for row in logs.operations or [] %}
+        <tr>
+          <td>{{ row.time }}</td>
+          <td>{{ row.actor }}</td>
+          <td>{{ row.action }}</td>
+          <td>{{ row.client or '-' }}</td>
+          <td><span class="badge {{ row.result|status_class }}">{{ row.result }}</span></td>
+          <td>{{ row.message }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="empty">Нет операций</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+</section>
+
+<section class="panel">
+  <h2>OpenVPN journal</h2>
+  <pre class="code">{% for line in logs.journal or [] %}{{ line }}
+{% endfor %}</pre>
+</section>
+{% endblock %}

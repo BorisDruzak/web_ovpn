@@ -1,0 +1,858 @@
+from __future__ import annotations
+
+import ipaddress
+import re
+import uuid
+from pathlib import Path
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+from starlette.middleware.sessions import SessionMiddleware
+
+from .audit import write_audit
+from .api import router as api_router
+from .auth import authenticate_user, csrf_token, current_user, require_user, verify_csrf
+from .auto_sync import force_client_sync, maybe_client_sync
+from .config import get_settings
+from .db import get_db, init_db
+from .download_tokens import assert_allowed_file, consume_download_token
+from .models import WebUser
+from .vpnctl_client import VpnctlError, run_vpnctl
+
+CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+BASE_DIR = Path(__file__).resolve().parent
+
+app = FastAPI(title="OpenVPN Web Manager")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=get_settings().app_secret_key,
+    session_cookie=get_settings().session_cookie_name,
+    same_site="lax",
+    https_only=False,
+)
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+app.include_router(api_router)
+
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+
+
+def status_class(value: Any) -> str:
+    raw = str(value or "").lower()
+    if raw in {"active", "connected", "valid", "ok", "true"}:
+        return "ok"
+    if raw in {"disabled", "warning"}:
+        return "warn"
+    if raw in {"deleted", "revoked", "error", "failed", "inactive"}:
+        return "bad"
+    return "muted"
+
+
+def format_bytes(value: Any) -> str:
+    try:
+        number = int(value or 0)
+    except (TypeError, ValueError):
+        return "-"
+    units = ["B", "KB", "MB", "GB"]
+    size = float(number)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{number} B"
+
+
+templates.env.globals["csrf_token"] = csrf_token
+templates.env.filters["status_class"] = status_class
+templates.env.filters["format_bytes"] = format_bytes
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    request.state.request_id = uuid.uuid4().hex[:16]
+    return await call_next(request)
+
+
+def add_flash(request: Request, category: str, message: str) -> None:
+    flashes = list(request.session.get("flashes", []))
+    flashes.append({"category": category, "message": message})
+    request.session["flashes"] = flashes[-5:]
+
+
+def pop_flashes(request: Request) -> list[dict[str, str]]:
+    flashes = list(request.session.get("flashes", []))
+    request.session["flashes"] = []
+    return flashes
+
+
+def render(
+    request: Request,
+    template: str,
+    context: dict[str, Any],
+    db: Session,
+    status_code: int = 200,
+) -> HTMLResponse:
+    user = current_user(request, db)
+    context.update(
+        {
+            "request": request,
+            "user": user,
+            "flashes": pop_flashes(request),
+            "settings": get_settings(),
+        }
+    )
+    return templates.TemplateResponse(template, context, status_code=status_code)
+
+
+def redirect(path: str) -> RedirectResponse:
+    return RedirectResponse(path, status_code=303)
+
+
+def require_client_name(client: str) -> str:
+    if not CLIENT_RE.match(client or ""):
+        raise HTTPException(status_code=400, detail="Недопустимое имя клиента")
+    return client
+
+
+def cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
+    try:
+        return run_vpnctl(args, timeout=timeout), None
+    except VpnctlError as exc:
+        message = exc.message
+        if exc.stderr:
+            message = f"{message}: {exc.stderr.strip()[:500]}"
+        return {}, message
+
+
+def list_from(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = data.get(key, [])
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def profiles_list(data: dict[str, Any]) -> list[dict[str, Any]]:
+    profiles = data.get("profiles", [])
+    if isinstance(profiles, dict):
+        return [{"name": key, "description": str(value)} for key, value in profiles.items()]
+    if isinstance(profiles, list):
+        return [item for item in profiles if isinstance(item, dict)]
+    return []
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, db: Session = Depends(get_db)):
+    if current_user(request, db):
+        return redirect("/")
+    return render(request, "login.html", {}, db)
+
+
+@app.post("/login")
+async def login(request: Request, db: Session = Depends(get_db)):
+    await verify_csrf(request)
+    form = await request.form()
+    user = authenticate_user(db, str(form.get("username") or ""), str(form.get("password") or ""))
+    if user is None:
+        add_flash(request, "bad", "Неверный логин или пароль")
+        write_audit(db, request, form.get("username") or "anonymous", "login", "error", "bad credentials")
+        return redirect("/login")
+    request.session["user_id"] = user.id
+    request.session["username"] = user.username
+    write_audit(db, request, user, "login", "ok")
+    return redirect("/")
+
+
+@app.post("/logout")
+async def logout(request: Request, db: Session = Depends(get_db)):
+    await verify_csrf(request)
+    actor = current_user(request, db)
+    if actor:
+        write_audit(db, request, actor, "logout", "ok")
+    request.session.clear()
+    return redirect("/login")
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    status, status_error = cli_call(request, ["status"])
+    clients_data, clients_error = cli_call(request, ["list"])
+    connected_data, connected_error = cli_call(request, ["connected"])
+    errors = [err for err in [status_error, clients_error, connected_error] if err]
+    clients = list_from(clients_data, "clients")
+    connected = list_from(connected_data, "connected")
+    return render(
+        request,
+        "dashboard.html",
+        {"status": status, "clients_count": len(clients), "connected_count": len(connected), "errors": errors},
+        db,
+    )
+
+
+@app.get("/clients", response_class=HTMLResponse)
+def clients(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    sync_error = maybe_client_sync(db, request, user, "clients page")
+    data, error = cli_call(request, ["list"])
+    profiles_data, _ = cli_call(request, ["profiles"])
+    rows = list_from(data, "clients")
+    query = (request.query_params.get("q") or "").lower()
+    profile = request.query_params.get("profile") or ""
+    status = request.query_params.get("status") or ""
+    connected = request.query_params.get("connected") or ""
+    if query:
+        rows = [row for row in rows if query in str(row.get("name", "")).lower()]
+    if profile:
+        rows = [row for row in rows if (row.get("profile") or row.get("detected_profile") or "") == profile]
+    if status:
+        rows = [row for row in rows if str(row.get("status") or "") == status]
+    if connected == "yes":
+        rows = [row for row in rows if row.get("connected")]
+    if connected == "no":
+        rows = [row for row in rows if not row.get("connected")]
+    return render(
+        request,
+        "clients.html",
+        {"clients": rows, "profiles": profiles_list(profiles_data), "error": error or sync_error},
+        db,
+    )
+
+
+@app.post("/clients/sync")
+async def clients_sync(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    data, error = force_client_sync(db, request, user, "manual button", action="manual-sync")
+    if error:
+        add_flash(request, "bad", error)
+    else:
+        count = data.get("imported_or_updated", 0)
+        add_flash(request, "ok", f"Синхронизация выполнена: {count}")
+    return redirect("/clients")
+
+
+@app.get("/clients/new", response_class=HTMLResponse)
+def new_client_page(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    profiles_data, error = cli_call(request, ["profiles"])
+    return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error}, db)
+
+
+@app.post("/clients/new", response_class=HTMLResponse)
+async def new_client_action(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    action = str(form.get("action") or "preview")
+    client = require_client_name(str(form.get("client") or "").strip())
+    profile = str(form.get("profile") or "").strip()
+    vpn_ip = str(form.get("vpn_ip") or "").strip()
+    comment = str(form.get("comment") or "").strip()
+    profiles_data, profiles_error = cli_call(request, ["profiles"])
+    args = [action, client, profile]
+    if vpn_ip:
+        args.append(vpn_ip)
+    if action == "generate":
+        args.extend(["--comment", comment])
+    if action not in {"preview", "generate"}:
+        raise HTTPException(status_code=400, detail="Недопустимое действие")
+    result, error = cli_call(request, args, timeout=180 if action == "generate" else 60)
+    sync_error = None
+    if action == "generate" and not error:
+        _, sync_error = force_client_sync(db, request, user, f"after generate {client}", action="auto-sync")
+        if sync_error:
+            add_flash(request, "bad", f"Профиль создан, но автосинхронизация не прошла: {sync_error}")
+        else:
+            add_flash(request, "ok", "Профиль создан, реестр синхронизирован автоматически")
+    write_audit(
+        db,
+        request,
+        user,
+        f"client-{action}",
+        "error" if error else "ok",
+        error or f"profile={profile} vpn_ip={vpn_ip}",
+        target_client=client,
+    )
+    return render(
+        request,
+        "client_new.html",
+        {
+            "profiles": profiles_list(profiles_data),
+            "error": error or profiles_error or sync_error,
+            "result": result,
+            "form_values": {"client": client, "profile": profile, "vpn_ip": vpn_ip, "comment": comment},
+        },
+        db,
+    )
+
+
+@app.get("/clients/{client}", response_class=HTMLResponse)
+def client_detail(client: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    client = require_client_name(client)
+    data, error = cli_call(request, ["inspect", client])
+    return render(request, "client_detail.html", {"client": client, "detail": data, "error": error}, db)
+
+
+@app.get("/clients/{client}/edit", response_class=HTMLResponse)
+def client_edit_page(client: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    client = require_client_name(client)
+    config, config_error = cli_call(request, ["config-view", client])
+    templates_data, templates_error = cli_call(request, ["network-templates", "list"])
+    networks_data, networks_error = cli_call(request, ["networks", "list"])
+    return render(
+        request,
+        "client_edit.html",
+        {
+            "client": client,
+            "config": config,
+            "network_templates": templates_data.get("templates", []),
+            "networks": networks_data.get("networks", []),
+            "error": config_error or templates_error or networks_error,
+        },
+        db,
+    )
+
+
+def confirm_client_form(form: Any, client: str) -> bool:
+    return str(form.get("confirm_name") or "") == client
+
+
+def refresh_client_routes_after_access_change(
+    request: Request,
+    db: Session,
+    user: WebUser,
+    client: str,
+    reason: str,
+) -> str | None:
+    data, error = cli_call(request, ["reconnect-client", client, "--reason", reason], timeout=60)
+    status = data.get("status") if data else None
+    write_audit(db, request, user, "reconnect-client", "error" if error else "ok", error or reason, target_client=client)
+    if error:
+        return error
+    if status == "not_configured":
+        return "OpenVPN management недоступен, клиент получит новые маршруты при следующем подключении"
+    if status == "not_connected":
+        return "Клиент сейчас не подключён, новые маршруты будут применены при следующем подключении"
+    return None
+
+
+@app.post("/clients/{client}/edit/template")
+async def client_edit_template(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    if not confirm_client_form(form, client):
+        add_flash(request, "bad", "Имя клиента не совпало, применение шаблона отменено")
+        return redirect(f"/clients/{client}/edit")
+    template = str(form.get("template") or "").strip()
+    vpn_ip = str(form.get("vpn_ip") or "").strip()
+    reason = str(form.get("reason") or "network template applied from web UI").strip()
+    args = ["client-template-apply", client, template]
+    if vpn_ip:
+        args.append(vpn_ip)
+    args.extend(["--reason", reason])
+    _, error = cli_call(request, args, timeout=180)
+    write_audit(db, request, user, "network-template-apply", "error" if error else "ok", error or reason, target_client=client)
+    if not error:
+        _, sync_error = force_client_sync(db, request, user, f"after network template apply {client}", action="auto-sync")
+        error = sync_error
+    reconnect_warning = None
+    if not error:
+        reconnect_warning = refresh_client_routes_after_access_change(
+            request,
+            db,
+            user,
+            client,
+            "route refresh after network template apply",
+        )
+    add_flash(
+        request,
+        "bad" if error else "ok",
+        error or reconnect_warning or "Шаблон сетей применён, клиент переподключён для обновления маршрутов",
+    )
+    return redirect(f"/clients/{client}/edit")
+
+
+@app.post("/clients/{client}/edit/networks")
+async def client_edit_networks(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    if not confirm_client_form(form, client):
+        add_flash(request, "bad", "Имя клиента не совпало, применение сетей отменено")
+        return redirect(f"/clients/{client}/edit")
+    reason = str(form.get("reason") or "selected networks applied from web UI").strip()
+    vpn_ip = str(form.get("vpn_ip") or "").strip()
+    cidrs = [str(value) for value in form.getlist("cidr") if str(value).strip()]
+    args = ["client-networks-apply", client]
+    for cidr in cidrs:
+        args.extend(["--cidr", cidr])
+    if vpn_ip:
+        args.append(vpn_ip)
+    if form.get("dns") == "1":
+        args.append("--dns")
+    args.extend(["--reason", reason])
+    _, error = cli_call(request, args, timeout=180)
+    write_audit(db, request, user, "networks-apply", "error" if error else "ok", error or reason, target_client=client)
+    if not error:
+        _, sync_error = force_client_sync(db, request, user, f"after networks apply {client}", action="auto-sync")
+        error = sync_error
+    reconnect_warning = None
+    if not error:
+        reconnect_warning = refresh_client_routes_after_access_change(
+            request,
+            db,
+            user,
+            client,
+            "route refresh after selected networks apply",
+        )
+    add_flash(
+        request,
+        "bad" if error else "ok",
+        error or reconnect_warning or "Сети применены, клиент переподключён для обновления маршрутов",
+    )
+    return redirect(f"/clients/{client}/edit")
+
+
+@app.post("/clients/{client}/edit/ovpn")
+async def client_edit_ovpn(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    if not confirm_client_form(form, client):
+        add_flash(request, "bad", "Имя клиента не совпало, изменение OVPN отменено")
+        return redirect(f"/clients/{client}/edit")
+    reason = str(form.get("reason") or "ovpn edit from web UI").strip()
+    content = str(form.get("content") or "")
+    _, error = cli_call(request, ["ovpn-update", client, "--content", content, "--reason", reason], timeout=180)
+    write_audit(db, request, user, "ovpn-update", "error" if error else "ok", error or reason, target_client=client)
+    if not error:
+        _, sync_error = force_client_sync(db, request, user, f"after OVPN update {client}", action="auto-sync")
+        error = sync_error
+    add_flash(request, "bad" if error else "ok", error or "OVPN сохранён, реестр синхронизирован")
+    return redirect(f"/clients/{client}/edit")
+
+
+@app.post("/clients/{client}/reconnect")
+async def reconnect_client_route(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    if not confirm_client_form(form, client):
+        add_flash(request, "bad", "Имя клиента не совпало, переподключение отменено")
+        return redirect(f"/clients/{client}")
+    reason = str(form.get("reason") or "route refresh from web UI").strip()
+    data, error = cli_call(request, ["reconnect-client", client, "--reason", reason], timeout=60)
+    status = data.get("status") if data else None
+    write_audit(db, request, user, "reconnect-client", "error" if error else "ok", error or reason, target_client=client)
+    if error:
+        add_flash(request, "bad", error)
+    elif status == "ok":
+        add_flash(request, "ok", "Клиент отключён через management и получит маршруты при переподключении")
+    elif status == "not_connected":
+        add_flash(request, "ok", "Клиент сейчас не подключён")
+    elif status == "not_configured":
+        add_flash(request, "bad", "OpenVPN management не настроен, точечное переподключение недоступно")
+    else:
+        add_flash(request, "bad", data.get("message") or "Не удалось подтвердить переподключение")
+    return redirect(f"/clients/{client}")
+
+
+@app.post("/clients/{client}/kill-session")
+async def kill_client_session_route(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    if not confirm_client_form(form, client):
+        add_flash(request, "bad", "Имя клиента не совпало, отключение сессии отменено")
+        return redirect(f"/clients/{client}")
+    data, error = cli_call(request, ["management", "kill", client], timeout=60)
+    write_audit(db, request, user, "management-kill", "error" if error else "ok", error or "client session kill", target_client=client)
+    if error:
+        add_flash(request, "bad", error)
+    elif data.get("killed"):
+        add_flash(request, "ok", "Активная сессия клиента отключена")
+    else:
+        add_flash(request, "ok", "Клиент сейчас не подключен")
+    return redirect(f"/clients/{client}")
+
+
+def file_path_from_inspect(detail: dict[str, Any], file_type: str) -> str:
+    files = detail.get("files") if isinstance(detail, dict) else None
+    if not isinstance(files, dict) or file_type not in {"ovpn", "bat"}:
+        raise ValueError("Файл не найден в inspect")
+    item = files.get(file_type) or {}
+    if not item.get("exists"):
+        raise ValueError("Файл отсутствует")
+    return str(item.get("path") or "")
+
+
+def should_repair_missing_ovpn(detail: dict[str, Any], file_type: str) -> bool:
+    if file_type != "ovpn" or not isinstance(detail, dict):
+        return False
+    files = detail.get("files")
+    if not isinstance(files, dict):
+        return False
+    ovpn = files.get("ovpn") or {}
+    if ovpn.get("exists"):
+        return False
+    registry = detail.get("registry") or {}
+    registry_status = str(registry.get("status") or "").lower() if isinstance(registry, dict) else ""
+    if registry_status in {"revoked", "disabled", "deleted"}:
+        return False
+    return str(detail.get("cert_status") or "").lower() == "valid"
+
+
+def repair_missing_ovpn_for_download(
+    request: Request,
+    db: Session,
+    user: WebUser,
+    client: str,
+    file_type: str,
+    detail: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    if not should_repair_missing_ovpn(detail, file_type):
+        return detail, None
+    repaired, repair_error = cli_call(
+        request,
+        ["repair-artifacts", client, "--reason", "download-link auto repair"],
+        timeout=180,
+    )
+    write_audit(
+        db,
+        request,
+        user,
+        "repair-artifacts",
+        "error" if repair_error else "ok",
+        repair_error or ",".join(repaired.get("actions", [])),
+        target_client=client,
+    )
+    if repair_error:
+        return detail, repair_error
+    refreshed, inspect_error = cli_call(request, ["inspect", client])
+    return refreshed or detail, inspect_error
+
+
+@app.post("/clients/{client}/download-link")
+async def download_link(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    file_type = str(form.get("file_type") or "ovpn")
+    detail, error = cli_call(request, ["inspect", client])
+    if error:
+        add_flash(request, "bad", error)
+        write_audit(db, request, user, "download-file", "error", error, target_client=client)
+        return redirect(f"/clients/{client}")
+    detail, repair_error = repair_missing_ovpn_for_download(request, db, user, client, file_type, detail)
+    if repair_error:
+        add_flash(request, "bad", repair_error)
+        write_audit(db, request, user, "download-file", "error", repair_error, target_client=client)
+        return redirect(f"/clients/{client}")
+    try:
+        file_path = assert_allowed_file(file_path_from_inspect(detail, file_type))
+    except ValueError as exc:
+        add_flash(request, "bad", str(exc))
+        write_audit(db, request, user, "download-file", "error", str(exc), target_client=client)
+        return redirect(f"/clients/{client}")
+    write_audit(db, request, user, "download-file", "ok", f"file_type={file_type}", target_client=client)
+    return FileResponse(file_path, filename=file_path.name, media_type="application/octet-stream")
+
+
+@app.get("/download/{token}")
+def download(token: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    record = consume_download_token(token)
+    if record is None:
+        write_audit(db, request, user, "download", "error", "invalid or expired token")
+        raise HTTPException(status_code=404, detail="Ссылка недействительна или истекла")
+    try:
+        path = assert_allowed_file(record.file_path)
+    except ValueError as exc:
+        write_audit(db, request, user, "download", "error", str(exc), target_client=record.client_name)
+        raise HTTPException(status_code=404, detail="Файл недоступен") from exc
+    write_audit(db, request, user, "download", "ok", record.file_type, target_client=record.client_name)
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+@app.post("/clients/{client}/disable")
+async def disable_client(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    if str(form.get("confirm_name") or "") != client:
+        add_flash(request, "bad", "Имя клиента не совпало, действие отменено")
+        return redirect(f"/clients/{client}")
+    reason = str(form.get("reason") or "disabled from web UI")
+    _, error = cli_call(request, ["disable", client, "--reason", reason, "--kill-active"], timeout=180)
+    write_audit(db, request, user, "disable", "error" if error else "ok", error or reason, target_client=client)
+    if not error:
+        _, sync_error = force_client_sync(db, request, user, f"after disable {client}", action="auto-sync")
+        error = sync_error
+    add_flash(request, "bad" if error else "ok", error or "Доступ отключён")
+    return redirect(f"/clients/{client}")
+
+
+@app.get("/connections", response_class=HTMLResponse)
+def connections(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    data, error = cli_call(request, ["connected", "--source", "auto"])
+    rows = list_from(data, "connected")
+    for row in rows:
+        row.pop("connected_since", None)
+    return render(request, "connections.html", {"connections": rows, "source": data.get("source"), "error": error}, db)
+
+
+@app.post("/connections/{client}/kill")
+async def connection_kill(client: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    client = require_client_name(client)
+    if not confirm_client_form(form, client):
+        add_flash(request, "bad", "Имя клиента не совпало, отключение сессии отменено")
+        return redirect("/connections")
+    data, error = cli_call(request, ["management", "kill", client], timeout=60)
+    write_audit(db, request, user, "management-kill", "error" if error else "ok", error or "connection page kill", target_client=client)
+    if error:
+        add_flash(request, "bad", error)
+    elif data.get("killed"):
+        add_flash(request, "ok", f"Сессия отключена: {client}")
+    else:
+        add_flash(request, "ok", f"Клиент не подключен: {client}")
+    return redirect("/connections")
+
+
+@app.get("/settings/openvpn", response_class=HTMLResponse)
+def openvpn_settings(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    server_config, config_error = cli_call(request, ["server-config", "inspect"])
+    status, status_error = cli_call(request, ["status"])
+    management, management_error = cli_call(request, ["management", "test"])
+    return render(
+        request,
+        "settings_openvpn.html",
+        {
+            "server_config": server_config,
+            "services": status.get("services", {}),
+            "management": management,
+            "error": config_error or status_error or management_error,
+        },
+        db,
+    )
+
+
+@app.post("/settings/openvpn/status-interval")
+async def openvpn_settings_status_interval(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    try:
+        interval = int(str(form.get("status_interval_seconds") or "10"))
+    except ValueError:
+        add_flash(request, "bad", "Период обновления должен быть числом")
+        return redirect("/settings/openvpn")
+    if interval < 5 or interval > 300:
+        add_flash(request, "bad", "Период обновления должен быть от 5 до 300 секунд")
+        return redirect("/settings/openvpn")
+    _, error = cli_call(
+        request,
+        ["server-config", "apply", "--status-interval", str(interval), "--status-version", "2", "--restart"],
+        timeout=180,
+    )
+    write_audit(db, request, user, "openvpn-settings-status-interval", "error" if error else "ok", error or str(interval))
+    add_flash(request, "bad" if error else "ok", error or "Период обновления сохранен и применен")
+    return redirect("/settings/openvpn")
+
+
+@app.post("/settings/openvpn/management-enable")
+async def openvpn_settings_management_enable(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    _, error = cli_call(
+        request,
+        [
+            "server-config",
+            "apply",
+            "--enable-management",
+            "--management-socket",
+            "/run/openvpn/server.sock",
+            "--management-client-group",
+            "openvpn-web",
+            "--management-log-cache",
+            "300",
+            "--restart",
+        ],
+        timeout=180,
+    )
+    write_audit(db, request, user, "openvpn-settings-management-enable", "error" if error else "ok", error or "enable management")
+    add_flash(request, "bad" if error else "ok", error or "Management Interface включен")
+    return redirect("/settings/openvpn")
+
+
+@app.post("/settings/openvpn/management-test")
+async def openvpn_settings_management_test(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    data, error = cli_call(request, ["management", "test"], timeout=60)
+    write_audit(db, request, user, "openvpn-settings-management-test", "error" if error else "ok", error or str(data.get("available")))
+    if error:
+        add_flash(request, "bad", error)
+    else:
+        add_flash(request, "ok" if data.get("available") else "bad", "Management Interface доступен" if data.get("available") else "Management Interface недоступен")
+    return redirect("/settings/openvpn")
+
+
+@app.post("/settings/openvpn/restart")
+async def openvpn_settings_restart(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    _, error = cli_call(request, ["server-config", "restart-openvpn"], timeout=180)
+    write_audit(db, request, user, "openvpn-settings-restart", "error" if error else "ok", error or "restart")
+    add_flash(request, "bad" if error else "ok", error or "OpenVPN перезапущен")
+    return redirect("/settings/openvpn")
+
+
+@app.get("/vipnet-nets", response_class=HTMLResponse)
+def vipnet_nets_legacy(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return redirect("/networks")
+
+
+@app.get("/networks", response_class=HTMLResponse)
+def networks(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    nets, nets_error = cli_call(request, ["networks", "list"])
+    nat, nat_error = cli_call(request, ["nat-status"])
+    return render(
+        request,
+        "networks.html",
+        {
+            "networks": nets.get("networks", []),
+            "nat": nat,
+            "error": nets_error or nat_error,
+        },
+        db,
+    )
+
+
+@app.post("/networks/add")
+async def network_add(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    cidr = str(form.get("cidr") or "").strip()
+    tag = str(form.get("tag") or "default").strip()
+    comment = str(form.get("comment") or "").strip()
+    try:
+        cidr = str(ipaddress.ip_network(cidr, strict=False))
+    except ValueError as exc:
+        add_flash(request, "bad", f"Некорректный CIDR: {exc}")
+        return redirect("/networks")
+    args = ["networks", "add", cidr, "--tag", tag, "--comment", comment]
+    args.append("--nat" if form.get("nat") == "1" else "--no-nat")
+    if form.get("restart_nat") == "1":
+        args.append("--restart-nat")
+    _, error = cli_call(request, args, timeout=180)
+    write_audit(db, request, user, "network-add", "error" if error else "ok", error or cidr)
+    add_flash(request, "bad" if error else "ok", error or f"Сеть добавлена: {cidr}")
+    return redirect("/networks")
+
+
+@app.post("/networks/remove")
+async def network_remove(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    cidr = str(form.get("cidr") or "").strip()
+    args = ["networks", "remove", cidr]
+    if form.get("restart_nat") == "1":
+        args.append("--restart-nat")
+    _, error = cli_call(request, args, timeout=180)
+    write_audit(db, request, user, "network-remove", "error" if error else "ok", error or cidr)
+    add_flash(request, "bad" if error else "ok", error or f"Сеть удалена: {cidr}")
+    return redirect("/networks")
+
+
+@app.post("/vipnet-nets/add")
+async def vipnet_add_legacy(request: Request, db: Session = Depends(get_db)):
+    return redirect("/networks")
+
+
+@app.post("/vipnet-nets/remove")
+async def vipnet_remove_legacy(request: Request, db: Session = Depends(get_db)):
+    return redirect("/networks")
+
+
+@app.get("/network-templates", response_class=HTMLResponse)
+def network_templates(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    data, error = cli_call(request, ["network-templates", "list"])
+    return render(
+        request,
+        "network_templates.html",
+        {
+            "templates": data.get("templates", []),
+            "networks": data.get("networks", []),
+            "error": error,
+        },
+        db,
+    )
+
+
+@app.post("/network-templates/add")
+async def network_template_add(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    description = str(form.get("description") or "").strip()
+    cidrs = [str(value) for value in form.getlist("cidr") if str(value).strip()]
+    args = ["network-templates", "add", name, "--description", description]
+    for cidr in cidrs:
+        args.extend(["--cidr", cidr])
+    if form.get("dns") == "1":
+        args.append("--dns")
+    _, error = cli_call(request, args, timeout=180)
+    write_audit(db, request, user, "network-template-add", "error" if error else "ok", error or name)
+    add_flash(request, "bad" if error else "ok", error or f"Шаблон добавлен: {name}")
+    return redirect("/network-templates")
+
+
+@app.post("/network-templates/remove")
+async def network_template_remove(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    _, error = cli_call(request, ["network-templates", "remove", name], timeout=180)
+    write_audit(db, request, user, "network-template-remove", "error" if error else "ok", error or name)
+    add_flash(request, "bad" if error else "ok", error or f"Шаблон удалён: {name}")
+    return redirect("/network-templates")
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def logs(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    lines = int(request.query_params.get("n") or 80)
+    if lines not in {30, 80, 150}:
+        lines = 80
+    data, error = cli_call(request, ["logs", "-n", str(lines)])
+    return render(request, "logs.html", {"logs": data, "lines": lines, "error": error}, db)

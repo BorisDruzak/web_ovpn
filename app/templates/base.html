@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}OpenVPN Web{% endblock %}</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">OpenVPN Web</div>
+    <nav>
+      <a href="/" class="{{ 'active' if request.url.path == '/' else '' }}">Панель</a>
+      <a href="/clients" class="{{ 'active' if request.url.path.startswith('/clients') and request.url.path != '/clients/new' else '' }}">Клиенты</a>
+      <a href="/clients/new" class="{{ 'active' if request.url.path == '/clients/new' else '' }}">Создать профиль</a>
+      <a href="/connections" class="{{ 'active' if request.url.path == '/connections' else '' }}">Подключения</a>
+      <a href="/networks" class="{{ 'active' if request.url.path in ['/networks', '/vipnet-nets'] else '' }}">Сети</a>
+      <a href="/network-templates" class="{{ 'active' if request.url.path == '/network-templates' else '' }}">Шаблоны</a>
+      <a href="/settings/openvpn" class="{{ 'active' if request.url.path.startswith('/settings/openvpn') else '' }}">Настройки</a>
+      <a href="/logs" class="{{ 'active' if request.url.path == '/logs' else '' }}">Логи</a>
+    </nav>
+  </aside>
+
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <div class="page-title">{% block page_title %}OpenVPN Web{% endblock %}</div>
+        <div class="request-id">request {{ request.state.request_id }}</div>
+      </div>
+      {% if user %}
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <span class="actor">{{ user.username }}</span>
+        <button type="submit" class="button secondary">Выйти</button>
+      </form>
+      {% endif %}
+    </header>
+
+    {% if flashes %}
+    <section class="alerts">
+      {% for flash in flashes %}
+      <div class="alert {{ flash.category }}">{{ flash.message }}</div>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+  <script src="{{ url_for('static', path='app.js') }}"></script>
+</body>
+</html>

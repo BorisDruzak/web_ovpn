@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Подключения - OpenVPN Web{% endblock %}
+{% block page_title %}Текущие подключения{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+{% if source %}<div class="meta">source: {{ source }}</div>{% endif %}
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Common Name</th>
+        <th>VPN IP</th>
+        <th>real_address</th>
+        <th>RX</th>
+        <th>TX</th>
+        <th>profile</th>
+        <th>registry_status</th>
+        <th>source</th>
+        <th>actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in connections %}
+      <tr>
+        <td>{{ row.common_name }}</td>
+        <td>{{ row.virtual_address or row.registry_vpn_ip or '-' }}</td>
+        <td>{{ row.real_address or '-' }}</td>
+        <td>{{ row.bytes_received|format_bytes }}</td>
+        <td>{{ row.bytes_sent|format_bytes }}</td>
+        <td>{{ row.profile or '-' }}</td>
+        <td><span class="badge {{ row.registry_status|status_class }}">{{ row.registry_status or '-' }}</span></td>
+        <td>{{ source or row.source or '-' }}</td>
+        <td>
+          <form method="post" action="/connections/{{ row.common_name }}/kill" class="form inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input name="confirm_name" placeholder="{{ row.common_name }}" required>
+            <button class="button secondary" type="submit">Отключить сессию</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty">Нет текущих подключений</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

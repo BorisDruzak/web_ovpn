@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime state
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*.pid
+*.sock
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+openvpn-web.env
+*.token
+*token*.txt
+*password*.txt
+id_rsa*
+id_ed25519*
+*.key
+*.pem
+*.crt
+*.p12
+
+# OpenVPN generated artifacts
+*.ovpn
+*.tls-crypt-v2.key
+*-install-hosts-as-admin.bat
+archive/
+output/
+
+# Build and transfer artifacts
+dist/
+build/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# Editors and OS files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

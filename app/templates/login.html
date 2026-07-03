@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Вход - OpenVPN Web{% endblock %}
+{% block page_title %}Вход администратора{% endblock %}
+{% block content %}
+<section class="login-panel">
+  <form method="post" action="/login" class="form narrow">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>
+      Логин
+      <input name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>
+      Пароль
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="button primary">Войти</button>
+  </form>
+</section>
+{% endblock %}

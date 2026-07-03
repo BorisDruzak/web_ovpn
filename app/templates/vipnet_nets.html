@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}ViPNet-сети - OpenVPN Web{% endblock %}
+{% block page_title %}ViPNet-сети{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="panel">
+  <form method="post" action="/vipnet-nets/add" class="form inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>CIDR<input name="cidr" placeholder="10.0.0.0/24" required></label>
+    <label class="checkbox"><input type="checkbox" name="restart_nat" value="1" checked> перезапустить NAT после изменения</label>
+    <button class="button primary" type="submit">Добавить</button>
+  </form>
+</section>
+
+<section class="columns">
+  <article class="panel">
+    <h2>Сети</h2>
+    <table>
+      <thead><tr><th>CIDR</th><th class="actions">Действие</th></tr></thead>
+      <tbody>
+        {% for cidr in networks %}
+        <tr>
+          <td>{{ cidr }}</td>
+          <td class="actions">
+            <form method="post" action="/vipnet-nets/remove">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <input type="hidden" name="cidr" value="{{ cidr }}">
+              <input type="hidden" name="restart_nat" value="1">
+              <button class="button small danger" type="submit">Удалить</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="2" class="empty">Список пуст</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </article>
+  <article class="panel">
+    <h2>NAT counters</h2>
+    <pre class="code">{% for line in nat.output or nat.lines or [] %}{{ line }}
+{% endfor %}</pre>
+  </article>
+</section>
+{% endblock %}

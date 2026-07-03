@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ client }} - OpenVPN Web{% endblock %}
+{% block page_title %}Клиент {{ client }}{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="toolbar">
+  <a class="button secondary" href="/clients">Назад к списку</a>
+  <a class="button secondary" href="/clients/{{ client }}/edit">Изменить</a>
+  <form method="post" action="/clients/{{ client }}/download-link">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="file_type" value="ovpn">
+    <button class="button secondary" type="submit">Скачать .ovpn</button>
+  </form>
+  {% if detail.files and detail.files.bat and detail.files.bat.exists %}
+  <form method="post" action="/clients/{{ client }}/download-link">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="file_type" value="bat">
+    <button class="button secondary" type="submit">Скачать .bat</button>
+  </form>
+  {% endif %}
+  <form method="post" action="/clients/{{ client }}/reconnect" class="form inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="reason" value="route refresh from web UI">
+    <input name="confirm_name" placeholder="{{ client }}" required>
+    <button class="button secondary" type="submit">Переподключить</button>
+  </form>
+  <form method="post" action="/clients/{{ client }}/kill-session" class="form inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input name="confirm_name" placeholder="{{ client }}" required>
+    <button class="button secondary" type="submit">Отключить активную сессию</button>
+  </form>
+</section>
+
+<section class="columns">
+  <article class="panel">
+    <h2>Реестр и сертификат</h2>
+    <dl class="details">
+      <dt>cert_status</dt><dd><span class="badge {{ detail.cert_status|status_class }}">{{ detail.cert_status or '-' }}</span></dd>
+      <dt>detected_profile</dt><dd>{{ detail.detected_profile or '-' }}</dd>
+      {% if detail.registry %}
+      {% for key, value in detail.registry.items() %}
+      <dt>{{ key }}</dt><dd>{{ value }}</dd>
+      {% endfor %}
+      {% endif %}
+    </dl>
+  </article>
+
+  <article class="panel">
+    <h2>Подключение</h2>
+    {% if detail.connected %}
+    <dl class="details">
+      {% for key, value in detail.connected.items() if key != 'connected_since' %}
+      <dt>{{ key }}</dt><dd>{{ value }}</dd>
+      {% endfor %}
+    </dl>
+    {% else %}
+    <p class="empty">Нет текущего подключения.</p>
+    {% endif %}
+  </article>
+</section>
+
+<section class="panel">
+  <h2>Файлы</h2>
+  <table>
+    <thead><tr><th>Тип</th><th>Путь</th><th>Есть</th><th>Размер</th></tr></thead>
+    <tbody>
+      {% for key, item in detail.files.items() %}
+      <tr>
+        <td>{{ key }}</td>
+        <td class="mono">{{ item.path }}</td>
+        <td><span class="badge {{ 'ok' if item.exists else 'muted' }}">{{ item.exists }}</span></td>
+        <td>{{ item.size|format_bytes if item.size else '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>CCD safe view</h2>
+  {% if detail.ccd %}
+  <dl class="details">
+    <dt>VPN IP</dt><dd>{{ detail.ccd.vpn_ip or '-' }}</dd>
+    <dt>DNS</dt><dd>{{ detail.ccd.dns }}</dd>
+    <dt>DOMAIN</dt><dd>{{ detail.ccd.domain }}</dd>
+    <dt>Routes</dt><dd>{{ detail.ccd.routes|join(', ') }}</dd>
+  </dl>
+  <pre class="code">{% for line in detail.ccd.raw_lines %}{{ line }}
+{% endfor %}</pre>
+  {% else %}
+  <p class="empty">CCD не найден.</p>
+  {% endif %}
+</section>
+
+<section class="panel danger">
+  <h2>Отключить доступ</h2>
+  <p>Revoke certificate + update CRL + archive active files + status disabled + kill active session.</p>
+  <form method="post" action="/clients/{{ client }}/disable" class="form narrow">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>Введите имя клиента<input name="confirm_name" required></label>
+    <label>Причина<input name="reason" value="disabled from web UI"></label>
+    <button class="button danger" type="submit">Отключить</button>
+  </form>
+</section>
+{% endblock %}

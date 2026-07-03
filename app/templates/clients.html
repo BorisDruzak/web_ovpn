@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Клиенты - OpenVPN Web{% endblock %}
+{% block page_title %}Клиенты{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="toolbar split">
+  <form method="get" class="filters">
+    <input name="q" value="{{ request.query_params.get('q','') }}" placeholder="Поиск по имени">
+    <select name="profile">
+      <option value="">Все профили</option>
+      {% for profile in profiles %}
+      <option value="{{ profile.name }}" {{ 'selected' if request.query_params.get('profile') == profile.name else '' }}>{{ profile.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="status">
+      <option value="">Все статусы</option>
+      {% for item in ['active','disabled','deleted','revoked','valid','unknown'] %}
+      <option value="{{ item }}" {{ 'selected' if request.query_params.get('status') == item else '' }}>{{ item }}</option>
+      {% endfor %}
+    </select>
+    <select name="connected">
+      <option value="">Любое подключение</option>
+      <option value="yes" {{ 'selected' if request.query_params.get('connected') == 'yes' else '' }}>Подключён</option>
+      <option value="no" {{ 'selected' if request.query_params.get('connected') == 'no' else '' }}>Офлайн</option>
+    </select>
+    <button class="button secondary" type="submit">Фильтр</button>
+  </form>
+  <form method="post" action="/clients/sync">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button class="button secondary" type="submit">Синхронизировать</button>
+  </form>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Клиент</th>
+        <th>Профиль</th>
+        <th>Статус</th>
+        <th>VPN IP</th>
+        <th>Подключение</th>
+        <th>Адрес</th>
+        <th class="actions">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in clients %}
+      <tr>
+        <td><a href="/clients/{{ row.name }}">{{ row.name }}</a></td>
+        <td>{{ row.profile or row.detected_profile or '-' }}</td>
+        <td><span class="badge {{ row.status|status_class }}">{{ row.status or '-' }}</span></td>
+        <td>{{ row.vpn_ip or row.registry_vpn_ip or '-' }}</td>
+        <td>
+          {% if row.connected %}
+          <span class="badge ok">connected</span>
+          {% else %}
+          <span class="badge muted">offline</span>
+          {% endif %}
+        </td>
+        <td>{{ row.real_address or row.virtual_address or '-' }}</td>
+        <td class="actions">
+          <a class="button small secondary" href="/clients/{{ row.name }}">Открыть</a>
+          <a class="button small secondary" href="/clients/{{ row.name }}/edit">Изменить</a>
+          <form method="post" action="/clients/{{ row.name }}/download-link">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input type="hidden" name="file_type" value="ovpn">
+            <button class="button small secondary" type="submit">Скачать .ovpn</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">Клиенты не найдены</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

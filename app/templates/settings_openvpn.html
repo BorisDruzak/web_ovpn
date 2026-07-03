@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Настройки OpenVPN - OpenVPN Web{% endblock %}
+{% block page_title %}Настройки OpenVPN{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="columns">
+  <article class="panel">
+    <h2>Текущие настройки OpenVPN</h2>
+    {% set cfg = server_config.settings or {} %}
+    <dl class="details">
+      <dt>server.conf</dt><dd class="mono">{{ server_config.server_conf or '-' }}</dd>
+      <dt>status file</dt><dd class="mono">{{ cfg.status_path or '-' }}</dd>
+      <dt>status interval</dt><dd>{{ cfg.status_interval or '-' }} sec</dd>
+      <dt>status-version</dt><dd>{{ cfg.status_version or '-' }}</dd>
+      <dt>management</dt><dd><span class="badge {{ cfg.management_enabled|status_class }}">{{ cfg.management_enabled }}</span></dd>
+      <dt>socket</dt><dd class="mono">{{ cfg.management_socket or '-' }}</dd>
+      <dt>group</dt><dd>{{ cfg.management_client_group or '-' }}</dd>
+      <dt>log cache</dt><dd>{{ cfg.management_log_cache or '-' }}</dd>
+      <dt>OpenVPN service</dt><dd><span class="badge {{ services.openvpn.active|status_class }}">{{ services.openvpn.active or '-' }}</span></dd>
+      <dt>NAT service</dt><dd><span class="badge {{ services.nat.active|status_class }}">{{ services.nat.active or '-' }}</span></dd>
+    </dl>
+  </article>
+
+  <article class="panel">
+    <h2>Период обновления клиентов</h2>
+    <p class="muted">Как часто OpenVPN обновляет status.log и как часто веб-интерфейс обновляет список текущих подключений. По умолчанию 10 секунд.</p>
+    <form method="post" action="/settings/openvpn/status-interval" class="form narrow">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label>Период обновления клиентов
+        <input type="number" name="status_interval_seconds" value="{{ cfg.status_interval or 10 }}" min="5" max="300" required>
+      </label>
+      <button class="button" type="submit">Сохранить и применить</button>
+    </form>
+  </article>
+</section>
+
+<section class="panel">
+  <h2>Management Interface</h2>
+  <dl class="details">
+    <dt>enabled</dt><dd><span class="badge {{ cfg.management_enabled|status_class }}">{{ cfg.management_enabled }}</span></dd>
+    <dt>socket</dt><dd class="mono">{{ cfg.management_socket or '/run/openvpn/server.sock' }}</dd>
+    <dt>group</dt><dd>{{ cfg.management_client_group or 'openvpn-web' }}</dd>
+    <dt>test</dt><dd><span class="badge {{ management.available|status_class }}">{{ management.available }}</span></dd>
+  </dl>
+  {% if management.message %}
+  <div class="alert bad">{{ management.message }}</div>
+  {% endif %}
+  <div class="toolbar">
+    <form method="post" action="/settings/openvpn/management-enable">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <button class="button secondary" type="submit">Включить Management Interface</button>
+    </form>
+    <form method="post" action="/settings/openvpn/management-test">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <button class="button secondary" type="submit">Проверить соединение</button>
+    </form>
+    <form method="post" action="/settings/openvpn/restart">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <button class="button secondary" type="submit">Перезапустить OpenVPN</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Шаблоны сетей - OpenVPN Web{% endblock %}
+{% block page_title %}Шаблоны{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<section class="panel">
+  <h2>Создать шаблон</h2>
+  <form method="post" action="/network-templates/add" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <div class="grid-form">
+      <label>Имя шаблона<input name="name" required pattern="[A-Za-z0-9._-]+" placeholder="branch_directum"></label>
+      <label>Описание<input name="description" placeholder="необязательно"></label>
+      <label class="checkbox"><input type="checkbox" name="dns" value="1"> добавить DNS/DOMAIN</label>
+    </div>
+    <div class="check-grid">
+      {% for row in networks %}
+      <label class="checkbox option-line">
+        <input type="checkbox" name="cidr" value="{{ row.cidr }}">
+        <span class="mono">{{ row.cidr }}</span>
+        <span class="badge muted">{{ row.tag }}</span>
+        {% if row.nat %}<span class="badge ok">NAT</span>{% endif %}
+      </label>
+      {% endfor %}
+    </div>
+    <div class="form-actions">
+      <button class="button primary" type="submit">Создать шаблон</button>
+    </div>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Доступные шаблоны</h2>
+  <table>
+    <thead><tr><th>Имя</th><th>Описание</th><th>Сети</th><th>DNS</th><th>Тип</th><th class="actions">Действие</th></tr></thead>
+    <tbody>
+      {% for row in templates %}
+      <tr>
+        <td class="mono">{{ row.name }}</td>
+        <td>{{ row.description or '-' }}</td>
+        <td class="mono">{{ row.cidrs|join(', ') }}</td>
+        <td><span class="badge {{ 'ok' if row.dns else 'muted' }}">{{ 'да' if row.dns else 'нет' }}</span></td>
+        <td>{{ 'встроенный' if row.builtin else 'свой' }}</td>
+        <td class="actions">
+          {% if not row.builtin %}
+          <form method="post" action="/network-templates/remove">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <input type="hidden" name="name" value="{{ row.name }}">
+            <button class="button small danger" type="submit">Удалить</button>
+          </form>
+          {% else %}
+          <span class="empty">-</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">Шаблонов нет</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
