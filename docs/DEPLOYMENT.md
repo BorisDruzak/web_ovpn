@@ -66,6 +66,7 @@ After deployment:
 ```bash
 ssh ui-vpn-deploy "cd /opt/openvpn-web && .venv/bin/python -m pytest -q"
 ssh ui-vpn-deploy "systemctl is-active openvpn-web && systemctl is-active openvpn-server@server"
+ssh ui-vpn-deploy "systemctl is-active netctl-collect.timer"
 ```
 
 Useful live checks:
@@ -74,7 +75,59 @@ Useful live checks:
 ssh ui-vpn-deploy "journalctl -u openvpn-web -n 100 --no-pager"
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json status"
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/vpnctl --json logs -n 50"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json sources list"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json dashboard"
 ```
+
+## Network Observer Setup
+
+The installer creates:
+
+- `/usr/local/sbin/netctl`
+- `/etc/netctl/sources.d/mikrotik-main.yaml`
+- `/etc/netctl/secrets.env`
+- `/var/lib/netctl/netctl.sqlite`
+- `netctl-collect.service`
+- `netctl-collect.timer`
+
+Before the first real collection, configure a read-only RouterOS API user and put its password into `/etc/netctl/secrets.env`:
+
+```bash
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S install -m 0600 -o root -g root /dev/null /etc/netctl/secrets.env"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S sh -c 'printf %s\\n \"NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='\"'\"'STRONG_PASSWORD'\"'\"'\" > /etc/netctl/secrets.env'"
+```
+
+Recommended RouterOS configuration:
+
+```routeros
+/user group add name=netobserver policy=read,api,test,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon
+/user add name=netobserver group=netobserver password="STRONG_PASSWORD"
+/ip service set api-ssl disabled=no address=192.168.100.30/32 port=8729
+/ip service set api disabled=yes
+```
+
+Temporary non-TLS API fallback:
+
+```routeros
+/ip service set api disabled=no address=192.168.100.30/32 port=8728
+```
+
+Verify:
+
+```bash
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json sources test mikrotik-main"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json collect mikrotik-main"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json hosts list"
+```
+
+The web pages are:
+
+- `/network/dashboard`
+- `/network/hosts`
+- `/network/sources`
+- `/network/interfaces`
+- `/network/routes`
+- `/network/collect`
 
 OpenVPN addressing and site-to-site checks:
 

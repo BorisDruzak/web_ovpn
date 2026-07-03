@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Источники{% endblock %}
+{% block page_title %}Источники{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="toolbar split">
+  <a class="button primary" href="/network/sources/new">Добавить MikroTik</a>
+</section>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Driver</th><th>Host</th><th>Site</th><th>Role</th><th>Enabled</th><th>Last collect</th><th>Status</th><th class="actions">Actions</th></tr></thead>
+    <tbody>
+      {% for source in sources %}
+      <tr>
+        <td class="mono">{{ source.name }}</td>
+        <td>{{ source.driver }}</td>
+        <td>{{ source.host }}</td>
+        <td>{{ source.site }}</td>
+        <td>{{ source.role }}</td>
+        <td>{{ "yes" if source.enabled else "no" }}</td>
+        <td>{{ source.last_collect_at or "-" }}</td>
+        <td><span class="badge {{ source.last_status|status_class }}">{{ source.last_status or "unknown" }}</span></td>
+        <td class="actions">
+          <form method="post" action="/network/sources/{{ source.name }}/test">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button class="button small secondary" type="submit">Test</button>
+          </form>
+          <form method="post" action="/network/sources/{{ source.name }}/collect">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button class="button small secondary" type="submit">Collect</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty">Источники пока не настроены.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

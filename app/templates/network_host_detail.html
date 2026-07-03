@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}IP {{ ip }}{% endblock %}
+{% block page_title %}IP {{ ip }}{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="toolbar">
+  <a class="button secondary" href="/network/hosts">Назад к списку</a>
+</section>
+<section class="panel">
+  <h2>{{ host.display_name or host.hostname or host.ip or ip }}</h2>
+  <dl class="details">
+    <dt>IP</dt><dd class="mono">{{ host.ip or ip }}</dd>
+    <dt>MAC</dt><dd class="mono">{{ host.mac or "-" }}</dd>
+    <dt>Категория</dt><dd>{{ category_labels.get(host.category, host.category or "-") }}</dd>
+    <dt>Статус</dt><dd>{{ host.status or "-" }}</dd>
+    <dt>Источники</dt><dd>{{ (host.sources or [])|join(", ") }}</dd>
+    <dt>Site</dt><dd>{{ host.site or "-" }}</dd>
+  </dl>
+</section>
+{% if vpn_row and vpn_row.vpn_client %}
+<section class="panel">
+  <h3>VPN</h3>
+  <dl class="details">
+    <dt>Common name</dt><dd>{{ vpn_row.vpn_client.common_name }}</dd>
+    <dt>Profile</dt><dd>{{ vpn_row.vpn_client.profile or "-" }}</dd>
+    <dt>Real address</dt><dd>{{ vpn_row.vpn_client.real_address or "-" }}</dd>
+  </dl>
+</section>
+{% endif %}
+<section class="panel">
+  <h3>Raw JSON</h3>
+  <pre class="code">{{ detail }}</pre>
+</section>
+{% endblock %}

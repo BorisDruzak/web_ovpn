@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Маршруты{% endblock %}
+{% block page_title %}Маршруты{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<form class="toolbar" method="get" action="/network/routes">
+  <select name="source">
+    <option value="">Все источники</option>
+    {% for source in sources %}<option value="{{ source.name }}" {% if selected_source == source.name %}selected{% endif %}>{{ source.name }}</option>{% endfor %}
+  </select>
+  <button class="button secondary" type="submit">Фильтр</button>
+</form>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Source</th><th>Dst address</th><th>Gateway</th><th>Active</th><th>Dynamic</th><th>Distance</th><th>Comment</th></tr></thead>
+    <tbody>
+      {% for item in routes %}
+      <tr><td>{{ item.source or item.source_id }}</td><td class="mono">{{ item.dst_address }}</td><td>{{ item.gateway or "-" }}</td><td>{{ item.active }}</td><td>{{ item.dynamic }}</td><td>{{ item.distance }}</td><td>{{ item.comment or "-" }}</td></tr>
+      {% else %}
+      <tr><td colspan="7" class="empty">Нет данных.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

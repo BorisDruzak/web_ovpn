@@ -27,6 +27,9 @@ class Settings:
     api_actor: str
     vpnctl_path: str
     vpnctl_use_sudo: bool
+    netctl_path: str
+    netctl_use_sudo: bool
+    network_observer_enabled: bool
     out_dir: Path
     share_out_dir: Path
     archive_dir: Path
@@ -49,6 +52,9 @@ def get_settings() -> Settings:
         api_actor=os.environ.get("OPENVPN_WEB_API_ACTOR", "api:codex-local"),
         vpnctl_path=os.environ.get("VPNCTL_PATH", "/usr/local/sbin/vpnctl"),
         vpnctl_use_sudo=_bool_env("VPNCTL_USE_SUDO", False),
+        netctl_path=os.environ.get("NETCTL_PATH", "/usr/local/sbin/netctl"),
+        netctl_use_sudo=_bool_env("NETCTL_USE_SUDO", True),
+        network_observer_enabled=_bool_env("NETWORK_OBSERVER_ENABLED", True),
         out_dir=_path_env("OUT_DIR", "/etc/openvpn/client-generator/output"),
         share_out_dir=_path_env("SHARE_OUT_DIR", "/mnt/antares_soft/vpn_config"),
         archive_dir=_path_env("ARCHIVE_DIR", "/etc/openvpn/client-generator/archive"),

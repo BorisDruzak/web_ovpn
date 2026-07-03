@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Интерфейсы{% endblock %}
+{% block page_title %}Интерфейсы{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<form class="toolbar" method="get" action="/network/interfaces">
+  <select name="source">
+    <option value="">Все источники</option>
+    {% for source in sources %}<option value="{{ source.name }}" {% if selected_source == source.name %}selected{% endif %}>{{ source.name }}</option>{% endfor %}
+  </select>
+  <button class="button secondary" type="submit">Фильтр</button>
+</form>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Source</th><th>Interface</th><th>Type</th><th>Running</th><th>Disabled</th><th>Comment</th><th>RX</th><th>TX</th><th>Last seen</th></tr></thead>
+    <tbody>
+      {% for item in interfaces %}
+      <tr><td>{{ item.source or item.source_id }}</td><td>{{ item.name }}</td><td>{{ item.type }}</td><td>{{ item.running }}</td><td>{{ item.disabled }}</td><td>{{ item.comment or "-" }}</td><td>{{ item.rx_bytes|format_bytes }}</td><td>{{ item.tx_bytes|format_bytes }}</td><td>{{ item.last_seen_at or "-" }}</td></tr>
+      {% else %}
+      <tr><td colspan="9" class="empty">Нет данных.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,21 +1,22 @@
 # OpenVPN Web Manager
 
-Документация по публикации, установке, деплою и эксплуатационным проверкам: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+FastAPI/Jinja2 web UI for managing OpenVPN profiles through `vpnctl`, plus a read-only Network Observer backend through `netctl`.
 
-Минимальный FastAPI/Jinja2 web-интерфейс для управления OpenVPN-профилями через `vpnctl`.
+Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-## Модель безопасности
+## Security Model
 
-- Web-приложение не читает и не редактирует PKI, CCD, CRL, `.ovpn`, iptables или systemd напрямую.
-- Все системные действия выполняются только через `vpnctl --json ...`.
-- `app/vpnctl_client.py` вызывает CLI через `subprocess.run([...], shell=False, timeout=...)`.
-- API использует Bearer token. В `/etc/openvpn-web/openvpn-web.env` хранится только `OPENVPN_WEB_API_TOKEN_HASH`.
-- Download tokens одноразовые, живут 15 минут по умолчанию и хранятся только как HMAC-SHA256 hash.
-- Web-БД хранит пользователей, audit, download-токены и настройки. Содержимое `.ovpn`, приватные ключи и сертификаты в web-БД не сохраняются.
-- Опасные действия выполняются только POST-запросами, защищены CSRF и требуют ручного ввода имени клиента.
-- Client delete намеренно не опубликован в API/MCP. Для агентского управления доступно только отключение клиента через disable с `confirm_client` и `reason`.
+- The web app does not edit OpenVPN PKI, CRL, CCD, `.ovpn`, iptables, RouterOS, or systemd directly.
+- Privileged OpenVPN actions go through `vpnctl --json ...`.
+- Network inventory actions go through `netctl --json ...`.
+- `app/vpnctl_client.py` and `app/netctl_client.py` use `subprocess.run([...], shell=False)`.
+- API uses a bearer token; `/etc/openvpn-web/openvpn-web.env` stores only `OPENVPN_WEB_API_TOKEN_HASH`.
+- Dangerous client actions require POST, CSRF, and explicit confirmation.
+- Client delete is intentionally not exposed; disable is the supported destructive action.
+- Network Observer is read-only for MikroTik in the MVP.
+- Network Observer secrets are kept outside SQLite in `/etc/netctl/secrets.env`.
 
-## Установка на Ubuntu
+## Install
 
 ```bash
 sudo apt-get update
@@ -25,70 +26,48 @@ sudo mkdir -p /opt/openvpn-web /etc/openvpn-web /var/lib/openvpn-web
 sudo chown -R openvpn-web:openvpn-web /opt/openvpn-web /var/lib/openvpn-web
 ```
 
-Скопировать проект в `/opt/openvpn-web`, затем:
+Copy the project to `/opt/openvpn-web`, then:
 
 ```bash
 cd /opt/openvpn-web
 sudo -u openvpn-web python3 -m venv .venv
 sudo -u openvpn-web .venv/bin/pip install -r requirements.txt
+sudo install -m 0440 deploy/sudoers-openvpn-web /etc/sudoers.d/openvpn-web
+sudo visudo -cf /etc/sudoers.d/openvpn-web
+sudo install -m 0644 deploy/openvpn-web.service /etc/systemd/system/openvpn-web.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now openvpn-web.service
 ```
 
-Создать `/etc/openvpn-web/openvpn-web.env`:
+The installer script `deploy/install-openvpn-web.sh` performs the production install, including `vpnctl`, `netctl`, env defaults, and systemd units.
 
-```bash
+## Environment
+
+Example `/etc/openvpn-web/openvpn-web.env`:
+
+```env
 DATABASE_URL=sqlite:////var/lib/openvpn-web/openvpn-web.sqlite
 VPNCTL_PATH=/usr/local/sbin/vpnctl
 VPNCTL_USE_SUDO=1
+NETCTL_PATH=/usr/local/sbin/netctl
+NETCTL_USE_SUDO=1
+NETWORK_OBSERVER_ENABLED=1
 APP_SECRET_KEY=<long-random-secret>
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=<initial-admin-password>
+OPENVPN_WEB_API_TOKEN_HASH=<sha256-hex-of-token>
+OPENVPN_WEB_API_ACTOR=api:codex-local
 OUT_DIR=/etc/openvpn/client-generator/output
 SHARE_OUT_DIR=/mnt/antares_soft/vpn_config
 ARCHIVE_DIR=/etc/openvpn/client-generator/archive
 DOWNLOAD_TOKEN_TTL_MINUTES=15
 ```
 
-Для API дополнительно:
+## OpenVPN Management
+
+Recommended setup is through `vpnctl`:
 
 ```bash
-OPENVPN_WEB_API_TOKEN_HASH=<sha256-hex-of-token>
-OPENVPN_WEB_API_ACTOR=api:codex-local
-```
-
-Установить sudoers:
-
-```bash
-sudo install -m 0440 deploy/sudoers-openvpn-web /etc/sudoers.d/openvpn-web
-sudo visudo -cf /etc/sudoers.d/openvpn-web
-```
-
-Установить systemd unit:
-
-```bash
-sudo install -m 0644 deploy/openvpn-web.service /etc/systemd/system/openvpn-web.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now openvpn-web.service
-```
-
-По умолчанию unit слушает `0.0.0.0:8088`. Если нужен nginx reverse proxy, установите nginx и используйте `deploy/nginx-openvpn-web.conf`.
-
-## OpenVPN Management Interface
-
-Web UI управляет текущими подключениями через `vpnctl`, а `vpnctl` подключается к OpenVPN Management Interface только через Unix socket. TCP management interface намеренно не используется.
-
-Рекомендуемая настройка через UI:
-
-1. Откройте `Настройки -> OpenVPN`.
-2. Нажмите `Включить Management Interface`.
-3. Нажмите `Проверить соединение`.
-4. При необходимости измените `Период обновления клиентов`; по умолчанию используется `10` секунд.
-
-Ручная настройка:
-
-```bash
-sudo groupadd --system openvpn-web || true
-sudo usermod -aG openvpn-web openvpn-web
-
 sudo vpnctl --json server-config apply \
   --status-interval 10 \
   --status-version 2 \
@@ -99,82 +78,95 @@ sudo vpnctl --json server-config apply \
   --restart
 
 sudo vpnctl --json management test
-```
-
-После применения в `/etc/openvpn/server/server.conf` должны быть директивы:
-
-```conf
-status /var/log/openvpn/status.log 10
-status-version 2
-management /run/openvpn/server.sock unix
-management-client-group openvpn-web
-management-log-cache 300
-```
-
-`status.log` остается fallback-источником для списка подключений. По умолчанию:
-
-```bash
 sudo vpnctl --json connected --source auto
 ```
 
-сначала пробует management socket, а если он недоступен, читает `/var/log/openvpn/status.log`. Для принудительной проверки:
+When a client network/template changes, the web UI runs sync and then `reconnect-client` so connected clients receive fresh pushed routes on reconnect.
+
+## Network Observer
+
+Network Observer adds a second read-only backend:
 
 ```bash
-sudo vpnctl --json connected --source management
-sudo vpnctl --json connected --source status-log
+sudo /usr/local/sbin/netctl --json sources list
+sudo /usr/local/sbin/netctl --json sources test mikrotik-main
+sudo /usr/local/sbin/netctl --json collect mikrotik-main
+sudo /usr/local/sbin/netctl --json hosts list
+sudo /usr/local/sbin/netctl --json dashboard
 ```
 
-Отключение активной сессии без revoke:
+Main files:
+
+- `/usr/local/sbin/netctl` - CLI wrapper.
+- `/etc/netctl/sources.d/mikrotik-main.yaml` - source metadata without password.
+- `/etc/netctl/secrets.env` - root-only secrets file.
+- `/var/lib/netctl/netctl.sqlite` - SQLite snapshots.
+- `netctl-collect.timer` - automatic collection every 5 minutes.
+
+Default source:
+
+```yaml
+name: mikrotik-main
+driver: mikrotik_api
+host: 192.168.100.250
+port: 8729
+tls: true
+verify_tls: false
+username: netobserver
+secret_ref: mikrotik-main
+site: main
+role: core-router
+enabled: true
+```
+
+Secrets file:
 
 ```bash
-sudo vpnctl --json management kill CLIENT
-sudo vpnctl --json reconnect CLIENT
+sudo install -m 0600 -o root -g root /dev/null /etc/netctl/secrets.env
+sudoedit /etc/netctl/secrets.env
 ```
 
-`disable` в web UI и API вызывает `vpnctl --json disable CLIENT --reason REASON --kill-active`: профиль отключается и активная сессия сразу выбивается, если management socket доступен. Client delete по-прежнему не опубликован в API/MCP.
-
-## Адресация, роутеры и site-to-site
-
-Текущая целевая схема:
-
-- `192.168.50.0/24` - OpenVPN tunnel pool.
-- `192.168.50.1` - OpenVPN server tunnel IP.
-- `192.168.50.2-199` - обычные пользователи.
-- `192.168.50.200-249` - фиксированные VPN-IP для роутеров.
-- `192.168.51.0/24`, `192.168.52.0/24` - remote LAN за site-to-site роутерами.
-
-Новые профили создаются через `client_type`:
-
-```bash
-sudo vpnctl --json preview test_user directum
-
-sudo vpnctl --json preview test_router_nat router_vipnet 192.168.50.200 \
-  --client-type router_nat
-
-sudo vpnctl --json preview test_router_s2s router_vipnet 192.168.50.201 \
-  --client-type router_site_to_site \
-  --remote-lan 192.168.51.0/24 \
-  --create-server-route
+```env
+NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='strong-password'
 ```
 
-Для `router_site_to_site` CCD получает `ifconfig-push` и `iroute`, а серверный `route` добавляется только в управляемый блок:
+Recommended MikroTik setup:
 
-```bash
-sudo vpnctl --json site-routes list
-sudo vpnctl --json site-routes add 192.168.51.0/24 --client router_site_001 --restart
-sudo vpnctl --json validate-network-plan
+- Use RouterOS API-SSL on `8729`.
+- Restrict API/API-SSL service by source address to the OpenVPN/Web server IP.
+- Use dedicated read-only user `netobserver`.
+- Use a strong password.
+- Do not expose API to WAN.
+- SSH is only fallback/debug.
+- SNMP can be added later for metrics.
+
+RouterOS commands:
+
+```routeros
+/user group add name=netobserver policy=read,api,test,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!winbox,!password,!web,!sniff,!sensitive,!romon
+/user add name=netobserver group=netobserver password="STRONG_PASSWORD"
+/ip service set api-ssl disabled=no address=192.168.100.30/32 port=8729
+/ip service set api disabled=yes
 ```
 
-Ожидаемый режим ViPNet - маршрутизация без SNAT. Проверка legacy NAT:
+Temporary non-TLS API fallback:
 
-```bash
-sudo vpnctl --json nat-status
-sudo vpnctl --json nat disable-legacy
+```routeros
+/ip service set api disabled=no address=192.168.100.30/32 port=8728
 ```
 
-`validate-network-plan` ловит старые CCD с legacy pool, пересечения remote LAN, дубли VPN-IP, отсутствующие server routes и активные legacy NAT-правила.
+Web pages:
 
-## Локальный запуск
+- `/network/dashboard`
+- `/network/hosts`
+- `/network/sources`
+- `/network/interfaces`
+- `/network/routes`
+- `/network/collect`
+
+HTTP API endpoints are under `/api/v1/network/...`.
+
+## Local Run
 
 ```bash
 python -m venv .venv
@@ -183,48 +175,30 @@ pip install -r requirements.txt
 export DATABASE_URL=sqlite:///./openvpn-web.sqlite
 export VPNCTL_PATH=/path/to/vpnctl
 export VPNCTL_USE_SUDO=0
+export NETCTL_PATH=/path/to/netctl
+export NETCTL_USE_SUDO=0
 export APP_SECRET_KEY=dev-secret
 export ADMIN_USERNAME=admin
 export ADMIN_PASSWORD=admin-pass
 uvicorn app.main:app --reload
 ```
 
-## Тесты
+## Tests
 
 ```bash
 pytest
 ```
 
-## API и MCP
+## API And MCP
 
-Основной API префикс: `/api/v1`.
-
-Примеры:
+Main HTTP API prefix: `/api/v1`.
 
 ```bash
 curl -H "Authorization: Bearer $OPENVPN_WEB_API_TOKEN" \
   http://192.168.100.30:8088/api/v1/status
 
 curl -H "Authorization: Bearer $OPENVPN_WEB_API_TOKEN" \
-  http://192.168.100.30:8088/api/v1/clients
+  http://192.168.100.30:8088/api/v1/network/hosts
 ```
 
-Локальный Codex plugin `openvpn-control` использует MCP server через stdio. MCP server читает:
-
-```bash
-OPENVPN_WEB_BASE_URL=http://192.168.100.30:8088
-OPENVPN_WEB_API_TOKEN_FILE=C:\Users\admin-2\.codex\openvpn-control-api-token.txt
-```
-
-MCP tools не содержат client delete. Для отключения клиента используется `openvpn_disable_client` с точным `confirm_client` и обязательным `reason`.
-
-## Backup notes
-
-Перед обновлением сохраняйте:
-
-```bash
-sudo cp /var/lib/openvpn-web/openvpn-web.sqlite /var/lib/openvpn-web/openvpn-web.sqlite.backup.$(date +%F_%H-%M-%S)
-sudo cp /etc/openvpn-web/openvpn-web.env /etc/openvpn-web/openvpn-web.env.backup.$(date +%F_%H-%M-%S)
-```
-
-Реестр OpenVPN-клиентов находится отдельно: `/var/lib/openvpn-client-manager/openvpn-manager.sqlite`. Web-приложение не мутирует эту базу напрямую.
+The local Codex plugin `openvpn-control` uses the MCP server in `mcp/openvpn_mcp_server.py`.

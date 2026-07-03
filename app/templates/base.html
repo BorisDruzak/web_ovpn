@@ -17,6 +17,12 @@
       <a href="/connections" class="{{ 'active' if request.url.path == '/connections' else '' }}">Подключения</a>
       <a href="/networks" class="{{ 'active' if request.url.path in ['/networks', '/vipnet-nets'] else '' }}">Сети</a>
       <a href="/network-templates" class="{{ 'active' if request.url.path == '/network-templates' else '' }}">Шаблоны</a>
+      <a href="/network/dashboard" class="{{ 'active' if request.url.path == '/network/dashboard' else '' }}">Сеть</a>
+      <a href="/network/hosts" class="{{ 'active' if request.url.path.startswith('/network/hosts') else '' }}">Устройства</a>
+      <a href="/network/sources" class="{{ 'active' if request.url.path.startswith('/network/sources') else '' }}">Источники</a>
+      <a href="/network/interfaces" class="{{ 'active' if request.url.path == '/network/interfaces' else '' }}">Интерфейсы</a>
+      <a href="/network/routes" class="{{ 'active' if request.url.path == '/network/routes' else '' }}">Маршруты</a>
+      <a href="/network/collect" class="{{ 'active' if request.url.path == '/network/collect' else '' }}">Сбор данных</a>
       <a href="/settings/openvpn" class="{{ 'active' if request.url.path.startswith('/settings/openvpn') else '' }}">Настройки</a>
       <a href="/logs" class="{{ 'active' if request.url.path == '/logs' else '' }}">Логи</a>
     </nav>

@@ -14,6 +14,8 @@ from .audit import write_audit
 from .auto_sync import force_client_sync
 from .config import get_settings
 from .db import get_db
+from .netctl_client import NetctlError, run_netctl
+from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -131,6 +133,20 @@ def call_vpnctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
         return run_vpnctl(args, timeout=timeout)
     except VpnctlError as exc:
         raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+
+
+def netctl_error_detail(exc: NetctlError) -> str:
+    suffix = exc.stderr.strip() or exc.stdout.strip()
+    if suffix:
+        return f"{exc.message}: {suffix[:500]}"
+    return exc.message
+
+
+def call_netctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
+    try:
+        return run_netctl(args, timeout=timeout)
+    except NetctlError as exc:
+        raise HTTPException(status_code=502, detail=netctl_error_detail(exc)) from exc
 
 
 def profile_command_args(command: str, client: str, payload: ClientProfileRequest) -> list[str]:
@@ -632,6 +648,92 @@ def api_vipnet_remove(
 @router.get("/nat-status")
 def api_nat_status(actor: str = Depends(require_api_actor)):
     return api_response(call_vpnctl(["nat-status"]))
+
+
+@router.get("/network/dashboard")
+def api_network_dashboard(actor: str = Depends(require_api_actor)):
+    dashboard = call_netctl(["dashboard"])
+    connected = call_vpnctl(["connected", "--source", "auto"])
+    dashboard.setdefault("summary", {})["vpn_connected"] = len(network_list_from(connected, "connected"))
+    return api_response(dashboard)
+
+
+@router.get("/network/hosts")
+def api_network_hosts(
+    actor: str = Depends(require_api_actor),
+    q: str = Query(default=""),
+    category: str = Query(default="all"),
+    status: str = Query(default="all"),
+    source: str = Query(default="all"),
+    network: str = Query(default="all"),
+    has_hostname: str = Query(default=""),
+    has_mac: str = Query(default=""),
+):
+    net_hosts = call_netctl(["hosts", "list"])
+    connected = call_vpnctl(["connected", "--source", "auto"])
+    clients = call_vpnctl(["list"])
+    rows = merge_unified_hosts(
+        network_list_from(net_hosts, "hosts"),
+        network_list_from(connected, "connected"),
+        network_list_from(clients, "clients"),
+    )
+    rows = filter_unified_hosts(
+        rows,
+        {
+            "q": q,
+            "category": category,
+            "status": status,
+            "source": source,
+            "network": network,
+            "has_hostname": has_hostname,
+            "has_mac": has_mac,
+        },
+    )
+    return api_response({"hosts": rows})
+
+
+@router.get("/network/hosts/{ip}")
+def api_network_host_detail(ip: str, actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["hosts", "inspect", ip]))
+
+
+@router.get("/network/sources")
+def api_network_sources(actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["sources", "list"]))
+
+
+@router.post("/network/sources/{source}/test")
+def api_network_source_test(source: str, actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["sources", "test", source], timeout=60))
+
+
+@router.post("/network/sources/{source}/collect")
+def api_network_source_collect(source: str, actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["collect", source], timeout=180))
+
+
+@router.get("/network/interfaces")
+def api_network_interfaces(actor: str = Depends(require_api_actor), source: str = Query(default="")):
+    args = ["interfaces", "list"]
+    if source:
+        args.extend(["--source", source])
+    return api_response(call_netctl(args))
+
+
+@router.get("/network/routes")
+def api_network_routes(actor: str = Depends(require_api_actor), source: str = Query(default="")):
+    args = ["routes", "list"]
+    if source:
+        args.extend(["--source", source])
+    return api_response(call_netctl(args))
+
+
+@router.get("/network/observations")
+def api_network_observations(actor: str = Depends(require_api_actor), host: str = Query(default="")):
+    args = ["observations", "list"]
+    if host:
+        args.extend(["--host", host])
+    return api_response(call_netctl(args))
 
 
 @router.get("/site-routes")

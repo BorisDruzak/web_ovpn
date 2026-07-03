@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Сбор данных{% endblock %}
+{% block page_title %}Сбор данных{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="panel">
+  <form class="form inline" method="post" action="/network/collect">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>Источник
+      <select name="source">
+        <option value="all">Все источники</option>
+        {% for source in sources %}<option value="{{ source.name }}">{{ source.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <button class="button primary" type="submit">Запустить сбор</button>
+  </form>
+</section>
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Time</th><th>Severity</th><th>Type</th><th>Message</th></tr></thead>
+    <tbody>
+      {% for event in events %}
+      <tr><td>{{ event.ts }}</td><td>{{ event.severity }}</td><td>{{ event.event_type }}</td><td>{{ event.message }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">Событий пока нет.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

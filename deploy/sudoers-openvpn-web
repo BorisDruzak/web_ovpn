@@ -1,1 +1,2 @@
 openvpn-web ALL=(root) NOPASSWD: /usr/local/sbin/vpnctl *
+openvpn-web ALL=(root) NOPASSWD: /usr/local/sbin/netctl *

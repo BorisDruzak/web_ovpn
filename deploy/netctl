@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP="${OPENVPN_WEB_APP_DIR:-/opt/openvpn-web}"
+PYTHON="${OPENVPN_WEB_PYTHON:-$APP/.venv/bin/python}"
+export PYTHONPATH="$APP${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON" -m netctl.cli "$@"

@@ -1,0 +1,6 @@
+[Unit]
+Description=Network Observer collection
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/netctl --json collect all

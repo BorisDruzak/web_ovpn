@@ -21,9 +21,12 @@ from .config import get_settings
 from .db import get_db, init_db
 from .download_tokens import assert_allowed_file, consume_download_token
 from .models import WebUser
+from .netctl_client import NetctlError, run_netctl
+from .network_observer import CATEGORY_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+SOURCE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(title="OpenVPN Web Manager")
@@ -66,6 +69,8 @@ def format_bytes(value: Any) -> str:
 
 
 templates.env.globals["csrf_token"] = csrf_token
+templates.env.globals["category_labels"] = CATEGORY_LABELS
+templates.env.globals["source_labels"] = SOURCE_LABELS
 templates.env.filters["status_class"] = status_class
 templates.env.filters["format_bytes"] = format_bytes
 
@@ -122,6 +127,12 @@ def require_client_name(client: str) -> str:
     return client
 
 
+def require_source_name(source: str) -> str:
+    if not SOURCE_RE.match(source or ""):
+        raise HTTPException(status_code=400, detail="Недопустимое имя источника")
+    return source
+
+
 def cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
     try:
         return run_vpnctl(args, timeout=timeout), None
@@ -129,6 +140,18 @@ def cli_call(request: Request, args: list[str], timeout: int | None = None) -> t
         message = exc.message
         if exc.stderr:
             message = f"{message}: {exc.stderr.strip()[:500]}"
+        return {}, message
+
+
+def net_cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
+    try:
+        return run_netctl(args, timeout=timeout), None
+    except NetctlError as exc:
+        message = exc.message
+        if exc.stderr:
+            message = f"{message}: {exc.stderr.strip()[:500]}"
+        elif exc.stdout:
+            message = f"{message}: {exc.stdout.strip()[:500]}"
         return {}, message
 
 
@@ -878,6 +901,213 @@ async def network_template_remove(request: Request, db: Session = Depends(get_db
     write_audit(db, request, user, "network-template-remove", "error" if error else "ok", error or name)
     add_flash(request, "bad" if error else "ok", error or f"Шаблон удалён: {name}")
     return redirect("/network-templates")
+
+
+@app.get("/network", response_class=HTMLResponse)
+def network_root(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return redirect("/network/dashboard")
+
+
+@app.get("/network/dashboard", response_class=HTMLResponse)
+def network_dashboard(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    dashboard_data, dashboard_error = net_cli_call(request, ["dashboard"])
+    connected_data, connected_error = cli_call(request, ["connected", "--source", "auto"])
+    summary = dashboard_data.get("summary", {})
+    summary["vpn_connected"] = len(list_from(connected_data, "connected"))
+    return render(
+        request,
+        "network_dashboard.html",
+        {"summary": summary, "sources": dashboard_data.get("sources", []), "error": dashboard_error or connected_error},
+        db,
+    )
+
+
+def unified_network_rows(request: Request) -> tuple[list[dict[str, Any]], str | None]:
+    hosts_data, hosts_error = net_cli_call(request, ["hosts", "list"])
+    connected_data, connected_error = cli_call(request, ["connected", "--source", "auto"])
+    clients_data, clients_error = cli_call(request, ["list"])
+    rows = merge_unified_hosts(
+        list_from(hosts_data, "hosts"),
+        list_from(connected_data, "connected"),
+        list_from(clients_data, "clients"),
+    )
+    return rows, hosts_error or connected_error or clients_error
+
+
+@app.get("/network/hosts", response_class=HTMLResponse)
+def network_hosts(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    rows, error = unified_network_rows(request)
+    filters = {
+        "q": request.query_params.get("q") or "",
+        "category": request.query_params.get("category") or "all",
+        "status": request.query_params.get("status") or "all",
+        "source": request.query_params.get("source") or "all",
+        "network": request.query_params.get("network") or "all",
+        "has_hostname": request.query_params.get("has_hostname") or "",
+        "has_mac": request.query_params.get("has_mac") or "",
+    }
+    rows = filter_unified_hosts(rows, filters)
+    sources_data, sources_error = net_cli_call(request, ["sources", "list"])
+    return render(
+        request,
+        "network_hosts.html",
+        {
+            "hosts": rows,
+            "filters": filters,
+            "sources": sources_data.get("sources", []),
+            "network_filters": NETWORK_FILTERS,
+            "error": error or sources_error,
+        },
+        db,
+    )
+
+
+@app.get("/network/hosts/{ip}", response_class=HTMLResponse)
+def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    data, error = net_cli_call(request, ["hosts", "inspect", ip])
+    rows, unified_error = unified_network_rows(request)
+    vpn_row = next((row for row in rows if row.get("ip") == ip), None)
+    return render(
+        request,
+        "network_host_detail.html",
+        {"ip": ip, "detail": data, "host": data.get("host") or vpn_row or {}, "vpn_row": vpn_row, "error": error or unified_error},
+        db,
+    )
+
+
+@app.get("/network/sources", response_class=HTMLResponse)
+def network_sources(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    data, error = net_cli_call(request, ["sources", "list"])
+    return render(request, "network_sources.html", {"sources": data.get("sources", []), "error": error}, db)
+
+
+@app.get("/network/sources/new", response_class=HTMLResponse)
+def network_source_new_page(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return render(request, "network_source_new.html", {"form_values": {}, "error": None}, db)
+
+
+@app.post("/network/sources/new")
+async def network_source_new(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    source = require_source_name(str(form.get("name") or "").strip())
+    args = [
+        "sources",
+        "add-mikrotik",
+        source,
+        "--host",
+        str(form.get("host") or "").strip(),
+        "--port",
+        str(form.get("port") or "8729").strip(),
+        "--username",
+        str(form.get("username") or "").strip(),
+        "--secret-ref",
+        str(form.get("secret_ref") or source).strip(),
+        "--site",
+        str(form.get("site") or "main").strip(),
+        "--role",
+        str(form.get("role") or "core-router").strip(),
+    ]
+    if form.get("tls") == "1":
+        args.append("--tls")
+    if form.get("verify_tls") == "1":
+        args.append("--verify-tls")
+    _, error = net_cli_call(request, args, timeout=60)
+    write_audit(db, request, user, "network-source-add", "error" if error else "ok", error or source)
+    if error:
+        return render(request, "network_source_new.html", {"form_values": dict(form), "error": error}, db, status_code=400)
+    add_flash(request, "ok", f"Источник добавлен: {source}. Пароль должен быть в /etc/netctl/secrets.env")
+    return redirect("/network/sources")
+
+
+@app.post("/network/sources/{source}/test")
+async def network_source_test(source: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    source = require_source_name(source)
+    _, error = net_cli_call(request, ["sources", "test", source], timeout=60)
+    write_audit(db, request, user, "network-source-test", "error" if error else "ok", error or source)
+    add_flash(request, "bad" if error else "ok", error or f"Источник доступен: {source}")
+    return redirect("/network/sources")
+
+
+@app.post("/network/sources/{source}/collect")
+async def network_source_collect(source: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    source = require_source_name(source)
+    data, error = net_cli_call(request, ["collect", source], timeout=180)
+    write_audit(db, request, user, "network-source-collect", "error" if error else "ok", error or str(data.get("summary", {})))
+    add_flash(request, "bad" if error else "ok", error or f"Сбор выполнен: {source}")
+    return redirect("/network/sources")
+
+
+@app.get("/network/interfaces", response_class=HTMLResponse)
+def network_interfaces(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    source = request.query_params.get("source") or ""
+    args = ["interfaces", "list"]
+    if source:
+        args.extend(["--source", require_source_name(source)])
+    data, error = net_cli_call(request, args)
+    sources_data, sources_error = net_cli_call(request, ["sources", "list"])
+    return render(
+        request,
+        "network_interfaces.html",
+        {"interfaces": data.get("interfaces", []), "sources": sources_data.get("sources", []), "selected_source": source, "error": error or sources_error},
+        db,
+    )
+
+
+@app.get("/network/routes", response_class=HTMLResponse)
+def network_routes(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    source = request.query_params.get("source") or ""
+    args = ["routes", "list"]
+    if source:
+        args.extend(["--source", require_source_name(source)])
+    data, error = net_cli_call(request, args)
+    sources_data, sources_error = net_cli_call(request, ["sources", "list"])
+    return render(
+        request,
+        "network_routes.html",
+        {"routes": data.get("routes", []), "sources": sources_data.get("sources", []), "selected_source": source, "error": error or sources_error},
+        db,
+    )
+
+
+@app.get("/network/collect", response_class=HTMLResponse)
+def network_collect_page(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    sources_data, sources_error = net_cli_call(request, ["sources", "list"])
+    logs_data, logs_error = net_cli_call(request, ["logs", "-n", "30"])
+    return render(
+        request,
+        "network_collect.html",
+        {"sources": sources_data.get("sources", []), "events": logs_data.get("events", []), "error": sources_error or logs_error},
+        db,
+    )
+
+
+@app.post("/network/collect")
+async def network_collect_action(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    source = str(form.get("source") or "all").strip()
+    if source != "all":
+        source = require_source_name(source)
+    _, error = net_cli_call(request, ["collect", source], timeout=180)
+    write_audit(db, request, user, "network-collect", "error" if error else "ok", error or source)
+    add_flash(request, "bad" if error else "ok", error or f"Сбор выполнен: {source}")
+    return redirect("/network/collect")
 
 
 @app.get("/logs", response_class=HTMLResponse)

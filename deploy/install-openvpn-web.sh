@@ -28,6 +28,7 @@ sudo_cmd mkdir -p "$APP" /etc/openvpn-web /var/lib/openvpn-web /etc/openvpn
 sudo_cmd chown -R openvpn-web:openvpn-web "$APP" /var/lib/openvpn-web
 sudo_cmd rm -rf \
   "$APP/app" \
+  "$APP/netctl" \
   "$APP/tests" \
   "$APP/deploy" \
   "$APP/README.md" \
@@ -39,7 +40,38 @@ sudo_cmd rm -rf "$APP/.git" "$APP/.pytest_cache"
 sudo_cmd chown -R openvpn-web:openvpn-web "$APP"
 
 sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
+sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
+sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
+sudo_cmd chmod 0755 /etc/netctl /etc/netctl/sources.d
+sudo_cmd chmod 0750 /var/lib/netctl
+if [[ ! -f /etc/netctl/sources.d/mikrotik-main.yaml ]]; then
+  TMP_SOURCE="$(mktemp)"
+  cat > "$TMP_SOURCE" <<'SOURCE_FILE'
+name: mikrotik-main
+driver: mikrotik_api
+host: 192.168.100.250
+port: 8729
+tls: true
+verify_tls: false
+username: netobserver
+secret_ref: mikrotik-main
+site: main
+role: core-router
+enabled: true
+SOURCE_FILE
+  sudo_cmd install -m 0644 -o root -g root "$TMP_SOURCE" /etc/netctl/sources.d/mikrotik-main.yaml
+  rm -f "$TMP_SOURCE"
+fi
+if [[ ! -f /etc/netctl/secrets.env ]]; then
+  TMP_SECRETS="$(mktemp)"
+  cat > "$TMP_SECRETS" <<'SECRETS_FILE'
+# Add the MikroTik read-only API password here:
+# NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='strong-password'
+SECRETS_FILE
+  sudo_cmd install -m 0600 -o root -g root "$TMP_SECRETS" /etc/netctl/secrets.env
+  rm -f "$TMP_SECRETS"
+fi
 sudo_cmd mkdir -p /etc/openvpn/client-generator/output
 sudo_cmd chgrp openvpn-web /etc/openvpn/client-generator/output
 sudo_cmd chmod 0750 /etc/openvpn/client-generator/output
@@ -86,6 +118,9 @@ PY
 DATABASE_URL=sqlite:////var/lib/openvpn-web/openvpn-web.sqlite
 VPNCTL_PATH=/usr/local/sbin/vpnctl
 VPNCTL_USE_SUDO=1
+NETCTL_PATH=/usr/local/sbin/netctl
+NETCTL_USE_SUDO=1
+NETWORK_OBSERVER_ENABLED=1
 APP_SECRET_KEY=$SECRET
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=$ADMIN_PASS
@@ -126,6 +161,24 @@ PY
   else
     printf 'API_TOKEN_EXISTS=1\n' > /tmp/openvpn-web-api-token.txt
   fi
+  TMP_ENV="$(mktemp)"
+  sudo_cmd cat "$ENV_PATH" > "$TMP_ENV"
+  changed_env=0
+  for line in \
+    'NETCTL_PATH=/usr/local/sbin/netctl' \
+    'NETCTL_USE_SUDO=1' \
+    'NETWORK_OBSERVER_ENABLED=1'; do
+    key="${line%%=*}"
+    if ! grep -q "^${key}=" "$TMP_ENV"; then
+      printf '%s\n' "$line" >> "$TMP_ENV"
+      changed_env=1
+    fi
+  done
+  if [[ "$changed_env" == "1" ]]; then
+    sudo_cmd cp "$ENV_PATH" "$ENV_PATH.backup.$(date +%F_%H-%M-%S)"
+    sudo_cmd install -m 0640 -o root -g openvpn-web "$TMP_ENV" "$ENV_PATH"
+  fi
+  rm -f "$TMP_ENV"
   sudo_cmd awk -F= '/^ADMIN_PASSWORD=/{print $0}' "$ENV_PATH" > /tmp/openvpn-web-admin-password.txt
 fi
 
@@ -140,8 +193,11 @@ sudo_cmd -u openvpn-web .venv/bin/python -m pip install --upgrade pip
 sudo_cmd -u openvpn-web .venv/bin/pip install -r requirements.txt
 
 sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web.service" /etc/systemd/system/openvpn-web.service
+sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.service" /etc/systemd/system/netctl-collect.service
+sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.timer" /etc/systemd/system/netctl-collect.timer
 sudo_cmd systemctl daemon-reload
 sudo_cmd systemctl enable openvpn-web.service
+sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl restart openvpn-web.service
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'
 cat /tmp/openvpn-web-admin-password.txt

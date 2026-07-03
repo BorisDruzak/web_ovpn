@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Новый источник{% endblock %}
+{% block page_title %}Новый источник{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="panel">
+  <p class="empty">Пароль не вводится в web UI. Добавьте его на сервере в <span class="mono">/etc/netctl/secrets.env</span> как <span class="mono">NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='...'</span>.</p>
+  <form class="form grid-form" method="post" action="/network/sources/new">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>Name <input name="name" value="{{ form_values.name or 'mikrotik-main' }}"></label>
+    <label>Host <input name="host" value="{{ form_values.host or '192.168.100.250' }}"></label>
+    <label>Port <input name="port" value="{{ form_values.port or '8729' }}"></label>
+    <label>Username <input name="username" value="{{ form_values.username or 'netobserver' }}"></label>
+    <label>Secret ref <input name="secret_ref" value="{{ form_values.secret_ref or 'mikrotik-main' }}"></label>
+    <label>Site <input name="site" value="{{ form_values.site or 'main' }}"></label>
+    <label>Role <input name="role" value="{{ form_values.role or 'core-router' }}"></label>
+    <label class="checkbox"><input type="checkbox" name="tls" value="1" checked> API-SSL / TLS</label>
+    <label class="checkbox"><input type="checkbox" name="verify_tls" value="1"> Verify TLS certificate</label>
+    <div class="form-actions"><button class="button primary" type="submit">Сохранить</button><a class="button secondary" href="/network/sources">Отмена</a></div>
+  </form>
+</section>
+{% endblock %}
