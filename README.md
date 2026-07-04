@@ -51,6 +51,7 @@ VPNCTL_PATH=/usr/local/sbin/vpnctl
 VPNCTL_USE_SUDO=1
 NETCTL_PATH=/usr/local/sbin/netctl
 NETCTL_USE_SUDO=1
+NETCTL_SUDO_USER=netctl
 NETWORK_OBSERVER_ENABLED=1
 APP_SECRET_KEY=<long-random-secret>
 ADMIN_USERNAME=admin
@@ -99,9 +100,9 @@ Main files:
 
 - `/usr/local/sbin/netctl` - CLI wrapper.
 - `/etc/netctl/sources.d/mikrotik-main.yaml` - source metadata without password.
-- `/etc/netctl/secrets.env` - root-only secrets file.
-- `/var/lib/netctl/netctl.sqlite` - SQLite snapshots.
-- `netctl-collect.timer` - automatic collection every 5 minutes.
+- `/etc/netctl/secrets.env` - root-owned secrets file readable by the `netctl` group.
+- `/var/lib/netctl/netctl.sqlite` - SQLite snapshots owned by the `netctl` service user.
+- `netctl-collect.timer` - automatic collection every 5 minutes as the `netctl` user.
 
 Default source:
 
@@ -122,7 +123,7 @@ enabled: true
 Secrets file:
 
 ```bash
-sudo install -m 0600 -o root -g root /dev/null /etc/netctl/secrets.env
+sudo install -m 0640 -o root -g netctl /dev/null /etc/netctl/secrets.env
 sudoedit /etc/netctl/secrets.env
 ```
 

@@ -23,6 +23,10 @@ if ! id openvpn-web >/dev/null 2>&1; then
 fi
 sudo_cmd groupadd --system openvpn-web >/dev/null 2>&1 || true
 sudo_cmd usermod -aG openvpn-web openvpn-web
+sudo_cmd groupadd --system netctl >/dev/null 2>&1 || true
+if ! id netctl >/dev/null 2>&1; then
+  sudo_cmd useradd --system --home /var/lib/netctl --shell /usr/sbin/nologin --gid netctl netctl
+fi
 
 sudo_cmd mkdir -p "$APP" /etc/openvpn-web /var/lib/openvpn-web /etc/openvpn
 sudo_cmd chown -R openvpn-web:openvpn-web "$APP" /var/lib/openvpn-web
@@ -44,6 +48,7 @@ sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
 sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
 sudo_cmd chmod 0755 /etc/netctl /etc/netctl/sources.d
+sudo_cmd chown -R netctl:netctl /var/lib/netctl
 sudo_cmd chmod 0750 /var/lib/netctl
 if [[ ! -f /etc/netctl/sources.d/mikrotik-main.yaml ]]; then
   TMP_SOURCE="$(mktemp)"
@@ -69,9 +74,11 @@ if [[ ! -f /etc/netctl/secrets.env ]]; then
 # Add the MikroTik read-only API password here:
 # NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='strong-password'
 SECRETS_FILE
-  sudo_cmd install -m 0600 -o root -g root "$TMP_SECRETS" /etc/netctl/secrets.env
+  sudo_cmd install -m 0640 -o root -g netctl "$TMP_SECRETS" /etc/netctl/secrets.env
   rm -f "$TMP_SECRETS"
 fi
+sudo_cmd chown root:netctl /etc/netctl/secrets.env
+sudo_cmd chmod 0640 /etc/netctl/secrets.env
 sudo_cmd mkdir -p /etc/openvpn/client-generator/output
 sudo_cmd chgrp openvpn-web /etc/openvpn/client-generator/output
 sudo_cmd chmod 0750 /etc/openvpn/client-generator/output
@@ -120,6 +127,7 @@ VPNCTL_PATH=/usr/local/sbin/vpnctl
 VPNCTL_USE_SUDO=1
 NETCTL_PATH=/usr/local/sbin/netctl
 NETCTL_USE_SUDO=1
+NETCTL_SUDO_USER=netctl
 NETWORK_OBSERVER_ENABLED=1
 APP_SECRET_KEY=$SECRET
 ADMIN_USERNAME=admin
@@ -167,6 +175,7 @@ PY
   for line in \
     'NETCTL_PATH=/usr/local/sbin/netctl' \
     'NETCTL_USE_SUDO=1' \
+    'NETCTL_SUDO_USER=netctl' \
     'NETWORK_OBSERVER_ENABLED=1'; do
     key="${line%%=*}"
     if ! grep -q "^${key}=" "$TMP_ENV"; then

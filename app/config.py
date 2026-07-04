@@ -29,6 +29,7 @@ class Settings:
     vpnctl_use_sudo: bool
     netctl_path: str
     netctl_use_sudo: bool
+    netctl_sudo_user: str
     network_observer_enabled: bool
     out_dir: Path
     share_out_dir: Path
@@ -54,6 +55,7 @@ def get_settings() -> Settings:
         vpnctl_use_sudo=_bool_env("VPNCTL_USE_SUDO", False),
         netctl_path=os.environ.get("NETCTL_PATH", "/usr/local/sbin/netctl"),
         netctl_use_sudo=_bool_env("NETCTL_USE_SUDO", True),
+        netctl_sudo_user=os.environ.get("NETCTL_SUDO_USER", "netctl"),
         network_observer_enabled=_bool_env("NETWORK_OBSERVER_ENABLED", True),
         out_dir=_path_env("OUT_DIR", "/etc/openvpn/client-generator/output"),
         share_out_dir=_path_env("SHARE_OUT_DIR", "/mnt/antares_soft/vpn_config"),

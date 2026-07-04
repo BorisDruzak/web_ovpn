@@ -3,4 +3,9 @@ Description=Network Observer collection
 
 [Service]
 Type=oneshot
+User=netctl
+Group=netctl
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
 ExecStart=/usr/local/sbin/netctl --json collect all

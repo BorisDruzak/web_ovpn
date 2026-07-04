@@ -7,6 +7,15 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def reset_settings_cache_between_tests():
+    from app.config import reset_settings_cache
+
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
+
+
 def make_executable(path: Path, content: str) -> Path:
     script_path = path.with_suffix(".py") if os.name == "nt" else path
     script_path.write_text(content, encoding="utf-8")
@@ -65,6 +74,26 @@ print(json.dumps({"status": "ok"}))
     assert run_netctl(["validate"], timeout=5)["status"] == "ok"
     assert calls
     assert calls[0]["shell"] is False
+
+
+def test_run_netctl_uses_configured_non_root_sudo_user(monkeypatch):
+    import app.config as config
+    from app.netctl_client import run_netctl
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, '{"status": "ok"}', "")
+
+    monkeypatch.setenv("NETCTL_PATH", "/usr/local/sbin/netctl")
+    monkeypatch.setenv("NETCTL_USE_SUDO", "1")
+    monkeypatch.setenv("NETCTL_SUDO_USER", "netctl")
+    config.reset_settings_cache()
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert run_netctl(["dashboard"], timeout=5) == {"status": "ok"}
+    assert calls[0][:5] == ["sudo", "-n", "-u", "netctl", "/usr/local/sbin/netctl"]
 
 
 def test_run_netctl_raises_controlled_error_on_nonzero(tmp_path, monkeypatch):

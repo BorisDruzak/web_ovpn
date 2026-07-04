@@ -89,11 +89,12 @@ The installer creates:
 - `/var/lib/netctl/netctl.sqlite`
 - `netctl-collect.service`
 - `netctl-collect.timer`
+- Linux service user `netctl`; automatic collection runs as this user, not root.
 
 Before the first real collection, configure a read-only RouterOS API user and put its password into `/etc/netctl/secrets.env`:
 
 ```bash
-ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S install -m 0600 -o root -g root /dev/null /etc/netctl/secrets.env"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S install -m 0640 -o root -g netctl /dev/null /etc/netctl/secrets.env"
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S sh -c 'printf %s\\n \"NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='\"'\"'STRONG_PASSWORD'\"'\"'\" > /etc/netctl/secrets.env'"
 ```
 

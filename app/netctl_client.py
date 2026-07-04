@@ -32,7 +32,10 @@ def run_netctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
     clean_args = [str(arg) for arg in args if str(arg) != ""]
     command = [settings.netctl_path, "--json", *clean_args]
     if settings.netctl_use_sudo:
-        command = ["sudo", "-n", *command]
+        sudo_prefix = ["sudo", "-n"]
+        if settings.netctl_sudo_user:
+            sudo_prefix.extend(["-u", settings.netctl_sudo_user])
+        command = [*sudo_prefix, *command]
 
     log.info("running netctl command: %s", " ".join(command[:3] + clean_args[:2]))
     try:
