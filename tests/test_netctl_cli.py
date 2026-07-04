@@ -132,6 +132,40 @@ def test_normalizer_creates_source_router_without_self_arp():
     assert hosts["192.168.100.250"]["sources"] == ["mikrotik_identity"]
 
 
+def test_normalizer_classifies_service_networks_and_ignores_incomplete_arp_noise():
+    from netctl.normalizer import normalize_hosts
+
+    source = {"name": "mikrotik-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
+    snapshot = {
+        "identity": [{"name": "sosn"}],
+        "dhcp_leases": [
+            {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "status": "waiting", "comment": "PVE1 MGMT"},
+            {"ip": "10.254.254.2", "mac": "00:58:3F:21:C6:2A", "hostname": "", "status": "bound"},
+        ],
+        "arp": [
+            {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "interface": "bridge-lan", "complete": True},
+            {"ip": "192.168.0.20", "mac": None, "interface": "bridge-lan", "complete": False},
+            {"ip": "192.168.1.251", "mac": "A4:DC:BE:AF:CB:FB", "interface": "ether9_wan_RTK", "complete": True},
+            {"ip": "78.29.0.1", "mac": "88:90:09:7B:90:34", "interface": "ether10_wan_IS74", "complete": True},
+        ],
+        "neighbors": [
+            {"address": "192.168.100.18", "mac": "2C:C8:1B:9C:33:D8", "identity": "MT-b2-k4", "platform": "MikroTik"},
+        ],
+        "bridge_hosts": [],
+    }
+
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+
+    assert hosts["192.168.0.12"]["category"] == "telephony"
+    assert hosts["10.83.1.11"]["category"] == "mgmt"
+    assert "mgmt" in hosts["10.83.1.11"]["tags"]
+    assert hosts["10.254.254.2"]["category"] == "vipnet_transit"
+    assert hosts["192.168.1.251"]["category"] == "wan"
+    assert hosts["78.29.0.1"]["category"] == "wan"
+    assert hosts["192.168.100.18"]["category"] == "network_infra"
+    assert "192.168.0.20" not in hosts
+
+
 def test_sources_validate_name_and_hide_secret(tmp_path, capsys):
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"

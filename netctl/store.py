@@ -5,7 +5,7 @@ import sqlite3
 from typing import Any
 
 from .db import get_source, insert_event
-from .normalizer import normalize_hosts
+from .normalizer import is_stale_noise_ip, normalize_hosts
 from .util import utc_now
 
 
@@ -82,6 +82,28 @@ def _upsert_host(conn: sqlite3.Connection, host: dict[str, Any]) -> int:
     )
     row = conn.execute("SELECT id FROM network_hosts WHERE ip = ?", (host["ip"],)).fetchone()
     return int(row["id"])
+
+
+def _demote_absent_noise_hosts(conn: sqlite3.Connection, source: dict[str, Any], current_ips: set[str], observed_at: str) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, ip FROM network_hosts
+        WHERE last_source = ? AND category IN ('unknown', 'telephony', 'wan')
+        """,
+        (source["name"],),
+    ).fetchall()
+    for row in rows:
+        ip = str(row["ip"])
+        if ip in current_ips or not is_stale_noise_ip(ip):
+            continue
+        conn.execute(
+            """
+            UPDATE network_hosts
+            SET category = ?, status = ?, last_seen_at = ?, tags_json = ?
+            WHERE id = ?
+            """,
+            ("noise", "seen", observed_at, _json({"sources": [], "tags": ["noise", "stale_arp"]}), row["id"]),
+        )
 
 
 def save_collection(
@@ -228,12 +250,14 @@ def save_collection(
 
     source_for_normalizer = dict(source)
     hosts = normalize_hosts(source_for_normalizer, snapshot, observed_at)
+    current_ips = {host["ip"] for host in hosts}
     for host in hosts:
         host_id = _upsert_host(conn, host)
         for item_type in ["arp", "dhcp_leases", "neighbors"]:
             for item in snapshot.get(item_type, []):
                 if item.get("ip") == host["ip"] or item.get("address") == host["ip"]:
                     _insert_observation(conn, source_id, observed_at, item_type.rstrip("s"), item, host_id=host_id)
+    _demote_absent_noise_hosts(conn, source, current_ips, observed_at)
 
     conn.execute(
         """
@@ -325,6 +349,12 @@ def dashboard_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "vpn_client": sum(1 for host in hosts if host.get("category") == "vpn_client"),
         "router": sum(1 for host in hosts if host.get("category") == "router"),
         "site_device": sum(1 for host in hosts if host.get("category") == "site_device"),
+        "network_infra": sum(1 for host in hosts if host.get("category") == "network_infra"),
+        "telephony": sum(1 for host in hosts if host.get("category") == "telephony"),
+        "mgmt": sum(1 for host in hosts if host.get("category") == "mgmt"),
+        "wan": sum(1 for host in hosts if host.get("category") == "wan"),
+        "vipnet_transit": sum(1 for host in hosts if host.get("category") == "vipnet_transit"),
+        "noise": sum(1 for host in hosts if host.get("category") == "noise"),
         "unknown": sum(1 for host in hosts if host.get("category") == "unknown"),
     }
     sources = [dict(row) for row in conn.execute("SELECT name, driver, host, site, role, enabled, last_collect_at, last_status, last_error FROM network_sources ORDER BY name").fetchall()]

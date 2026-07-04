@@ -11,8 +11,18 @@
 </section>
 <section class="metrics">
   <div class="metric"><span>Обычная сеть</span><strong>{{ summary.local_device or 0 }}</strong></div>
+  <div class="metric"><span>Сетевая инфраструктура</span><strong>{{ summary.network_infra or 0 }}</strong></div>
+  <div class="metric"><span>Телефония</span><strong>{{ summary.telephony or 0 }}</strong></div>
+  <div class="metric"><span>Управление</span><strong>{{ summary.mgmt or 0 }}</strong></div>
+</section>
+<section class="metrics">
   <div class="metric"><span>Site-to-site</span><strong>{{ summary.site_device or 0 }}</strong></div>
   <div class="metric"><span>Роутеры</span><strong>{{ summary.router or 0 }}</strong></div>
+  <div class="metric"><span>WAN/провайдер</span><strong>{{ summary.wan or 0 }}</strong></div>
+  <div class="metric"><span>Шум</span><strong>{{ summary.noise or 0 }}</strong></div>
+</section>
+<section class="metrics">
+  <div class="metric"><span>ViPNet transit</span><strong>{{ summary.vipnet_transit or 0 }}</strong></div>
   <div class="metric"><span>Видели ранее</span><strong>{{ summary.seen or 0 }}</strong></div>
 </section>
 <section class="table-wrap">

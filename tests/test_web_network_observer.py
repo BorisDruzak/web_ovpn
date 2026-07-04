@@ -48,11 +48,15 @@ import sys
 args = sys.argv[1:]
 cmd = args[1:]
 if cmd[:2] == ["hosts", "list"]:
-    print(json.dumps({"status": "ok", "hosts": [{"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:FF", "hostname": "pc-buh-01", "display_name": "pc-buh-01", "category": "local_device", "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"}]}))
+    print(json.dumps({"status": "ok", "hosts": [
+        {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:FF", "hostname": "pc-buh-01", "display_name": "pc-buh-01", "category": "local_device", "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
+        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
+        {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"}
+    ]}))
 elif cmd[:2] == ["hosts", "inspect"]:
     print(json.dumps({"status": "ok", "host": {"ip": cmd[2], "display_name": "pc-buh-01"}, "observations": []}))
 elif cmd[:1] == ["dashboard"]:
-    print(json.dumps({"status": "ok", "summary": {"total_hosts": 1, "local_device": 1, "vpn_client": 0, "router": 0, "site_device": 0, "unknown": 0, "online": 1, "seen": 0, "offline": 0}, "sources": [{"name": "mikrotik-main", "last_collect_at": "2026-07-03T12:00:00Z", "last_status": "ok"}]}))
+    print(json.dumps({"status": "ok", "summary": {"total_hosts": 3, "local_device": 1, "telephony": 1, "mgmt": 1, "vpn_client": 0, "router": 0, "site_device": 0, "unknown": 0, "online": 2, "seen": 1, "offline": 0}, "sources": [{"name": "mikrotik-main", "last_collect_at": "2026-07-03T12:00:00Z", "last_status": "ok"}]}))
 elif cmd[:2] == ["sources", "list"]:
     print(json.dumps({"status": "ok", "sources": [{"name": "mikrotik-main", "driver": "mikrotik_api", "host": "192.168.100.250", "site": "main", "role": "core-router", "enabled": True, "last_status": "ok"}]}))
 elif cmd[:2] == ["interfaces", "list"]:
@@ -120,6 +124,10 @@ def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch
     assert "pc-buh-01" in page.text
     assert "alpha" in page.text
     assert "Обычная сеть" in page.text
+    assert "Телефония" in page.text
+    assert "Управление" in page.text
+    assert "192.168.0.12" in page.text
+    assert "10.83.1.11" in page.text
     assert "VPN" in page.text
     assert "192.168.50.10" in page.text
     assert "192.168.100.55" in page.text
@@ -132,7 +140,7 @@ def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     rows = response.json()["data"]["hosts"]
-    assert {row["ip"] for row in rows} == {"192.168.100.55", "192.168.50.10"}
+    assert {row["ip"] for row in rows} == {"192.168.100.55", "192.168.0.12", "10.83.1.11", "192.168.50.10"}
     vpn = next(row for row in rows if row["ip"] == "192.168.50.10")
     assert vpn["category"] == "vpn_client"
     assert vpn["vpn_client"]["common_name"] == "alpha"

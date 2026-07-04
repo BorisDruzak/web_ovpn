@@ -6,7 +6,7 @@
 <form class="toolbar" method="get" action="/network/hosts">
   <input name="q" value="{{ filters.q }}" placeholder="Поиск по IP, MAC, имени">
   <select name="category">
-    {% for value, label in {"all":"Все типы","local_device":"Обычная сеть","vpn_client":"VPN","router":"Роутер","site_device":"Site-to-site","unknown":"Неизвестно"}.items() %}
+    {% for value, label in {"all":"Все типы без шума","local_device":"Обычная сеть","vpn_client":"VPN","router":"Роутер","site_device":"Site-to-site","network_infra":"Сетевая инфраструктура","telephony":"Телефония","mgmt":"Управление","wan":"WAN/провайдер","vipnet_transit":"ViPNet transit","unknown":"Неизвестно","noise":"Шум"}.items() %}
     <option value="{{ value }}" {% if filters.category == value %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
   </select>

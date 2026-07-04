@@ -5,6 +5,13 @@ from typing import Any
 
 NETWORK_FILTERS = [
     "192.168.100.0/23",
+    "192.168.100.0/24",
+    "192.168.101.0/24",
+    "192.168.0.0/24",
+    "10.83.1.0/24",
+    "10.254.254.0/30",
+    "192.168.1.0/24",
+    "78.29.0.0/18",
     "192.168.50.0/24",
     "192.168.51.0/24",
     "192.168.52.0/24",
@@ -15,6 +22,12 @@ CATEGORY_LABELS = {
     "vpn_client": "VPN",
     "router": "Роутер",
     "site_device": "Site-to-site",
+    "network_infra": "Сетевая инфраструктура",
+    "telephony": "Телефония",
+    "mgmt": "Управление",
+    "wan": "WAN/провайдер",
+    "vipnet_transit": "ViPNet transit",
+    "noise": "Шум",
     "unknown": "Неизвестно",
 }
 
@@ -23,6 +36,7 @@ SOURCE_LABELS = {
     "mikrotik_arp": "MikroTik ARP",
     "mikrotik_dhcp": "DHCP",
     "mikrotik_neighbor": "Neighbor",
+    "mikrotik_identity": "Identity",
 }
 
 
@@ -121,6 +135,8 @@ def filter_unified_hosts(rows: list[dict[str, Any]], params: dict[str, str]) -> 
     has_hostname = params.get("has_hostname") or ""
     has_mac = params.get("has_mac") or ""
     result = rows
+    if category == "all":
+        result = [row for row in result if row.get("category") != "noise"]
     if q:
         result = [
             row
