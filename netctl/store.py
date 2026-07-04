@@ -216,7 +216,7 @@ def _demote_absent_noise_hosts(conn: sqlite3.Connection, source: dict[str, Any],
     rows = conn.execute(
         """
         SELECT id, ip FROM network_hosts
-        WHERE last_source = ? AND category IN ('unknown', 'telephony', 'wan')
+        WHERE last_source = ? AND category IN ('unknown', 'telephony', 'wan', 'noise')
         """,
         (source["name"],),
     ).fetchall()
@@ -227,10 +227,20 @@ def _demote_absent_noise_hosts(conn: sqlite3.Connection, source: dict[str, Any],
         conn.execute(
             """
             UPDATE network_hosts
-            SET category = ?, status = ?, last_seen_at = ?, tags_json = ?
+            SET category = ?, device_key = ?, device_type = ?, device_confidence = ?, device_evidence_json = ?, status = ?, last_seen_at = ?, tags_json = ?
             WHERE id = ?
             """,
-            ("noise", "seen", observed_at, _json({"sources": [], "tags": ["noise", "stale_arp"]}), row["id"]),
+            (
+                "noise",
+                f"ip:{ip}",
+                "noise",
+                50,
+                _json(["stale_arp"]),
+                "seen",
+                observed_at,
+                _json({"sources": [], "tags": ["device:noise", "noise", "stale_arp"], "auto_tags": ["device:noise", "noise", "stale_arp"], "manual_tags": []}),
+                row["id"],
+            ),
         )
 
 

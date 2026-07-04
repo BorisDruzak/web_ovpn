@@ -293,6 +293,82 @@ def test_legacy_hosts_without_device_columns_get_defaults(tmp_path):
         conn.close()
 
 
+def test_demoted_stale_noise_hosts_get_noise_device_type(tmp_path):
+    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.store import inspect_host, save_collection
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "mock-main")
+        assert source is not None
+        conn.execute(
+            """
+            INSERT INTO network_hosts
+              (ip, mac, hostname, display_name, category, status, site, first_seen_at, last_seen_at, last_source, tags_json, comment)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "192.168.0.20",
+                None,
+                None,
+                None,
+                "telephony",
+                "online",
+                "main",
+                "2026-07-03T12:00:00Z",
+                "2026-07-03T12:00:00Z",
+                "mock-main",
+                '{"sources":["mikrotik_arp"],"tags":["telephony"]}',
+                "",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO network_hosts
+              (ip, mac, hostname, display_name, category, status, site, first_seen_at, last_seen_at, last_source, tags_json, comment)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "192.168.0.21",
+                None,
+                None,
+                None,
+                "noise",
+                "seen",
+                "main",
+                "2026-07-03T12:00:00Z",
+                "2026-07-03T12:00:00Z",
+                "mock-main",
+                '{"sources":[],"tags":["noise","stale_arp"]}',
+                "",
+            ),
+        )
+        conn.commit()
+
+        save_collection(
+            conn,
+            source,
+            {"identity": [], "dhcp_leases": [], "arp": [], "neighbors": [], "bridge_hosts": []},
+            "2026-07-03T12:05:00Z",
+        )
+        host = inspect_host(conn, "192.168.0.20")
+
+        assert host is not None
+        assert host["category"] == "noise"
+        assert host["device_type"] == "noise"
+        assert host["device_key"] == "ip:192.168.0.20"
+        assert "stale_arp" in host["tags"]
+        old_noise = inspect_host(conn, "192.168.0.21")
+        assert old_noise is not None
+        assert old_noise["device_type"] == "noise"
+    finally:
+        conn.close()
+
+
 def test_sources_validate_name_and_hide_secret(tmp_path, capsys):
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
