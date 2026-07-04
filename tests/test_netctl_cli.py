@@ -243,6 +243,15 @@ def test_manual_tag_follows_mac_when_ip_changes(tmp_path, capsys):
     assert "accounting" in data["host"]["manual_tags"]
     assert "accounting" in data["host"]["tags"]
 
+    rc, remove_result = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "tags", "remove", "192.168.100.77", "accounting"],
+        capsys,
+    )
+    assert rc == 0
+    assert remove_result["tags"] == []
+    _, tags_result = run_cli(["--json", "--config", str(config_path), "--db", db_url, "tags", "list"], capsys)
+    assert tags_result["tags"] == []
+
 
 def test_legacy_hosts_without_device_columns_get_defaults(tmp_path):
     from netctl.db import connect

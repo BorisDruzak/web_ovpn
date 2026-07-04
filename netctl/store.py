@@ -73,17 +73,20 @@ def set_device_tags(conn: sqlite3.Connection, target: str, tags: list[str]) -> d
     device_key, match_type = resolve_device_key(conn, target)
     clean_tags = sorted({_normalize_tag(tag) for tag in tags})
     now = utc_now()
-    conn.execute(
-        """
-        INSERT INTO network_device_tags (device_key, match_type, tags_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(device_key) DO UPDATE SET
-            match_type=excluded.match_type,
-            tags_json=excluded.tags_json,
-            updated_at=excluded.updated_at
-        """,
-        (device_key, match_type, _json(clean_tags), now, now),
-    )
+    if clean_tags:
+        conn.execute(
+            """
+            INSERT INTO network_device_tags (device_key, match_type, tags_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(device_key) DO UPDATE SET
+                match_type=excluded.match_type,
+                tags_json=excluded.tags_json,
+                updated_at=excluded.updated_at
+            """,
+            (device_key, match_type, _json(clean_tags), now, now),
+        )
+    else:
+        conn.execute("DELETE FROM network_device_tags WHERE device_key = ?", (device_key,))
     _refresh_host_manual_tags(conn, device_key)
     conn.commit()
     return {"device_key": device_key, "match_type": match_type, "tags": clean_tags}
