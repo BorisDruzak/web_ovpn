@@ -42,13 +42,17 @@
 </form>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Category</th><th>Status</th><th>Sources</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
+    <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
     <tbody>
       {% for host in hosts %}
       <tr>
         <td class="mono">{{ host.ip }}</td>
         <td class="mono">{{ host.mac or "-" }}</td>
         <td>{{ host.display_name or host.hostname or "-" }}</td>
+        <td>
+          <span class="badge muted">{{ device_type_labels.get(host.device_type, host.device_type or "-") }}</span>
+          {% if host.device_confidence %}<span class="muted">{{ host.device_confidence }}%</span>{% endif %}
+        </td>
         <td><span class="badge {{ host.category|status_class }}">{{ category_labels.get(host.category, host.category) }}</span></td>
         <td><span class="badge {{ host.status|status_class }}">{{ host.status }}</span></td>
         <td>
@@ -56,12 +60,17 @@
           <span class="badge muted">{{ source_labels.get(source, source) }}</span>
           {% endfor %}
         </td>
+        <td>
+          {% for tag in host.manual_tags %}
+          <span class="badge ok">{{ tag }}</span>
+          {% endfor %}
+        </td>
         <td>{{ host.site or "-" }}</td>
         <td>{{ host.last_seen_at or "-" }}</td>
         <td class="actions"><a class="button small secondary" href="/network/hosts/{{ host.ip }}">Открыть</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="9" class="empty">Нет данных. Запустите сбор.</td></tr>
+      <tr><td colspan="11" class="empty">Нет данных. Запустите сбор.</td></tr>
       {% endfor %}
     </tbody>
   </table>

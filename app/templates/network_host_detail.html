@@ -11,6 +11,10 @@
   <dl class="details">
     <dt>IP</dt><dd class="mono">{{ host.ip or ip }}</dd>
     <dt>MAC</dt><dd class="mono">{{ host.mac or "-" }}</dd>
+    <dt>Ключ устройства</dt><dd class="mono">{{ host.device_key or "-" }}</dd>
+    <dt>Тип устройства</dt><dd>{{ device_type_labels.get(host.device_type, host.device_type or "-") }}{% if host.device_confidence %} ({{ host.device_confidence }}%){% endif %}</dd>
+    <dt>Доказательства</dt><dd>{{ (host.device_evidence or [])|join(", ") or "-" }}</dd>
+    <dt>Ручные теги</dt><dd>{{ (host.manual_tags or [])|join(", ") or "-" }}</dd>
     <dt>Категория</dt><dd>{{ category_labels.get(host.category, host.category or "-") }}</dd>
     <dt>Статус</dt><dd>{{ host.status or "-" }}</dd>
     <dt>Источники</dt><dd>{{ (host.sources or [])|join(", ") }}</dd>

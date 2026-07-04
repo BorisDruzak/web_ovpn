@@ -49,9 +49,9 @@ args = sys.argv[1:]
 cmd = args[1:]
 if cmd[:2] == ["hosts", "list"]:
     print(json.dumps({"status": "ok", "hosts": [
-        {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:FF", "hostname": "pc-buh-01", "display_name": "pc-buh-01", "category": "local_device", "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
-        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
-        {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"}
+        {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:FF", "hostname": "pc-buh-01", "display_name": "pc-buh-01", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:FF", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
+        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "mac:84:D8:1B:EF:3C:6F", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
+        {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "device_key": "mac:E0:1C:FC:AE:82:9B", "device_type": "server", "device_confidence": 80, "device_evidence": ["category:mgmt"], "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"}
     ]}))
 elif cmd[:2] == ["hosts", "inspect"]:
     print(json.dumps({"status": "ok", "host": {"ip": cmd[2], "display_name": "pc-buh-01"}, "observations": []}))
@@ -124,6 +124,9 @@ def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch
     assert "pc-buh-01" in page.text
     assert "alpha" in page.text
     assert "Обычная сеть" in page.text
+    assert "ПК" in page.text
+    assert "Телефон" in page.text
+    assert "Сервер" in page.text
     assert "Телефония" in page.text
     assert "Управление" in page.text
     assert "192.168.0.12" in page.text
@@ -144,6 +147,9 @@ def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
     vpn = next(row for row in rows if row["ip"] == "192.168.50.10")
     assert vpn["category"] == "vpn_client"
     assert vpn["vpn_client"]["common_name"] == "alpha"
+    phone = next(row for row in rows if row["ip"] == "192.168.0.12")
+    assert phone["device_type"] == "phone"
+    assert phone["device_confidence"] == 85
 
 
 def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, monkeypatch):

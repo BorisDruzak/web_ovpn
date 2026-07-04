@@ -39,6 +39,17 @@ SOURCE_LABELS = {
     "mikrotik_identity": "Identity",
 }
 
+DEVICE_TYPE_LABELS = {
+    "pc": "ПК",
+    "phone": "Телефон",
+    "server": "Сервер",
+    "network": "Сеть",
+    "camera": "Камера",
+    "printer": "Принтер",
+    "noise": "Шум",
+    "unknown": "Неизвестно",
+}
+
 
 def list_from(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
     value = data.get(key, [])
@@ -59,12 +70,27 @@ def normalize_netctl_host(row: dict[str, Any]) -> dict[str, Any]:
     sources = row.get("sources")
     if not isinstance(sources, list):
         sources = []
+    tags = row.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+    manual_tags = row.get("manual_tags")
+    if not isinstance(manual_tags, list):
+        manual_tags = []
+    device_evidence = row.get("device_evidence")
+    if not isinstance(device_evidence, list):
+        device_evidence = []
     return {
         "ip": str(row.get("ip") or ""),
         "mac": row.get("mac"),
         "hostname": row.get("hostname"),
         "display_name": _display_name(row),
         "category": row.get("category") or "unknown",
+        "device_key": row.get("device_key") or "",
+        "device_type": row.get("device_type") or "unknown",
+        "device_confidence": row.get("device_confidence") or 0,
+        "device_evidence": list(device_evidence),
+        "tags": list(tags),
+        "manual_tags": list(manual_tags),
         "status": row.get("status") or "seen",
         "sources": list(sources),
         "site": row.get("site") or "",
@@ -95,6 +121,12 @@ def vpn_rows(connected: list[dict[str, Any]], clients: list[dict[str, Any]]) -> 
                 "site": "vpn",
                 "last_seen_at": item.get("connected_since") or "",
                 "last_source": "openvpn",
+                "device_key": f"ip:{ip}",
+                "device_type": "pc",
+                "device_confidence": 55,
+                "device_evidence": ["category:vpn_client"],
+                "tags": ["device:pc"],
+                "manual_tags": [],
                 "vpn_client": {
                     "common_name": common_name,
                     "profile": profile,
@@ -141,7 +173,13 @@ def filter_unified_hosts(rows: list[dict[str, Any]], params: dict[str, str]) -> 
         result = [
             row
             for row in result
-            if q in " ".join(str(row.get(key) or "") for key in ["ip", "mac", "hostname", "display_name"]).lower()
+            if q
+            in " ".join(
+                [
+                    *(str(row.get(key) or "") for key in ["ip", "mac", "hostname", "display_name", "device_type", "device_key"]),
+                    *(str(tag) for tag in row.get("tags", [])),
+                ]
+            ).lower()
         ]
     if category != "all":
         result = [row for row in result if row.get("category") == category]

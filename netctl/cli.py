@@ -10,7 +10,7 @@ from .collect_lock import CollectLock
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, write_source_yaml
 from .db import connect, get_source, list_sources, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for
-from .store import dashboard_summary, inspect_host, query_hosts, related_for_host, save_collection
+from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .util import utc_now, validate_source_name
 
 
@@ -153,6 +153,26 @@ def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return 2, err("unsupported hosts command")
 
 
+def cmd_tags(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        try:
+            if args.tags_command == "list":
+                return 0, ok(tags=list_device_tags(conn))
+            if args.tags_command == "add":
+                return 0, ok(**add_device_tag(conn, args.target, args.tag))
+            if args.tags_command == "remove":
+                return 0, ok(**remove_device_tag(conn, args.target, args.tag))
+            if args.tags_command == "set":
+                tags = [item for item in args.tags.split(",") if item.strip()]
+                return 0, ok(**set_device_tags(conn, args.target, tags))
+        except ValueError as exc:
+            return 2, err(str(exc))
+    finally:
+        conn.close()
+    return 2, err("unsupported tags command")
+
+
 def _rows(conn, table: str, source_name: str = "") -> list[dict[str, Any]]:
     params: list[Any] = []
     where = ""
@@ -247,6 +267,19 @@ def build_parser() -> argparse.ArgumentParser:
     hosts_inspect = hosts_sub.add_parser("inspect")
     hosts_inspect.add_argument("host")
 
+    tags = sub.add_parser("tags")
+    tags_sub = tags.add_subparsers(dest="tags_command", required=True)
+    tags_sub.add_parser("list")
+    tags_add = tags_sub.add_parser("add")
+    tags_add.add_argument("target")
+    tags_add.add_argument("tag")
+    tags_remove = tags_sub.add_parser("remove")
+    tags_remove.add_argument("target")
+    tags_remove.add_argument("tag")
+    tags_set = tags_sub.add_parser("set")
+    tags_set.add_argument("target")
+    tags_set.add_argument("--tags", required=True)
+
     for command, table, key in [
         ("interfaces", "network_interfaces", "interfaces"),
         ("routes", "network_routes", "routes"),
@@ -280,6 +313,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_collect(args)
     if args.command == "hosts":
         return cmd_hosts(args)
+    if args.command == "tags":
+        return cmd_tags(args)
     if hasattr(args, "table"):
         return cmd_table(args, args.table, args.table_key)
     if args.command == "observations":

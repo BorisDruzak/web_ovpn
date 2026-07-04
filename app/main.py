@@ -22,7 +22,7 @@ from .db import get_db, init_db
 from .download_tokens import assert_allowed_file, consume_download_token
 from .models import WebUser
 from .netctl_client import NetctlError, run_netctl
-from .network_observer import CATEGORY_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
+from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -70,6 +70,7 @@ def format_bytes(value: Any) -> str:
 
 templates.env.globals["csrf_token"] = csrf_token
 templates.env.globals["category_labels"] = CATEGORY_LABELS
+templates.env.globals["device_type_labels"] = DEVICE_TYPE_LABELS
 templates.env.globals["source_labels"] = SOURCE_LABELS
 templates.env.filters["status_class"] = status_class
 templates.env.filters["format_bytes"] = format_bytes

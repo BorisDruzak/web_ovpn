@@ -62,6 +62,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             hostname TEXT,
             display_name TEXT,
             category TEXT,
+            device_key TEXT,
+            device_type TEXT,
+            device_confidence INTEGER,
+            device_evidence_json TEXT,
             status TEXT,
             site TEXT,
             first_seen_at TEXT,
@@ -69,6 +73,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             last_source TEXT,
             tags_json TEXT,
             comment TEXT
+        );
+        CREATE TABLE IF NOT EXISTS network_device_tags (
+            device_key TEXT PRIMARY KEY,
+            match_type TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS host_observations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,7 +179,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_column(conn, "network_hosts", "device_key", "TEXT")
+    _ensure_column(conn, "network_hosts", "device_type", "TEXT")
+    _ensure_column(conn, "network_hosts", "device_confidence", "INTEGER")
+    _ensure_column(conn, "network_hosts", "device_evidence_json", "TEXT")
     conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

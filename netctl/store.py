@@ -1,16 +1,131 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import sqlite3
 from typing import Any
 
 from .db import get_source, insert_event
-from .normalizer import is_stale_noise_ip, normalize_hosts
+from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
 from .util import utc_now
 
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def device_key_for_host(host: dict[str, Any]) -> tuple[str, str]:
+    mac = normalize_mac(host.get("mac"))
+    if mac:
+        return f"mac:{mac}", "mac"
+    return f"ip:{host['ip']}", "ip"
+
+
+def _normalize_tag(tag: str) -> str:
+    value = tag.strip()
+    if not value:
+        raise ValueError("tag must not be empty")
+    if any(char.isspace() for char in value):
+        raise ValueError("tag must not contain whitespace")
+    return value
+
+
+def _decode_tags(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        data = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, list):
+        return sorted(str(item) for item in data if str(item).strip())
+    return []
+
+
+def _manual_tags(conn: sqlite3.Connection, device_key: str) -> list[str]:
+    row = conn.execute("SELECT tags_json FROM network_device_tags WHERE device_key = ?", (device_key,)).fetchone()
+    return _decode_tags(row["tags_json"] if row else None)
+
+
+def resolve_device_key(conn: sqlite3.Connection, target: str) -> tuple[str, str]:
+    raw = target.strip()
+    if raw.startswith("mac:"):
+        mac = normalize_mac(raw.removeprefix("mac:"))
+        if not mac:
+            raise ValueError("invalid MAC address")
+        return f"mac:{mac}", "mac"
+    if raw.startswith("ip:"):
+        ip = str(ipaddress.ip_address(raw.removeprefix("ip:")))
+        return f"ip:{ip}", "ip"
+    mac = normalize_mac(raw)
+    if mac:
+        return f"mac:{mac}", "mac"
+    ip = str(ipaddress.ip_address(raw))
+    row = conn.execute("SELECT ip, mac FROM network_hosts WHERE ip = ?", (ip,)).fetchone()
+    if row and row["mac"]:
+        mac = normalize_mac(row["mac"])
+        if mac:
+            return f"mac:{mac}", "mac"
+    return f"ip:{ip}", "ip"
+
+
+def set_device_tags(conn: sqlite3.Connection, target: str, tags: list[str]) -> dict[str, Any]:
+    device_key, match_type = resolve_device_key(conn, target)
+    clean_tags = sorted({_normalize_tag(tag) for tag in tags})
+    now = utc_now()
+    conn.execute(
+        """
+        INSERT INTO network_device_tags (device_key, match_type, tags_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(device_key) DO UPDATE SET
+            match_type=excluded.match_type,
+            tags_json=excluded.tags_json,
+            updated_at=excluded.updated_at
+        """,
+        (device_key, match_type, _json(clean_tags), now, now),
+    )
+    _refresh_host_manual_tags(conn, device_key)
+    conn.commit()
+    return {"device_key": device_key, "match_type": match_type, "tags": clean_tags}
+
+
+def add_device_tag(conn: sqlite3.Connection, target: str, tag: str) -> dict[str, Any]:
+    device_key, _ = resolve_device_key(conn, target)
+    tags = _manual_tags(conn, device_key)
+    tags.append(tag)
+    return set_device_tags(conn, target, tags)
+
+
+def remove_device_tag(conn: sqlite3.Connection, target: str, tag: str) -> dict[str, Any]:
+    device_key, _ = resolve_device_key(conn, target)
+    remove = _normalize_tag(tag)
+    tags = [item for item in _manual_tags(conn, device_key) if item != remove]
+    return set_device_tags(conn, target, tags)
+
+
+def list_device_tags(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return [
+        {
+            "device_key": row["device_key"],
+            "match_type": row["match_type"],
+            "tags": _decode_tags(row["tags_json"]),
+            "updated_at": row["updated_at"],
+        }
+        for row in conn.execute("SELECT * FROM network_device_tags ORDER BY device_key").fetchall()
+    ]
+
+
+def _refresh_host_manual_tags(conn: sqlite3.Connection, device_key: str) -> None:
+    rows = conn.execute("SELECT * FROM network_hosts WHERE device_key = ?", (device_key,)).fetchall()
+    for row in rows:
+        host = decode_host(dict(row))
+        auto_tags = host.get("auto_tags") or []
+        manual_tags = _manual_tags(conn, device_key)
+        merged = sorted(set(auto_tags) | set(manual_tags))
+        conn.execute(
+            "UPDATE network_hosts SET tags_json = ? WHERE id = ?",
+            (_json({"sources": host.get("sources", []), "tags": merged, "auto_tags": auto_tags, "manual_tags": manual_tags}), row["id"]),
+        )
 
 
 def _clear_current(conn: sqlite3.Connection, source_id: int) -> None:
@@ -56,17 +171,26 @@ def _insert_observation(
 def _upsert_host(conn: sqlite3.Connection, host: dict[str, Any]) -> int:
     existing = conn.execute("SELECT id, first_seen_at FROM network_hosts WHERE ip = ?", (host["ip"],)).fetchone()
     first_seen = existing["first_seen_at"] if existing else host["first_seen_at"]
+    device_key, _ = device_key_for_host(host)
+    host["device_key"] = device_key
+    auto_tags = sorted(host.get("tags", []))
+    manual_tags = _manual_tags(conn, device_key)
+    merged_tags = sorted(set(auto_tags) | set(manual_tags))
     conn.execute(
         """
         INSERT INTO network_hosts
-            (ip, mac, hostname, display_name, category, status, site, first_seen_at, last_seen_at, last_source, tags_json, comment)
+            (ip, mac, hostname, display_name, category, device_key, device_type, device_confidence, device_evidence_json, status, site, first_seen_at, last_seen_at, last_source, tags_json, comment)
         VALUES
-            (:ip, :mac, :hostname, :display_name, :category, :status, :site, :first_seen_at, :last_seen_at, :last_source, :tags_json, :comment)
+            (:ip, :mac, :hostname, :display_name, :category, :device_key, :device_type, :device_confidence, :device_evidence_json, :status, :site, :first_seen_at, :last_seen_at, :last_source, :tags_json, :comment)
         ON CONFLICT(ip) DO UPDATE SET
             mac=excluded.mac,
             hostname=excluded.hostname,
             display_name=excluded.display_name,
             category=excluded.category,
+            device_key=excluded.device_key,
+            device_type=excluded.device_type,
+            device_confidence=excluded.device_confidence,
+            device_evidence_json=excluded.device_evidence_json,
             status=excluded.status,
             site=excluded.site,
             last_seen_at=excluded.last_seen_at,
@@ -77,7 +201,8 @@ def _upsert_host(conn: sqlite3.Connection, host: dict[str, Any]) -> int:
         {
             **host,
             "first_seen_at": first_seen,
-            "tags_json": _json({"sources": host.get("sources", []), "tags": host.get("tags", [])}),
+            "device_evidence_json": _json(host.get("device_evidence", [])),
+            "tags_json": _json({"sources": host.get("sources", []), "tags": merged_tags, "auto_tags": auto_tags, "manual_tags": manual_tags}),
         },
     )
     row = conn.execute("SELECT id FROM network_hosts WHERE ip = ?", (host["ip"],)).fetchone()
@@ -305,6 +430,16 @@ def decode_host(row: dict[str, Any]) -> dict[str, Any]:
             tags = {}
     row["sources"] = tags.get("sources", [])
     row["tags"] = tags.get("tags", [])
+    row["auto_tags"] = tags.get("auto_tags", [])
+    row["manual_tags"] = tags.get("manual_tags", [])
+    if not row.get("device_key") and row.get("ip"):
+        row["device_key"] = device_key_for_host(row)[0]
+    row["device_type"] = row.get("device_type") or "unknown"
+    row["device_confidence"] = int(row.get("device_confidence") or 0)
+    try:
+        row["device_evidence"] = json.loads(row.get("device_evidence_json") or "[]")
+    except json.JSONDecodeError:
+        row["device_evidence"] = []
     return row
 
 
@@ -332,6 +467,12 @@ def related_for_host(conn: sqlite3.Connection, host: dict[str, Any]) -> dict[str
         ("bridge_hosts", "bridge_hosts"),
         ("neighbors", "network_neighbors"),
     ]:
+        if table == "bridge_hosts":
+            if not mac:
+                result[name] = []
+                continue
+            result[name] = [dict(row) for row in conn.execute("SELECT * FROM bridge_hosts WHERE mac = ? ORDER BY id DESC LIMIT 200", (mac,)).fetchall()]
+            continue
         column = "ip" if table not in {"network_neighbors"} else "address"
         query = f"SELECT * FROM {table} WHERE {column} = ?{mac_clause} ORDER BY id DESC LIMIT 200"
         result[name] = [dict(row) for row in conn.execute(query, params).fetchall()]

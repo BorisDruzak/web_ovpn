@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from typing import Any
 
 CENTRAL_LAN = ipaddress.ip_network("192.168.100.0/23")
@@ -11,6 +12,7 @@ MGMT_NETWORKS = [ipaddress.ip_network("10.83.1.0/24"), ipaddress.ip_network("90.
 VIPNET_TRANSIT_NETWORKS = [ipaddress.ip_network("10.254.254.0/30")]
 WAN_NETWORKS = [ipaddress.ip_network("192.168.1.0/24"), ipaddress.ip_network("78.29.0.0/18")]
 NOISE_NETWORKS = [ipaddress.ip_network("169.254.0.0/16")]
+MAC_RE = re.compile(r"^[0-9A-F]{12}$")
 
 
 def _ip(value: Any) -> str | None:
@@ -18,6 +20,16 @@ def _ip(value: Any) -> str | None:
         return str(ipaddress.ip_address(str(value)))
     except ValueError:
         return None
+
+
+def normalize_mac(value: Any) -> str | None:
+    if value is None:
+        return None
+    raw = re.sub(r"[^0-9A-Fa-f]", "", str(value))
+    if not MAC_RE.match(raw.upper()):
+        return None
+    raw = raw.upper()
+    return ":".join(raw[index : index + 2] for index in range(0, 12, 2))
 
 
 def ip_in_any_network(ip: str, networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> bool:
@@ -93,6 +105,47 @@ def _apply_hint_tags(host: dict[str, Any], *values: Any) -> None:
         _add_tag(host, "telephony")
 
 
+def _token_text(host: dict[str, Any]) -> str:
+    values = [
+        host.get("ip"),
+        host.get("hostname"),
+        host.get("display_name"),
+        host.get("comment"),
+        host.get("category"),
+        " ".join(host.get("tags") or []),
+    ]
+    return " ".join(str(value or "") for value in values).lower()
+
+
+def _has_token(text: str, tokens: tuple[str, ...]) -> bool:
+    words = set(re.split(r"[^a-z0-9]+", text))
+    return any(token in words or (len(token) >= 4 and token in text) for token in tokens)
+
+
+def _device_guess(host: dict[str, Any]) -> tuple[str, int, list[str]]:
+    category = str(host.get("category") or "")
+    text = _token_text(host)
+    if category in {"router", "network_infra"}:
+        return "network", 95, [f"category:{category}"]
+    if category in {"wan", "vipnet_transit"}:
+        return "network", 80, [f"category:{category}"]
+    if category == "noise":
+        return "noise", 50, ["category:noise"]
+    if category == "telephony" or _has_token(text, ("phone", "grandstream", "yealink", "atc", "sip", "voip")):
+        return "phone", 85, ["category:telephony" if category == "telephony" else "text:phone"]
+    if _has_token(text, ("camera", "cam", "hikvision", "dahua", "hiwatch", "onvif", "rtsp")):
+        return "camera", 80, ["text:camera"]
+    if _has_token(text, ("printer", "print", "hp", "canon", "xerox", "brother", "kyocera")):
+        return "printer", 80, ["text:printer"]
+    if category == "mgmt" or _has_token(text, ("pve", "pbs", "ipmi", "proxmox", "server", "srv", "nas", "nextcloud", "onlyoffice")):
+        return "server", 80, ["category:mgmt" if category == "mgmt" else "text:server"]
+    if _has_token(text, ("pc", "desktop", "laptop", "notebook", "win", "workstation", "ws")):
+        return "pc", 70, ["text:pc"]
+    if category == "vpn_client":
+        return "pc", 55, ["category:vpn_client"]
+    return "unknown", 0, []
+
+
 def normalize_hosts(source: dict[str, Any], snapshot: dict[str, Any], observed_at: str) -> list[dict[str, Any]]:
     hosts: dict[str, dict[str, Any]] = {}
     source_ip = _ip(source.get("host"))
@@ -109,7 +162,7 @@ def normalize_hosts(source: dict[str, Any], snapshot: dict[str, Any], observed_a
         if not ip:
             continue
         host = _ensure_host(hosts, ip, observed_at, source)
-        host["mac"] = lease.get("mac") or host["mac"]
+        host["mac"] = normalize_mac(lease.get("mac")) or host["mac"]
         host["hostname"] = lease.get("hostname") or host["hostname"]
         host["display_name"] = host["hostname"] or host["display_name"]
         if not host["display_name"] and lease.get("comment"):
@@ -126,7 +179,7 @@ def normalize_hosts(source: dict[str, Any], snapshot: dict[str, Any], observed_a
         if not arp.get("complete") and ip not in hosts:
             continue
         host = _ensure_host(hosts, ip, observed_at, source)
-        host["mac"] = host["mac"] or arp.get("mac")
+        host["mac"] = host["mac"] or normalize_mac(arp.get("mac"))
         host["comment"] = host["comment"] or arp.get("comment")
         if arp.get("complete"):
             host["status"] = "online"
@@ -137,7 +190,7 @@ def normalize_hosts(source: dict[str, Any], snapshot: dict[str, Any], observed_a
         if not ip:
             continue
         host = _ensure_host(hosts, ip, observed_at, source)
-        host["mac"] = host["mac"] or neighbor.get("mac")
+        host["mac"] = host["mac"] or normalize_mac(neighbor.get("mac"))
         identity = neighbor.get("identity")
         if identity:
             host["hostname"] = host["hostname"] or identity
@@ -156,6 +209,12 @@ def normalize_hosts(source: dict[str, Any], snapshot: dict[str, Any], observed_a
             host["hostname"] = host["hostname"] or source.get("name")
         if host["category"] not in {"unknown", "local_device"}:
             _add_tag(host, host["category"])
+        device_type, confidence, evidence = _device_guess(host)
+        host["device_type"] = device_type
+        host["device_confidence"] = confidence
+        host["device_evidence"] = evidence
+        if device_type != "unknown":
+            _add_tag(host, f"device:{device_type}")
         host["sources"] = sorted(host["sources"])
         host["tags"] = sorted(host["tags"])
         host.pop("network_infra", None)
