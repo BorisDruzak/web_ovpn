@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}IPsec{% endblock %}
+{% block page_title %}IPsec{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="metrics">
+  <div class="metric"><span>Источники</span><strong>{{ summary.sources or 0 }}</strong></div>
+  <div class="metric"><span>OK</span><strong>{{ summary.ok or 0 }}</strong></div>
+  <div class="metric"><span>Предупреждения</span><strong>{{ summary.warn or 0 }}</strong></div>
+  <div class="metric"><span>Ошибки</span><strong>{{ summary.error or 0 }}</strong></div>
+</section>
+<section class="toolbar split">
+  <form class="filters" method="get" action="/network/ipsec">
+    <select name="source">
+      <option value="">Все источники</option>
+      {% for source in sources %}
+      <option value="{{ source.name }}" {% if selected_source == source.name %}selected{% endif %}>{{ source.name }} - {{ source.host }}</option>
+      {% endfor %}
+    </select>
+    <button class="button secondary" type="submit">Фильтр</button>
+  </form>
+</section>
+{% for item in ipsec_sources %}
+<section class="panel">
+  <h2>{{ item.source }} <span class="badge {{ item.status|status_class }}">{{ item.status }}</span></h2>
+  <dl class="details compact">
+    <dt>Хост</dt><dd class="mono">{{ item.host }}</dd>
+    <dt>Площадка</dt><dd>{{ item.site or "-" }}</dd>
+    <dt>Роль</dt><dd>{{ item.role or "-" }}</dd>
+    <dt>Активные peer</dt><dd>{{ item.summary.active_peers or 0 }}</dd>
+    <dt>Установленные SA</dt><dd>{{ item.summary.installed_sas or 0 }}</dd>
+    <dt>Политики</dt><dd>{{ item.summary.policies_established or 0 }} / {{ item.summary.policies_total or 0 }}</dd>
+  </dl>
+  {% if item.errors %}
+  <div class="alert bad">
+    {% for err in item.errors %}
+    <div>{{ err.section }}: {{ err.message }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <h3>Политики</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Статус</th><th>Peer</th><th>Источник</th><th>Назначение</th><th>PH2</th><th>SA</th><th>Комментарий</th></tr>
+      </thead>
+      <tbody>
+        {% for policy in item.policies %}
+        <tr>
+          <td><span class="badge {{ 'ok' if policy.established else ('warn' if policy.active else 'muted') }}">{{ 'up' if policy.established else ('active' if policy.active else 'down') }}</span></td>
+          <td class="mono">{{ policy.peer or "-" }}</td>
+          <td class="mono">{{ policy.src_address }}</td>
+          <td class="mono">{{ policy.dst_address }}</td>
+          <td>{{ policy.ph2_state or "-" }}{% if policy.ph2_count %} / {{ policy.ph2_count }}{% endif %}</td>
+          <td class="mono">{{ policy.sa_src_address or "-" }} -> {{ policy.sa_dst_address or "-" }}</td>
+          <td>{{ policy.comment or "-" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="empty">IPsec-политики не найдены.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <h3>Активные peer</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Удалённый адрес</th><th>Локальный адрес</th><th>Статус</th><th>Аптайм</th><th>PH2</th><th>Сторона</th></tr>
+      </thead>
+      <tbody>
+        {% for peer in item.active_peers %}
+        <tr>
+          <td class="mono">{{ peer.remote_address or "-" }}</td>
+          <td class="mono">{{ peer.local_address or "-" }}</td>
+          <td><span class="badge {{ peer.state|status_class }}">{{ peer.state or "active" }}</span></td>
+          <td>{{ peer.uptime or "-" }}</td>
+          <td>{{ peer.ph2_total or 0 }}</td>
+          <td>{{ peer.side or "-" }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="empty">Активных peer нет.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% else %}
+<section class="panel"><p class="empty">Нет данных IPsec.</p></section>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Бэкапы RouterOS{% endblock %}
+{% block page_title %}Бэкапы RouterOS{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="panel">
+  <dl class="details compact">
+    <dt>Каталог</dt><dd class="mono">{{ backup_dir }}</dd>
+    <dt>Файлы</dt><dd>{{ backups|length }}</dd>
+  </dl>
+</section>
+<section class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Устройство</th><th>Имя</th><th>Тип</th><th>Размер</th><th>Изменён</th><th>Путь</th></tr>
+    </thead>
+    <tbody>
+      {% for backup in backups %}
+      <tr>
+        <td>{{ backup.device or "-" }}</td>
+        <td class="mono">{{ backup.name }}</td>
+        <td><span class="badge muted">{{ backup.type }}</span></td>
+        <td>{{ backup.size|format_bytes }}</td>
+        <td>{{ backup.modified_at }}</td>
+        <td class="mono">{{ backup.relative_path }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">Файлы бэкапов RouterOS не найдены.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

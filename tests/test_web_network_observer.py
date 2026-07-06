@@ -63,6 +63,19 @@ elif cmd[:2] == ["interfaces", "list"]:
     print(json.dumps({"status": "ok", "interfaces": [{"source": "mikrotik-main", "name": "bridge-lan", "type": "bridge", "running": True, "disabled": False, "rx_bytes": 10, "tx_bytes": 20}]}))
 elif cmd[:2] == ["routes", "list"]:
     print(json.dumps({"status": "ok", "routes": [{"source": "mikrotik-main", "dst_address": "192.168.50.0/24", "gateway": "192.168.100.30", "active": True, "dynamic": False, "distance": "1"}]}))
+elif cmd[:2] == ["ipsec", "status"]:
+    print(json.dumps({"status": "ok", "summary": {"sources": 1, "ok": 1, "warn": 0, "error": 0}, "sources": [{
+        "source": "mikrotik-main",
+        "host": "192.168.100.250",
+        "site": "main",
+        "role": "core-router",
+        "status": "ok",
+        "summary": {"active_peers": 1, "installed_sas": 2, "policies_total": 1, "policies_established": 1},
+        "active_peers": [{"remote_address": "62.148.235.108", "state": "established", "ph2_total": 2}],
+        "policies": [{"src_address": "192.168.0.0/24", "dst_address": "192.168.99.0/24", "ph2_state": "established", "ph2_count": 1, "comment": "phone LAN to m-arhiv"}],
+        "installed_sas": [{"src_address": "78.29.35.68", "dst_address": "62.148.235.108", "state": "mature"}],
+        "errors": []
+    }]}))
 elif cmd[:2] == ["observations", "list"]:
     print(json.dumps({"status": "ok", "observations": []}))
 elif cmd[:1] == ["logs"]:
@@ -163,3 +176,25 @@ def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, mo
     collect = client.get("/network/collect")
     assert collect.status_code == 200
     assert "Сбор данных" in collect.text
+
+
+def test_network_ipsec_and_backup_pages_render_status(tmp_path, monkeypatch):
+    backup_dir = tmp_path / "routeros_backups"
+    backup_dir.mkdir()
+    (backup_dir / "sosn-20260706-200358.backup").write_bytes(b"routeros-backup")
+    (backup_dir / "sosn-20260706-200358.rsc").write_text("/ip route print\n", encoding="utf-8")
+    monkeypatch.setenv("ROUTEROS_BACKUP_DIR", str(backup_dir))
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    ipsec = client.get("/network/ipsec")
+    backups = client.get("/network/backups")
+
+    assert ipsec.status_code == 200
+    assert "IPsec" in ipsec.text
+    assert "mikrotik-main" in ipsec.text
+    assert "192.168.99.0/24" in ipsec.text
+    assert backups.status_code == 200
+    assert "RouterOS" in backups.text
+    assert "sosn-20260706-200358.backup" in backups.text
+    assert "sosn-20260706-200358.rsc" in backups.text

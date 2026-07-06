@@ -137,6 +137,7 @@ OPENVPN_WEB_API_ACTOR=api:codex-local
 OUT_DIR=/etc/openvpn/client-generator/output
 SHARE_OUT_DIR=/mnt/antares_soft/vpn_config
 ARCHIVE_DIR=/etc/openvpn/client-generator/archive
+ROUTEROS_BACKUP_DIR=/var/backups/routeros
 DOWNLOAD_TOKEN_TTL_MINUTES=15
 ENV_FILE
   sudo_cmd install -m 0640 -o root -g openvpn-web "$TMP_ENV" "$ENV_PATH"
@@ -176,7 +177,8 @@ PY
     'NETCTL_PATH=/usr/local/sbin/netctl' \
     'NETCTL_USE_SUDO=1' \
     'NETCTL_SUDO_USER=netctl' \
-    'NETWORK_OBSERVER_ENABLED=1'; do
+    'NETWORK_OBSERVER_ENABLED=1' \
+    'ROUTEROS_BACKUP_DIR=/var/backups/routeros'; do
     key="${line%%=*}"
     if ! grep -q "^${key}=" "$TMP_ENV"; then
       printf '%s\n' "$line" >> "$TMP_ENV"

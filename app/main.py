@@ -23,6 +23,7 @@ from .download_tokens import assert_allowed_file, consume_download_token
 from .models import WebUser
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
+from .routeros_backups import list_routeros_backups
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1080,6 +1081,42 @@ def network_routes(request: Request, db: Session = Depends(get_db)):
         request,
         "network_routes.html",
         {"routes": data.get("routes", []), "sources": sources_data.get("sources", []), "selected_source": source, "error": error or sources_error},
+        db,
+    )
+
+
+@app.get("/network/ipsec", response_class=HTMLResponse)
+def network_ipsec(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    source = request.query_params.get("source") or ""
+    args = ["ipsec", "status"]
+    if source:
+        args.extend(["--source", require_source_name(source)])
+    data, error = net_cli_call(request, args, timeout=60)
+    sources_data, sources_error = net_cli_call(request, ["sources", "list"])
+    return render(
+        request,
+        "network_ipsec.html",
+        {
+            "summary": data.get("summary", {}),
+            "ipsec_sources": data.get("sources", []),
+            "sources": sources_data.get("sources", []),
+            "selected_source": source,
+            "error": error or sources_error,
+        },
+        db,
+    )
+
+
+@app.get("/network/backups", response_class=HTMLResponse)
+def network_backups(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    settings = get_settings()
+    backups, error = list_routeros_backups(settings.routeros_backup_dir)
+    return render(
+        request,
+        "network_backups.html",
+        {"backups": backups, "backup_dir": settings.routeros_backup_dir, "error": error},
         db,
     )
 

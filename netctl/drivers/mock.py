@@ -103,3 +103,44 @@ class MockDriver(NetworkDriver):
                 {"list": "CORP", "address": "192.168.100.0/23", "comment": "local", "dynamic": False, "disabled": False}
             ],
         }
+
+    def ipsec_status(self) -> dict[str, Any]:
+        return {
+            "active_peers": [
+                {
+                    "id": "*1",
+                    "local_address": "78.29.35.68",
+                    "remote_address": "62.148.235.108",
+                    "state": "established",
+                    "uptime": "1h",
+                    "ph2_total": 1,
+                    "side": "responder",
+                }
+            ],
+            "policies": [
+                {
+                    "id": "*2",
+                    "peer": "m-arhiv",
+                    "src_address": "192.168.100.0/23",
+                    "dst_address": "192.168.99.0/24",
+                    "active": True,
+                    "disabled": False,
+                    "tunnel": True,
+                    "ph2_state": "established",
+                    "ph2_count": 1,
+                    "comment": "central to m-arhiv IPsec",
+                    "established": True,
+                }
+            ],
+            "installed_sas": [
+                {
+                    "id": "*3",
+                    "src_address": "78.29.35.68",
+                    "dst_address": "62.148.235.108",
+                    "state": "mature",
+                    "spi": "0x123",
+                    "current_bytes": 1024,
+                }
+            ],
+            "errors": [],
+        }

@@ -34,6 +34,7 @@ class Settings:
     out_dir: Path
     share_out_dir: Path
     archive_dir: Path
+    routeros_backup_dir: Path
     download_ttl_minutes: int
     session_cookie_name: str
 
@@ -60,6 +61,7 @@ def get_settings() -> Settings:
         out_dir=_path_env("OUT_DIR", "/etc/openvpn/client-generator/output"),
         share_out_dir=_path_env("SHARE_OUT_DIR", "/mnt/antares_soft/vpn_config"),
         archive_dir=_path_env("ARCHIVE_DIR", "/etc/openvpn/client-generator/archive"),
+        routeros_backup_dir=_path_env("ROUTEROS_BACKUP_DIR", "/var/backups/routeros"),
         download_ttl_minutes=int(os.environ.get("DOWNLOAD_TOKEN_TTL_MINUTES", "15")),
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
     )

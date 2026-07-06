@@ -505,3 +505,21 @@ def test_collect_lock_prevents_parallel_run(tmp_path, capsys):
     assert rc == 1
     assert data["status"] == "error"
     assert "already running" in data["message"]
+
+
+def test_ipsec_status_reports_source_health(tmp_path, capsys):
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+
+    rc, data = run_cli(["--json", "--config", str(config_path), "--db", db_url, "ipsec", "status"], capsys)
+
+    assert rc == 0
+    assert data["status"] == "ok"
+    assert data["summary"] == {"sources": 1, "ok": 1, "warn": 0, "error": 0}
+    assert data["sources"][0]["source"] == "mock-main"
+    assert data["sources"][0]["status"] == "ok"
+    assert data["sources"][0]["summary"]["policies_total"] == 1
+    assert data["sources"][0]["summary"]["policies_established"] == 1
+    assert data["sources"][0]["policies"][0]["src_address"] == "192.168.100.0/23"
+    assert data["sources"][0]["policies"][0]["dst_address"] == "192.168.99.0/24"

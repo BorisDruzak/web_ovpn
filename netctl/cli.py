@@ -196,6 +196,82 @@ def cmd_table(args: argparse.Namespace, table: str, key: str) -> tuple[int, dict
         conn.close()
 
 
+def _ipsec_source_status(source: dict[str, Any]) -> dict[str, Any]:
+    snapshot = driver_for(source, load_secrets()).ipsec_status()
+    policies = list(snapshot.get("policies", []))
+    active_peers = list(snapshot.get("active_peers", []))
+    installed_sas = list(snapshot.get("installed_sas", []))
+    errors = list(snapshot.get("errors", []))
+    established = sum(1 for policy in policies if policy.get("established"))
+    if errors and not (policies or active_peers or installed_sas):
+        status = "error"
+    elif active_peers and established:
+        status = "ok"
+    elif policies or active_peers or installed_sas:
+        status = "warn"
+    else:
+        status = "warn"
+    return {
+        "source": source["name"],
+        "host": source.get("host") or "",
+        "site": source.get("site") or "",
+        "role": source.get("role") or "",
+        "status": status,
+        "summary": {
+            "active_peers": len(active_peers),
+            "installed_sas": len(installed_sas),
+            "policies_total": len(policies),
+            "policies_established": established,
+        },
+        "active_peers": active_peers,
+        "policies": policies,
+        "installed_sas": installed_sas,
+        "errors": errors,
+    }
+
+
+def cmd_ipsec(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        if args.ipsec_command != "status":
+            return 2, err("unsupported ipsec command")
+        sources = list_sources(conn)
+        if args.source:
+            validate_source_name(args.source)
+            sources = [source for source in sources if source["name"] == args.source]
+            if not sources:
+                return 1, err("source not found", source=args.source)
+        sources = [source for source in sources if source.get("enabled")]
+        results = []
+        for source in sources:
+            try:
+                results.append(_ipsec_source_status(source))
+            except Exception as exc:
+                results.append(
+                    {
+                        "source": source["name"],
+                        "host": source.get("host") or "",
+                        "site": source.get("site") or "",
+                        "role": source.get("role") or "",
+                        "status": "error",
+                        "summary": {"active_peers": 0, "installed_sas": 0, "policies_total": 0, "policies_established": 0},
+                        "active_peers": [],
+                        "policies": [],
+                        "installed_sas": [],
+                        "errors": [{"section": "source", "message": str(exc)}],
+                    }
+                )
+        summary = {
+            "sources": len(results),
+            "ok": sum(1 for item in results if item.get("status") == "ok"),
+            "warn": sum(1 for item in results if item.get("status") == "warn"),
+            "error": sum(1 for item in results if item.get("status") == "error"),
+        }
+        return (1 if results and summary["ok"] == 0 and summary["error"] else 0), ok(summary=summary, sources=results)
+    finally:
+        conn.close()
+
+
 def cmd_dashboard(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = prepare_conn(args)
     try:
@@ -299,6 +375,11 @@ def build_parser() -> argparse.ArgumentParser:
     observations_list = observations_sub.add_parser("list")
     observations_list.add_argument("--host", default="")
 
+    ipsec = sub.add_parser("ipsec")
+    ipsec_sub = ipsec.add_subparsers(dest="ipsec_command", required=True)
+    ipsec_status = ipsec_sub.add_parser("status")
+    ipsec_status.add_argument("--source", default="")
+
     sub.add_parser("dashboard")
     sub.add_parser("validate")
     logs = sub.add_parser("logs")
@@ -319,6 +400,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_table(args, args.table, args.table_key)
     if args.command == "observations":
         return cmd_table(args, "host_observations", "observations")
+    if args.command == "ipsec":
+        return cmd_ipsec(args)
     if args.command == "dashboard":
         return cmd_dashboard(args)
     if args.command == "validate":

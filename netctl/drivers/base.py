@@ -13,3 +13,6 @@ class NetworkDriver:
 
     def collect(self, include_connections: bool = False) -> dict[str, Any]:
         raise NotImplementedError
+
+    def ipsec_status(self) -> dict[str, Any]:
+        raise NotImplementedError
