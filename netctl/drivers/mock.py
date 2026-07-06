@@ -105,6 +105,37 @@ class MockDriver(NetworkDriver):
         }
 
     def ipsec_status(self) -> dict[str, Any]:
+        if self.source.get("role") == "edge-router" or self.source.get("host") == "192.168.99.1":
+            return {
+                "active_peers": [
+                    {
+                        "id": "*1",
+                        "local_address": "62.148.235.108",
+                        "remote_address": "78.29.35.68",
+                        "state": "established",
+                        "uptime": "1h",
+                        "ph2_total": 1,
+                        "side": "initiator",
+                    }
+                ],
+                "policies": [
+                    {
+                        "id": "*2",
+                        "peer": "central",
+                        "src_address": "192.168.99.0/24",
+                        "dst_address": "192.168.100.0/23",
+                        "active": True,
+                        "disabled": False,
+                        "tunnel": True,
+                        "ph2_state": "established",
+                        "ph2_count": 1,
+                        "comment": "m-arhiv to central IPsec",
+                        "established": True,
+                    }
+                ],
+                "installed_sas": [],
+                "errors": [],
+            }
         return {
             "active_peers": [
                 {

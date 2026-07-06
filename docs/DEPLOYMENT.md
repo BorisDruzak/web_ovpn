@@ -85,6 +85,7 @@ The installer creates:
 
 - `/usr/local/sbin/netctl`
 - `/etc/netctl/sources.d/mikrotik-main.yaml`
+- `/etc/netctl/sources.d/mikrotik-hex.yaml`
 - `/etc/netctl/secrets.env`
 - `/var/lib/netctl/netctl.sqlite`
 - `netctl-collect.service`
@@ -97,6 +98,8 @@ Before the first real collection, configure a read-only RouterOS API user and pu
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S install -m 0640 -o root -g netctl /dev/null /etc/netctl/secrets.env"
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S sh -c 'printf %s\\n \"NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='\"'\"'STRONG_PASSWORD'\"'\"'\" > /etc/netctl/secrets.env'"
 ```
+
+For the remote m-arhiv hEX, `netctl` uses SSH because that router is RouterOS 6 and may not expose API to the OpenVPN host. The installer creates `/etc/netctl/sources.d/mikrotik-hex.yaml`; the required private key is `/var/lib/netctl/.ssh/m_arhiv_hex_rsa`, owned by `netctl` with mode `0600`.
 
 Recommended RouterOS configuration:
 
@@ -113,10 +116,19 @@ Temporary non-TLS API fallback:
 /ip service set api disabled=no address=192.168.100.30/32 port=8728
 ```
 
+Remote hEX SSH requirements:
+
+```routeros
+/ip service set ssh address=192.168.99.176/32,192.168.100.30/32
+/user ssh-keys import user=asmr_admin public-key-file=netctl-openvpn-to-m-arhiv.pub
+```
+
 Verify:
 
 ```bash
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json sources test mikrotik-main"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json sources test mikrotik-hex"
+ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json ipsec status"
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json collect mikrotik-main"
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json hosts list"
 ```
@@ -128,6 +140,8 @@ The web pages are:
 - `/network/sources`
 - `/network/interfaces`
 - `/network/routes`
+- `/network/ipsec`
+- `/network/backups`
 - `/network/collect`
 
 OpenVPN addressing and site-to-site checks:

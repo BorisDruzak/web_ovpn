@@ -92,15 +92,18 @@ Network Observer adds a second read-only backend:
 ```bash
 sudo /usr/local/sbin/netctl --json sources list
 sudo /usr/local/sbin/netctl --json sources test mikrotik-main
+sudo /usr/local/sbin/netctl --json sources test mikrotik-hex
 sudo /usr/local/sbin/netctl --json collect mikrotik-main
 sudo /usr/local/sbin/netctl --json hosts list
 sudo /usr/local/sbin/netctl --json dashboard
+sudo /usr/local/sbin/netctl --json ipsec status
 ```
 
 Main files:
 
 - `/usr/local/sbin/netctl` - CLI wrapper.
-- `/etc/netctl/sources.d/mikrotik-main.yaml` - source metadata without password.
+- `/etc/netctl/sources.d/mikrotik-main.yaml` - central MikroTik source metadata without password.
+- `/etc/netctl/sources.d/mikrotik-hex.yaml` - m-arhiv hEX source metadata, using the `netctl` SSH key.
 - `/etc/netctl/secrets.env` - root-owned secrets file readable by the `netctl` group.
 - `/var/lib/netctl/netctl.sqlite` - SQLite snapshots owned by the `netctl` service user.
 - `netctl-collect.timer` - automatic collection every 5 minutes as the `netctl` user.
@@ -120,6 +123,26 @@ site: main
 role: core-router
 enabled: true
 ```
+
+Remote hEX source:
+
+```yaml
+name: mikrotik-hex
+driver: mikrotik_ssh
+host: 192.168.99.1
+port: 22
+tls: false
+verify_tls: false
+username: asmr_admin
+secret_ref: mikrotik-hex
+site: m-arhiv
+role: edge-router
+ssh_identity_file: /var/lib/netctl/.ssh/m_arhiv_hex_rsa
+ssh_connect_timeout: 12
+enabled: true
+```
+
+`mikrotik_ssh` is read-only and exists for RouterOS 6 devices where API access is not available. It uses legacy SSH algorithms required by RouterOS 6 and does not collect `installed-sa` keys from the remote side.
 
 Secrets file:
 
@@ -141,6 +164,12 @@ Recommended MikroTik setup:
 - Do not expose API to WAN.
 - SSH is only fallback/debug.
 - SNMP can be added later for metrics.
+
+Remote hEX SSH requirements:
+
+- `/ip service ssh` on the hEX must allow `192.168.100.30/32`.
+- The public key for `/var/lib/netctl/.ssh/m_arhiv_hex_rsa` must be imported for the RouterOS user configured in `mikrotik-hex.yaml`.
+- The web IPsec page checks both policy directions: central LAN/telephony to `192.168.99.0/24`, and `192.168.99.0/24` back to central LAN/telephony.
 
 RouterOS commands:
 
@@ -164,6 +193,8 @@ Web pages:
 - `/network/sources`
 - `/network/interfaces`
 - `/network/routes`
+- `/network/ipsec`
+- `/network/backups`
 - `/network/collect`
 
 HTTP API endpoints are under `/api/v1/network/...`.

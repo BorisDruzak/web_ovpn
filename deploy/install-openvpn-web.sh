@@ -68,6 +68,26 @@ SOURCE_FILE
   sudo_cmd install -m 0644 -o root -g root "$TMP_SOURCE" /etc/netctl/sources.d/mikrotik-main.yaml
   rm -f "$TMP_SOURCE"
 fi
+if [[ ! -f /etc/netctl/sources.d/mikrotik-hex.yaml ]]; then
+  TMP_SOURCE="$(mktemp)"
+  cat > "$TMP_SOURCE" <<'SOURCE_FILE'
+name: mikrotik-hex
+driver: mikrotik_ssh
+host: 192.168.99.1
+port: 22
+tls: false
+verify_tls: false
+username: asmr_admin
+secret_ref: mikrotik-hex
+site: m-arhiv
+role: edge-router
+ssh_identity_file: /var/lib/netctl/.ssh/m_arhiv_hex_rsa
+ssh_connect_timeout: 12
+enabled: true
+SOURCE_FILE
+  sudo_cmd install -m 0644 -o root -g root "$TMP_SOURCE" /etc/netctl/sources.d/mikrotik-hex.yaml
+  rm -f "$TMP_SOURCE"
+fi
 if [[ ! -f /etc/netctl/secrets.env ]]; then
   TMP_SECRETS="$(mktemp)"
   cat > "$TMP_SECRETS" <<'SECRETS_FILE'

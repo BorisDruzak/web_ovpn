@@ -1099,6 +1099,7 @@ def network_ipsec(request: Request, db: Session = Depends(get_db)):
         "network_ipsec.html",
         {
             "summary": data.get("summary", {}),
+            "site_checks": data.get("site_checks", []),
             "ipsec_sources": data.get("sources", []),
             "sources": sources_data.get("sources", []),
             "selected_source": source,

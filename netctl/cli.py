@@ -230,6 +230,44 @@ def _ipsec_source_status(source: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _ipsec_site_checks(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_pair: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for item in results:
+        if item.get("status") == "error":
+            continue
+        source_name = str(item.get("source") or "")
+        for policy in item.get("policies", []):
+            if not policy.get("established"):
+                continue
+            src = str(policy.get("src_address") or "")
+            dst = str(policy.get("dst_address") or "")
+            if not src or not dst or src == "::/0" or dst == "::/0":
+                continue
+            network_a, network_b = sorted([src, dst])
+            by_pair.setdefault((network_a, network_b), []).append(
+                {
+                    "source": source_name,
+                    "src_address": src,
+                    "dst_address": dst,
+                    "ph2_count": int(policy.get("ph2_count") or 0),
+                }
+            )
+    checks: list[dict[str, Any]] = []
+    for (network_a, network_b), directions in sorted(by_pair.items()):
+        has_a_to_b = any(item["src_address"] == network_a and item["dst_address"] == network_b for item in directions)
+        has_b_to_a = any(item["src_address"] == network_b and item["dst_address"] == network_a for item in directions)
+        ordered = sorted(directions, key=lambda item: (item["src_address"], item["dst_address"], item["source"]))
+        checks.append(
+            {
+                "status": "ok" if has_a_to_b and has_b_to_a else "warn",
+                "network_a": network_a,
+                "network_b": network_b,
+                "directions": ordered,
+            }
+        )
+    return checks
+
+
 def cmd_ipsec(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = prepare_conn(args)
     try:
@@ -267,7 +305,10 @@ def cmd_ipsec(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             "warn": sum(1 for item in results if item.get("status") == "warn"),
             "error": sum(1 for item in results if item.get("status") == "error"),
         }
-        return (1 if results and summary["ok"] == 0 and summary["error"] else 0), ok(summary=summary, sources=results)
+        site_checks = _ipsec_site_checks(results)
+        summary["site_checks_ok"] = sum(1 for item in site_checks if item.get("status") == "ok")
+        summary["site_checks_warn"] = sum(1 for item in site_checks if item.get("status") == "warn")
+        return (1 if results and summary["ok"] == 0 and summary["error"] else 0), ok(summary=summary, sources=results, site_checks=site_checks)
     finally:
         conn.close()
 

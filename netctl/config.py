@@ -57,6 +57,9 @@ def write_source_yaml(config_path: str | Path, source: dict[str, Any]) -> Path:
         "secret_ref",
         "site",
         "role",
+        "ssh_identity_file",
+        "ssh_proxy_jump",
+        "ssh_connect_timeout",
         "enabled",
     ]
     lines = []
@@ -99,6 +102,9 @@ def normalize_source(source: dict[str, Any]) -> dict[str, Any]:
         "verify_tls": parse_bool(source.get("verify_tls"), False),
         "site": str(source.get("site") or "main"),
         "role": str(source.get("role") or ""),
+        "ssh_identity_file": str(source.get("ssh_identity_file") or ""),
+        "ssh_proxy_jump": str(source.get("ssh_proxy_jump") or ""),
+        "ssh_connect_timeout": int(source.get("ssh_connect_timeout") or 8),
         "enabled": parse_bool(source.get("enabled"), True),
     }
 

@@ -20,6 +20,32 @@
     <button class="button secondary" type="submit">Фильтр</button>
   </form>
 </section>
+<section class="panel">
+  <h2>Двухсторонняя проверка</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Статус</th><th>Сеть A</th><th>Сеть B</th><th>Найденные направления</th></tr>
+      </thead>
+      <tbody>
+        {% for check in site_checks %}
+        <tr>
+          <td><span class="badge {{ check.status|status_class }}">{{ check.status }}</span></td>
+          <td class="mono">{{ check.network_a }}</td>
+          <td class="mono">{{ check.network_b }}</td>
+          <td>
+            {% for direction in check.directions %}
+            <div><span class="mono">{{ direction.source }}</span>: <span class="mono">{{ direction.src_address }} -> {{ direction.dst_address }}</span>{% if direction.ph2_count %} / {{ direction.ph2_count }}{% endif %}</div>
+            {% endfor %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="empty">Нет established-политик для двухсторонней проверки.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% for item in ipsec_sources %}
 <section class="panel">
   <h2>{{ item.source }} <span class="badge {{ item.status|status_class }}">{{ item.status }}</span></h2>

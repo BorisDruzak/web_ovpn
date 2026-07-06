@@ -37,6 +37,49 @@ def write_mock_source(config_path: Path) -> None:
     )
 
 
+def write_mock_ipsec_pair_sources(config_path: Path) -> None:
+    sources_dir = config_path.parent / "sources.d"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    (sources_dir / "mock-main.yaml").write_text(
+        "\n".join(
+            [
+                "name: mock-main",
+                "driver: mock",
+                "host: 192.168.100.250",
+                "port: 8729",
+                "username: netobserver",
+                "secret_ref: mikrotik-main",
+                "tls: true",
+                "verify_tls: false",
+                "site: main",
+                "role: core-router",
+                "enabled: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (sources_dir / "mock-hex.yaml").write_text(
+        "\n".join(
+            [
+                "name: mock-hex",
+                "driver: mock",
+                "host: 192.168.99.1",
+                "port: 22",
+                "username: asmr_admin",
+                "secret_ref: mikrotik-hex",
+                "tls: false",
+                "verify_tls: false",
+                "site: m-arhiv",
+                "role: edge-router",
+                "enabled: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_mikrotik_api_driver_parses_arp_and_dhcp_rows():
     from netctl.drivers.mikrotik_api import MikroTikApiDriver
 
@@ -516,10 +559,120 @@ def test_ipsec_status_reports_source_health(tmp_path, capsys):
 
     assert rc == 0
     assert data["status"] == "ok"
-    assert data["summary"] == {"sources": 1, "ok": 1, "warn": 0, "error": 0}
+    assert data["summary"] == {"sources": 1, "ok": 1, "warn": 0, "error": 0, "site_checks_ok": 0, "site_checks_warn": 1}
     assert data["sources"][0]["source"] == "mock-main"
     assert data["sources"][0]["status"] == "ok"
     assert data["sources"][0]["summary"]["policies_total"] == 1
     assert data["sources"][0]["summary"]["policies_established"] == 1
     assert data["sources"][0]["policies"][0]["src_address"] == "192.168.100.0/23"
     assert data["sources"][0]["policies"][0]["dst_address"] == "192.168.99.0/24"
+
+
+def test_ipsec_status_reports_bidirectional_site_checks(tmp_path, capsys):
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_ipsec_pair_sources(config_path)
+
+    rc, data = run_cli(["--json", "--config", str(config_path), "--db", db_url, "ipsec", "status"], capsys)
+
+    assert rc == 0
+    assert data["summary"]["sources"] == 2
+    assert data["summary"]["site_checks_ok"] == 1
+    assert data["summary"]["site_checks_warn"] == 0
+    assert data["site_checks"] == [
+        {
+            "status": "ok",
+            "network_a": "192.168.100.0/23",
+            "network_b": "192.168.99.0/24",
+            "directions": [
+                {"source": "mock-main", "src_address": "192.168.100.0/23", "dst_address": "192.168.99.0/24", "ph2_count": 1},
+                {"source": "mock-hex", "src_address": "192.168.99.0/24", "dst_address": "192.168.100.0/23", "ph2_count": 1},
+            ],
+        }
+    ]
+
+
+def test_mikrotik_ssh_driver_parses_routeros6_ipsec_without_sensitive_sa(monkeypatch):
+    import subprocess
+
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    calls = []
+
+    def fake_run(command, shell, text, stdout, stderr, timeout, check):
+        calls.append(command)
+        assert shell is False
+        assert "BatchMode=yes" in command
+        joined = " ".join(command)
+        if "active-peers" in joined:
+            out = " 0    local-address=62.148.235.108 port=4500 remote-address=78.29.35.68 port=4500 state=established side=initiator uptime=2h ph2-total=2\\n"
+        elif "policy" in joined:
+            out = (
+                " 0 T  * group=default src-address=::/0 dst-address=::/0 protocol=all proposal=default template=yes\\n"
+                " 1   A  peer=ics-asmr-tunnel tunnel=yes src-address=192.168.99.0/24 src-port=any dst-address=192.168.100.0/23 dst-port=any protocol=all action=encrypt level=require ipsec-protocols=esp sa-src-address=62.148.235.108 sa-dst-address=78.29.35.68 proposal=default ph2-count=1 ph2-state=established\\n"
+            )
+        else:
+            out = ""
+        return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    driver = MikroTikSshDriver(
+        {
+            "name": "mikrotik-hex",
+            "host": "192.168.99.1",
+            "port": 22,
+            "username": "asmr_admin",
+            "ssh_identity_file": "/var/lib/netctl/.ssh/m_arhiv_hex_rsa",
+            "ssh_proxy_jump": "a2-it-n@192.168.99.176",
+        },
+        {},
+    )
+
+    data = driver.ipsec_status()
+
+    assert data["errors"] == []
+    assert data["installed_sas"] == []
+    assert data["active_peers"][0]["state"] == "established"
+    assert data["policies"][0]["src_address"] == "192.168.99.0/24"
+    assert data["policies"][0]["dst_address"] == "192.168.100.0/23"
+    assert data["policies"][0]["established"] is True
+    assert not any("installed-sa" in " ".join(command) for command in calls)
+
+
+def test_mikrotik_ssh_driver_tests_routeros6_scalar_sections(monkeypatch):
+    import subprocess
+
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    calls = []
+
+    def fake_run(command, shell, text, stdout, stderr, timeout, check):
+        calls.append(command)
+        joined = " ".join(command)
+        if "/system identity print" in joined:
+            out = "  name: m-arhiv\n"
+        elif "/system resource print" in joined:
+            out = "  version: 6.49.7 (stable)\n  board-name: hEX\n"
+        else:
+            out = ""
+        return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    driver = MikroTikSshDriver(
+        {
+            "name": "mikrotik-hex",
+            "host": "192.168.99.1",
+            "port": 22,
+            "username": "asmr_admin",
+            "ssh_identity_file": "/var/lib/netctl/.ssh/m_arhiv_hex_rsa",
+        },
+        {},
+    )
+
+    result = driver.test()
+
+    assert result["status"] == "ok"
+    assert result["identity"] == "m-arhiv"
+    assert result["resource"]["version"] == "6.49.7 (stable)"
+    assert result["resource"]["board-name"] == "hEX"
+    assert not any("print terse" in " ".join(command) for command in calls)

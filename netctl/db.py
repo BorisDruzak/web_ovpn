@@ -39,6 +39,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             verify_tls INTEGER NOT NULL DEFAULT 0,
             site TEXT,
             role TEXT,
+            ssh_identity_file TEXT,
+            ssh_proxy_jump TEXT,
+            ssh_connect_timeout INTEGER NOT NULL DEFAULT 8,
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -183,6 +186,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "network_hosts", "device_type", "TEXT")
     _ensure_column(conn, "network_hosts", "device_confidence", "INTEGER")
     _ensure_column(conn, "network_hosts", "device_evidence_json", "TEXT")
+    _ensure_column(conn, "network_sources", "ssh_identity_file", "TEXT")
+    _ensure_column(conn, "network_sources", "ssh_proxy_jump", "TEXT")
+    _ensure_column(conn, "network_sources", "ssh_connect_timeout", "INTEGER NOT NULL DEFAULT 8")
     conn.commit()
 
 
@@ -231,6 +237,23 @@ def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
             "created_at": now,
             "updated_at": now,
         },
+    )
+    conn.commit()
+    _ensure_column(conn, "network_sources", "ssh_identity_file", "TEXT")
+    _ensure_column(conn, "network_sources", "ssh_proxy_jump", "TEXT")
+    _ensure_column(conn, "network_sources", "ssh_connect_timeout", "INTEGER NOT NULL DEFAULT 8")
+    conn.execute(
+        """
+        UPDATE network_sources
+        SET ssh_identity_file = ?, ssh_proxy_jump = ?, ssh_connect_timeout = ?
+        WHERE name = ?
+        """,
+        (
+            source.get("ssh_identity_file") or "",
+            source.get("ssh_proxy_jump") or "",
+            int(source.get("ssh_connect_timeout") or 8),
+            source["name"],
+        ),
     )
     conn.commit()
     row = conn.execute("SELECT id FROM network_sources WHERE name = ?", (source["name"],)).fetchone()
