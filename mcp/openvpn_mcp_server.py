@@ -13,6 +13,13 @@ TOKEN_ENV = "OPENVPN_WEB_API_TOKEN"
 TOKEN_FILE_ENV = "OPENVPN_WEB_API_TOKEN_FILE"
 
 
+def configure_stdio() -> None:
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def tool_schema(description: str, properties: dict[str, Any] | None = None, required: list[str] | None = None) -> dict[str, Any]:
     return {
         "description": description,
@@ -158,6 +165,49 @@ TOOLS: dict[str, dict[str, Any]] = {
     ),
     "openvpn_connections": tool_schema("List current OpenVPN connections."),
     "openvpn_nat_status": tool_schema("Show ViPNet NAT counters."),
+    "openvpn_network_dashboard": tool_schema("Show network observer dashboard summary and source health."),
+    "openvpn_network_hosts": tool_schema(
+        "List observed network hosts with optional filters.",
+        {
+            "q": {"type": "string", "default": ""},
+            "category": {"type": "string", "default": ""},
+            "status": {"type": "string", "default": ""},
+            "source": {"type": "string", "default": ""},
+            "network": {"type": "string", "default": ""},
+            "has_hostname": {"type": "string", "enum": ["", "yes", "no"], "default": ""},
+            "has_mac": {"type": "string", "enum": ["", "yes", "no"], "default": ""},
+        },
+    ),
+    "openvpn_network_host_detail": tool_schema(
+        "Inspect one observed network host by IP address.",
+        {"ip": {"type": "string"}},
+        ["ip"],
+    ),
+    "openvpn_network_sources": tool_schema("List network observer sources such as MikroTik routers."),
+    "openvpn_network_interfaces": tool_schema(
+        "List observed router interfaces, optionally filtered by source.",
+        {"source": {"type": "string", "default": ""}},
+    ),
+    "openvpn_network_routes": tool_schema(
+        "List observed router routes, optionally filtered by source.",
+        {"source": {"type": "string", "default": ""}},
+    ),
+    "openvpn_network_observations": tool_schema(
+        "List raw observations for one host or all hosts.",
+        {"host": {"type": "string", "default": ""}},
+    ),
+    "openvpn_network_ipsec": tool_schema(
+        "Show IPsec source health, policies, SAs and bidirectional site checks.",
+        {"source": {"type": "string", "default": ""}},
+    ),
+    "openvpn_routeros_backups": tool_schema("List RouterOS backup and export files known to the web service."),
+    "openvpn_network_logs": tool_schema(
+        "Read recent network observer collection logs.",
+        {"n": {"type": "integer", "enum": [30, 80, 150], "default": 80}},
+    ),
+    "openvpn_diagnostic_snapshot": tool_schema(
+        "Collect a read-only OpenVPN, network, IPsec, RouterOS backup and log diagnostic snapshot."
+    ),
     "openvpn_addressing": tool_schema("Show OpenVPN tunnel addressing plan."),
     "openvpn_validate_network_plan": tool_schema("Validate OpenVPN pool, CCDs, site routes and legacy NAT state."),
     "openvpn_site_routes": tool_schema("List managed OpenVPN site-to-site server routes."),
@@ -200,6 +250,20 @@ def _client_path(client: str, suffix: str = "") -> str:
     if not client:
         raise ValueError("client is required")
     return f"/api/v1/clients/{urllib.parse.quote(client, safe='._-')}{suffix}"
+
+
+def _query_path(path: str, params: list[tuple[str, Any]]) -> str:
+    query = [(key, str(value)) for key, value in params if value not in ("", None)]
+    if not query:
+        return path
+    return f"{path}?{urllib.parse.urlencode(query)}"
+
+
+def _snapshot_section(tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+    try:
+        return call_tool(tool_name, arguments or {})
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -321,6 +385,59 @@ def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return api_request("GET", "/api/v1/connections")
     if name == "openvpn_nat_status":
         return api_request("GET", "/api/v1/nat-status")
+    if name == "openvpn_network_dashboard":
+        return api_request("GET", "/api/v1/network/dashboard")
+    if name == "openvpn_network_hosts":
+        return api_request(
+            "GET",
+            _query_path(
+                "/api/v1/network/hosts",
+                [
+                    ("q", arguments.get("q", "")),
+                    ("category", arguments.get("category", "")),
+                    ("status", arguments.get("status", "")),
+                    ("source", arguments.get("source", "")),
+                    ("network", arguments.get("network", "")),
+                    ("has_hostname", arguments.get("has_hostname", "")),
+                    ("has_mac", arguments.get("has_mac", "")),
+                ],
+            ),
+        )
+    if name == "openvpn_network_host_detail":
+        ip = str(arguments.get("ip", ""))
+        if not ip:
+            raise ValueError("ip is required")
+        return api_request("GET", f"/api/v1/network/hosts/{urllib.parse.quote(ip, safe='.:')}")
+    if name == "openvpn_network_sources":
+        return api_request("GET", "/api/v1/network/sources")
+    if name == "openvpn_network_interfaces":
+        return api_request("GET", _query_path("/api/v1/network/interfaces", [("source", arguments.get("source", ""))]))
+    if name == "openvpn_network_routes":
+        return api_request("GET", _query_path("/api/v1/network/routes", [("source", arguments.get("source", ""))]))
+    if name == "openvpn_network_observations":
+        return api_request("GET", _query_path("/api/v1/network/observations", [("host", arguments.get("host", ""))]))
+    if name == "openvpn_network_ipsec":
+        return api_request("GET", _query_path("/api/v1/network/ipsec", [("source", arguments.get("source", ""))]))
+    if name == "openvpn_routeros_backups":
+        return api_request("GET", "/api/v1/network/backups")
+    if name == "openvpn_network_logs":
+        n = int(arguments.get("n", 80))
+        return api_request("GET", f"/api/v1/network/logs?n={n}")
+    if name == "openvpn_diagnostic_snapshot":
+        sections = {
+            "status": _snapshot_section("openvpn_status"),
+            "server_config": _snapshot_section("openvpn_server_config"),
+            "management_test": _snapshot_section("openvpn_management_test"),
+            "connections": _snapshot_section("openvpn_connections"),
+            "nat": _snapshot_section("openvpn_nat_status"),
+            "network_dashboard": _snapshot_section("openvpn_network_dashboard"),
+            "network_sources": _snapshot_section("openvpn_network_sources"),
+            "ipsec": _snapshot_section("openvpn_network_ipsec"),
+            "routeros_backups": _snapshot_section("openvpn_routeros_backups"),
+            "network_logs": _snapshot_section("openvpn_network_logs", {"n": 30}),
+        }
+        failed = [key for key, value in sections.items() if value.get("status") == "error"]
+        return {"status": "partial" if failed else "ok", "failed_sections": failed, "sections": sections}
     if name == "openvpn_addressing":
         return api_request("GET", "/api/v1/openvpn/addressing")
     if name == "openvpn_validate_network_plan":
@@ -376,6 +493,7 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def main() -> int:
+    configure_stdio()
     for line in sys.stdin:
         line = line.strip()
         if not line:

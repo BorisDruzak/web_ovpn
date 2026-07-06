@@ -17,6 +17,13 @@
 - Make code changes in the local copy first, then deploy or sync them to `192.168.100.30` when requested.
 - When reporting status, distinguish clearly between the local copy and the deployed copy.
 
+## Diagnostics workflow
+
+- For OpenVPN, client access, Network Observer, MikroTik/RouterOS, IPsec site-to-site, RouterOS backups, and network collection diagnostics, use the local Codex `openvpn-control` plugin and MCP tools first.
+- Prefer read-only MCP tools before any changes: `openvpn_diagnostic_snapshot`, `openvpn_status`, `openvpn_network_dashboard`, `openvpn_network_hosts`, `openvpn_network_ipsec`, `openvpn_routeros_backups`, and `openvpn_network_logs`.
+- Use direct SSH, Winbox, manual `vpnctl`, or manual `netctl` only as a fallback when MCP/API output is unavailable, stale, contradictory, or the user explicitly asks for low-level server/router work.
+- Do not store access passwords, API tokens, private keys, or other secrets in this repository or in `AGENTS.md`.
+
 ## Git publishing
 
 - For this project, publish completed and verified work to `main` by default.

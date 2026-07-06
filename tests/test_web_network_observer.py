@@ -221,3 +221,26 @@ def test_network_ipsec_and_backup_pages_render_status(tmp_path, monkeypatch):
     assert "RouterOS" in backups.text
     assert "sosn-20260706-200358.backup" in backups.text
     assert "sosn-20260706-200358.rsc" in backups.text
+
+
+def test_network_diagnostic_api_returns_ipsec_backups_and_logs(tmp_path, monkeypatch):
+    backup_dir = tmp_path / "routeros_backups"
+    backup_dir.mkdir()
+    (backup_dir / "sosn-20260706-200358.backup").write_bytes(b"routeros-backup")
+    (backup_dir / "m-arhiv-20260706-200358.rsc").write_text("/ip route print\n", encoding="utf-8")
+    monkeypatch.setenv("ROUTEROS_BACKUP_DIR", str(backup_dir))
+    client, headers = make_client(tmp_path, monkeypatch)
+
+    ipsec = client.get("/api/v1/network/ipsec", headers=headers)
+    backups = client.get("/api/v1/network/backups", headers=headers)
+    logs = client.get("/api/v1/network/logs", headers=headers)
+
+    assert ipsec.status_code == 200
+    assert ipsec.json()["data"]["summary"]["sources"] == 2
+    assert ipsec.json()["data"]["site_checks"][0]["network_b"] == "192.168.99.0/24"
+    assert backups.status_code == 200
+    backup_names = {row["name"] for row in backups.json()["data"]["backups"]}
+    assert backup_names == {"sosn-20260706-200358.backup", "m-arhiv-20260706-200358.rsc"}
+    assert backups.json()["data"]["error"] is None
+    assert logs.status_code == 200
+    assert logs.json()["data"]["events"] == []

@@ -17,6 +17,17 @@ def test_mcp_tools_list_has_no_delete_tool():
     assert "openvpn_validate_network_plan" in names
     assert "openvpn_site_routes" in names
     assert "openvpn_router_instructions" in names
+    assert "openvpn_network_dashboard" in names
+    assert "openvpn_network_hosts" in names
+    assert "openvpn_network_host_detail" in names
+    assert "openvpn_network_sources" in names
+    assert "openvpn_network_interfaces" in names
+    assert "openvpn_network_routes" in names
+    assert "openvpn_network_observations" in names
+    assert "openvpn_network_ipsec" in names
+    assert "openvpn_routeros_backups" in names
+    assert "openvpn_network_logs" in names
+    assert "openvpn_diagnostic_snapshot" in names
     assert "openvpn_disable_client" in names
     assert "openvpn_view_config" in names
     assert "openvpn_networks" in names
@@ -322,3 +333,93 @@ def test_mcp_apply_networks_call_uses_safe_network_list(monkeypatch):
     ]
     payload = json.loads(response["result"]["content"][0]["text"])
     assert payload["data"]["networks"] == ["192.168.100.10/32"]
+
+
+def test_mcp_network_diagnostic_tools_call_api(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {"status": "ok", "data": {"ok": True}}
+
+    monkeypatch.setattr(server, "api_request", fake_api_request)
+
+    tool_calls = [
+        ("openvpn_network_dashboard", {}),
+        (
+            "openvpn_network_hosts",
+            {"category": "telephony", "status": "online", "source": "mikrotik-main", "network": "telephony", "has_mac": "yes"},
+        ),
+        ("openvpn_network_host_detail", {"ip": "192.168.100.10"}),
+        ("openvpn_network_sources", {}),
+        ("openvpn_network_interfaces", {"source": "mikrotik-main"}),
+        ("openvpn_network_routes", {"source": "mikrotik-main"}),
+        ("openvpn_network_observations", {"host": "192.168.100.10"}),
+        ("openvpn_network_ipsec", {"source": "mikrotik-hex"}),
+        ("openvpn_routeros_backups", {}),
+        ("openvpn_network_logs", {"n": 30}),
+    ]
+    for idx, (name, arguments) in enumerate(tool_calls, start=40):
+        response = server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": idx,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            }
+        )
+        assert "result" in response
+
+    assert calls == [
+        ("GET", "/api/v1/network/dashboard", None),
+        ("GET", "/api/v1/network/hosts?category=telephony&status=online&source=mikrotik-main&network=telephony&has_mac=yes", None),
+        ("GET", "/api/v1/network/hosts/192.168.100.10", None),
+        ("GET", "/api/v1/network/sources", None),
+        ("GET", "/api/v1/network/interfaces?source=mikrotik-main", None),
+        ("GET", "/api/v1/network/routes?source=mikrotik-main", None),
+        ("GET", "/api/v1/network/observations?host=192.168.100.10", None),
+        ("GET", "/api/v1/network/ipsec?source=mikrotik-hex", None),
+        ("GET", "/api/v1/network/backups", None),
+        ("GET", "/api/v1/network/logs?n=30", None),
+    ]
+
+
+def test_mcp_diagnostic_snapshot_aggregates_read_only_checks(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+
+    calls = []
+
+    def fake_api_request(method, path, payload=None):
+        calls.append((method, path, payload))
+        if path == "/api/v1/network/ipsec":
+            return {"status": "ok", "data": {"summary": {"sources": 2, "ok": 2}}}
+        return {"status": "ok", "data": {"path": path}}
+
+    monkeypatch.setattr(server, "api_request", fake_api_request)
+
+    response = server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "tools/call",
+            "params": {"name": "openvpn_diagnostic_snapshot", "arguments": {}},
+        }
+    )
+
+    payload = json.loads(response["result"]["content"][0]["text"])
+    assert payload["status"] == "ok"
+    assert payload["sections"]["ipsec"]["data"]["summary"]["ok"] == 2
+    assert calls == [
+        ("GET", "/api/v1/status", None),
+        ("GET", "/api/v1/openvpn/server-config", None),
+        ("GET", "/api/v1/openvpn/management/test", None),
+        ("GET", "/api/v1/connections", None),
+        ("GET", "/api/v1/nat-status", None),
+        ("GET", "/api/v1/network/dashboard", None),
+        ("GET", "/api/v1/network/sources", None),
+        ("GET", "/api/v1/network/ipsec", None),
+        ("GET", "/api/v1/network/backups", None),
+        ("GET", "/api/v1/network/logs?n=30", None),
+    ]

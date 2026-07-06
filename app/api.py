@@ -16,6 +16,7 @@ from .config import get_settings
 from .db import get_db
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts
+from .routeros_backups import list_routeros_backups
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -734,6 +735,28 @@ def api_network_observations(actor: str = Depends(require_api_actor), host: str 
     if host:
         args.extend(["--host", host])
     return api_response(call_netctl(args))
+
+
+@router.get("/network/ipsec")
+def api_network_ipsec(actor: str = Depends(require_api_actor), source: str = Query(default="")):
+    args = ["ipsec", "status"]
+    if source:
+        args.extend(["--source", source])
+    return api_response(call_netctl(args, timeout=60))
+
+
+@router.get("/network/backups")
+def api_network_backups(actor: str = Depends(require_api_actor)):
+    settings = get_settings()
+    backups, error = list_routeros_backups(settings.routeros_backup_dir)
+    return api_response({"backups": backups, "backup_dir": str(settings.routeros_backup_dir), "error": error})
+
+
+@router.get("/network/logs")
+def api_network_logs(actor: str = Depends(require_api_actor), n: int = Query(default=80)):
+    if n not in {30, 80, 150}:
+        n = 80
+    return api_response(call_netctl(["logs", "-n", str(n)]))
 
 
 @router.get("/site-routes")
