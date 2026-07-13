@@ -16,6 +16,9 @@ env/
 # Local Git worktrees
 .worktrees/
 
+# Subagent task and review ledger
+.superpowers/
+
 # Local runtime state
 *.sqlite
 *.sqlite3
