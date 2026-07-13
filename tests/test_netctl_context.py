@@ -118,6 +118,28 @@ def test_validate_context_scopes_duplicate_ids_to_their_collection(tmp_path: Pat
     assert validate_context(load_context(context_path), load_schema(schema_path)) == []
 
 
+def test_validate_context_rejects_remote_ref_without_retrieval(monkeypatch: pytest.MonkeyPatch) -> None:
+    import netctl.context as context
+
+    retrieval_attempts: list[str] = []
+
+    def fail_if_retrieval_is_attempted(uri: str) -> None:
+        retrieval_attempts.append(uri)
+        raise AssertionError("remote schema retrieval must not be attempted")
+
+    monkeypatch.setattr(context, "_reject_external_retrieval", fail_if_retrieval_is_attempted)
+
+    errors = context.validate_context({}, {"$ref": "https://schemas.example.invalid/network-context.json"})
+
+    assert retrieval_attempts == []
+    assert errors == [
+        {
+            "path": "$ref",
+            "message": "external schema references are not allowed: https://schemas.example.invalid/network-context.json",
+        }
+    ]
+
+
 def test_load_context_and_schema_report_missing_files(tmp_path: Path) -> None:
     from netctl.context import load_context, load_schema
 
@@ -177,6 +199,36 @@ def test_revalidating_a_revision_refreshes_latest_status_without_duplicate_rows(
     assert status_rc == 0
     assert status["context"]["sha256"] == context_a["sha256"]
     assert status["context"]["counts"] == {"sites": 3}
+
+
+def test_revalidating_revision_refreshes_latest_provenance(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from netctl.db import connect, latest_context_revision, record_context_revision
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    conn = connect(db_url)
+    original = {"context_id": "test-network", "schema_version": "2.2.0", "sha256": "a" * 64, "counts": {"sites": 1}}
+    refreshed = {**original, "schema_version": "2.3.0", "counts": {"sites": 2}}
+    original_path = tmp_path / "original-context.yaml"
+    refreshed_path = tmp_path / "relocated-context.yaml"
+    try:
+        first = record_context_revision(conn, original, original_path, "old-git-sha")
+        second = record_context_revision(conn, refreshed, refreshed_path, "new-git-sha")
+        latest = latest_context_revision(conn)
+
+        assert first["id"] == second["id"]
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 1
+        assert latest["source_path"] == str(refreshed_path)
+        assert latest["git_sha"] == "new-git-sha"
+        assert latest["schema_version"] == "2.3.0"
+        assert latest["counts"] == {"sites": 2}
+    finally:
+        conn.close()
+
+    status_rc, status = run_cli(["--json", "--db", db_url, "context", "status"], capsys)
+    assert status_rc == 0
+    assert status["context"]["source_path"] == str(refreshed_path)
+    assert status["context"]["git_sha"] == "new-git-sha"
+    assert status["context"]["schema_version"] == "2.3.0"
 
 
 def test_context_validate_then_status_returns_recorded_revision(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

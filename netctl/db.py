@@ -249,7 +249,10 @@ def record_context_revision(
             (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json, counts_json, validation_order)
         VALUES (?, ?, ?, ?, ?, ?, 'ok', '[]', ?, (SELECT COALESCE(MAX(validation_order), 0) + 1 FROM context_revisions))
         ON CONFLICT(context_id, sha256) DO UPDATE SET
+            schema_version = excluded.schema_version,
+            source_path = excluded.source_path,
             validated_at = excluded.validated_at,
+            git_sha = excluded.git_sha,
             counts_json = excluded.counts_json,
             validation_order = excluded.validation_order
         """,

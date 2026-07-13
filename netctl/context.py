@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from referencing import Registry
+from referencing.exceptions import NoSuchResource
 import yaml
 
 
@@ -37,11 +39,45 @@ def load_schema(path: Path) -> dict[str, Any]:
     return schema
 
 
+def _reject_external_retrieval(uri: str) -> None:
+    raise NoSuchResource(ref=uri)
+
+
+def _external_reference_errors(value: Any, path: str = "") -> list[dict[str, str]]:
+    if isinstance(value, dict):
+        errors = []
+        for key, item in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key in {"$ref", "$dynamicRef", "$recursiveRef"} and isinstance(item, str) and not item.startswith("#"):
+                errors.append(
+                    {
+                        "path": child_path,
+                        "message": f"external schema references are not allowed: {item}",
+                    }
+                )
+            else:
+                errors.extend(_external_reference_errors(item, child_path))
+        return errors
+    if isinstance(value, list):
+        errors = []
+        for index, item in enumerate(value):
+            errors.extend(_external_reference_errors(item, f"{path}.{index}" if path else str(index)))
+        return errors
+    return []
+
+
 def validate_context(document: dict[str, Any], schema: dict[str, Any]) -> list[dict[str, str]]:
-    schema_errors = sorted(
-        Draft202012Validator(schema).iter_errors(document),
-        key=lambda error: tuple(error.absolute_path),
-    )
+    reference_errors = _external_reference_errors(schema)
+    if reference_errors:
+        return sorted(reference_errors, key=lambda error: (error["path"], error["message"]))
+
+    try:
+        schema_errors = sorted(
+            Draft202012Validator(schema, registry=Registry(retrieve=_reject_external_retrieval)).iter_errors(document),
+            key=lambda error: tuple(error.absolute_path),
+        )
+    except Exception as exc:
+        return [{"path": "$ref", "message": f"schema reference resolution failed: {exc}"}]
     errors = [
         {
             "path": _validation_error_path(error),
