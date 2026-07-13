@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 from .collect_lock import CollectLock
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, write_source_yaml
-from .db import connect, get_source, list_sources, source_public, sync_config_sources, upsert_source
+from .context import context_summary, load_context_bytes, load_schema, validate_context
+from .db import connect, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .util import utc_now, validate_source_name
@@ -344,6 +346,47 @@ def cmd_logs(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def resolve_context_schema(path: Path, explicit_schema: str) -> Path:
+    candidates = [Path(explicit_schema)] if explicit_schema else []
+    candidates.append(path.parent.parent / "schemas" / "network-context.schema.json")
+    if os.environ.get("NETCTL_CONTEXT_SCHEMA"):
+        candidates.append(Path(os.environ["NETCTL_CONTEXT_SCHEMA"]))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("network context schema not found; use --schema or NETCTL_CONTEXT_SCHEMA")
+
+
+def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.context_command == "validate" and not args.path:
+        return 1, err("context path is required", errors=[])
+
+    conn = connect(args.db)
+    try:
+        if args.context_command == "status":
+            revision = latest_context_revision(conn)
+            if revision is None:
+                return 1, err("no successful context validation found", errors=[])
+            return 0, ok(context=revision, errors=[])
+
+        try:
+            path = Path(args.path)
+            raw_bytes = path.read_bytes()
+            document = load_context_bytes(raw_bytes)
+            schema = load_schema(resolve_context_schema(path, args.schema))
+            errors = validate_context(document, schema)
+        except Exception as exc:
+            return 1, err(str(exc), errors=[])
+
+        if errors:
+            return 1, err("network context validation failed", errors=errors)
+
+        revision = record_context_revision(conn, context_summary(document, raw_bytes), path, args.git_sha)
+        return 0, ok(context=revision, errors=[])
+    finally:
+        conn.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="netctl")
     parser.add_argument("--json", action="store_true", help="emit JSON")
@@ -425,6 +468,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("validate")
     logs = sub.add_parser("logs")
     logs.add_argument("-n", type=int, default=100)
+
+    context = sub.add_parser("context")
+    context_sub = context.add_subparsers(dest="context_command", required=True)
+    for name in ("validate", "status"):
+        context_command = context_sub.add_parser(name)
+        context_command.add_argument("--path", default="")
+        context_command.add_argument("--schema", default="")
+        context_command.add_argument("--git-sha", default="")
     return parser
 
 
@@ -449,6 +500,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_validate(args)
     if args.command == "logs":
         return cmd_logs(args)
+    if args.command == "context":
+        return cmd_context(args)
     return 2, err("unsupported command")
 
 
