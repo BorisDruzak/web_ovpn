@@ -81,3 +81,36 @@ def test_load_schema_rejects_non_object_json(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="context schema must contain an object"):
         load_schema(schema_path)
+
+
+def test_validate_context_reports_schema_and_duplicate_id_errors(tmp_path: Path) -> None:
+    from netctl.context import load_context, load_schema, validate_context
+
+    context_path, schema_path, document = write_context_files(tmp_path)
+    document["sites"].append({"id": "central"})
+    document.pop("schema_version")
+    context_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    errors = validate_context(load_context(context_path), load_schema(schema_path))
+
+    assert {error["path"] for error in errors} >= {"schema_version", "sites.1.id"}
+    assert any(error["message"] == "duplicate id 'central'" for error in errors)
+
+
+def test_validate_context_scopes_duplicate_ids_to_their_collection(tmp_path: Path) -> None:
+    from netctl.context import load_context, load_schema, validate_context
+
+    context_path, schema_path, document = write_context_files(tmp_path)
+    document["segments"].append({"id": "central"})
+    context_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    assert validate_context(load_context(context_path), load_schema(schema_path)) == []
+
+
+def test_load_context_and_schema_report_missing_files(tmp_path: Path) -> None:
+    from netctl.context import load_context, load_schema
+
+    with pytest.raises(FileNotFoundError):
+        load_context(tmp_path / "missing.yaml")
+    with pytest.raises(FileNotFoundError):
+        load_schema(tmp_path / "missing.schema.json")

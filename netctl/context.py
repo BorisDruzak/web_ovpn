@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator
 import yaml
 
 
@@ -30,6 +31,51 @@ def load_schema(path: Path) -> dict[str, Any]:
     if not isinstance(schema, dict):
         raise ValueError("context schema must contain an object")
     return schema
+
+
+def validate_context(document: dict[str, Any], schema: dict[str, Any]) -> list[dict[str, str]]:
+    schema_errors = sorted(
+        Draft202012Validator(schema).iter_errors(document),
+        key=lambda error: tuple(error.absolute_path),
+    )
+    errors = [
+        {
+            "path": _validation_error_path(error),
+            "message": error.message,
+        }
+        for error in schema_errors
+    ]
+
+    for collection, items in document.items():
+        if not isinstance(items, list):
+            continue
+        seen_ids: set[str] = set()
+        for index, item in enumerate(items):
+            item_id = item.get("id") if isinstance(item, dict) else None
+            if not isinstance(item_id, str):
+                continue
+            if item_id in seen_ids:
+                errors.append(
+                    {
+                        "path": f"{collection}.{index}.id",
+                        "message": f"duplicate id '{item_id}'",
+                    }
+                )
+            seen_ids.add(item_id)
+
+    return sorted(errors, key=lambda error: (error["path"], error["message"]))
+
+
+def _validation_error_path(error: Any) -> str:
+    path = list(error.absolute_path)
+    if error.validator == "required" and isinstance(error.instance, dict):
+        missing_property = next(
+            (name for name in error.validator_value if name not in error.instance),
+            None,
+        )
+        if missing_property is not None:
+            path.append(missing_property)
+    return ".".join(str(part) for part in path)
 
 
 def context_summary(document: dict[str, Any], raw_bytes: bytes) -> dict[str, Any]:
