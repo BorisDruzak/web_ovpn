@@ -13,6 +13,9 @@ htmlcov/
 venv/
 env/
 
+# Local Git worktrees
+.worktrees/
+
 # Local runtime state
 *.sqlite
 *.sqlite3
