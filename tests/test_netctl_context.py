@@ -148,6 +148,37 @@ def test_context_revision_is_idempotent_and_status_returns_latest(tmp_path: Path
         conn.close()
 
 
+def test_revalidating_a_revision_refreshes_latest_status_without_duplicate_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import netctl.db as db
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    timestamps = iter(["2026-07-13T00:00:00Z", "2026-07-13T00:00:00Z", "2026-07-13T00:00:00Z"])
+    monkeypatch.setattr(db, "utc_now", lambda: next(timestamps))
+    conn = db.connect(db_url)
+    context_a = {"context_id": "test-network", "schema_version": "2.2.0", "sha256": "a" * 64, "counts": {"sites": 1}}
+    context_b = {"context_id": "test-network", "schema_version": "2.2.0", "sha256": "b" * 64, "counts": {"sites": 2}}
+    try:
+        first_a = db.record_context_revision(conn, context_a, tmp_path / "a.yaml", "a")
+        db.record_context_revision(conn, context_b, tmp_path / "b.yaml", "b")
+        refreshed_a = db.record_context_revision(conn, {**context_a, "counts": {"sites": 3}}, tmp_path / "a.yaml", "a")
+
+        latest = db.latest_context_revision(conn)
+        assert refreshed_a["id"] == first_a["id"]
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 2
+        assert latest["sha256"] == context_a["sha256"]
+        assert latest["counts"] == {"sites": 3}
+        assert latest["validated_at"] == "2026-07-13T00:00:00Z"
+    finally:
+        conn.close()
+
+    status_rc, status = run_cli(["--json", "--db", db_url, "context", "status"], capsys)
+    assert status_rc == 0
+    assert status["context"]["sha256"] == context_a["sha256"]
+    assert status["context"]["counts"] == {"sites": 3}
+
+
 def test_context_validate_then_status_returns_recorded_revision(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     context_path, schema_path, _document = write_context_files(tmp_path)
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"

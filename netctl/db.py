@@ -191,6 +191,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL,
             error_json TEXT NOT NULL DEFAULT '[]',
             counts_json TEXT NOT NULL DEFAULT '{}',
+            validation_order INTEGER NOT NULL DEFAULT 0,
             UNIQUE(context_id, sha256)
         );
         """
@@ -203,6 +204,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "network_sources", "ssh_proxy_jump", "TEXT")
     _ensure_column(conn, "network_sources", "ssh_connect_timeout", "INTEGER NOT NULL DEFAULT 8")
     _ensure_column(conn, "context_revisions", "counts_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(conn, "context_revisions", "validation_order", "INTEGER NOT NULL DEFAULT 0")
     conn.commit()
 
 
@@ -226,6 +228,7 @@ def context_revision_public(row: sqlite3.Row | None) -> dict[str, Any] | None:
     revision = row_to_dict(row)
     if revision is None:
         return None
+    revision.pop("validation_order", None)
     try:
         counts = json.loads(revision.pop("counts_json", "{}") or "{}")
     except (TypeError, json.JSONDecodeError):
@@ -243,9 +246,12 @@ def record_context_revision(
     conn.execute(
         """
         INSERT INTO context_revisions
-            (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json, counts_json)
-        VALUES (?, ?, ?, ?, ?, ?, 'ok', '[]', ?)
-        ON CONFLICT(context_id, sha256) DO UPDATE SET counts_json = excluded.counts_json
+            (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json, counts_json, validation_order)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', '[]', ?, (SELECT COALESCE(MAX(validation_order), 0) + 1 FROM context_revisions))
+        ON CONFLICT(context_id, sha256) DO UPDATE SET
+            validated_at = excluded.validated_at,
+            counts_json = excluded.counts_json,
+            validation_order = excluded.validation_order
         """,
         (
             context["context_id"],
@@ -270,7 +276,7 @@ def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:
         """
         SELECT * FROM context_revisions
         WHERE status = 'ok'
-        ORDER BY validated_at DESC, id DESC
+        ORDER BY validated_at DESC, validation_order DESC, id DESC
         LIMIT 1
         """
     ).fetchone()
