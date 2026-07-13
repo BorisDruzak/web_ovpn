@@ -26,7 +26,9 @@ does not import devices, links, or IP addresses into existing host tables.
 1. `netctl/context.py` loads YAML bytes from an explicit path and JSON Schema
    from a local path. It validates the decoded document and returns structured
    validation errors, SHA-256 of the raw YAML, schema version, context ID, and
-   counts of top-level object collections.
+   counts of top-level object collections. The canonical schema does not
+   express uniqueness of object IDs, so the module also reports duplicate `id`
+   values within each top-level object collection as validation errors.
 2. `netctl/cli.py` exposes `context validate` and `context status` under the
    existing JSON CLI. Schema discovery checks `--schema`, a sibling
    `network_configuration/schemas/network-context.schema.json`, and
@@ -57,6 +59,8 @@ the supplied context.
   raise a traceback through the CLI.
 - JSON Schema violations are normalised to objects with a location path and
   human-readable message, sorted deterministically.
+- Duplicate `id` values in one top-level object collection are reported with
+  the collection index paths, even when the JSON Schema itself permits them.
 - A missing schema reports a clear JSON error after all three local resolution
   options have been exhausted.
 - Revalidating identical content is idempotent because the revision table has a
