@@ -180,6 +180,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             message TEXT NOT NULL,
             data_json TEXT
         );
+        CREATE TABLE IF NOT EXISTS context_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            context_id TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            validated_at TEXT NOT NULL,
+            git_sha TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL,
+            error_json TEXT NOT NULL DEFAULT '[]',
+            UNIQUE(context_id, sha256)
+        );
         """
     )
     _ensure_column(conn, "network_hosts", "device_key", "TEXT")
@@ -206,6 +218,47 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
+
+
+def record_context_revision(
+    conn: sqlite3.Connection,
+    context: dict[str, Any],
+    source_path: str | Path,
+    git_sha: str,
+) -> dict[str, Any]:
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO context_revisions
+            (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', '[]')
+        """,
+        (
+            context["context_id"],
+            context["schema_version"],
+            context["sha256"],
+            str(source_path),
+            utc_now(),
+            git_sha,
+        ),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM context_revisions WHERE context_id = ? AND sha256 = ?",
+        (context["context_id"], context["sha256"]),
+    ).fetchone()
+    return dict(row)
+
+
+def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    row = conn.execute(
+        """
+        SELECT * FROM context_revisions
+        WHERE status = 'ok'
+        ORDER BY validated_at DESC, id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    return row_to_dict(row)
 
 
 def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:

@@ -114,3 +114,24 @@ def test_load_context_and_schema_report_missing_files(tmp_path: Path) -> None:
         load_context(tmp_path / "missing.yaml")
     with pytest.raises(FileNotFoundError):
         load_schema(tmp_path / "missing.schema.json")
+
+
+def test_context_revision_is_idempotent_and_status_returns_latest(tmp_path: Path) -> None:
+    from netctl.db import connect, latest_context_revision, record_context_revision
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    context = {
+        "context_id": "test-network",
+        "schema_version": "2.2.0",
+        "sha256": "a" * 64,
+        "counts": {},
+    }
+    try:
+        first = record_context_revision(conn, context, tmp_path / "context.yaml", "abc123")
+        second = record_context_revision(conn, context, tmp_path / "context.yaml", "abc123")
+
+        assert first["id"] == second["id"]
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 1
+        assert latest_context_revision(conn)["sha256"] == "a" * 64
+    finally:
+        conn.close()
