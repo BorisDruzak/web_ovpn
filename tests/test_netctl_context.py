@@ -6,6 +6,15 @@ import pytest
 import yaml
 
 
+def run_cli(args: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str, Any]]:
+    from netctl.cli import main
+
+    rc = main(args)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    return rc, json.loads(captured.out)
+
+
 def write_context_files(tmp_path: Path) -> tuple[Path, Path, dict[str, Any]]:
     document = {
         "schema_version": "2.2.0",
@@ -135,3 +144,51 @@ def test_context_revision_is_idempotent_and_status_returns_latest(tmp_path: Path
         assert latest_context_revision(conn)["sha256"] == "a" * 64
     finally:
         conn.close()
+
+
+def test_context_validate_then_status_returns_recorded_revision(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    context_path, schema_path, _document = write_context_files(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    rc, valid = run_cli(
+        [
+            "--json",
+            "--db",
+            db_url,
+            "context",
+            "validate",
+            "--path",
+            str(context_path),
+            "--schema",
+            str(schema_path),
+            "--git-sha",
+            "abc123",
+        ],
+        capsys,
+    )
+    status_rc, status = run_cli(["--json", "--db", db_url, "context", "status"], capsys)
+
+    assert rc == status_rc == 0
+    assert valid["context"]["git_sha"] == status["context"]["git_sha"] == "abc123"
+
+
+def test_context_validate_invalid_document_keeps_last_successful_revision(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    context_path, schema_path, document = write_context_files(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    assert run_cli(
+        ["--json", "--db", db_url, "context", "validate", "--path", str(context_path), "--schema", str(schema_path)], capsys
+    )[0] == 0
+    document.pop("schema_version")
+    context_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    invalid_rc, invalid = run_cli(
+        ["--json", "--db", db_url, "context", "validate", "--path", str(context_path), "--schema", str(schema_path)],
+        capsys,
+    )
+    status_rc, status = run_cli(["--json", "--db", db_url, "context", "status"], capsys)
+
+    assert invalid_rc != 0 and invalid["status"] == "error"
+    assert status_rc == 0 and status["context"]["schema_version"] == "2.2.0"
