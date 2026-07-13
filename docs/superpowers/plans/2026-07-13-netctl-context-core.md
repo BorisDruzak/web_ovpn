@@ -360,4 +360,3 @@ Remove-Item -LiteralPath $invalid -Force
 ~~~
 
 Expected: validation returns status "error" and non-zero; status remains the original successful revision.
-
