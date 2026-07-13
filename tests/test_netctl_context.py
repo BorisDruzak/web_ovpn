@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -171,6 +172,7 @@ def test_context_validate_then_status_returns_recorded_revision(tmp_path: Path, 
 
     assert rc == status_rc == 0
     assert valid["context"]["git_sha"] == status["context"]["git_sha"] == "abc123"
+    assert status["context"]["counts"] == valid["context"]["counts"]
 
 
 def test_context_validate_invalid_document_keeps_last_successful_revision(
@@ -312,3 +314,46 @@ def test_context_validate_uses_the_hashed_raw_bytes_for_parsing(
     assert context_reads == 1
     assert data["context"]["context_id"] == "test-network"
     assert data["context"]["sha256"] == sha256(raw_bytes).hexdigest()
+
+
+def test_legacy_context_revision_gets_empty_decoded_counts(tmp_path: Path) -> None:
+    from netctl.db import connect, latest_context_revision
+
+    db_path = tmp_path / "netctl.sqlite"
+    legacy = sqlite3.connect(db_path)
+    try:
+        legacy.execute(
+            """
+            CREATE TABLE context_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                context_id TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                validated_at TEXT NOT NULL,
+                git_sha TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                error_json TEXT NOT NULL DEFAULT '[]',
+                UNIQUE(context_id, sha256)
+            )
+            """
+        )
+        legacy.execute(
+            """
+            INSERT INTO context_revisions
+                (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json)
+            VALUES ('legacy', '2.2.0', 'a', 'legacy.yaml', '2026-07-13T00:00:00Z', '', 'ok', '[]')
+            """
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    conn = connect(f"sqlite:///{db_path.as_posix()}")
+    try:
+        assert latest_context_revision(conn)["counts"] == {}
+        conn.execute("UPDATE context_revisions SET counts_json = 'not-json'")
+        conn.commit()
+        assert latest_context_revision(conn)["counts"] == {}
+    finally:
+        conn.close()

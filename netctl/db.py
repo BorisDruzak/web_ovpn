@@ -190,6 +190,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             git_sha TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL,
             error_json TEXT NOT NULL DEFAULT '[]',
+            counts_json TEXT NOT NULL DEFAULT '{}',
             UNIQUE(context_id, sha256)
         );
         """
@@ -201,6 +202,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "network_sources", "ssh_identity_file", "TEXT")
     _ensure_column(conn, "network_sources", "ssh_proxy_jump", "TEXT")
     _ensure_column(conn, "network_sources", "ssh_connect_timeout", "INTEGER NOT NULL DEFAULT 8")
+    _ensure_column(conn, "context_revisions", "counts_json", "TEXT NOT NULL DEFAULT '{}'")
     conn.commit()
 
 
@@ -220,6 +222,18 @@ def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def context_revision_public(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    revision = row_to_dict(row)
+    if revision is None:
+        return None
+    try:
+        counts = json.loads(revision.pop("counts_json", "{}") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        counts = {}
+    revision["counts"] = counts if isinstance(counts, dict) else {}
+    return revision
+
+
 def record_context_revision(
     conn: sqlite3.Connection,
     context: dict[str, Any],
@@ -228,9 +242,10 @@ def record_context_revision(
 ) -> dict[str, Any]:
     conn.execute(
         """
-        INSERT OR IGNORE INTO context_revisions
-            (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json)
-        VALUES (?, ?, ?, ?, ?, ?, 'ok', '[]')
+        INSERT INTO context_revisions
+            (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json, counts_json)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', '[]', ?)
+        ON CONFLICT(context_id, sha256) DO UPDATE SET counts_json = excluded.counts_json
         """,
         (
             context["context_id"],
@@ -239,6 +254,7 @@ def record_context_revision(
             str(source_path),
             utc_now(),
             git_sha,
+            json.dumps(context.get("counts") if isinstance(context.get("counts"), dict) else {}, ensure_ascii=False, sort_keys=True),
         ),
     )
     conn.commit()
@@ -246,7 +262,7 @@ def record_context_revision(
         "SELECT * FROM context_revisions WHERE context_id = ? AND sha256 = ?",
         (context["context_id"], context["sha256"]),
     ).fetchone()
-    return dict(row)
+    return context_revision_public(row) or {}
 
 
 def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:
@@ -258,7 +274,7 @@ def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:
         LIMIT 1
         """
     ).fetchone()
-    return row_to_dict(row)
+    return context_revision_public(row)
 
 
 def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
