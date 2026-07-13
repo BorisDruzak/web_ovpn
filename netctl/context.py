@@ -20,7 +20,11 @@ COUNT_FIELDS = (
 
 
 def load_context(path: Path) -> dict[str, Any]:
-    document = yaml.safe_load(path.read_bytes())
+    return load_context_bytes(path.read_bytes())
+
+
+def load_context_bytes(raw_bytes: bytes) -> dict[str, Any]:
+    document = yaml.safe_load(raw_bytes)
     if not isinstance(document, dict):
         raise ValueError("context YAML must contain an object")
     return document

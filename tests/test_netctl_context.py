@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -192,3 +193,122 @@ def test_context_validate_invalid_document_keeps_last_successful_revision(
 
     assert invalid_rc != 0 and invalid["status"] == "error"
     assert status_rc == 0 and status["context"]["schema_version"] == "2.2.0"
+
+
+def test_context_validate_without_path_returns_json_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    rc, data = run_cli(["--json", "--db", db_url, "context", "validate"], capsys)
+
+    assert rc == 1
+    assert data == {"status": "error", "message": "context path is required", "errors": []}
+
+
+@pytest.mark.parametrize(
+    ("context_contents", "schema_contents"),
+    [
+        (None, json.dumps({"type": "object"})),
+        ("sites: [", json.dumps({"type": "object"})),
+        ("metadata: {}\n", "[]"),
+    ],
+    ids=["missing-context", "invalid-yaml", "invalid-schema"],
+)
+def test_context_validate_file_and_parse_errors_return_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], context_contents: str | None, schema_contents: str
+) -> None:
+    context_path = tmp_path / "context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    if context_contents is not None:
+        context_path.write_text(context_contents, encoding="utf-8")
+    schema_path.write_text(schema_contents, encoding="utf-8")
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    rc, data = run_cli(
+        ["--json", "--db", db_url, "context", "validate", "--path", str(context_path), "--schema", str(schema_path)], capsys
+    )
+
+    assert rc == 1
+    assert data["status"] == "error"
+    assert data["errors"] == []
+    assert data["message"]
+
+
+def test_context_validate_unreadable_file_returns_json_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context_path, schema_path, _document = write_context_files(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    original_read_bytes = Path.read_bytes
+
+    def fail_context_read(path: Path) -> bytes:
+        if path == context_path:
+            raise PermissionError("context is unreadable")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_context_read)
+
+    rc, data = run_cli(
+        ["--json", "--db", db_url, "context", "validate", "--path", str(context_path), "--schema", str(schema_path)], capsys
+    )
+
+    assert rc == 1
+    assert data == {"status": "error", "message": "context is unreadable", "errors": []}
+
+
+def test_context_status_without_successful_revision_returns_json_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    rc, data = run_cli(["--json", "--db", db_url, "context", "status"], capsys)
+
+    assert rc == 1
+    assert data == {"status": "error", "message": "no successful context validation found", "errors": []}
+
+
+def test_resolve_context_schema_precedence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from netctl.cli import resolve_context_schema
+
+    context_path = tmp_path / "repo" / "contexts" / "network.yaml"
+    context_path.parent.mkdir(parents=True)
+    context_path.write_text("metadata: {}\n", encoding="utf-8")
+    explicit_schema = tmp_path / "explicit.json"
+    sibling_schema = context_path.parent.parent / "schemas" / "network-context.schema.json"
+    environment_schema = tmp_path / "environment.json"
+    for path in (explicit_schema, sibling_schema, environment_schema):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("NETCTL_CONTEXT_SCHEMA", str(environment_schema))
+
+    assert resolve_context_schema(context_path, str(explicit_schema)) == explicit_schema
+    explicit_schema.unlink()
+    assert resolve_context_schema(context_path, "") == sibling_schema
+    sibling_schema.unlink()
+    assert resolve_context_schema(context_path, "") == environment_schema
+
+
+def test_context_validate_uses_the_hashed_raw_bytes_for_parsing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context_path, schema_path, _document = write_context_files(tmp_path)
+    raw_bytes = context_path.read_bytes()
+    changed_bytes = raw_bytes.replace(b"test-network", b"other-network")
+    original_read_bytes = Path.read_bytes
+    context_reads = 0
+
+    def alternating_context_reads(path: Path) -> bytes:
+        nonlocal context_reads
+        if path == context_path:
+            context_reads += 1
+            return raw_bytes if context_reads == 1 else changed_bytes
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", alternating_context_reads)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    rc, data = run_cli(
+        ["--json", "--db", db_url, "context", "validate", "--path", str(context_path), "--schema", str(schema_path)], capsys
+    )
+
+    assert rc == 0
+    assert context_reads == 1
+    assert data["context"]["context_id"] == "test-network"
+    assert data["context"]["sha256"] == sha256(raw_bytes).hexdigest()
