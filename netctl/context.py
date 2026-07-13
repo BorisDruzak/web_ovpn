@@ -1,0 +1,45 @@
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+COUNT_FIELDS = (
+    "sites",
+    "locations",
+    "segments",
+    "devices",
+    "services",
+    "links",
+    "features",
+    "risks",
+)
+
+
+def load_context(path: Path) -> dict[str, Any]:
+    document = yaml.safe_load(path.read_bytes())
+    if not isinstance(document, dict):
+        raise ValueError("context YAML must contain an object")
+    return document
+
+
+def load_schema(path: Path) -> dict[str, Any]:
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(schema, dict):
+        raise ValueError("context schema must contain an object")
+    return schema
+
+
+def context_summary(document: dict[str, Any], raw_bytes: bytes) -> dict[str, Any]:
+    metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+    return {
+        "context_id": str(metadata.get("context_id") or ""),
+        "schema_version": str(document.get("schema_version") or ""),
+        "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+        "counts": {
+            name: len(document.get(name, [])) if isinstance(document.get(name), list) else 0
+            for name in COUNT_FIELDS
+        },
+    }
