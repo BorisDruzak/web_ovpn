@@ -832,7 +832,9 @@ async def network_add(request: Request, db: Session = Depends(get_db)):
     except ValueError as exc:
         add_flash(request, "bad", f"Некорректный CIDR: {exc}")
         return redirect("/networks")
-    args = ["networks", "add", cidr, "--tag", tag, "--comment", comment]
+    args = ["networks", "add", cidr, "--tag", tag]
+    if comment:
+        args.extend(["--comment", comment])
     args.append("--nat" if form.get("nat") == "1" else "--no-nat")
     if form.get("restart_nat") == "1":
         args.append("--restart-nat")

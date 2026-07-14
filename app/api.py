@@ -521,7 +521,9 @@ def api_network_add(
     actor: str = Depends(require_api_actor),
     db: Session = Depends(get_db),
 ):
-    args = ["networks", "add", payload.cidr, "--tag", payload.tag, "--comment", payload.comment]
+    args = ["networks", "add", payload.cidr, "--tag", payload.tag]
+    if payload.comment:
+        args.extend(["--comment", payload.comment])
     args.append("--nat" if payload.nat else "--no-nat")
     if payload.restart_nat:
         args.append("--restart-nat")

@@ -191,6 +191,47 @@ def test_clients_page_shows_live_vpn_ip_without_ccd_push(tmp_path, monkeypatch):
     assert "192.168.50.77" in detail_page.text
 
 
+def test_network_add_without_comment_omits_comment_flag(tmp_path, monkeypatch):
+    fake = make_fake_vpnctl(tmp_path / "vpnctl")
+    log_path = tmp_path / "vpnctl-calls.jsonl"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+    monkeypatch.setenv("VPNCTL_PATH", str(fake))
+    monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
+    monkeypatch.setenv("OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("SHARE_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("FAKE_VPNCTL_LOG", str(log_path))
+
+    import app.db
+    import app.main
+
+    app.db.reset_engine_cache()
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login = client.get("/login")
+        csrf = login.text.split('name="csrf_token" value="')[1].split('"')[0]
+        assert client.post(
+            "/login",
+            data={"username": "admin", "password": "admin-pass", "csrf_token": csrf},
+            follow_redirects=False,
+        ).status_code == 303
+        response = client.post(
+            "/networks/add",
+            data={"cidr": "192.168.100.12", "tag": "default", "comment": "", "csrf_token": csrf},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line]
+    add_call = next(call for call in calls if call[1:3] == ["networks", "add"])
+    assert "192.168.100.12/32" in add_call
+    assert "--comment" not in add_call
+
+
 def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
     fake = make_fake_vpnctl(tmp_path / "vpnctl")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
