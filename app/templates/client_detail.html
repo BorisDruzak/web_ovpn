@@ -40,6 +40,7 @@
       <dt>detected_profile</dt><dd>{{ detail.detected_profile or '-' }}</dd>
       <dt>client_type</dt><dd>{{ detail.client_type or (detail.registry.client_type if detail.registry else '-') }}</dd>
       <dt>remote_lan_cidr</dt><dd>{{ detail.remote_lan_cidr or (detail.registry.remote_lan_cidr if detail.registry else '-') }}</dd>
+      <dt>Действующий VPN IP</dt><dd>{{ effective_vpn_ip or '-' }}</dd>
       {% if detail.registry %}
       {% for key, value in detail.registry.items() %}
       <dt>{{ key }}</dt><dd>{{ value }}</dd>
