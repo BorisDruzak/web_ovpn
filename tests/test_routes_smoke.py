@@ -24,7 +24,8 @@ if log_path:
 if cmd == "status":
     print(json.dumps({"services": {"openvpn": {"active": "active"}, "nat": {"active": "active"}}, "connected": []}))
 elif cmd == "list":
-    print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": "192.168.50.10", "connected": False}]}))
+    dynamic_vpn_ip = os.environ.get("FAKE_DYNAMIC_VPN_IP", "")
+    print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": None if dynamic_vpn_ip else "192.168.50.10", "connected": bool(dynamic_vpn_ip), "virtual_address": dynamic_vpn_ip}]}))
 elif cmd == "connected":
     print(json.dumps({"connected": [{"common_name": "alpha", "virtual_address": "192.168.50.10", "real_address": "1.2.3.4:1000", "bytes_received": 10, "bytes_sent": 20, "connected_since": "hidden"}]}))
 elif cmd == "server-config":
@@ -46,7 +47,8 @@ elif cmd == "profiles":
 elif cmd == "inspect":
     client = args[2]
     ovpn_path = os.path.join(out_dir, f"{client}.ovpn")
-    print(json.dumps({"client": client, "registry": {"name": client, "profile": "directum", "status": "active"}, "cert_status": "valid", "connected": None, "files": {"ovpn": {"path": ovpn_path, "exists": os.path.isfile(ovpn_path)}, "bat": {"path": os.path.join(out_dir, f"{client}-install-hosts-as-admin.bat"), "exists": False}}, "ccd": {"raw_lines": []}}))
+    dynamic_vpn_ip = os.environ.get("FAKE_DYNAMIC_VPN_IP", "")
+    print(json.dumps({"client": client, "registry": {"name": client, "profile": "directum", "status": "active", "vpn_ip": None}, "cert_status": "valid", "connected": {"virtual_address": dynamic_vpn_ip} if dynamic_vpn_ip else None, "files": {"ovpn": {"path": ovpn_path, "exists": os.path.isfile(ovpn_path)}, "bat": {"path": os.path.join(out_dir, f"{client}-install-hosts-as-admin.bat"), "exists": False}}, "ccd": {"raw_lines": []}}))
 elif cmd == "sync":
     print(json.dumps({"status": "ok", "imported_or_updated": 1}))
 elif cmd == "generate":
@@ -135,6 +137,7 @@ def test_login_dashboard_and_clients_smoke(tmp_path, monkeypatch):
         assert templates_page.status_code == 200
         assert "directum" in templates_page.text
 
+
         edit_page = client.get("/clients/alpha/edit")
         assert edit_page.status_code == 200
         assert "Применить шаблон сетей" in edit_page.text
@@ -151,6 +154,89 @@ def test_login_dashboard_and_clients_smoke(tmp_path, monkeypatch):
             if line
         ]
         assert any(call[1] == "sync" for call in calls)
+
+
+def test_clients_page_shows_live_vpn_ip_without_ccd_push(tmp_path, monkeypatch):
+    fake = make_fake_vpnctl(tmp_path / "vpnctl")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+    monkeypatch.setenv("VPNCTL_PATH", str(fake))
+    monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
+    monkeypatch.setenv("OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("SHARE_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("FAKE_DYNAMIC_VPN_IP", "192.168.50.77")
+
+    import app.db
+    import app.main
+
+    app.db.reset_engine_cache()
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login = client.get("/login")
+        csrf = login.text.split('name="csrf_token" value="')[1].split('"')[0]
+        assert client.post(
+            "/login",
+            data={"username": "admin", "password": "admin-pass", "csrf_token": csrf},
+            follow_redirects=False,
+        ).status_code == 303
+        clients_page = client.get("/clients")
+        detail_page = client.get("/clients/alpha")
+
+    assert clients_page.text.count("<td>192.168.50.77</td>") == 2
+    assert "Действующий VPN IP" in detail_page.text
+    assert "192.168.50.77" in detail_page.text
+
+
+def test_network_add_without_comment_omits_comment_flag(tmp_path, monkeypatch):
+    fake = make_fake_vpnctl(tmp_path / "vpnctl")
+    log_path = tmp_path / "vpnctl-calls.jsonl"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+    monkeypatch.setenv("VPNCTL_PATH", str(fake))
+    monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
+    monkeypatch.setenv("OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("SHARE_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("FAKE_VPNCTL_LOG", str(log_path))
+
+    import app.db
+    import app.main
+
+    app.db.reset_engine_cache()
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login = client.get("/login")
+        csrf = login.text.split('name="csrf_token" value="')[1].split('"')[0]
+        assert client.post(
+            "/login",
+            data={"username": "admin", "password": "admin-pass", "csrf_token": csrf},
+            follow_redirects=False,
+        ).status_code == 303
+        empty_comment_response = client.post(
+            "/networks/add",
+            data={"cidr": "192.168.100.12", "tag": "default", "comment": "", "csrf_token": csrf},
+            follow_redirects=False,
+        )
+        nonempty_comment_response = client.post(
+            "/networks/add",
+            data={"cidr": "192.168.100.13", "tag": "default", "comment": "branch office", "csrf_token": csrf},
+            follow_redirects=False,
+        )
+
+    assert empty_comment_response.status_code == 303
+    assert nonempty_comment_response.status_code == 303
+    calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line]
+    add_calls = [call for call in calls if call[1:3] == ["networks", "add"]]
+    assert "192.168.100.12/32" in add_calls[0]
+    assert "--comment" not in add_calls[0]
+    assert add_calls[1][add_calls[1].index("--comment") + 1] == "branch office"
 
 
 def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):

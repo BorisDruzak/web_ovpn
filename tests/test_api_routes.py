@@ -140,6 +140,33 @@ def test_api_status_and_clients_use_vpnctl(tmp_path, monkeypatch):
     assert clients.json()["data"]["clients"][0]["name"] == "alpha"
 
 
+def test_api_network_add_without_comment_omits_comment_flag(tmp_path, monkeypatch):
+    client, headers = make_api_client(tmp_path, monkeypatch)
+
+    empty_comment_response = client.post(
+        "/api/v1/networks/add",
+        headers=headers,
+        json={"cidr": "192.168.100.12", "tag": "default", "comment": "", "nat": False, "restart_nat": False},
+    )
+    nonempty_comment_response = client.post(
+        "/api/v1/networks/add",
+        headers=headers,
+        json={"cidr": "192.168.100.13", "tag": "default", "comment": "branch office", "nat": False, "restart_nat": False},
+    )
+
+    assert empty_comment_response.status_code == 200
+    assert nonempty_comment_response.status_code == 200
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "vpnctl-calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    add_calls = [call for call in calls if call[1:3] == ["networks", "add"]]
+    assert "192.168.100.12" in add_calls[0]
+    assert "--comment" not in add_calls[0]
+    assert add_calls[1][add_calls[1].index("--comment") + 1] == "branch office"
+
+
 def test_api_disable_requires_confirm_client_and_reason(tmp_path, monkeypatch):
     client, headers = make_api_client(tmp_path, monkeypatch)
 

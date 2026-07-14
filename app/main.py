@@ -340,7 +340,16 @@ def client_detail(client: str, request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
     client = require_client_name(client)
     data, error = cli_call(request, ["inspect", client])
-    return render(request, "client_detail.html", {"client": client, "detail": data, "error": error}, db)
+    connected = data.get("connected") if isinstance(data.get("connected"), dict) else {}
+    ccd = data.get("ccd") if isinstance(data.get("ccd"), dict) else {}
+    registry = data.get("registry") if isinstance(data.get("registry"), dict) else {}
+    effective_vpn_ip = connected.get("virtual_address") or ccd.get("vpn_ip") or registry.get("vpn_ip") or ""
+    return render(
+        request,
+        "client_detail.html",
+        {"client": client, "detail": data, "error": error, "effective_vpn_ip": effective_vpn_ip},
+        db,
+    )
 
 
 @app.get("/clients/{client}/edit", response_class=HTMLResponse)
@@ -823,7 +832,9 @@ async def network_add(request: Request, db: Session = Depends(get_db)):
     except ValueError as exc:
         add_flash(request, "bad", f"Некорректный CIDR: {exc}")
         return redirect("/networks")
-    args = ["networks", "add", cidr, "--tag", tag, "--comment", comment]
+    args = ["networks", "add", cidr, "--tag", tag]
+    if comment:
+        args.extend(["--comment", comment])
     args.append("--nat" if form.get("nat") == "1" else "--no-nat")
     if form.get("restart_nat") == "1":
         args.append("--restart-nat")

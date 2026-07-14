@@ -51,7 +51,7 @@
         <td><a href="/clients/{{ row.name }}">{{ row.name }}</a></td>
         <td>{{ row.profile or row.detected_profile or '-' }}</td>
         <td><span class="badge {{ row.status|status_class }}">{{ row.status or '-' }}</span></td>
-        <td>{{ row.vpn_ip or row.registry_vpn_ip or '-' }}</td>
+        <td>{{ row.virtual_address or row.vpn_ip or row.registry_vpn_ip or '-' }}</td>
         <td>
           {% if row.connected %}
           <span class="badge ok">connected</span>
