@@ -186,7 +186,7 @@ def test_clients_page_shows_live_vpn_ip_without_ccd_push(tmp_path, monkeypatch):
         clients_page = client.get("/clients")
         detail_page = client.get("/clients/alpha")
 
-    assert "192.168.50.77" in clients_page.text
+    assert clients_page.text.count("<td>192.168.50.77</td>") == 2
     assert "Действующий VPN IP" in detail_page.text
     assert "192.168.50.77" in detail_page.text
 
@@ -219,17 +219,24 @@ def test_network_add_without_comment_omits_comment_flag(tmp_path, monkeypatch):
             data={"username": "admin", "password": "admin-pass", "csrf_token": csrf},
             follow_redirects=False,
         ).status_code == 303
-        response = client.post(
+        empty_comment_response = client.post(
             "/networks/add",
             data={"cidr": "192.168.100.12", "tag": "default", "comment": "", "csrf_token": csrf},
             follow_redirects=False,
         )
+        nonempty_comment_response = client.post(
+            "/networks/add",
+            data={"cidr": "192.168.100.13", "tag": "default", "comment": "branch office", "csrf_token": csrf},
+            follow_redirects=False,
+        )
 
-    assert response.status_code == 303
+    assert empty_comment_response.status_code == 303
+    assert nonempty_comment_response.status_code == 303
     calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line]
-    add_call = next(call for call in calls if call[1:3] == ["networks", "add"])
-    assert "192.168.100.12/32" in add_call
-    assert "--comment" not in add_call
+    add_calls = [call for call in calls if call[1:3] == ["networks", "add"]]
+    assert "192.168.100.12/32" in add_calls[0]
+    assert "--comment" not in add_calls[0]
+    assert add_calls[1][add_calls[1].index("--comment") + 1] == "branch office"
 
 
 def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
