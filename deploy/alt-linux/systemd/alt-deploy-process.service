@@ -1,0 +1,16 @@
+[Unit]
+Description=Process pending ALT registrations
+After=network-online.target alt-deploy-register.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=altserver
+Group=altserver
+WorkingDirectory=/home/altserver/ansible
+ExecStart=/usr/bin/python3 /opt/alt-deploy-api/process_pending.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/alt-deploy/registration
+ReadWritePaths=/home/altserver/.ssh
