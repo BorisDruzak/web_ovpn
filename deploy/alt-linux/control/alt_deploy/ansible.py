@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+
+from .config import Settings
+from .errors import ControlError
+from .jsonio import read_json
+from .models import MachineRecord
+
+
+Runner = Callable[
+    [list[str], int],
+    subprocess.CompletedProcess[str],
+]
+
+
+def _default_runner(
+    command: list[str],
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        shell=False,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _bounded(value: str | None) -> str:
+    return (value or "")[-10000:]
+
+
+class AnsibleController:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        runner: Runner | None = None,
+    ) -> None:
+        self.settings = settings
+        self.runner = runner or _default_runner
+
+    @property
+    def preflight_playbook(self) -> Path:
+        return (
+            self.settings.ansible_project_dir
+            / "playbooks"
+            / "01-preflight.yml"
+        )
+
+    def _validate_preflight_files(self) -> None:
+        required_files = {
+            "ansible_playbook": (
+                self.settings.ansible_playbook_path
+            ),
+            "private_key": (
+                self.settings.private_key_file
+            ),
+            "known_hosts": (
+                self.settings.known_hosts_file
+            ),
+            "preflight_playbook": (
+                self.preflight_playbook
+            ),
+        }
+
+        missing = [
+            {
+                "name": name,
+                "path": str(path),
+            }
+            for name, path in required_files.items()
+            if not path.is_file()
+        ]
+
+        if missing:
+            raise ControlError(
+                code="preflight_not_configured",
+                message=(
+                    "ALT workstation preflight "
+                    "is not fully configured"
+                ),
+                exit_code=5,
+                details={
+                    "missing": missing,
+                },
+            )
+
+    def run_preflight(
+        self,
+        machine: MachineRecord,
+        employee_login: str = "",
+    ) -> dict[str, object]:
+        self._validate_preflight_files()
+
+        if not machine.ip:
+            raise ControlError(
+                code="machine_missing_ip",
+                message=(
+                    "Registered machine has no IP address"
+                ),
+                exit_code=5,
+                details={
+                    "machine_uuid": machine.uuid,
+                },
+            )
+
+        strict_ssh_arguments = (
+            "-o UserKnownHostsFile="
+            f"{self.settings.known_hosts_file} "
+            "-o StrictHostKeyChecking=yes "
+            "-o IdentitiesOnly=yes "
+            "-o ConnectTimeout=10"
+        )
+
+        with tempfile.TemporaryDirectory(
+            prefix="alt-deploy-preflight-",
+        ) as temporary_name:
+            temporary_dir = Path(temporary_name)
+            os.chmod(temporary_dir, 0o700)
+
+            result_path = temporary_dir / "result.json"
+
+            command = [
+                str(
+                    self.settings.ansible_playbook_path
+                ),
+                "-i",
+                f"{machine.ip},",
+                "-u",
+                "ansible",
+                (
+                    "--private-key="
+                    f"{self.settings.private_key_file}"
+                ),
+                (
+                    "--ssh-common-args="
+                    f"{strict_ssh_arguments}"
+                ),
+                "-e",
+                (
+                    "ansible_python_interpreter="
+                    "/usr/bin/python3"
+                ),
+                "-e",
+                f"machine_uuid={machine.uuid}",
+                "-e",
+                (
+                    "preflight_employee_login="
+                    f"{employee_login}"
+                ),
+                "-e",
+                (
+                    "preflight_result_file="
+                    f"{result_path}"
+                ),
+                str(self.preflight_playbook),
+            ]
+
+            try:
+                completed = self.runner(
+                    command,
+                    180,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ControlError(
+                    code="preflight_failed",
+                    message=(
+                        "Ansible preflight timed out"
+                    ),
+                    exit_code=5,
+                    details={
+                        "timeout": exc.timeout,
+                    },
+                ) from exc
+
+            if completed.returncode != 0:
+                raise ControlError(
+                    code="preflight_failed",
+                    message=(
+                        "Ansible preflight failed"
+                    ),
+                    exit_code=5,
+                    details={
+                        "returncode": (
+                            completed.returncode
+                        ),
+                        "stdout": _bounded(
+                            completed.stdout
+                        ),
+                        "stderr": _bounded(
+                            completed.stderr
+                        ),
+                    },
+                )
+
+            if not result_path.is_file():
+                raise ControlError(
+                    code="preflight_failed",
+                    message=(
+                        "Ansible preflight did not "
+                        "produce a result"
+                    ),
+                    exit_code=5,
+                    details={
+                        "stdout": _bounded(
+                            completed.stdout
+                        ),
+                        "stderr": _bounded(
+                            completed.stderr
+                        ),
+                    },
+                )
+
+            try:
+                result = read_json(result_path)
+            except (OSError, ValueError) as exc:
+                raise ControlError(
+                    code="preflight_failed",
+                    message=(
+                        "Ansible preflight produced "
+                        "an invalid result"
+                    ),
+                    exit_code=5,
+                ) from exc
+
+            return result

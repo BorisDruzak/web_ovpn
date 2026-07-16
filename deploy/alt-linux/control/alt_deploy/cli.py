@@ -6,6 +6,7 @@ import sys
 from collections.abc import Sequence
 from typing import TextIO
 
+from .ansible import AnsibleController
 from .config import Settings
 from .errors import ControlError
 from .registry import MachineRepository
@@ -38,6 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     show = machine_commands.add_parser("show")
     show.add_argument("machine_uuid")
+
+    preflight = commands.add_parser("preflight")
+    preflight.add_argument("machine_uuid")
 
     return parser
 
@@ -83,7 +87,8 @@ def main(
                 "status": "ok",
                 "machines": [
                     machine.to_public_dict()
-                    for machine in repository.list()
+                    for machine
+                    in repository.list()
                 ],
             }
 
@@ -98,6 +103,41 @@ def main(
                 ).to_public_dict(),
             }
 
+        elif parsed.command == "preflight":
+            machine = repository.get(
+                parsed.machine_uuid
+            )
+            controller = AnsibleController(
+                active_settings
+            )
+
+            try:
+                preflight_result = (
+                    controller.run_preflight(machine)
+                )
+            except ControlError as exc:
+                repository.persist_preflight(
+                    machine,
+                    {
+                        "status": "error",
+                        "error": exc.to_dict()["error"],
+                    },
+                    succeeded=False,
+                )
+                raise
+
+            repository.persist_preflight(
+                machine,
+                preflight_result,
+                succeeded=True,
+            )
+
+            payload = {
+                "status": "ok",
+                "machine_uuid": machine.uuid,
+                "preflight": preflight_result,
+            }
+
         else:
             raise ControlError(
                 code="unsupported_command",
@@ -107,7 +147,10 @@ def main(
 
     except ControlError as exc:
         if parsed.as_json:
-            _write_json(stdout, exc.to_dict())
+            _write_json(
+                stdout,
+                exc.to_dict(),
+            )
         else:
             stderr.write(
                 f"ERROR [{exc.code}]: "

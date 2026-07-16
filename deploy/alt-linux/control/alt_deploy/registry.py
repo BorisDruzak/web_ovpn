@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from .config import Settings
 from .errors import ControlError
-from .jsonio import read_json
+from .jsonio import atomic_write_json, read_json
 from .models import MachineRecord
 
 
@@ -30,7 +30,9 @@ class MachineRepository:
                     tzinfo=timezone.utc
                 )
 
-            timestamp = timestamp.astimezone(timezone.utc)
+            timestamp = timestamp.astimezone(
+                timezone.utc
+            )
         except ValueError:
             timestamp = datetime.min.replace(
                 tzinfo=timezone.utc
@@ -106,4 +108,38 @@ class MachineRepository:
             details={
                 "machine_uuid": normalized,
             },
+        )
+
+    def persist_preflight(
+        self,
+        machine: MachineRecord,
+        payload: dict[str, object],
+        *,
+        succeeded: bool,
+    ) -> MachineRecord:
+        record = dict(machine.raw)
+
+        record["preflight"] = dict(payload)
+        record["preflight_checked_at"] = (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+        record["status"] = (
+            "awaiting_assignment"
+            if succeeded
+            else "preflight_failed"
+        )
+
+        atomic_write_json(
+            machine.record_path,
+            record,
+        )
+
+        return MachineRecord.from_mapping(
+            record,
+            registration_state=(
+                machine.registration_state
+            ),
+            record_path=machine.record_path,
         )
