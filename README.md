@@ -4,6 +4,8 @@ FastAPI/Jinja2 web UI for managing OpenVPN profiles through `vpnctl`, plus a rea
 
 Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
+ALT Linux workstation deployment context: [docs/ALT_LINUX_AUTOINSTALL.md](docs/ALT_LINUX_AUTOINSTALL.md).
+
 ## Security Model
 
 - The web app does not edit OpenVPN PKI, CRL, CCD, `.ovpn`, iptables, RouterOS, or systemd directly.
