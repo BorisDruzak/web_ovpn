@@ -5,11 +5,13 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import TextIO
 
 from .config import Settings
 from .errors import ControlError
 from .jsonio import read_json
-from .models import MachineRecord
+from .models import JobRecord, MachineRecord
+from .registry import MachineRepository
 
 
 Runner = Callable[
@@ -231,3 +233,191 @@ class AnsibleController:
                 ) from exc
 
             return result
+
+
+    @property
+    def provision_playbook(self) -> Path:
+        return (
+            self.settings.ansible_project_dir
+            / "playbooks"
+            / "02-provision-account.yml"
+        )
+
+    def _validate_provision_files(
+        self,
+        job: JobRecord,
+    ) -> None:
+        required_files = {
+            "ansible_playbook": (
+                self.settings.ansible_playbook_path
+            ),
+            "private_key": (
+                self.settings.private_key_file
+            ),
+            "known_hosts": (
+                self.settings.known_hosts_file
+            ),
+            "provision_playbook": (
+                self.provision_playbook
+            ),
+            "request_file": (
+                job.job_dir / "request.json"
+            ),
+        }
+
+        missing = [
+            {
+                "name": name,
+                "path": str(path),
+            }
+            for name, path in required_files.items()
+            if not path.is_file()
+        ]
+
+        if missing:
+            raise ControlError(
+                code="provision_not_configured",
+                message=(
+                    "ALT workstation provisioning "
+                    "is not fully configured"
+                ),
+                exit_code=7,
+                details={"missing": missing},
+            )
+
+    def run_provision(
+        self,
+        job: JobRecord,
+        log_stream: TextIO,
+    ) -> dict[str, object]:
+        self._validate_provision_files(job)
+
+        machine = MachineRepository(
+            self.settings
+        ).get(job.machine_uuid)
+
+        if not machine.ip:
+            raise ControlError(
+                code="machine_missing_ip",
+                message=(
+                    "Registered machine has no IP address"
+                ),
+                exit_code=7,
+                details={
+                    "machine_uuid": machine.uuid,
+                },
+            )
+
+        result_path = (
+            job.job_dir / "provision-result.json"
+        )
+        result_path.unlink(missing_ok=True)
+
+        strict_ssh_arguments = (
+            "-o UserKnownHostsFile="
+            f"{self.settings.known_hosts_file} "
+            "-o StrictHostKeyChecking=yes "
+            "-o IdentitiesOnly=yes "
+            "-o ConnectTimeout=10"
+        )
+
+        command = [
+            str(self.settings.ansible_playbook_path),
+            "-i",
+            f"{machine.ip},",
+            "-u",
+            "ansible",
+            (
+                "--private-key="
+                f"{self.settings.private_key_file}"
+            ),
+            (
+                "--ssh-common-args="
+                f"{strict_ssh_arguments}"
+            ),
+            "-e",
+            (
+                "ansible_python_interpreter="
+                "/usr/bin/python3"
+            ),
+            "-e",
+            f"@{job.job_dir / 'request.json'}",
+            "-e",
+            f"job_id={job.job_id}",
+            "-e",
+            (
+                "provision_result_file="
+                f"{result_path}"
+            ),
+            str(self.provision_playbook),
+        ]
+
+        try:
+            completed = subprocess.run(
+                command,
+                shell=False,
+                text=True,
+                stdout=log_stream,
+                stderr=subprocess.STDOUT,
+                timeout=1800,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ControlError(
+                code="ansible_provision_failed",
+                message=(
+                    "Ansible provision timed out"
+                ),
+                exit_code=7,
+                details={
+                    "timeout": exc.timeout,
+                },
+            ) from exc
+        except OSError as exc:
+            raise ControlError(
+                code="ansible_provision_failed",
+                message=(
+                    "Unable to execute Ansible provision"
+                ),
+                exit_code=7,
+                details={
+                    "error": str(exc),
+                },
+            ) from exc
+
+        if completed.returncode != 0:
+            raise ControlError(
+                code="ansible_provision_failed",
+                message=(
+                    "Ansible workstation provision failed"
+                ),
+                exit_code=7,
+                details={
+                    "returncode": completed.returncode,
+                    "log_file": str(
+                        job.job_dir / "ansible.log"
+                    ),
+                },
+            )
+
+        if not result_path.is_file():
+            raise ControlError(
+                code="ansible_provision_failed",
+                message=(
+                    "Ansible provision did not produce "
+                    "a result"
+                ),
+                exit_code=7,
+            )
+
+        try:
+            return read_json(result_path)
+        except (OSError, ValueError) as exc:
+            raise ControlError(
+                code="ansible_provision_failed",
+                message=(
+                    "Ansible provision produced "
+                    "an invalid result"
+                ),
+                exit_code=7,
+            ) from exc
