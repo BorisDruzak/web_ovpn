@@ -1,0 +1,78 @@
+; ALT Workstation K 11.2 autoinstall template.
+; Copy to /srv/alt-deploy/metadata/autoinstall.scm and replace both
+; yescrypt placeholders before use. Do not commit active password hashes.
+
+; Language and keyboard.
+("/sysconfig-base/language" action "write" lang ("ru_RU"))
+("/sysconfig-base/kbd" language ("ru_RU") action "write" layout "alt_sh_toggle")
+
+; Yekaterinburg timezone, hardware clock in UTC.
+("/datetime-installer"
+ action "write"
+ commit #t
+ name "Asia"
+ zone "Asia/Yekaterinburg"
+ utc #t)
+
+; DHCP network configuration.
+; WARNING: enp3s0 is model-specific and was used for the verified test host.
+("/net-eth" action "write" reset #t)
+("/net-eth"
+ action "write"
+ name "enp3s0"
+ ipv "4"
+ ipv_enabled #t
+ controlled "NetworkManager"
+ configuration "dhcp"
+ default ""
+ search ""
+ dns ""
+ computer_name "alt-auto-test")
+("/net-eth" action "write" commit #t)
+
+; Destructive disk setup using the profile from vm-profile.scm.
+("/evms/control" action "write" control open installer #t)
+("/evms/control" action "write" control update)
+("/evms/profiles/timeshiftstation"
+ action apply
+ commit #f
+ clearall #t
+ exclude ())
+("/evms/control" action "write" control commit)
+("/evms/control" action "write" control close)
+
+; Install the workstation package groups from the exact ISO pkg-groups.tar.
+("pkg-install-init" action "write")
+("/pkg-install"
+ action "write"
+ lists "kworkstation/kde kworkstation/publishing kworkstation/remote-desktop kworkstation/graphics-editing kworkstation/sound-editing kworkstation/video-editing kworkstation/emulators kworkstation/printing kworkstation/scanning"
+ auto #t)
+("/preinstall" action "write")
+
+; UEFI bootloader.
+("/grub"
+ action "write"
+ device "efi"
+ passwd #f
+ passwd_1 "*"
+ passwd_2 "*")
+
+; Temporary installation passwords. Generate with:
+;   mkpasswd --method=yescrypt
+("/root/change_password"
+ iscrypted #t
+ passwd_1 "__ROOT_YESCRYPT_HASH__")
+
+("/users/create_account"
+ new_name "osn-admin"
+ real_name "osn-admin"
+ allow_su #t
+ auto #f
+ iscrypted #t
+ passwd_1 "__OSN_ADMIN_YESCRYPT_HASH__"
+ autologin #f)
+
+; Download and execute bootstrap on the first boot of the installed system.
+("/postinstall/firsttime"
+ script
+ "http://192.168.100.17:8087/bootstrap/bootstrap.sh")

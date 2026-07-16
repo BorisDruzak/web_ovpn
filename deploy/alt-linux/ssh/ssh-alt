@@ -1,0 +1,19 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: ssh-alt <IP-or-hostname> [command]" >&2
+    exit 2
+fi
+
+HOST=$1
+shift
+
+exec /usr/bin/ssh \
+    -o UserKnownHostsFile=/home/altserver/.ssh/known_hosts_autoinstall \
+    -o StrictHostKeyChecking=yes \
+    -o IdentitiesOnly=yes \
+    -i /home/altserver/.ssh/id_ed25519 \
+    "ansible@${HOST}" \
+    "$@"
