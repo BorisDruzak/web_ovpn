@@ -1,0 +1,8 @@
+[alt_autoinstall_test]
+alt-auto-test ansible_host=192.168.101.56
+
+[alt_autoinstall_test:vars]
+ansible_user=ansible
+ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_private_key_file=/home/altserver/.ssh/id_ed25519
+ansible_ssh_common_args=-o UserKnownHostsFile=/home/altserver/.ssh/known_hosts_autoinstall -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes
