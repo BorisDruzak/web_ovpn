@@ -4,11 +4,14 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TextIO
 
 from .ansible import AnsibleController
 from .config import Settings
 from .errors import ControlError
+from .jsonio import read_json
+from .provision import ProvisionPlanner, ProvisionRequest
 from .registry import MachineRepository
 
 
@@ -16,7 +19,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="workstationctl"
     )
-
     parser.add_argument(
         "--json",
         action="store_true",
@@ -29,12 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     machines = commands.add_parser("machines")
-
     machine_commands = machines.add_subparsers(
         dest="machine_command",
         required=True,
     )
-
     machine_commands.add_parser("list")
 
     show = machine_commands.add_parser("show")
@@ -42,6 +42,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     preflight = commands.add_parser("preflight")
     preflight.add_argument("machine_uuid")
+
+    provision = commands.add_parser("provision")
+    provision_commands = provision.add_subparsers(
+        dest="provision_command",
+        required=True,
+    )
+
+    preview = provision_commands.add_parser("preview")
+    preview.add_argument("machine_uuid")
+    preview.add_argument(
+        "--vars-file",
+        required=True,
+    )
 
     return parser
 
@@ -60,6 +73,21 @@ def _write_json(
     )
 
 
+def _read_request_file(path_text: str) -> dict[str, object]:
+    path = Path(path_text)
+
+    try:
+        return read_json(path)
+    except (OSError, ValueError) as exc:
+        raise ControlError(
+            code="invalid_request_file",
+            message=(
+                f"Unable to read provision request: {path}"
+            ),
+            exit_code=4,
+        ) from exc
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -71,12 +99,8 @@ def main(
         list(argv) if argv is not None else None
     )
 
-    active_settings = (
-        settings or Settings.from_env()
-    )
-    repository = MachineRepository(
-        active_settings
-    )
+    active_settings = settings or Settings.from_env()
+    repository = MachineRepository(active_settings)
 
     try:
         if (
@@ -87,8 +111,7 @@ def main(
                 "status": "ok",
                 "machines": [
                     machine.to_public_dict()
-                    for machine
-                    in repository.list()
+                    for machine in repository.list()
                 ],
             }
 
@@ -138,6 +161,24 @@ def main(
                 "preflight": preflight_result,
             }
 
+        elif (
+            parsed.command == "provision"
+            and parsed.provision_command == "preview"
+        ):
+            request_payload = _read_request_file(
+                parsed.vars_file
+            )
+            request = ProvisionRequest.from_mapping(
+                request_payload,
+                expected_uuid=parsed.machine_uuid,
+            )
+            payload = ProvisionPlanner(
+                active_settings
+            ).preview(
+                parsed.machine_uuid,
+                request,
+            )
+
         else:
             raise ControlError(
                 code="unsupported_command",
@@ -147,14 +188,10 @@ def main(
 
     except ControlError as exc:
         if parsed.as_json:
-            _write_json(
-                stdout,
-                exc.to_dict(),
-            )
+            _write_json(stdout, exc.to_dict())
         else:
             stderr.write(
-                f"ERROR [{exc.code}]: "
-                f"{exc.message}\n"
+                f"ERROR [{exc.code}]: {exc.message}\n"
             )
 
         return exc.exit_code
