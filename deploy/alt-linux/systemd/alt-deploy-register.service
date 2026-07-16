@@ -1,0 +1,20 @@
+[Unit]
+Description=ALT deployment registration API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=altserver
+Group=altserver
+ExecStart=/usr/bin/python3 /opt/alt-deploy-api/register_api.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/alt-deploy/registration
+
+[Install]
+WantedBy=multi-user.target
