@@ -21,6 +21,10 @@ PRIVATE_KEY = Path("/home/altserver/.ssh/id_ed25519")
 ANSIBLE = "/usr/bin/ansible"
 SSH_KEYGEN = "/usr/bin/ssh-keygen"
 SSH_KEYSCAN = "/usr/bin/ssh-keyscan"
+WORKSTATIONCTL = os.environ.get(
+    "ALT_DEPLOY_WORKSTATIONCTL",
+    "/usr/local/sbin/workstationctl",
+)
 
 ALLOWED_NETWORKS = (
     ipaddress.ip_network("192.168.100.0/23"),
@@ -174,15 +178,67 @@ def process_record(path: Path) -> None:
                 + result.stderr
             )
 
+        preflight = run_command(
+            [
+                WORKSTATIONCTL,
+                "--json",
+                "preflight",
+                machine_key,
+            ],
+            timeout=240,
+        )
+
+        if preflight.returncode != 0:
+            raise RuntimeError(
+                "Automatic preflight failed:\n"
+                + preflight.stdout[-10000:]
+                + "\n"
+                + preflight.stderr[-10000:]
+            )
+
+        try:
+            preflight_payload = json.loads(
+                preflight.stdout
+            )
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "Automatic preflight returned invalid JSON"
+            ) from exc
+
+        if not isinstance(preflight_payload, dict):
+            raise RuntimeError(
+                "Automatic preflight returned invalid payload"
+            )
+
+        if preflight_payload.get("status") != "ok":
+            raise RuntimeError(
+                "Automatic preflight did not return status=ok"
+            )
+
+        preflight_result = preflight_payload.get(
+            "preflight"
+        )
+
+        if not isinstance(preflight_result, dict):
+            raise RuntimeError(
+                "Automatic preflight result is missing"
+            )
+
         record.pop("failed_at", None)
         record.pop("error", None)
-        record["status"] = "ready"
+
+        record["status"] = "awaiting_assignment"
         record["verified_at"] = utc_now()
         record["ansible_output"] = result.stdout[-10000:]
+        record["preflight"] = dict(preflight_result)
+        record["preflight_verified_at"] = utc_now()
 
         save_record(path, record, READY_DIR)
 
-        print(f"{machine_key}: READY at {ip}")
+        print(
+            f"{machine_key}: "
+            f"AWAITING_ASSIGNMENT at {ip}"
+        )
 
     except Exception as exc:
         print(f"{path.name}: FAILED: {exc}")
