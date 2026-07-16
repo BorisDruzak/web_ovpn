@@ -10,8 +10,12 @@ from typing import TextIO
 from .ansible import AnsibleController
 from .config import Settings
 from .errors import ControlError
+from .jobs import JobRepository
 from .jsonio import read_json
-from .provision import ProvisionPlanner, ProvisionRequest
+from .provision import (
+    ProvisionPlanner,
+    ProvisionRequest,
+)
 from .registry import MachineRepository
 
 
@@ -19,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="workstationctl"
     )
+
     parser.add_argument(
         "--json",
         action="store_true",
@@ -35,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="machine_command",
         required=True,
     )
+
     machine_commands.add_parser("list")
 
     show = machine_commands.add_parser("show")
@@ -56,6 +62,25 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    start = provision_commands.add_parser("start")
+    start.add_argument("machine_uuid")
+    start.add_argument(
+        "--vars-file",
+        required=True,
+    )
+
+    jobs = commands.add_parser("jobs")
+    job_commands = jobs.add_subparsers(
+        dest="job_command",
+        required=True,
+    )
+
+    job_status = job_commands.add_parser("status")
+    job_status.add_argument("job_id")
+
+    job_log = job_commands.add_parser("log")
+    job_log.add_argument("job_id")
+
     return parser
 
 
@@ -73,7 +98,9 @@ def _write_json(
     )
 
 
-def _read_request_file(path_text: str) -> dict[str, object]:
+def _read_request_file(
+    path_text: str,
+) -> dict[str, object]:
     path = Path(path_text)
 
     try:
@@ -82,7 +109,8 @@ def _read_request_file(path_text: str) -> dict[str, object]:
         raise ControlError(
             code="invalid_request_file",
             message=(
-                f"Unable to read provision request: {path}"
+                "Unable to read provision request: "
+                f"{path}"
             ),
             exit_code=4,
         ) from exc
@@ -99,8 +127,13 @@ def main(
         list(argv) if argv is not None else None
     )
 
-    active_settings = settings or Settings.from_env()
-    repository = MachineRepository(active_settings)
+    active_settings = (
+        settings or Settings.from_env()
+    )
+
+    repository = MachineRepository(
+        active_settings
+    )
 
     try:
         if (
@@ -130,6 +163,7 @@ def main(
             machine = repository.get(
                 parsed.machine_uuid
             )
+
             controller = AnsibleController(
                 active_settings
             )
@@ -143,7 +177,9 @@ def main(
                     machine,
                     {
                         "status": "error",
-                        "error": exc.to_dict()["error"],
+                        "error": (
+                            exc.to_dict()["error"]
+                        ),
                     },
                     succeeded=False,
                 )
@@ -163,21 +199,63 @@ def main(
 
         elif (
             parsed.command == "provision"
-            and parsed.provision_command == "preview"
+            and parsed.provision_command
+            in {"preview", "start"}
         ):
             request_payload = _read_request_file(
                 parsed.vars_file
             )
+
             request = ProvisionRequest.from_mapping(
                 request_payload,
                 expected_uuid=parsed.machine_uuid,
             )
-            payload = ProvisionPlanner(
+
+            planner = ProvisionPlanner(
                 active_settings
-            ).preview(
-                parsed.machine_uuid,
-                request,
             )
+
+            if parsed.provision_command == "preview":
+                payload = planner.preview(
+                    parsed.machine_uuid,
+                    request,
+                )
+            else:
+                job = planner.start(
+                    parsed.machine_uuid,
+                    request,
+                )
+
+                payload = {
+                    "status": "ok",
+                    "job": job.to_public_dict(),
+                }
+
+        elif (
+            parsed.command == "jobs"
+            and parsed.job_command == "status"
+        ):
+            job = JobRepository(
+                active_settings
+            ).get(parsed.job_id)
+
+            payload = {
+                "status": "ok",
+                "job": job.to_public_dict(),
+            }
+
+        elif (
+            parsed.command == "jobs"
+            and parsed.job_command == "log"
+        ):
+            log_result = JobRepository(
+                active_settings
+            ).read_log(parsed.job_id)
+
+            payload = {
+                "status": "ok",
+                **log_result,
+            }
 
         else:
             raise ControlError(
@@ -188,10 +266,14 @@ def main(
 
     except ControlError as exc:
         if parsed.as_json:
-            _write_json(stdout, exc.to_dict())
+            _write_json(
+                stdout,
+                exc.to_dict(),
+            )
         else:
             stderr.write(
-                f"ERROR [{exc.code}]: {exc.message}\n"
+                f"ERROR [{exc.code}]: "
+                f"{exc.message}\n"
             )
 
         return exc.exit_code

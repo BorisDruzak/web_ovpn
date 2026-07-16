@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -9,7 +10,8 @@ from typing import Any
 from .assignments import AssignmentRepository
 from .config import Settings
 from .errors import ControlError
-from .jobs import JobRepository
+from .jobs import JobRepository, utc_now
+from .launcher import SystemdLauncher
 from .jsonio import read_json
 from .locks import exclusive_lock
 from .registry import MachineRepository
@@ -208,11 +210,19 @@ class ProvisionRequest:
 
 
 class ProvisionPlanner:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        launcher: SystemdLauncher | None = None,
+    ):
         self.settings = settings
         self.machines = MachineRepository(settings)
         self.jobs = JobRepository(settings)
         self.assignments = AssignmentRepository(settings)
+        self.launcher = launcher or SystemdLauncher(
+            settings
+        )
 
     @property
     def vault_file(self):
@@ -401,4 +411,57 @@ class ProvisionPlanner:
             return self._preview_unlocked(
                 machine_uuid,
                 request,
+            )
+
+    def start(
+        self,
+        machine_uuid: str,
+        request: ProvisionRequest,
+    ):
+        if os.geteuid() != 0:
+            raise ControlError(
+                code="root_required",
+                message=(
+                    "Provision start must be executed "
+                    "as root"
+                ),
+                exit_code=6,
+            )
+
+        with exclusive_lock(self.settings.lock_file):
+            self._preview_unlocked(
+                machine_uuid,
+                request,
+            )
+
+            job = self.jobs.create(
+                request.to_dict()
+            )
+
+            try:
+                systemd_unit = self.launcher.launch(
+                    job.job_id
+                )
+            except ControlError as exc:
+                launch_detail = str(
+                    exc.details.get("stderr") or ""
+                )
+
+                error_text = (
+                    f"{exc.message}\n{launch_detail}"
+                ).strip()[-10000:]
+
+                self.jobs.update(
+                    job.job_id,
+                    state="failed",
+                    stage="launch",
+                    finished_at=utc_now(),
+                    error=error_text,
+                )
+
+                raise
+
+            return self.jobs.update(
+                job.job_id,
+                systemd_unit=systemd_unit,
             )
