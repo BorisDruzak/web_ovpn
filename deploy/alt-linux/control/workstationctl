@@ -1,0 +1,13 @@
+#!/usr/bin/python3
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+PACKAGE_ROOT = Path("/opt/alt-deploy-control")
+sys.path.insert(0, str(PACKAGE_ROOT))
+
+from alt_deploy.cli import main
+
+raise SystemExit(main())
