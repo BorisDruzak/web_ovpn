@@ -1,0 +1,51 @@
+---
+- name: Create or reconcile local employee
+  ansible.builtin.user:
+    name: "{{ employee_login }}"
+    comment: "{{ employee_full_name }}"
+    home: "/home/{{ employee_login }}"
+    shell: /bin/bash
+    create_home: true
+    password: "{{ vault_employee_password_hash }}"
+    update_password: always
+    groups: ""
+    append: false
+    password_expire_max: -1
+    state: present
+  no_log: true
+
+- name: Read employee groups
+  ansible.builtin.command:
+    argv:
+      - id
+      - -nG
+      - "{{ employee_login }}"
+  register: local_employee_groups
+  changed_when: false
+
+- name: Verify employee is not an administrator
+  ansible.builtin.assert:
+    that:
+      - "'wheel' not in local_employee_groups.stdout.split()"
+    fail_msg: Employee account is a member of wheel
+
+- name: Check employee sudo authorization
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - -n
+      - -l
+      - -U
+      - "{{ employee_login }}"
+  register: local_employee_sudo
+  changed_when: false
+  failed_when: false
+
+- name: Reject employee sudo authorization
+  ansible.builtin.assert:
+    that:
+      - local_employee_sudo.rc != 0
+        or 'not allowed to run sudo' in local_employee_sudo.stderr
+        or 'may not run sudo' in local_employee_sudo.stdout
+        or 'may not run sudo' in local_employee_sudo.stderr
+    fail_msg: Employee account has sudo authorization

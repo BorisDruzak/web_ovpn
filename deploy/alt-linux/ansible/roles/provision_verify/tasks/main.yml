@@ -1,0 +1,126 @@
+---
+- name: Read final hostname
+  ansible.builtin.command:
+    argv:
+      - hostnamectl
+      - --static
+  register: provision_verify_hostname
+  changed_when: false
+
+- name: Read employee account
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - "{{ employee_login }}"
+  register: provision_verify_employee
+  changed_when: false
+
+- name: Read employee groups
+  ansible.builtin.command:
+    argv:
+      - id
+      - -nG
+      - "{{ employee_login }}"
+  register: provision_verify_groups
+  changed_when: false
+
+- name: Check employee sudo authorization
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - -n
+      - -l
+      - -U
+      - "{{ employee_login }}"
+  register: provision_verify_employee_sudo
+  changed_when: false
+  failed_when: false
+
+- name: Verify ansible passwordless sudo
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - -n
+      - "true"
+  become: false
+  register: provision_verify_ansible_sudo
+  changed_when: false
+
+- name: Read managed SDDM configuration
+  ansible.builtin.slurp:
+    src: /etc/sddm.conf.d/90-alt-workstation-users.conf
+  register: provision_verify_sddm_raw
+
+- name: Normalize managed SDDM configuration
+  ansible.builtin.set_fact:
+    provision_verify_sddm: >-
+      {{
+        provision_verify_sddm_raw.content
+        | b64decode
+      }}
+
+- name: Verify provisioned workstation state
+  ansible.builtin.assert:
+    that:
+      - provision_verify_hostname.stdout | trim == final_hostname
+      - provision_verify_employee.rc == 0
+      - "'wheel' not in provision_verify_groups.stdout.split()"
+      - provision_verify_employee_sudo.rc != 0
+        or 'not allowed to run sudo' in provision_verify_employee_sudo.stderr
+        or 'may not run sudo' in provision_verify_employee_sudo.stdout
+        or 'may not run sudo' in provision_verify_employee_sudo.stderr
+      - provision_verify_ansible_sudo.rc == 0
+      - "'HideUsers=ansible' in provision_verify_sddm"
+      - "'User=' in provision_verify_sddm"
+      - "'Session=' in provision_verify_sddm"
+      - "'Relogin=false' in provision_verify_sddm"
+    fail_msg: Workstation verification failed
+
+- name: Set provision completion time
+  ansible.builtin.set_fact:
+    provision_completed_at: "{{ ansible_date_time.iso8601 }}"
+
+- name: Create assignment directory
+  ansible.builtin.file:
+    path: /var/lib/alt-workstation
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write target assignment record
+  ansible.builtin.template:
+    src: assignment.json.j2
+    dest: /var/lib/alt-workstation/assignment.json
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Build public provision result
+  ansible.builtin.set_fact:
+    provision_public_result:
+      machine_uuid: "{{ machine_uuid }}"
+      final_hostname: "{{ final_hostname }}"
+      employee_login: "{{ employee_login }}"
+      employee_full_name: "{{ employee_full_name }}"
+      profile: "{{ profile }}"
+      job_id: "{{ job_id }}"
+      completed_at: "{{ provision_completed_at }}"
+      verification:
+        hostname: true
+        employee_exists: true
+        employee_not_wheel: true
+        employee_no_sudo: true
+        ansible_sudo: true
+        sddm_hides_ansible: true
+        sddm_autologin_disabled: true
+
+- name: Write provision result on controller
+  ansible.builtin.copy:
+    content: "{{ provision_public_result | to_nice_json }}"
+    dest: "{{ provision_result_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  run_once: true

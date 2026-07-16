@@ -1,0 +1,25 @@
+---
+- name: Provision ALT workstation local employee
+  hosts: all
+  gather_facts: true
+  become: true
+
+  pre_tasks:
+    - name: Validate required provision variables
+      ansible.builtin.assert:
+        that:
+          - machine_uuid | length > 0
+          - employee_login | length > 0
+          - employee_full_name | length > 0
+          - final_hostname | length > 0
+          - profile == 'standard'
+          - job_id | length > 0
+          - provision_result_file | length > 0
+          - vault_employee_password_hash | length > 0
+        fail_msg: Required provision variables are missing
+
+  roles:
+    - role: workstation_identity
+    - role: local_employee
+    - role: sddm_accounts
+    - role: provision_verify

@@ -1,0 +1,23 @@
+---
+- name: Create SDDM configuration directory
+  ansible.builtin.file:
+    path: /etc/sddm.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure visible SDDM accounts
+  ansible.builtin.copy:
+    dest: /etc/sddm.conf.d/90-alt-workstation-users.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Users]
+      HideUsers=ansible
+
+      [Autologin]
+      User=
+      Session=
+      Relogin=false

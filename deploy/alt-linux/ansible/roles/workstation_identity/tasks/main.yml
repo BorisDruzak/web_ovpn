@@ -1,0 +1,19 @@
+---
+- name: Set final static hostname
+  ansible.builtin.hostname:
+    name: "{{ final_hostname }}"
+    use: systemd
+
+- name: Read resulting static hostname
+  ansible.builtin.command:
+    argv:
+      - hostnamectl
+      - --static
+  register: workstation_identity_hostname
+  changed_when: false
+
+- name: Verify resulting static hostname
+  ansible.builtin.assert:
+    that:
+      - workstation_identity_hostname.stdout | trim == final_hostname
+    fail_msg: Final hostname was not applied
