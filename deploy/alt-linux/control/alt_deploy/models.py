@@ -17,6 +17,8 @@ class MachineRecord:
     status: str
     record_path: Path
     raw: dict[str, Any]
+    assignment: dict[str, Any] | None = None
+    active_job: dict[str, Any] | None = None
 
     @classmethod
     def from_mapping(
@@ -68,6 +70,31 @@ class MachineRecord:
             "registration_state": self.registration_state,
             "status": self.status,
             "preflight": self.raw.get("preflight"),
-            "assignment": None,
-            "active_job": None,
+            "assignment": self.assignment,
+            "active_job": self.active_job,
         }
+
+
+@dataclass(frozen=True)
+class JobRecord:
+    job_id: str
+    machine_uuid: str
+    state: str
+    stage: str
+    created_at: str
+    updated_at: str
+    job_dir: Path
+    request: dict[str, Any]
+    status: dict[str, Any]
+
+    def to_public_dict(self) -> dict[str, Any]:
+        payload = dict(self.status)
+
+        payload["job_id"] = self.job_id
+        payload["machine_uuid"] = self.machine_uuid
+        payload["state"] = self.state
+        payload["stage"] = self.stage
+        payload["created_at"] = self.created_at
+        payload["updated_at"] = self.updated_at
+
+        return payload

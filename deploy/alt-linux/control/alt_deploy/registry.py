@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
+from .assignments import AssignmentRepository
 from .config import Settings
 from .errors import ControlError
+from .jobs import JobRepository
 from .jsonio import atomic_write_json, read_json
 from .models import MachineRecord
 
@@ -80,8 +83,40 @@ class MachineRepository:
                 ):
                     selected[record.machine_key] = record
 
+        assignment_repository = AssignmentRepository(
+            self.settings
+        )
+        job_repository = JobRepository(
+            self.settings
+        )
+
+        enriched: list[MachineRecord] = []
+
+        for record in selected.values():
+            active_job = (
+                job_repository.active_for_machine(
+                    record.uuid
+                )
+            )
+
+            enriched.append(
+                replace(
+                    record,
+                    assignment=(
+                        assignment_repository.get(
+                            record.uuid
+                        )
+                    ),
+                    active_job=(
+                        active_job.to_public_dict()
+                        if active_job is not None
+                        else None
+                    ),
+                )
+            )
+
         return sorted(
-            selected.values(),
+            enriched,
             key=lambda item: (
                 item.hostname,
                 item.machine_key,
