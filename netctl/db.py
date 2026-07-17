@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .config import load_config_sources
+from .migrations import apply_migrations
 from .util import utc_now
 
 
@@ -19,6 +20,7 @@ def connect(db_url: str) -> sqlite3.Connection:
     path = db_path_from_url(db_url)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
     return conn
@@ -205,6 +207,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "network_sources", "ssh_connect_timeout", "INTEGER NOT NULL DEFAULT 8")
     _ensure_column(conn, "context_revisions", "counts_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "context_revisions", "validation_order", "INTEGER NOT NULL DEFAULT 0")
+    apply_migrations(conn)
     conn.commit()
 
 
