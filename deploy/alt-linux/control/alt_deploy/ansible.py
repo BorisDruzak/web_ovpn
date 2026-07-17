@@ -20,18 +20,6 @@ Runner = Callable[
 ]
 
 
-def _default_runner(
-    command: list[str],
-    timeout: int,
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        shell=False,
-        text=True,
-        capture_output=True,
-        timeout=timeout,
-        check=False,
-    )
 
 
 def _bounded(value: str | None) -> str:
@@ -46,7 +34,39 @@ class AnsibleController:
         runner: Runner | None = None,
     ) -> None:
         self.settings = settings
-        self.runner = runner or _default_runner
+        self.runner = runner or self._run_default
+
+    @property
+    def ansible_config(self) -> Path:
+        return (
+            self.settings.ansible_project_dir
+            / "ansible.cfg"
+        )
+
+    def _ansible_environment(
+        self,
+    ) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment["ANSIBLE_CONFIG"] = str(
+            self.ansible_config
+        )
+        return environment
+
+    def _run_default(
+        self,
+        command: list[str],
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            command,
+            shell=False,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            cwd=self.settings.ansible_project_dir,
+            env=self._ansible_environment(),
+        )
 
     @property
     def preflight_playbook(self) -> Path:
@@ -117,6 +137,7 @@ class AnsibleController:
             "-o UserKnownHostsFile="
             f"{self.settings.known_hosts_file} "
             "-o StrictHostKeyChecking=yes "
+            "-o ProxyCommand=none "
             "-o IdentitiesOnly=yes "
             "-o ConnectTimeout=10"
         )
@@ -317,6 +338,7 @@ class AnsibleController:
             "-o UserKnownHostsFile="
             f"{self.settings.known_hosts_file} "
             "-o StrictHostKeyChecking=yes "
+            "-o ProxyCommand=none "
             "-o IdentitiesOnly=yes "
             "-o ConnectTimeout=10"
         )
@@ -361,6 +383,8 @@ class AnsibleController:
                 stderr=subprocess.STDOUT,
                 timeout=1800,
                 check=False,
+                cwd=self.settings.ansible_project_dir,
+                env=self._ansible_environment(),
             )
         except subprocess.TimeoutExpired as exc:
             raise ControlError(

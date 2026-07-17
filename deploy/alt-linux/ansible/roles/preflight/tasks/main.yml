@@ -104,21 +104,54 @@
       - preflight_ansible_sudo.rc == 0
     fail_msg: The ansible account has no passwordless sudo
 
-- name: Check SDDM package
+- name: Check LightDM package
   ansible.builtin.command:
     argv:
       - rpm
       - -q
-      - sddm
-  register: preflight_sddm
+      - lightdm
+  register: preflight_lightdm
   changed_when: false
   failed_when: false
 
-- name: Validate SDDM installation
+- name: Check AccountsService package
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - accountsservice
+  register: preflight_accountsservice
+  changed_when: false
+  failed_when: false
+
+- name: Check AccountsService daemon
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - accounts-daemon
+  register: preflight_accounts_daemon
+  changed_when: false
+  failed_when: false
+
+- name: Read active display manager
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - /etc/systemd/system/display-manager.service
+  register: preflight_display_manager
+  changed_when: false
+  failed_when: false
+
+- name: Validate LightDM and AccountsService
   ansible.builtin.assert:
     that:
-      - preflight_sddm.rc == 0
-    fail_msg: SDDM is not installed
+      - preflight_lightdm.rc == 0
+      - preflight_accountsservice.rc == 0
+      - preflight_accounts_daemon.stdout | trim == 'active'
+      - "'lightdm.service' in preflight_display_manager.stdout"
+    fail_msg: LightDM or AccountsService is not correctly configured
 
 - name: Find home and root mounts
   ansible.builtin.set_fact:
@@ -193,7 +226,10 @@
         ansible_account: true
         osn_admin_account: true
         ansible_passwordless_sudo: true
-        sddm_installed: true
+        lightdm_installed: true
+        accountsservice_installed: true
+        accounts_daemon_active: true
+        lightdm_active: true
         filesystem_space: true
         employee_login_available: >-
           {{

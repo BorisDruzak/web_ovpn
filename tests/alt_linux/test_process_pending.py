@@ -319,3 +319,17 @@ def test_failed_automatic_preflight_moves_record_to_failed(
 
     assert record["status"] == "failed"
     assert "Automatic preflight failed" in record["error"]
+
+
+def test_pending_processor_disables_system_ssh_proxy() -> None:
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "alt-linux"
+        / "api"
+        / "process_pending.py"
+    ).read_text(encoding="utf-8")
+
+    assert "-o ProxyCommand=none " in source

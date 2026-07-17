@@ -27,8 +27,9 @@ EXPECTED_ACTIONS = [
     "set_final_hostname",
     "create_or_reconcile_local_employee",
     "remove_employee_admin_rights",
-    "hide_ansible_from_sddm",
-    "disable_sddm_autologin",
+    "hide_ansible_from_lightdm",
+    "keep_employee_visible_in_lightdm",
+    "disable_lightdm_autologin",
     "verify_provisioning",
     "write_assignment_records",
 ]
@@ -37,7 +38,7 @@ EXPECTED_ACTIONS = [
 def valid_request(
     *,
     machine_uuid: str = MACHINE_UUID,
-    employee_login: str = "i.ivanov",
+    employee_login: str = "i-ivanov",
     employee_full_name: str = "Иванов Иван Иванович",
     final_hostname: str = "buh-023",
     profile: str = "standard",
@@ -113,6 +114,10 @@ def prepare_preview_environment(tmp_path: Path):
         (
             {"employee_login": "ansible"},
             "protected_employee_login",
+        ),
+        (
+            {"employee_login": "i.ivanov"},
+            "invalid_employee_login",
         ),
         (
             {"employee_login": "ivanov@local"},

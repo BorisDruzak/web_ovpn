@@ -15,6 +15,16 @@
       - "{{ employee_login }}"
   register: provision_verify_employee
   changed_when: false
+  failed_when: false
+
+- name: Normalize employee account
+  ansible.builtin.set_fact:
+    provision_verify_employee_fields: >-
+      {{
+        (provision_verify_employee.stdout | trim).split(':')
+        if provision_verify_employee.rc == 0
+        else []
+      }}
 
 - name: Read employee groups
   ansible.builtin.command:
@@ -33,6 +43,8 @@
       - -l
       - -U
       - "{{ employee_login }}"
+  environment:
+    LC_ALL: C
   register: provision_verify_employee_sudo
   changed_when: false
   failed_when: false
@@ -47,16 +59,56 @@
   register: provision_verify_ansible_sudo
   changed_when: false
 
-- name: Read managed SDDM configuration
-  ansible.builtin.slurp:
-    src: /etc/sddm.conf.d/90-alt-workstation-users.conf
-  register: provision_verify_sddm_raw
+- name: Check LightDM service
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - lightdm
+  register: provision_verify_lightdm_service
+  changed_when: false
+  failed_when: false
 
-- name: Normalize managed SDDM configuration
+- name: Check AccountsService daemon
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - accounts-daemon
+  register: provision_verify_accounts_daemon
+  changed_when: false
+  failed_when: false
+
+- name: Read ansible AccountsService record
+  ansible.builtin.slurp:
+    src: /var/lib/AccountsService/users/ansible
+  register: provision_verify_ansible_account_raw
+
+- name: Read employee AccountsService record
+  ansible.builtin.slurp:
+    src: "/var/lib/AccountsService/users/{{ employee_login }}"
+  register: provision_verify_employee_account_raw
+
+- name: Read managed LightDM configuration
+  ansible.builtin.slurp:
+    src: /etc/lightdm/lightdm.conf.d/90-alt-workstation.conf
+  register: provision_verify_lightdm_raw
+
+- name: Normalize LightDM and AccountsService records
   ansible.builtin.set_fact:
-    provision_verify_sddm: >-
+    provision_verify_ansible_account: >-
       {{
-        provision_verify_sddm_raw.content
+        provision_verify_ansible_account_raw.content
+        | b64decode
+      }}
+    provision_verify_employee_account: >-
+      {{
+        provision_verify_employee_account_raw.content
+        | b64decode
+      }}
+    provision_verify_lightdm: >-
+      {{
+        provision_verify_lightdm_raw.content
         | b64decode
       }}
 
@@ -65,16 +117,25 @@
     that:
       - provision_verify_hostname.stdout | trim == final_hostname
       - provision_verify_employee.rc == 0
+      - provision_verify_employee_fields | length >= 7
+      - provision_verify_employee_fields[5] == '/home/' + employee_login
+      - provision_verify_employee_fields[6] == '/bin/bash'
       - "'wheel' not in provision_verify_groups.stdout.split()"
-      - provision_verify_employee_sudo.rc != 0
-        or 'not allowed to run sudo' in provision_verify_employee_sudo.stderr
-        or 'may not run sudo' in provision_verify_employee_sudo.stdout
-        or 'may not run sudo' in provision_verify_employee_sudo.stderr
+      - provision_verify_employee_sudo.rc == 0
+      - >-
+        'is not allowed to run sudo'
+        in
+        (
+          provision_verify_employee_sudo.stdout
+          + provision_verify_employee_sudo.stderr
+        )
       - provision_verify_ansible_sudo.rc == 0
-      - "'HideUsers=ansible' in provision_verify_sddm"
-      - "'User=' in provision_verify_sddm"
-      - "'Session=' in provision_verify_sddm"
-      - "'Relogin=false' in provision_verify_sddm"
+      - provision_verify_lightdm_service.stdout | trim == 'active'
+      - provision_verify_accounts_daemon.stdout | trim == 'active'
+      - "'SystemAccount=true' in provision_verify_ansible_account"
+      - "'SystemAccount=false' in provision_verify_employee_account"
+      - "'autologin-user=' in provision_verify_lightdm"
+      - "'autologin-user-timeout=0' in provision_verify_lightdm"
     fail_msg: Workstation verification failed
 
 - name: Set provision completion time
@@ -113,8 +174,9 @@
         employee_not_wheel: true
         employee_no_sudo: true
         ansible_sudo: true
-        sddm_hides_ansible: true
-        sddm_autologin_disabled: true
+        lightdm_hides_ansible: true
+        lightdm_shows_employee: true
+        lightdm_autologin_disabled: true
 
 - name: Write provision result on controller
   ansible.builtin.copy:

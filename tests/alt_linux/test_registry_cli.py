@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 
+from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.cli import main
 from alt_deploy.config import Settings
 from alt_deploy.jsonio import atomic_write_json
@@ -135,3 +136,50 @@ def test_machines_show_returns_not_found_error(
 
     assert payload["status"] == "error"
     assert payload["error"]["code"] == "machine_not_found"
+
+
+def test_machine_with_assignment_reports_assigned_status(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+
+    write_machine(
+        settings,
+        "ready",
+        "2026-07-16T08:00:00+00:00",
+    )
+
+    repository = MachineRepository(settings)
+    machine = repository.get(MACHINE_UUID)
+
+    repository.persist_preflight(
+        machine,
+        {
+            "status": "ok",
+            "checks": {
+                "uuid": True,
+            },
+        },
+        succeeded=True,
+    )
+
+    AssignmentRepository(settings).write(
+        MACHINE_UUID,
+        {
+            "machine_uuid": MACHINE_UUID,
+            "employee_login": "test-user",
+            "employee_full_name": "Тестовый Пользователь",
+            "final_hostname": "alt-auto-test",
+            "profile": "standard",
+            "job_id": "job-test",
+            "completed_at": "2026-07-17T11:29:05Z",
+            "verification": {
+                "hostname": True,
+            },
+        },
+    )
+
+    refreshed = repository.get(MACHINE_UUID)
+
+    assert refreshed.assignment is not None
+    assert refreshed.to_public_dict()["status"] == "assigned"

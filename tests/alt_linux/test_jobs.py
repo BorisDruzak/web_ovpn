@@ -32,7 +32,7 @@ def provision_request(
 ) -> dict[str, str]:
     return {
         "machine_uuid": machine_uuid,
-        "employee_login": "i.ivanov",
+        "employee_login": "i-ivanov",
         "employee_full_name": "Иванов Иван Иванович",
         "final_hostname": "buh-023",
         "profile": "standard",
@@ -45,7 +45,7 @@ def assignment_payload(
 ) -> dict[str, object]:
     return {
         "machine_uuid": MACHINE_UUID,
-        "employee_login": "i.ivanov",
+        "employee_login": "i-ivanov",
         "employee_full_name": "Иванов Иван Иванович",
         "final_hostname": "buh-023",
         "profile": "standard",

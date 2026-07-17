@@ -62,3 +62,7 @@ build/
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# ALT deployment active secrets and runtime state
+deploy/alt-linux/ansible/group_vars/vault.yml
+alt-deploy-state/

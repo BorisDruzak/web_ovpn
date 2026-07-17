@@ -116,6 +116,10 @@ def test_preflight_uses_inline_inventory_and_strict_known_hosts(
         "StrictHostKeyChecking=yes" in value
         for value in command
     )
+    assert any(
+        "ProxyCommand=none" in value
+        for value in command
+    )
     assert result["status"] == "ok"
 
 
@@ -168,3 +172,79 @@ def test_preflight_cli_persists_success(
     response = json.loads(stdout.getvalue())
 
     assert response["preflight"]["checks"]["uuid"] is True
+
+
+def test_default_preflight_runner_uses_project_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = prepare_controller_files(tmp_path)
+
+    ansible_config = (
+        settings.ansible_project_dir
+        / "ansible.cfg"
+    )
+    ansible_config.write_text(
+        "[defaults]\nroles_path = ./roles\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        command: list[str],
+        **kwargs,
+    ) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+
+        result_arg = next(
+            value
+            for value in command
+            if value.startswith(
+                "preflight_result_file="
+            )
+        )
+        result_path = Path(
+            result_arg.split("=", 1)[1]
+        )
+
+        atomic_write_json(
+            result_path,
+            {
+                "status": "ok",
+                "checks": {
+                    "alt_release": True,
+                },
+            },
+        )
+
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "PLAY RECAP",
+            "",
+        )
+
+    monkeypatch.setattr(
+        "alt_deploy.ansible.subprocess.run",
+        fake_run,
+    )
+
+    write_machine(
+        settings,
+        "ready",
+        "2026-07-16T08:00:00+00:00",
+    )
+    machine = MachineRepository(settings).list()[0]
+
+    result = AnsibleController(
+        settings
+    ).run_preflight(machine)
+
+    assert result["status"] == "ok"
+    assert captured["cwd"] == (
+        settings.ansible_project_dir
+    )
+    assert captured["env"]["ANSIBLE_CONFIG"] == str(
+        ansible_config
+    )

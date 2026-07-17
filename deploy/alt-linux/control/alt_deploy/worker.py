@@ -39,8 +39,9 @@ VERIFICATION_FIELDS = frozenset(
         "employee_not_wheel",
         "employee_no_sudo",
         "ansible_sudo",
-        "sddm_hides_ansible",
-        "sddm_autologin_disabled",
+        "lightdm_hides_ansible",
+        "lightdm_shows_employee",
+        "lightdm_autologin_disabled",
     }
 )
 

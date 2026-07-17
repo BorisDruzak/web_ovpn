@@ -37,7 +37,7 @@ PROTECTED_LOGINS = frozenset(
 )
 
 LOGIN_RE = re.compile(
-    r"^[a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])?$"
+    r"^[a-z0-9](?:[a-z0-9_-]{0,30}[a-z0-9])?$"
 )
 
 HOSTNAME_RE = re.compile(
@@ -50,8 +50,9 @@ PROVISION_ACTIONS = (
     "set_final_hostname",
     "create_or_reconcile_local_employee",
     "remove_employee_admin_rights",
-    "hide_ansible_from_sddm",
-    "disable_sddm_autologin",
+    "hide_ansible_from_lightdm",
+    "keep_employee_visible_in_lightdm",
+    "disable_lightdm_autologin",
     "verify_provisioning",
     "write_assignment_records",
 )
@@ -377,6 +378,20 @@ class ProvisionPlanner:
 
         machine = self.machines.get(normalized_uuid)
 
+        assignment = self.assignments.get(
+            normalized_uuid
+        )
+        if assignment is not None:
+            raise ControlError(
+                code="machine_already_assigned",
+                message=(
+                    "The workstation already has a successful "
+                    "employee assignment"
+                ),
+                exit_code=4,
+                details={"machine_uuid": normalized_uuid},
+            )
+
         preflight = machine.raw.get("preflight")
 
         if (
@@ -394,17 +409,6 @@ class ProvisionPlanner:
                     "machine_uuid": normalized_uuid,
                     "status": machine.status,
                 },
-            )
-
-        if self.assignments.get(normalized_uuid) is not None:
-            raise ControlError(
-                code="machine_already_assigned",
-                message=(
-                    "The workstation already has a successful "
-                    "employee assignment"
-                ),
-                exit_code=4,
-                details={"machine_uuid": normalized_uuid},
             )
 
         active_job = self.jobs.active_for_machine(

@@ -21,6 +21,14 @@ PREFLIGHT_PLAYBOOK = (
     / "01-preflight.yml"
 )
 
+PREFLIGHT_TASKS = (
+    ANSIBLE_ROOT
+    / "roles"
+    / "preflight"
+    / "tasks"
+    / "main.yml"
+)
+
 PROVISION_PLAYBOOK = (
     ANSIBLE_ROOT
     / "playbooks"
@@ -35,10 +43,10 @@ LOCAL_EMPLOYEE_TASKS = (
     / "main.yml"
 )
 
-SDDM_TASKS = (
+LIGHTDM_TASKS = (
     ANSIBLE_ROOT
     / "roles"
-    / "sddm_accounts"
+    / "lightdm_accounts"
     / "tasks"
     / "main.yml"
 )
@@ -114,7 +122,7 @@ def test_provision_role_order_is_fixed() -> None:
     assert role_names == [
         "workstation_identity",
         "local_employee",
-        "sddm_accounts",
+        "lightdm_accounts",
         "provision_verify",
     ]
 
@@ -136,15 +144,34 @@ def test_local_employee_uses_vault_hash_without_admin_groups() -> None:
     assert user_task["no_log"] is True
 
 
-def test_sddm_configuration_hides_only_ansible() -> None:
-    content = SDDM_TASKS.read_text(
+def test_lightdm_configuration_hides_only_ansible_and_disables_autologin() -> None:
+    content = LIGHTDM_TASKS.read_text(
         encoding="utf-8"
     )
 
-    assert "HideUsers=ansible" in content
-    assert "User=" in content
-    assert "Session=" in content
-    assert "Relogin=false" in content
+    assert (
+        "/var/lib/AccountsService/users/ansible"
+        in content
+    )
+    assert "SystemAccount=true" in content
+
+    assert (
+        "/var/lib/AccountsService/users/"
+        "{{ employee_login }}"
+        in content
+    )
+    assert "SystemAccount=false" in content
+
+    assert (
+        "/etc/lightdm/lightdm.conf.d/"
+        "90-alt-workstation.conf"
+        in content
+    )
+    assert "autologin-user=" in content
+    assert "autologin-user-timeout=0" in content
+
+    assert "osn-admin" not in content
+    assert "sddm" not in content.lower()
 
 
 def test_assignment_template_contains_no_secret_fields() -> None:
@@ -250,4 +277,141 @@ def test_local_employee_validates_existing_account_before_mutation() -> None:
         "employee_login not in "
         "['root', 'ansible', 'osn-admin']"
         in rendered
+    )
+
+
+def test_preflight_validates_lightdm_accountsservice_stack() -> None:
+    tasks = load_yaml(PREFLIGHT_TASKS)[0]
+
+    by_name = {
+        str(task.get("name") or ""): task
+        for task in tasks
+    }
+
+    assert by_name["Check LightDM package"][
+        "ansible.builtin.command"
+    ]["argv"] == [
+        "rpm",
+        "-q",
+        "lightdm",
+    ]
+
+    assert by_name["Check AccountsService package"][
+        "ansible.builtin.command"
+    ]["argv"] == [
+        "rpm",
+        "-q",
+        "accountsservice",
+    ]
+
+    assert by_name["Check AccountsService daemon"][
+        "ansible.builtin.command"
+    ]["argv"] == [
+        "systemctl",
+        "is-active",
+        "accounts-daemon",
+    ]
+
+    assert by_name["Read active display manager"][
+        "ansible.builtin.command"
+    ]["argv"] == [
+        "readlink",
+        "-f",
+        "/etc/systemd/system/display-manager.service",
+    ]
+
+    validation = by_name[
+        "Validate LightDM and AccountsService"
+    ]["ansible.builtin.assert"]["that"]
+
+    rendered = "\n".join(
+        str(condition)
+        for condition in validation
+    )
+
+    assert "preflight_lightdm.rc == 0" in rendered
+    assert "preflight_accountsservice.rc == 0" in rendered
+    assert "preflight_accounts_daemon.stdout | trim == 'active'" in rendered
+    assert "'lightdm.service' in preflight_display_manager.stdout" in rendered
+
+    combined = PREFLIGHT_TASKS.read_text(
+        encoding="utf-8"
+    ).lower()
+
+    assert "sddm" not in combined
+
+
+def test_provision_verifies_lightdm_accountsservice_state() -> None:
+    tasks_path = (
+        ANSIBLE_ROOT
+        / "roles"
+        / "provision_verify"
+        / "tasks"
+        / "main.yml"
+    )
+    content = tasks_path.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "/var/lib/AccountsService/users/ansible"
+        in content
+    )
+    assert (
+        "/var/lib/AccountsService/users/"
+        "{{ employee_login }}"
+        in content
+    )
+    assert (
+        "/etc/lightdm/lightdm.conf.d/"
+        "90-alt-workstation.conf"
+        in content
+    )
+
+    assert "SystemAccount=true" in content
+    assert "SystemAccount=false" in content
+    assert "autologin-user=" in content
+    assert "autologin-user-timeout=0" in content
+
+    assert "lightdm_hides_ansible" in content
+    assert "lightdm_shows_employee" in content
+    assert "lightdm_autologin_disabled" in content
+
+    assert "sddm" not in content.lower()
+
+
+def test_provision_playbook_explicitly_loads_vault() -> None:
+    documents = load_yaml(PROVISION_PLAYBOOK)
+    play = documents[0][0]
+
+    assert play["vars_files"] == [
+        "../group_vars/vault.yml",
+    ]
+
+
+def test_employee_sudo_checks_use_c_locale_and_accept_denial() -> None:
+    local_employee = (
+        ANSIBLE_ROOT
+        / "roles"
+        / "local_employee"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    provision_verify = (
+        ANSIBLE_ROOT
+        / "roles"
+        / "provision_verify"
+        / "tasks"
+        / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    for content in (local_employee, provision_verify):
+        assert "LC_ALL: C" in content
+        assert "is not allowed to run sudo" in content
+
+    assert "local_employee_sudo.rc != 0" not in local_employee
+    assert (
+        "provision_verify_employee_sudo.rc != 0"
+        not in provision_verify
     )

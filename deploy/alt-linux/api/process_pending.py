@@ -147,6 +147,7 @@ def process_record(path: Path) -> None:
         ssh_arguments = (
             f"-o UserKnownHostsFile={KNOWN_HOSTS} "
             "-o StrictHostKeyChecking=yes "
+            "-o ProxyCommand=none "
             "-o IdentitiesOnly=yes "
             "-o ConnectTimeout=10"
         )

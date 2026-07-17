@@ -72,6 +72,8 @@
       - -l
       - -U
       - "{{ employee_login }}"
+  environment:
+    LC_ALL: C
   register: local_employee_sudo
   changed_when: false
   failed_when: false
@@ -79,8 +81,12 @@
 - name: Reject employee sudo authorization
   ansible.builtin.assert:
     that:
-      - local_employee_sudo.rc != 0
-        or 'not allowed to run sudo' in local_employee_sudo.stderr
-        or 'may not run sudo' in local_employee_sudo.stdout
-        or 'may not run sudo' in local_employee_sudo.stderr
+      - local_employee_sudo.rc == 0
+      - >-
+        'is not allowed to run sudo'
+        in
+        (
+          local_employee_sudo.stdout
+          + local_employee_sudo.stderr
+        )
     fail_msg: Employee account has sudo authorization

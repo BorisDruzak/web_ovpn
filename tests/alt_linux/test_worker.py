@@ -10,7 +10,10 @@ from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.errors import ControlError
 from alt_deploy.jobs import JobRepository
 from alt_deploy.jsonio import atomic_write_json, read_json
-from alt_deploy.worker import run_job
+from alt_deploy.worker import (
+    VERIFICATION_FIELDS,
+    run_job,
+)
 
 from test_provision_preview import (
     prepare_preview_environment,
@@ -32,7 +35,7 @@ def successful_result(job_id: str) -> dict[str, Any]:
     return {
         "machine_uuid": MACHINE_UUID,
         "final_hostname": "buh-023",
-        "employee_login": "i.ivanov",
+        "employee_login": "i-ivanov",
         "employee_full_name": "Иванов Иван Иванович",
         "profile": "standard",
         "job_id": job_id,
@@ -43,8 +46,9 @@ def successful_result(job_id: str) -> dict[str, Any]:
             "employee_not_wheel": True,
             "employee_no_sudo": True,
             "ansible_sudo": True,
-            "sddm_hides_ansible": True,
-            "sddm_autologin_disabled": True,
+            "lightdm_hides_ansible": True,
+            "lightdm_shows_employee": True,
+            "lightdm_autologin_disabled": True,
         },
     }
 
@@ -161,6 +165,8 @@ def test_ansible_run_provision_uses_safe_command(
         stderr: int,
         timeout: int,
         check: bool,
+        cwd: Path,
+        env: dict[str, str],
     ) -> subprocess.CompletedProcess[str]:
         captured.update(
             {
@@ -170,6 +176,8 @@ def test_ansible_run_provision_uses_safe_command(
                 "stderr": stderr,
                 "timeout": timeout,
                 "check": check,
+                "cwd": cwd,
+                "env": env,
             }
         )
 
@@ -228,6 +236,10 @@ def test_ansible_run_provision_uses_safe_command(
         "StrictHostKeyChecking=yes" in value
         for value in command
     )
+    assert any(
+        "ProxyCommand=none" in value
+        for value in command
+    )
     assert (
         f"@{job.job_dir / 'request.json'}"
         in command
@@ -239,6 +251,10 @@ def test_ansible_run_provision_uses_safe_command(
     assert captured["stderr"] is subprocess.STDOUT
     assert captured["timeout"] == 1800
     assert captured["check"] is False
+    assert captured["cwd"] == settings.ansible_project_dir
+    assert captured["env"]["ANSIBLE_CONFIG"] == str(
+        settings.ansible_project_dir / "ansible.cfg"
+    )
     assert result == expected_result
 
 
@@ -282,7 +298,7 @@ def test_worker_success_finalizes_assignment(
 
     assert job.job_id in log
     assert MACHINE_UUID in log
-    assert "i.ivanov" in log
+    assert "i-ivanov" in log
     assert "buh-023" in log
     assert "TASK [local_employee" in log
 
@@ -377,3 +393,23 @@ def test_worker_rejects_failed_verification(
 
     assert assignments.get(MACHINE_UUID) is None
     assert not (job.job_dir / "result.json").exists()
+
+
+def test_worker_verification_contract_uses_lightdm() -> None:
+    assert VERIFICATION_FIELDS == frozenset(
+        {
+            "hostname",
+            "employee_exists",
+            "employee_not_wheel",
+            "employee_no_sudo",
+            "ansible_sudo",
+            "lightdm_hides_ansible",
+            "lightdm_shows_employee",
+            "lightdm_autologin_disabled",
+        }
+    )
+
+    assert not any(
+        "sddm" in field
+        for field in VERIFICATION_FIELDS
+    )

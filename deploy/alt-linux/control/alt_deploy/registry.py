@@ -93,6 +93,9 @@ class MachineRepository:
         enriched: list[MachineRecord] = []
 
         for record in selected.values():
+            assignment = assignment_repository.get(
+                record.uuid
+            )
             active_job = (
                 job_repository.active_for_machine(
                     record.uuid
@@ -102,11 +105,12 @@ class MachineRepository:
             enriched.append(
                 replace(
                     record,
-                    assignment=(
-                        assignment_repository.get(
-                            record.uuid
-                        )
+                    status=(
+                        "assigned"
+                        if assignment is not None
+                        else record.status
                     ),
+                    assignment=assignment,
                     active_job=(
                         active_job.to_public_dict()
                         if active_job is not None
