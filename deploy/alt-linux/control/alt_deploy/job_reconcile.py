@@ -108,12 +108,27 @@ class JobReconciler:
     def _reconcile_queued(
         self,
         job: JobRecord,
+        unit_state: dict[str, str] | None = None,
     ) -> dict[str, object] | None:
         recorded_unit = str(
             job.status.get("systemd_unit") or ""
         ).strip()
+
         if recorded_unit:
-            return None
+            if (
+                unit_state is None
+                or unit_state["LoadState"] != "not-found"
+            ):
+                return None
+            error = (
+                "Provision job was queued but its worker unit "
+                "is missing"
+            )
+        else:
+            error = (
+                "Provision job was queued but no worker unit "
+                "was recorded"
+            )
 
         previous_state = job.state
         self.jobs.update(
@@ -123,10 +138,7 @@ class JobReconciler:
             finished_at=utc_now(),
             error_code="worker_not_started",
             retryable=True,
-            error=(
-                "Provision job was queued but no worker unit "
-                "was recorded"
-            ),
+            error=error,
         )
 
         return {
@@ -178,7 +190,7 @@ class JobReconciler:
 
         try:
             raw_result = read_json(result_path)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError):
             invalid_result = ControlError(
                 code="invalid_provision_result",
                 message="Provision result cannot be read",
@@ -277,6 +289,15 @@ class JobReconciler:
                     continue
 
             unit_state = self._unit_state(job)
+
+            if job.state == "queued":
+                change = self._reconcile_queued(
+                    job,
+                    unit_state,
+                )
+                if change is not None:
+                    changed.append(change)
+                continue
 
             if job.state == "running":
                 recovered = self._recover_result(
