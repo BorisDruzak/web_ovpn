@@ -137,6 +137,33 @@ class JobReconciler:
             "retryable": True,
         }
 
+    def _reject_result(
+        self,
+        job: JobRecord,
+        error: ControlError,
+    ) -> dict[str, object]:
+        previous_state = job.state
+        self.jobs.update(
+            job.job_id,
+            state="failed",
+            stage="reconcile",
+            finished_at=utc_now(),
+            error_code=error.code,
+            retryable=True,
+            error=(
+                f"{error.code}: {error.message}"
+            )[-10000:],
+        )
+
+        return {
+            "job_id": job.job_id,
+            "previous_state": previous_state,
+            "state": "failed",
+            "action": "result_rejected",
+            "retryable": True,
+            "error_code": error.code,
+        }
+
     def _recover_result(
         self,
         job: JobRecord,
@@ -150,35 +177,21 @@ class JobReconciler:
             return None
 
         try:
-            result = _validate_result(
-                job,
-                read_json(result_path),
+            raw_result = read_json(result_path)
+        except (OSError, ValueError) as exc:
+            invalid_result = ControlError(
+                code="invalid_provision_result",
+                message="Provision result cannot be read",
+                exit_code=7,
             )
+            return self._reject_result(job, invalid_result)
+
+        try:
+            result = _validate_result(job, raw_result)
         except ControlError as exc:
             if exc.code != "invalid_provision_result":
                 raise
-
-            previous_state = job.state
-            self.jobs.update(
-                job.job_id,
-                state="failed",
-                stage="reconcile",
-                finished_at=utc_now(),
-                error_code=exc.code,
-                retryable=True,
-                error=(
-                    f"{exc.code}: {exc.message}"
-                )[-10000:],
-            )
-
-            return {
-                "job_id": job.job_id,
-                "previous_state": previous_state,
-                "state": "failed",
-                "action": "result_rejected",
-                "retryable": True,
-                "error_code": exc.code,
-            }
+            return self._reject_result(job, exc)
 
         self.assignments.write(job.machine_uuid, result)
 
