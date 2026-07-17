@@ -95,7 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
         dest="controller_command",
         required=True,
     )
-    controller_commands.add_parser("permissions")
+    permissions = controller_commands.add_parser(
+        "permissions"
+    )
+    permissions.add_argument(
+        "permission_action",
+        nargs="?",
+        choices=("repair",),
+    )
 
     return parser
 
@@ -288,13 +295,17 @@ def main(
             parsed.command == "controller"
             and parsed.controller_command == "permissions"
         ):
+            auditor = ControllerPermissionAuditor(
+                active_settings
+            )
+            if parsed.permission_action == "repair":
+                permissions_result = auditor.repair()
+            else:
+                permissions_result = auditor.check()
+
             payload = {
                 "status": "ok",
-                "controller_permissions": (
-                    ControllerPermissionAuditor(
-                        active_settings
-                    ).check()
-                ),
+                "controller_permissions": permissions_result,
             }
 
         else:
