@@ -1406,6 +1406,26 @@ def test_intent_binding_migration_creates_no_automatic_binding(
             """,
             (revision_id, revision_id),
         )
+        now = "2026-07-17T12:00:00Z"
+        import_run_id = seed_conn.execute(
+            """
+            INSERT INTO context_import_runs (
+                context_id, context_revision_id, git_sha, source_path,
+                started_at, finished_at, status
+            ) VALUES ('test-network', ?, 'matching-git',
+                      'test-context.yaml', ?, ?, 'success_imported')
+            """,
+            (revision_id, now, now),
+        ).lastrowid
+        seed_conn.execute(
+            """
+            INSERT INTO context_heads (
+                context_id, context_revision_id, activated_by_import_run_id,
+                activated_at
+            ) VALUES ('test-network', ?, ?, ?)
+            """,
+            (revision_id, import_run_id, now),
+        )
         seed_conn.commit()
     finally:
         seed_conn.close()
@@ -1423,6 +1443,18 @@ def test_intent_binding_migration_creates_no_automatic_binding(
 
     conn = connect(pr_1b_database)
     try:
+        active_intent = conn.execute(
+            """
+            SELECT heads.context_revision_id, intent_assets.stable_id
+            FROM context_heads AS heads
+            JOIN intent_assets
+              ON intent_assets.context_revision_id = heads.context_revision_id
+            WHERE heads.context_id = 'test-network'
+              AND intent_assets.lifecycle = 'active'
+            """
+        ).fetchone()
+        assert active_intent is not None
+        assert tuple(active_intent) == (revision_id, "mac:00:11:22:33:44:F1")
         assert conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM intent_assets").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM asset_intent_bindings").fetchone()[0] == 0
