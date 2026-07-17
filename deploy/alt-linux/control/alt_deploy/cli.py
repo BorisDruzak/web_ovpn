@@ -11,6 +11,7 @@ from .ansible import AnsibleController
 from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
 from .errors import ControlError
+from .job_reconcile import JobReconciler
 from .jobs import JobRepository
 from .jsonio import read_json
 from .provision import (
@@ -82,6 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     job_log = job_commands.add_parser("log")
     job_log.add_argument("job_id")
+
+    job_commands.add_parser("reconcile")
 
     vault = commands.add_parser("vault")
     vault_commands = vault.add_subparsers(
@@ -278,6 +281,17 @@ def main(
             payload = {
                 "status": "ok",
                 **log_result,
+            }
+
+        elif (
+            parsed.command == "jobs"
+            and parsed.job_command == "reconcile"
+        ):
+            payload = {
+                "status": "ok",
+                "reconciliation": JobReconciler(
+                    active_settings
+                ).reconcile(),
             }
 
         elif (
