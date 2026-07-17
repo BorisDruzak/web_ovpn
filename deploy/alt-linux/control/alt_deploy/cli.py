@@ -9,6 +9,7 @@ from typing import TextIO
 
 from .ansible import AnsibleController
 from .config import Settings
+from .controller_permissions import ControllerPermissionAuditor
 from .errors import ControlError
 from .jobs import JobRepository
 from .jsonio import read_json
@@ -88,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     vault_commands.add_parser("check")
+
+    controller = commands.add_parser("controller")
+    controller_commands = controller.add_subparsers(
+        dest="controller_command",
+        required=True,
+    )
+    controller_commands.add_parser("permissions")
 
     return parser
 
@@ -274,6 +282,19 @@ def main(
                 "vault": VaultHealthChecker(
                     active_settings
                 ).check(),
+            }
+
+        elif (
+            parsed.command == "controller"
+            and parsed.controller_command == "permissions"
+        ):
+            payload = {
+                "status": "ok",
+                "controller_permissions": (
+                    ControllerPermissionAuditor(
+                        active_settings
+                    ).check()
+                ),
             }
 
         else:
