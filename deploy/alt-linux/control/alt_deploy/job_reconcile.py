@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import subprocess
 
+from .assignments import AssignmentRepository
 from .config import Settings
 from .errors import ControlError
 from .jobs import ACTIVE_STATES, JobRepository, utc_now
+from .jsonio import read_json
 from .locks import exclusive_lock
 from .models import JobRecord
+from .worker import _validate_result
 
 
 SYSTEMCTL_PATH = "/usr/bin/systemctl"
@@ -21,6 +24,7 @@ class JobReconciler:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.jobs = JobRepository(settings)
+        self.assignments = AssignmentRepository(settings)
 
     @staticmethod
     def _expected_unit(job: JobRecord) -> str:
@@ -133,6 +137,40 @@ class JobReconciler:
             "retryable": True,
         }
 
+    def _recover_result(
+        self,
+        job: JobRecord,
+        unit_state: dict[str, str],
+    ) -> dict[str, object] | None:
+        result_path = job.job_dir / "result.json"
+        if not result_path.is_file():
+            return None
+
+        if unit_state["ActiveState"] in RUNNING_UNIT_STATES:
+            return None
+
+        result = _validate_result(
+            job,
+            read_json(result_path),
+        )
+        self.assignments.write(job.machine_uuid, result)
+
+        previous_state = job.state
+        self.jobs.update(
+            job.job_id,
+            state="successful",
+            stage="complete",
+            finished_at=str(result["completed_at"]),
+            result_file=str(result_path),
+        )
+
+        return {
+            "job_id": job.job_id,
+            "previous_state": previous_state,
+            "state": "successful",
+            "action": "result_recovered",
+        }
+
     def _reconcile_running(
         self,
         job: JobRecord,
@@ -201,6 +239,14 @@ class JobReconciler:
             unit_state = self._unit_state(job)
 
             if job.state == "running":
+                recovered = self._recover_result(
+                    job,
+                    unit_state,
+                )
+                if recovered is not None:
+                    changed.append(recovered)
+                    continue
+
                 change = self._reconcile_running(
                     job,
                     unit_state,
