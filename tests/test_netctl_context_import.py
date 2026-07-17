@@ -4,8 +4,10 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import sqlite3
+from typing import Any
 
 import pytest
+import yaml
 
 
 def import_document() -> dict[str, object]:
@@ -54,6 +56,15 @@ RUNTIME_TABLES = (
 
 def raw_document(document: dict[str, object]) -> bytes:
     return json.dumps(document, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+
+def run_cli(args: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, dict[str, Any]]:
+    from netctl.cli import main
+
+    rc = main(args)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    return rc, json.loads(captured.out)
 
 
 def connect_import_db(tmp_path: Path) -> sqlite3.Connection:
@@ -580,3 +591,133 @@ def test_materialisation_error_rolls_back_snapshot_and_head_then_marks_run_db_er
         ]
     finally:
         conn.close()
+
+
+def test_diff_snapshots_reports_canonical_entity_changes_in_stable_order() -> None:
+    from netctl.context_diff import diff_snapshots
+
+    base = {
+        "asset": {
+            "changed": {"id": "changed", "role": "before"},
+            "removed": {"id": "removed"},
+            "same": {"id": "same", "nested": {"a": 1, "b": 2}},
+            "retired": {"id": "retired", "lifecycle": "retired"},
+        }
+    }
+    candidate = {
+        "asset": {
+            "added": {"id": "added"},
+            "changed": {"role": "after", "id": "changed"},
+            "same": {"nested": {"b": 2, "a": 1}, "id": "same"},
+            "retired": {"id": "retired", "lifecycle": "retired"},
+        }
+    }
+
+    assert [(item["stable_id"], item["change"]) for item in diff_snapshots(base, candidate)] == [
+        ("added", "added"),
+        ("changed", "changed"),
+        ("removed", "removed"),
+        ("retired", "unchanged"),
+        ("same", "unchanged"),
+    ]
+
+
+def test_context_cli_import_diff_and_status_are_structural_and_read_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    context_path = tmp_path / "network-context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    document = import_document()
+    context_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    schema_path.write_text(json.dumps({"type": "object"}), encoding="utf-8")
+
+    missing_sha_rc, missing_sha = run_cli(
+        ["--json", "--db", database_url, "context", "import", "--path", str(context_path), "--schema", str(schema_path)],
+        capsys,
+    )
+    assert missing_sha_rc == 1
+    assert missing_sha == {"status": "error", "message": "context git SHA is required", "errors": []}
+
+    validate_rc, _validate = run_cli(
+        ["--json", "--db", database_url, "context", "validate", "--path", str(context_path), "--schema", str(schema_path)],
+        capsys,
+    )
+    status_rc, before_import_status = run_cli(["--json", "--db", database_url, "context", "status"], capsys)
+    assert validate_rc == status_rc == 0
+    assert before_import_status["context"] == before_import_status["latest_validated_revision"]
+    assert before_import_status["active_head"] is None
+
+    first_rc, first = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import", "--path", str(context_path), "--schema", str(schema_path),
+            "--git-sha", "first-git-sha",
+        ],
+        capsys,
+    )
+    assert first_rc == 0
+    assert first["status"] == "ok"
+    assert first["result"] == "success_imported"
+    assert first["run"]["git_sha"] == "first-git-sha"
+    assert first["head"]["context_revision_id"] == first["context"]["id"]
+
+    second_rc, second = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import", "--path", str(context_path), "--schema", str(schema_path),
+            "--git-sha", "second-git-sha",
+        ],
+        capsys,
+    )
+    assert second_rc == 0
+    assert second["result"] == "success_noop_same_content"
+    assert second["run"]["id"] != first["run"]["id"]
+    assert second["context"]["id"] == first["context"]["id"]
+
+    candidate = deepcopy(document)
+    candidate["devices"] = [
+        {"id": "firewall"},
+        {"id": "switch"},
+        {"id": "router", "role": "changed"},
+    ]
+    candidate["services"] = []
+    candidate["sites"] = list(reversed(candidate["sites"]))
+    candidate["links"] = list(reversed(candidate["links"]))
+    candidate_path = tmp_path / "candidate.yaml"
+    candidate_path.write_text(yaml.safe_dump(candidate), encoding="utf-8")
+
+    conn = connect_import_db(tmp_path)
+    try:
+        tables = ("context_revisions", "context_import_runs", "context_heads", *[table for table, _kind in __import__("netctl.context", fromlist=["IMPORT_COLLECTIONS"]).IMPORT_COLLECTIONS.values()])
+        before_counts = {table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables}
+    finally:
+        conn.close()
+    diff_rc, diff = run_cli(
+        ["--json", "--db", database_url, "context", "diff", "--path", str(candidate_path), "--schema", str(schema_path)],
+        capsys,
+    )
+    assert diff_rc == 0
+    assert diff["base_revision"]["id"] == first["context"]["id"]
+    assert diff["summary"] == {"added": 1, "changed": 1, "removed": 1, "unchanged": 6}
+    assert {(item["stable_id"], item["change"]) for item in diff["changes"]} >= {
+        ("firewall", "added"), ("router", "changed"), ("web", "removed"), ("switch", "unchanged"),
+    }
+    conn = connect_import_db(tmp_path)
+    try:
+        assert {table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables} == before_counts
+    finally:
+        conn.close()
+
+    invalid = deepcopy(document)
+    invalid["links"][0]["relation"] = "UNKNOWN"
+    context_path.write_text(yaml.safe_dump(invalid), encoding="utf-8")
+    invalid_rc, invalid_result = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import", "--path", str(context_path), "--schema", str(schema_path),
+            "--git-sha", "invalid-git-sha",
+        ],
+        capsys,
+    )
+    assert invalid_rc == 1
+    assert invalid_result["status"] == "error"
+    assert invalid_result["result"] == "validation_error"
+    assert invalid_result["head"]["context_revision_id"] == first["context"]["id"]

@@ -9,8 +9,10 @@ from typing import Any
 
 from .collect_lock import CollectLock
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, write_source_yaml
-from .context import context_summary, load_context_bytes, load_schema, validate_context
-from .db import connect, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
+from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
+from .context_diff import diff_snapshots
+from .context_import import import_context, load_active_snapshot
+from .db import context_revision_public, connect, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .util import utc_now, validate_source_name
@@ -358,8 +360,10 @@ def resolve_context_schema(path: Path, explicit_schema: str) -> Path:
 
 
 def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    if args.context_command == "validate" and not args.path:
+    if args.context_command in {"validate", "import", "diff"} and not args.path:
         return 1, err("context path is required", errors=[])
+    if args.context_command == "import" and not args.git_sha.strip():
+        return 1, err("context git SHA is required", errors=[])
 
     conn = connect(args.db)
     try:
@@ -367,7 +371,13 @@ def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             revision = latest_context_revision(conn)
             if revision is None:
                 return 1, err("no successful context validation found", errors=[])
-            return 0, ok(context=revision, errors=[])
+            head = get_context_head(conn, revision["context_id"])
+            return 0, ok(
+                context=revision,
+                latest_validated_revision=revision,
+                active_head=_context_head_public(conn, head),
+                errors=[],
+            )
 
         try:
             path = Path(args.path)
@@ -380,6 +390,27 @@ def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
         if errors:
             return 1, err("network context validation failed", errors=errors)
+
+        if args.context_command == "diff":
+            semantic_errors = validate_import_semantics(document)
+            if semantic_errors:
+                return 1, err("network context validation failed", errors=semantic_errors)
+            context_id = context_summary(document, raw_bytes)["context_id"]
+            head = get_context_head(conn, context_id)
+            base_snapshot = load_active_snapshot(conn, context_id) or {}
+            changes = diff_snapshots(base_snapshot, normalise_import_entities(document))
+            return 0, ok(
+                base_revision=_head_revision(conn, head),
+                changes=changes,
+                summary={name: sum(item["change"] == name for item in changes) for name in ("added", "changed", "removed", "unchanged")},
+                errors=[],
+            )
+
+        if args.context_command == "import":
+            result = import_context(conn, document, raw_bytes, path, args.git_sha)
+            if result["result"] in {"success_imported", "success_noop_same_content", "success_activated_existing_content"}:
+                return 0, ok(**result)
+            return 1, err("network context import failed", **result)
 
         revision = record_context_revision(conn, context_summary(document, raw_bytes), path, args.git_sha)
         conn.commit()
@@ -472,12 +503,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
-    for name in ("validate", "status"):
+    for name in ("validate", "status", "import", "diff"):
         context_command = context_sub.add_parser(name)
-        context_command.add_argument("--path", default="")
+        context_command.add_argument("--path", required=name in {"import", "diff"}, default="")
         context_command.add_argument("--schema", default="")
         context_command.add_argument("--git-sha", default="")
     return parser
+
+
+def _head_revision(conn, head: dict[str, Any] | None) -> dict[str, Any] | None:
+    if head is None:
+        return None
+    row = conn.execute("SELECT * FROM context_revisions WHERE id = ?", (head["context_revision_id"],)).fetchone()
+    return context_revision_public(row)
+
+
+def _context_head_public(conn, head: dict[str, Any] | None) -> dict[str, Any] | None:
+    if head is None:
+        return None
+    public = dict(head)
+    row = conn.execute(
+        "SELECT git_sha FROM context_import_runs WHERE id = ?",
+        (head["activated_by_import_run_id"],),
+    ).fetchone()
+    public["git_sha"] = str(row["git_sha"]) if row else ""
+    return public
 
 
 def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
