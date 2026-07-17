@@ -39,6 +39,8 @@ different MACs                     -> different assets
 no valid MAC                       -> one provisional asset per legacy host row
 ```
 
+The legacy `network_hosts` table keeps `UNIQUE(ip)`, so the “same IP, different MACs” case is represented and tested as reuse across time through historical observations or sequential states, not as two simultaneous legacy host rows.
+
 Migration must never merge different MACs using only:
 
 ```text
@@ -383,7 +385,7 @@ PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
 ```
 
-6. `network_routes.routing_table` is outside PR 2A and must be tracked separately.
+6. `network_routes.routing_table` is outside PR 2A and is tracked in Issue #8.
 7. Candidate merge generation and operator merge workflow are deferred. PR 2A only preserves the data model needed for them.
 
 ---
@@ -440,11 +442,13 @@ RED tests:
 
 ```text
 same MAC + changed IP -> one asset, one MAC interface, multiple current IP observations
-different MACs -> separate assets even when IP/hostname/display_name overlap
+different MACs -> separate assets even when hostname/display_name overlap
 IP-only host -> provisional legacy-host:<id> asset
 no global unique IP index
 migration report accounts for every legacy host
 ```
+
+The reused-IP scenario is tested separately as historical/temporal reuse because simultaneous duplicate IP rows are not representable in legacy `network_hosts`.
 
 Commands:
 
@@ -587,7 +591,8 @@ No live device or production-network access is permitted in tests.
 | Requirement | Required evidence |
 |---|---|
 | Same MAC and changed IP remains one asset | migration test with multiple current IP observations |
-| Different MACs are not auto-merged | overlapping IP/hostname fixture produces separate assets |
+| Different MACs are not auto-merged | matching hostname/display_name fixture produces separate assets |
+| Reused IP remains historical, not identity | temporal observation fixture maps one IP to different assets at different times |
 | Multiple interfaces are supported | explicit runtime insert/read-helper test |
 | IP-only host is provisional | `legacy-host:<id>`, provisional=1, confidence=20 |
 | IP is not globally unique | DDL/index inspection and reused-IP test |
