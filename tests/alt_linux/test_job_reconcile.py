@@ -194,3 +194,53 @@ def test_jobs_reconcile_reports_genuinely_running_worker(
 
     after = jobs.get(running.job_id)
     assert after.status == status_before
+
+
+def test_jobs_reconcile_marks_unlaunched_queue_retryable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    jobs = JobRepository(settings)
+    queued = jobs.create(provision_request())
+
+    def fail_if_systemctl_runs(*args, **kwargs):
+        raise AssertionError("queued job without unit must not query systemd")
+
+    monkeypatch.setattr(subprocess, "run", fail_if_systemctl_runs)
+
+    stdout = io.StringIO()
+    rc = main(
+        ["--json", "jobs", "reconcile"],
+        settings=settings,
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    assert rc == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload == {
+        "status": "ok",
+        "reconciliation": {
+            "status": "ok",
+            "checked": 1,
+            "changed": [
+                {
+                    "job_id": queued.job_id,
+                    "previous_state": "queued",
+                    "state": "failed",
+                    "action": "queued_recoverable",
+                    "retryable": True,
+                }
+            ],
+            "unchanged": [],
+        },
+    }
+
+    reconciled = jobs.get(queued.job_id)
+    assert reconciled.state == "failed"
+    assert reconciled.stage == "reconcile"
+    assert reconciled.status["error_code"] == "worker_not_started"
+    assert reconciled.status["retryable"] is True
+    assert reconciled.status["finished_at"]
+    assert "systemd_unit" not in reconciled.status
