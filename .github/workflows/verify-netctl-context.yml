@@ -6,6 +6,7 @@ on:
       - "netctl/**"
       - "tests/**"
       - "requirements.txt"
+      - "docs/verification/netctl-context-validate-status.md"
       - ".github/workflows/verify-netctl-context.yml"
   workflow_dispatch:
 
