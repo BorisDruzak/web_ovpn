@@ -1,6 +1,25 @@
 #!/bin/bash
 set -Eeuo pipefail
 
+REQUIRED_COMMANDS=(
+    python3
+    ansible-playbook
+    ansible-vault
+    systemd-run
+    install
+    cp
+    ssh
+    ssh-keyscan
+    mkpasswd
+)
+
+for command_name in "${REQUIRED_COMMANDS[@]}"; do
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        echo "Missing required command: ${command_name}" >&2
+        exit 1
+    fi
+done
+
 if [[ ${EUID} -ne 0 ]]; then
     echo "Run as root" >&2
     exit 1
