@@ -34,9 +34,10 @@ Required controller facilities:
 - systemd and OpenSSH client tools;
 - `mkpasswd` for initial password-hash preparation.
 
-The current installer validates root, `altserver` and `ansible-playbook`.
-Phase 1 will make dependency validation exhaustive before replacing runtime
-files.
+Before changing runtime files, the installer verifies `python3`,
+`ansible-playbook`, `ansible-vault`, `systemd-run`, `install`, `cp`, `ssh`,
+`ssh-keyscan` and `mkpasswd`. It then requires root and the `altserver` service
+account.
 
 ## Install or update the controller
 
@@ -113,21 +114,17 @@ sudo chmod 0600 \
   /home/altserver/ansible/group_vars/vault.yml
 ```
 
-Validate decryption and the required variable without displaying its value:
+Validate the complete Vault contract without displaying any secret:
 
 ```bash
-sudo -u altserver env \
-  ANSIBLE_VAULT_PASSWORD_FILE=/home/altserver/.ansible-vault-pass \
-  ansible-vault view \
-  /home/altserver/ansible/group_vars/vault.yml \
-  >/dev/null
-
-sudo -u altserver env \
-  ANSIBLE_VAULT_PASSWORD_FILE=/home/altserver/.ansible-vault-pass \
-  ansible-vault view \
-  /home/altserver/ansible/group_vars/vault.yml \
-  | grep -q '^vault_employee_password_hash:[[:space:]]\+'
+sudo -u altserver workstationctl --json vault check
 ```
+
+The command checks file presence, ownership, mode `0600`, the Ansible Vault
+header, successful decryption, the required variable and yescrypt format. A
+healthy Vault returns only boolean checks. An unhealthy Vault returns
+`error.code=vault_unhealthy` and boolean diagnostics; neither response contains
+the hash, decrypted YAML or Vault password.
 
 ## CLI and provision request
 
@@ -137,6 +134,7 @@ Read and non-mutating operations run as `altserver`:
 sudo -u altserver workstationctl --json machines list
 sudo -u altserver workstationctl --json machines show <uuid>
 sudo -u altserver workstationctl --json preflight <uuid>
+sudo -u altserver workstationctl --json vault check
 sudo -u altserver workstationctl --json provision preview <uuid> \
   --vars-file /path/to/request.json
 sudo -u altserver workstationctl --json jobs status <job_id>
@@ -193,6 +191,7 @@ Use the CLI before reading private files directly:
 
 ```bash
 sudo -u altserver workstationctl --json machines show <uuid>
+sudo -u altserver workstationctl --json vault check
 sudo -u altserver workstationctl --json jobs status <job_id>
 sudo -u altserver workstationctl --json jobs log <job_id>
 ```
@@ -241,6 +240,7 @@ deploy/alt-linux/
 ├── api/process_pending.py
 ├── control/
 │   ├── alt_deploy/
+│   │   └── vault.py
 │   ├── workstationctl
 │   └── alt-provision-worker
 ├── install-control-plane.sh
