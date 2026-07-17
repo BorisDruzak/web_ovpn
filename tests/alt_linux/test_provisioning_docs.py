@@ -128,6 +128,7 @@ def test_deploy_readme_documents_current_cli_and_request_contract() -> None:
         "workstationctl --json machines show <uuid>",
         "workstationctl --json preflight <uuid>",
         "workstationctl --json vault check",
+        "workstationctl --json controller permissions",
         "workstationctl --json provision preview <uuid>",
         "workstationctl --json provision start <uuid>",
         "workstationctl --json jobs status <job_id>",
@@ -157,3 +158,23 @@ def test_deploy_readme_documents_state_paths_and_recovery() -> None:
     missing = [fragment for fragment in required if fragment not in content]
     assert not missing, f"README missing: {missing}"
     assert not re.search(r"employee_login[^\n]*\.", content)
+
+
+def test_deploy_readme_documents_controller_permission_contract() -> None:
+    content = read(Path("deploy/alt-linux/README.md"))
+    required = (
+        "## Controller state permissions",
+        "/var/lib/alt-deploy` | `altserver` | `altserver` | `0700`",
+        "/srv/alt-deploy/registration` | `altserver` | `altserver` | `0700`",
+        "/home/altserver/.ssh` | `altserver` | `altserver` | `0700`",
+        "workstationctl --json controller permissions",
+        "workstationctl --json controller permissions repair",
+        "controller_permissions_unhealthy",
+        "controller_permissions_repair_blocked",
+        "controller_permissions_repair_failed",
+        "symbolic links",
+        "does not create a missing Vault file",
+        "requires root",
+    )
+    missing = [fragment for fragment in required if fragment not in content]
+    assert not missing, f"README permission contract missing: {missing}"
