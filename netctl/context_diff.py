@@ -1,18 +1,31 @@
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal, TypeAlias
 
 from .context import canonical_entity_hash
 
 
+@dataclass(frozen=True)
+class SnapshotEntity:
+    """Canonical payload plus materialized-snapshot storage lifecycle."""
+
+    payload: dict[str, Any]
+    lifecycle: Literal["active", "retired"] = "active"
+
+
+SnapshotValue: TypeAlias = dict[str, Any] | SnapshotEntity
+Snapshot: TypeAlias = dict[str, dict[str, SnapshotValue]]
+
+
 def diff_snapshots(
-    base: dict[str, dict[str, dict[str, Any]]],
-    candidate: dict[str, dict[str, dict[str, Any]]],
+    base: Snapshot,
+    candidate: Snapshot,
 ) -> list[dict[str, str | None]]:
     """Return a deterministic structural diff keyed by entity type and stable ID.
 
-    Both inputs contain canonical payloads for active intent. Storage lifecycle
-    is filtered before this boundary and must not be inferred from payload keys.
+    Raw mappings are active canonical payloads. Materialized rows use
+    ``SnapshotEntity`` so storage lifecycle remains separate from payload keys.
     """
     changes: list[dict[str, str | None]] = []
     entity_types = sorted(set(base) | set(candidate))
@@ -20,8 +33,8 @@ def diff_snapshots(
         before_entities = base.get(entity_type, {})
         after_entities = candidate.get(entity_type, {})
         for stable_id in sorted(set(before_entities) | set(after_entities)):
-            before = before_entities.get(stable_id)
-            after = after_entities.get(stable_id)
+            before = _active_payload(before_entities.get(stable_id))
+            after = _active_payload(after_entities.get(stable_id))
             before_hash = canonical_entity_hash(before) if before is not None else None
             after_hash = canonical_entity_hash(after) if after is not None else None
             if before is None and after is None:
@@ -44,3 +57,9 @@ def diff_snapshots(
                 }
             )
     return changes
+
+
+def _active_payload(entity: SnapshotValue | None) -> dict[str, Any] | None:
+    if isinstance(entity, SnapshotEntity):
+        return entity.payload if entity.lifecycle == "active" else None
+    return entity

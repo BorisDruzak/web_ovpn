@@ -729,6 +729,61 @@ def test_diff_snapshots_reports_canonical_entity_changes_in_stable_order() -> No
     ]
 
 
+def test_diff_snapshots_treats_retired_base_as_absent_from_active_candidate() -> None:
+    from netctl.context_diff import SnapshotEntity, diff_snapshots
+
+    payload = {"id": "old-router", "lifecycle": "retired"}
+    base = {
+        "asset": {
+            "old-router": SnapshotEntity(payload=payload, lifecycle="retired"),
+        }
+    }
+    candidate = {"asset": {"old-router": payload}}
+
+    assert diff_snapshots(base, candidate) == [
+        {
+            "entity_type": "asset",
+            "stable_id": "old-router",
+            "change": "added",
+            "before_hash": None,
+            "after_hash": hashlib.sha256(
+                b'{"id":"old-router","lifecycle":"retired"}'
+            ).hexdigest(),
+        }
+    ]
+
+
+def test_diff_snapshots_reports_two_retired_materialized_rows_with_null_hashes() -> None:
+    from netctl.context_diff import SnapshotEntity, diff_snapshots
+
+    base = {
+        "asset": {
+            "old-router": SnapshotEntity(
+                payload={"id": "old-router", "role": "before"},
+                lifecycle="retired",
+            ),
+        }
+    }
+    candidate = {
+        "asset": {
+            "old-router": SnapshotEntity(
+                payload={"id": "old-router", "role": "after"},
+                lifecycle="retired",
+            ),
+        }
+    }
+
+    assert diff_snapshots(base, candidate) == [
+        {
+            "entity_type": "asset",
+            "stable_id": "old-router",
+            "change": "unchanged",
+            "before_hash": None,
+            "after_hash": None,
+        }
+    ]
+
+
 def test_context_cli_diff_treats_payload_lifecycle_as_active_intent(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -761,6 +816,58 @@ def test_context_cli_diff_treats_payload_lifecycle_as_active_intent(
     assert [(item["stable_id"], item["change"]) for item in diff["changes"]] == [
         ("old-router", "added")
     ]
+
+
+def test_context_cli_diff_nan_returns_canonicalisation_validation_error_without_writes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    context_path = tmp_path / "network-context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    document = import_document()
+    document["devices"][0]["metric"] = float("nan")
+    context_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    schema_path.write_text(json.dumps({"type": "object"}), encoding="utf-8")
+
+    conn = connect_import_db(tmp_path)
+    try:
+        tables = (
+            "context_revisions",
+            "context_import_runs",
+            "context_heads",
+            *[table for table, _entity_type in __import__(
+                "netctl.context", fromlist=["IMPORT_COLLECTIONS"]
+            ).IMPORT_COLLECTIONS.values()],
+        )
+        before_counts = {
+            table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in tables
+        }
+    finally:
+        conn.close()
+
+    diff_rc, result = run_cli(
+        [
+            "--json", "--db", database_url, "context", "diff", "--path", str(context_path),
+            "--schema", str(schema_path),
+        ],
+        capsys,
+    )
+
+    assert diff_rc == 1
+    assert result["status"] == "error"
+    assert result["result"] == "validation_error"
+    assert result["message"] == "network context validation failed"
+    assert result["errors"][0]["path"] == "canonicalization"
+    assert "Out of range float values are not JSON compliant" in result["errors"][0]["message"]
+    conn = connect_import_db(tmp_path)
+    try:
+        assert {
+            table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in tables
+        } == before_counts
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize(

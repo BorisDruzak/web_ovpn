@@ -421,7 +421,15 @@ def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             context_id = context_summary(document, raw_bytes)["context_id"]
             head = get_context_head(conn, context_id)
             base_snapshot = load_active_snapshot(conn, context_id) or {}
-            changes = diff_snapshots(base_snapshot, normalise_import_entities(document))
+            try:
+                changes = diff_snapshots(base_snapshot, normalise_import_entities(document))
+            except (TypeError, ValueError) as exc:
+                errors = [{"path": "canonicalization", "message": str(exc)}]
+                return 1, err(
+                    "network context validation failed",
+                    result="validation_error",
+                    errors=errors,
+                )
             return 0, ok(
                 base_revision=_head_revision(conn, head),
                 changes=changes,
