@@ -324,17 +324,17 @@ def finish_context_import_run(
 ) -> dict[str, Any]:
     if status not in CONTEXT_IMPORT_RUN_FINAL_STATUSES:
         raise ValueError(f"invalid finished context import run status: {status}")
-    conn.execute(
+    cursor = conn.execute(
         """
         UPDATE context_import_runs
         SET status = ?, finished_at = ?, errors_json = ?
-        WHERE id = ?
+        WHERE id = ? AND status = 'running'
         """,
         (status, utc_now(), json.dumps(errors, ensure_ascii=False, sort_keys=True), run_id),
     )
+    if cursor.rowcount != 1:
+        raise ValueError(f"context import run is not running or not found: {run_id}")
     row = conn.execute("SELECT * FROM context_import_runs WHERE id = ?", (run_id,)).fetchone()
-    if row is None:
-        raise ValueError(f"context import run not found: {run_id}")
     return row_to_dict(row) or {}
 
 
