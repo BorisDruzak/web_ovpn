@@ -1,7 +1,7 @@
 # ALT Workstation Provisioning — verified implementation context
 
 Status: verified end to end on 2026-07-17 and subsequently hardened through
-Phase 1 installer, Vault-health and controller-permission work.
+Phase 1 controller work and Phase 2.1 job reconciliation.
 
 Repository: `BorisDruzak/web_ovpn`
 
@@ -11,13 +11,9 @@ This document is the operational source of truth for the ALT Workstation
 provisioning control plane. Historical design and implementation-plan documents
 remain useful for intent, but this file takes precedence when they differ.
 
-## 1. Purpose and current result
+## 1. Purpose and verified result
 
-The MVP takes an ALT Workstation K 11.2 computer from automatic installation
-through registration, non-mutating preflight and operator-approved local account
-provisioning.
-
-Verified flow:
+The control plane takes an ALT Workstation K 11.2 computer through:
 
 ```text
 ALT autoinstall
@@ -29,7 +25,7 @@ ALT autoinstall
   -> workstationctl preflight
   -> awaiting_assignment
   -> provision preview
-  -> asynchronous provision job
+  -> root-approved asynchronous provision job
   -> final verification
   -> assignment records
   -> assigned
@@ -54,7 +50,7 @@ Responsibilities:
 - Ansible playbooks and roles;
 - Ansible Vault and non-secret Vault health checks;
 - controller permission audit and narrowly scoped repair;
-- provision jobs, logs, results and assignments;
+- provision jobs, logs, results, assignments and recovery;
 - constrained API in a future stage.
 
 Important runtime paths:
@@ -68,6 +64,7 @@ Important runtime paths:
 /home/altserver/ansible/group_vars/vault.yml
 /home/altserver/.ansible-vault-pass
 /home/altserver/.ssh/known_hosts_autoinstall
+/var/lib/alt-deploy/
 /var/lib/alt-deploy/jobs/
 /var/lib/alt-deploy/assignments/
 /srv/alt-deploy/registration/
@@ -84,6 +81,12 @@ alt-deploy-http.service
 alt-deploy-register.service
 alt-deploy-process.path
 alt-deploy-process.service
+```
+
+Transient provisioning units use:
+
+```text
+alt-provision-<job_id>.service
 ```
 
 ### Future web interface
@@ -112,9 +115,9 @@ deploy/alt-linux/install-control-plane.sh
 deploy/alt-linux/api/process_pending.py
 deploy/alt-linux/control/workstationctl
 deploy/alt-linux/control/alt-provision-worker
-deploy/alt-linux/control/alt_deploy/
-deploy/alt-linux/control/alt_deploy/vault.py
 deploy/alt-linux/control/alt_deploy/controller_permissions.py
+deploy/alt-linux/control/alt_deploy/job_reconcile.py
+deploy/alt-linux/control/alt_deploy/vault.py
 deploy/alt-linux/ansible/playbooks/01-preflight.yml
 deploy/alt-linux/ansible/playbooks/02-provision-account.yml
 deploy/alt-linux/ansible/roles/preflight/
@@ -127,12 +130,12 @@ tests/alt_linux/
 
 The installer:
 
-1. validates all required controller commands before any runtime mutation;
+1. validates required commands before runtime mutation;
 2. requires root and the `altserver` service account;
 3. installs the controller package, CLI and worker;
 4. copies playbooks and roles without overwriting unrelated Ansible files;
 5. does not copy or mutate the active Vault or Vault password file;
-6. prepares the private controller job and assignment directories;
+6. prepares private controller job and assignment directories;
 7. runs the ALT-specific test suite;
 8. syntax-checks both playbooks;
 9. restarts the pending-registration path unit only after verification succeeds.
@@ -166,17 +169,19 @@ workstationctl --json provision preview <uuid> --vars-file <file>
 workstationctl --json provision start <uuid> --vars-file <file>
 workstationctl --json jobs status <job_id>
 workstationctl --json jobs log <job_id>
+workstationctl --json jobs reconcile
 ```
 
 Execution boundary:
 
-- machine reads, preflight, Vault check, controller permission audit, preview and
-  job reads run as `altserver`;
+- machine reads, preflight, Vault check, permission audit, preview and job reads
+  run as `altserver`;
+- `jobs reconcile` runs as `altserver` and may update only controller job and
+  assignment state;
 - controller permission repair requires root;
-- `provision start` requires root because it creates and launches the transient
-  systemd job;
-- the transient worker writes private job state;
-- neither Vault nor permission commands return secret file contents.
+- `provision start` requires root because it creates the transient systemd job;
+- the transient worker runs as `altserver` and writes private job state;
+- no command returns Vault values, password hashes or private-key contents.
 
 Provision request fields:
 
@@ -192,7 +197,7 @@ Provision request fields:
 
 The request never contains a password or password hash.
 
-## 5. Current validation rules
+## 5. Validation rules
 
 ### Employee login
 
@@ -223,7 +228,7 @@ starts and ends with a letter or digit.
 
 Only `standard` is currently supported.
 
-## 6. Preflight contract
+## 6. Preflight and SSH contract
 
 The verified preflight checks:
 
@@ -241,9 +246,16 @@ The verified preflight checks:
 Successful preflight produces `awaiting_assignment`. Failed preflight persists
 structured diagnostics and produces `preflight_failed`.
 
-All automated SSH paths explicitly pass `ProxyCommand=none`. This bypasses the
-system-wide `sss_ssh_knownhostsproxy` configuration without weakening strict
-host-key checking or the isolated autoinstall known-hosts file.
+All automated direct-IP SSH paths retain:
+
+```text
+StrictHostKeyChecking=yes
+UserKnownHostsFile=/home/altserver/.ssh/known_hosts_autoinstall
+ProxyCommand=none
+```
+
+`ProxyCommand=none` bypasses the system-wide `sss_ssh_knownhostsproxy`
+configuration without weakening strict host-key checking.
 
 ## 7. Provisioning behavior
 
@@ -251,8 +263,8 @@ The provision job:
 
 1. validates the request, machine, preflight, Vault and uniqueness constraints;
 2. sets and verifies the final hostname;
-3. creates or reconciles the matching local primary group;
-4. creates or reconciles the local employee account;
+3. creates or reconciles the local primary group;
+4. creates or reconciles the employee account;
 5. applies the Vault-provided yescrypt password hash;
 6. verifies the employee is not in `wheel`;
 7. verifies sudo policy denies the employee;
@@ -261,10 +273,9 @@ The provision job:
 10. disables LightDM autologin through a managed drop-in;
 11. verifies LightDM, AccountsService, account and sudo state;
 12. writes target and controller assignment records only after verification;
-13. validates the structured public result before accepting the job as
-    successful.
+13. validates the structured public result before accepting success.
 
-The sudo denial check uses `LC_ALL=C` and accepts the actual ALT sudo text
+The sudo denial check uses `LC_ALL=C` and accepts the actual ALT text
 `User <login> is not allowed to run sudo ...`. A zero return code from
 `sudo -l -U` means the listing operation succeeded; it does not grant sudo.
 
@@ -331,36 +342,19 @@ Rules:
 - never commit `.ansible-vault-pass`;
 - never print or log the password or hash;
 - keep both files mode `0600`;
-- use a rotated production password if a previous value appeared in chat or
-  logs;
-- keep a protected controller-side Vault backup outside Git.
+- keep a protected controller-side backup outside Git.
 
-The repository contains only `vault.yml.example`.
-
-### Vault health command
-
-Run as `altserver`:
+Vault health command:
 
 ```bash
 sudo -u altserver workstationctl --json vault check
 ```
 
-The command checks:
+It verifies file presence, owner, mode, Vault header, decryption, required
+variable and yescrypt prefix `$y$`. An unhealthy response uses
+`error.code=vault_unhealthy`; no secret value is returned.
 
-- Vault file existence;
-- Vault password file existence;
-- ownership by the service account;
-- mode `0600` for both files;
-- the Ansible Vault header;
-- successful `ansible-vault view` decryption;
-- presence of `vault_employee_password_hash`;
-- yescrypt prefix `$y$`.
-
-A healthy response contains only boolean checks. An unhealthy response uses
-`error.code=vault_unhealthy` with boolean diagnostics and exit code `7`.
-Neither response contains decrypted YAML, the hash or the Vault password.
-
-## 10. Controller state permission contract
+## 10. Controller permission contract
 
 Expected owner, group, mode and object type:
 
@@ -380,33 +374,100 @@ Read-only audit:
 sudo -u altserver workstationctl --json controller permissions
 ```
 
-The audit uses `lstat`, rejects symbolic links and reports boolean checks for
-existence, owner, group, mode and type. An unhealthy state returns
-`error.code=controller_permissions_unhealthy` and exit code `8`.
-
 Root-only repair:
 
 ```bash
 sudo workstationctl --json controller permissions repair
 ```
 
-Repair safety properties:
+Repair validates all seven paths before mutation, blocks on missing paths,
+symbolic links or unexpected types, uses no-follow file descriptors, changes
+only owner/group/mode and never creates missing Vault files.
 
-- validates all seven paths before any mutation;
-- blocks on a missing path, symbolic link or unexpected object type;
-- never creates missing Vault or password files;
-- opens each validated object with `O_NOFOLLOW` and, for directories,
-  `O_DIRECTORY`;
-- applies only `fchown` and `fchmod` to opened descriptors;
-- returns symbolic path keys in `changed`, never secret contents;
-- returns `controller_permissions_repair_blocked` for unsafe preconditions;
-- returns `controller_permissions_repair_failed` for an operating-system error.
+## 11. Job reconciliation after controller restart
 
-Repair operations are sequential. If an operating-system error occurs after an
-earlier path was fixed, run the read-only audit to inspect the resulting state
-before retrying.
+Manual command:
 
-## 11. Verified reference run
+```bash
+sudo -u altserver workstationctl --json jobs reconcile
+```
+
+Reconciliation:
+
+- holds the common `workstationctl.lock` used by provision preview/start;
+- considers only jobs in `queued` or `running`;
+- verifies the exact recorded unit name `alt-provision-<job_id>.service`;
+- queries `LoadState`, `ActiveState` and `SubState` through `systemctl show`;
+- never follows arbitrary unit names from job state;
+- does not contact or mutate the workstation directly.
+
+Verified outcomes:
+
+### `still_running`
+
+A unit in `active`, `activating` or `reloading` is reported in `unchanged` with
+its systemd states. The job record remains byte-for-byte unchanged.
+
+### `queued_recoverable`
+
+A queued job with no recorded unit, or a recorded unit with
+`LoadState=not-found`, becomes:
+
+```text
+state=failed
+stage=reconcile
+error_code=worker_not_started
+retryable=true
+action=queued_recoverable
+```
+
+A queued job without a recorded unit does not invoke `systemctl`.
+
+### `worker_lost`
+
+A running job whose unit disappeared before producing `result.json` becomes:
+
+```text
+state=failed
+stage=reconcile
+error_code=worker_lost
+action=worker_lost
+```
+
+It no longer blocks a new preview through `active_for_machine`.
+
+### `result_recovered`
+
+When the worker is inactive and a `result.json` exists:
+
+1. JSON is read as an object;
+2. the same `_validate_result` contract used by the worker is applied;
+3. assignment is written through the idempotent `AssignmentRepository`;
+4. the job becomes `successful / complete`;
+5. `finished_at` is taken from the validated `completed_at` field.
+
+No result is recovered while its worker remains active.
+
+### `result_rejected`
+
+Malformed JSON or a result that fails verification produces:
+
+```text
+state=failed
+stage=reconcile
+error_code=invalid_provision_result
+retryable=true
+action=result_rejected
+```
+
+The original `result.json` is retained for diagnostics and no assignment is
+written. Assignment conflicts, invalid systemd unit records and systemd query
+failures remain explicit errors rather than being hidden as result rejection.
+
+Reconciliation is currently an explicit operator command. No automatic boot
+service invokes it yet.
+
+## 12. Verified reference run
 
 Reference target:
 
@@ -424,55 +485,25 @@ Verified result:
 
 - job state `successful` and stage `complete`;
 - all 38 Ansible tasks completed, `failed=0`;
-- controller assignment exists;
-- target assignment exists;
+- controller and target assignment records exist;
 - machine derived status is `assigned`;
 - repeated preview is blocked with `machine_already_assigned`;
-- employee exists with its own group and home mode `0700`;
+- employee has its own group and home mode `0700`;
 - employee is not in `wheel` and has no sudo permission;
 - `ansible` remains usable with passwordless sudo;
 - `ansible` has `SystemAccount=true`;
 - employee has `SystemAccount=false`;
 - LightDM autologin is disabled;
 - all state survived reboot;
-- graphical LightDM login as the employee successfully opened Plasma;
-- `ansible` was hidden and normal accounts remained available.
+- graphical LightDM login successfully opened Plasma.
 
 The assigned reference UUID must not be provisioned again. Release and
 reassignment require a dedicated workflow.
 
-## 12. Test and verification baseline
-
-Use the latest successful full command output as the exact test-count baseline;
-do not rely on an old hard-coded count in documentation.
-
-Required verification after a behavior slice:
-
-```text
-all tests in tests/alt_linux
-Python compilation of controller modules
-Bash syntax of install-control-plane.sh
-Ansible syntax of 01-preflight.yml
-Ansible syntax of 02-provision-account.yml
-git diff --check
-clean worktree
-```
-
-Phase 1.4 target tests confirmed all four controller-permission scenarios:
-
-- healthy read-only audit;
-- root-only repair of known owner/group/mode deviations;
-- non-root rejection without mutation;
-- complete pre-mutation block for missing paths or symbolic links.
-
-The full repository suite contains unrelated OpenVPN tests that require
-`/etc/openvpn/vpnctl.env`. For ALT provisioning work, use `tests/alt_linux`
-unless that environment is intentionally prepared.
-
 ## 13. Machine state model
 
-The displayed machine status is derived from registration data, latest
-preflight, active job and assignment.
+Displayed machine state is derived from registration, latest preflight, active
+job and assignment.
 
 Relevant states:
 
@@ -483,76 +514,74 @@ awaiting_assignment
 assigned
 ```
 
-When a successful assignment exists, `MachineRepository` derives
-`status=assigned` without rewriting the original registration record. Repeated
-preview checks assignment existence before readiness and returns
-`machine_already_assigned`.
+A successful assignment produces `assigned` without rewriting the original
+registration record. Repeated preview returns `machine_already_assigned`.
 
-## 14. Historical documentation differences
+## 14. Verification baseline
 
-Do not copy these obsolete historical assumptions into new code:
+Use the latest successful full command output as the exact test-count baseline;
+do not rely on an old hard-coded count in documentation.
 
-- SDDM: the verified implementation uses LightDM and AccountsService;
-- dotted employee logins: dots are rejected;
-- examples such as `i.ivanov` use `i-ivanov` or `i_ivanov`;
-- the final displayed success state is `assigned`;
-- Vault loading remains explicit in the provision playbook;
-- automated SSH continues to set `ProxyCommand=none`;
-- `provision start` remains root-only;
-- sudo denial verification uses `LC_ALL=C` and the real ALT denial text.
+Required verification after a behavior phase:
 
-## 15. Safe verification commands
+```text
+all tests in tests/alt_linux
+Python compilation of controller modules
+Bash syntax of install-control-plane.sh
+Bash syntax of bootstrap.sh
+Ansible syntax of 01-preflight.yml
+Ansible syntax of 02-provision-account.yml
+git diff --check
+clean worktree
+```
 
-Controller checks:
+The full repository suite contains unrelated OpenVPN tests that require
+`/etc/openvpn/vpnctl.env`. For this workstream use `tests/alt_linux` unless that
+environment is intentionally prepared.
+
+## 15. Safe operational commands
 
 ```bash
 cd /home/altserver/web_ovpn-src/.worktrees/alt-workstation-mvp
 .venv/bin/python -m pytest -q tests/alt_linux
 
-python3 -m py_compile \
-  deploy/alt-linux/control/alt_deploy/*.py \
-  deploy/alt-linux/api/process_pending.py
-
-bash -n deploy/alt-linux/install-control-plane.sh
-
-git diff --check
-
-ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
-  ansible-playbook --syntax-check \
-  deploy/alt-linux/ansible/playbooks/01-preflight.yml
-
-ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
-  ansible-playbook --syntax-check \
-  deploy/alt-linux/ansible/playbooks/02-provision-account.yml
+sudo -u altserver workstationctl --json machines list
+sudo -u altserver workstationctl --json machines show <uuid>
+sudo -u altserver workstationctl --json vault check
+sudo -u altserver workstationctl --json controller permissions
+sudo -u altserver workstationctl --json jobs reconcile
 ```
 
-Install or update controller runtime:
+Install or update controller runtime only with explicit approval:
 
 ```bash
 sudo bash deploy/alt-linux/install-control-plane.sh
 ```
 
-Read controller state without changing a workstation:
-
-```bash
-sudo -u altserver workstationctl --json machines list
-sudo -u altserver workstationctl --json machines show <uuid>
-sudo -u altserver workstationctl --json vault check
-sudo -u altserver workstationctl --json controller permissions
-```
-
-Repair known controller permission deviations only after reviewing the audit:
+Repair known permission deviations only after reviewing the audit:
 
 ```bash
 sudo workstationctl --json controller permissions repair
 ```
 
-Do not rerun `provision start` for an already assigned machine.
+Do not rerun `provision start` for the assigned reference machine.
 
-## 16. Continuation document
+## 16. Historical differences
 
-The ordered remaining work, acceptance checks, hardening tasks and future roles
-are maintained in:
+Do not copy obsolete assumptions into new code:
+
+- SDDM: verified implementation uses LightDM and AccountsService;
+- dotted employee logins are rejected;
+- examples use `i-ivanov` or `i_ivanov`;
+- final displayed success state is `assigned`;
+- Vault loading remains explicit through `vars_files`;
+- automated SSH retains `ProxyCommand=none`;
+- `provision start` remains root-only;
+- sudo denial verification uses `LC_ALL=C` and actual ALT denial text.
+
+## 17. Continuation document
+
+Remaining work and acceptance checks are maintained in:
 
 ```text
 docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md
