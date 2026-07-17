@@ -110,29 +110,61 @@ collection from opening or changing the database during deployment.
 ```bash
 set -euo pipefail
 
-sudo systemctl mask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
+sudo systemctl mask openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service || true
 if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service is still active' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer is still active' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is still active' >&2; exit 1; fi
+web_mask_state="$(sudo systemctl is-enabled openvpn-web.service 2>/dev/null || true)"
+timer_mask_state="$(sudo systemctl is-enabled netctl-collect.timer 2>/dev/null || true)"
+collector_mask_state="$(sudo systemctl is-enabled netctl-collect.service 2>/dev/null || true)"
+test "$web_mask_state" = masked
+test "$timer_mask_state" = masked
+test "$collector_mask_state" = masked
 ```
 
-Stage the already-reviewed release archive and run the documented installer
-only if it has an approved **no-start/no-unmask** mode. Do not place a
-credential in this runbook or in a pasted command. The currently documented
-`deploy/install-openvpn-web.sh` starts `openvpn-web.service` and enables the
-timer, so it must not be run while the three units above are masked; use the
-approved service-neutral release procedure instead. If none is available,
-abort this deployment rather than unmasking or starting a unit before
-verification.
+Build the release archive from the exact reviewed Git commit (for example,
+with `git archive`) and record that commit in the deployment ticket. Transfer
+and extract that archive as the documented source-package procedure describes.
+Do not run `deploy/install-openvpn-web.sh`: it starts `openvpn-web.service` and
+enables the timer. The following version-controlled, service-neutral procedure
+replaces only the application tree and the `netctl` wrapper; it never calls
+`systemctl` and preserves the database, configuration/secrets, virtual
+environment, and backup artifacts.
 
 ```bash
 set -euo pipefail
 
-# Stage according to docs/DEPLOYMENT.md, then run only the approved service-neutral
-# release procedure. It must replace /opt/openvpn-web and /usr/local/sbin/netctl
-# without calling systemctl start, restart, enable, or unmask.
-# Verify the units remain stopped and masked before opening the upgraded database.
+# `release_dir` must be extracted from a git archive of the recorded release commit.
+release_dir='/tmp/openvpn-web-src'
+app_path='/opt/openvpn-web'
+wrapper_path='/usr/local/sbin/netctl'
+test -f "$release_dir/app/main.py"
+test -f "$release_dir/netctl/cli.py"
+test -f "$release_dir/deploy/netctl"
+sudo test -d "$app_path/.venv"
+sudo test -f /var/lib/netctl/netctl.sqlite
+sudo test -d /etc/netctl
+sudo test -f /etc/netctl/secrets.env
+sudo test -d /var/backups/netctl
+
+# Verify every unit is still masked before copying any release file.
+web_mask_state="$(sudo systemctl is-enabled openvpn-web.service 2>/dev/null || true)"
+timer_mask_state="$(sudo systemctl is-enabled netctl-collect.timer 2>/dev/null || true)"
+collector_mask_state="$(sudo systemctl is-enabled netctl-collect.service 2>/dev/null || true)"
+test "$web_mask_state" = masked
+test "$timer_mask_state" = masked
+test "$collector_mask_state" = masked
+
+# --delete removes only obsolete version-controlled application files. The explicit
+# exclusion keeps the existing production virtual environment intact. Database,
+# configuration/secrets, and /var/backups are outside $app_path and are untouched.
+sudo rsync -a --delete --chown=openvpn-web:openvpn-web \
+  --exclude='.venv/' --exclude='.git/' --exclude='.pytest_cache/' \
+  "$release_dir/" "$app_path/"
+sudo install -o root -g root -m 0755 "$release_dir/deploy/netctl" "$wrapper_path"
+
+# Confirm the service-neutral copy did not alter unit state.
 if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service started during deployment' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer started during deployment' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service started during deployment' >&2; exit 1; fi
@@ -303,7 +335,13 @@ After every command succeeds, make the release live:
 ```bash
 set -euo pipefail
 
-sudo systemctl unmask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
+web_mask_state="$(sudo systemctl is-enabled openvpn-web.service 2>/dev/null || true)"
+timer_mask_state="$(sudo systemctl is-enabled netctl-collect.timer 2>/dev/null || true)"
+collector_mask_state="$(sudo systemctl is-enabled netctl-collect.service 2>/dev/null || true)"
+test "$web_mask_state" = masked
+test "$timer_mask_state" = masked
+test "$collector_mask_state" = masked
+sudo systemctl unmask openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo systemctl start openvpn-web.service netctl-collect.timer
 sudo systemctl is-active --quiet openvpn-web.service
 sudo systemctl is-active --quiet netctl-collect.timer
@@ -338,11 +376,17 @@ sudo test -f "$app_backup"
 sudo test -x "$wrapper_backup"
 sudo sha256sum -c "$(dirname "$manifest")/SHA256SUMS"
 
-sudo systemctl mask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
+sudo systemctl mask openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service || true
 if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service is still active' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer is still active' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is still active' >&2; exit 1; fi
+web_mask_state="$(sudo systemctl is-enabled openvpn-web.service 2>/dev/null || true)"
+timer_mask_state="$(sudo systemctl is-enabled netctl-collect.timer 2>/dev/null || true)"
+collector_mask_state="$(sudo systemctl is-enabled netctl-collect.service 2>/dev/null || true)"
+test "$web_mask_state" = masked
+test "$timer_mask_state" = masked
+test "$collector_mask_state" = masked
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 failed_app="${app_path}.failed-runtime-asset-identity-$stamp"
 failed_db="${db_path}.failed-runtime-asset-identity-$stamp"
@@ -369,7 +413,13 @@ set -euo pipefail
 
 sudo -u netctl /usr/local/sbin/netctl --json dashboard
 sudo -u netctl /usr/local/sbin/netctl --json hosts list
-sudo systemctl unmask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
+web_mask_state="$(sudo systemctl is-enabled openvpn-web.service 2>/dev/null || true)"
+timer_mask_state="$(sudo systemctl is-enabled netctl-collect.timer 2>/dev/null || true)"
+collector_mask_state="$(sudo systemctl is-enabled netctl-collect.service 2>/dev/null || true)"
+test "$web_mask_state" = masked
+test "$timer_mask_state" = masked
+test "$collector_mask_state" = masked
+sudo systemctl unmask openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo systemctl start openvpn-web.service netctl-collect.timer
 sudo systemctl is-active --quiet openvpn-web.service
 sudo systemctl is-active --quiet netctl-collect.timer
