@@ -293,7 +293,7 @@ def create_context_import_run(
     git_sha: str,
     source_path: str | Path,
 ) -> dict[str, Any]:
-    if not git_sha:
+    if not git_sha.strip():
         raise ValueError("git_sha is required for a context import run")
     cursor = conn.execute(
         """

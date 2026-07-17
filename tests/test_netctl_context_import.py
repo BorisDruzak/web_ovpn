@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
 from copy import deepcopy
+import json
+from pathlib import Path
+import sqlite3
 
 import pytest
 
 
 def import_document() -> dict[str, object]:
     return {
+        "schema_version": "2.2.0",
+        "metadata": {"context_id": "test-network"},
         "sites": [{"id": "central"}],
         "locations": [{"id": "central-rack"}],
         "segments": [{"id": "central-lan"}],
@@ -30,6 +34,48 @@ def import_document() -> dict[str, object]:
             },
         ],
     }
+
+
+RUNTIME_TABLES = (
+    "network_sources",
+    "collection_runs",
+    "network_hosts",
+    "network_device_tags",
+    "host_observations",
+    "network_interfaces",
+    "network_routes",
+    "dhcp_leases",
+    "arp_entries",
+    "bridge_hosts",
+    "network_neighbors",
+    "network_events",
+)
+
+
+def raw_document(document: dict[str, object]) -> bytes:
+    return json.dumps(document, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+
+def connect_import_db(tmp_path: Path) -> sqlite3.Connection:
+    from netctl.db import connect
+
+    return connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+
+
+def runtime_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    return {
+        table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in RUNTIME_TABLES
+    }
+
+
+def intent_count(conn: sqlite3.Connection) -> int:
+    from netctl.context import IMPORT_COLLECTIONS
+
+    return sum(
+        int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table, _entity_type in IMPORT_COLLECTIONS.values()
+    )
 
 
 @pytest.mark.parametrize(
@@ -204,5 +250,333 @@ def test_context_import_run_can_only_finish_once(tmp_path: Path) -> None:
             "SELECT status, errors_json, finished_at FROM context_import_runs WHERE id = ?", (run["id"],)
         ).fetchone()
         assert tuple(after) == tuple(before)
+    finally:
+        conn.close()
+
+
+def test_context_import_run_rejects_blank_git_sha(tmp_path: Path) -> None:
+    from netctl.db import connect, create_context_import_run
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        with pytest.raises(ValueError, match="git_sha is required"):
+            create_context_import_run(
+                conn,
+                context_id="test-network",
+                context_revision_id=None,
+                base_context_revision_id=None,
+                input_sha256="a" * 64,
+                git_sha="   ",
+                source_path=tmp_path / "network.yaml",
+            )
+    finally:
+        conn.close()
+
+
+def test_first_import_materialises_active_snapshot_without_touching_runtime_tables(tmp_path: Path) -> None:
+    from netctl.context import normalise_import_entities
+    from netctl.context_import import import_context, load_active_snapshot
+
+    conn = connect_import_db(tmp_path)
+    document = import_document()
+    source_path = tmp_path / "network-context.yaml"
+    try:
+        conn.execute(
+            "INSERT INTO network_hosts (ip, hostname) VALUES (?, ?)",
+            ("192.0.2.10", "observed-router"),
+        )
+        conn.execute(
+            """
+            INSERT INTO host_observations
+                (host_id, observed_at, observation_type, ip)
+            VALUES (1, '2026-07-17T00:00:00Z', 'arp', '192.0.2.10')
+            """
+        )
+        conn.execute(
+            "INSERT INTO dhcp_leases (ip, hostname) VALUES (?, ?)",
+            ("192.0.2.10", "observed-router"),
+        )
+        conn.commit()
+        before_runtime = runtime_counts(conn)
+
+        result = import_context(
+            conn,
+            document,
+            raw_document(document),
+            source_path,
+            "first-import-git-sha",
+        )
+
+        assert result["result"] == "success_imported"
+        assert result["run"]["status"] == "success_imported"
+        assert result["context"]["context_id"] == "test-network"
+        assert result["head"]["context_revision_id"] == result["context"]["id"]
+        assert runtime_counts(conn) == before_runtime
+        assert conn.execute("SELECT COUNT(*) FROM intent_assets WHERE lifecycle = 'active'").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM network_hosts").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM intent_assets WHERE stable_id = 'router'"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM intent_links WHERE relation = 'CONNECTED_TO'"
+        ).fetchone()[0] == 2
+        assert load_active_snapshot(conn, "test-network") == normalise_import_entities(document)
+        assert load_active_snapshot(conn, "missing-context") is None
+    finally:
+        conn.close()
+
+
+def test_removal_creates_retired_copy_and_preserves_original_snapshot(tmp_path: Path) -> None:
+    from netctl.context_import import import_context
+
+    conn = connect_import_db(tmp_path)
+    original = import_document()
+    removed = deepcopy(original)
+    removed["devices"] = [{"id": "router"}]
+    removed["links"] = []
+    source_path = tmp_path / "network-context.yaml"
+    try:
+        first = import_context(conn, original, raw_document(original), source_path, "first-git-sha")
+        original_rows = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT stable_id, lifecycle, canonical_json, canonical_hash, origin_context_revision_id
+                FROM intent_assets
+                WHERE context_revision_id = ?
+                ORDER BY stable_id
+                """,
+                (first["context"]["id"],),
+            )
+        ]
+
+        second = import_context(conn, removed, raw_document(removed), source_path, "second-git-sha")
+
+        retired_switch = conn.execute(
+            """
+            SELECT lifecycle, canonical_json, canonical_hash, origin_context_revision_id
+            FROM intent_assets
+            WHERE context_revision_id = ? AND stable_id = 'switch'
+            """,
+            (second["context"]["id"],),
+        ).fetchone()
+        original_switch = conn.execute(
+            """
+            SELECT lifecycle, canonical_json, canonical_hash, origin_context_revision_id
+            FROM intent_assets
+            WHERE context_revision_id = ? AND stable_id = 'switch'
+            """,
+            (first["context"]["id"],),
+        ).fetchone()
+        carried_router = conn.execute(
+            """
+            SELECT lifecycle, origin_context_revision_id
+            FROM intent_assets
+            WHERE context_revision_id = ? AND stable_id = 'router'
+            """,
+            (second["context"]["id"],),
+        ).fetchone()
+        current_original_rows = [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT stable_id, lifecycle, canonical_json, canonical_hash, origin_context_revision_id
+                FROM intent_assets
+                WHERE context_revision_id = ?
+                ORDER BY stable_id
+                """,
+                (first["context"]["id"],),
+            )
+        ]
+
+        assert second["result"] == "success_imported"
+        assert tuple(retired_switch) == (
+            "retired",
+            original_switch["canonical_json"],
+            original_switch["canonical_hash"],
+            first["context"]["id"],
+        )
+        assert tuple(carried_router) == ("active", first["context"]["id"])
+        assert current_original_rows == original_rows
+        assert all(row[1] == "active" for row in current_original_rows)
+    finally:
+        conn.close()
+
+
+def test_same_content_creates_new_noop_run_without_duplicate_snapshot(tmp_path: Path) -> None:
+    from netctl.context_import import import_context
+
+    conn = connect_import_db(tmp_path)
+    document = import_document()
+    raw_bytes = raw_document(document)
+    source_path = tmp_path / "network-context.yaml"
+    try:
+        first = import_context(conn, document, raw_bytes, source_path, "first-git-sha")
+        before_intent_count = intent_count(conn)
+        first_head = dict(conn.execute("SELECT * FROM context_heads").fetchone())
+
+        second = import_context(conn, document, raw_bytes, source_path, "second-git-sha")
+
+        assert second["result"] == "success_noop_same_content"
+        assert second["run"]["id"] != first["run"]["id"]
+        assert second["run"]["git_sha"] == "second-git-sha"
+        assert second["context"]["id"] == first["context"]["id"]
+        assert intent_count(conn) == before_intent_count
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM context_import_runs").fetchone()[0] == 2
+        assert dict(conn.execute("SELECT * FROM context_heads").fetchone()) == first_head
+    finally:
+        conn.close()
+
+
+def test_inactive_imported_revision_reactivates_without_new_intent_rows(tmp_path: Path) -> None:
+    from netctl.context_import import import_context
+
+    conn = connect_import_db(tmp_path)
+    first_document = import_document()
+    second_document = deepcopy(first_document)
+    second_document["services"] = []
+    source_path = tmp_path / "network-context.yaml"
+    try:
+        first = import_context(
+            conn,
+            first_document,
+            raw_document(first_document),
+            source_path,
+            "first-git-sha",
+        )
+        second = import_context(
+            conn,
+            second_document,
+            raw_document(second_document),
+            source_path,
+            "second-git-sha",
+        )
+        before_intent_count = intent_count(conn)
+
+        reactivated = import_context(
+            conn,
+            first_document,
+            raw_document(first_document),
+            source_path,
+            "reactivation-git-sha",
+        )
+
+        assert second["context"]["id"] != first["context"]["id"]
+        assert reactivated["result"] == "success_activated_existing_content"
+        assert reactivated["context"]["id"] == first["context"]["id"]
+        assert reactivated["head"]["context_revision_id"] == first["context"]["id"]
+        assert reactivated["head"]["activated_by_import_run_id"] == reactivated["run"]["id"]
+        assert intent_count(conn) == before_intent_count
+    finally:
+        conn.close()
+
+
+def test_entity_origins_do_not_cross_context_boundaries(tmp_path: Path) -> None:
+    from netctl.context_import import import_context
+
+    conn = connect_import_db(tmp_path)
+    first_document = import_document()
+    second_document = deepcopy(first_document)
+    second_document["metadata"] = {"context_id": "other-network"}
+    source_path = tmp_path / "network-context.yaml"
+    try:
+        first = import_context(
+            conn,
+            first_document,
+            raw_document(first_document),
+            source_path,
+            "first-git-sha",
+        )
+        second = import_context(
+            conn,
+            second_document,
+            raw_document(second_document),
+            source_path,
+            "second-git-sha",
+        )
+
+        second_origin = conn.execute(
+            """
+            SELECT origin_context_revision_id
+            FROM intent_assets
+            WHERE context_revision_id = ? AND stable_id = 'router'
+            """,
+            (second["context"]["id"],),
+        ).fetchone()[0]
+        assert second["context"]["id"] != first["context"]["id"]
+        assert second_origin == second["context"]["id"]
+    finally:
+        conn.close()
+
+
+def test_semantic_validation_error_records_finished_run_without_revision_or_head(tmp_path: Path) -> None:
+    from netctl.context_import import import_context
+
+    conn = connect_import_db(tmp_path)
+    document = import_document()
+    document["links"][0]["relation"] = "UNKNOWN"
+    try:
+        result = import_context(
+            conn,
+            document,
+            raw_document(document),
+            tmp_path / "invalid.yaml",
+            "invalid-git-sha",
+        )
+
+        persisted = conn.execute("SELECT * FROM context_import_runs").fetchone()
+        assert result["result"] == "validation_error"
+        assert result["context"] is None
+        assert result["head"] is None
+        assert persisted["status"] == "validation_error"
+        assert persisted["finished_at"] is not None
+        assert persisted["context_revision_id"] is None
+        assert json.loads(persisted["errors_json"]) == result["errors"]
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM context_heads").fetchone()[0] == 0
+        assert intent_count(conn) == 0
+    finally:
+        conn.close()
+
+
+def test_materialisation_error_rolls_back_snapshot_and_head_then_marks_run_db_error(tmp_path: Path) -> None:
+    from netctl.context_import import import_context
+
+    conn = connect_import_db(tmp_path)
+    original = import_document()
+    broken = deepcopy(original)
+    broken["devices"].append({"id": "broken"})
+    source_path = tmp_path / "network-context.yaml"
+    try:
+        first = import_context(conn, original, raw_document(original), source_path, "first-git-sha")
+        conn.execute(
+            """
+            CREATE TRIGGER fail_broken_asset
+            BEFORE INSERT ON intent_assets
+            WHEN NEW.stable_id = 'broken'
+            BEGIN
+                SELECT RAISE(ABORT, 'forced materialisation failure');
+            END
+            """
+        )
+        conn.commit()
+
+        result = import_context(conn, broken, raw_document(broken), source_path, "broken-git-sha")
+
+        assert result["result"] == "db_error"
+        assert result["run"]["status"] == "db_error"
+        assert result["head"]["context_revision_id"] == first["context"]["id"]
+        assert conn.execute(
+            "SELECT context_revision_id FROM context_heads WHERE context_id = 'test-network'"
+        ).fetchone()[0] == first["context"]["id"]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM intent_assets WHERE context_revision_id = ?",
+            (result["context"]["id"],),
+        ).fetchone()[0] == 0
+        persisted_errors = json.loads(result["run"]["errors_json"])
+        assert persisted_errors == [
+            {"path": "database", "message": "forced materialisation failure"}
+        ]
     finally:
         conn.close()
