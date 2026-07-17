@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -726,6 +727,137 @@ def test_diff_snapshots_reports_canonical_entity_changes_in_stable_order() -> No
         ("retired", "unchanged"),
         ("same", "unchanged"),
     ]
+
+
+def test_context_cli_diff_treats_payload_lifecycle_as_active_intent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    context_path = tmp_path / "network-context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    context_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "2.2.0",
+                "metadata": {"context_id": "test-network"},
+                "devices": [{"id": "old-router", "lifecycle": "retired"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    schema_path.write_text(json.dumps({"type": "object"}), encoding="utf-8")
+
+    diff_rc, diff = run_cli(
+        [
+            "--json", "--db", database_url, "context", "diff", "--path", str(context_path),
+            "--schema", str(schema_path),
+        ],
+        capsys,
+    )
+
+    assert diff_rc == 0
+    assert diff["base_revision"] is None
+    assert diff["summary"] == {"added": 1, "changed": 0, "removed": 0, "unchanged": 0}
+    assert [(item["stable_id"], item["change"]) for item in diff["changes"]] == [
+        ("old-router", "added")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("yaml_payload", "schema_payload", "expected_path", "expected_context_id"),
+    [
+        ("metadata: [unterminated", '{"type":"object"}', "document", ""),
+        (yaml.safe_dump(import_document()), '{"type":', "schema", "test-network"),
+    ],
+    ids=["malformed-yaml", "malformed-schema"],
+)
+def test_context_cli_import_parse_failures_record_one_validation_error_run_without_snapshot_writes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    yaml_payload: str,
+    schema_payload: str,
+    expected_path: str,
+    expected_context_id: str,
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    context_path = tmp_path / "network-context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    context_path.write_text(yaml_payload, encoding="utf-8")
+    schema_path.write_text(schema_payload, encoding="utf-8")
+
+    import_rc, result = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import", "--path", str(context_path),
+            "--schema", str(schema_path), "--git-sha", "invalid-input-git-sha",
+        ],
+        capsys,
+    )
+
+    assert import_rc == 1
+    assert result["status"] == "error"
+    assert result["result"] == "validation_error"
+    assert result["context"] is None
+    assert result["head"] is None
+    assert result["errors"][0]["path"] == expected_path
+    conn = connect_import_db(tmp_path)
+    try:
+        runs = conn.execute("SELECT * FROM context_import_runs").fetchall()
+        assert len(runs) == 1
+        assert runs[0]["status"] == "validation_error"
+        assert runs[0]["finished_at"] is not None
+        assert runs[0]["context_id"] == expected_context_id
+        assert runs[0]["context_revision_id"] is None
+        assert runs[0]["base_context_revision_id"] is None
+        assert runs[0]["git_sha"] == "invalid-input-git-sha"
+        assert runs[0]["input_sha256"] == hashlib.sha256(context_path.read_bytes()).hexdigest()
+        assert json.loads(runs[0]["errors_json"]) == result["errors"]
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM context_heads").fetchone()[0] == 0
+        assert intent_count(conn) == 0
+    finally:
+        conn.close()
+
+
+def test_context_cli_import_nan_canonicalisation_records_one_validation_error_run_without_snapshot_writes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    context_path = tmp_path / "network-context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    document = import_document()
+    document["devices"][0]["metric"] = float("nan")
+    context_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    schema_path.write_text(json.dumps({"type": "object"}), encoding="utf-8")
+
+    import_rc, result = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import", "--path", str(context_path),
+            "--schema", str(schema_path), "--git-sha", "nan-git-sha",
+        ],
+        capsys,
+    )
+
+    assert import_rc == 1
+    assert result["status"] == "error"
+    assert result["result"] == "validation_error"
+    assert result["context"] is None
+    assert result["head"] is None
+    assert result["errors"][0]["path"] == "canonicalization"
+    assert "Out of range float values are not JSON compliant" in result["errors"][0]["message"]
+    conn = connect_import_db(tmp_path)
+    try:
+        runs = conn.execute("SELECT * FROM context_import_runs").fetchall()
+        assert len(runs) == 1
+        assert runs[0]["status"] == "validation_error"
+        assert runs[0]["context_id"] == "test-network"
+        assert runs[0]["context_revision_id"] is None
+        assert runs[0]["base_context_revision_id"] is None
+        assert json.loads(runs[0]["errors_json"]) == result["errors"]
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM context_heads").fetchone()[0] == 0
+        assert intent_count(conn) == 0
+    finally:
+        conn.close()
 
 
 def test_context_cli_import_diff_and_status_are_structural_and_read_only(

@@ -10,22 +10,41 @@ database path consistently instead; do not assume the default path applies.
 
 ## Pre-upgrade backup
 
-1. Stop collection so no collector process changes the database while it is
-   being backed up.
-2. Create an SQLite online backup, retain the timestamped filename printed by
-   the shell, and verify both integrity and its checksum.
+1. Stop the web application and collection so neither code nor database state
+   changes while the rollback set is being captured.
+2. Back up the SQLite database, the deployed application tree, and the
+   `/usr/local/sbin/netctl` wrapper. Record their absolute paths in the fixed
+   manifest file shown below so rollback works from a fresh shell.
+3. Verify the database integrity, archives, and checksums.
 
 ```bash
-sudo systemctl stop netctl-collect.timer netctl-collect.service
+sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo install -d -m 0750 /var/backups/netctl
-backup="/var/backups/netctl/netctl-before-context-import-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
-sudo sqlite3 /var/lib/netctl/netctl.sqlite ".backup '$backup'"
-sudo sqlite3 "$backup" 'PRAGMA integrity_check;'
-sudo sha256sum "$backup"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+db_backup="/var/backups/netctl/netctl-before-context-import-$stamp.sqlite"
+app_backup="/var/backups/netctl/openvpn-web-before-context-import-$stamp.tgz"
+netctl_backup="/var/backups/netctl/netctl-before-context-import-$stamp"
+rollback_manifest='/var/backups/netctl/context-import-rollback.paths'
+sudo sqlite3 /var/lib/netctl/netctl.sqlite ".backup '$db_backup'"
+sudo tar -C /opt -czf "$app_backup" openvpn-web
+sudo install -m 0755 /usr/local/sbin/netctl "$netctl_backup"
+{
+  printf 'db_backup=%s\n' "$db_backup"
+  printf 'app_backup=%s\n' "$app_backup"
+  printf 'netctl_backup=%s\n' "$netctl_backup"
+} | sudo tee "$rollback_manifest" >/dev/null
+sudo chmod 0640 "$rollback_manifest"
+sudo sqlite3 "$db_backup" 'PRAGMA integrity_check;'
+sudo tar -tzf "$app_backup" >/dev/null
+sudo test -x "$netctl_backup"
+sudo sha256sum "$db_backup" "$app_backup" "$netctl_backup"
 ```
 
 Proceed only when `PRAGMA integrity_check` returns `ok`. Preserve the recorded
-timestamped backup filename and checksum for the deployment and any rollback.
+checksums and `/var/backups/netctl/context-import-rollback.paths` for the
+deployment and any rollback. Keep the old application archive and wrapper with
+the database backup: restoring only the pre-migration database under the new
+application is not a valid rollback.
 
 ## Deploy and verify
 
@@ -53,20 +72,39 @@ the agreed operational retention period.
 ## Rollback
 
 Roll back if the migration fails or any post-deployment verification fails.
-This preserves the failed database for diagnosis before restoring the verified
-backup.
+This preserves the failed application and database for diagnosis, restores the
+compatible pre-upgrade application and `netctl` wrapper, and only then restores
+the verified database. The fixed manifest path makes these commands reusable
+from a fresh shell.
 
 ```bash
-sudo systemctl stop netctl-collect.timer netctl-collect.service
-failed="/var/lib/netctl/netctl.failed-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
-sudo mv /var/lib/netctl/netctl.sqlite "$failed"
-sudo install -m 0640 -o netctl -g netctl "$backup" /var/lib/netctl/netctl.sqlite
+rollback_manifest='/var/backups/netctl/context-import-rollback.paths'
+db_backup="$(sudo sed -n 's/^db_backup=//p' "$rollback_manifest")"
+app_backup="$(sudo sed -n 's/^app_backup=//p' "$rollback_manifest")"
+netctl_backup="$(sudo sed -n 's/^netctl_backup=//p' "$rollback_manifest")"
+test -n "$db_backup" && test -n "$app_backup" && test -n "$netctl_backup"
+sudo test -f "$db_backup"
+sudo test -f "$app_backup"
+sudo test -x "$netctl_backup"
+
+sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+failed_app="/opt/openvpn-web.failed-$stamp"
+failed_db="/var/lib/netctl/netctl.failed-$stamp.sqlite"
+sudo mv /opt/openvpn-web "$failed_app"
+sudo tar -C /opt -xzf "$app_backup"
+sudo install -m 0755 "$netctl_backup" /usr/local/sbin/netctl
+sudo mv /var/lib/netctl/netctl.sqlite "$failed_db"
+sudo install -m 0640 -o netctl -g netctl "$db_backup" /var/lib/netctl/netctl.sqlite
 sudo sqlite3 /var/lib/netctl/netctl.sqlite 'PRAGMA integrity_check;'
-sudo systemctl start netctl-collect.timer
+sudo systemctl start openvpn-web.service netctl-collect.timer
+sudo systemctl is-active openvpn-web.service netctl-collect.timer
 sudo /usr/local/sbin/netctl --json context status
 ```
 
-Do not restart collection unless the restored database returns `ok` from
-`PRAGMA integrity_check`. After startup, confirm that `context status` succeeds
-and record the failed-database diagnostic filename alongside the rollback in the
-deployment ticket or log.
+Do not start the web application or collection timer unless the restored
+database returns `ok` from `PRAGMA integrity_check`. The previous application
+tree and `netctl` wrapper must already be active before either service starts or
+any status command runs. After startup, confirm that both units are active and
+that `context status` succeeds. Record the failed application and database
+diagnostic paths alongside the rollback in the deployment ticket or log.

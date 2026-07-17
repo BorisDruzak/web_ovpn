@@ -49,7 +49,17 @@ def import_context(
             conn, document, raw_bytes, source_path, git_sha, semantic_errors
         )
 
-    candidate_rows = _prepare_candidate_rows(document)
+    try:
+        candidate_rows = _prepare_candidate_rows(document)
+    except (TypeError, ValueError) as exc:
+        return record_context_import_validation_error(
+            conn,
+            document,
+            raw_bytes,
+            source_path,
+            git_sha,
+            [{"path": "canonicalization", "message": str(exc)}],
+        )
     try:
         revision = record_context_revision(conn, summary, source_path, git_sha)
         run = create_context_import_run(
@@ -116,14 +126,14 @@ def load_active_snapshot(
 
 def record_context_import_validation_error(
     conn: sqlite3.Connection,
-    document: dict[str, Any],
+    document: dict[str, Any] | None,
     raw_bytes: bytes,
     source_path: Path,
     git_sha: str,
     errors: list[dict[str, str]],
 ) -> dict[str, Any]:
     """Persist a failed import attempt without creating a content revision."""
-    summary = context_summary(document, raw_bytes)
+    summary = context_summary(document or {}, raw_bytes)
     context_id = summary["context_id"]
     head = get_context_head(conn, context_id)
     return _record_validation_error(

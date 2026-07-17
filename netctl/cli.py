@@ -379,13 +379,33 @@ def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 errors=[],
             )
 
+        path = Path(args.path)
         try:
-            path = Path(args.path)
             raw_bytes = path.read_bytes()
+        except Exception as exc:
+            return 1, err(str(exc), errors=[])
+
+        try:
             document = load_context_bytes(raw_bytes)
+        except Exception as exc:
+            errors = [{"path": "document", "message": str(exc)}]
+            if args.context_command == "import":
+                result = record_context_import_validation_error(
+                    conn, None, raw_bytes, path, args.git_sha, errors
+                )
+                return 1, err("network context import failed", **result)
+            return 1, err(str(exc), errors=[])
+
+        try:
             schema = load_schema(resolve_context_schema(path, args.schema))
             errors = validate_context(document, schema)
         except Exception as exc:
+            errors = [{"path": "schema", "message": str(exc)}]
+            if args.context_command == "import":
+                result = record_context_import_validation_error(
+                    conn, document, raw_bytes, path, args.git_sha, errors
+                )
+                return 1, err("network context import failed", **result)
             return 1, err(str(exc), errors=[])
 
         if errors:
