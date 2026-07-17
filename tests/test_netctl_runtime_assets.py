@@ -228,6 +228,30 @@ def _seed_legacy_tags(db_url: str, tags: list[dict[str, str]]) -> None:
         conn.close()
 
 
+def _insert_context_revision(
+    conn: sqlite3.Connection,
+    *,
+    context_id: str,
+    sha256: str,
+    validation_order: int,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO context_revisions (
+            context_id, schema_version, sha256, source_path, validated_at,
+            status, validation_order
+        ) VALUES (?, '1', ?, 'test-context.yaml', ?, 'ok', ?)
+        """,
+        (
+            context_id,
+            sha256,
+            f"2026-07-17T00:00:0{validation_order}Z",
+            validation_order,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
 def test_connect_enables_runtime_identity_pragmas(pr_1b_database: str) -> None:
     from netctl.db import connect
 
@@ -1166,5 +1190,342 @@ def test_tags_with_invalid_list_elements_are_reported_as_malformed(
                 "reason": "malformed_tags_json",
             }
         ]
+    finally:
+        conn.close()
+
+
+def test_intent_binding_uses_context_and_stable_id_not_intent_row_identity(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    conn = connect(pr_1b_database)
+    try:
+        columns = [row["name"] for row in conn.execute("PRAGMA table_info(asset_intent_bindings)")]
+        assert columns == [
+            "id",
+            "asset_id",
+            "context_id",
+            "intent_stable_id",
+            "last_verified_context_revision_id",
+            "binding_source",
+            "confidence",
+            "status",
+            "first_seen_at",
+            "last_seen_at",
+        ]
+        foreign_keys = {
+            (row["from"], row["table"], row["to"])
+            for row in conn.execute("PRAGMA foreign_key_list(asset_intent_bindings)")
+        }
+        assert foreign_keys == {
+            ("asset_id", "assets", "id"),
+            ("last_verified_context_revision_id", "context_revisions", "id"),
+        }
+
+        now = "2026-07-17T12:00:00Z"
+        asset_id = conn.execute(
+            """
+            INSERT INTO assets (
+                asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at
+            ) VALUES ('manual:intent-bound', 'manual', 100, 0, ?, ?, ?, ?)
+            """,
+            (now, now, now, now),
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO asset_intent_bindings (
+                asset_id, context_id, intent_stable_id, binding_source,
+                confidence, status, first_seen_at, last_seen_at
+            ) VALUES (?, 'test-network', 'router', 'operator', 100,
+                      'confirmed', ?, ?)
+            """,
+            (asset_id, now, now),
+        )
+
+        binding = conn.execute(
+            """
+            SELECT asset_id, context_id, intent_stable_id,
+                   last_verified_context_revision_id
+            FROM asset_intent_bindings
+            """
+        ).fetchone()
+        assert tuple(binding) == (asset_id, "test-network", "router", None)
+    finally:
+        conn.close()
+
+
+def test_intent_binding_remains_meaningful_when_context_head_changes(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    conn = connect(pr_1b_database)
+    try:
+        now = "2026-07-17T12:00:00Z"
+        asset_id = conn.execute(
+            """
+            INSERT INTO assets (
+                asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at
+            ) VALUES ('manual:router', 'manual', 100, 0, ?, ?, ?, ?)
+            """,
+            (now, now, now, now),
+        ).lastrowid
+
+        first_revision_id = _insert_context_revision(
+            conn,
+            context_id="test-network",
+            sha256="first-revision",
+            validation_order=1,
+        )
+        first_intent_asset_id = conn.execute(
+            """
+            INSERT INTO intent_assets (
+                context_revision_id, stable_id, lifecycle, canonical_json,
+                canonical_hash, origin_context_revision_id
+            ) VALUES (?, 'router', 'active', '{"name":"old"}', 'old-hash', ?)
+            """,
+            (first_revision_id, first_revision_id),
+        ).lastrowid
+        first_run_id = conn.execute(
+            """
+            INSERT INTO context_import_runs (
+                context_id, context_revision_id, git_sha, source_path,
+                started_at, finished_at, status
+            ) VALUES ('test-network', ?, 'first-git', 'test-context.yaml',
+                      ?, ?, 'success_imported')
+            """,
+            (first_revision_id, now, now),
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO context_heads (
+                context_id, context_revision_id, activated_by_import_run_id,
+                activated_at
+            ) VALUES ('test-network', ?, ?, ?)
+            """,
+            (first_revision_id, first_run_id, now),
+        )
+        binding_id = conn.execute(
+            """
+            INSERT INTO asset_intent_bindings (
+                asset_id, context_id, intent_stable_id,
+                last_verified_context_revision_id, binding_source, confidence,
+                status, first_seen_at, last_seen_at
+            ) VALUES (?, 'test-network', 'router', ?, 'operator', 100,
+                      'confirmed', ?, ?)
+            """,
+            (asset_id, first_revision_id, now, now),
+        ).lastrowid
+
+        second_revision_id = _insert_context_revision(
+            conn,
+            context_id="test-network",
+            sha256="second-revision",
+            validation_order=2,
+        )
+        second_intent_asset_id = conn.execute(
+            """
+            INSERT INTO intent_assets (
+                context_revision_id, stable_id, lifecycle, canonical_json,
+                canonical_hash, origin_context_revision_id
+            ) VALUES (?, 'router', 'active', '{"name":"new"}', 'new-hash', ?)
+            """,
+            (second_revision_id, first_revision_id),
+        ).lastrowid
+        second_run_id = conn.execute(
+            """
+            INSERT INTO context_import_runs (
+                context_id, context_revision_id, base_context_revision_id,
+                git_sha, source_path, started_at, finished_at, status
+            ) VALUES ('test-network', ?, ?, 'second-git', 'test-context.yaml',
+                      ?, ?, 'success_imported')
+            """,
+            (second_revision_id, first_revision_id, now, now),
+        ).lastrowid
+        conn.execute(
+            """
+            UPDATE context_heads
+            SET context_revision_id = ?, activated_by_import_run_id = ?,
+                activated_at = ?
+            WHERE context_id = 'test-network'
+            """,
+            (second_revision_id, second_run_id, now),
+        )
+
+        resolved = conn.execute(
+            """
+            SELECT bindings.id AS binding_id,
+                   bindings.last_verified_context_revision_id,
+                   heads.context_revision_id AS current_revision_id,
+                   intent_assets.id AS current_intent_asset_id
+            FROM asset_intent_bindings AS bindings
+            JOIN context_heads AS heads
+              ON heads.context_id = bindings.context_id
+            JOIN intent_assets
+              ON intent_assets.context_revision_id = heads.context_revision_id
+             AND intent_assets.stable_id = bindings.intent_stable_id
+            WHERE bindings.asset_id = ?
+            """,
+            (asset_id,),
+        ).fetchone()
+        assert tuple(resolved) == (
+            binding_id,
+            first_revision_id,
+            second_revision_id,
+            second_intent_asset_id,
+        )
+        assert second_intent_asset_id != first_intent_asset_id
+    finally:
+        conn.close()
+
+
+def test_intent_binding_migration_creates_no_automatic_binding(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    db_path = Path(pr_1b_database.removeprefix("sqlite:///"))
+    seed_conn = sqlite3.connect(db_path)
+    try:
+        revision_id = _insert_context_revision(
+            seed_conn,
+            context_id="test-network",
+            sha256="matching-stable-id",
+            validation_order=1,
+        )
+        seed_conn.execute(
+            """
+            INSERT INTO intent_assets (
+                context_revision_id, stable_id, lifecycle, canonical_json,
+                canonical_hash, origin_context_revision_id
+            ) VALUES (?, 'mac:00:11:22:33:44:F1', 'active', '{}',
+                      'matching-hash', ?)
+            """,
+            (revision_id, revision_id),
+        )
+        seed_conn.commit()
+    finally:
+        seed_conn.close()
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 151,
+                "ip": "10.0.0.151",
+                "mac": "00:11:22:33:44:F1",
+                "device_key": "mac:00:11:22:33:44:F1",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM intent_assets").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM asset_intent_bindings").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_explicit_asset_supports_multiple_interfaces(pr_1b_database: str) -> None:
+    from netctl.db import connect
+
+    conn = connect(pr_1b_database)
+    try:
+        now = "2026-07-17T12:00:00Z"
+        asset_id = conn.execute(
+            """
+            INSERT INTO assets (
+                asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at
+            ) VALUES ('manual:multi-interface', 'manual', 100, 0, ?, ?, ?, ?)
+            """,
+            (now, now, now, now),
+        ).lastrowid
+        conn.executemany(
+            """
+            INSERT INTO asset_interfaces (
+                asset_id, interface_key, mac, interface_type, interface_name,
+                first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (asset_id, "ethernet:primary", "00:11:22:33:44:A1", "ethernet", "eth0", now, now),
+                (asset_id, "wifi:primary", "00:11:22:33:44:A2", "wifi", "wlan0", now, now),
+            ],
+        )
+
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT asset_id, interface_key, mac, interface_type,
+                       interface_name
+                FROM asset_interfaces
+                WHERE asset_id = ?
+                ORDER BY interface_key
+                """,
+                (asset_id,),
+            )
+        ] == [
+            (asset_id, "ethernet:primary", "00:11:22:33:44:A1", "ethernet", "eth0"),
+            (asset_id, "wifi:primary", "00:11:22:33:44:A2", "wifi", "wlan0"),
+        ]
+    finally:
+        conn.close()
+
+
+def test_no_auto_merge_when_mac_column_conflicts_with_shared_device_key(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 161,
+                "ip": "10.0.0.161",
+                "mac": "00:11:22:33:44:B1",
+                "device_key": "mac:00:11:22:33:44:B1",
+                "hostname": "shared-host",
+                "display_name": "Shared device",
+                "site": "main",
+            },
+            {
+                "id": 162,
+                "ip": "10.0.0.162",
+                "mac": "00:11:22:33:44:B2",
+                "device_key": "mac:00:11:22:33:44:B1",
+                "hostname": "shared-host",
+                "display_name": "Shared device",
+                "site": "main",
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT mappings.legacy_network_host_id, assets.asset_key,
+                       interfaces.mac
+                FROM legacy_host_asset_mappings AS mappings
+                JOIN assets ON assets.id = mappings.asset_id
+                JOIN asset_interfaces AS interfaces
+                  ON interfaces.asset_id = assets.id
+                ORDER BY mappings.legacy_network_host_id
+                """
+            )
+        ] == [
+            (161, "mac:00:11:22:33:44:B1", "00:11:22:33:44:B1"),
+            (162, "mac:00:11:22:33:44:B2", "00:11:22:33:44:B2"),
+        ]
+        assert conn.execute("SELECT COUNT(DISTINCT asset_id) FROM asset_interfaces").fetchone()[0] == 2
     finally:
         conn.close()
