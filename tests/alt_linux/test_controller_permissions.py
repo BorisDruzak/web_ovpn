@@ -5,7 +5,6 @@ import io
 import json
 import os
 import pwd
-from dataclasses import replace
 from pathlib import Path
 
 from alt_deploy.cli import main
@@ -75,17 +74,19 @@ def test_controller_permissions_reports_healthy_private_state(
         "ALT_DEPLOY_KNOWN_HOSTS",
         str(ssh_dir / "known_hosts_autoinstall"),
     )
-
-    settings = replace(
-        Settings.from_env(),
-        service_user=pwd.getpwuid(os.geteuid()).pw_name,
-        service_group=grp.getgrgid(os.getegid()).gr_name,
+    monkeypatch.setenv(
+        "ALT_DEPLOY_SERVICE_USER",
+        pwd.getpwuid(os.geteuid()).pw_name,
+    )
+    monkeypatch.setenv(
+        "ALT_DEPLOY_SERVICE_GROUP",
+        grp.getgrgid(os.getegid()).gr_name,
     )
 
     stdout = io.StringIO()
     rc = main(
         ["--json", "controller", "permissions"],
-        settings=settings,
+        settings=Settings.from_env(),
         stdout=stdout,
         stderr=io.StringIO(),
     )
