@@ -11,6 +11,8 @@ PLAN_DOC = Path(
     "docs/superpowers/plans/"
     "2026-07-16-alt-workstation-provisioning-mvp.md"
 )
+CONTEXT_DOC = Path("docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md")
+README_DOC = Path("deploy/alt-linux/README.md")
 PROVISIONING_DOCS = (DESIGN_DOC, PLAN_DOC)
 
 
@@ -71,7 +73,7 @@ def test_historical_docs_record_the_verified_runtime_contract() -> None:
 
 
 def test_deploy_readme_identifies_current_control_plane_context() -> None:
-    content = read(Path("deploy/alt-linux/README.md"))
+    content = read(README_DOC)
     required = (
         "# ALT Workstation Provisioning",
         "ALT_WORKSTATION_PROVISIONING_CONTEXT.md",
@@ -86,7 +88,7 @@ def test_deploy_readme_identifies_current_control_plane_context() -> None:
 
 
 def test_deploy_readme_documents_installation_and_safe_vault_handling() -> None:
-    content = read(Path("deploy/alt-linux/README.md"))
+    content = read(README_DOC)
     required = (
         "## Controller prerequisites",
         "sudo bash deploy/alt-linux/install-control-plane.sh",
@@ -122,7 +124,7 @@ def test_deploy_readme_documents_installation_and_safe_vault_handling() -> None:
 
 
 def test_deploy_readme_documents_current_cli_and_request_contract() -> None:
-    content = read(Path("deploy/alt-linux/README.md"))
+    content = read(README_DOC)
     required = (
         "workstationctl --json machines list",
         "workstationctl --json machines show <uuid>",
@@ -133,6 +135,7 @@ def test_deploy_readme_documents_current_cli_and_request_contract() -> None:
         "workstationctl --json provision start <uuid>",
         "workstationctl --json jobs status <job_id>",
         "workstationctl --json jobs log <job_id>",
+        "workstationctl --json jobs reconcile",
         '"employee_login": "i-ivanov"',
         '"profile": "standard"',
         "`provision start` requires root",
@@ -143,7 +146,7 @@ def test_deploy_readme_documents_current_cli_and_request_contract() -> None:
 
 
 def test_deploy_readme_documents_state_paths_and_recovery() -> None:
-    content = read(Path("deploy/alt-linux/README.md"))
+    content = read(README_DOC)
     required = (
         "/var/lib/alt-deploy/jobs/<job_id>/",
         "/var/lib/alt-deploy/assignments/<uuid>.json",
@@ -161,7 +164,7 @@ def test_deploy_readme_documents_state_paths_and_recovery() -> None:
 
 
 def test_deploy_readme_documents_controller_permission_contract() -> None:
-    content = read(Path("deploy/alt-linux/README.md"))
+    content = read(README_DOC)
     required = (
         "## Controller state permissions",
         "/var/lib/alt-deploy` | `altserver` | `altserver` | `0700`",
@@ -178,3 +181,23 @@ def test_deploy_readme_documents_controller_permission_contract() -> None:
     )
     missing = [fragment for fragment in required if fragment not in content]
     assert not missing, f"README permission contract missing: {missing}"
+
+
+def test_recovery_docs_record_phase_2_1_contract() -> None:
+    required = (
+        "workstationctl --json jobs reconcile",
+        "workstationctl.lock",
+        "still_running",
+        "queued_recoverable",
+        "worker_not_started",
+        "worker_lost",
+        "result_recovered",
+        "result_rejected",
+        "invalid_provision_result",
+        "No automatic boot service",
+    )
+
+    for relative_path in (README_DOC, CONTEXT_DOC):
+        content = read(relative_path)
+        missing = [fragment for fragment in required if fragment not in content]
+        assert not missing, f"{relative_path}: recovery docs missing {missing}"
