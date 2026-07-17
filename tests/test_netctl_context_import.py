@@ -89,6 +89,15 @@ def intent_count(conn: sqlite3.Connection) -> int:
     )
 
 
+def intent_rows_by_table(conn: sqlite3.Connection) -> dict[str, list[tuple[object, ...]]]:
+    from netctl.context import IMPORT_COLLECTIONS
+
+    return {
+        table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")]
+        for table, _entity_type in IMPORT_COLLECTIONS.values()
+    }
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
@@ -521,51 +530,66 @@ def test_entity_origins_do_not_cross_context_boundaries(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_semantic_validation_error_records_finished_run_without_revision_or_head(tmp_path: Path) -> None:
-    from netctl.context_import import import_context
-
-    conn = connect_import_db(tmp_path)
-    document = import_document()
-    document["links"][0]["relation"] = "UNKNOWN"
-    try:
-        result = import_context(
-            conn,
-            document,
-            raw_document(document),
-            tmp_path / "invalid.yaml",
-            "invalid-git-sha",
-        )
-
-        persisted = conn.execute("SELECT * FROM context_import_runs").fetchone()
-        assert result["result"] == "validation_error"
-        assert result["context"] is None
-        assert result["head"] is None
-        assert persisted["status"] == "validation_error"
-        assert persisted["finished_at"] is not None
-        assert persisted["context_revision_id"] is None
-        assert json.loads(persisted["errors_json"]) == result["errors"]
-        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM context_heads").fetchone()[0] == 0
-        assert intent_count(conn) == 0
-    finally:
-        conn.close()
-
-
-def test_materialisation_error_rolls_back_snapshot_and_head_then_marks_run_db_error(tmp_path: Path) -> None:
+def test_semantic_validation_error_preserves_prior_head_and_active_snapshot(tmp_path: Path) -> None:
     from netctl.context_import import import_context
 
     conn = connect_import_db(tmp_path)
     original = import_document()
-    broken = deepcopy(original)
-    broken["devices"].append({"id": "broken"})
+    document = deepcopy(original)
+    document["links"][0]["relation"] = "UNKNOWN"
     source_path = tmp_path / "network-context.yaml"
     try:
         first = import_context(conn, original, raw_document(original), source_path, "first-git-sha")
+        before_head = dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone())
+        before_intent_rows = intent_rows_by_table(conn)
+        before_runtime = runtime_counts(conn)
+
+        result = import_context(
+            conn,
+            document,
+            raw_document(document),
+            source_path,
+            "invalid-git-sha",
+        )
+
+        persisted = conn.execute(
+            "SELECT * FROM context_import_runs WHERE id = ?", (result["run"]["id"],)
+        ).fetchone()
+        assert result["result"] == "validation_error"
+        assert result["context"] is None
+        assert result["head"] == before_head
+        assert persisted["status"] == "validation_error"
+        assert persisted["finished_at"] is not None
+        assert persisted["context_revision_id"] is None
+        assert persisted["base_context_revision_id"] == first["context"]["id"]
+        assert json.loads(persisted["errors_json"]) == result["errors"]
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 1
+        assert dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone()) == before_head
+        assert intent_rows_by_table(conn) == before_intent_rows
+        assert runtime_counts(conn) == before_runtime
+    finally:
+        conn.close()
+
+
+def test_second_entity_table_failure_rolls_back_candidate_and_preserves_prior_head(tmp_path: Path) -> None:
+    from netctl.context_import import import_context
+    from netctl.context import IMPORT_COLLECTIONS
+
+    conn = connect_import_db(tmp_path)
+    original = import_document()
+    broken = deepcopy(original)
+    broken["locations"] = [{"id": "candidate-location"}]
+    source_path = tmp_path / "network-context.yaml"
+    try:
+        first = import_context(conn, original, raw_document(original), source_path, "first-git-sha")
+        before_head = dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone())
+        before_intent_rows = intent_rows_by_table(conn)
+        before_runtime = runtime_counts(conn)
         conn.execute(
             """
-            CREATE TRIGGER fail_broken_asset
-            BEFORE INSERT ON intent_assets
-            WHEN NEW.stable_id = 'broken'
+            CREATE TRIGGER fail_candidate_location
+            BEFORE INSERT ON intent_locations
+            WHEN NEW.stable_id = 'candidate-location'
             BEGIN
                 SELECT RAISE(ABORT, 'forced materialisation failure');
             END
@@ -577,14 +601,24 @@ def test_materialisation_error_rolls_back_snapshot_and_head_then_marks_run_db_er
 
         assert result["result"] == "db_error"
         assert result["run"]["status"] == "db_error"
-        assert result["head"]["context_revision_id"] == first["context"]["id"]
-        assert conn.execute(
-            "SELECT context_revision_id FROM context_heads WHERE context_id = 'test-network'"
-        ).fetchone()[0] == first["context"]["id"]
-        assert conn.execute(
-            "SELECT COUNT(*) FROM intent_assets WHERE context_revision_id = ?",
-            (result["context"]["id"],),
-        ).fetchone()[0] == 0
+        assert result["head"] == before_head
+        assert dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone()) == before_head
+        assert intent_rows_by_table(conn) == before_intent_rows
+        assert runtime_counts(conn) == before_runtime
+        assert all(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE context_revision_id = ?",
+                (result["context"]["id"],),
+            ).fetchone()[0]
+            == 0
+            for table, _entity_type in IMPORT_COLLECTIONS.values()
+        )
+        persisted_run = conn.execute(
+            "SELECT * FROM context_import_runs WHERE id = ?", (result["run"]["id"],)
+        ).fetchone()
+        assert persisted_run["status"] == "db_error"
+        assert persisted_run["finished_at"] is not None
+        assert persisted_run["base_context_revision_id"] == first["context"]["id"]
         persisted_errors = json.loads(result["run"]["errors_json"])
         assert persisted_errors == [
             {"path": "database", "message": "forced materialisation failure"}
