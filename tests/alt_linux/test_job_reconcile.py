@@ -5,11 +5,14 @@ import json
 import subprocess
 from pathlib import Path
 
+from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.cli import main
 from alt_deploy.jobs import JobRepository
+from alt_deploy.jsonio import atomic_write_json
 
 from test_jobs import provision_request
 from test_registry_cli import make_settings
+from test_worker import successful_result
 
 
 def _systemctl_result(
@@ -244,3 +247,85 @@ def test_jobs_reconcile_marks_unlaunched_queue_retryable(
     assert reconciled.status["retryable"] is True
     assert reconciled.status["finished_at"]
     assert "systemd_unit" not in reconciled.status
+
+
+def test_jobs_reconcile_recovers_validated_result_after_interruption(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    jobs = JobRepository(settings)
+    assignments = AssignmentRepository(settings)
+    created = jobs.create(provision_request())
+    unit_name = f"alt-provision-{created.job_id}.service"
+
+    running = jobs.update(
+        created.job_id,
+        state="running",
+        stage="ansible",
+        started_at="2026-07-17T12:00:00+00:00",
+        systemd_unit=unit_name,
+    )
+    result = successful_result(running.job_id)
+    atomic_write_json(running.job_dir / "result.json", result)
+
+    def fake_systemctl(
+        command,
+        *,
+        shell,
+        text,
+        capture_output,
+        timeout,
+        check,
+    ):
+        assert shell is False
+        assert text is True
+        assert capture_output is True
+        assert timeout == 15
+        assert check is False
+
+        return _systemctl_result(
+            command,
+            unit_name=unit_name,
+            load_state="not-found",
+            active_state="inactive",
+            sub_state="dead",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_systemctl)
+
+    stdout = io.StringIO()
+    rc = main(
+        ["--json", "jobs", "reconcile"],
+        settings=settings,
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    assert rc == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload == {
+        "status": "ok",
+        "reconciliation": {
+            "status": "ok",
+            "checked": 1,
+            "changed": [
+                {
+                    "job_id": running.job_id,
+                    "previous_state": "running",
+                    "state": "successful",
+                    "action": "result_recovered",
+                }
+            ],
+            "unchanged": [],
+        },
+    }
+
+    recovered = jobs.get(running.job_id)
+    assert recovered.state == "successful"
+    assert recovered.stage == "complete"
+    assert recovered.status["finished_at"]
+    assert recovered.status["result_file"] == str(
+        running.job_dir / "result.json"
+    )
+    assert assignments.get(running.machine_uuid) == result
