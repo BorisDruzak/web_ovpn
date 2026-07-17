@@ -615,6 +615,81 @@ def test_unresolved_historical_observation_history_is_reported(
         conn.close()
 
 
+def test_resolved_mac_only_observation_history_is_reported(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 72, "ip": "10.0.0.72", "mac": "00:11:22:33:44:72"}],
+    )
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 172,
+                "observation_type": "bridge",
+                "mac": "00-11-22-33-44-72",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        report_json = conn.execute(
+            """
+            SELECT unresolved_observation_ids_json
+            FROM runtime_asset_migration_reports
+            WHERE migration_version = 2
+            """
+        ).fetchone()[0]
+        assert json.loads(report_json) == [
+            {
+                "observation_id": 172,
+                "reason": "unsupported_mac_only_observation",
+            }
+        ]
+    finally:
+        conn.close()
+
+
+def test_invalid_mac_only_observation_history_reports_invalid_mac(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(pr_1b_database, [{"id": 73, "ip": "10.0.0.73"}])
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 173,
+                "observation_type": "bridge",
+                "mac": "not-a-valid-mac",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        report_json = conn.execute(
+            """
+            SELECT unresolved_observation_ids_json
+            FROM runtime_asset_migration_reports
+            WHERE migration_version = 2
+            """
+        ).fetchone()[0]
+        assert json.loads(report_json) == [
+            {
+                "observation_id": 173,
+                "reason": "invalid_mac",
+            }
+        ]
+    finally:
+        conn.close()
+
+
 def test_reused_ip_history_can_belong_to_different_assets_at_different_times(
     pr_1b_database: str,
 ) -> None:

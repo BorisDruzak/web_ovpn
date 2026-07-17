@@ -434,9 +434,11 @@ def _migration_2(conn: sqlite3.Connection) -> None:
     )
     for observation in observation_rows:
         asset_id = host_asset_ids.get(observation["host_id"])
-        normalized_mac = normalize_mac(observation["mac"])
+        raw_mac = str(observation["mac"] or "").strip()
+        normalized_mac = normalize_mac(raw_mac)
         mac_matches = mac_asset_ids.get(normalized_mac, set()) if normalized_mac else set()
         observation_ip = str(observation["ip"] or "").strip()
+        hostname = str(observation["hostname"] or "").strip()
         ip_matches = ip_asset_ids.get(observation_ip, set()) if observation_ip else set()
         if asset_id is None and len(mac_matches) == 1:
             asset_id = next(iter(mac_matches))
@@ -452,6 +454,16 @@ def _migration_2(conn: sqlite3.Connection) -> None:
                         mac_match_count=len(mac_matches),
                         observation_ip=observation_ip,
                         ip_match_count=len(ip_matches),
+                    ),
+                }
+            )
+            continue
+        if raw_mac and not observation_ip and not hostname:
+            unresolved_observations.append(
+                {
+                    "observation_id": int(observation["id"]),
+                    "reason": (
+                        "unsupported_mac_only_observation" if normalized_mac else "invalid_mac"
                     ),
                 }
             )
@@ -485,7 +497,6 @@ def _migration_2(conn: sqlite3.Connection) -> None:
                     observation_type,
                 ),
             )
-        hostname = str(observation["hostname"] or "").strip()
         if hostname:
             conn.execute(
                 """
@@ -577,7 +588,10 @@ def _unresolved_observation_reason(
     reasons: list[str] = []
     if observation["host_id"] is not None:
         reasons.append("host_id_not_mapped")
-    if normalized_mac:
+    raw_mac = str(observation["mac"] or "").strip()
+    if raw_mac and not normalized_mac:
+        reasons.append("invalid_mac")
+    elif normalized_mac:
         reasons.append("mac_not_mapped" if mac_match_count == 0 else "mac_mapping_not_unique")
     if observation_ip:
         reasons.append("ip_not_mapped" if ip_match_count == 0 else "ip_mapping_not_unique")
