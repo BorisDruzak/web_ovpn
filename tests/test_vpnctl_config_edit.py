@@ -27,6 +27,8 @@ def run_vpnctl(tmp_path: Path, *args: str) -> dict:
         "SHARE_OUT_DIR": str(tmp_path / "share"),
         "ARCHIVE_DIR": str(tmp_path / "archive"),
         "REGISTRY_DB": str(tmp_path / "registry.sqlite"),
+        "NETWORKS_DB": str(tmp_path / "networks.json"),
+        "NETWORK_TEMPLATES_DB": str(tmp_path / "network-templates.json"),
         "OPERATION_LOG": str(tmp_path / "vpnctl.log"),
         "LOCK_FILE": str(tmp_path / "vpnctl.lock"),
         "VIPNET_NETS_FILE": str(vipnet),
