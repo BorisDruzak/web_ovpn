@@ -253,6 +253,10 @@ def _migration_2(conn: sqlite3.Connection) -> None:
         if statement.strip():
             conn.execute(statement)
 
+    _copy_legacy_runtime_assets(conn)
+
+
+def _copy_legacy_runtime_assets(conn: sqlite3.Connection) -> None:
     migration_time = utc_now()
     host_rows = _dict_rows(
         conn.execute(

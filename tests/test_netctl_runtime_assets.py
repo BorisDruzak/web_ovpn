@@ -1561,3 +1561,191 @@ def test_no_auto_merge_when_mac_column_conflicts_with_shared_device_key(
         assert conn.execute("SELECT COUNT(DISTINCT asset_id) FROM asset_interfaces").fetchone()[0] == 2
     finally:
         conn.close()
+
+
+def test_migration_2_rollback_after_partial_copy_and_reopen_is_idempotent(
+    pr_1b_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netctl import migrations
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 171,
+                "ip": "10.0.0.171",
+                "mac": "00:11:22:33:44:C1",
+                "hostname": "rollback-host",
+                "device_key": "mac:00:11:22:33:44:C1",
+                "first_seen_at": "2026-07-16T10:00:00Z",
+                "last_seen_at": "2026-07-17T10:00:00Z",
+                "comment": "must survive rollback",
+            }
+        ],
+    )
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 172,
+                "host_id": 171,
+                "observed_at": "2026-07-16T11:00:00Z",
+                "observation_type": "arp",
+                "ip": "10.0.0.170",
+                "mac": "00:11:22:33:44:C1",
+                "hostname": "rollback-host-old",
+                "data_json": '{"proof":"legacy"}',
+            }
+        ],
+    )
+    _seed_legacy_tags(
+        pr_1b_database,
+        [
+            {
+                "device_key": "mac:00:11:22:33:44:C1",
+                "match_type": "device_key",
+                "tags_json": '["rollback-proof"]',
+            }
+        ],
+    )
+    db_path = Path(pr_1b_database.removeprefix("sqlite:///"))
+    version_2_tables = {
+        "assets",
+        "asset_interfaces",
+        "ip_observations",
+        "hostname_observations",
+        "asset_intent_bindings",
+        "asset_tag_bindings",
+        "legacy_host_asset_mappings",
+        "runtime_asset_migration_reports",
+    }
+
+    def legacy_rows() -> dict[str, list[tuple[Any, ...]]]:
+        raw_conn = sqlite3.connect(db_path)
+        try:
+            return {
+                table: [
+                    tuple(row)
+                    for row in raw_conn.execute(f"SELECT * FROM {table} ORDER BY 1")
+                ]
+                for table in (
+                    "network_hosts",
+                    "host_observations",
+                    "network_device_tags",
+                )
+            }
+        finally:
+            raw_conn.close()
+
+    legacy_before = legacy_rows()
+    original_copy = getattr(migrations, "_copy_legacy_runtime_assets", None)
+    copy_calls = 0
+
+    def fail_after_copy(conn: sqlite3.Connection) -> None:
+        nonlocal copy_calls
+        assert original_copy is not None
+        original_copy(conn)
+        copy_calls += 1
+        assert conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM runtime_asset_migration_reports"
+        ).fetchone()[0] == 1
+        raise RuntimeError("injected failure after runtime asset copy")
+
+    with monkeypatch.context() as migration_patch:
+        migration_patch.setattr(
+            migrations,
+            "_copy_legacy_runtime_assets",
+            fail_after_copy,
+            raising=False,
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="injected failure after runtime asset copy",
+        ):
+            connect(pr_1b_database)
+
+    assert copy_calls == 1
+    reopened = sqlite3.connect(db_path)
+    try:
+        assert [
+            row[0]
+            for row in reopened.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ] == [1]
+        table_names = {
+            row[0]
+            for row in reopened.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert version_2_tables.isdisjoint(table_names)
+    finally:
+        reopened.close()
+    assert legacy_rows() == legacy_before
+
+    first_success = connect(pr_1b_database)
+    try:
+        first_success_state = {
+            "versions": [
+                row[0]
+                for row in first_success.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ],
+            "counts": {
+                table: first_success.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0]
+                for table in sorted(version_2_tables)
+            },
+            "reports": [
+                tuple(row)
+                for row in first_success.execute(
+                    "SELECT * FROM runtime_asset_migration_reports ORDER BY migration_version"
+                )
+            ],
+        }
+    finally:
+        first_success.close()
+
+    assert first_success_state["versions"] == [1, 2]
+    assert first_success_state["counts"] == {
+        "asset_intent_bindings": 0,
+        "asset_interfaces": 1,
+        "asset_tag_bindings": 1,
+        "assets": 1,
+        "hostname_observations": 2,
+        "ip_observations": 2,
+        "legacy_host_asset_mappings": 1,
+        "runtime_asset_migration_reports": 1,
+    }
+    assert len(first_success_state["reports"]) == 1
+
+    repeated_open = connect(pr_1b_database)
+    try:
+        assert [
+            row[0]
+            for row in repeated_open.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ] == first_success_state["versions"]
+        assert {
+            table: repeated_open.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+            for table in sorted(version_2_tables)
+        } == first_success_state["counts"]
+        assert [
+            tuple(row)
+            for row in repeated_open.execute(
+                "SELECT * FROM runtime_asset_migration_reports ORDER BY migration_version"
+            )
+        ] == first_success_state["reports"]
+    finally:
+        repeated_open.close()
+
+    assert legacy_rows() == legacy_before
