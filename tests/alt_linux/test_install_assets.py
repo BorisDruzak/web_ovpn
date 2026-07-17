@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,29 @@ INSTALLER = (
     / "deploy"
     / "alt-linux"
     / "install-control-plane.sh"
+)
+
+
+REQUIRED_CONTROLLER_COMMANDS = (
+    "python3",
+    "ansible-playbook",
+    "ansible-vault",
+    "systemd-run",
+    "install",
+    "cp",
+    "ssh",
+    "ssh-keyscan",
+    "mkpasswd",
+)
+
+MUTATING_INSTALLER_COMMANDS = (
+    "install",
+    "rm",
+    "cp",
+    "chown",
+    "find",
+    "chmod",
+    "systemctl",
 )
 
 
@@ -156,4 +181,52 @@ def test_installer_does_not_copy_active_vault_secret(
     assert (
         "vault.yml.example"
         not in installer_text
+    )
+
+
+def test_missing_dependency_is_reported_before_runtime_mutation(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    mutation_marker = tmp_path / "mutation.log"
+    missing_command = "ansible-vault"
+
+    commands = set(REQUIRED_CONTROLLER_COMMANDS)
+    commands.update(MUTATING_INSTALLER_COMMANDS)
+
+    for command in sorted(commands - {missing_command}):
+        command_path = fake_bin / command
+
+        if command in MUTATING_INSTALLER_COMMANDS:
+            command_path.write_text(
+                "#!/bin/sh\n"
+                'printf "%s\\n" "$0" >> "$INSTALL_MARKER"\n'
+                "exit 99\n",
+                encoding="utf-8",
+            )
+            command_path.chmod(0o755)
+        else:
+            command_path.symlink_to("/bin/true")
+
+    completed = subprocess.run(
+        ["/bin/bash", str(INSTALLER)],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": str(fake_bin),
+            "INSTALL_MARKER": str(mutation_marker),
+        },
+    )
+
+    assert completed.returncode != 0
+    assert (
+        f"Missing required command: {missing_command}"
+        in completed.stderr
+    )
+    assert not mutation_marker.exists(), (
+        "Installer invoked a mutating command before dependency "
+        f"preflight completed:\n{mutation_marker.read_text(encoding='utf-8')}"
     )
