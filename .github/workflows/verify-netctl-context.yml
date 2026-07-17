@@ -55,4 +55,23 @@ jobs:
           python -m pip install --quiet -r requirements.txt
 
       - name: Run full regression suite
-        run: python -m pytest -q --maxfail=20
+        id: full_pytest
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q --maxfail=20 > pytest-full.log 2>&1
+          rc=$?
+          echo "$rc" > pytest-full.exit-code
+          cat pytest-full.log
+          exit "$rc"
+
+      - name: Upload full regression output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-full-regression
+          path: |
+            pytest-full.log
+            pytest-full.exit-code
+          if-no-files-found: error
+          retention-days: 7
