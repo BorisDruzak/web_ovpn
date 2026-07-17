@@ -230,3 +230,31 @@ def test_missing_dependency_is_reported_before_runtime_mutation(
         "Installer invoked a mutating command before dependency "
         f"preflight completed:\n{mutation_marker.read_text(encoding='utf-8')}"
     )
+
+
+def test_reinstall_does_not_mutate_runtime_vault_files(
+    installer_text: str,
+) -> None:
+    runtime_secret_paths = (
+        "/home/altserver/ansible/group_vars/vault.yml",
+        "/home/altserver/.ansible-vault-pass",
+    )
+
+    for path in runtime_secret_paths:
+        assert path not in installer_text, (
+            "Installer must not read, copy, overwrite, chmod, or chown "
+            f"the runtime secret directly: {path}"
+        )
+
+    forbidden_recursive_operations = (
+        "rm -rf /home/altserver/ansible",
+        'cp -a "${ALT_ROOT}/ansible/group_vars/."',
+        "chown -R altserver:altserver /home/altserver/ansible\n",
+        "find /home/altserver/ansible -type",
+    )
+
+    for operation in forbidden_recursive_operations:
+        assert operation not in installer_text, (
+            "Installer contains a broad operation that could change the "
+            f"runtime Vault bytes, owner, or mode: {operation}"
+        )
