@@ -131,6 +131,24 @@ class JobReconciler:
             "action": "worker_lost",
         }
 
+    def _still_running(
+        self,
+        job: JobRecord,
+        unit_state: dict[str, str],
+    ) -> dict[str, str] | None:
+        if unit_state["ActiveState"] not in RUNNING_UNIT_STATES:
+            return None
+
+        return {
+            "job_id": job.job_id,
+            "state": job.state,
+            "action": "still_running",
+            "systemd_unit": self._expected_unit(job),
+            "load_state": unit_state["LoadState"],
+            "active_state": unit_state["ActiveState"],
+            "sub_state": unit_state["SubState"],
+        }
+
     def reconcile(self) -> dict[str, object]:
         active_jobs = [
             job
@@ -138,6 +156,7 @@ class JobReconciler:
             if job.state in ACTIVE_STATES
         ]
         changed: list[dict[str, str]] = []
+        unchanged: list[dict[str, str]] = []
 
         for job in active_jobs:
             unit_state = self._unit_state(job)
@@ -149,9 +168,18 @@ class JobReconciler:
                 )
                 if change is not None:
                     changed.append(change)
+                    continue
+
+                running = self._still_running(
+                    job,
+                    unit_state,
+                )
+                if running is not None:
+                    unchanged.append(running)
 
         return {
             "status": "ok",
             "checked": len(active_jobs),
             "changed": changed,
+            "unchanged": unchanged,
         }
