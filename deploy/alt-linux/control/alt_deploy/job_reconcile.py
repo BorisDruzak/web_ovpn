@@ -5,6 +5,7 @@ import subprocess
 from .config import Settings
 from .errors import ControlError
 from .jobs import ACTIVE_STATES, JobRepository, utc_now
+from .locks import exclusive_lock
 from .models import JobRecord
 
 
@@ -100,11 +101,43 @@ class JobReconciler:
 
         return properties
 
+    def _reconcile_queued(
+        self,
+        job: JobRecord,
+    ) -> dict[str, object] | None:
+        recorded_unit = str(
+            job.status.get("systemd_unit") or ""
+        ).strip()
+        if recorded_unit:
+            return None
+
+        previous_state = job.state
+        self.jobs.update(
+            job.job_id,
+            state="failed",
+            stage="reconcile",
+            finished_at=utc_now(),
+            error_code="worker_not_started",
+            retryable=True,
+            error=(
+                "Provision job was queued but no worker unit "
+                "was recorded"
+            ),
+        )
+
+        return {
+            "job_id": job.job_id,
+            "previous_state": previous_state,
+            "state": "failed",
+            "action": "queued_recoverable",
+            "retryable": True,
+        }
+
     def _reconcile_running(
         self,
         job: JobRecord,
         unit_state: dict[str, str],
-    ) -> dict[str, str] | None:
+    ) -> dict[str, object] | None:
         if (job.job_dir / "result.json").exists():
             return None
 
@@ -135,7 +168,7 @@ class JobReconciler:
         self,
         job: JobRecord,
         unit_state: dict[str, str],
-    ) -> dict[str, str] | None:
+    ) -> dict[str, object] | None:
         if unit_state["ActiveState"] not in RUNNING_UNIT_STATES:
             return None
 
@@ -149,16 +182,22 @@ class JobReconciler:
             "sub_state": unit_state["SubState"],
         }
 
-    def reconcile(self) -> dict[str, object]:
+    def _reconcile_unlocked(self) -> dict[str, object]:
         active_jobs = [
             job
             for job in self.jobs.list()
             if job.state in ACTIVE_STATES
         ]
-        changed: list[dict[str, str]] = []
-        unchanged: list[dict[str, str]] = []
+        changed: list[dict[str, object]] = []
+        unchanged: list[dict[str, object]] = []
 
         for job in active_jobs:
+            if job.state == "queued":
+                change = self._reconcile_queued(job)
+                if change is not None:
+                    changed.append(change)
+                    continue
+
             unit_state = self._unit_state(job)
 
             if job.state == "running":
@@ -183,3 +222,7 @@ class JobReconciler:
             "changed": changed,
             "unchanged": unchanged,
         }
+
+    def reconcile(self) -> dict[str, object]:
+        with exclusive_lock(self.settings.lock_file):
+            return self._reconcile_unlocked()
