@@ -149,10 +149,37 @@ class JobReconciler:
         if unit_state["ActiveState"] in RUNNING_UNIT_STATES:
             return None
 
-        result = _validate_result(
-            job,
-            read_json(result_path),
-        )
+        try:
+            result = _validate_result(
+                job,
+                read_json(result_path),
+            )
+        except ControlError as exc:
+            if exc.code != "invalid_provision_result":
+                raise
+
+            previous_state = job.state
+            self.jobs.update(
+                job.job_id,
+                state="failed",
+                stage="reconcile",
+                finished_at=utc_now(),
+                error_code=exc.code,
+                retryable=True,
+                error=(
+                    f"{exc.code}: {exc.message}"
+                )[-10000:],
+            )
+
+            return {
+                "job_id": job.job_id,
+                "previous_state": previous_state,
+                "state": "failed",
+                "action": "result_rejected",
+                "retryable": True,
+                "error_code": exc.code,
+            }
+
         self.assignments.write(job.machine_uuid, result)
 
         previous_state = job.state
