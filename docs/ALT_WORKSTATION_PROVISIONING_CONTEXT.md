@@ -1,16 +1,21 @@
 # ALT Workstation Provisioning — verified implementation context
 
-Status: verified end to end on 2026-07-17.
+Status: verified end to end on 2026-07-17 and subsequently hardened through
+Phase 1 installer and Vault-health work.
 
 Repository: `BorisDruzak/web_ovpn`
 
 Implementation branch: `feat/alt-workstation-provisioning-mvp`
 
-This document is the current operational source of truth for the ALT Workstation provisioning control plane. The earlier design and implementation-plan documents remain useful for intent and history, but some details in them are obsolete. In particular, the real target uses LightDM with AccountsService rather than SDDM, and local employee logins must not contain a dot.
+This document is the operational source of truth for the ALT Workstation
+provisioning control plane. Historical design and implementation-plan documents
+remain useful for intent, but this file takes precedence when they differ.
 
 ## 1. Purpose and current result
 
-The implemented MVP takes an ALT Workstation K 11.2 computer from successful registration through non-mutating preflight and operator-approved local account provisioning.
+The implemented MVP takes an ALT Workstation K 11.2 computer from successful
+registration through non-mutating preflight and operator-approved local account
+provisioning.
 
 Verified flow:
 
@@ -30,7 +35,8 @@ ALT autoinstall
   -> assigned
 ```
 
-The first complete physical-machine run succeeded, survived reboot, and was verified through an actual graphical login to Plasma.
+The first complete physical-machine run succeeded, survived reboot and was
+verified through an actual graphical login to Plasma.
 
 ## 2. Deployment architecture
 
@@ -46,7 +52,7 @@ Responsibilities:
 - SSH known-host handling;
 - `workstationctl` CLI;
 - Ansible playbooks and roles;
-- Ansible Vault;
+- Ansible Vault and non-secret Vault health checks;
 - provision jobs, logs, results and assignments;
 - constrained API in a future stage.
 
@@ -58,6 +64,7 @@ Important runtime paths:
 /opt/alt-deploy-control/alt_deploy/
 /opt/alt-deploy-api/process_pending.py
 /home/altserver/ansible/
+/home/altserver/ansible/group_vars/vault.yml
 /home/altserver/.ansible-vault-pass
 /var/lib/alt-deploy/jobs/
 /var/lib/alt-deploy/assignments/
@@ -81,9 +88,12 @@ alt-deploy-process.service
 
 Planned host: `192.168.100.30`.
 
-The web application must be a thin operator UI. SSH private keys, Vault material, direct Ansible execution and direct workstation SSH access must remain on `192.168.100.17`.
+The web application must remain a thin operator UI. SSH private keys, Vault
+material, direct Ansible execution and direct workstation SSH access remain on
+`192.168.100.17`.
 
-The UI must call a constrained API on the controller. It must not invoke `ansible-playbook` directly.
+The UI must call a constrained API on the controller and must not invoke
+`ansible-playbook` directly.
 
 ## 3. Repository implementation
 
@@ -101,6 +111,7 @@ deploy/alt-linux/api/process_pending.py
 deploy/alt-linux/control/workstationctl
 deploy/alt-linux/control/alt-provision-worker
 deploy/alt-linux/control/alt_deploy/
+deploy/alt-linux/control/alt_deploy/vault.py
 deploy/alt-linux/ansible/playbooks/01-preflight.yml
 deploy/alt-linux/ansible/playbooks/02-provision-account.yml
 deploy/alt-linux/ansible/roles/preflight/
@@ -111,7 +122,30 @@ deploy/alt-linux/ansible/roles/provision_verify/
 tests/alt_linux/
 ```
 
-The installer copies the controller package and Ansible project into their runtime locations, runs the ALT-specific test suite, performs syntax checks for both playbooks and restarts the pending-registration path unit.
+The installer:
+
+1. validates all required controller commands before any runtime mutation;
+2. requires root and the `altserver` service account;
+3. installs the controller package, CLI and worker;
+4. copies playbooks and roles without overwriting unrelated Ansible files;
+5. does not copy or mutate the active Vault or Vault password file;
+6. runs the ALT-specific test suite;
+7. syntax-checks both playbooks;
+8. restarts the pending-registration path unit only after verification succeeds.
+
+Required command preflight currently covers:
+
+```text
+python3
+ansible-playbook
+ansible-vault
+systemd-run
+install
+cp
+ssh
+ssh-keyscan
+mkpasswd
+```
 
 ## 4. Authoritative CLI contract
 
@@ -121,6 +155,7 @@ Machine-readable commands return one JSON object:
 workstationctl --json machines list
 workstationctl --json machines show <uuid>
 workstationctl --json preflight <uuid>
+workstationctl --json vault check
 workstationctl --json provision preview <uuid> --vars-file <file>
 workstationctl --json provision start <uuid> --vars-file <file>
 workstationctl --json jobs status <job_id>
@@ -129,9 +164,11 @@ workstationctl --json jobs log <job_id>
 
 Execution boundary:
 
-- list, show, preflight, preview and job reads run as `altserver`;
-- `provision start` requires root because it creates and launches the transient systemd job;
-- the transient worker runs with the constrained controller runtime and writes private job state.
+- list, show, preflight, Vault check, preview and job reads run as `altserver`;
+- `provision start` requires root because it creates and launches the transient
+  systemd job;
+- the transient worker runs with the constrained controller runtime and writes
+  private job state.
 
 Provision request fields:
 
@@ -166,11 +203,13 @@ Not allowed:
 - uppercase protected-name variants;
 - reserved accounts `root`, `ansible`, `osn-admin`.
 
-The dot is intentionally forbidden because ALT `groupadd` rejects a primary group such as `test.user`. The role creates a matching primary group for the employee.
+The dot is intentionally forbidden because ALT `groupadd` rejects a matching
+primary group such as `test.user`.
 
 ### Hostname
 
-Allowed characters are lowercase ASCII letters, digits and `-`. It must start and end with a letter or digit.
+Allowed characters are lowercase ASCII letters, digits and `-`. The hostname
+must start and end with a letter or digit.
 
 ### Profile
 
@@ -191,9 +230,12 @@ The verified preflight checks:
 - LightDM package and active service;
 - AccountsService package and active `accounts-daemon`.
 
-Successful preflight produces `awaiting_assignment`. Failed preflight persists structured diagnostics and produces `preflight_failed`.
+Successful preflight produces `awaiting_assignment`. Failed preflight persists
+structured diagnostics and produces `preflight_failed`.
 
-All automated SSH paths explicitly pass `ProxyCommand=none`. This prevents the system-wide `sss_ssh_knownhostsproxy` configuration from intermittently causing SSH banner-exchange timeouts when connecting directly by registered IP. Strict host-key checking and the isolated autoinstall known-hosts file remain enabled.
+All automated SSH paths explicitly pass `ProxyCommand=none`. This bypasses the
+system-wide `sss_ssh_knownhostsproxy` configuration without weakening strict
+host-key checking or the isolated autoinstall known-hosts file.
 
 ## 7. Provisioning behavior
 
@@ -211,9 +253,12 @@ The provision job:
 10. disables LightDM autologin through a managed drop-in;
 11. verifies LightDM, AccountsService, account and sudo state;
 12. writes target and controller assignment records only after verification;
-13. validates the structured public result before accepting the job as successful.
+13. validates the structured public result before accepting the job as
+    successful.
 
-The sudo denial check uses `LC_ALL=C` and accepts the actual ALT sudo output `User <login> is not allowed to run sudo ...`. `sudo -l -U` returning code zero means the listing operation itself succeeded and does not imply that the user has sudo authorization.
+The sudo denial check uses `LC_ALL=C` and accepts the actual ALT sudo text
+`User <login> is not allowed to run sudo ...`. A zero return code from
+`sudo -l -U` means the listing operation succeeded; it does not grant sudo.
 
 ## 8. LightDM and AccountsService state
 
@@ -246,7 +291,8 @@ autologin-user=
 autologin-user-timeout=0
 ```
 
-The role does not restart LightDM during provisioning. AccountsService is restarted only when managed account visibility files change.
+The role does not restart LightDM during provisioning. AccountsService is
+restarted only when managed visibility files change.
 
 ## 9. Vault and secrets
 
@@ -262,13 +308,14 @@ Vault password file:
 /home/altserver/.ansible-vault-pass
 ```
 
-Required variable:
+Required encrypted variable:
 
 ```yaml
 vault_employee_password_hash: "$y$..."
 ```
 
-`02-provision-account.yml` explicitly loads `../group_vars/vault.yml` through `vars_files`. A file named `group_vars/vault.yml` is not automatically loaded for an inline host inventory unless it is referenced explicitly or associated with a matching group.
+`02-provision-account.yml` explicitly loads `../group_vars/vault.yml` through
+`vars_files`. An inline host inventory does not load this file automatically.
 
 Rules:
 
@@ -276,10 +323,34 @@ Rules:
 - never commit `.ansible-vault-pass`;
 - never print or log the password or hash;
 - keep both files mode `0600`;
-- use a rotated production password if a previous value appeared in chat or logs;
+- use a rotated production password if a previous value appeared in chat or
+  logs;
 - keep a protected controller-side Vault backup outside Git.
 
 The repository contains only `vault.yml.example`.
+
+### Vault health command
+
+Run as `altserver`:
+
+```bash
+sudo -u altserver workstationctl --json vault check
+```
+
+The command checks:
+
+- Vault file existence;
+- Vault password file existence;
+- ownership by the executing service account;
+- mode `0600` for both files;
+- the Ansible Vault header;
+- successful `ansible-vault view` decryption;
+- presence of `vault_employee_password_hash`;
+- yescrypt prefix `$y$`.
+
+A healthy response contains only boolean checks. An unhealthy response uses
+`error.code=vault_unhealthy` with boolean diagnostics and exit code `7`.
+Neither response contains decrypted YAML, the hash or the Vault password.
 
 ## 10. Verified reference run
 
@@ -315,27 +386,37 @@ Verified result:
 
 ## 11. Current test and verification baseline
 
-At the completed implementation point:
+The ALT-specific suite has been expanded beyond the original `80 passed`
+baseline with documentation, installer dependency, Vault-preservation and Vault
+health regression coverage.
+
+The latest compact controller verification after the Phase 1.3 implementation
+reported:
 
 ```text
-.venv/bin/python -m pytest -q tests/alt_linux
-80 passed
+vault check tests               PASS
+all ALT tests                   PASS
+Python compile                  PASS
+installer syntax                PASS
+preflight playbook              PASS
+provision playbook              PASS
+git diff check                  PASS
+clean worktree                  PASS
 ```
 
-Both playbooks pass syntax checking:
+Use the next local run to record the exact updated pytest count after the latest
+negative Vault regression and documentation synchronization.
 
-```text
-ansible-playbook --syntax-check deploy/alt-linux/ansible/playbooks/01-preflight.yml
-ansible-playbook --syntax-check deploy/alt-linux/ansible/playbooks/02-provision-account.yml
-```
-
-The full repository test suite still has unrelated OpenVPN tests that require access to `/etc/openvpn/vpnctl.env`. For ALT provisioning work, use `tests/alt_linux` unless the OpenVPN environment is intentionally prepared.
+The full repository suite contains unrelated OpenVPN tests that require
+`/etc/openvpn/vpnctl.env`. For ALT provisioning work, use `tests/alt_linux`
+unless that environment is intentionally prepared.
 
 ## 12. Machine state model
 
-The displayed machine status is derived from registration data, latest preflight, active job and assignment.
+The displayed machine status is derived from registration data, latest
+preflight, active job and assignment.
 
-Relevant states currently observed:
+Relevant states:
 
 ```text
 ready
@@ -344,28 +425,37 @@ awaiting_assignment
 assigned
 ```
 
-When a successful assignment exists, `MachineRepository` derives `status=assigned` without rewriting the original registration record. A repeated preview checks assignment existence before readiness and returns `machine_already_assigned`.
+When a successful assignment exists, `MachineRepository` derives
+`status=assigned` without rewriting the original registration record. Repeated
+preview checks assignment existence before readiness and returns
+`machine_already_assigned`.
 
-## 13. Known documentation differences
+## 13. Historical documentation differences
 
-The following details in the original approved design are stale and must not be copied into new code:
+Do not copy these obsolete historical assumptions into new code:
 
-- SDDM references: the verified implementation uses LightDM and AccountsService;
-- dotted employee logins: dots are now rejected;
-- examples such as `i.ivanov` should become `i-ivanov` or `i_ivanov`;
-- the final successful displayed state is currently `assigned`;
-- Vault loading must remain explicit in the provision playbook;
-- automated SSH must continue to disable the inherited SSSD ProxyCommand.
-
-Future documentation cleanup should update the old design and plan while preserving their historical role.
+- SDDM: the verified implementation uses LightDM and AccountsService;
+- dotted employee logins: dots are rejected;
+- examples such as `i.ivanov` must use `i-ivanov` or `i_ivanov`;
+- the final displayed success state is `assigned`;
+- Vault loading remains explicit in the provision playbook;
+- automated SSH continues to set `ProxyCommand=none`;
+- `provision start` remains root-only;
+- sudo denial verification uses `LC_ALL=C` and the real ALT denial text.
 
 ## 14. Safe verification commands
 
-Controller tests:
+Controller checks:
 
 ```bash
 cd /home/altserver/web_ovpn-src/.worktrees/alt-workstation-mvp
 .venv/bin/python -m pytest -q tests/alt_linux
+
+python3 -m py_compile \
+  deploy/alt-linux/control/alt_deploy/*.py \
+  deploy/alt-linux/api/process_pending.py
+
+bash -n deploy/alt-linux/install-control-plane.sh
 
 git diff --check
 
@@ -378,24 +468,27 @@ ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
   deploy/alt-linux/ansible/playbooks/02-provision-account.yml
 ```
 
-Install/update controller runtime:
+Install or update controller runtime:
 
 ```bash
 sudo bash deploy/alt-linux/install-control-plane.sh
 ```
 
-Read machine state without changing it:
+Read controller state without changing a workstation:
 
 ```bash
 sudo -u altserver workstationctl --json machines list
 sudo -u altserver workstationctl --json machines show <uuid>
+sudo -u altserver workstationctl --json vault check
 ```
 
-Do not rerun `provision start` for a machine that is already assigned. Implement and use an explicit release/reassignment workflow in a later stage.
+Do not rerun `provision start` for an already assigned machine. Implement and
+use an explicit release/reassignment workflow in a later stage.
 
 ## 15. Continuation document
 
-The ordered remaining work, acceptance checks, hardening tasks and future roles are maintained in:
+The ordered remaining work, acceptance checks, hardening tasks and future roles
+are maintained in:
 
 ```text
 docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md
