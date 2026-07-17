@@ -1097,3 +1097,74 @@ def test_unmatched_and_malformed_tags_are_preserved_in_migration_report(
         assert conn.execute("SELECT COUNT(*) FROM network_device_tags").fetchone()[0] == 3
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("raw_evidence_json", ["", "   "])
+def test_invalid_empty_or_whitespace_evidence_is_preserved_literally(
+    pr_1b_database: str,
+    raw_evidence_json: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 131,
+                "ip": "10.0.0.131",
+                "mac": "00:11:22:33:44:D1",
+                "device_evidence_json": raw_evidence_json,
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        evidence_json = conn.execute(
+            "SELECT legacy_evidence_json FROM assets"
+        ).fetchone()[0]
+        assert json.loads(evidence_json) == [raw_evidence_json]
+    finally:
+        conn.close()
+
+
+def test_tags_with_invalid_list_elements_are_reported_as_malformed(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 141, "ip": "10.0.0.141", "mac": "00:11:22:33:44:E1"}],
+    )
+    raw_tags_json = '["","two words",{"x":1}]'
+    _seed_legacy_tags(
+        pr_1b_database,
+        [
+            {
+                "device_key": "mac:00:11:22:33:44:E1",
+                "match_type": "mac",
+                "tags_json": raw_tags_json,
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM asset_tag_bindings").fetchone()[0] == 0
+        report_json = conn.execute(
+            """
+            SELECT unresolved_tag_records_json
+            FROM runtime_asset_migration_reports
+            WHERE migration_version = 2
+            """
+        ).fetchone()[0]
+        assert json.loads(report_json) == [
+            {
+                "device_key": "mac:00:11:22:33:44:E1",
+                "raw_tags_json": raw_tags_json,
+                "reason": "malformed_tags_json",
+            }
+        ]
+    finally:
+        conn.close()

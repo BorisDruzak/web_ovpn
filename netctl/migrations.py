@@ -445,6 +445,16 @@ def _migration_2(conn: sqlite3.Connection) -> None:
                 }
             )
             continue
+        normalized_tags = _normalize_legacy_tags(parsed_tags)
+        if normalized_tags is None:
+            unresolved_tags.append(
+                {
+                    "device_key": device_key,
+                    "raw_tags_json": raw_tags_json,
+                    "reason": "malformed_tags_json",
+                }
+            )
+            continue
 
         asset_matches: set[int]
         if device_key.startswith("mac:"):
@@ -496,18 +506,12 @@ def _migration_2(conn: sqlite3.Connection) -> None:
             continue
 
         asset_id = next(iter(asset_matches))
-        normalized_tags = sorted(
-            {
-                normalized
-                for item in parsed_tags
-                if (normalized := _normalize_legacy_list_item(item))
-            }
-        )
         conn.executemany(
             """
-            INSERT OR IGNORE INTO asset_tag_bindings (
+            INSERT INTO asset_tag_bindings (
                 asset_id, tag, binding_source, first_seen_at, last_seen_at
             ) VALUES (?, ?, 'legacy_manual_tag', ?, ?)
+            ON CONFLICT(asset_id, tag, binding_source) DO NOTHING
             """,
             [
                 (asset_id, tag, migration_time, migration_time)
@@ -778,15 +782,29 @@ def _normalize_legacy_list_item(item: Any) -> str:
     return json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _normalize_legacy_tags(items: list[Any]) -> list[str] | None:
+    normalized_tags: set[str] = set()
+    for item in items:
+        if not isinstance(item, str):
+            return None
+        normalized = item.strip()
+        if not normalized or any(char.isspace() for char in normalized):
+            return None
+        normalized_tags.add(normalized)
+    return sorted(normalized_tags)
+
+
 def _legacy_evidence(hosts: list[dict[str, Any]]) -> str:
     evidence: set[str] = set()
     for host in hosts:
-        raw_evidence_json = str(host["device_evidence_json"] or "[]")
+        raw_evidence = host["device_evidence_json"]
+        if raw_evidence is None:
+            continue
+        raw_evidence_json = str(raw_evidence)
         try:
             items = json.loads(raw_evidence_json)
         except (TypeError, ValueError, json.JSONDecodeError):
-            if raw_evidence_json.strip():
-                evidence.add(raw_evidence_json)
+            evidence.add(raw_evidence_json)
             continue
         if isinstance(items, list):
             evidence.update(
@@ -794,7 +812,7 @@ def _legacy_evidence(hosts: list[dict[str, Any]]) -> str:
                 for item in items
                 if (normalized := _normalize_legacy_list_item(item))
             )
-        elif raw_evidence_json.strip():
+        else:
             evidence.add(raw_evidence_json)
     return json.dumps(sorted(evidence), ensure_ascii=False, separators=(",", ":"))
 
