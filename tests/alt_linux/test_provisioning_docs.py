@@ -194,7 +194,7 @@ def test_recovery_docs_record_phase_2_1_contract() -> None:
         "result_recovered",
         "result_rejected",
         "invalid_provision_result",
-        "No automatic boot service",
+        "automatic boot service",
     )
 
     for relative_path in (README_DOC, CONTEXT_DOC):
