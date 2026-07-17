@@ -10,6 +10,19 @@ from .migrations import apply_migrations
 from .util import utc_now
 
 
+CONTEXT_IMPORT_RUN_STATUSES = frozenset(
+    {
+        "running",
+        "success_imported",
+        "success_noop_same_content",
+        "success_activated_existing_content",
+        "validation_error",
+        "db_error",
+    }
+)
+CONTEXT_IMPORT_RUN_FINAL_STATUSES = CONTEXT_IMPORT_RUN_STATUSES - {"running"}
+
+
 def db_path_from_url(db_url: str) -> Path:
     if not db_url.startswith("sqlite:///"):
         raise ValueError("only sqlite:/// DB URLs are supported")
@@ -251,13 +264,7 @@ def record_context_revision(
         INSERT INTO context_revisions
             (context_id, schema_version, sha256, source_path, validated_at, git_sha, status, error_json, counts_json, validation_order)
         VALUES (?, ?, ?, ?, ?, ?, 'ok', '[]', ?, (SELECT COALESCE(MAX(validation_order), 0) + 1 FROM context_revisions))
-        ON CONFLICT(context_id, sha256) DO UPDATE SET
-            schema_version = excluded.schema_version,
-            source_path = excluded.source_path,
-            validated_at = excluded.validated_at,
-            git_sha = excluded.git_sha,
-            counts_json = excluded.counts_json,
-            validation_order = excluded.validation_order
+        ON CONFLICT(context_id, sha256) DO NOTHING
         """,
         (
             context["context_id"],
@@ -269,12 +276,92 @@ def record_context_revision(
             json.dumps(context.get("counts") if isinstance(context.get("counts"), dict) else {}, ensure_ascii=False, sort_keys=True),
         ),
     )
-    conn.commit()
     row = conn.execute(
         "SELECT * FROM context_revisions WHERE context_id = ? AND sha256 = ?",
         (context["context_id"], context["sha256"]),
     ).fetchone()
     return context_revision_public(row) or {}
+
+
+def create_context_import_run(
+    conn: sqlite3.Connection,
+    *,
+    context_id: str,
+    context_revision_id: int | None,
+    base_context_revision_id: int | None,
+    input_sha256: str,
+    git_sha: str,
+    source_path: str | Path,
+) -> dict[str, Any]:
+    if not git_sha:
+        raise ValueError("git_sha is required for a context import run")
+    cursor = conn.execute(
+        """
+        INSERT INTO context_import_runs
+            (context_id, context_revision_id, base_context_revision_id, input_sha256,
+             git_sha, source_path, started_at, status, errors_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'running', '[]')
+        """,
+        (
+            context_id,
+            context_revision_id,
+            base_context_revision_id,
+            input_sha256,
+            git_sha,
+            str(source_path),
+            utc_now(),
+        ),
+    )
+    row = conn.execute("SELECT * FROM context_import_runs WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return row_to_dict(row) or {}
+
+
+def finish_context_import_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    status: str,
+    errors: list[dict[str, str]],
+) -> dict[str, Any]:
+    if status not in CONTEXT_IMPORT_RUN_FINAL_STATUSES:
+        raise ValueError(f"invalid finished context import run status: {status}")
+    conn.execute(
+        """
+        UPDATE context_import_runs
+        SET status = ?, finished_at = ?, errors_json = ?
+        WHERE id = ?
+        """,
+        (status, utc_now(), json.dumps(errors, ensure_ascii=False, sort_keys=True), run_id),
+    )
+    row = conn.execute("SELECT * FROM context_import_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"context import run not found: {run_id}")
+    return row_to_dict(row) or {}
+
+
+def get_context_head(conn: sqlite3.Connection, context_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM context_heads WHERE context_id = ?", (context_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def set_context_head(
+    conn: sqlite3.Connection,
+    context_id: str,
+    revision_id: int,
+    run_id: int,
+) -> dict[str, Any]:
+    conn.execute(
+        """
+        INSERT INTO context_heads
+            (context_id, context_revision_id, activated_by_import_run_id, activated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(context_id) DO UPDATE SET
+            context_revision_id = excluded.context_revision_id,
+            activated_by_import_run_id = excluded.activated_by_import_run_id,
+            activated_at = excluded.activated_at
+        """,
+        (context_id, revision_id, run_id, utc_now()),
+    )
+    return get_context_head(conn, context_id) or {}
 
 
 def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:

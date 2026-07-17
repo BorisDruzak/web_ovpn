@@ -382,6 +382,7 @@ def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             return 1, err("network context validation failed", errors=errors)
 
         revision = record_context_revision(conn, context_summary(document, raw_bytes), path, args.git_sha)
+        conn.commit()
         return 0, ok(context=revision, errors=[])
     finally:
         conn.close()
