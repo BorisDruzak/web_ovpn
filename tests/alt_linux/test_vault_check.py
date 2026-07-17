@@ -80,3 +80,62 @@ def test_vault_check_reports_healthy_without_exposing_secret(
     assert "$y$fixture" not in serialized
     assert "vault_employee_password_hash" not in serialized
     assert "fixture-password" not in serialized
+
+
+def test_vault_check_reports_unhealthy_without_exposing_secret(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    ansible_project = tmp_path / "ansible"
+    group_vars = ansible_project / "group_vars"
+    group_vars.mkdir(parents=True)
+
+    vault_file = group_vars / "vault.yml"
+    vault_file.write_text(
+        "$ANSIBLE_VAULT;1.1;AES256\nfixture-ciphertext\n",
+        encoding="utf-8",
+    )
+    vault_file.chmod(0o600)
+
+    password_file = tmp_path / ".ansible-vault-pass"
+    password_file.write_text("fixture-password\n", encoding="utf-8")
+    password_file.chmod(0o600)
+
+    ansible_vault = tmp_path / "ansible-vault"
+    ansible_vault.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"vault_employee_password_hash: 'not-yescrypt'\"\n",
+        encoding="utf-8",
+    )
+    ansible_vault.chmod(0o755)
+
+    monkeypatch.setenv(
+        "ALT_DEPLOY_ANSIBLE_PROJECT",
+        str(ansible_project),
+    )
+    monkeypatch.setenv(
+        "ALT_DEPLOY_ANSIBLE_VAULT",
+        str(ansible_vault),
+    )
+
+    stdout = io.StringIO()
+    rc = main(
+        ["--json", "vault", "check"],
+        settings=Settings.from_env(),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    assert rc == 7
+    payload = json.loads(stdout.getvalue())
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == "vault_unhealthy"
+    assert payload["error"]["details"]["checks"] == {
+        **EXPECTED_CHECKS,
+        "yescrypt_format": False,
+    }
+
+    serialized = stdout.getvalue()
+    assert "not-yescrypt" not in serialized
+    assert "vault_employee_password_hash" not in serialized
+    assert "fixture-password" not in serialized
