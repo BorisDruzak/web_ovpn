@@ -72,6 +72,13 @@ def pr_1b_database(tmp_path: Path) -> str:
                 tags_json TEXT,
                 comment TEXT
             );
+            CREATE TABLE network_device_tags (
+                device_key TEXT PRIMARY KEY,
+                match_type TEXT NOT NULL,
+                tags_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE host_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 host_id INTEGER,
@@ -195,6 +202,26 @@ def _seed_network_source(db_url: str, source_id: int) -> None:
                 "2026-07-16T00:00:00Z",
                 "2026-07-16T00:00:00Z",
             ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_legacy_tags(db_url: str, tags: list[dict[str, str]]) -> None:
+    db_path = Path(db_url.removeprefix("sqlite:///"))
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO network_device_tags (
+                device_key, match_type, tags_json, created_at, updated_at
+            ) VALUES (
+                :device_key, :match_type, :tags_json,
+                '2026-07-16T00:00:00Z', '2026-07-16T00:00:00Z'
+            )
+            """,
+            tags,
         )
         conn.commit()
     finally:
@@ -770,5 +797,303 @@ def test_migration_report_maps_every_legacy_host(pr_1b_database: str) -> None:
             """
         ).fetchone()
         assert tuple(report) == (3, 3, 1, 1, 2, 3, 3, 0, "[]")
+    finally:
+        conn.close()
+
+
+def test_same_mac_aggregate_uses_timestamp_fallbacks_and_reports_conflicts(
+    pr_1b_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netctl import migrations
+    from netctl.db import connect
+
+    migration_time = "2026-07-17T12:00:00Z"
+    monkeypatch.setattr(migrations, "utc_now", lambda: migration_time)
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 91,
+                "ip": "10.0.0.91",
+                "mac": "00:11:22:33:44:91",
+                "device_type": "printer",
+                "status": "offline",
+                "site": "branch-a",
+                "display_name": "Old printer",
+                "first_seen_at": "2026-07-15T10:00:00Z",
+                "comment": "old comment",
+            },
+            {
+                "id": 92,
+                "ip": "10.0.0.92",
+                "mac": "00-11-22-33-44-91",
+                "device_type": "server",
+                "status": "degraded",
+                "site": "branch-b",
+                "display_name": "Middle server",
+                "last_seen_at": migration_time,
+                "comment": "middle comment",
+            },
+            {
+                "id": 93,
+                "ip": "10.0.0.93",
+                "mac": "0011.2233.4491",
+                "device_type": "router",
+                "status": "online",
+                "site": "main",
+                "display_name": "Current router",
+                "comment": "current comment",
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        asset = conn.execute(
+            """
+            SELECT asset_key, kind, status, site, display_name, legacy_comment,
+                   first_seen_at, last_seen_at
+            FROM assets
+            """
+        ).fetchone()
+        assert tuple(asset) == (
+            "mac:00:11:22:33:44:91",
+            "router",
+            "online",
+            "main",
+            "Current router",
+            "current comment",
+            "2026-07-15T10:00:00Z",
+            migration_time,
+        )
+        report_json = conn.execute(
+            """
+            SELECT aggregation_conflicts_json
+            FROM runtime_asset_migration_reports
+            WHERE migration_version = 2
+            """
+        ).fetchone()[0]
+        assert json.loads(report_json) == [
+            {
+                "alternatives": [
+                    {"source_host_ids": [92], "value": "middle comment"},
+                    {"source_host_ids": [91], "value": "old comment"},
+                ],
+                "asset_key": "mac:00:11:22:33:44:91",
+                "field": "comment",
+                "selected_source_host_id": 93,
+                "selected_value": "current comment",
+                "type": "same_mac_aggregation_conflict",
+            },
+            {
+                "alternatives": [
+                    {"source_host_ids": [92], "value": "Middle server"},
+                    {"source_host_ids": [91], "value": "Old printer"},
+                ],
+                "asset_key": "mac:00:11:22:33:44:91",
+                "field": "display_name",
+                "selected_source_host_id": 93,
+                "selected_value": "Current router",
+                "type": "same_mac_aggregation_conflict",
+            },
+            {
+                "alternatives": [
+                    {"source_host_ids": [91], "value": "printer"},
+                    {"source_host_ids": [92], "value": "server"},
+                ],
+                "asset_key": "mac:00:11:22:33:44:91",
+                "field": "kind",
+                "selected_source_host_id": 93,
+                "selected_value": "router",
+                "type": "same_mac_aggregation_conflict",
+            },
+            {
+                "alternatives": [
+                    {"source_host_ids": [91], "value": "branch-a"},
+                    {"source_host_ids": [92], "value": "branch-b"},
+                ],
+                "asset_key": "mac:00:11:22:33:44:91",
+                "field": "site",
+                "selected_source_host_id": 93,
+                "selected_value": "main",
+                "type": "same_mac_aggregation_conflict",
+            },
+            {
+                "alternatives": [
+                    {"source_host_ids": [92], "value": "degraded"},
+                    {"source_host_ids": [91], "value": "offline"},
+                ],
+                "asset_key": "mac:00:11:22:33:44:91",
+                "field": "status",
+                "selected_source_host_id": 93,
+                "selected_value": "online",
+                "type": "same_mac_aggregation_conflict",
+            },
+        ]
+    finally:
+        conn.close()
+
+
+def test_same_mac_evidence_union_is_deterministic_and_preserves_invalid_json(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 101,
+                "ip": "10.0.0.101",
+                "mac": "00:11:22:33:44:A1",
+                "device_evidence_json": '[" zeta ","alpha","alpha"]',
+            },
+            {
+                "id": 102,
+                "ip": "10.0.0.102",
+                "mac": "00-11-22-33-44-a1",
+                "device_evidence_json": "{broken-json",
+            },
+            {
+                "id": 103,
+                "ip": "10.0.0.103",
+                "mac": "0011.2233.44a1",
+                "device_evidence_json": '["beta","alpha"]',
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        evidence_json = conn.execute(
+            "SELECT legacy_evidence_json FROM assets"
+        ).fetchone()[0]
+        assert evidence_json == '["alpha","beta","zeta","{broken-json"]'
+        assert json.loads(evidence_json) == ["alpha", "beta", "zeta", "{broken-json"]
+    finally:
+        conn.close()
+
+
+def test_mac_and_ip_tags_migrate_once_with_legacy_binding_source(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 111,
+                "ip": "10.0.0.111",
+                "mac": "00:11:22:33:44:B1",
+            }
+        ],
+    )
+    legacy_tags = [
+        {
+            "device_key": "mac:00-11-22-33-44-b1",
+            "match_type": "mac",
+            "tags_json": '[" critical ","shared","critical"]',
+        },
+        {
+            "device_key": "ip:10.0.0.111",
+            "match_type": "ip",
+            "tags_json": '["remote","shared"]',
+        },
+    ]
+    _seed_legacy_tags(pr_1b_database, legacy_tags)
+
+    conn = connect(pr_1b_database)
+    try:
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT assets.asset_key, bindings.tag, bindings.binding_source
+                FROM asset_tag_bindings AS bindings
+                JOIN assets ON assets.id = bindings.asset_id
+                ORDER BY bindings.tag
+                """
+            ).fetchall()
+        ] == [
+            ("mac:00:11:22:33:44:B1", "critical", "legacy_manual_tag"),
+            ("mac:00:11:22:33:44:B1", "remote", "legacy_manual_tag"),
+            ("mac:00:11:22:33:44:B1", "shared", "legacy_manual_tag"),
+        ]
+        assert conn.execute(
+            """
+            SELECT tag_binding_count FROM runtime_asset_migration_reports
+            WHERE migration_version = 2
+            """
+        ).fetchone()[0] == 3
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT device_key, tags_json FROM network_device_tags ORDER BY device_key"
+            ).fetchall()
+        ] == sorted((tag["device_key"], tag["tags_json"]) for tag in legacy_tags)
+    finally:
+        conn.close()
+
+
+def test_unmatched_and_malformed_tags_are_preserved_in_migration_report(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 121, "ip": "10.0.0.121", "mac": "00:11:22:33:44:C1"}],
+    )
+    _seed_legacy_tags(
+        pr_1b_database,
+        [
+            {
+                "device_key": "ip:10.0.0.121",
+                "match_type": "ip",
+                "tags_json": "{broken-json",
+            },
+            {
+                "device_key": "mac:00:11:22:33:44:FF",
+                "match_type": "mac",
+                "tags_json": '["orphan"]',
+            },
+            {
+                "device_key": "serial:legacy-121",
+                "match_type": "serial",
+                "tags_json": '["unsupported"]',
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        report_json = conn.execute(
+            """
+            SELECT unresolved_tag_records_json
+            FROM runtime_asset_migration_reports
+            WHERE migration_version = 2
+            """
+        ).fetchone()[0]
+        assert json.loads(report_json) == [
+            {
+                "device_key": "ip:10.0.0.121",
+                "raw_tags_json": "{broken-json",
+                "reason": "malformed_tags_json",
+            },
+            {
+                "device_key": "mac:00:11:22:33:44:FF",
+                "raw_tags_json": '["orphan"]',
+                "reason": "unmatched_device_key",
+            },
+            {
+                "device_key": "serial:legacy-121",
+                "raw_tags_json": '["unsupported"]',
+                "reason": "unsupported_device_key",
+            },
+        ]
+        assert conn.execute("SELECT COUNT(*) FROM asset_tag_bindings").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM network_device_tags").fetchone()[0] == 3
     finally:
         conn.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import sqlite3
 from collections.abc import Callable
@@ -301,6 +302,15 @@ def _migration_2(conn: sqlite3.Connection) -> None:
         resolved_mac = representative["_resolved_mac"]
         provisional = resolved_mac is None
         evidence = _legacy_evidence(hosts)
+        representative_values = _legacy_representative_values(representative, asset_key)
+        aggregation_conflicts.extend(
+            _legacy_aggregation_conflicts(
+                asset_key,
+                hosts,
+                representative,
+                representative_values,
+            )
+        )
         cursor = conn.execute(
             """
             INSERT INTO assets (
@@ -312,18 +322,13 @@ def _migration_2(conn: sqlite3.Connection) -> None:
             (
                 asset_key,
                 "provisional_legacy" if provisional else "mac_seed",
-                _first_nonblank(representative["device_type"], representative["category"], "unknown"),
-                _first_nonblank(representative["status"], "unknown"),
-                _first_nonblank(representative["site"], ""),
-                _first_nonblank(
-                    representative["display_name"],
-                    representative["hostname"],
-                    representative["ip"],
-                    asset_key,
-                ),
+                representative_values["kind"],
+                representative_values["status"],
+                representative_values["site"],
+                representative_values["display_name"],
                 20 if provisional else 100,
                 1 if provisional else 0,
-                _first_nonblank(representative["comment"], ""),
+                representative_values["comment"],
                 evidence,
                 first_seen_at,
                 last_seen_at,
@@ -413,6 +418,102 @@ def _migration_2(conn: sqlite3.Connection) -> None:
         ip = str(host["ip"] or "").strip()
         if ip:
             ip_asset_ids.setdefault(ip, set()).add(asset_id)
+
+    unresolved_tags: list[dict[str, Any]] = []
+    tag_rows = _dict_rows(
+        conn.execute(
+            """
+            SELECT device_key, tags_json
+            FROM network_device_tags
+            ORDER BY device_key
+            """
+        )
+    )
+    for tag_row in tag_rows:
+        device_key = str(tag_row["device_key"] or "")
+        raw_tags_json = str(tag_row["tags_json"] or "")
+        try:
+            parsed_tags = json.loads(raw_tags_json)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_tags = None
+        if not isinstance(parsed_tags, list):
+            unresolved_tags.append(
+                {
+                    "device_key": device_key,
+                    "raw_tags_json": raw_tags_json,
+                    "reason": "malformed_tags_json",
+                }
+            )
+            continue
+
+        asset_matches: set[int]
+        if device_key.startswith("mac:"):
+            tag_mac = normalize_mac(device_key.removeprefix("mac:"))
+            if tag_mac is None:
+                unresolved_tags.append(
+                    {
+                        "device_key": device_key,
+                        "raw_tags_json": raw_tags_json,
+                        "reason": "invalid_mac_device_key",
+                    }
+                )
+                continue
+            asset_matches = mac_asset_ids.get(tag_mac, set())
+        elif device_key.startswith("ip:"):
+            tag_ip = _normalize_ip(device_key.removeprefix("ip:"))
+            if tag_ip is None:
+                unresolved_tags.append(
+                    {
+                        "device_key": device_key,
+                        "raw_tags_json": raw_tags_json,
+                        "reason": "invalid_ip_device_key",
+                    }
+                )
+                continue
+            asset_matches = ip_asset_ids.get(tag_ip, set())
+        else:
+            unresolved_tags.append(
+                {
+                    "device_key": device_key,
+                    "raw_tags_json": raw_tags_json,
+                    "reason": "unsupported_device_key",
+                }
+            )
+            continue
+
+        if len(asset_matches) != 1:
+            unresolved_tags.append(
+                {
+                    "device_key": device_key,
+                    "raw_tags_json": raw_tags_json,
+                    "reason": (
+                        "unmatched_device_key"
+                        if not asset_matches
+                        else "ambiguous_device_key"
+                    ),
+                }
+            )
+            continue
+
+        asset_id = next(iter(asset_matches))
+        normalized_tags = sorted(
+            {
+                normalized
+                for item in parsed_tags
+                if (normalized := _normalize_legacy_list_item(item))
+            }
+        )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO asset_tag_bindings (
+                asset_id, tag, binding_source, first_seen_at, last_seen_at
+            ) VALUES (?, ?, 'legacy_manual_tag', ?, ?)
+            """,
+            [
+                (asset_id, tag, migration_time, migration_time)
+                for tag in normalized_tags
+            ],
+        )
 
     asset_sites = {
         int(row[0]): str(row[1] or "")
@@ -543,7 +644,7 @@ def _migration_2(conn: sqlite3.Connection) -> None:
             tag_binding_count, unresolved_legacy_host_ids_json,
             unresolved_observation_ids_json, unresolved_tag_records_json,
             aggregation_conflicts_json
-        ) VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, '[]', ?)
+        ) VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?)
         """,
         (
             migration_time,
@@ -557,6 +658,12 @@ def _migration_2(conn: sqlite3.Connection) -> None:
             counts["tag_binding_count"],
             json.dumps(
                 unresolved_observations,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            json.dumps(
+                unresolved_tags,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
@@ -605,15 +712,90 @@ def _first_nonblank(*values: Any) -> str:
     return ""
 
 
+def _legacy_representative_values(host: dict[str, Any], asset_key: str) -> dict[str, str]:
+    return {
+        "kind": _first_nonblank(host["device_type"], host["category"], "unknown"),
+        "status": _first_nonblank(host["status"], "unknown"),
+        "site": _first_nonblank(host["site"], ""),
+        "display_name": _first_nonblank(
+            host["display_name"],
+            host["hostname"],
+            host["ip"],
+            asset_key,
+        ),
+        "comment": _first_nonblank(host["comment"], ""),
+    }
+
+
+def _legacy_aggregation_conflicts(
+    asset_key: str,
+    hosts: list[dict[str, Any]],
+    representative: dict[str, Any],
+    selected_values: dict[str, str],
+) -> list[dict[str, Any]]:
+    if len(hosts) < 2:
+        return []
+    conflicts: list[dict[str, Any]] = []
+    selected_source_host_id = int(representative["id"])
+    for field in sorted(selected_values):
+        selected_value = selected_values[field]
+        alternative_sources: dict[str, list[int]] = {}
+        for host in hosts:
+            value = _legacy_representative_values(host, asset_key)[field]
+            if value and value != selected_value:
+                alternative_sources.setdefault(value, []).append(int(host["id"]))
+        if not alternative_sources:
+            continue
+        conflicts.append(
+            {
+                "alternatives": [
+                    {
+                        "source_host_ids": sorted(source_host_ids),
+                        "value": value,
+                    }
+                    for value, source_host_ids in sorted(alternative_sources.items())
+                ],
+                "asset_key": asset_key,
+                "field": field,
+                "selected_source_host_id": selected_source_host_id,
+                "selected_value": selected_value,
+                "type": "same_mac_aggregation_conflict",
+            }
+        )
+    return conflicts
+
+
+def _normalize_ip(value: Any) -> str | None:
+    try:
+        return str(ipaddress.ip_address(str(value).strip()))
+    except ValueError:
+        return None
+
+
+def _normalize_legacy_list_item(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    return json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _legacy_evidence(hosts: list[dict[str, Any]]) -> str:
     evidence: set[str] = set()
     for host in hosts:
+        raw_evidence_json = str(host["device_evidence_json"] or "[]")
         try:
-            items = json.loads(str(host["device_evidence_json"] or "[]"))
+            items = json.loads(raw_evidence_json)
         except (TypeError, ValueError, json.JSONDecodeError):
+            if raw_evidence_json.strip():
+                evidence.add(raw_evidence_json)
             continue
         if isinstance(items, list):
-            evidence.update(str(item).strip() for item in items if str(item).strip())
+            evidence.update(
+                normalized
+                for item in items
+                if (normalized := _normalize_legacy_list_item(item))
+            )
+        elif raw_evidence_json.strip():
+            evidence.add(raw_evidence_json)
     return json.dumps(sorted(evidence), ensure_ascii=False, separators=(",", ":"))
 
 
