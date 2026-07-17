@@ -1,149 +1,275 @@
-# ALT Linux deployment files
+# ALT Workstation Provisioning
 
-Working context and architecture: [`docs/ALT_LINUX_AUTOINSTALL.md`](../../docs/ALT_LINUX_AUTOINSTALL.md).
+This directory contains the verified ALT Workstation K 11.2 autoinstall,
+bootstrap, registration, preflight and local-account provisioning control
+plane.
 
-These files mirror the verified deployment configuration, but active secrets and ISO-derived files are intentionally excluded.
+Authoritative documentation:
+
+- [Verified implementation context](../../docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md)
+- [Remaining work and acceptance roadmap](../../docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md)
+- [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)
+
+## Architecture
+
+The controller runs on `192.168.100.17` under the `altserver` service account.
+It owns `workstationctl`, Ansible, SSH host-key handling, Vault, provision jobs,
+logs and assignments.
+
+The future operator web interface runs on `192.168.100.30`. It must use a
+constrained API on the controller and must not receive SSH private keys, Vault
+material, direct Ansible execution or direct workstation SSH access.
+
+Provisioned workstations use LightDM with AccountsService. The verified
+implementation does not use SDDM.
+
+## Controller prerequisites
+
+Required controller facilities:
+
+- root access through `sudo` for installation and provision start;
+- local service account `altserver`;
+- Python 3;
+- `ansible-playbook` and `ansible-vault`;
+- systemd and OpenSSH client tools;
+- `mkpasswd` for initial password-hash preparation.
+
+The current installer validates root, `altserver` and `ansible-playbook`.
+Phase 1 will make dependency validation exhaustive before replacing runtime
+files.
+
+## Install or update the controller
+
+```bash
+sudo bash deploy/alt-linux/install-control-plane.sh
+```
+
+The installer:
+
+- installs `workstationctl` and the asynchronous provision worker;
+- installs the Ansible project without copying an active Vault;
+- prepares private job and assignment directories;
+- installs the pending-registration processor;
+- runs `tests/alt_linux`;
+- syntax-checks `01-preflight.yml` and `02-provision-account.yml`;
+- restarts `alt-deploy-process.path` only after verification succeeds.
+
+It does not copy `.ansible-vault-pass` or create an active `vault.yml`.
+
+## Vault setup and validation
+
+The repository contains only:
+
+```text
+deploy/alt-linux/ansible/group_vars/vault.yml.example
+```
+
+The active encrypted files exist only on the controller:
+
+```text
+/home/altserver/ansible/group_vars/vault.yml
+/home/altserver/.ansible-vault-pass
+```
+
+The provision playbook explicitly loads `../group_vars/vault.yml` through
+`vars_files` and expects `vault_employee_password_hash`.
+
+Never print the Vault password, decrypted Vault content, employee password or
+employee password hash. Never commit either active secret file.
+
+Create the private Vault password file interactively:
+
+```bash
+sudo install -o altserver -g altserver -m 0600 /dev/null \
+  /home/altserver/.ansible-vault-pass
+
+sudo -u altserver sh -c '
+  read -r -s -p "Vault password: " p
+  printf "\n" >&2
+  printf "%s\n" "$p" > /home/altserver/.ansible-vault-pass
+  unset p
+'
+```
+
+Generate the yescrypt value interactively and encrypt it without displaying it:
+
+```bash
+sudo -u altserver bash -lc '
+set -Eeuo pipefail
+umask 077
+plain=/tmp/alt-workstation-vault.yml
+trap "rm -f ${plain}" EXIT
+HASH=$(mkpasswd --method=yescrypt)
+printf "vault_employee_password_hash: %s\n" "${HASH}" > "${plain}"
+unset HASH
+ANSIBLE_VAULT_PASSWORD_FILE=/home/altserver/.ansible-vault-pass \
+  ansible-vault encrypt \
+  "${plain}" \
+  --output /home/altserver/ansible/group_vars/vault.yml
+'
+
+sudo chmod 0600 \
+  /home/altserver/.ansible-vault-pass \
+  /home/altserver/ansible/group_vars/vault.yml
+```
+
+Validate decryption and the required variable without displaying its value:
+
+```bash
+sudo -u altserver env \
+  ANSIBLE_VAULT_PASSWORD_FILE=/home/altserver/.ansible-vault-pass \
+  ansible-vault view \
+  /home/altserver/ansible/group_vars/vault.yml \
+  >/dev/null
+
+sudo -u altserver env \
+  ANSIBLE_VAULT_PASSWORD_FILE=/home/altserver/.ansible-vault-pass \
+  ansible-vault view \
+  /home/altserver/ansible/group_vars/vault.yml \
+  | grep -q '^vault_employee_password_hash:[[:space:]]\+'
+```
+
+## CLI and provision request
+
+Read and non-mutating operations run as `altserver`:
+
+```bash
+sudo -u altserver workstationctl --json machines list
+sudo -u altserver workstationctl --json machines show <uuid>
+sudo -u altserver workstationctl --json preflight <uuid>
+sudo -u altserver workstationctl --json provision preview <uuid> \
+  --vars-file /path/to/request.json
+sudo -u altserver workstationctl --json jobs status <job_id>
+sudo -u altserver workstationctl --json jobs log <job_id>
+```
+
+The provision request contains no password or password hash:
+
+```json
+{
+  "machine_uuid": "<uuid>",
+  "employee_login": "i-ivanov",
+  "employee_full_name": "Иванов Иван Иванович",
+  "final_hostname": "buh-023",
+  "profile": "standard"
+}
+```
+
+Employee logins may contain lowercase ASCII letters, digits, `_` and `-`.
+A dot is not allowed.
+
+`provision start` requires root because it creates the transient systemd job:
+
+```bash
+sudo workstationctl --json provision start <uuid> \
+  --vars-file /path/to/request.json
+```
+
+Do not run `provision start` for a machine whose derived state is `assigned`.
+A repeat request is rejected with `machine_already_assigned`. An explicit
+release or reassignment workflow must be implemented first.
+
+## State, diagnostics, and recovery
+
+Controller state:
+
+```text
+/srv/alt-deploy/registration/
+/var/lib/alt-deploy/jobs/<job_id>/
+/var/lib/alt-deploy/assignments/<uuid>.json
+/home/altserver/.ssh/known_hosts_autoinstall
+```
+
+Each job directory may contain `request.json`, `status.json`, `result.json`,
+`ansible.log` and `provision-result.json`.
+
+Target assignment state:
+
+```text
+/var/lib/alt-workstation/assignment.json
+```
+
+Use the CLI before reading private files directly:
+
+```bash
+sudo -u altserver workstationctl --json machines show <uuid>
+sudo -u altserver workstationctl --json jobs status <job_id>
+sudo -u altserver workstationctl --json jobs log <job_id>
+```
+
+Controller service diagnostics:
+
+```bash
+systemctl status alt-deploy-process.path --no-pager
+systemctl status alt-deploy-process.service --no-pager
+journalctl -u alt-deploy-process.service --no-pager -n 200
+```
+
+Automated direct-IP SSH must retain:
+
+```text
+StrictHostKeyChecking=yes
+UserKnownHostsFile=/home/altserver/.ssh/known_hosts_autoinstall
+ProxyCommand=none
+```
+
+`ProxyCommand=none` bypasses inherited SSSD SSH proxy configuration without
+weakening strict host-key checking.
+
+For a failed, unassigned machine, inspect the structured error and bounded job
+log, correct the cause, rerun preview, and start a new job only after preview
+succeeds.
+
+Do not delete assignment JSON manually. Do not rerun provisioning for an
+assigned machine. Release and reassignment require a dedicated audited
+workflow.
 
 ## Repository layout
 
 ```text
 deploy/alt-linux/
-├── api/
-│   ├── register_api.py
-│   └── process_pending.py
+├── ansible/
+│   ├── playbooks/
+│   │   ├── 01-preflight.yml
+│   │   └── 02-provision-account.yml
+│   └── roles/
+│       ├── preflight/
+│       ├── workstation_identity/
+│       ├── local_employee/
+│       ├── lightdm_accounts/
+│       └── provision_verify/
+├── api/process_pending.py
+├── control/
+│   ├── alt_deploy/
+│   ├── workstationctl
+│   └── alt-provision-worker
+├── install-control-plane.sh
 ├── autoinstall/
-│   ├── autoinstall.scm.example
-│   ├── vm-profile.scm
-│   └── create-install-scripts-tar.sh
 ├── bootstrap/
-│   └── bootstrap.sh
-├── inventory/
-│   └── inventory-autoinstall.ini.example
 ├── ssh/
-│   └── ssh-alt
 └── systemd/
-    ├── alt-deploy-http.service
-    ├── alt-deploy-register.service
-    ├── alt-deploy-process.service
-    └── alt-deploy-process.path
 ```
 
-## Initial server layout
+## Verification
 
-Run on the deployment server as an administrator:
+Run only the ALT provisioning suite by default. The unrelated OpenVPN tests
+require `/etc/openvpn/vpnctl.env`.
 
 ```bash
-sudo install -d -o root -g root -m 0755 \
-  /srv/alt-deploy \
-  /srv/alt-deploy/metadata \
-  /srv/alt-deploy/bootstrap \
-  /srv/alt-deploy/packages \
-  /srv/alt-deploy/logs
+.venv/bin/python -m pytest -q tests/alt_linux
 
-sudo install -d -o altserver -g altserver -m 0700 \
-  /srv/alt-deploy/registration/pending \
-  /srv/alt-deploy/registration/ready \
-  /srv/alt-deploy/registration/failed
+ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
+  ansible-playbook --syntax-check \
+  deploy/alt-linux/ansible/playbooks/01-preflight.yml
 
-sudo install -d -o root -g root -m 0755 /opt/alt-deploy-api
+ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
+  ansible-playbook --syntax-check \
+  deploy/alt-linux/ansible/playbooks/02-provision-account.yml
+
+git diff --check
 ```
 
-Copy the files:
-
-```bash
-sudo install -m 0755 \
-  deploy/alt-linux/bootstrap/bootstrap.sh \
-  /srv/alt-deploy/bootstrap/bootstrap.sh
-
-sudo install -m 0644 \
-  deploy/alt-linux/autoinstall/vm-profile.scm \
-  /srv/alt-deploy/metadata/vm-profile.scm
-
-sudo install -m 0755 \
-  deploy/alt-linux/autoinstall/create-install-scripts-tar.sh \
-  /usr/local/sbin/create-alt-install-scripts-tar
-
-sudo /usr/local/sbin/create-alt-install-scripts-tar
-
-sudo install -m 0755 \
-  deploy/alt-linux/api/register_api.py \
-  /opt/alt-deploy-api/register_api.py
-
-sudo install -m 0755 \
-  deploy/alt-linux/api/process_pending.py \
-  /opt/alt-deploy-api/process_pending.py
-
-sudo install -m 0755 \
-  deploy/alt-linux/ssh/ssh-alt \
-  /usr/local/bin/ssh-alt
-```
-
-Prepare the active autoinstall file:
-
-```bash
-sudo cp \
-  deploy/alt-linux/autoinstall/autoinstall.scm.example \
-  /srv/alt-deploy/metadata/autoinstall.scm
-
-sudoedit /srv/alt-deploy/metadata/autoinstall.scm
-```
-
-Replace both yescrypt placeholders. Never commit the active file with hashes.
-
-Copy from the exact installation ISO:
-
-```text
-/Metadata/pkg-groups.tar
-```
-
-into:
-
-```text
-/srv/alt-deploy/metadata/pkg-groups.tar
-```
-
-Publish the Ansible public key:
-
-```bash
-sudo install -m 0644 \
-  /home/altserver/.ssh/id_ed25519.pub \
-  /srv/alt-deploy/bootstrap/ansible_authorized_keys
-
-sudo -u altserver touch \
-  /home/altserver/.ssh/known_hosts_autoinstall
-sudo chmod 0600 \
-  /home/altserver/.ssh/known_hosts_autoinstall
-```
-
-Install systemd units:
-
-```bash
-sudo install -m 0644 deploy/alt-linux/systemd/* \
-  /etc/systemd/system/
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now \
-  alt-deploy-http.service \
-  alt-deploy-register.service \
-  alt-deploy-process.path
-```
-
-## Validation
-
-```bash
-bash -n /srv/alt-deploy/bootstrap/bootstrap.sh
-python3 -m py_compile /opt/alt-deploy-api/register_api.py
-python3 -m py_compile /opt/alt-deploy-api/process_pending.py
-
-curl -fsS http://127.0.0.1:8087/index.txt
-curl -fsS http://127.0.0.1:8088/health
-
-systemctl is-active alt-deploy-http
-systemctl is-active alt-deploy-register
-systemctl is-active alt-deploy-process.path
-```
-
-## Boot parameter
+## Autoinstall boot parameter
 
 Append to the stock ALT installer kernel command line:
 
@@ -151,4 +277,5 @@ Append to the stock ALT installer kernel command line:
 ai curl=http://192.168.100.17:8087/metadata/
 ```
 
-The profile clears the first detected disk. Use a disposable test machine with one disk until disk selection is hardened.
+The current profile clears the first detected disk. Use a disposable target
+with one disk until disk-selection hardening is complete.
