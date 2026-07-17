@@ -32,6 +32,18 @@ RESULT_FIELDS = frozenset(
     }
 )
 
+VERIFICATION_FIELDS = frozenset(
+    {
+        "hostname",
+        "employee_exists",
+        "employee_not_wheel",
+        "employee_no_sudo",
+        "ansible_sudo",
+        "sddm_hides_ansible",
+        "sddm_autologin_disabled",
+    }
+)
+
 
 def _validate_result(
     job: JobRecord,
@@ -88,18 +100,22 @@ def _validate_result(
 
     if (
         not isinstance(verification, dict)
-        or not verification
+        or set(verification) != VERIFICATION_FIELDS
         or not all(
-            isinstance(value, bool)
+            value is True
             for value in verification.values()
         )
     ):
         raise ControlError(
             code="invalid_provision_result",
             message=(
-                "Provision result verification is invalid"
+                "Provision result verification "
+                "is incomplete or unsuccessful"
             ),
             exit_code=7,
+            details={
+                "verification": verification,
+            },
         )
 
     assert_safe_payload(result)
@@ -231,9 +247,14 @@ def run_job(
         return 0
 
     except Exception as exc:
-        error_text = (
-            f"{type(exc).__name__}: {exc}"
-        )[-10000:]
+        if isinstance(exc, ControlError):
+            error_text = (
+                f"{exc.code}: {exc.message}"
+            )[-10000:]
+        else:
+            error_text = (
+                f"{type(exc).__name__}: {exc}"
+            )[-10000:]
 
         with log_path.open(
             "a",

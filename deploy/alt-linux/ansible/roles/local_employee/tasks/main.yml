@@ -1,16 +1,51 @@
 ---
+- name: Inspect existing local employee
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - "{{ employee_login }}"
+  register: employee_existing
+  changed_when: false
+  failed_when: false
+
+- name: Normalize existing local employee
+  ansible.builtin.set_fact:
+    employee_existing_fields: >-
+      {{
+        (employee_existing.stdout | trim).split(':')
+        if employee_existing.rc == 0
+        else []
+      }}
+
+- name: Validate existing local employee
+  ansible.builtin.assert:
+    that:
+      - employee_existing_fields | length == 0 or employee_existing_fields[2] | int >= 1000
+      - employee_existing_fields | length == 0 or employee_existing_fields[5] == '/home/' + employee_login
+      - employee_login not in ['root', 'ansible', 'osn-admin']
+    fail_msg: Existing local account conflicts with requested employee
+
+- name: Ensure employee primary group exists
+  ansible.builtin.group:
+    name: "{{ employee_login }}"
+    state: present
+
 - name: Create or reconcile local employee
   ansible.builtin.user:
     name: "{{ employee_login }}"
     comment: "{{ employee_full_name }}"
+    group: "{{ employee_login }}"
+    groups: ""
+    append: false
     home: "/home/{{ employee_login }}"
     shell: /bin/bash
     create_home: true
     password: "{{ vault_employee_password_hash }}"
     update_password: always
-    groups: ""
-    append: false
-    password_expire_max: -1
+    password_lock: false
+    password_expire_max: 99999
+    expires: -1
     state: present
   no_log: true
 

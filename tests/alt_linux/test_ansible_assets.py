@@ -185,3 +185,69 @@ def test_roles_contain_no_unsafe_ansible_patterns() -> None:
     assert "ansible.builtin.shell" not in combined
     assert "ignore_errors:" not in combined
     assert "StrictHostKeyChecking=no" not in combined
+
+
+def test_local_employee_validates_existing_account_before_mutation() -> None:
+    tasks = load_yaml(LOCAL_EMPLOYEE_TASKS)[0]
+
+    task_names = [
+        str(task.get("name") or "")
+        for task in tasks
+    ]
+
+    inspect_index = task_names.index(
+        "Inspect existing local employee"
+    )
+    normalize_index = task_names.index(
+        "Normalize existing local employee"
+    )
+    validate_index = task_names.index(
+        "Validate existing local employee"
+    )
+    create_index = task_names.index(
+        "Create or reconcile local employee"
+    )
+
+    assert (
+        inspect_index
+        < normalize_index
+        < validate_index
+        < create_index
+    )
+
+    inspect_task = tasks[inspect_index]
+
+    assert inspect_task["ansible.builtin.command"]["argv"] == [
+        "getent",
+        "passwd",
+        "{{ employee_login }}",
+    ]
+    assert inspect_task["register"] == "employee_existing"
+    assert inspect_task["changed_when"] is False
+    assert inspect_task["failed_when"] is False
+
+    validation = tasks[validate_index][
+        "ansible.builtin.assert"
+    ]["that"]
+
+    rendered = "\n".join(
+        str(condition)
+        for condition in validation
+    )
+
+    assert (
+        "employee_existing_fields | length == 0 "
+        "or employee_existing_fields[2] | int >= 1000"
+        in rendered
+    )
+    assert (
+        "employee_existing_fields | length == 0 "
+        "or employee_existing_fields[5] == "
+        "'/home/' + employee_login"
+        in rendered
+    )
+    assert (
+        "employee_login not in "
+        "['root', 'ansible', 'osn-admin']"
+        in rendered
+    )

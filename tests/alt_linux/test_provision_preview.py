@@ -371,3 +371,32 @@ def test_provision_preview_cli(
 
     assert payload["status"] == "ok"
     assert payload["actions"] == EXPECTED_ACTIONS
+
+
+def test_preview_rejects_plaintext_vault_file(
+    tmp_path: Path,
+) -> None:
+    settings = prepare_preview_environment(tmp_path)
+
+    vault_file = (
+        settings.ansible_project_dir
+        / "group_vars"
+        / "vault.yml"
+    )
+    vault_file.write_text(
+        "vault_employee_password_hash: plaintext-fixture\n",
+        encoding="utf-8",
+    )
+
+    request = ProvisionRequest.from_mapping(
+        valid_request(),
+        expected_uuid=MACHINE_UUID,
+    )
+
+    with pytest.raises(ControlError) as exc:
+        ProvisionPlanner(settings).preview(
+            MACHINE_UUID,
+            request,
+        )
+
+    assert exc.value.code == "vault_not_configured"

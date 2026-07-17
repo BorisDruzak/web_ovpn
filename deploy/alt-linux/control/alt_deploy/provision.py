@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pwd
 import re
 import unicodedata
 from collections.abc import Mapping
@@ -260,6 +261,38 @@ class ProvisionPlanner:
                 details={"missing": missing},
             )
 
+        try:
+            with self.vault_file.open(
+                "r",
+                encoding="utf-8",
+            ) as handle:
+                vault_header = handle.readline(256).strip()
+        except (OSError, UnicodeError) as exc:
+            raise ControlError(
+                code="vault_not_configured",
+                message=(
+                    "Ansible Vault file cannot be read"
+                ),
+                exit_code=4,
+                details={
+                    "path": str(self.vault_file),
+                },
+            ) from exc
+
+        if not vault_header.startswith(
+            "$ANSIBLE_VAULT;"
+        ):
+            raise ControlError(
+                code="vault_not_configured",
+                message=(
+                    "Ansible Vault file is not encrypted"
+                ),
+                exit_code=4,
+                details={
+                    "path": str(self.vault_file),
+                },
+            )
+
     def _validate_assignment_uniqueness(
         self,
         request: ProvisionRequest,
@@ -413,6 +446,52 @@ class ProvisionPlanner:
                 request,
             )
 
+    def _prepare_job_for_worker(
+        self,
+        job,
+    ) -> None:
+        try:
+            worker_account = pwd.getpwnam(
+                "altserver"
+            )
+        except KeyError as exc:
+            raise ControlError(
+                code="worker_account_missing",
+                message=(
+                    "Controller account altserver "
+                    "does not exist"
+                ),
+                exit_code=6,
+            ) from exc
+
+        paths = (
+            job.job_dir,
+            job.job_dir / "request.json",
+            job.job_dir / "status.json",
+            job.job_dir / "ansible.log",
+        )
+
+        try:
+            for target in paths:
+                os.chown(
+                    target,
+                    worker_account.pw_uid,
+                    worker_account.pw_gid,
+                )
+        except OSError as exc:
+            raise ControlError(
+                code="job_ownership_failed",
+                message=(
+                    "Unable to prepare provision job "
+                    "for the altserver worker"
+                ),
+                exit_code=6,
+                details={
+                    "path": str(target),
+                    "error": str(exc),
+                },
+            ) from exc
+
     def start(
         self,
         machine_uuid: str,
@@ -438,20 +517,59 @@ class ProvisionPlanner:
                 request.to_dict()
             )
 
+            expected_systemd_unit = (
+                f"alt-provision-{job.job_id}.service"
+            )
+
             try:
-                systemd_unit = self.launcher.launch(
-                    job.job_id
+                job = self.jobs.update(
+                    job.job_id,
+                    systemd_unit=(
+                        expected_systemd_unit
+                    ),
                 )
+
+                self._prepare_job_for_worker(job)
+
+                actual_systemd_unit = (
+                    self.launcher.launch(
+                        job.job_id
+                    )
+                )
+
+                if (
+                    actual_systemd_unit
+                    != expected_systemd_unit
+                ):
+                    raise ControlError(
+                        code="job_launch_failed",
+                        message=(
+                            "Provision service returned "
+                            "an unexpected unit name"
+                        ),
+                        exit_code=6,
+                        details={
+                            "expected": (
+                                expected_systemd_unit
+                            ),
+                            "actual": (
+                                actual_systemd_unit
+                            ),
+                        },
+                    )
+
             except ControlError as exc:
                 launch_detail = str(
-                    exc.details.get("stderr") or ""
+                    exc.details.get("stderr")
+                    or exc.details.get("error")
+                    or ""
                 )
 
                 error_text = (
                     f"{exc.message}\n{launch_detail}"
                 ).strip()[-10000:]
 
-                self.jobs.update(
+                failed_job = self.jobs.update(
                     job.job_id,
                     state="failed",
                     stage="launch",
@@ -459,9 +577,13 @@ class ProvisionPlanner:
                     error=error_text,
                 )
 
+                try:
+                    self._prepare_job_for_worker(
+                        failed_job
+                    )
+                except ControlError:
+                    pass
+
                 raise
 
-            return self.jobs.update(
-                job.job_id,
-                systemd_unit=systemd_unit,
-            )
+            return self.jobs.get(job.job_id)

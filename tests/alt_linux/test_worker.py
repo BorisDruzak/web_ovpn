@@ -331,3 +331,49 @@ def test_worker_failure_preserves_log_without_assignment(
 
     assert "TASK [failed task]" in log
     assert "Provision failed" in log
+
+
+class FailedVerificationController:
+    def run_provision(
+        self,
+        job,
+        log_stream: TextIO,
+    ) -> dict[str, Any]:
+        result = successful_result(job.job_id)
+        result["verification"]["hostname"] = False
+
+        log_stream.write(
+            "Provision returned failed verification\n"
+        )
+        log_stream.flush()
+
+        return result
+
+
+def test_worker_rejects_failed_verification(
+    tmp_path: Path,
+) -> None:
+    settings = prepare_preview_environment(tmp_path)
+    jobs = JobRepository(settings)
+    assignments = AssignmentRepository(settings)
+
+    job = jobs.create(valid_request())
+
+    result_code = run_job(
+        job.job_id,
+        settings,
+        FailedVerificationController(),
+    )
+
+    assert result_code == 1
+
+    stored_job = jobs.get(job.job_id)
+
+    assert stored_job.state == "failed"
+    assert stored_job.stage == "ansible"
+    assert "invalid_provision_result" in (
+        stored_job.status["error"].lower()
+    )
+
+    assert assignments.get(MACHINE_UUID) is None
+    assert not (job.job_dir / "result.json").exists()

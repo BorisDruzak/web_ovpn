@@ -371,3 +371,72 @@ def test_jobs_status_and_log_cli(
     assert log_payload["state"] == "queued"
     assert "TASK [preflight]" in log_payload["log"]
     assert log_payload["truncated"] is False
+
+
+def test_start_prepares_altserver_owned_job_before_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import types
+
+    import alt_deploy.provision as provision_module
+
+    settings = prepare_preview_environment(tmp_path)
+    ownership_calls: list[Path] = []
+
+    monkeypatch.setattr(
+        provision_module.os,
+        "geteuid",
+        lambda: 0,
+    )
+    monkeypatch.setattr(
+        provision_module,
+        "pwd",
+        types.SimpleNamespace(
+            getpwnam=lambda username: types.SimpleNamespace(
+                pw_uid=1200,
+                pw_gid=1200,
+            )
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        provision_module.os,
+        "chown",
+        lambda path, uid, gid: ownership_calls.append(
+            Path(path)
+        ),
+    )
+
+    class OwnershipCheckingLauncher:
+        def launch(self, job_id: str) -> str:
+            job = JobRepository(settings).get(job_id)
+
+            assert job.status["systemd_unit"] == (
+                f"alt-provision-{job_id}.service"
+            )
+
+            required_paths = {
+                job.job_dir,
+                job.job_dir / "request.json",
+                job.job_dir / "status.json",
+                job.job_dir / "ansible.log",
+            }
+
+            assert required_paths <= set(ownership_calls)
+
+            return f"alt-provision-{job_id}.service"
+
+    planner = ProvisionPlanner(
+        settings,
+        launcher=OwnershipCheckingLauncher(),
+    )
+
+    job = planner.start(
+        MACHINE_UUID,
+        parsed_request(),
+    )
+
+    assert job.status["systemd_unit"] == (
+        f"alt-provision-{job.job_id}.service"
+    )
