@@ -89,6 +89,9 @@ When a client network/template changes, the web UI runs sync and then `reconnect
 
 Network Observer adds a second read-only backend:
 
+Before deploying the context-import migration, follow the
+[netctl context-import backup and rollback runbook](docs/runbooks/netctl-context-import-backup-rollback.md).
+
 ```bash
 sudo /usr/local/sbin/netctl --json sources list
 sudo /usr/local/sbin/netctl --json sources test mikrotik-main
