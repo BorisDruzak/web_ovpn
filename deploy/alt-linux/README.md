@@ -126,6 +126,52 @@ healthy Vault returns only boolean checks. An unhealthy Vault returns
 `error.code=vault_unhealthy` and boolean diagnostics; neither response contains
 the hash, decrypted YAML or Vault password.
 
+## Controller state permissions
+
+Expected controller permission contract:
+
+| Path | Owner | Group | Mode | Type |
+| --- | --- | --- | --- | --- |
+| `/var/lib/alt-deploy` | `altserver` | `altserver` | `0700` | directory |
+| `/var/lib/alt-deploy/jobs` | `altserver` | `altserver` | `0700` | directory |
+| `/var/lib/alt-deploy/assignments` | `altserver` | `altserver` | `0700` | directory |
+| `/srv/alt-deploy/registration` | `altserver` | `altserver` | `0700` | directory |
+| `/home/altserver/.ssh` | `altserver` | `altserver` | `0700` | directory |
+| `/home/altserver/ansible/group_vars/vault.yml` | `altserver` | `altserver` | `0600` | regular file |
+| `/home/altserver/.ansible-vault-pass` | `altserver` | `altserver` | `0600` | regular file |
+
+Run the read-only audit as the service account:
+
+```bash
+sudo -u altserver workstationctl --json controller permissions
+```
+
+A healthy audit returns boolean checks for existence, owner, group, mode and
+object type. An unhealthy audit returns
+`error.code=controller_permissions_unhealthy`. It never reads or returns file
+contents.
+
+Repair only these known paths as root:
+
+```bash
+sudo workstationctl --json controller permissions repair
+```
+
+The repair command:
+
+- requires root;
+- validates every expected path before changing any path;
+- refuses missing paths, symbolic links and unexpected object types;
+- does not create a missing Vault file or password file;
+- opens objects with no-follow semantics and changes only owner, group and mode;
+- returns the symbolic path keys that were changed, not secret contents.
+
+A blocked repair returns
+`error.code=controller_permissions_repair_blocked`. A system error during
+sequential `fchown` or `fchmod` returns
+`error.code=controller_permissions_repair_failed`; run the read-only audit again
+to see the resulting state before retrying.
+
 ## CLI and provision request
 
 Read and non-mutating operations run as `altserver`:
@@ -135,6 +181,7 @@ sudo -u altserver workstationctl --json machines list
 sudo -u altserver workstationctl --json machines show <uuid>
 sudo -u altserver workstationctl --json preflight <uuid>
 sudo -u altserver workstationctl --json vault check
+sudo -u altserver workstationctl --json controller permissions
 sudo -u altserver workstationctl --json provision preview <uuid> \
   --vars-file /path/to/request.json
 sudo -u altserver workstationctl --json jobs status <job_id>
@@ -161,6 +208,12 @@ A dot is not allowed.
 ```bash
 sudo workstationctl --json provision start <uuid> \
   --vars-file /path/to/request.json
+```
+
+Permission repair also requires root:
+
+```bash
+sudo workstationctl --json controller permissions repair
 ```
 
 Do not run `provision start` for a machine whose derived state is `assigned`.
@@ -192,6 +245,7 @@ Use the CLI before reading private files directly:
 ```bash
 sudo -u altserver workstationctl --json machines show <uuid>
 sudo -u altserver workstationctl --json vault check
+sudo -u altserver workstationctl --json controller permissions
 sudo -u altserver workstationctl --json jobs status <job_id>
 sudo -u altserver workstationctl --json jobs log <job_id>
 ```
@@ -240,6 +294,7 @@ deploy/alt-linux/
 ├── api/process_pending.py
 ├── control/
 │   ├── alt_deploy/
+│   │   ├── controller_permissions.py
 │   │   └── vault.py
 │   ├── workstationctl
 │   └── alt-provision-worker
