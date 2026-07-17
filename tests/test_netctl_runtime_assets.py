@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,18 @@ def pr_1b_database(tmp_path: Path) -> str:
                 tags_json TEXT,
                 comment TEXT
             );
+            CREATE TABLE host_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                host_id INTEGER,
+                source_id INTEGER,
+                observed_at TEXT NOT NULL,
+                observation_type TEXT NOT NULL,
+                ip TEXT,
+                mac TEXT,
+                hostname TEXT,
+                interface TEXT,
+                data_json TEXT
+            );
             CREATE TABLE schema_migrations (
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL
@@ -125,6 +138,64 @@ def _seed_legacy_hosts(db_url: str, hosts: list[dict[str, Any]]) -> None:
                 """,
                 values,
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_legacy_observations(db_url: str, observations: list[dict[str, Any]]) -> None:
+    db_path = Path(db_url.removeprefix("sqlite:///"))
+    conn = sqlite3.connect(db_path)
+    try:
+        for observation in observations:
+            values = {
+                "id": None,
+                "host_id": None,
+                "source_id": None,
+                "observed_at": "2026-07-16T00:00:00Z",
+                "observation_type": "test",
+                "ip": None,
+                "mac": None,
+                "hostname": None,
+                "interface": None,
+                "data_json": "{}",
+                **observation,
+            }
+            conn.execute(
+                """
+                INSERT INTO host_observations (
+                    id, host_id, source_id, observed_at, observation_type,
+                    ip, mac, hostname, interface, data_json
+                ) VALUES (
+                    :id, :host_id, :source_id, :observed_at, :observation_type,
+                    :ip, :mac, :hostname, :interface, :data_json
+                )
+                """,
+                values,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _seed_network_source(db_url: str, source_id: int) -> None:
+    db_path = Path(db_url.removeprefix("sqlite:///"))
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO network_sources (
+                id, name, driver, host, port, username, secret_ref,
+                created_at, updated_at
+            ) VALUES (?, ?, 'test', '127.0.0.1', 1, 'test', 'TEST_SECRET', ?, ?)
+            """,
+            (
+                source_id,
+                f"source-{source_id}",
+                "2026-07-16T00:00:00Z",
+                "2026-07-16T00:00:00Z",
+            ),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -281,6 +352,320 @@ def test_runtime_ip_is_not_globally_unique(pr_1b_database: str) -> None:
         assert conn.execute(
             "SELECT COUNT(*) FROM ip_observations WHERE ip = '10.0.0.99'"
         ).fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_historical_source_key_deduplicates_when_source_id_is_null(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 51, "ip": "10.0.0.51", "mac": "00:11:22:33:44:51"}],
+    )
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 151,
+                "host_id": 51,
+                "source_id": None,
+                "observation_type": "dhcp",
+                "ip": "10.0.0.50",
+                "hostname": "history-51",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        ip_observation = conn.execute(
+            """
+            SELECT asset_id, source_id, source_key, ip, first_seen_at,
+                   last_seen_at, is_current, observation_source
+            FROM ip_observations
+            WHERE source_key = 'legacy-host-observation:151'
+            """
+        ).fetchone()
+        assert tuple(ip_observation) == (
+            ip_observation["asset_id"],
+            None,
+            "legacy-host-observation:151",
+            "10.0.0.50",
+            "2026-07-16T00:00:00Z",
+            "2026-07-16T00:00:00Z",
+            0,
+            "dhcp",
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO ip_observations (
+                    asset_id, source_id, source_key, ip, first_seen_at,
+                    last_seen_at, is_current, observation_source
+                ) VALUES (?, NULL, ?, ?, ?, ?, 0, ?)
+                """,
+                (
+                    ip_observation["asset_id"],
+                    ip_observation["source_key"],
+                    ip_observation["ip"],
+                    ip_observation["first_seen_at"],
+                    ip_observation["last_seen_at"],
+                    ip_observation["observation_source"],
+                ),
+            )
+
+        hostname_observation = conn.execute(
+            """
+            SELECT asset_id, source_id, source_key, hostname, source_type,
+                   first_seen_at, last_seen_at, is_current
+            FROM hostname_observations
+            WHERE source_key = 'legacy-host-observation:151'
+            """
+        ).fetchone()
+        assert hostname_observation["source_id"] is None
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO hostname_observations (
+                    asset_id, hostname, source_id, source_key, source_type,
+                    first_seen_at, last_seen_at, is_current
+                ) VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
+                """,
+                (
+                    hostname_observation["asset_id"],
+                    hostname_observation["hostname"],
+                    hostname_observation["source_key"],
+                    hostname_observation["source_type"],
+                    hostname_observation["first_seen_at"],
+                    hostname_observation["last_seen_at"],
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def test_orphan_source_historical_observation_uses_null_source_id(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 52, "ip": "10.0.0.52", "mac": "00:11:22:33:44:52"}],
+    )
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 152,
+                "host_id": 52,
+                "source_id": 9999,
+                "observation_type": "arp",
+                "ip": "10.0.0.52",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        row = conn.execute(
+            """
+            SELECT source_id, source_key, observation_source, is_current
+            FROM ip_observations
+            WHERE source_key = 'legacy-host-observation:152'
+            """
+        ).fetchone()
+        assert tuple(row) == (None, "legacy-host-observation:152", "arp", 0)
+    finally:
+        conn.close()
+
+
+def test_historical_observation_history_uses_host_mac_ip_precedence(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {"id": 61, "ip": "10.0.0.61", "mac": "00:11:22:33:44:61"},
+            {"id": 62, "ip": "10.0.0.62", "mac": "00:11:22:33:44:62"},
+            {"id": 63, "ip": "10.0.0.63", "mac": "00:11:22:33:44:63"},
+        ],
+    )
+    _seed_network_source(pr_1b_database, 7)
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 161,
+                "host_id": 61,
+                "observation_type": "host-priority",
+                "ip": "10.0.0.62",
+                "mac": "00:11:22:33:44:62",
+                "hostname": "by-host",
+            },
+            {
+                "id": 162,
+                "observation_type": "mac-priority",
+                "ip": "10.0.0.61",
+                "mac": "00-11-22-33-44-62",
+                "hostname": "by-mac",
+            },
+            {
+                "id": 163,
+                "source_id": 7,
+                "observation_type": "ip-fallback",
+                "ip": "10.0.0.63",
+                "hostname": "by-ip",
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT observations.source_key, assets.asset_key,
+                       observations.observation_source, observations.is_current,
+                       observations.source_id
+                FROM ip_observations AS observations
+                JOIN assets ON assets.id = observations.asset_id
+                WHERE observations.source_key LIKE 'legacy-host-observation:%'
+                ORDER BY observations.source_key
+                """
+            ).fetchall()
+        ] == [
+            ("legacy-host-observation:161", "mac:00:11:22:33:44:61", "host-priority", 0, None),
+            ("legacy-host-observation:162", "mac:00:11:22:33:44:62", "mac-priority", 0, None),
+            ("legacy-host-observation:163", "mac:00:11:22:33:44:63", "ip-fallback", 0, 7),
+        ]
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT observations.source_key, assets.asset_key,
+                       observations.source_type, observations.is_current,
+                       observations.source_id
+                FROM hostname_observations AS observations
+                JOIN assets ON assets.id = observations.asset_id
+                WHERE observations.source_key LIKE 'legacy-host-observation:%'
+                ORDER BY observations.source_key
+                """
+            ).fetchall()
+        ] == [
+            ("legacy-host-observation:161", "mac:00:11:22:33:44:61", "host-priority", 0, None),
+            ("legacy-host-observation:162", "mac:00:11:22:33:44:62", "mac-priority", 0, None),
+            ("legacy-host-observation:163", "mac:00:11:22:33:44:63", "ip-fallback", 0, 7),
+        ]
+    finally:
+        conn.close()
+
+
+def test_unresolved_historical_observation_history_is_reported(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(pr_1b_database, [{"id": 71, "ip": "10.0.0.71"}])
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 171,
+                "host_id": 9999,
+                "observation_type": "neighbor",
+                "ip": "192.0.2.171",
+                "mac": "not-a-mac",
+                "hostname": "unresolved",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        report_json = conn.execute(
+            """
+            SELECT unresolved_observation_ids_json
+            FROM runtime_asset_migration_reports
+            WHERE migration_version = 2
+            """
+        ).fetchone()[0]
+        report = json.loads(report_json)
+        assert [record["observation_id"] for record in report] == [171]
+        assert all(record["reason"] for record in report)
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM ip_observations
+            WHERE source_key = 'legacy-host-observation:171'
+            """
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM hostname_observations
+            WHERE source_key = 'legacy-host-observation:171'
+            """
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_reused_ip_history_can_belong_to_different_assets_at_different_times(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {"id": 81, "ip": "10.0.0.81", "mac": "00:11:22:33:44:81"},
+            {"id": 82, "ip": "10.0.0.82", "mac": "00:11:22:33:44:82"},
+        ],
+    )
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 181,
+                "host_id": 81,
+                "observed_at": "2026-07-14T00:00:00Z",
+                "observation_type": "dhcp",
+                "ip": "10.0.0.99",
+            },
+            {
+                "id": 182,
+                "host_id": 82,
+                "observed_at": "2026-07-15T00:00:00Z",
+                "observation_type": "dhcp",
+                "ip": "10.0.0.99",
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT observations.ip, assets.asset_key,
+                       observations.first_seen_at, observations.last_seen_at,
+                       observations.is_current
+                FROM ip_observations AS observations
+                JOIN assets ON assets.id = observations.asset_id
+                WHERE observations.ip = '10.0.0.99'
+                ORDER BY observations.first_seen_at
+                """
+            ).fetchall()
+        ] == [
+            ("10.0.0.99", "mac:00:11:22:33:44:81", "2026-07-14T00:00:00Z", "2026-07-14T00:00:00Z", 0),
+            ("10.0.0.99", "mac:00:11:22:33:44:82", "2026-07-15T00:00:00Z", "2026-07-15T00:00:00Z", 0),
+        ]
     finally:
         conn.close()
 

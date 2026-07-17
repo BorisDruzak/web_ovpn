@@ -393,6 +393,118 @@ def _migration_2(conn: sqlite3.Connection) -> None:
                     ),
                 )
 
+    host_asset_ids = {
+        int(row[0]): int(row[1])
+        for row in conn.execute(
+            """
+            SELECT legacy_network_host_id, asset_id
+            FROM legacy_host_asset_mappings
+            ORDER BY legacy_network_host_id
+            """
+        )
+    }
+    mac_asset_ids: dict[str, set[int]] = {}
+    ip_asset_ids: dict[str, set[int]] = {}
+    for host in host_rows:
+        asset_id = host_asset_ids[int(host["id"])]
+        resolved_mac = host["_resolved_mac"]
+        if resolved_mac:
+            mac_asset_ids.setdefault(str(resolved_mac), set()).add(asset_id)
+        ip = str(host["ip"] or "").strip()
+        if ip:
+            ip_asset_ids.setdefault(ip, set()).add(asset_id)
+
+    asset_sites = {
+        int(row[0]): str(row[1] or "")
+        for row in conn.execute("SELECT id, site FROM assets ORDER BY id")
+    }
+    valid_source_ids = {
+        int(row[0]) for row in conn.execute("SELECT id FROM network_sources ORDER BY id")
+    }
+    unresolved_observations: list[dict[str, Any]] = []
+    observation_rows = _dict_rows(
+        conn.execute(
+            """
+            SELECT id, host_id, source_id, observed_at, observation_type,
+                   ip, mac, hostname
+            FROM host_observations
+            ORDER BY id
+            """
+        )
+    )
+    for observation in observation_rows:
+        asset_id = host_asset_ids.get(observation["host_id"])
+        normalized_mac = normalize_mac(observation["mac"])
+        mac_matches = mac_asset_ids.get(normalized_mac, set()) if normalized_mac else set()
+        observation_ip = str(observation["ip"] or "").strip()
+        ip_matches = ip_asset_ids.get(observation_ip, set()) if observation_ip else set()
+        if asset_id is None and len(mac_matches) == 1:
+            asset_id = next(iter(mac_matches))
+        if asset_id is None and len(ip_matches) == 1:
+            asset_id = next(iter(ip_matches))
+        if asset_id is None:
+            unresolved_observations.append(
+                {
+                    "observation_id": int(observation["id"]),
+                    "reason": _unresolved_observation_reason(
+                        observation,
+                        normalized_mac=normalized_mac,
+                        mac_match_count=len(mac_matches),
+                        observation_ip=observation_ip,
+                        ip_match_count=len(ip_matches),
+                    ),
+                }
+            )
+            continue
+
+        original_source_id = observation["source_id"]
+        source_id = (
+            int(original_source_id)
+            if original_source_id in valid_source_ids
+            else None
+        )
+        source_key = f"legacy-host-observation:{observation['id']}"
+        observation_type = str(observation["observation_type"])
+        observed_at = str(observation["observed_at"])
+        if observation_ip:
+            conn.execute(
+                """
+                INSERT INTO ip_observations (
+                    asset_id, site, source_id, source_key, ip, first_seen_at,
+                    last_seen_at, is_current, observation_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                """,
+                (
+                    asset_id,
+                    asset_sites[asset_id],
+                    source_id,
+                    source_key,
+                    observation_ip,
+                    observed_at,
+                    observed_at,
+                    observation_type,
+                ),
+            )
+        hostname = str(observation["hostname"] or "").strip()
+        if hostname:
+            conn.execute(
+                """
+                INSERT INTO hostname_observations (
+                    asset_id, hostname, source_id, source_key, source_type,
+                    first_seen_at, last_seen_at, is_current
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    asset_id,
+                    hostname,
+                    source_id,
+                    source_key,
+                    observation_type,
+                    observed_at,
+                    observed_at,
+                ),
+            )
+
     counts = {
         "legacy_host_count": len(host_rows),
         "mapped_legacy_host_count": conn.execute(
@@ -420,7 +532,7 @@ def _migration_2(conn: sqlite3.Connection) -> None:
             tag_binding_count, unresolved_legacy_host_ids_json,
             unresolved_observation_ids_json, unresolved_tag_records_json,
             aggregation_conflicts_json
-        ) VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '[]', ?)
+        ) VALUES (2, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, '[]', ?)
         """,
         (
             migration_time,
@@ -432,6 +544,12 @@ def _migration_2(conn: sqlite3.Connection) -> None:
             counts["ip_observation_count"],
             counts["hostname_observation_count"],
             counts["tag_binding_count"],
+            json.dumps(
+                unresolved_observations,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             json.dumps(aggregation_conflicts, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
         ),
     )
@@ -446,6 +564,24 @@ def _effective_host_times(host: dict[str, Any], migration_time: str) -> tuple[st
     first_seen_at = _first_nonblank(host["first_seen_at"], host["last_seen_at"], migration_time)
     last_seen_at = _first_nonblank(host["last_seen_at"], host["first_seen_at"], migration_time)
     return first_seen_at, last_seen_at
+
+
+def _unresolved_observation_reason(
+    observation: dict[str, Any],
+    *,
+    normalized_mac: str | None,
+    mac_match_count: int,
+    observation_ip: str,
+    ip_match_count: int,
+) -> str:
+    reasons: list[str] = []
+    if observation["host_id"] is not None:
+        reasons.append("host_id_not_mapped")
+    if normalized_mac:
+        reasons.append("mac_not_mapped" if mac_match_count == 0 else "mac_mapping_not_unique")
+    if observation_ip:
+        reasons.append("ip_not_mapped" if ip_match_count == 0 else "ip_mapping_not_unique")
+    return ",".join(reasons) or "no_identity_fields"
 
 
 def _first_nonblank(*values: Any) -> str:
