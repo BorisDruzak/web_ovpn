@@ -721,3 +721,71 @@ def test_context_cli_import_diff_and_status_are_structural_and_read_only(
     assert invalid_result["status"] == "error"
     assert invalid_result["result"] == "validation_error"
     assert invalid_result["head"]["context_revision_id"] == first["context"]["id"]
+
+
+def test_schema_invalid_context_import_records_one_validation_error_run_and_preserves_active_snapshot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from netctl.context_import import load_active_snapshot
+
+    database_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    context_path = tmp_path / "network-context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    document = import_document()
+    schema = {
+        "type": "object",
+        "required": ["schema_version"],
+        "properties": {"schema_version": {"const": "2.2.0"}},
+    }
+    context_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+    initial_rc, initial = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import", "--path", str(context_path), "--schema", str(schema_path),
+            "--git-sha", "initial-git-sha",
+        ],
+        capsys,
+    )
+    assert initial_rc == 0
+
+    conn = connect_import_db(tmp_path)
+    try:
+        before_snapshot = load_active_snapshot(conn, "test-network")
+        before_head = conn.execute(
+            "SELECT context_revision_id FROM context_heads WHERE context_id = 'test-network'"
+        ).fetchone()[0]
+        before_intent_count = intent_count(conn)
+    finally:
+        conn.close()
+
+    invalid = deepcopy(document)
+    invalid["schema_version"] = "invalid"
+    context_path.write_text(yaml.safe_dump(invalid), encoding="utf-8")
+    invalid_rc, invalid_result = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import", "--path", str(context_path), "--schema", str(schema_path),
+            "--git-sha", "schema-invalid-git-sha",
+        ],
+        capsys,
+    )
+
+    assert invalid_rc == 1
+    assert invalid_result["status"] == "error"
+    assert invalid_result["result"] == "validation_error"
+    conn = connect_import_db(tmp_path)
+    try:
+        validation_runs = conn.execute(
+            "SELECT * FROM context_import_runs WHERE status = 'validation_error'"
+        ).fetchall()
+        assert len(validation_runs) == 1
+        assert validation_runs[0]["context_revision_id"] is None
+        assert validation_runs[0]["git_sha"] == "schema-invalid-git-sha"
+        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 1
+        assert intent_count(conn) == before_intent_count
+        assert load_active_snapshot(conn, "test-network") == before_snapshot
+        assert conn.execute(
+            "SELECT context_revision_id FROM context_heads WHERE context_id = 'test-network'"
+        ).fetchone()[0] == before_head
+    finally:
+        conn.close()

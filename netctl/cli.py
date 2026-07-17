@@ -11,7 +11,7 @@ from .collect_lock import CollectLock
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
-from .context_import import import_context, load_active_snapshot
+from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
 from .db import context_revision_public, connect, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
@@ -389,6 +389,9 @@ def cmd_context(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             return 1, err(str(exc), errors=[])
 
         if errors:
+            if args.context_command == "import":
+                result = record_context_import_validation_error(conn, document, raw_bytes, path, args.git_sha, errors)
+                return 1, err("network context import failed", **result)
             return 1, err("network context validation failed", errors=errors)
 
         if args.context_command == "diff":

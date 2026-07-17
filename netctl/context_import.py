@@ -45,15 +45,8 @@ def import_context(
     base_revision_id = initial_head["context_revision_id"] if initial_head else None
 
     if semantic_errors:
-        return _record_validation_error(
-            conn,
-            context_id=context_id,
-            base_revision_id=base_revision_id,
-            input_sha256=input_sha256,
-            git_sha=git_sha,
-            source_path=source_path,
-            errors=semantic_errors,
-            head=initial_head,
+        return record_context_import_validation_error(
+            conn, document, raw_bytes, source_path, git_sha, semantic_errors
         )
 
     candidate_rows = _prepare_candidate_rows(document)
@@ -119,6 +112,30 @@ def load_active_snapshot(
             for row in rows
         }
     return snapshot
+
+
+def record_context_import_validation_error(
+    conn: sqlite3.Connection,
+    document: dict[str, Any],
+    raw_bytes: bytes,
+    source_path: Path,
+    git_sha: str,
+    errors: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Persist a failed import attempt without creating a content revision."""
+    summary = context_summary(document, raw_bytes)
+    context_id = summary["context_id"]
+    head = get_context_head(conn, context_id)
+    return _record_validation_error(
+        conn,
+        context_id=context_id,
+        base_revision_id=head["context_revision_id"] if head else None,
+        input_sha256=summary["sha256"],
+        git_sha=git_sha,
+        source_path=source_path,
+        errors=errors,
+        head=head,
+    )
 
 
 def _record_validation_error(
