@@ -14,7 +14,7 @@ Authoritative documentation:
 
 The controller runs on `192.168.100.17` under the `altserver` service account.
 It owns `workstationctl`, Ansible, SSH host-key handling, Vault, provision jobs,
-logs and assignments.
+logs, assignments and job reconciliation.
 
 The future operator web interface runs on `192.168.100.30`. It must use a
 constrained API on the controller and must not receive SSH private keys, Vault
@@ -174,7 +174,7 @@ to see the resulting state before retrying.
 
 ## CLI and provision request
 
-Read and non-mutating operations run as `altserver`:
+Service-account operations:
 
 ```bash
 sudo -u altserver workstationctl --json machines list
@@ -186,7 +186,12 @@ sudo -u altserver workstationctl --json provision preview <uuid> \
   --vars-file /path/to/request.json
 sudo -u altserver workstationctl --json jobs status <job_id>
 sudo -u altserver workstationctl --json jobs log <job_id>
+sudo -u altserver workstationctl --json jobs reconcile
 ```
+
+`jobs reconcile` is not read-only. It may update controller-side `status.json`
+and assignment records, but it does not provision or reconnect to a workstation
+and does not require root.
 
 The provision request contains no password or password hash:
 
@@ -220,6 +225,42 @@ Do not run `provision start` for a machine whose derived state is `assigned`.
 A repeat request is rejected with `machine_already_assigned`. An explicit
 release or reassignment workflow must be implemented first.
 
+## Job reconciliation after controller restart
+
+Run reconciliation after a controller reboot, after an unexpected transient
+worker disappearance, or before creating a new job when an old job remains
+`queued` or `running`:
+
+```bash
+sudo -u altserver workstationctl --json jobs reconcile
+```
+
+The command holds the common `workstationctl.lock`, checks only active jobs and
+uses the exact recorded unit name `alt-provision-<job_id>.service`.
+
+Possible actions:
+
+- `still_running`: the unit is `active`, `activating` or `reloading`; the job
+  record remains unchanged and the systemd states are returned in `unchanged`;
+- `queued_recoverable`: a queued job has no recorded unit, or its recorded unit
+  has `LoadState=not-found`; the job becomes `failed`, receives
+  `error_code=worker_not_started` and `retryable=true`;
+- `worker_lost`: a running job has no unit and no result; the job becomes
+  `failed` with `stage=reconcile` and `error_code=worker_lost`;
+- `result_recovered`: an inactive worker left a valid `result.json`; the result
+  is validated with the same contract as the worker, the assignment is written
+  idempotently, and the job becomes `successful / complete`;
+- `result_rejected`: an inactive worker left malformed JSON or a result that
+  fails result verification; no assignment is written, the original result file
+  is retained, and the job becomes retryable failure with
+  `error_code=invalid_provision_result`.
+
+A result is never recovered while the worker is still active. Assignment-store,
+systemd and invalid-unit errors are not hidden as result-validation failures.
+
+Reconciliation is currently an explicit operator command; no automatic boot
+service invokes it yet.
+
 ## State, diagnostics, and recovery
 
 Controller state:
@@ -248,6 +289,7 @@ sudo -u altserver workstationctl --json vault check
 sudo -u altserver workstationctl --json controller permissions
 sudo -u altserver workstationctl --json jobs status <job_id>
 sudo -u altserver workstationctl --json jobs log <job_id>
+sudo -u altserver workstationctl --json jobs reconcile
 ```
 
 Controller service diagnostics:
@@ -295,6 +337,7 @@ deploy/alt-linux/
 ├── control/
 │   ├── alt_deploy/
 │   │   ├── controller_permissions.py
+│   │   ├── job_reconcile.py
 │   │   └── vault.py
 │   ├── workstationctl
 │   └── alt-provision-worker
