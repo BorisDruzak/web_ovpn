@@ -19,6 +19,8 @@ class Settings:
     systemd_run_path: Path
     worker_path: Path
     workstationctl_path: Path
+    service_user: str = "altserver"
+    service_group: str = "altserver"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -83,5 +85,13 @@ class Settings:
                     "ALT_DEPLOY_WORKSTATIONCTL",
                     "/usr/local/sbin/workstationctl",
                 )
+            ),
+            service_user=os.environ.get(
+                "ALT_DEPLOY_SERVICE_USER",
+                "altserver",
+            ),
+            service_group=os.environ.get(
+                "ALT_DEPLOY_SERVICE_GROUP",
+                "altserver",
             ),
         )
