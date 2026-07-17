@@ -17,6 +17,7 @@ from .provision import (
     ProvisionRequest,
 )
 from .registry import MachineRepository
+from .vault import VaultHealthChecker
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,6 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     job_log = job_commands.add_parser("log")
     job_log.add_argument("job_id")
+
+    vault = commands.add_parser("vault")
+    vault_commands = vault.add_subparsers(
+        dest="vault_command",
+        required=True,
+    )
+    vault_commands.add_parser("check")
 
     return parser
 
@@ -255,6 +263,17 @@ def main(
             payload = {
                 "status": "ok",
                 **log_result,
+            }
+
+        elif (
+            parsed.command == "vault"
+            and parsed.vault_command == "check"
+        ):
+            payload = {
+                "status": "ok",
+                "vault": VaultHealthChecker(
+                    active_settings
+                ).check(),
             }
 
         else:
