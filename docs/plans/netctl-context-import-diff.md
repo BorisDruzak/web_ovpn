@@ -332,7 +332,7 @@ Expected: the new immutability assertions FAIL because `record_context_revision(
 
 - [ ] **Step 3: Implement immutable revision and run helpers.**
 
-Change `record_context_revision()` to `DO NOTHING` on its unique conflict. Implement run creation/finish helpers with only the statuses in section 2.2 and head helpers that exclusively read/write `context_heads`. All functions must accept the caller's connection and must not call `commit()`; the caller owns the transaction boundary.
+Change `record_context_revision()` to `DO NOTHING` on its unique conflict. Implement run creation/finish helpers with only the statuses in section 2.2 and head helpers that exclusively read/write `context_heads`. All functions must accept the caller's connection and must not call `commit()`; the caller owns the transaction boundary. In the same task, update the existing `context validate` branch in `netctl/cli.py` to commit after a successful `record_context_revision()` call, so the PR 1A CLI contract remains green before the later CLI-command task.
 
 - [ ] **Step 4: Run focused tests.**
 
@@ -574,4 +574,3 @@ PR 1B is complete only when all of the following are demonstrated:
 - Same content with a new Git SHA produces one new run with `success_noop_same_content`, the existing revision/head, and zero duplicated intent rows.
 - A schema, semantic, or injected database failure leaves the prior active revision and all its snapshot rows intact.
 - Migration tests start from the current PR 1A SQLite schema, backup/rollback documentation is present, rollback tests pass, and `python -m pytest -q` passes.
-
