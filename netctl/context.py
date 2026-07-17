@@ -20,6 +20,29 @@ COUNT_FIELDS = (
     "risks",
 )
 
+IMPORT_COLLECTIONS: dict[str, tuple[str, str]] = {
+    "sites": ("intent_sites", "site"),
+    "locations": ("intent_locations", "location"),
+    "segments": ("intent_segments", "segment"),
+    "devices": ("intent_assets", "asset"),
+    "services": ("intent_services", "service"),
+    "links": ("intent_links", "link"),
+}
+
+RELATION_TYPES: frozenset[str] = frozenset(
+    {
+        "CONNECTED_TO",
+        "MEMBER_OF",
+        "ROUTED_VIA",
+        "RUNS_ON",
+        "USED_BY",
+        "LOCATED_AT",
+        "CAN_ACCESS",
+        "AFFECTED_BY",
+        "RESOLVED_BY",
+    }
+)
+
 
 def load_context(path: Path) -> dict[str, Any]:
     return load_context_bytes(path.read_bytes())
@@ -104,6 +127,114 @@ def validate_context(document: dict[str, Any], schema: dict[str, Any]) -> list[d
             seen_ids.add(item_id)
 
     return sorted(errors, key=lambda error: (error["path"], error["message"]))
+
+
+def validate_import_semantics(document: dict[str, Any]) -> list[dict[str, str]]:
+    """Return deterministic errors for import-specific context constraints."""
+    errors: list[dict[str, str]] = []
+    device_ids = _valid_entity_ids(document.get("devices"))
+
+    for collection in IMPORT_COLLECTIONS:
+        items = document.get(collection)
+        if not isinstance(items, list):
+            continue
+        seen_ids: set[str] = set()
+        for index, entity in enumerate(items):
+            path = f"{collection}.{index}"
+            entity_id = entity.get("id") if isinstance(entity, dict) else None
+            if not _is_nonblank_string(entity_id):
+                errors.append({"path": f"{path}.id", "message": "id must be a non-blank string"})
+            elif entity_id in seen_ids:
+                errors.append({"path": f"{path}.id", "message": f"duplicate id '{entity_id}'"})
+            else:
+                seen_ids.add(entity_id)
+
+            if collection == "links" and isinstance(entity, dict):
+                errors.extend(_link_semantic_errors(entity, path, device_ids))
+
+    return sorted(errors, key=lambda error: (error["path"], error["message"]))
+
+
+def canonical_entity_json(entity: dict[str, Any]) -> str:
+    return json.dumps(entity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def canonical_entity_hash(entity: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_entity_json(entity).encode("utf-8")).hexdigest()
+
+
+def normalise_import_entities(document: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    """Build a stable entity-type/stable-id view of the import collections."""
+    normalised: dict[str, dict[str, dict[str, Any]]] = {}
+    for collection, (_table, entity_type) in IMPORT_COLLECTIONS.items():
+        items = document.get(collection)
+        if not isinstance(items, list):
+            normalised[entity_type] = {}
+            continue
+        entities = [
+            entity
+            for entity in items
+            if isinstance(entity, dict) and _is_nonblank_string(entity.get("id"))
+        ]
+        normalised[entity_type] = {
+            entity["id"]: entity
+            for entity in sorted(entities, key=lambda entity: entity["id"])
+        }
+    return normalised
+
+
+def _link_semantic_errors(link: dict[str, Any], path: str, device_ids: set[str]) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    relation = link.get("relation")
+    if not isinstance(relation, str) or relation not in RELATION_TYPES:
+        errors.append({"path": f"{path}.relation", "message": f"unsupported relation {relation!r}"})
+
+    if "confidence" in link:
+        confidence = link["confidence"]
+        if type(confidence) is not int or not 0 <= confidence <= 100:
+            errors.append(
+                {
+                    "path": f"{path}.confidence",
+                    "message": "confidence must be an integer from 0 to 100",
+                }
+            )
+
+    for endpoint_name in ("endpoint_a", "endpoint_b"):
+        endpoint_path = f"{path}.{endpoint_name}"
+        endpoint = link.get(endpoint_name)
+        if not isinstance(endpoint, dict):
+            errors.append({"path": endpoint_path, "message": "endpoint must be an object"})
+            continue
+
+        device = endpoint.get("device")
+        device_path = f"{endpoint_path}.device"
+        if not _is_nonblank_string(device):
+            errors.append({"path": device_path, "message": "device must be a non-blank string"})
+        elif device not in device_ids:
+            errors.append({"path": device_path, "message": f"unknown device '{device}'"})
+
+        if "interface" in endpoint and not _is_nonblank_string(endpoint["interface"]):
+            errors.append(
+                {
+                    "path": f"{endpoint_path}.interface",
+                    "message": "interface must be a non-blank string when present",
+                }
+            )
+    return errors
+
+
+def _valid_entity_ids(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        entity["id"]
+        for entity in value
+        if isinstance(entity, dict) and _is_nonblank_string(entity.get("id"))
+    }
+
+
+def _is_nonblank_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _validation_error_path(error: Any) -> str:
