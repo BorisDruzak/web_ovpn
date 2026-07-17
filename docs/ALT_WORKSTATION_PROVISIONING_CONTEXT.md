@@ -1,7 +1,7 @@
 # ALT Workstation Provisioning — verified implementation context
 
 Status: verified end to end on 2026-07-17 and subsequently hardened through
-Phase 1 installer and Vault-health work.
+Phase 1 installer, Vault-health and controller-permission work.
 
 Repository: `BorisDruzak/web_ovpn`
 
@@ -13,8 +13,8 @@ remain useful for intent, but this file takes precedence when they differ.
 
 ## 1. Purpose and current result
 
-The implemented MVP takes an ALT Workstation K 11.2 computer from successful
-registration through non-mutating preflight and operator-approved local account
+The MVP takes an ALT Workstation K 11.2 computer from automatic installation
+through registration, non-mutating preflight and operator-approved local account
 provisioning.
 
 Verified flow:
@@ -44,7 +44,7 @@ verified through an actual graphical login to Plasma.
 
 Host: `192.168.100.17`
 
-Service account: `altserver`
+Service account and group: `altserver:altserver`
 
 Responsibilities:
 
@@ -53,6 +53,7 @@ Responsibilities:
 - `workstationctl` CLI;
 - Ansible playbooks and roles;
 - Ansible Vault and non-secret Vault health checks;
+- controller permission audit and narrowly scoped repair;
 - provision jobs, logs, results and assignments;
 - constrained API in a future stage.
 
@@ -66,6 +67,7 @@ Important runtime paths:
 /home/altserver/ansible/
 /home/altserver/ansible/group_vars/vault.yml
 /home/altserver/.ansible-vault-pass
+/home/altserver/.ssh/known_hosts_autoinstall
 /var/lib/alt-deploy/jobs/
 /var/lib/alt-deploy/assignments/
 /srv/alt-deploy/registration/
@@ -88,7 +90,7 @@ alt-deploy-process.service
 
 Planned host: `192.168.100.30`.
 
-The web application must remain a thin operator UI. SSH private keys, Vault
+The web application remains a thin operator UI. SSH private keys, Vault
 material, direct Ansible execution and direct workstation SSH access remain on
 `192.168.100.17`.
 
@@ -112,6 +114,7 @@ deploy/alt-linux/control/workstationctl
 deploy/alt-linux/control/alt-provision-worker
 deploy/alt-linux/control/alt_deploy/
 deploy/alt-linux/control/alt_deploy/vault.py
+deploy/alt-linux/control/alt_deploy/controller_permissions.py
 deploy/alt-linux/ansible/playbooks/01-preflight.yml
 deploy/alt-linux/ansible/playbooks/02-provision-account.yml
 deploy/alt-linux/ansible/roles/preflight/
@@ -129,11 +132,12 @@ The installer:
 3. installs the controller package, CLI and worker;
 4. copies playbooks and roles without overwriting unrelated Ansible files;
 5. does not copy or mutate the active Vault or Vault password file;
-6. runs the ALT-specific test suite;
-7. syntax-checks both playbooks;
-8. restarts the pending-registration path unit only after verification succeeds.
+6. prepares the private controller job and assignment directories;
+7. runs the ALT-specific test suite;
+8. syntax-checks both playbooks;
+9. restarts the pending-registration path unit only after verification succeeds.
 
-Required command preflight currently covers:
+Required command preflight covers:
 
 ```text
 python3
@@ -156,6 +160,8 @@ workstationctl --json machines list
 workstationctl --json machines show <uuid>
 workstationctl --json preflight <uuid>
 workstationctl --json vault check
+workstationctl --json controller permissions
+workstationctl --json controller permissions repair
 workstationctl --json provision preview <uuid> --vars-file <file>
 workstationctl --json provision start <uuid> --vars-file <file>
 workstationctl --json jobs status <job_id>
@@ -164,11 +170,13 @@ workstationctl --json jobs log <job_id>
 
 Execution boundary:
 
-- list, show, preflight, Vault check, preview and job reads run as `altserver`;
+- machine reads, preflight, Vault check, controller permission audit, preview and
+  job reads run as `altserver`;
+- controller permission repair requires root;
 - `provision start` requires root because it creates and launches the transient
   systemd job;
-- the transient worker runs with the constrained controller runtime and writes
-  private job state.
+- the transient worker writes private job state;
+- neither Vault nor permission commands return secret file contents.
 
 Provision request fields:
 
@@ -182,7 +190,7 @@ Provision request fields:
 }
 ```
 
-The request must never contain a password or password hash.
+The request never contains a password or password hash.
 
 ## 5. Current validation rules
 
@@ -194,7 +202,7 @@ Allowed:
 - digits;
 - `_` and `-`;
 - maximum length enforced by the implementation;
-- must start and end with a letter or digit.
+- starts and ends with a letter or digit.
 
 Not allowed:
 
@@ -209,7 +217,7 @@ primary group such as `test.user`.
 ### Hostname
 
 Allowed characters are lowercase ASCII letters, digits and `-`. The hostname
-must start and end with a letter or digit.
+starts and ends with a letter or digit.
 
 ### Profile
 
@@ -341,7 +349,7 @@ The command checks:
 
 - Vault file existence;
 - Vault password file existence;
-- ownership by the executing service account;
+- ownership by the service account;
 - mode `0600` for both files;
 - the Ansible Vault header;
 - successful `ansible-vault view` decryption;
@@ -352,7 +360,53 @@ A healthy response contains only boolean checks. An unhealthy response uses
 `error.code=vault_unhealthy` with boolean diagnostics and exit code `7`.
 Neither response contains decrypted YAML, the hash or the Vault password.
 
-## 10. Verified reference run
+## 10. Controller state permission contract
+
+Expected owner, group, mode and object type:
+
+| Path | Owner | Group | Mode | Type |
+| --- | --- | --- | --- | --- |
+| `/var/lib/alt-deploy` | `altserver` | `altserver` | `0700` | directory |
+| `/var/lib/alt-deploy/jobs` | `altserver` | `altserver` | `0700` | directory |
+| `/var/lib/alt-deploy/assignments` | `altserver` | `altserver` | `0700` | directory |
+| `/srv/alt-deploy/registration` | `altserver` | `altserver` | `0700` | directory |
+| `/home/altserver/.ssh` | `altserver` | `altserver` | `0700` | directory |
+| `/home/altserver/ansible/group_vars/vault.yml` | `altserver` | `altserver` | `0600` | regular file |
+| `/home/altserver/.ansible-vault-pass` | `altserver` | `altserver` | `0600` | regular file |
+
+Read-only audit:
+
+```bash
+sudo -u altserver workstationctl --json controller permissions
+```
+
+The audit uses `lstat`, rejects symbolic links and reports boolean checks for
+existence, owner, group, mode and type. An unhealthy state returns
+`error.code=controller_permissions_unhealthy` and exit code `8`.
+
+Root-only repair:
+
+```bash
+sudo workstationctl --json controller permissions repair
+```
+
+Repair safety properties:
+
+- validates all seven paths before any mutation;
+- blocks on a missing path, symbolic link or unexpected object type;
+- never creates missing Vault or password files;
+- opens each validated object with `O_NOFOLLOW` and, for directories,
+  `O_DIRECTORY`;
+- applies only `fchown` and `fchmod` to opened descriptors;
+- returns symbolic path keys in `changed`, never secret contents;
+- returns `controller_permissions_repair_blocked` for unsafe preconditions;
+- returns `controller_permissions_repair_failed` for an operating-system error.
+
+Repair operations are sequential. If an operating-system error occurs after an
+earlier path was fixed, run the read-only audit to inspect the resulting state
+before retrying.
+
+## 11. Verified reference run
 
 Reference target:
 
@@ -384,34 +438,38 @@ Verified result:
 - graphical LightDM login as the employee successfully opened Plasma;
 - `ansible` was hidden and normal accounts remained available.
 
-## 11. Current test and verification baseline
+The assigned reference UUID must not be provisioned again. Release and
+reassignment require a dedicated workflow.
 
-The ALT-specific suite has been expanded beyond the original `80 passed`
-baseline with documentation, installer dependency, Vault-preservation and Vault
-health regression coverage.
+## 12. Test and verification baseline
 
-The latest compact controller verification after the Phase 1.3 implementation
-reported:
+Use the latest successful full command output as the exact test-count baseline;
+do not rely on an old hard-coded count in documentation.
+
+Required verification after a behavior slice:
 
 ```text
-vault check tests               PASS
-all ALT tests                   PASS
-Python compile                  PASS
-installer syntax                PASS
-preflight playbook              PASS
-provision playbook              PASS
-git diff check                  PASS
-clean worktree                  PASS
+all tests in tests/alt_linux
+Python compilation of controller modules
+Bash syntax of install-control-plane.sh
+Ansible syntax of 01-preflight.yml
+Ansible syntax of 02-provision-account.yml
+git diff --check
+clean worktree
 ```
 
-Use the next local run to record the exact updated pytest count after the latest
-negative Vault regression and documentation synchronization.
+Phase 1.4 target tests confirmed all four controller-permission scenarios:
+
+- healthy read-only audit;
+- root-only repair of known owner/group/mode deviations;
+- non-root rejection without mutation;
+- complete pre-mutation block for missing paths or symbolic links.
 
 The full repository suite contains unrelated OpenVPN tests that require
 `/etc/openvpn/vpnctl.env`. For ALT provisioning work, use `tests/alt_linux`
 unless that environment is intentionally prepared.
 
-## 12. Machine state model
+## 13. Machine state model
 
 The displayed machine status is derived from registration data, latest
 preflight, active job and assignment.
@@ -430,20 +488,20 @@ When a successful assignment exists, `MachineRepository` derives
 preview checks assignment existence before readiness and returns
 `machine_already_assigned`.
 
-## 13. Historical documentation differences
+## 14. Historical documentation differences
 
 Do not copy these obsolete historical assumptions into new code:
 
 - SDDM: the verified implementation uses LightDM and AccountsService;
 - dotted employee logins: dots are rejected;
-- examples such as `i.ivanov` must use `i-ivanov` or `i_ivanov`;
+- examples such as `i.ivanov` use `i-ivanov` or `i_ivanov`;
 - the final displayed success state is `assigned`;
 - Vault loading remains explicit in the provision playbook;
 - automated SSH continues to set `ProxyCommand=none`;
 - `provision start` remains root-only;
 - sudo denial verification uses `LC_ALL=C` and the real ALT denial text.
 
-## 14. Safe verification commands
+## 15. Safe verification commands
 
 Controller checks:
 
@@ -480,12 +538,18 @@ Read controller state without changing a workstation:
 sudo -u altserver workstationctl --json machines list
 sudo -u altserver workstationctl --json machines show <uuid>
 sudo -u altserver workstationctl --json vault check
+sudo -u altserver workstationctl --json controller permissions
 ```
 
-Do not rerun `provision start` for an already assigned machine. Implement and
-use an explicit release/reassignment workflow in a later stage.
+Repair known controller permission deviations only after reviewing the audit:
 
-## 15. Continuation document
+```bash
+sudo workstationctl --json controller permissions repair
+```
+
+Do not rerun `provision start` for an already assigned machine.
+
+## 16. Continuation document
 
 The ordered remaining work, acceptance checks, hardening tasks and future roles
 are maintained in:
