@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - "netctl/**"
-      - "tests/test_netctl_context.py"
+      - "tests/**"
       - "requirements.txt"
       - ".github/workflows/verify-netctl-context.yml"
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  verify-context:
+  context-stage:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
@@ -29,11 +29,30 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt
 
       - name: Run context-stage tests
         run: python -m pytest -q tests/test_netctl_context.py
 
+  full-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt
+
       - name: Run full regression suite
-        run: python -m pytest -q
+        run: python -m pytest -q --maxfail=20
