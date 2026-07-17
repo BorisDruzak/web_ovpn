@@ -53,6 +53,11 @@ RUNTIME_TABLES = (
     "network_events",
 )
 
+REPRESENTATIVE_RUNTIME_TABLES = (
+    "network_hosts",
+    "host_observations",
+)
+
 
 def raw_document(document: dict[str, object]) -> bytes:
     return json.dumps(document, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -78,6 +83,64 @@ def runtime_counts(conn: sqlite3.Connection) -> dict[str, int]:
         table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
         for table in RUNTIME_TABLES
     }
+
+
+def representative_runtime_rows(conn: sqlite3.Connection) -> dict[str, list[tuple[object, ...]]]:
+    return {
+        table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY id")]
+        for table in REPRESENTATIVE_RUNTIME_TABLES
+    }
+
+
+def seed_representative_runtime_rows(conn: sqlite3.Connection) -> None:
+    host = conn.execute(
+        """
+        INSERT INTO network_hosts
+            (ip, mac, hostname, display_name, category, device_key, device_type,
+             device_confidence, device_evidence_json, status, site, first_seen_at,
+             last_seen_at, last_source, tags_json, comment)
+        VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "192.0.2.10",
+            "00:11:22:33:44:55",
+            "observed-router",
+            "Observed Router",
+            "network",
+            "router-192-0-2-10",
+            "router",
+            87,
+            '{"source":"test"}',
+            "up",
+            "central",
+            "2026-07-17T00:00:00Z",
+            "2026-07-17T00:01:00Z",
+            "test-source",
+            '["managed","observed"]',
+            "seeded runtime row",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO host_observations
+            (host_id, source_id, observed_at, observation_type, ip, mac, hostname,
+             interface, data_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            host.lastrowid,
+            None,
+            "2026-07-17T00:02:00Z",
+            "arp",
+            "192.0.2.10",
+            "00:11:22:33:44:55",
+            "observed-router",
+            "ether1",
+            '{"vlan":10,"source":"test"}',
+        ),
+    )
+    conn.commit()
 
 
 def intent_count(conn: sqlite3.Connection) -> int:
@@ -539,10 +602,12 @@ def test_semantic_validation_error_preserves_prior_head_and_active_snapshot(tmp_
     document["links"][0]["relation"] = "UNKNOWN"
     source_path = tmp_path / "network-context.yaml"
     try:
+        seed_representative_runtime_rows(conn)
         first = import_context(conn, original, raw_document(original), source_path, "first-git-sha")
         before_head = dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone())
         before_intent_rows = intent_rows_by_table(conn)
         before_runtime = runtime_counts(conn)
+        before_runtime_rows = representative_runtime_rows(conn)
 
         result = import_context(
             conn,
@@ -567,6 +632,7 @@ def test_semantic_validation_error_preserves_prior_head_and_active_snapshot(tmp_
         assert dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone()) == before_head
         assert intent_rows_by_table(conn) == before_intent_rows
         assert runtime_counts(conn) == before_runtime
+        assert representative_runtime_rows(conn) == before_runtime_rows
     finally:
         conn.close()
 
@@ -581,10 +647,12 @@ def test_second_entity_table_failure_rolls_back_candidate_and_preserves_prior_he
     broken["locations"] = [{"id": "candidate-location"}]
     source_path = tmp_path / "network-context.yaml"
     try:
+        seed_representative_runtime_rows(conn)
         first = import_context(conn, original, raw_document(original), source_path, "first-git-sha")
         before_head = dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone())
         before_intent_rows = intent_rows_by_table(conn)
         before_runtime = runtime_counts(conn)
+        before_runtime_rows = representative_runtime_rows(conn)
         conn.execute(
             """
             CREATE TRIGGER fail_candidate_location
@@ -599,12 +667,16 @@ def test_second_entity_table_failure_rolls_back_candidate_and_preserves_prior_he
 
         result = import_context(conn, broken, raw_document(broken), source_path, "broken-git-sha")
 
+        conn.close()
+        conn = connect_import_db(tmp_path)
+
         assert result["result"] == "db_error"
         assert result["run"]["status"] == "db_error"
         assert result["head"] == before_head
         assert dict(conn.execute("SELECT * FROM context_heads WHERE context_id = 'test-network'").fetchone()) == before_head
         assert intent_rows_by_table(conn) == before_intent_rows
         assert runtime_counts(conn) == before_runtime
+        assert representative_runtime_rows(conn) == before_runtime_rows
         assert all(
             conn.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE context_revision_id = ?",
@@ -619,7 +691,7 @@ def test_second_entity_table_failure_rolls_back_candidate_and_preserves_prior_he
         assert persisted_run["status"] == "db_error"
         assert persisted_run["finished_at"] is not None
         assert persisted_run["base_context_revision_id"] == first["context"]["id"]
-        persisted_errors = json.loads(result["run"]["errors_json"])
+        persisted_errors = json.loads(persisted_run["errors_json"])
         assert persisted_errors == [
             {"path": "database", "message": "forced materialisation failure"}
         ]
