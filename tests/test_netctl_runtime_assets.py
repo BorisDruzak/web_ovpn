@@ -1749,3 +1749,93 @@ def test_migration_2_rollback_after_partial_copy_and_reopen_is_idempotent(
         repeated_open.close()
 
     assert legacy_rows() == legacy_before
+
+
+def test_read_helpers_return_deterministic_runtime_asset_data(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+    from netctl.runtime_assets import (
+        get_runtime_asset_by_key,
+        list_asset_interfaces,
+        list_current_hostname_observations,
+        list_current_ip_observations,
+    )
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {"id": 181, "ip": "10.0.0.181", "mac": "00:11:22:33:44:D1", "hostname": "runtime-z", "display_name": "Runtime asset", "site": "main", "first_seen_at": "2026-07-16T10:00:00Z", "last_seen_at": "2026-07-17T10:00:00Z"},
+            {"id": 182, "ip": "10.0.0.182", "mac": "00:11:22:33:44:D1", "hostname": "runtime-a", "display_name": "Runtime asset", "site": "main", "first_seen_at": "2026-07-16T11:00:00Z", "last_seen_at": "2026-07-17T11:00:00Z"},
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        asset = get_runtime_asset_by_key(conn, "mac:00:11:22:33:44:D1")
+        assert asset is not None
+        assert asset["asset_key"] == "mac:00:11:22:33:44:D1"
+        assert asset["id"] > 0
+        assert get_runtime_asset_by_key(conn, "missing") is None
+
+        asset_id = asset["id"]
+        conn.execute(
+            """
+            INSERT INTO asset_interfaces (
+                asset_id, interface_key, mac, interface_type, interface_name,
+                first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (asset_id, "mac:00:11:22:33:44:D1:wan", "00:11:22:33:44:D2", "ethernet", "wan", "2026-07-16T09:00:00Z", "2026-07-17T09:00:00Z"),
+        )
+        conn.execute(
+            """
+            INSERT INTO ip_observations (
+                asset_id, source_key, ip, first_seen_at, last_seen_at,
+                is_current, observation_source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (asset_id, "manual:old", "10.0.0.180", "2026-07-16T08:00:00Z", "2026-07-17T08:00:00Z", 0, "manual"),
+        )
+        conn.execute(
+            """
+            INSERT INTO hostname_observations (
+                asset_id, hostname, source_key, source_type, first_seen_at,
+                last_seen_at, is_current
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (asset_id, "runtime-old", "manual:old", "manual", "2026-07-16T08:00:00Z", "2026-07-17T08:00:00Z", 0),
+        )
+        conn.commit()
+
+        assert [row["interface_key"] for row in list_asset_interfaces(conn, asset_id)] == ["mac:00:11:22:33:44:D1", "mac:00:11:22:33:44:D1:wan"]
+        assert [row["ip"] for row in list_current_ip_observations(conn, asset_id)] == ["10.0.0.182", "10.0.0.181"]
+        assert [row["hostname"] for row in list_current_hostname_observations(conn, asset_id)] == ["runtime-a", "runtime-z"]
+    finally:
+        conn.close()
+
+
+def test_read_helper_runtime_identity_report_decodes_arrays_and_does_not_write(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+    from netctl.runtime_assets import get_runtime_asset_by_key, runtime_identity_report
+
+    _seed_legacy_hosts(pr_1b_database, [{"id": 191, "ip": "10.0.0.191", "mac": "00:11:22:33:44:E1", "hostname": "report-host", "first_seen_at": "2026-07-16T10:00:00Z", "last_seen_at": "2026-07-17T10:00:00Z"}])
+
+    conn = connect(pr_1b_database)
+    try:
+        before = conn.total_changes
+        report = runtime_identity_report(conn)
+        assert report is not None
+        assert report["migration_version"] == 2
+        assert report["unresolved_legacy_host_ids"] == []
+        assert report["unresolved_observation_ids"] == []
+        assert report["unresolved_tag_records"] == []
+        assert report["aggregation_conflicts"] == []
+        assert conn.total_changes == before
+
+        assert get_runtime_asset_by_key(conn, "mac:00:11:22:33:44:E1") is not None
+        assert conn.execute("SELECT COUNT(*) FROM asset_intent_bindings").fetchone()[0] == 0
+    finally:
+        conn.close()
