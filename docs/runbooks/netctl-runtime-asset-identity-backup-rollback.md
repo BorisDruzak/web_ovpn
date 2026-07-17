@@ -20,10 +20,12 @@ backup is taken. The `.backup` command is required: do not copy the live
 database file with `cp` while WAL mode is in use.
 
 ```bash
+set -euo pipefail
+
 sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service
-sudo systemctl is-active --quiet openvpn-web.service && exit 1 || true
-sudo systemctl is-active --quiet netctl-collect.timer && exit 1 || true
-sudo systemctl is-active --quiet netctl-collect.service && exit 1 || true
+if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service is still active' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer is still active' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is still active' >&2; exit 1; fi
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 backup_dir="/var/backups/netctl/runtime-asset-identity-$stamp"
@@ -53,6 +55,8 @@ completes, and the wrapper is executable. Capture the pre-migration ledger and
 the legacy-table baseline from the backup, rather than from the live path:
 
 ```bash
+set -euo pipefail
+
 sudo sqlite3 -header -column "$db_backup" \
   'SELECT version, applied_at FROM schema_migrations ORDER BY version;' | sudo tee "$pre_migrations" >/dev/null
 
@@ -95,28 +99,43 @@ schema.
 
 ## 2. Deploy without allowing collection
 
-Use the documented source-package and installation procedure in
-[`docs/DEPLOYMENT.md`](../DEPLOYMENT.md). Before executing its installer,
-temporarily mask the collector service. The standard installer enables the
-timer; the mask prevents a timer-triggered collection from changing the legacy
-baseline before migration verification is complete.
+Use the documented source-package procedure in
+[`docs/DEPLOYMENT.md`](../DEPLOYMENT.md) to stage the approved release, but do
+not use a deployment procedure that starts or unmasks services. Before the
+application tree or wrapper is replaced, mask and stop the web service,
+collector timer, and collector service. They remain masked until every check in
+section 3 passes. This prevents both an HTTP request and a timer-triggered
+collection from opening or changing the database during deployment.
 
 ```bash
-sudo systemctl mask --runtime netctl-collect.service
-sudo systemctl is-enabled netctl-collect.service
+set -euo pipefail
+
+sudo systemctl mask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
+sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service || true
+if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service is still active' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer is still active' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is still active' >&2; exit 1; fi
 ```
 
 Stage the already-reviewed release archive and run the documented installer
-using the operator's approved secret-entry method. Do not place a credential in
-this runbook or in a pasted command. Immediately stop the web service that the
-installer starts; leave the collector service masked.
+only if it has an approved **no-start/no-unmask** mode. Do not place a
+credential in this runbook or in a pasted command. The currently documented
+`deploy/install-openvpn-web.sh` starts `openvpn-web.service` and enables the
+timer, so it must not be run while the three units above are masked; use the
+approved service-neutral release procedure instead. If none is available,
+abort this deployment rather than unmasking or starting a unit before
+verification.
 
 ```bash
-# Follow docs/DEPLOYMENT.md to unpack the approved release in /tmp/openvpn-web-src
-# and invoke deploy/install-openvpn-web.sh using the approved interactive secret method.
-sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service || true
-sudo systemctl is-active --quiet openvpn-web.service && exit 1 || true
-sudo systemctl is-active --quiet netctl-collect.timer && exit 1 || true
+set -euo pipefail
+
+# Stage according to docs/DEPLOYMENT.md, then run only the approved service-neutral
+# release procedure. It must replace /opt/openvpn-web and /usr/local/sbin/netctl
+# without calling systemctl start, restart, enable, or unmask.
+# Verify the units remain stopped and masked before opening the upgraded database.
+if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service started during deployment' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer started during deployment' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service started during deployment' >&2; exit 1; fi
 ```
 
 Trigger migration `2` once, explicitly and as the collector user. This command
@@ -124,6 +143,8 @@ opens the deployed database through the deployed wrapper; it is read-only with
 respect to network devices and does not collect from any source.
 
 ```bash
+set -euo pipefail
+
 sudo -u netctl /usr/local/sbin/netctl --json dashboard
 ```
 
@@ -136,6 +157,8 @@ All checks below must pass before starting either service. Save their output in
 the same backup directory for the deployment record.
 
 ```bash
+set -euo pipefail
+
 # Use the exact directory printed in the deployment record from section 1.
 manifest='/var/backups/netctl/runtime-asset-identity-REPLACE_WITH_STAMP/rollback.paths'
 backup_dir="$(dirname "$manifest")"
@@ -144,7 +167,8 @@ test -n "$db_path"
 
 sudo sqlite3 -header -column "$db_path" \
   'SELECT version, applied_at FROM schema_migrations ORDER BY version;' | sudo tee "$backup_dir/schema-migrations-after.txt" >/dev/null
-sudo sqlite3 "$db_path" "SELECT CASE WHEN EXISTS (SELECT 1 FROM schema_migrations WHERE version = 2) THEN 'migration_2_present' ELSE 'migration_2_missing' END;"
+version_2_count="$(sudo sqlite3 "$db_path" 'SELECT COUNT(*) FROM schema_migrations WHERE version = 2;')"
+test "$version_2_count" = 1
 
 sudo sqlite3 -header -column "$db_path" <<'SQL' | sudo tee "$backup_dir/legacy-counts-after.txt" >/dev/null
 SELECT 'network_sources' AS table_name, COUNT(*) AS row_count FROM network_sources
@@ -167,12 +191,15 @@ SQL
 sudo diff -u "$backup_dir/legacy-counts-before.txt" "$backup_dir/legacy-counts-after.txt"
 ```
 
-The post-deployment ledger must contain version `2` exactly once, and the
+The post-deployment ledger must contain version `2` exactly once (the command
+asserts `COUNT(*) = 1`), and the
 legacy count diff must be empty. Inspect the migration report: mapped legacy
-hosts must equal legacy hosts, and all three unresolved/conflict JSON fields
+hosts must equal legacy hosts, and all four unresolved/conflict JSON fields
 must be `[]`. Treat any other value as a failed verification and roll back.
 
 ```bash
+set -euo pipefail
+
 sudo sqlite3 -header -column "$db_path" <<'SQL' | sudo tee "$backup_dir/migration-report.txt" >/dev/null
 SELECT migration_version, completed_at, legacy_host_count,
        mapped_legacy_host_count, mac_asset_count, provisional_asset_count,
@@ -183,6 +210,21 @@ SELECT migration_version, completed_at, legacy_host_count,
 FROM runtime_asset_migration_reports
 WHERE migration_version = 2;
 SQL
+
+report_assertion="$(sudo sqlite3 "$db_path" <<'SQL'
+SELECT CASE WHEN COUNT(*) = 1
+              AND MIN(legacy_host_count) = MIN(mapped_legacy_host_count)
+              AND MIN(unresolved_legacy_host_ids_json) = '[]'
+              AND MIN(unresolved_observation_ids_json) = '[]'
+              AND MIN(unresolved_tag_records_json) = '[]'
+              AND MIN(aggregation_conflicts_json) = '[]'
+            THEN 'runtime_asset_migration_report_ok'
+            ELSE 'runtime_asset_migration_report_invalid' END
+FROM runtime_asset_migration_reports
+WHERE migration_version = 2;
+SQL
+)"
+test "$report_assertion" = 'runtime_asset_migration_report_ok'
 
 sudo sqlite3 -header -column "$db_path" <<'SQL' | sudo tee "$backup_dir/ip-indexes.txt" >/dev/null
 WITH indexes AS (
@@ -217,6 +259,8 @@ Verify connection settings through the deployed application's `connect()`
 function, because `foreign_keys` and `busy_timeout` are connection-local:
 
 ```bash
+set -euo pipefail
+
 sudo -u netctl env PYTHONPATH=/opt/openvpn-web /opt/openvpn-web/.venv/bin/python - <<'PY' | sudo tee "$backup_dir/runtime-pragmas.txt" >/dev/null
 from netctl.db import connect
 
@@ -237,6 +281,8 @@ read the database; do not substitute `collect` or `sources test` in this
 verification stage.
 
 ```bash
+set -euo pipefail
+
 for command in \
   'sources list' \
   'dashboard' \
@@ -255,9 +301,13 @@ done
 After every command succeeds, make the release live:
 
 ```bash
-sudo systemctl unmask --runtime netctl-collect.service
+set -euo pipefail
+
+sudo systemctl unmask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo systemctl start openvpn-web.service netctl-collect.timer
-sudo systemctl is-active openvpn-web.service netctl-collect.timer
+sudo systemctl is-active --quiet openvpn-web.service
+sudo systemctl is-active --quiet netctl-collect.timer
+if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is unexpectedly active' >&2; exit 1; fi
 ```
 
 Keep the complete backup directory until the agreed retention period has
@@ -273,6 +323,8 @@ the **old application tree and old wrapper before restoring the old database**;
 the old database must never be started beneath the new code.
 
 ```bash
+set -euo pipefail
+
 manifest='/var/backups/netctl/runtime-asset-identity-REPLACE_WITH_STAMP/rollback.paths'
 db_path="$(sudo sed -n 's/^db_path=//p' "$manifest")"
 app_path="$(sudo sed -n 's/^app_path=//p' "$manifest")"
@@ -286,17 +338,24 @@ sudo test -f "$app_backup"
 sudo test -x "$wrapper_backup"
 sudo sha256sum -c "$(dirname "$manifest")/SHA256SUMS"
 
+sudo systemctl mask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service || true
-sudo systemctl mask --runtime netctl-collect.service
+if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service is still active' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer is still active' >&2; exit 1; fi
+if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is still active' >&2; exit 1; fi
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 failed_app="${app_path}.failed-runtime-asset-identity-$stamp"
 failed_db="${db_path}.failed-runtime-asset-identity-$stamp"
+failed_wal="${db_path}-wal.failed-runtime-asset-identity-$stamp"
+failed_shm="${db_path}-shm.failed-runtime-asset-identity-$stamp"
 
 sudo mv "$app_path" "$failed_app"
 sudo tar -C "$(dirname "$app_path")" -xzf "$app_backup"
 sudo install -m 0755 "$wrapper_backup" "$wrapper_path"
 
 sudo mv "$db_path" "$failed_db"
+if sudo test -e "${db_path}-wal"; then sudo mv "${db_path}-wal" "$failed_wal"; fi
+if sudo test -e "${db_path}-shm"; then sudo mv "${db_path}-shm" "$failed_shm"; fi
 sudo install -m 0640 -o netctl -g netctl "$db_backup" "$db_path"
 sudo sqlite3 "$db_path" 'PRAGMA integrity_check;'
 ```
@@ -306,13 +365,17 @@ tree and wrapper are now in place before any command opens the old database.
 Complete rollback verification and restore service operation:
 
 ```bash
+set -euo pipefail
+
 sudo -u netctl /usr/local/sbin/netctl --json dashboard
 sudo -u netctl /usr/local/sbin/netctl --json hosts list
-sudo systemctl unmask --runtime netctl-collect.service
+sudo systemctl unmask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
 sudo systemctl start openvpn-web.service netctl-collect.timer
-sudo systemctl is-active openvpn-web.service netctl-collect.timer
+sudo systemctl is-active --quiet openvpn-web.service
+sudo systemctl is-active --quiet netctl-collect.timer
+if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is unexpectedly active' >&2; exit 1; fi
 ```
 
-Record `failed_app`, `failed_db`, and the failed verification output with the
-rollback. Do not delete those diagnostic artifacts until the failure has been
-investigated.
+Record `failed_app`, `failed_db`, `failed_wal`, `failed_shm`, and the failed
+verification output with the rollback. Do not delete those diagnostic artifacts
+until the failure has been investigated.
