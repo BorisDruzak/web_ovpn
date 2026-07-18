@@ -267,6 +267,10 @@ class JobRepository:
         status_payload["updated_at"] = utc_now()
 
         assert_safe_payload(status_payload)
+        validate_job_stage_status(
+            status_payload,
+            job_id=job.job_id,
+        )
 
         atomic_write_json(
             job.job_dir / "status.json",
