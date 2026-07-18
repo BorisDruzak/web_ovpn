@@ -285,3 +285,73 @@ def test_reconcile_rejects_result_before_recording(
         for item in unchanged.status["stage_history"]
     ][-1] == "verifying"
     assert assignments.get(running.machine_uuid) is None
+
+
+def test_reconcile_recovers_recording_result_through_stage_manager(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    jobs = JobRepository(settings)
+    assignments = AssignmentRepository(settings)
+    created = jobs.create(provision_request())
+    unit_name = f"alt-provision-{created.job_id}.service"
+    advance_to_employee(settings, created.job_id, unit_name)
+
+    manager = JobStageManager(settings)
+    for stage in (
+        "login_screen",
+        "verifying",
+        "recording",
+    ):
+        manager.advance(created.job_id, stage)
+
+    running = jobs.get(created.job_id)
+    result_payload = successful_result(running.job_id)
+    result_path = running.job_dir / "result.json"
+    atomic_write_json(result_path, result_payload)
+
+    def fake_systemctl(
+        command,
+        *,
+        shell,
+        text,
+        capture_output,
+        timeout,
+        check,
+    ):
+        assert shell is False
+        assert text is True
+        assert capture_output is True
+        assert timeout == 15
+        assert check is False
+        return missing_unit_result(command, unit_name)
+
+    monkeypatch.setattr(
+        "alt_deploy.job_reconcile.subprocess.run",
+        fake_systemctl,
+    )
+
+    reconciliation = JobReconciler(settings).reconcile()
+
+    assert reconciliation["changed"] == [
+        {
+            "job_id": running.job_id,
+            "previous_state": "running",
+            "state": "successful",
+            "action": "result_recovered",
+        }
+    ]
+
+    recovered = jobs.get(running.job_id)
+    assert recovered.state == "successful"
+    assert recovered.stage == "complete"
+    assert [
+        item["stage"]
+        for item in recovered.status["stage_history"]
+    ][-2:] == ["recording", "complete"]
+    assert recovered.status["finished_at"] == (
+        result_payload["completed_at"]
+    )
+    assert recovered.status["result_file"] == str(result_path)
+    assert assignments.get(running.machine_uuid) == result_payload
