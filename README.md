@@ -93,6 +93,8 @@ Network Observer adds a second read-only backend:
 
 Before deploying the context-import migration, follow the
 [netctl context-import backup and rollback runbook](docs/runbooks/netctl-context-import-backup-rollback.md).
+Before deploying the runtime asset identity migration, follow the
+[runtime asset identity backup and rollback runbook](docs/runbooks/netctl-runtime-asset-identity-backup-rollback.md).
 
 ```bash
 sudo /usr/local/sbin/netctl --json sources list
