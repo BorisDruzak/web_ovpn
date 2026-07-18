@@ -124,7 +124,7 @@ else
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl start vpn-policy.service
+sudo systemctl restart vpn-policy.service
 if [[ "$restore_reconciler" == "1" ]]; then
   sudo systemctl enable --now vpn-policy-reconcile.timer
 fi
@@ -135,6 +135,12 @@ if [[ "$restore_reconciler" == "1" ]]; then
 fi
 sudo /usr/local/sbin/vpnctl --json runtime-health --strict
 ```
+
+`vpn-policy.service` uses `RemainAfterExit=yes`, so rollback uses `restart`,
+not `start`, to apply the restored unit and script even when the service is
+already active. This executes only that service's `ExecStop`/`ExecStart` policy
+operations under the shared `flock`; it does not issue a restart for
+`wg-quick@wg0.service` or OpenVPN.
 
 If only one of the two reconciler backup files is present, treat it as an
 incomplete pre-feature backup: leave the reconciler disabled and remove both
