@@ -289,7 +289,7 @@ def test_connect_enables_runtime_identity_pragmas(pr_1b_database: str) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3]
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4]
     finally:
         conn.close()
 
@@ -1760,9 +1760,12 @@ def test_migration_3_is_applied_once_and_reopen_is_idempotent(
 
     reopened = connect(pr_1b_database)
     try:
-        assert first_state["versions"] == [1, 2, 3]
+        assert first_state["versions"] == [1, 2, 3, 4]
         assert reopened.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = 3"
+        ).fetchone()[0] == 1
+        assert reopened.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 4"
         ).fetchone()[0] == 1
         assert reopened.execute(
             "SELECT COUNT(*) FROM runtime_identity_findings"
@@ -1775,6 +1778,157 @@ def test_migration_3_is_applied_once_and_reopen_is_idempotent(
         ] == first_state["ip_rows"]
     finally:
         reopened.close()
+
+
+def test_migration_4_acknowledges_only_legacy_identity_conflicts(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+    from netctl.migrations import _migration_4
+
+    conn = connect(pr_1b_database)
+    try:
+        rows = [
+            ("legacy-identity-conflict:1", "historical_identity_conflict", "open", '{"origin":"migration"}'),
+            ("ip-moved:1:192.0.2.10:1:2", "historical_identity_conflict", "open", '{"origin":"live"}'),
+            ("mac-site-collision:1:00:11:22:33:44:55", "mac_identity_collision", "open", "{}"),
+            ("unresolved-ip-only:1:192.0.2.11", "unresolved_ip_only_runtime", "open", "{}"),
+            ("legacy-identity-conflict:2", "historical_identity_conflict", "resolved", "{}"),
+        ]
+        conn.executemany(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status,
+                first_seen_at, last_seen_at, details_json
+            ) VALUES (?, ?, 'warning', ?, '2026-07-17T00:00:00Z', '2026-07-17T01:00:00Z', ?)
+            """,
+            rows,
+        )
+        before = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT finding_key, status, first_seen_at, last_seen_at, details_json "
+                "FROM runtime_identity_findings ORDER BY finding_key"
+            )
+        ]
+
+        _migration_4(conn)
+
+        after = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT finding_key, status, first_seen_at, last_seen_at, details_json "
+                "FROM runtime_identity_findings ORDER BY finding_key"
+            )
+        ]
+        expected = [
+            (key, "acknowledged" if key == "legacy-identity-conflict:1" else status, first_seen, last_seen, details)
+            for key, status, first_seen, last_seen, details in before
+        ]
+        assert after == expected
+    finally:
+        conn.close()
+
+
+def test_migration_4_is_applied_once_and_reopen_is_idempotent(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    seeded = connect(pr_1b_database)
+    try:
+        seeded.execute("DELETE FROM schema_migrations WHERE version = 4")
+        seeded.execute(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status,
+                first_seen_at, last_seen_at, details_json
+            ) VALUES (
+                'legacy-identity-conflict:1', 'historical_identity_conflict', 'warning', 'open',
+                '2026-07-17T00:00:00Z', '2026-07-17T01:00:00Z', '{}'
+            )
+            """
+        )
+        seeded.commit()
+    finally:
+        seeded.close()
+
+    first = connect(pr_1b_database)
+    first.close()
+    reopened = connect(pr_1b_database)
+    try:
+        assert [
+            row[0]
+            for row in reopened.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ] == [1, 2, 3, 4]
+        assert reopened.execute(
+            "SELECT status FROM runtime_identity_findings WHERE finding_key = 'legacy-identity-conflict:1'"
+        ).fetchone()[0] == "acknowledged"
+        assert reopened.execute(
+            "SELECT COUNT(*) FROM runtime_identity_findings WHERE finding_key = 'legacy-identity-conflict:1'"
+        ).fetchone()[0] == 1
+    finally:
+        reopened.close()
+
+
+def test_migration_4_failure_rolls_back_status_and_ledger(
+    pr_1b_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netctl import migrations
+    from netctl.db import connect
+
+    seeded = connect(pr_1b_database)
+    try:
+        seeded.execute("DELETE FROM schema_migrations WHERE version = 4")
+        seeded.execute(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status,
+                first_seen_at, last_seen_at, details_json
+            ) VALUES (
+                'legacy-identity-conflict:1', 'historical_identity_conflict', 'warning', 'open',
+                '2026-07-17T00:00:00Z', '2026-07-17T01:00:00Z', '{}'
+            )
+            """
+        )
+        seeded.commit()
+    finally:
+        seeded.close()
+
+    original_migration_4 = migrations._migration_4
+
+    def fail_after_migration_4(conn: sqlite3.Connection) -> None:
+        original_migration_4(conn)
+        raise RuntimeError("injected migration 4 failure")
+
+    with monkeypatch.context() as migration_patch:
+        migration_patch.setattr(
+            migrations,
+            "MIGRATIONS",
+            (
+                (1, migrations._migration_1),
+                (2, migrations._migration_2),
+                (3, migrations._migration_3),
+                (4, fail_after_migration_4),
+            ),
+        )
+        with pytest.raises(RuntimeError, match="injected migration 4 failure"):
+            connect(pr_1b_database)
+
+    db_path = Path(pr_1b_database.removeprefix("sqlite:///"))
+    rolled_back = sqlite3.connect(db_path)
+    try:
+        assert rolled_back.execute(
+            "SELECT status FROM runtime_identity_findings WHERE finding_key = 'legacy-identity-conflict:1'"
+        ).fetchone()[0] == "open"
+        assert rolled_back.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 4"
+        ).fetchone()[0] == 0
+    finally:
+        rolled_back.close()
 
 
 def test_migration_3_makes_migration_created_legacy_observations_historical(
@@ -2006,7 +2160,7 @@ def test_migration_3_legacy_identity_conflict_creates_finding(
             "legacy-identity-conflict:169",
             "historical_identity_conflict",
             "warning",
-            "open",
+            "acknowledged",
             host_asset_id,
             None,
         )
@@ -2167,7 +2321,7 @@ def test_migration_3_rollback_is_atomic_and_reopen_succeeds(
             for row in reopened.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == [1, 2, 3]
+        ] == [1, 2, 3, 4]
         assert reopened.execute(
             "SELECT is_current FROM ip_observations"
         ).fetchone()[0] == 0
@@ -2324,7 +2478,7 @@ def test_migration_2_rollback_after_partial_copy_and_reopen_is_idempotent(
     finally:
         first_success.close()
 
-    assert first_success_state["versions"] == [1, 2, 3]
+    assert first_success_state["versions"] == [1, 2, 3, 4]
     assert first_success_state["counts"] == {
         "asset_intent_bindings": 0,
         "asset_interfaces": 1,

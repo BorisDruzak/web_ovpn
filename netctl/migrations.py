@@ -1043,10 +1043,24 @@ def _backfill_legacy_identity_conflicts(
     return finding_count
 
 
+def _migration_4(conn: sqlite3.Connection) -> None:
+    """Acknowledge reviewed migration-3 provenance without deleting it."""
+    conn.execute(
+        """
+        UPDATE runtime_identity_findings
+        SET status = 'acknowledged'
+        WHERE status = 'open'
+          AND finding_type = 'historical_identity_conflict'
+          AND finding_key GLOB 'legacy-identity-conflict:*'
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
+    (4, _migration_4),
 )
 
 

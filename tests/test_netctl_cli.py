@@ -570,7 +570,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     assert rc == 0
     assert data["status"] == "ok"
     summary = data["runtime_identity"]
-    assert summary["schema_migration_versions"] == [1, 2, 3]
+    assert summary["schema_migration_versions"] == [1, 2, 3, 4]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1
     assert summary["counts"]["current_ip_observations"] >= 1
@@ -673,6 +673,58 @@ def test_runtime_assets_inspect_and_findings_commands_are_read_only(tmp_path, ca
         "message": "invalid finding status",
         "finding_status": "invalid",
     }
+
+
+def test_runtime_assets_findings_acknowledged_legacy_findings(tmp_path, capsys):
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    conn = connect(db_url)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status,
+                first_seen_at, last_seen_at, details_json
+            ) VALUES (?, ?, 'warning', ?, '2026-07-17T00:00:00Z', '2026-07-17T01:00:00Z', ?)
+            """,
+            [
+                ("legacy-identity-conflict:1", "historical_identity_conflict", "open", '{"origin":"migration"}'),
+                ("mac-site-collision:1:00:11:22:33:44:55", "mac_identity_collision", "open", "{}"),
+                ("unresolved-ip-only:1:192.0.2.11", "unresolved_ip_only_runtime", "open", "{}"),
+                ("legacy-identity-conflict:2", "historical_identity_conflict", "resolved", "{}"),
+            ],
+        )
+        conn.execute("DELETE FROM schema_migrations WHERE version = 4")
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = connect(db_url)
+    migrated.close()
+
+    code, payload = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "findings"],
+        capsys,
+    )
+    assert code == 0
+    assert {item["finding_type"] for item in payload["findings"]} == {
+        "mac_identity_collision", "unresolved_ip_only_runtime"
+    }
+
+    code, payload = run_cli(
+        [
+            "--json", "--config", str(config_path), "--db", db_url,
+            "runtime-assets", "findings", "--status", "acknowledged",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert [item["finding_key"] for item in payload["findings"]] == [
+        "legacy-identity-conflict:1"
+    ]
+    assert payload["findings"][0]["details"] == {"origin": "migration"}
 
 
 def test_runtime_assets_commands_do_not_modify_database_or_sync_sources(tmp_path, capsys):
