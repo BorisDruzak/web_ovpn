@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import stat
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,7 +146,7 @@ class JobRepository:
 
         timestamp = utc_now()
 
-        status: dict[str, object] = {
+        status_payload: dict[str, object] = {
             "job_id": job_id,
             "machine_uuid": machine_uuid,
             "state": "queued",
@@ -160,7 +161,7 @@ class JobRepository:
         )
         atomic_write_json(
             job_dir / "status.json",
-            status,
+            status_payload,
         )
 
         log_path = job_dir / "ansible.log"
@@ -190,7 +191,12 @@ class JobRepository:
         for job_dir in sorted(
             self.settings.jobs_dir.glob("job-*")
         ):
-            if not job_dir.is_dir():
+            try:
+                entry_stat = job_dir.lstat()
+            except OSError:
+                continue
+
+            if not stat.S_ISDIR(entry_stat.st_mode):
                 continue
 
             try:
@@ -215,24 +221,24 @@ class JobRepository:
         **fields: object,
     ) -> JobRecord:
         job = self.get(job_id)
-        status = dict(job.status)
+        status_payload = dict(job.status)
 
         fields.pop("job_id", None)
         fields.pop("machine_uuid", None)
         fields.pop("created_at", None)
 
-        status.update(fields)
+        status_payload.update(fields)
 
-        status["job_id"] = job.job_id
-        status["machine_uuid"] = job.machine_uuid
-        status["created_at"] = job.created_at
-        status["updated_at"] = utc_now()
+        status_payload["job_id"] = job.job_id
+        status_payload["machine_uuid"] = job.machine_uuid
+        status_payload["created_at"] = job.created_at
+        status_payload["updated_at"] = utc_now()
 
-        assert_safe_payload(status)
+        assert_safe_payload(status_payload)
 
         atomic_write_json(
             job.job_dir / "status.json",
-            status,
+            status_payload,
         )
 
         return self.get(job_id)
@@ -266,7 +272,6 @@ class JobRepository:
         with log_path.open("rb") as handle:
             if truncated:
                 handle.seek(-max_bytes, os.SEEK_END)
-
             raw = handle.read()
 
         return {
