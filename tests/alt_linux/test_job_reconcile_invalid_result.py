@@ -7,6 +7,7 @@ from pathlib import Path
 
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.cli import main
+from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
 from alt_deploy.jsonio import atomic_write_json
 
@@ -61,14 +62,30 @@ def _running_job(settings):
     jobs = JobRepository(settings)
     created = jobs.create(provision_request())
     unit_name = f"alt-provision-{created.job_id}.service"
-    running = jobs.update(
+    manager = JobStageManager(settings, repository=jobs)
+    manager.advance(
         created.job_id,
-        state="running",
-        stage="ansible",
-        started_at="2026-07-17T12:00:00+00:00",
-        systemd_unit=unit_name,
+        "launching",
+        updates={"systemd_unit": unit_name},
     )
-    return jobs, running, unit_name
+    manager.advance(
+        created.job_id,
+        "validating",
+        updates={
+            "state": "running",
+            "started_at": "2026-07-17T12:00:00+00:00",
+        },
+    )
+    for stage in (
+        "connecting",
+        "identity",
+        "employee",
+        "login_screen",
+        "verifying",
+        "recording",
+    ):
+        manager.advance(created.job_id, stage)
+    return jobs, jobs.get(created.job_id), unit_name
 
 
 def _assert_rejected_payload(payload, job_id: str) -> None:
@@ -100,10 +117,14 @@ def _assert_rejected_state(
 ) -> None:
     rejected = jobs.get(running.job_id)
     assert rejected.state == "failed"
-    assert rejected.stage == "reconcile"
+    assert rejected.stage == "recording"
     assert rejected.status["error_code"] == "invalid_provision_result"
     assert rejected.status["retryable"] is True
     assert rejected.status["finished_at"]
+    assert [
+        item["stage"]
+        for item in rejected.status["stage_history"]
+    ][-1] == "recording"
     assert assignments.get(running.machine_uuid) is None
     assert result_path.is_file()
 
