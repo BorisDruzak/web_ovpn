@@ -31,12 +31,13 @@
 **Files:**
 - Modify: \`netctl/migrations.py:1046-1050\`
 - Test: \`tests/test_netctl_runtime_assets.py:1722-1778, 2063-2148\`
+- Test: \`tests/test_netctl_cli.py\`
 
 **Interfaces:**
 - Consumes: \`MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...]\` and \`apply_migrations(conn)\`.
 - Produces: \`_migration_4(conn: sqlite3.Connection) -> None\` and migration ledger version \`4\`.
 
-- [ ] **Step 1: Write the failing exact-predicate migration test**
+- [ ] **Step 1: Write failing migration and CLI regression tests**
 
 Add a test that creates migration-3 finding rows with this fixture data, invokes \`_migration_4(conn)\`, and asserts the exact statuses and unchanged evidence:
 
@@ -52,15 +53,31 @@ rows = [
 
 Assert that only the first row becomes \`acknowledged\`; all other statuses, both JSON payloads, and the first row's timestamps are unchanged.
 
+Add a CLI test using the same migration-3 fixture that asserts the default
+command is an operational inbox after v4 is applied:
+
+\`\`\`python
+code, payload = run_cli("--json", "runtime-assets", "findings")
+assert code == 0
+assert {item["finding_type"] for item in payload["findings"]} == {
+    "mac_identity_collision", "unresolved_ip_only_runtime"
+}
+\`\`\`
+
+Also assert \`--status acknowledged\` returns the preserved
+\`legacy-identity-conflict:\` row and its \`details\` object.
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run:
 
 \`\`\`powershell
 python -m pytest tests/test_netctl_runtime_assets.py -k migration_4_acknowledges_only_legacy_identity_conflicts -v
+python -m pytest tests/test_netctl_cli.py -k acknowledged_legacy_findings -v
 \`\`\`
 
-Expected: FAIL because \`_migration_4\` is not defined.
+Expected: both commands FAIL because migration version 4 is not defined or the
+legacy finding has not been acknowledged.
 
 - [ ] **Step 3: Implement the minimal version-4 migration**
 
@@ -96,11 +113,16 @@ MIGRATIONS = (
 Add two tests:
 
 \`\`\`python
-def test_migration_4_is_applied_once_and_reopen_is_idempotent(...):
+def test_migration_4_is_applied_once_and_reopen_is_idempotent(
+    pr_1b_database: str,
+) -> None:
     # Seed a version-3 database with a legacy finding, call connect twice,
     # then assert ledger [1, 2, 3, 4], acknowledged status, and one row.
 
-def test_migration_4_failure_rolls_back_status_and_ledger(...):
+def test_migration_4_failure_rolls_back_status_and_ledger(
+    pr_1b_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Patch MIGRATIONS so version 4 acknowledges then raises RuntimeError.
     # Assert the database retains status='open' and no version-4 ledger row.
 \`\`\`
@@ -121,7 +143,7 @@ Expected: all selected tests PASS.
 - [ ] **Step 6: Commit the migration and tests**
 
 \`\`\`powershell
-git add netctl/migrations.py tests/test_netctl_runtime_assets.py
+git add netctl/migrations.py tests/test_netctl_runtime_assets.py tests/test_netctl_cli.py
 git commit -m "feat(netctl): acknowledge reviewed legacy identity findings"
 \`\`\`
 
@@ -130,37 +152,12 @@ git commit -m "feat(netctl): acknowledge reviewed legacy identity findings"
 **Files:**
 - Modify: \`docs/runbooks/netctl-runtime-live-observations-deploy.md:129-147\`
 - Modify: \`docs/verification/netctl-live-context-readiness.md:53-75\`
-- Test: \`tests/test_netctl_cli.py\`
 
 **Interfaces:**
 - Consumes: the existing read-only commands \`netctl --json runtime-assets status\` and \`netctl --json runtime-assets findings --status <lifecycle>\`.
 - Produces: a reproducible backup/rollback checklist and sanitized readiness evidence that distinguishes acknowledged provenance from open findings.
 
-- [ ] **Step 1: Write the failing CLI regression assertion**
-
-Add a CLI test using a migration-4 database that asserts the default command remains an operational inbox:
-
-\`\`\`python
-code, payload = run_cli("--json", "runtime-assets", "findings")
-assert code == 0
-assert {item["finding_type"] for item in payload["findings"]} == {
-    "mac_identity_collision", "unresolved_ip_only_runtime"
-}
-\`\`\`
-
-In the same test, assert \`--status acknowledged\` returns the preserved \`legacy-identity-conflict:\` row and its \`details\` object.
-
-- [ ] **Step 2: Run test to verify it fails before migration support is present**
-
-Run:
-
-\`\`\`powershell
-python -m pytest tests/test_netctl_cli.py -k acknowledged_legacy_findings -v
-\`\`\`
-
-Expected: FAIL until Task 1's migration is present and the fixture has applied it.
-
-- [ ] **Step 3: Update the deployment runbook**
+- [ ] **Step 1: Update the deployment runbook**
 
 Replace the manual-review-only wording with a migration-4 operation that:
 
@@ -175,7 +172,7 @@ sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status ac
 
 State explicitly that normal application startup applies ledgered migration 4, that acknowledged rows remain accessible, and that rollback restores the pre-v4 backup only while services are stopped and after operator approval.
 
-- [ ] **Step 4: Update sanitized readiness evidence**
+- [ ] **Step 2: Update sanitized readiness evidence**
 
 Change the findings table to record three distinct states:
 
@@ -187,7 +184,7 @@ Open IP-only findings                     | 1
 
 Explain that acknowledgement is a reviewed provenance classification, not automatic remediation or deletion. Do not include raw host, IP, MAC, credential, or database-row data.
 
-- [ ] **Step 5: Run documentation and CLI checks**
+- [ ] **Step 3: Run documentation and CLI checks**
 
 Run:
 
@@ -198,10 +195,10 @@ git diff --check
 
 Expected: all selected tests PASS and no whitespace errors.
 
-- [ ] **Step 6: Commit documentation and CLI regression**
+- [ ] **Step 4: Commit documentation**
 
 \`\`\`powershell
-git add docs/runbooks/netctl-runtime-live-observations-deploy.md docs/verification/netctl-live-context-readiness.md tests/test_netctl_cli.py
+git add docs/runbooks/netctl-runtime-live-observations-deploy.md docs/verification/netctl-live-context-readiness.md
 git commit -m "docs(netctl): record historical findings acknowledgement"
 \`\`\`
 
@@ -280,4 +277,3 @@ systemctl is-active netctl-collect.timer
 \`\`\`
 
 Expected: migration ledger includes \`4\`; 46,271 legacy rows are acknowledged and queryable; MAC collisions and the IP-only finding remain open; services are active. If any invariant fails, stop the application change and restore the exact pre-v4 SQLite backup using the runbook rather than editing findings with ad-hoc SQL.
-
