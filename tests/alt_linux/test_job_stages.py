@@ -270,3 +270,27 @@ def test_malformed_real_job_is_not_hidden_by_get_or_list(
         repository.list()
 
     assert exc.value.code == "job_stage_history_invalid"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"stage": "launching"},
+        {"stage_history": []},
+    ],
+)
+def test_repository_update_rejects_direct_stage_fields(
+    tmp_path: Path,
+    fields: dict[str, object],
+) -> None:
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    status_path = job.job_dir / "status.json"
+    before = status_path.read_bytes()
+
+    with pytest.raises(ControlError) as exc:
+        repository.update(job.job_id, **fields)
+
+    assert exc.value.code == "job_stage_update_forbidden"
+    assert status_path.read_bytes() == before
