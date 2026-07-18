@@ -840,9 +840,213 @@ def _legacy_evidence(hosts: list[dict[str, Any]]) -> str:
     return json.dumps(sorted(evidence), ensure_ascii=False, separators=(",", ":"))
 
 
+def _migration_3(conn: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE runtime_identity_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_key TEXT NOT NULL UNIQUE,
+            finding_type TEXT NOT NULL,
+            severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+            status TEXT NOT NULL CHECK (status IN ('open', 'acknowledged', 'resolved')),
+            asset_id INTEGER REFERENCES assets(id) ON DELETE RESTRICT,
+            source_id INTEGER REFERENCES network_sources(id) ON DELETE RESTRICT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+        """
+        CREATE INDEX runtime_identity_findings_status_type_idx
+            ON runtime_identity_findings(status, finding_type, last_seen_at DESC)
+        """,
+        """
+        CREATE TRIGGER ip_observations_interface_asset_insert_guard
+        BEFORE INSERT ON ip_observations
+        WHEN NEW.asset_interface_id IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM asset_interfaces
+             WHERE id = NEW.asset_interface_id AND asset_id = NEW.asset_id
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'asset_interface_id does not belong to asset_id');
+        END
+        """,
+        """
+        CREATE TRIGGER ip_observations_interface_asset_update_guard
+        BEFORE UPDATE OF asset_id, asset_interface_id ON ip_observations
+        WHEN NEW.asset_interface_id IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM asset_interfaces
+             WHERE id = NEW.asset_interface_id AND asset_id = NEW.asset_id
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'asset_interface_id does not belong to asset_id');
+        END
+        """,
+        """
+        CREATE INDEX ip_observations_source_current_idx
+            ON ip_observations(source_key, observation_source, is_current, last_seen_at DESC)
+        """,
+        """
+        CREATE INDEX hostname_observations_source_current_idx
+            ON hostname_observations(source_key, source_type, is_current, last_seen_at DESC)
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        UPDATE ip_observations
+        SET is_current = 0
+        WHERE observation_source = 'legacy_network_host'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE hostname_observations
+        SET is_current = 0
+        WHERE source_type = 'legacy_network_host'
+        """
+    )
+    _backfill_legacy_identity_conflicts(conn, utc_now())
+
+
+def _backfill_legacy_identity_conflicts(
+    conn: sqlite3.Connection,
+    observed_at: str,
+) -> int:
+    mapped_asset_ids = {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT asset_id FROM legacy_host_asset_mappings"
+        )
+    }
+    mac_asset_ids: dict[str, set[int]] = {}
+    for asset_id, raw_mac in conn.execute(
+        "SELECT asset_id, mac FROM asset_interfaces WHERE mac IS NOT NULL"
+    ):
+        normalized_mac = normalize_mac(raw_mac)
+        if int(asset_id) in mapped_asset_ids and normalized_mac:
+            mac_asset_ids.setdefault(normalized_mac, set()).add(int(asset_id))
+
+    ip_asset_ids: dict[str, set[int]] = {}
+    for asset_id, raw_ip in conn.execute(
+        """
+        SELECT asset_id, ip
+        FROM ip_observations
+        WHERE observation_source = 'legacy_network_host'
+        """
+    ):
+        normalized_ip = _normalize_ip(raw_ip)
+        if int(asset_id) in mapped_asset_ids and normalized_ip:
+            ip_asset_ids.setdefault(normalized_ip, set()).add(int(asset_id))
+
+    valid_source_ids = {
+        int(row[0]) for row in conn.execute("SELECT id FROM network_sources")
+    }
+    observation_rows = conn.execute(
+        """
+        SELECT observations.id, observations.host_id, observations.source_id,
+               observations.ip, observations.mac, observations.hostname,
+               mappings.asset_id AS host_asset_id
+        FROM host_observations AS observations
+        JOIN legacy_host_asset_mappings AS mappings
+          ON mappings.legacy_network_host_id = observations.host_id
+        ORDER BY observations.id
+        """
+    )
+    finding_count = 0
+    for (
+        observation_id,
+        host_id,
+        original_source_id,
+        observation_ip,
+        observation_mac,
+        observation_hostname,
+        mapped_asset_id,
+    ) in observation_rows:
+        host_asset_id = int(mapped_asset_id)
+        raw_mac = str(observation_mac or "").strip()
+        normalized_mac = normalize_mac(raw_mac)
+        mac_matches = mac_asset_ids.get(normalized_mac, set()) if normalized_mac else set()
+        mac_candidate_asset_id = (
+            next(iter(mac_matches)) if len(mac_matches) == 1 else None
+        )
+
+        raw_ip = str(observation_ip or "").strip()
+        normalized_ip = _normalize_ip(raw_ip) if raw_ip else None
+        ip_matches = ip_asset_ids.get(normalized_ip, set()) if normalized_ip else set()
+        ip_candidate_asset_id = (
+            next(iter(ip_matches)) if len(ip_matches) == 1 else None
+        )
+
+        candidate_asset_ids = (
+            mac_candidate_asset_id,
+            ip_candidate_asset_id,
+        )
+        if not any(
+            candidate_asset_id is not None
+            and candidate_asset_id != host_asset_id
+            for candidate_asset_id in candidate_asset_ids
+        ):
+            continue
+
+        observation_id = int(observation_id)
+        source_id = (
+            int(original_source_id)
+            if original_source_id in valid_source_ids
+            else None
+        )
+        details = {
+            "host_asset_id": host_asset_id,
+            "ip_candidate_asset_id": ip_candidate_asset_id,
+            "mac_candidate_asset_id": mac_candidate_asset_id,
+            "observation_id": observation_id,
+            "raw_identity": {
+                "host_id": int(host_id),
+                "hostname": str(observation_hostname or ""),
+                "ip": raw_ip,
+                "mac": raw_mac,
+            },
+        }
+        conn.execute(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status, asset_id,
+                source_id, first_seen_at, last_seen_at, details_json
+            ) VALUES (?, 'historical_identity_conflict', 'warning', 'open', ?, ?, ?, ?, ?)
+            ON CONFLICT(finding_key) DO UPDATE SET
+                finding_type = excluded.finding_type,
+                severity = excluded.severity,
+                asset_id = excluded.asset_id,
+                source_id = excluded.source_id,
+                last_seen_at = excluded.last_seen_at,
+                details_json = excluded.details_json
+            """,
+            (
+                f"legacy-identity-conflict:{observation_id}",
+                host_asset_id,
+                source_id,
+                observed_at,
+                observed_at,
+                json.dumps(
+                    details,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+        finding_count += 1
+    return finding_count
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
+    (3, _migration_3),
 )
 
 

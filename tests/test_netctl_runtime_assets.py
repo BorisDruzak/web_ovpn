@@ -235,6 +235,28 @@ def _seed_legacy_tags(db_url: str, tags: list[dict[str, Any]]) -> None:
         conn.close()
 
 
+def _migrate_test_database_to_version_2(db_url: str) -> None:
+    from netctl.migrations import _migration_2
+
+    db_path = Path(db_url.removeprefix("sqlite:///"))
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("SAVEPOINT migrate_test_database_to_version_2")
+        _migration_2(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)",
+            ("2026-07-17T00:00:01Z",),
+        )
+        conn.execute("RELEASE SAVEPOINT migrate_test_database_to_version_2")
+        conn.commit()
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT migrate_test_database_to_version_2")
+        conn.execute("RELEASE SAVEPOINT migrate_test_database_to_version_2")
+        raise
+    finally:
+        conn.close()
+
+
 def _insert_context_revision(
     conn: sqlite3.Connection,
     *,
@@ -267,7 +289,7 @@ def test_connect_enables_runtime_identity_pragmas(pr_1b_database: str) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2]
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3]
     finally:
         conn.close()
 
@@ -312,7 +334,7 @@ def test_same_mac_with_changed_ips_maps_to_one_asset(pr_1b_database: str) -> Non
             for row in conn.execute(
                 "SELECT ip, is_current FROM ip_observations ORDER BY ip"
             ).fetchall()
-        ] == [("10.0.0.11", 1), ("10.0.0.12", 1)]
+        ] == [("10.0.0.11", 0), ("10.0.0.12", 0)]
         assert conn.execute("SELECT COUNT(*) FROM legacy_host_asset_mappings").fetchone()[0] == 2
     finally:
         conn.close()
@@ -1697,6 +1719,462 @@ def test_no_auto_merge_when_mac_column_conflicts_with_shared_device_key(
         conn.close()
 
 
+def test_migration_3_is_applied_once_and_reopen_is_idempotent(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 163,
+                "ip": "10.0.0.163",
+                "mac": "00:11:22:33:44:B3",
+                "hostname": "migration-three",
+            }
+        ],
+    )
+
+    first = connect(pr_1b_database)
+    try:
+        first_state = {
+            "versions": [
+                row[0]
+                for row in first.execute(
+                    "SELECT version FROM schema_migrations ORDER BY version"
+                )
+            ],
+            "finding_count": first.execute(
+                "SELECT COUNT(*) FROM runtime_identity_findings"
+            ).fetchone()[0],
+            "ip_rows": [
+                tuple(row)
+                for row in first.execute(
+                    "SELECT id, is_current FROM ip_observations ORDER BY id"
+                )
+            ],
+        }
+    finally:
+        first.close()
+
+    reopened = connect(pr_1b_database)
+    try:
+        assert first_state["versions"] == [1, 2, 3]
+        assert reopened.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = 3"
+        ).fetchone()[0] == 1
+        assert reopened.execute(
+            "SELECT COUNT(*) FROM runtime_identity_findings"
+        ).fetchone()[0] == first_state["finding_count"]
+        assert [
+            tuple(row)
+            for row in reopened.execute(
+                "SELECT id, is_current FROM ip_observations ORDER BY id"
+            )
+        ] == first_state["ip_rows"]
+    finally:
+        reopened.close()
+
+
+def test_migration_3_makes_migration_created_legacy_observations_historical(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 164,
+                "ip": "10.0.0.164",
+                "mac": "00:11:22:33:44:B4",
+                "hostname": "legacy-current",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert conn.execute(
+            """
+            SELECT is_current FROM ip_observations
+            WHERE observation_source = 'legacy_network_host'
+            """
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            """
+            SELECT is_current FROM hostname_observations
+            WHERE source_type = 'legacy_network_host'
+            """
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_migration_3_finding_table_has_enforced_status_contract(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    conn = connect(pr_1b_database)
+    try:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(runtime_identity_findings)")
+        }
+        assert columns == {
+            "id",
+            "finding_key",
+            "finding_type",
+            "severity",
+            "status",
+            "asset_id",
+            "source_id",
+            "first_seen_at",
+            "last_seen_at",
+            "details_json",
+        }
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO runtime_identity_findings (
+                    finding_key, finding_type, severity, status,
+                    first_seen_at, last_seen_at
+                ) VALUES ('invalid-status', 'test', 'warning', 'invalid', ?, ?)
+                """,
+                ("2026-07-17T12:00:00Z", "2026-07-17T12:00:00Z"),
+            )
+    finally:
+        conn.close()
+
+
+def test_migration_3_interface_guard_rejects_cross_asset_insert(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    conn = connect(pr_1b_database)
+    try:
+        now = "2026-07-17T12:00:00Z"
+        conn.executemany(
+            """
+            INSERT INTO assets (
+                asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at
+            ) VALUES (?, 'manual', 100, 0, ?, ?, ?, ?)
+            """,
+            [
+                ("manual:guard-insert-a", now, now, now, now),
+                ("manual:guard-insert-b", now, now, now, now),
+            ],
+        )
+        asset_a, asset_b = [
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM assets ORDER BY id"
+            )
+        ]
+        interface_b = conn.execute(
+            """
+            INSERT INTO asset_interfaces (
+                asset_id, interface_key, first_seen_at, last_seen_at
+            ) VALUES (?, 'manual:guard-insert-b', ?, ?)
+            """,
+            (asset_b, now, now),
+        ).lastrowid
+
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="asset_interface_id does not belong to asset_id",
+        ):
+            conn.execute(
+                """
+                INSERT INTO ip_observations (
+                    asset_id, asset_interface_id, source_key, ip,
+                    first_seen_at, last_seen_at, is_current, observation_source
+                ) VALUES (?, ?, 'manual:guard', '10.0.0.165', ?, ?, 1, 'test')
+                """,
+                (asset_a, interface_b, now, now),
+            )
+    finally:
+        conn.close()
+
+
+def test_migration_3_interface_guard_rejects_cross_asset_update(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    conn = connect(pr_1b_database)
+    try:
+        now = "2026-07-17T12:00:00Z"
+        conn.executemany(
+            """
+            INSERT INTO assets (
+                asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at
+            ) VALUES (?, 'manual', 100, 0, ?, ?, ?, ?)
+            """,
+            [
+                ("manual:guard-update-a", now, now, now, now),
+                ("manual:guard-update-b", now, now, now, now),
+            ],
+        )
+        asset_a, asset_b = [
+            row[0]
+            for row in conn.execute("SELECT id FROM assets ORDER BY id")
+        ]
+        interface_a = conn.execute(
+            """
+            INSERT INTO asset_interfaces (
+                asset_id, interface_key, first_seen_at, last_seen_at
+            ) VALUES (?, 'manual:guard-update-a', ?, ?)
+            """,
+            (asset_a, now, now),
+        ).lastrowid
+        observation_id = conn.execute(
+            """
+            INSERT INTO ip_observations (
+                asset_id, asset_interface_id, source_key, ip,
+                first_seen_at, last_seen_at, is_current, observation_source
+            ) VALUES (?, ?, 'manual:guard', '10.0.0.166', ?, ?, 1, 'test')
+            """,
+            (asset_a, interface_a, now, now),
+        ).lastrowid
+
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="asset_interface_id does not belong to asset_id",
+        ):
+            conn.execute(
+                "UPDATE ip_observations SET asset_id = ? WHERE id = ?",
+                (asset_b, observation_id),
+            )
+    finally:
+        conn.close()
+
+
+def test_migration_3_legacy_identity_conflict_creates_finding(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {"id": 167, "ip": "10.0.0.167", "mac": "00:11:22:33:44:B7"},
+            {"id": 168, "ip": "10.0.0.168", "mac": "00:11:22:33:44:B8"},
+        ],
+    )
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 169,
+                "host_id": 167,
+                "source_id": None,
+                "ip": "10.0.0.168",
+                "mac": "00-11-22-33-44-b8",
+                "hostname": "moved-host",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        finding = conn.execute(
+            """
+            SELECT finding_key, finding_type, severity, status, asset_id,
+                   source_id, first_seen_at, last_seen_at, details_json
+            FROM runtime_identity_findings
+            """
+        ).fetchone()
+        host_asset_id = conn.execute(
+            """
+            SELECT asset_id FROM legacy_host_asset_mappings
+            WHERE legacy_network_host_id = 167
+            """
+        ).fetchone()[0]
+        candidate_asset_id = conn.execute(
+            """
+            SELECT asset_id FROM legacy_host_asset_mappings
+            WHERE legacy_network_host_id = 168
+            """
+        ).fetchone()[0]
+        assert tuple(finding[:6]) == (
+            "legacy-identity-conflict:169",
+            "historical_identity_conflict",
+            "warning",
+            "open",
+            host_asset_id,
+            None,
+        )
+        assert finding[6] == finding[7]
+        assert json.loads(finding[8]) == {
+            "host_asset_id": host_asset_id,
+            "ip_candidate_asset_id": candidate_asset_id,
+            "mac_candidate_asset_id": candidate_asset_id,
+            "observation_id": 169,
+            "raw_identity": {
+                "host_id": 167,
+                "hostname": "moved-host",
+                "ip": "10.0.0.168",
+                "mac": "00-11-22-33-44-b8",
+            },
+        }
+    finally:
+        conn.close()
+
+
+def test_migration_3_matching_legacy_identity_does_not_create_finding(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {"id": 170, "ip": "10.0.0.170", "mac": "00:11:22:33:44:C0"},
+        ],
+    )
+    _seed_legacy_observations(
+        pr_1b_database,
+        [
+            {
+                "id": 171,
+                "host_id": 170,
+                "ip": "10.0.0.170",
+                "mac": "00-11-22-33-44-c0",
+                "hostname": "same-host",
+            }
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM runtime_identity_findings"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_migration_3_does_not_commit_or_escape_outer_savepoint(
+    pr_1b_database: str,
+) -> None:
+    from netctl.migrations import _migration_3
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 172, "ip": "10.0.0.172", "mac": "00:11:22:33:44:C2"}],
+    )
+    _migrate_test_database_to_version_2(pr_1b_database)
+    db_path = Path(pr_1b_database.removeprefix("sqlite:///"))
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("SAVEPOINT migration_3_test_outer")
+        conn.execute(
+            "UPDATE network_hosts SET comment = 'inside outer savepoint' WHERE id = 172"
+        )
+        _migration_3(conn)
+        assert conn.in_transaction
+        assert conn.execute(
+            "SELECT is_current FROM ip_observations"
+        ).fetchone()[0] == 0
+        conn.execute("ROLLBACK TO SAVEPOINT migration_3_test_outer")
+        conn.execute("RELEASE SAVEPOINT migration_3_test_outer")
+
+        assert conn.execute(
+            "SELECT comment FROM network_hosts WHERE id = 172"
+        ).fetchone()[0] is None
+        assert conn.execute(
+            "SELECT is_current FROM ip_observations"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'table' AND name = 'runtime_identity_findings'
+            """
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_migration_3_rollback_is_atomic_and_reopen_succeeds(
+    pr_1b_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netctl import migrations
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 173, "ip": "10.0.0.173", "mac": "00:11:22:33:44:C3"}],
+    )
+    _migrate_test_database_to_version_2(pr_1b_database)
+    original_migration_3 = migrations._migration_3
+
+    def fail_after_migration_3(conn: sqlite3.Connection) -> None:
+        original_migration_3(conn)
+        assert conn.execute(
+            "SELECT is_current FROM ip_observations"
+        ).fetchone()[0] == 0
+        raise RuntimeError("injected migration 3 failure")
+
+    with monkeypatch.context() as migration_patch:
+        migration_patch.setattr(
+            migrations,
+            "MIGRATIONS",
+            (
+                (1, migrations._migration_1),
+                (2, migrations._migration_2),
+                (3, fail_after_migration_3),
+            ),
+        )
+        with pytest.raises(RuntimeError, match="injected migration 3 failure"):
+            connect(pr_1b_database)
+
+    db_path = Path(pr_1b_database.removeprefix("sqlite:///"))
+    rolled_back = sqlite3.connect(db_path)
+    try:
+        assert [
+            row[0]
+            for row in rolled_back.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ] == [1, 2]
+        assert rolled_back.execute(
+            "SELECT is_current FROM ip_observations"
+        ).fetchone()[0] == 1
+        assert rolled_back.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE name IN (
+                'runtime_identity_findings',
+                'ip_observations_interface_asset_insert_guard',
+                'ip_observations_interface_asset_update_guard'
+            )
+            """
+        ).fetchone()[0] == 0
+    finally:
+        rolled_back.close()
+
+    reopened = connect(pr_1b_database)
+    try:
+        assert [
+            row[0]
+            for row in reopened.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ] == [1, 2, 3]
+        assert reopened.execute(
+            "SELECT is_current FROM ip_observations"
+        ).fetchone()[0] == 0
+    finally:
+        reopened.close()
+
+
 def test_migration_2_rollback_after_partial_copy_and_reopen_is_idempotent(
     pr_1b_database: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -1846,7 +2324,7 @@ def test_migration_2_rollback_after_partial_copy_and_reopen_is_idempotent(
     finally:
         first_success.close()
 
-    assert first_success_state["versions"] == [1, 2]
+    assert first_success_state["versions"] == [1, 2, 3]
     assert first_success_state["counts"] == {
         "asset_intent_bindings": 0,
         "asset_interfaces": 1,
@@ -1921,6 +2399,30 @@ def test_read_helpers_return_deterministic_runtime_asset_data(
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (asset_id, "mac:00:11:22:33:44:D1:wan", "00:11:22:33:44:D2", "ethernet", "wan", "2026-07-16T09:00:00Z", "2026-07-17T09:00:00Z"),
+        )
+        conn.executemany(
+            """
+            INSERT INTO ip_observations (
+                asset_id, source_key, ip, first_seen_at, last_seen_at,
+                is_current, observation_source
+            ) VALUES (?, ?, ?, ?, ?, 1, 'manual')
+            """,
+            [
+                (asset_id, "manual:current:181", "10.0.0.181", "2026-07-16T10:00:00Z", "2026-07-17T10:00:00Z"),
+                (asset_id, "manual:current:182", "10.0.0.182", "2026-07-16T11:00:00Z", "2026-07-17T11:00:00Z"),
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT INTO hostname_observations (
+                asset_id, hostname, source_key, source_type, first_seen_at,
+                last_seen_at, is_current
+            ) VALUES (?, ?, ?, 'manual', ?, ?, 1)
+            """,
+            [
+                (asset_id, "runtime-z", "manual:current:181", "2026-07-16T10:00:00Z", "2026-07-17T10:00:00Z"),
+                (asset_id, "runtime-a", "manual:current:182", "2026-07-16T11:00:00Z", "2026-07-17T11:00:00Z"),
+            ],
         )
         conn.execute(
             """
