@@ -2,9 +2,12 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -183,6 +186,53 @@ def test_network_dashboard_contains_runtime_health_card_and_polling(tmp_path, mo
     assert "setInterval(loadVpnRuntimeHealth, 30000)" in script
     assert "function runtimeHealthRows" in script
     assert "innerHTML" not in script
+
+
+def test_runtime_health_messages_redact_peer_identifiers():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise the browser-side redaction helper")
+
+    script = Path(__file__).resolve().parents[1] / "app" / "static" / "app.js"
+    key = "A" * 43 + "="
+    messages = [
+        "Endpoint vpn.example.test:51820 is unavailable",
+        "Peer route 192.0.2.8/32 has no handshake",
+        "Endpoint [2001:db8::8]:51820 is unavailable",
+        "hostname=branch-gateway is unreachable",
+        f"WireGuard public key {key} is stale",
+    ]
+    node_program = """
+const fs = require("fs");
+const vm = require("vm");
+const context = {
+  document: {addEventListener() {}},
+  HTMLFormElement: function HTMLFormElement() {},
+  window: {},
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
+process.stdout.write(JSON.stringify(JSON.parse(process.argv[2]).map(context.runtimeHealthMessage)));
+"""
+    result = subprocess.run(
+        [node, "-e", node_program, str(script), json.dumps(messages)],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    redacted = json.loads(result.stdout)
+
+    assert "vpn.example.test" not in redacted[0]
+    assert "vpn.example" not in redacted[0]
+    assert "example.test" not in redacted[0]
+    assert "51820" not in redacted[0]
+    assert "192.0.2.8" not in redacted[1]
+    assert "/32" not in redacted[1]
+    assert "2001:db8::8" not in redacted[2]
+    assert "51820" not in redacted[2]
+    assert "branch-gateway" not in redacted[3]
+    assert key not in redacted[4]
+    assert "unavailable" in redacted[0]
 
 
 def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch):

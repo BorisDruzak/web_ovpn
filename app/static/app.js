@@ -45,9 +45,14 @@ function runtimeHealthRows(sections) {
 
 function runtimeHealthMessage(message) {
   return String(message)
-    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[redacted address]")
-    .replace(/\b(?:[0-9a-f]{0,4}:){2,}[0-9a-f:]*\b/gi, "[redacted address]")
-    .replace(/\b[A-Za-z0-9+/]{40,}={0,2}\b/g, "[redacted key]");
+    .replace(/(^|[^A-Za-z0-9+/])(?:[A-Za-z0-9+/]{43}=)(?=$|[^A-Za-z0-9+/=])/g, "$1[redacted key]")
+    .replace(/\[(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]*\](?::\d{1,5})?(?:\/\d{1,3})?/gi, "[redacted address]")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d{1,5})?\b/g, "[redacted address]")
+    .replace(/(^|[^0-9a-f:])(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]+(?=$|[^0-9a-f:])/gi, "$1[redacted address]")
+    .replace(/(\b(?:endpoint|peer(?:[ _-]?(?:host|hostname))?|hostname|host|remote(?:[ _-]?host)?|address)\s*(?:=|:)\s*)[A-Za-z0-9][A-Za-z0-9.-]*/gi, "$1[redacted address]")
+    .replace(/(^|[^A-Za-z0-9.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}:\d{1,5}(?=$|[^0-9])/g, "$1[redacted address]")
+    .replace(/(^|[^A-Za-z0-9-])[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::\d{1,5})(?=$|[^0-9])/g, "$1[redacted address]")
+    .replace(/(^|[^A-Za-z0-9.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?=$|[^A-Za-z0-9.-])/g, "$1[redacted address]");
 }
 
 function runtimeHealthMessages(messages) {
