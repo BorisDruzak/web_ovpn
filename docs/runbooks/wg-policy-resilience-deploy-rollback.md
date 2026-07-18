@@ -107,6 +107,9 @@ enable the new reconciler again.
 
 ```bash
 BACKUP_DIR=/root/wg-policy-backup-YYYYMMDD-HHMMSS
+# Prevent a current reconciler tick from mixing current and restored assets.
+sudo systemctl disable --now vpn-policy-reconcile.timer || true
+
 sudo install -m 0755 "$BACKUP_DIR/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo install -m 0644 "$BACKUP_DIR/vpn-policy.service" /etc/systemd/system/vpn-policy.service
 sudo install -m 0644 "$BACKUP_DIR/vpn-runtime-health.service" /etc/systemd/system/vpn-runtime-health.service
@@ -118,7 +121,6 @@ if sudo test -f "$BACKUP_DIR/vpn-policy-reconcile.service" \
   sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
   restore_reconciler=1
 else
-  sudo systemctl disable --now vpn-policy-reconcile.timer || true
   sudo rm -f /etc/systemd/system/vpn-policy-reconcile.service /etc/systemd/system/vpn-policy-reconcile.timer
   restore_reconciler=0
 fi
@@ -138,9 +140,11 @@ sudo /usr/local/sbin/vpnctl --json runtime-health --strict
 
 `vpn-policy.service` uses `RemainAfterExit=yes`, so rollback uses `restart`,
 not `start`, to apply the restored unit and script even when the service is
-already active. This executes only that service's `ExecStop`/`ExecStart` policy
-operations under the shared `flock`; it does not issue a restart for
-`wg-quick@wg0.service` or OpenVPN.
+already active. The restart executes only the restored service's
+`ExecStop`/`ExecStart` policy operations; it does not issue a restart for
+`wg-quick@wg0.service` or OpenVPN. Current reconciler and policy units serialize
+their normal operations with the shared `flock`, but a restored older policy
+unit may predate that lock and is not represented as using it here.
 
 If only one of the two reconciler backup files is present, treat it as an
 incomplete pre-feature backup: leave the reconciler disabled and remove both
