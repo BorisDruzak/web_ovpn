@@ -116,6 +116,7 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
             (2,),
             (3,),
             (4,),
+            (5,),
         ]
         assert conn.execute("SELECT * FROM context_heads").fetchall() == []
         assert [tuple(row) for row in conn.execute("SELECT id, context_id, sha256 FROM context_revisions").fetchall()] == [

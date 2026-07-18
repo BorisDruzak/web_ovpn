@@ -570,7 +570,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     assert rc == 0
     assert data["status"] == "ok"
     summary = data["runtime_identity"]
-    assert summary["schema_migration_versions"] == [1, 2, 3, 4]
+    assert summary["schema_migration_versions"] == [1, 2, 3, 4, 5]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1
     assert summary["counts"]["current_ip_observations"] >= 1

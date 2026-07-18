@@ -1056,11 +1056,167 @@ def _migration_4(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_5(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        ALTER TABLE network_sources
+        ADD COLUMN driver_options_json TEXT NOT NULL DEFAULT '{}'
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_devices (
+            source_id INTEGER PRIMARY KEY REFERENCES network_sources(id) ON DELETE RESTRICT,
+            runtime_asset_id INTEGER REFERENCES assets(id) ON DELETE RESTRICT,
+            intent_context_id TEXT NOT NULL DEFAULT '',
+            intent_stable_id TEXT NOT NULL DEFAULT '',
+            profile_id TEXT NOT NULL DEFAULT 'generic',
+            profile_fingerprint TEXT NOT NULL DEFAULT '',
+            sys_object_id TEXT NOT NULL DEFAULT '',
+            sys_descr TEXT NOT NULL DEFAULT '',
+            sys_name TEXT NOT NULL DEFAULT '',
+            sys_location TEXT NOT NULL DEFAULT '',
+            sys_uptime_ticks INTEGER,
+            last_success_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_collection_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL CHECK (status IN ('running','success','partial','failed')),
+            profile_id TEXT NOT NULL DEFAULT '',
+            sys_uptime_ticks INTEGER,
+            error_class TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            outcomes_json TEXT NOT NULL DEFAULT '{}',
+            counts_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_collection_runs_source_started_idx
+        ON switch_collection_runs(source_id, started_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_capabilities (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            capability TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN (
+                'success_with_rows','success_empty','unsupported_no_such_object',
+                'timeout','auth_or_view_failure','parse_error'
+            )),
+            rows_seen INTEGER NOT NULL DEFAULT 0,
+            profile_fingerprint TEXT NOT NULL DEFAULT '',
+            checked_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY(source_id, capability)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_ports (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            port_key TEXT NOT NULL,
+            if_index INTEGER,
+            bridge_port INTEGER,
+            physical_port INTEGER,
+            name TEXT NOT NULL DEFAULT '',
+            alias TEXT NOT NULL DEFAULT '',
+            mac TEXT,
+            admin_status TEXT NOT NULL DEFAULT 'unknown',
+            oper_status TEXT NOT NULL DEFAULT 'unknown',
+            speed_bps INTEGER,
+            last_seen_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL REFERENCES switch_collection_runs(id) ON DELETE RESTRICT,
+            PRIMARY KEY(source_id, port_key)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX switch_ports_source_ifindex_idx ON switch_ports(source_id, if_index)"
+    )
+    conn.execute(
+        "CREATE INDEX switch_ports_source_bridge_idx ON switch_ports(source_id, bridge_port)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE current_switch_fdb (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            fdb_id INTEGER,
+            vlan_key TEXT NOT NULL,
+            vlan_id INTEGER,
+            mac TEXT NOT NULL,
+            port_key TEXT NOT NULL,
+            bridge_port INTEGER,
+            if_index INTEGER,
+            physical_port INTEGER,
+            port_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'unknown',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL REFERENCES switch_collection_runs(id) ON DELETE RESTRICT,
+            PRIMARY KEY(source_id, vlan_key, mac)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_fdb_source_port_idx
+        ON current_switch_fdb(source_id, port_key, vlan_key)
+        """
+    )
+    conn.execute(
+        "CREATE INDEX current_switch_fdb_mac_idx ON current_switch_fdb(mac, source_id)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_fdb_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            fdb_id INTEGER,
+            vlan_key TEXT NOT NULL,
+            vlan_id INTEGER,
+            mac TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('appeared','moved','disappeared')),
+            old_port_key TEXT NOT NULL DEFAULT '',
+            new_port_key TEXT NOT NULL DEFAULT '',
+            observed_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL REFERENCES switch_collection_runs(id) ON DELETE RESTRICT,
+            details_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_fdb_events_source_time_idx
+        ON switch_fdb_events(source_id, observed_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_fdb_events_mac_time_idx
+        ON switch_fdb_events(mac, observed_at DESC, id DESC)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
     (4, _migration_4),
+    (5, _migration_5),
 )
 
 

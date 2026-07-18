@@ -21,6 +21,9 @@ CONTEXT_IMPORT_RUN_STATUSES = frozenset(
     }
 )
 CONTEXT_IMPORT_RUN_FINAL_STATUSES = CONTEXT_IMPORT_RUN_STATUSES - {"running"}
+PRIVATE_SOURCE_KEYS = frozenset(
+    {"community", "password", "resolved_secret", "resolved_secrets", "secret_value"}
+)
 
 
 def db_path_from_url(db_url: str) -> Path:
@@ -390,12 +393,15 @@ def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:
 
 def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
     now = utc_now()
+    driver_options_json = _encode_driver_options(source.get("driver_options", {}))
     conn.execute(
         """
         INSERT INTO network_sources
-            (name, driver, host, port, username, secret_ref, tls, verify_tls, site, role, enabled, created_at, updated_at)
+            (name, driver, host, port, username, secret_ref, tls, verify_tls, site, role,
+             enabled, driver_options_json, created_at, updated_at)
         VALUES
-            (:name, :driver, :host, :port, :username, :secret_ref, :tls, :verify_tls, :site, :role, :enabled, :created_at, :updated_at)
+            (:name, :driver, :host, :port, :username, :secret_ref, :tls, :verify_tls,
+             :site, :role, :enabled, :driver_options_json, :created_at, :updated_at)
         ON CONFLICT(name) DO UPDATE SET
             driver=excluded.driver,
             host=excluded.host,
@@ -407,6 +413,7 @@ def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
             site=excluded.site,
             role=excluded.role,
             enabled=excluded.enabled,
+            driver_options_json=excluded.driver_options_json,
             updated_at=excluded.updated_at
         """,
         {
@@ -414,6 +421,7 @@ def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
             "tls": int(bool(source.get("tls"))),
             "verify_tls": int(bool(source.get("verify_tls"))),
             "enabled": int(bool(source.get("enabled", True))),
+            "driver_options_json": driver_options_json,
             "created_at": now,
             "updated_at": now,
         },
@@ -446,21 +454,79 @@ def sync_config_sources(conn: sqlite3.Connection, config_path: str | Path) -> No
 
 
 def source_public(source: dict[str, Any]) -> dict[str, Any]:
-    result = dict(source)
+    result = _redact_source_value(dict(source))
+    result.pop("driver_options_json", None)
     for key in ["id", "tls", "verify_tls", "enabled"]:
         if key in result and key != "id":
             result[key] = bool(result[key])
-    result.pop("password", None)
     return result
 
 
 def get_source(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM network_sources WHERE name = ?", (name,)).fetchone()
-    return row_to_dict(row)
+    return _source_from_row(row)
 
 
 def list_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return rows_to_dicts(conn.execute("SELECT * FROM network_sources ORDER BY name").fetchall())
+    return [
+        source
+        for row in conn.execute("SELECT * FROM network_sources ORDER BY name").fetchall()
+        if (source := _source_from_row(row)) is not None
+    ]
+
+
+def _contains_private_source_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(
+            str(key).lower() in PRIVATE_SOURCE_KEYS
+            or _contains_private_source_key(nested_value)
+            for key, nested_value in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_private_source_key(item) for item in value)
+    return False
+
+
+def _encode_driver_options(value: Any) -> str:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("driver_options must be a mapping")
+    if _contains_private_source_key(value):
+        raise ValueError("driver_options must not contain resolved secret material")
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _source_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    source = row_to_dict(row)
+    if source is None:
+        return None
+    raw_options = source.pop("driver_options_json", "{}")
+    try:
+        options = json.loads(str(raw_options or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        options = {}
+    source["driver_options"] = options if isinstance(options, dict) else {}
+    return source
+
+
+def _redact_source_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redact_source_value(nested_value)
+            for key, nested_value in value.items()
+            if str(key).lower() not in PRIVATE_SOURCE_KEYS
+        }
+    if isinstance(value, list):
+        return [_redact_source_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_source_value(item) for item in value)
+    return value
 
 
 def insert_event(
