@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,11 @@ from alt_deploy.job_stages import (
     initial_stage_history,
     validate_job_stage_status,
 )
+from alt_deploy.jobs import JobRepository
+from alt_deploy.jsonio import read_json
+
+from test_jobs import provision_request
+from test_registry_cli import make_settings
 
 
 JOB_ID = "job-20260718T120000Z-a1b2c3d4"
@@ -227,3 +233,19 @@ def test_invalid_state_stage_combination_is_rejected(
     status = status_at(state=state, stage=stage)
 
     assert_invalid(deepcopy(status))
+
+
+def test_new_job_has_created_stage_history(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    job = JobRepository(settings).create(provision_request())
+
+    status = read_json(job.job_dir / "status.json")
+
+    assert status["state"] == "queued"
+    assert status["stage"] == "created"
+    assert status["stage_history"] == [
+        {
+            "stage": "created",
+            "entered_at": status["created_at"],
+        }
+    ]
