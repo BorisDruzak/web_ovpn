@@ -251,6 +251,25 @@ class JobStageManager:
         if next_stage == job.stage:
             return job
 
+        if (
+            next_stage in STAGE_INDEX
+            and STAGE_INDEX[next_stage]
+            != STAGE_INDEX[job.stage] + 1
+        ):
+            raise ControlError(
+                code="invalid_job_stage_transition",
+                message=(
+                    "Provision job stage transition "
+                    "is not the immediate next step"
+                ),
+                exit_code=4,
+                details={
+                    "job_id": job.job_id,
+                    "current_stage": job.stage,
+                    "requested_stage": next_stage,
+                },
+            )
+
         entered_at = _parse_timestamp(
             self.clock(),
             job_id=job.job_id,
