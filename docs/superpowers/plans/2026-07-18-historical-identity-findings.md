@@ -60,12 +60,16 @@ command is an operational inbox after v4 is applied:
 code, payload = run_cli("--json", "runtime-assets", "findings")
 assert code == 0
 assert {item["finding_type"] for item in payload["findings"]} == {
+    "historical_identity_conflict",
     "mac_identity_collision", "unresolved_ip_only_runtime"
 }
 \`\`\`
 
 Also assert \`--status acknowledged\` returns the preserved
 \`legacy-identity-conflict:\` row and its \`details\` object.
+The full fixture must include an open \`ip-moved:\` row: it proves that a
+current movement remains visible while migration-era provenance is
+acknowledged.
 
 - [ ] **Step 2: Run test to verify it fails**
 
