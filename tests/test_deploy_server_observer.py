@@ -10,6 +10,7 @@ from app import server_observer_cli
 SNAPSHOT_DIR = "/var/lib/openvpn-web/server-observer"
 RUNTIME_CONFIG = "/etc/openvpn-web/server-observer.json"
 OBSERVER_KEY = "/etc/openvpn-web/server-observer.key"
+OBSERVER_KNOWN_HOSTS = "/etc/openvpn-web/server-observer.known_hosts"
 
 
 def test_server_observer_service_runs_as_gateway_account_with_only_snapshot_write_access():
@@ -21,13 +22,16 @@ def test_server_observer_service_runs_as_gateway_account_with_only_snapshot_writ
     assert "PrivateTmp=true" in service
     assert "ProtectHome=tmpfs" in service
     assert "ProtectSystem=strict" in service
+    assert "WorkingDirectory=/opt/openvpn-web" in service
     assert f"ReadWritePaths={SNAPSHOT_DIR}" in service
     assert "TimeoutStartSec=3min" in service
     assert f"BindReadOnlyPaths={RUNTIME_CONFIG}" in service
     assert f"BindReadOnlyPaths={OBSERVER_KEY}" in service
+    assert f"BindReadOnlyPaths={OBSERVER_KNOWN_HOSTS}" in service
     assert "InaccessiblePaths=/etc/openvpn-web/openvpn-web.env" in service
     assert "InaccessiblePaths=/etc/openvpn/client-generator" in service
-    assert "InaccessiblePaths=/mnt/antares_soft/vpn_config" in service
+    assert "InaccessiblePaths=-/mnt/antares_soft/vpn_config" in service
+    assert "InaccessiblePaths=-/var/lib/openvpn-web/openvpn-web.sqlite" in service
     assert "CapabilityBoundingSet=" in service
     assert "ExecStart=/usr/local/sbin/server-observer" in service
 
@@ -66,6 +70,7 @@ def test_role_only_sample_has_no_runtime_topology_or_credentials():
     assert "192.168." not in sample_text
     assert "password" not in sample_text.lower()
     assert "PRIVATE KEY" not in sample_text
+    assert sample["ssh_key"] == OBSERVER_KEY
 
 
 def test_install_script_installs_observer_without_creating_runtime_topology():
@@ -77,8 +82,15 @@ def test_install_script_installs_observer_without_creating_runtime_topology():
     assert f"-d -m 0750 -o openvpm -g openvpn-web {SNAPSHOT_DIR}" in installer
     assert f'[[ ! -e {RUNTIME_CONFIG} ]]' in installer
     assert "server-observer.json.sample" in installer
-    assert f"chown root:openvpn-web {OBSERVER_KEY}" in installer
-    assert f"chmod 0640 {OBSERVER_KEY}" in installer
+    assert f"chown openvpm:openvpm {OBSERVER_KEY}" in installer
+    assert f"chmod 0600 {OBSERVER_KEY}" in installer
+    assert f"chown openvpm:openvpm {OBSERVER_KNOWN_HOSTS}" in installer
+    assert f"chmod 0600 {OBSERVER_KNOWN_HOSTS}" in installer
+    assert "chown openvpm:openvpn-web /etc/openvpn-web/server-observer.key" not in installer
+    assert f"chown root:openvpn-web {OBSERVER_KEY}" not in installer
+    assert f"chgrp openvpn-web {OBSERVER_KEY}" not in installer
+    assert f"test -L {OBSERVER_KEY}" in installer
+    assert f"test -f {OBSERVER_KNOWN_HOSTS}" in installer
     assert "systemctl enable --now server-observer.timer" in installer
 
 

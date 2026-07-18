@@ -324,7 +324,7 @@ git commit -m "feat: show infrastructure health dashboard"
 
 **Files:**
 - Create: `docs/verification/server-observability-2026-07-18.md`
-- Modify: runtime-only `/etc/openvpn-web/server-observer.json` on the gateway; do not add it to Git.
+- Modify: runtime-only `/etc/openvpn-web/server-observer.json`, `/etc/openvpn-web/server-observer.key`, and `/etc/openvpn-web/server-observer.known_hosts` on the gateway; do not add them to Git.
 
 **Interfaces:**
 - Uses the deployed wrapper, unit, timer, runtime config, observer key, and web endpoint from Tasks 1-4.
@@ -332,7 +332,7 @@ git commit -m "feat: show infrastructure health dashboard"
 
 - [ ] **Step 1: Write the runtime config outside the repository**
 
-Create `/etc/openvpn-web/server-observer.json` on the gateway with role identifiers, runtime host addresses, per-role SSH users, the existing observer key path, and tunnel source. Set ownership to `root:openvpn-web` and mode `0640`; ensure `openvpm` can read only the specific key file and config through the service group arrangement. Do not include a password or private key value.
+Before enabling the timer, an operator must provision `/etc/openvpn-web/server-observer.json` with role identifiers, runtime host addresses, per-role SSH users, the canonical observer key path, and tunnel source. The operator must also provision the matching private key at `/etc/openvpn-web/server-observer.key` and pinned host keys at `/etc/openvpn-web/server-observer.known_hosts`. Set the JSON configuration to `root:openvpn-web` mode `0640`; set both observer-only files to `openvpm:openvpm` mode `0600`. Do not include a password, private key value, or host-key value in Git.
 
 - [ ] **Step 2: Run one manual collection before enabling the timer**
 

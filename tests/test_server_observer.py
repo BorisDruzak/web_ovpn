@@ -8,6 +8,8 @@ import pytest
 
 from app import server_observer
 from app.server_observer import (
+    OBSERVER_KEY_PATH,
+    OBSERVER_KNOWN_HOSTS_PATH,
     classify_directum_logs,
     classify_disk,
     collect,
@@ -22,7 +24,7 @@ from app.server_observer import (
 def runtime_config():
     """Topology fixture uses documentation-only address space."""
     return {
-        "ssh_key": "C:/runtime/observer_key",
+        "ssh_key": OBSERVER_KEY_PATH,
         "tunnel_source": "198.51.100.50",
         "targets": [
             {
@@ -250,7 +252,24 @@ def test_collect_uses_ssh_end_of_options_before_destination():
     collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
 
     assert all(command[-3] == "--" for command in calls)
+    assert all(f"UserKnownHostsFile={OBSERVER_KNOWN_HOSTS_PATH}" in command for command in calls)
+    assert all("StrictHostKeyChecking=yes" in command for command in calls)
     assert all(command[-2].startswith("observer@") for command in calls)
+
+
+def test_collect_rejects_a_noncanonical_observer_key_before_calling_runner():
+    config = runtime_config()
+    config["ssh_key"] = "/tmp/not-the-observer-key"
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        raise AssertionError("runner must not receive a noncanonical observer key")
+
+    with pytest.raises(ValueError, match="observer key"):
+        collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    assert calls == []
 
 
 @pytest.mark.parametrize(

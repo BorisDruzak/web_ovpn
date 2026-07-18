@@ -54,8 +54,20 @@ if [[ ! -e /etc/openvpn-web/server-observer.json ]]; then
     "$SRC/deploy/server-observer.json.sample" /etc/openvpn-web/server-observer.json
 fi
 if [[ -e /etc/openvpn-web/server-observer.key ]]; then
-  sudo_cmd chown root:openvpn-web /etc/openvpn-web/server-observer.key
-  sudo_cmd chmod 0640 /etc/openvpn-web/server-observer.key
+  if sudo_cmd test -L /etc/openvpn-web/server-observer.key || ! sudo_cmd test -f /etc/openvpn-web/server-observer.key; then
+    echo "server observer key must be a regular file" >&2
+    exit 2
+  fi
+  sudo_cmd chown openvpm:openvpm /etc/openvpn-web/server-observer.key
+  sudo_cmd chmod 0600 /etc/openvpn-web/server-observer.key
+fi
+if [[ -e /etc/openvpn-web/server-observer.known_hosts ]]; then
+  if sudo_cmd test -L /etc/openvpn-web/server-observer.known_hosts || ! sudo_cmd test -f /etc/openvpn-web/server-observer.known_hosts; then
+    echo "server observer known-hosts file must be a regular file" >&2
+    exit 2
+  fi
+  sudo_cmd chown openvpm:openvpm /etc/openvpn-web/server-observer.known_hosts
+  sudo_cmd chmod 0600 /etc/openvpn-web/server-observer.known_hosts
 fi
 sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
 sudo_cmd chmod 0755 /etc/netctl /etc/netctl/sources.d

@@ -33,6 +33,8 @@ ALLOWED_ROLES = frozenset(
 ALLOWED_SOURCES = frozenset({"gateway", "vpn_path", "target"})
 STALE_AFTER = timedelta(minutes=15)
 SSH_TIMEOUT_SECONDS = 20
+OBSERVER_KEY_PATH = "/etc/openvpn-web/server-observer.key"
+OBSERVER_KNOWN_HOSTS_PATH = "/etc/openvpn-web/server-observer.known_hosts"
 SNAPSHOT_FILE_MODE = 0o640
 SNAPSHOT_REPLACE_ATTEMPTS = 3
 SNAPSHOT_REPLACE_RETRY_SECONDS = 0.01
@@ -220,8 +222,8 @@ def collect(
         raise ValueError("now must be timezone-aware UTC")
     config = _require_mapping(config, "config")
     ssh_key = config.get("ssh_key")
-    if not isinstance(ssh_key, str) or not ssh_key:
-        raise ValueError("config.ssh_key must be a non-empty string")
+    if ssh_key != OBSERVER_KEY_PATH:
+        raise ValueError("config.ssh_key must use the canonical observer key")
     tunnel_source = config.get("tunnel_source")
     if not isinstance(tunnel_source, str) or not tunnel_source:
         raise ValueError("config.tunnel_source must be a non-empty string")
@@ -291,6 +293,10 @@ def _ssh_command(
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=8",
+            "-o",
+            f"UserKnownHostsFile={OBSERVER_KNOWN_HOSTS_PATH}",
+            "-o",
+            "StrictHostKeyChecking=yes",
             "--",
             f"{target['user']}@{target['host']}",
             _ROLE_PROBES[target["role"]],
