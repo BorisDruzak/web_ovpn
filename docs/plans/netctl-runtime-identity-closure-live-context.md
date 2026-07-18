@@ -4,7 +4,7 @@
 
 **Goal:** Close PR 2A with reproducible merged-main and production evidence, implement PR 2B so runtime assets stay synchronized with successful collections, and implement PR 2C so network classification comes from imported context rather than production CIDRs embedded in Python.
 
-**Architecture:** Keep migrations 1 and 2 immutable. Add migration 3 for runtime integrity guards and identity findings, write runtime observations inside the existing collection transaction, and preserve legacy tables as a compatibility layer. After the writer is stable, extend canonical segment intent with explicit observer classification and make `netctl` use the active imported context with a visible compatibility fallback.
+**Architecture:** Keep migrations 1 and 2 immutable. Add migration 3 for runtime integrity guards, legacy conflict backfill, and identity findings; write runtime observations inside the existing collection transaction; preserve legacy tables as a compatibility layer. After the writer is stable, extend canonical segment intent with explicit observer classification and make `netctl` use the active imported context with a visible compatibility fallback.
 
 **Tech Stack:** Python 3.12, SQLite, existing `netctl.migrations.MIGRATIONS`, pytest, GitHub Actions, systemd, `network_configuration` YAML and JSON Schema.
 
@@ -12,6 +12,7 @@
 
 - Baseline commit: `7427e08f0ce7bdb3957cf407d2d9db1e8c0e36a9`.
 - Do not alter migration 2; use migration 3 or later for corrections.
+- Migration functions must not call `commit()` or `executescript()`; all writes remain inside the existing `apply_migrations()` savepoint.
 - Keep `network_hosts`, `host_observations`, DHCP, ARP, bridge, neighbor, route, tag, UI, CLI, and MCP legacy reads operational.
 - IP remains an observation and must not have a global unique runtime constraint.
 - Different MAC addresses must never be merged automatically.
@@ -41,6 +42,7 @@ Issue #7 closed only after evidence exists
 
 ```text
 migration 3 integrity guards
+legacy identity-conflict backfill
 runtime identity findings
 live MAC-backed asset writer
 per-source current/historical transitions
@@ -314,14 +316,14 @@ git commit -m "docs: verify runtime identity production migration"
 
 # Delivery B — PR 2B live runtime observations
 
-### Task 3: Add migration 3 integrity guards and findings
+### Task 3: Add migration 3 integrity guards, backfill, and findings
 
 **Files:**
 - Modify: `netctl/migrations.py`
 - Modify: `tests/test_netctl_runtime_assets.py`
 
 **Interfaces:**
-- Produces: `_migration_3(conn: sqlite3.Connection) -> None` and schema version 3.
+- Produces: `_migration_3(conn: sqlite3.Connection) -> None`, `_backfill_legacy_identity_conflicts(conn, observed_at) -> int`, and schema version 3.
 - Consumes: migration-2 tables unchanged.
 
 - [ ] **Step 1: Write failing tests**
@@ -334,6 +336,9 @@ migration-created legacy observations become historical
 cross-asset interface reference fails on INSERT
 cross-asset interface reference fails on UPDATE
 runtime_identity_findings exists
+legacy host_id versus MAC/IP disagreement creates a finding
+matching host_id/MAC/IP does not create a finding
+migration 3 does not commit or escape the outer savepoint
 migration 3 rollback is atomic
 reopen is idempotent
 ```
@@ -341,16 +346,18 @@ reopen is idempotent
 - [ ] **Step 2: Verify RED**
 
 ```bash
-python -m pytest tests/test_netctl_runtime_assets.py -k "migration_3 or interface_guard or finding_table" -q
+python -m pytest tests/test_netctl_runtime_assets.py -k "migration_3 or interface_guard or legacy_identity_conflict or finding_table" -q
 ```
 
 Expected: FAIL because migration 3 does not exist.
 
-- [ ] **Step 3: Implement migration 3**
+- [ ] **Step 3: Implement migration 3 without `executescript()`**
+
+Use individual `conn.execute()` calls so the existing `apply_migrations()` savepoint remains authoritative:
 
 ```python
 def _migration_3(conn: sqlite3.Connection) -> None:
-    conn.executescript(
+    statements = (
         """
         CREATE TABLE runtime_identity_findings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -363,10 +370,13 @@ def _migration_3(conn: sqlite3.Connection) -> None:
             first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
             details_json TEXT NOT NULL DEFAULT '{}'
-        );
+        )
+        """,
+        """
         CREATE INDEX runtime_identity_findings_status_type_idx
-            ON runtime_identity_findings(status, finding_type, last_seen_at DESC);
-
+            ON runtime_identity_findings(status, finding_type, last_seen_at DESC)
+        """,
+        """
         CREATE TRIGGER ip_observations_interface_asset_insert_guard
         BEFORE INSERT ON ip_observations
         WHEN NEW.asset_interface_id IS NOT NULL
@@ -376,8 +386,9 @@ def _migration_3(conn: sqlite3.Connection) -> None:
          )
         BEGIN
             SELECT RAISE(ABORT, 'asset_interface_id does not belong to asset_id');
-        END;
-
+        END
+        """,
+        """
         CREATE TRIGGER ip_observations_interface_asset_update_guard
         BEFORE UPDATE OF asset_id, asset_interface_id ON ip_observations
         WHEN NEW.asset_interface_id IS NOT NULL
@@ -387,22 +398,35 @@ def _migration_3(conn: sqlite3.Connection) -> None:
          )
         BEGIN
             SELECT RAISE(ABORT, 'asset_interface_id does not belong to asset_id');
-        END;
+        END
+        """,
+        """
+        CREATE INDEX ip_observations_source_current_idx
+            ON ip_observations(source_key, observation_source, is_current, last_seen_at DESC)
+        """,
+        """
+        CREATE INDEX hostname_observations_source_current_idx
+            ON hostname_observations(source_key, source_type, is_current, last_seen_at DESC)
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
 
+    conn.execute(
+        """
         UPDATE ip_observations
         SET is_current = 0
-        WHERE observation_source = 'legacy_network_host';
-
-        UPDATE hostname_observations
-        SET is_current = 0
-        WHERE source_type = 'legacy_network_host';
-
-        CREATE INDEX ip_observations_source_current_idx
-            ON ip_observations(source_key, observation_source, is_current, last_seen_at DESC);
-        CREATE INDEX hostname_observations_source_current_idx
-            ON hostname_observations(source_key, source_type, is_current, last_seen_at DESC);
+        WHERE observation_source = 'legacy_network_host'
         """
     )
+    conn.execute(
+        """
+        UPDATE hostname_observations
+        SET is_current = 0
+        WHERE source_type = 'legacy_network_host'
+        """
+    )
+    _backfill_legacy_identity_conflicts(conn, utc_now())
 ```
 
 Registry:
@@ -415,15 +439,38 @@ MIGRATIONS = (
 )
 ```
 
-- [ ] **Step 4: Verify GREEN**
+- [ ] **Step 4: Implement conflict backfill**
+
+For every `host_observations` row with a mapped `host_id`:
+
+```text
+host asset = legacy_host_asset_mappings(host_id)
+MAC candidate = unique mapped asset for normalized observation MAC
+IP candidate = unique mapped asset for observation IP
+```
+
+When a unique MAC or IP candidate differs from the host asset, upsert:
+
+```text
+finding_key=legacy-identity-conflict:<observation_id>
+finding_type=historical_identity_conflict
+severity=warning
+status=open
+asset_id=<host asset>
+details_json contains observation ID, host asset, MAC candidate, IP candidate, raw identity fields
+```
+
+Do not create a finding when all available candidates agree or a candidate is ambiguous/unavailable.
+
+- [ ] **Step 5: Verify GREEN**
 
 ```bash
-python -m pytest tests/test_netctl_runtime_assets.py -k "migration_3 or interface_guard or finding_table" -q
+python -m pytest tests/test_netctl_runtime_assets.py -k "migration_3 or interface_guard or legacy_identity_conflict or finding_table" -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add netctl/migrations.py tests/test_netctl_runtime_assets.py
@@ -467,6 +514,7 @@ same MAC later reuses both
 successful snapshot demotes prior current rows for that source only
 IP moving to another MAC preserves history and makes only new row current
 IP-only host remains legacy and creates unresolved_ip_only_runtime finding
+IP-only finding resolves when the condition disappears or gains a MAC
 collector does not overwrite nonblank/manual asset fields
 same MAC current in multiple sites creates mac_identity_collision
 same current IP on multiple assets creates duplicate_current_ip
@@ -586,9 +634,12 @@ mac_identity_collision:
 
 duplicate_current_ip:
   one IP has current observations for more than one asset
+
+unresolved_ip_only_runtime:
+  successful current snapshot contains an IP without a usable MAC
 ```
 
-Upsert active findings and set old findings of those types to `resolved` when conditions disappear.
+Upsert active findings and set old findings of all three recomputed types to `resolved` when their conditions disappear. Historical movement findings remain as provenance and are not auto-resolved.
 
 - [ ] **Step 7: Verify GREEN**
 
@@ -752,6 +803,7 @@ Require:
 migration 3 once
 both interface guard triggers present
 migration-only observations historical
+legacy conflict backfill reviewed
 first successful collection creates current rows
 second collection proves idempotence and stale demotion
 failed collection leaves current rows unchanged
@@ -955,7 +1007,8 @@ removed source IP becomes historical
 failed collection leaves prior current state unchanged
 context_classifier_fallback=false
 no cross-asset interface references
-findings are reviewed or resolved
+legacy conflict findings reviewed
+current collision findings reviewed or resolved
 legacy commands remain operational
 ```
 
@@ -991,6 +1044,7 @@ runtime-assets status healthy
 | Failed collection retains state | unit/integration and production verification |
 | Interface belongs to the same asset | migration-3 INSERT/UPDATE guard tests |
 | Legacy migration rows are historical | migration-3 state test |
+| Hidden legacy identity disagreement is retained | migration-3 conflict backfill test |
 | Same-MAC collision visible | `mac_identity_collision` finding test |
 | Duplicate current IP visible | `duplicate_current_ip` finding test |
 | Identity movement preserved | `historical_identity_conflict` test |
