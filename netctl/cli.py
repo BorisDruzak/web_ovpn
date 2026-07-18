@@ -14,6 +14,11 @@ from .context_diff import diff_snapshots
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
 from .db import context_revision_public, connect, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for
+from .runtime_assets import (
+    inspect_runtime_asset,
+    list_runtime_identity_findings,
+    runtime_identity_status,
+)
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .util import utc_now, validate_source_name
 
@@ -348,6 +353,34 @@ def cmd_logs(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_runtime_assets(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if (
+        args.runtime_assets_command == "findings"
+        and args.finding_status not in {"open", "acknowledged", "resolved"}
+    ):
+        return 2, err(
+            "invalid finding status",
+            finding_status=args.finding_status,
+        )
+
+    conn = prepare_conn(args)
+    try:
+        if args.runtime_assets_command == "status":
+            return 0, ok(runtime_identity=runtime_identity_status(conn))
+        if args.runtime_assets_command == "inspect":
+            asset = inspect_runtime_asset(conn, args.asset_key)
+            if asset is None:
+                return 1, err("runtime asset not found", asset_key=args.asset_key)
+            return 0, ok(runtime_asset=asset)
+        if args.runtime_assets_command == "findings":
+            return 0, ok(
+                findings=list_runtime_identity_findings(conn, args.finding_status)
+            )
+        return 2, err("unsupported runtime-assets command")
+    finally:
+        conn.close()
+
+
 def resolve_context_schema(path: Path, explicit_schema: str) -> Path:
     candidates = [Path(explicit_schema)] if explicit_schema else []
     candidates.append(path.parent.parent / "schemas" / "network-context.schema.json")
@@ -532,6 +565,16 @@ def build_parser() -> argparse.ArgumentParser:
     logs = sub.add_parser("logs")
     logs.add_argument("-n", type=int, default=100)
 
+    runtime_assets = sub.add_parser("runtime-assets")
+    runtime_assets_sub = runtime_assets.add_subparsers(
+        dest="runtime_assets_command", required=True
+    )
+    runtime_assets_sub.add_parser("status")
+    runtime_assets_inspect = runtime_assets_sub.add_parser("inspect")
+    runtime_assets_inspect.add_argument("--asset-key", required=True)
+    runtime_assets_findings = runtime_assets_sub.add_parser("findings")
+    runtime_assets_findings.add_argument("--status", dest="finding_status", default="open")
+
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
     for name in ("validate", "status", "import", "diff"):
@@ -582,6 +625,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_validate(args)
     if args.command == "logs":
         return cmd_logs(args)
+    if args.command == "runtime-assets":
+        return cmd_runtime_assets(args)
     if args.command == "context":
         return cmd_context(args)
     return 2, err("unsupported command")

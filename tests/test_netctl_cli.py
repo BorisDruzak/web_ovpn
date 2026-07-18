@@ -546,6 +546,130 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     assert dashboard["sources"][0]["name"] == "mock-main"
 
 
+def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, capsys):
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+
+    rc, _ = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "collect", "mock-main"],
+        capsys,
+    )
+    assert rc == 0
+
+    rc, data = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "status"],
+        capsys,
+    )
+
+    assert rc == 0
+    assert data["status"] == "ok"
+    summary = data["runtime_identity"]
+    assert summary["schema_migration_versions"] == [1, 2, 3]
+    assert summary["counts"]["assets"] >= 1
+    assert summary["counts"]["interfaces"] >= 1
+    assert summary["counts"]["current_ip_observations"] >= 1
+    assert summary["counts"]["current_hostname_observations"] >= 1
+    collection = summary["last_successful_collections"]
+    assert len(collection) == 1
+    assert collection[0]["source_id"] == 1
+    assert collection[0]["source"] == "mock-main"
+    assert collection[0]["started_at"]
+    assert collection[0]["finished_at"]
+    assert summary["open_findings"]["by_type"] == []
+    assert summary["open_findings"]["by_severity"] == []
+    assert summary["migration_2_report_summary"]["migration_version"] == 2
+    assert summary["migration_only_current"]["ip_observations"] == 0
+    assert summary["migration_only_current"]["hostname_observations"] == 0
+    assert summary["migration_only_current"]["total"] == 0
+
+
+def test_runtime_assets_inspect_and_findings_commands_are_read_only(tmp_path, capsys):
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    rc, _ = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "collect", "mock-main"],
+        capsys,
+    )
+    assert rc == 0
+
+    conn = connect(db_url)
+    try:
+        asset = conn.execute("SELECT id FROM assets WHERE asset_key = ?", ("mac:AA:BB:CC:DD:EE:FF",)).fetchone()
+        assert asset is not None
+        conn.execute(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status, asset_id,
+                first_seen_at, last_seen_at, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "test-runtime-finding",
+                "duplicate_current_ip",
+                "warning",
+                "open",
+                asset["id"],
+                "2026-07-18T00:00:00Z",
+                "2026-07-18T00:00:00Z",
+                '{"ip":"192.168.100.55"}',
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, inspected = run_cli(
+        [
+            "--json", "--config", str(config_path), "--db", db_url,
+            "runtime-assets", "inspect", "--asset-key", "mac:AA:BB:CC:DD:EE:FF",
+        ],
+        capsys,
+    )
+    assert rc == 0
+    assert inspected["runtime_asset"]["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:FF"
+    assert inspected["runtime_asset"]["interfaces"]
+    assert inspected["runtime_asset"]["current_ip_observations"]
+    assert inspected["runtime_asset"]["current_hostname_observations"]
+    assert inspected["runtime_asset"]["findings"][0]["finding_key"] == "test-runtime-finding"
+
+    rc, findings = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "findings", "--status", "open"],
+        capsys,
+    )
+    assert rc == 0
+    assert findings["findings"][0]["details"] == {"ip": "192.168.100.55"}
+    assert findings["findings"][0]["asset_key"] == "mac:AA:BB:CC:DD:EE:FF"
+
+    rc, missing = run_cli(
+        [
+            "--json", "--config", str(config_path), "--db", db_url,
+            "runtime-assets", "inspect", "--asset-key", "mac:00:00:00:00:00:00",
+        ],
+        capsys,
+    )
+    assert rc == 1
+    assert missing == {
+        "status": "error",
+        "message": "runtime asset not found",
+        "asset_key": "mac:00:00:00:00:00:00",
+    }
+
+    rc, invalid = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "findings", "--status", "invalid"],
+        capsys,
+    )
+    assert rc == 2
+    assert invalid == {
+        "status": "error",
+        "message": "invalid finding status",
+        "finding_status": "invalid",
+    }
+
+
 def test_collect_lock_prevents_parallel_run(tmp_path, capsys):
     from netctl.collect_lock import collect_lock_path
 
