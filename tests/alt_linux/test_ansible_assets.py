@@ -7,50 +7,16 @@ import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-ANSIBLE_ROOT = (
-    REPO_ROOT
-    / "deploy"
-    / "alt-linux"
-    / "ansible"
-)
-
-PREFLIGHT_PLAYBOOK = (
-    ANSIBLE_ROOT
-    / "playbooks"
-    / "01-preflight.yml"
-)
-
-PREFLIGHT_TASKS = (
-    ANSIBLE_ROOT
-    / "roles"
-    / "preflight"
-    / "tasks"
-    / "main.yml"
-)
-
-PROVISION_PLAYBOOK = (
-    ANSIBLE_ROOT
-    / "playbooks"
-    / "02-provision-account.yml"
-)
-
+ANSIBLE_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "ansible"
+PREFLIGHT_PLAYBOOK = ANSIBLE_ROOT / "playbooks" / "01-preflight.yml"
+PREFLIGHT_TASKS = ANSIBLE_ROOT / "roles" / "preflight" / "tasks" / "main.yml"
+PROVISION_PLAYBOOK = ANSIBLE_ROOT / "playbooks" / "02-provision-account.yml"
 LOCAL_EMPLOYEE_TASKS = (
-    ANSIBLE_ROOT
-    / "roles"
-    / "local_employee"
-    / "tasks"
-    / "main.yml"
+    ANSIBLE_ROOT / "roles" / "local_employee" / "tasks" / "main.yml"
 )
-
 LIGHTDM_TASKS = (
-    ANSIBLE_ROOT
-    / "roles"
-    / "lightdm_accounts"
-    / "tasks"
-    / "main.yml"
+    ANSIBLE_ROOT / "roles" / "lightdm_accounts" / "tasks" / "main.yml"
 )
-
 ASSIGNMENT_TEMPLATE = (
     ANSIBLE_ROOT
     / "roles"
@@ -58,20 +24,11 @@ ASSIGNMENT_TEMPLATE = (
     / "templates"
     / "assignment.json.j2"
 )
-
-VAULT_EXAMPLE = (
-    ANSIBLE_ROOT
-    / "group_vars"
-    / "vault.yml.example"
-)
+VAULT_EXAMPLE = ANSIBLE_ROOT / "group_vars" / "vault.yml.example"
 
 
 def load_yaml(path: Path) -> list[Any]:
-    return list(
-        yaml.safe_load_all(
-            path.read_text(encoding="utf-8")
-        )
-    )
+    return list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
 
 
 def find_module_task(
@@ -82,25 +39,15 @@ def find_module_task(
         if module_name in task:
             return task
 
-        for block_name in (
-            "block",
-            "rescue",
-            "always",
-        ):
+        for block_name in ("block", "rescue", "always"):
             nested = task.get(block_name)
-
             if isinstance(nested, list):
                 try:
-                    return find_module_task(
-                        nested,
-                        module_name,
-                    )
+                    return find_module_task(nested, module_name)
                 except AssertionError:
                     pass
 
-    raise AssertionError(
-        f"Module task not found: {module_name}"
-    )
+    raise AssertionError(f"Module task not found: {module_name}")
 
 
 def test_both_playbooks_are_valid_yaml() -> None:
@@ -109,14 +56,13 @@ def test_both_playbooks_are_valid_yaml() -> None:
 
 
 def test_provision_role_order_is_fixed() -> None:
-    documents = load_yaml(PROVISION_PLAYBOOK)
-    play = documents[0][0]
+    play = load_yaml(PROVISION_PLAYBOOK)[0][0]
 
+    assert "roles" not in play
     role_names = [
-        role["role"]
-        if isinstance(role, dict)
-        else role
-        for role in play["roles"]
+        task["ansible.builtin.include_role"]["name"]
+        for task in play["tasks"]
+        if "ansible.builtin.include_role" in task
     ]
 
     assert role_names == [
@@ -129,55 +75,37 @@ def test_provision_role_order_is_fixed() -> None:
 
 def test_local_employee_uses_vault_hash_without_admin_groups() -> None:
     tasks = load_yaml(LOCAL_EMPLOYEE_TASKS)[0]
-    user_task = find_module_task(
-        tasks,
-        "ansible.builtin.user",
-    )
-
+    user_task = find_module_task(tasks, "ansible.builtin.user")
     arguments = user_task["ansible.builtin.user"]
 
-    assert arguments["password"] == (
-        "{{ vault_employee_password_hash }}"
-    )
+    assert arguments["password"] == "{{ vault_employee_password_hash }}"
     assert arguments["update_password"] == "always"
     assert arguments["groups"] == ""
     assert user_task["no_log"] is True
 
 
 def test_lightdm_configuration_hides_only_ansible_and_disables_autologin() -> None:
-    content = LIGHTDM_TASKS.read_text(
-        encoding="utf-8"
-    )
+    content = LIGHTDM_TASKS.read_text(encoding="utf-8")
 
-    assert (
-        "/var/lib/AccountsService/users/ansible"
-        in content
-    )
+    assert "/var/lib/AccountsService/users/ansible" in content
     assert "SystemAccount=true" in content
-
     assert (
-        "/var/lib/AccountsService/users/"
-        "{{ employee_login }}"
+        "/var/lib/AccountsService/users/{{ employee_login }}"
         in content
     )
     assert "SystemAccount=false" in content
-
     assert (
-        "/etc/lightdm/lightdm.conf.d/"
-        "90-alt-workstation.conf"
+        "/etc/lightdm/lightdm.conf.d/90-alt-workstation.conf"
         in content
     )
     assert "autologin-user=" in content
     assert "autologin-user-timeout=0" in content
-
     assert "osn-admin" not in content
     assert "sddm" not in content.lower()
 
 
 def test_assignment_template_contains_no_secret_fields() -> None:
-    content = ASSIGNMENT_TEMPLATE.read_text(
-        encoding="utf-8"
-    ).lower()
+    content = ASSIGNMENT_TEMPLATE.read_text(encoding="utf-8").lower()
 
     for forbidden in (
         "password",
@@ -190,9 +118,7 @@ def test_assignment_template_contains_no_secret_fields() -> None:
 
 
 def test_vault_example_contains_no_secret_value() -> None:
-    payload = load_yaml(VAULT_EXAMPLE)[0]
-
-    assert payload == {
+    assert load_yaml(VAULT_EXAMPLE)[0] == {
         "vault_employee_password_hash": "",
     }
 
@@ -203,7 +129,6 @@ def test_roles_contain_no_unsafe_ansible_patterns() -> None:
         *ANSIBLE_ROOT.rglob("*.j2"),
         *ANSIBLE_ROOT.rglob("*.cfg"),
     ]
-
     combined = "\n".join(
         path.read_text(encoding="utf-8")
         for path in tracked_files
@@ -216,24 +141,12 @@ def test_roles_contain_no_unsafe_ansible_patterns() -> None:
 
 def test_local_employee_validates_existing_account_before_mutation() -> None:
     tasks = load_yaml(LOCAL_EMPLOYEE_TASKS)[0]
+    task_names = [str(task.get("name") or "") for task in tasks]
 
-    task_names = [
-        str(task.get("name") or "")
-        for task in tasks
-    ]
-
-    inspect_index = task_names.index(
-        "Inspect existing local employee"
-    )
-    normalize_index = task_names.index(
-        "Normalize existing local employee"
-    )
-    validate_index = task_names.index(
-        "Validate existing local employee"
-    )
-    create_index = task_names.index(
-        "Create or reconcile local employee"
-    )
+    inspect_index = task_names.index("Inspect existing local employee")
+    normalize_index = task_names.index("Normalize existing local employee")
+    validate_index = task_names.index("Validate existing local employee")
+    create_index = task_names.index("Create or reconcile local employee")
 
     assert (
         inspect_index
@@ -243,7 +156,6 @@ def test_local_employee_validates_existing_account_before_mutation() -> None:
     )
 
     inspect_task = tasks[inspect_index]
-
     assert inspect_task["ansible.builtin.command"]["argv"] == [
         "getent",
         "passwd",
@@ -253,14 +165,8 @@ def test_local_employee_validates_existing_account_before_mutation() -> None:
     assert inspect_task["changed_when"] is False
     assert inspect_task["failed_when"] is False
 
-    validation = tasks[validate_index][
-        "ansible.builtin.assert"
-    ]["that"]
-
-    rendered = "\n".join(
-        str(condition)
-        for condition in validation
-    )
+    validation = tasks[validate_index]["ansible.builtin.assert"]["that"]
+    rendered = "\n".join(str(condition) for condition in validation)
 
     assert (
         "employee_existing_fields | length == 0 "
@@ -274,15 +180,13 @@ def test_local_employee_validates_existing_account_before_mutation() -> None:
         in rendered
     )
     assert (
-        "employee_login not in "
-        "['root', 'ansible', 'osn-admin']"
+        "employee_login not in ['root', 'ansible', 'osn-admin']"
         in rendered
     )
 
 
 def test_preflight_validates_lightdm_accountsservice_stack() -> None:
     tasks = load_yaml(PREFLIGHT_TASKS)[0]
-
     by_name = {
         str(task.get("name") or ""): task
         for task in tasks
@@ -290,20 +194,10 @@ def test_preflight_validates_lightdm_accountsservice_stack() -> None:
 
     assert by_name["Check LightDM package"][
         "ansible.builtin.command"
-    ]["argv"] == [
-        "rpm",
-        "-q",
-        "lightdm",
-    ]
-
+    ]["argv"] == ["rpm", "-q", "lightdm"]
     assert by_name["Check AccountsService package"][
         "ansible.builtin.command"
-    ]["argv"] == [
-        "rpm",
-        "-q",
-        "accountsservice",
-    ]
-
+    ]["argv"] == ["rpm", "-q", "accountsservice"]
     assert by_name["Check AccountsService daemon"][
         "ansible.builtin.command"
     ]["argv"] == [
@@ -311,7 +205,6 @@ def test_preflight_validates_lightdm_accountsservice_stack() -> None:
         "is-active",
         "accounts-daemon",
     ]
-
     assert by_name["Read active display manager"][
         "ansible.builtin.command"
     ]["argv"] == [
@@ -323,22 +216,21 @@ def test_preflight_validates_lightdm_accountsservice_stack() -> None:
     validation = by_name[
         "Validate LightDM and AccountsService"
     ]["ansible.builtin.assert"]["that"]
-
-    rendered = "\n".join(
-        str(condition)
-        for condition in validation
-    )
+    rendered = "\n".join(str(condition) for condition in validation)
 
     assert "preflight_lightdm.rc == 0" in rendered
     assert "preflight_accountsservice.rc == 0" in rendered
-    assert "preflight_accounts_daemon.stdout | trim == 'active'" in rendered
-    assert "'lightdm.service' in preflight_display_manager.stdout" in rendered
-
-    combined = PREFLIGHT_TASKS.read_text(
+    assert (
+        "preflight_accounts_daemon.stdout | trim == 'active'"
+        in rendered
+    )
+    assert (
+        "'lightdm.service' in preflight_display_manager.stdout"
+        in rendered
+    )
+    assert "sddm" not in PREFLIGHT_TASKS.read_text(
         encoding="utf-8"
     ).lower()
-
-    assert "sddm" not in combined
 
 
 def test_provision_verifies_lightdm_accountsservice_state() -> None:
@@ -349,44 +241,30 @@ def test_provision_verifies_lightdm_accountsservice_state() -> None:
         / "tasks"
         / "main.yml"
     )
-    content = tasks_path.read_text(
-        encoding="utf-8"
-    )
+    content = tasks_path.read_text(encoding="utf-8")
 
+    assert "/var/lib/AccountsService/users/ansible" in content
     assert (
-        "/var/lib/AccountsService/users/ansible"
+        "/var/lib/AccountsService/users/{{ employee_login }}"
         in content
     )
     assert (
-        "/var/lib/AccountsService/users/"
-        "{{ employee_login }}"
+        "/etc/lightdm/lightdm.conf.d/90-alt-workstation.conf"
         in content
     )
-    assert (
-        "/etc/lightdm/lightdm.conf.d/"
-        "90-alt-workstation.conf"
-        in content
-    )
-
     assert "SystemAccount=true" in content
     assert "SystemAccount=false" in content
     assert "autologin-user=" in content
     assert "autologin-user-timeout=0" in content
-
     assert "lightdm_hides_ansible" in content
     assert "lightdm_shows_employee" in content
     assert "lightdm_autologin_disabled" in content
-
     assert "sddm" not in content.lower()
 
 
 def test_provision_playbook_explicitly_loads_vault() -> None:
-    documents = load_yaml(PROVISION_PLAYBOOK)
-    play = documents[0][0]
-
-    assert play["vars_files"] == [
-        "../group_vars/vault.yml",
-    ]
+    play = load_yaml(PROVISION_PLAYBOOK)[0][0]
+    assert play["vars_files"] == ["../group_vars/vault.yml"]
 
 
 def test_employee_sudo_checks_use_c_locale_and_accept_denial() -> None:
@@ -397,7 +275,6 @@ def test_employee_sudo_checks_use_c_locale_and_accept_denial() -> None:
         / "tasks"
         / "main.yml"
     ).read_text(encoding="utf-8")
-
     provision_verify = (
         ANSIBLE_ROOT
         / "roles"
