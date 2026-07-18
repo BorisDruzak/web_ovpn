@@ -691,6 +691,7 @@ def test_runtime_assets_findings_acknowledged_legacy_findings(tmp_path, capsys):
             """,
             [
                 ("legacy-identity-conflict:1", "historical_identity_conflict", "open", '{"origin":"migration"}'),
+                ("ip-moved:1:192.0.2.10:1:2", "historical_identity_conflict", "open", '{"origin":"live"}'),
                 ("mac-site-collision:1:00:11:22:33:44:55", "mac_identity_collision", "open", "{}"),
                 ("unresolved-ip-only:1:192.0.2.11", "unresolved_ip_only_runtime", "open", "{}"),
                 ("legacy-identity-conflict:2", "historical_identity_conflict", "resolved", "{}"),
@@ -710,7 +711,8 @@ def test_runtime_assets_findings_acknowledged_legacy_findings(tmp_path, capsys):
     )
     assert code == 0
     assert {item["finding_type"] for item in payload["findings"]} == {
-        "mac_identity_collision", "unresolved_ip_only_runtime"
+        "historical_identity_conflict", "mac_identity_collision",
+        "unresolved_ip_only_runtime",
     }
 
     code, payload = run_cli(
