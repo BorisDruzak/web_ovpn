@@ -9,6 +9,7 @@ from .assignments import assert_safe_payload
 from .config import Settings
 from .errors import ControlError
 from .jsonio import atomic_write_json
+from .locking import exclusive_lock
 
 if TYPE_CHECKING:
     from .jobs import JobRepository
@@ -354,8 +355,9 @@ class JobStageManager:
         *,
         updates: Mapping[str, object] | None = None,
     ) -> JobRecord:
-        return self.advance_unlocked(
-            job_id,
-            next_stage,
-            updates=updates,
-        )
+        with exclusive_lock(self.settings.lock_file):
+            return self.advance_unlocked(
+                job_id,
+                next_stage,
+                updates=updates,
+            )
