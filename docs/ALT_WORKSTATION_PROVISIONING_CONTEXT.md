@@ -1,7 +1,8 @@
 # ALT Workstation Provisioning — verified implementation context
 
 Status: verified end to end on 2026-07-17 and subsequently hardened through
-Phase 1 controller work and Phase 2.1 job reconciliation.
+Phase 1 controller work, Phase 2.1 job reconciliation and Phase 2.2 job and log
+retention.
 
 Repository: `BorisDruzak/web_ovpn`
 
@@ -117,6 +118,7 @@ deploy/alt-linux/control/workstationctl
 deploy/alt-linux/control/alt-provision-worker
 deploy/alt-linux/control/alt_deploy/controller_permissions.py
 deploy/alt-linux/control/alt_deploy/job_reconcile.py
+deploy/alt-linux/control/alt_deploy/job_retention.py
 deploy/alt-linux/control/alt_deploy/vault.py
 deploy/alt-linux/ansible/playbooks/01-preflight.yml
 deploy/alt-linux/ansible/playbooks/02-provision-account.yml
@@ -170,14 +172,17 @@ workstationctl --json provision start <uuid> --vars-file <file>
 workstationctl --json jobs status <job_id>
 workstationctl --json jobs log <job_id>
 workstationctl --json jobs reconcile
+workstationctl --json jobs cleanup
+workstationctl --json jobs cleanup --apply
 ```
 
 Execution boundary:
 
-- machine reads, preflight, Vault check, permission audit, preview and job reads
-  run as `altserver`;
+- machine reads, preflight, Vault check, permission audit, preview, job reads and
+  retention dry-run run as `altserver`;
 - `jobs reconcile` runs as `altserver` and may update only controller job and
   assignment state;
+- `jobs cleanup --apply` requires root and mutates only the private job store;
 - controller permission repair requires root;
 - `provision start` requires root because it creates the transient systemd job;
 - the transient worker runs as `altserver` and writes private job state;
@@ -467,6 +472,37 @@ failures remain explicit errors rather than being hidden as result rejection.
 Reconciliation is currently an explicit operator command. No automatic boot
 service invokes it yet.
 
+## 11.1 Phase 2.2 job and log retention
+
+Implementation: `deploy/alt-linux/control/alt_deploy/job_retention.py`.
+
+The verified policy is:
+
+- successful and failed jobs are retained for 90 days;
+- logs are archived after 14 days from terminal completion;
+- the archive is `ansible.log.gz` mode `0600`;
+- active `queued` and `running` jobs are never archived or deleted;
+- assignment records are retained independently from job cleanup;
+- job-directory and log access use no-follow checks;
+- symlinks inside an expired job are removed as links without touching their
+  external targets.
+
+Dry-run:
+
+```bash
+sudo -u altserver workstationctl --json jobs cleanup
+```
+
+Apply:
+
+```bash
+sudo workstationctl --json jobs cleanup --apply
+```
+
+`jobs log` reads either `ansible.log` or `ansible.log.gz` and reports whether the
+log is archived. No automatic cleanup service is installed; cleanup remains an
+explicit operator action.
+
 ## 12. Verified reference run
 
 Reference target:
@@ -550,6 +586,7 @@ sudo -u altserver workstationctl --json machines show <uuid>
 sudo -u altserver workstationctl --json vault check
 sudo -u altserver workstationctl --json controller permissions
 sudo -u altserver workstationctl --json jobs reconcile
+sudo -u altserver workstationctl --json jobs cleanup
 ```
 
 Install or update controller runtime only with explicit approval:
