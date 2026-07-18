@@ -352,3 +352,28 @@ def test_stage_manager_advances_one_stage_atomically(
         },
     ]
     assert read_json(job.job_dir / "status.json") == launched.status
+
+
+def test_repeated_current_stage_is_byte_identical_noop(
+    tmp_path: Path,
+) -> None:
+    from alt_deploy.job_stages import JobStageManager
+
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    manager = JobStageManager(settings, repository=repository)
+    manager.advance(job.job_id, "launching")
+
+    status_path = job.job_dir / "status.json"
+    before = status_path.read_bytes()
+
+    repeated = manager.advance(
+        job.job_id,
+        "launching",
+        updates={"state": "running"},
+    )
+
+    assert repeated.state == "queued"
+    assert repeated.stage == "launching"
+    assert status_path.read_bytes() == before
