@@ -8,6 +8,19 @@ from typing import Any
 
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+OBSERVER_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "local_device",
+        "site_device",
+        "vpn_client",
+        "telephony",
+        "mgmt",
+        "vipnet_transit",
+        "wan",
+        "noise",
+        "unknown",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -40,8 +53,8 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
                 raise ValueError("cidr must be a non-empty string")
             network = ipaddress.ip_network(cidr, strict=False)
             category = value.get("observer_category", "unknown")
-            if not isinstance(category, str) or not category.strip():
-                raise ValueError("observer_category must be a non-empty string when present")
+            if category not in OBSERVER_CATEGORIES:
+                raise ValueError(f"invalid observer_category {category!r}")
             site = value.get("site", "")
             if not isinstance(site, str):
                 raise ValueError("site must be a string when present")

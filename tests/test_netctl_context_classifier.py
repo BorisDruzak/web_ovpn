@@ -5,6 +5,24 @@ import json
 import pytest
 
 
+def test_observer_categories_match_canonical_schema_contract():
+    import netctl.context_classifier as classifier
+
+    assert getattr(classifier, "OBSERVER_CATEGORIES", None) == frozenset(
+        {
+            "local_device",
+            "site_device",
+            "vpn_client",
+            "telephony",
+            "mgmt",
+            "vipnet_transit",
+            "wan",
+            "noise",
+            "unknown",
+        }
+    )
+
+
 def _activate_segments(conn, segments: list[dict[str, object]], *, revision: int = 1) -> None:
     context_id = "classifier-test"
     revision_row = conn.execute(
@@ -182,6 +200,46 @@ def test_malformed_active_segment_is_rejected(tmp_path):
         _activate_segments(conn, [{"id": "bad", "cidr": "not-a-network", "observer_category": "wan"}])
         with pytest.raises(ValueError, match="active segment bad"):
             load_active_segment_rules(conn)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("category", ["unapproved", " local_device", "local_device "])
+def test_invalid_active_category_aborts_collection_without_writes(tmp_path, category):
+    from netctl.db import connect
+    from netctl.store import save_collection
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        source = _source(conn)
+        assert source is not None
+        _activate_segments(
+            conn,
+            [{"id": "invalid-category", "cidr": "10.80.0.0/24", "observer_category": category}],
+        )
+        before = "\n".join(conn.iterdump())
+
+        with pytest.raises(
+            ValueError,
+            match=r"malformed active segment invalid-category: invalid observer_category",
+        ):
+            save_collection(
+                conn,
+                source,
+                {
+                    "dhcp_leases": [
+                        {"ip": "10.80.0.8", "hostname": "workstation", "status": "bound"}
+                    ],
+                    "arp": [],
+                    "neighbors": [],
+                    "bridge_hosts": [],
+                },
+                "2026-07-18T01:00:00Z",
+            )
+
+        assert "\n".join(conn.iterdump()) == before
+        assert conn.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM network_events").fetchone()[0] == 0
     finally:
         conn.close()
 
