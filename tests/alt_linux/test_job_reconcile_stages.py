@@ -3,12 +3,18 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from alt_deploy.assignments import AssignmentRepository
+from alt_deploy.errors import ControlError
 from alt_deploy.job_reconcile import JobReconciler
 from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
+from alt_deploy.jsonio import atomic_write_json
 
 from test_jobs import provision_request
 from test_registry_cli import make_settings
+from test_worker import successful_result
 
 
 def missing_unit_result(
@@ -222,3 +228,60 @@ def test_reconcile_missing_queued_unit_preserves_launching_stage(
         item["stage"]
         for item in reconciled.status["stage_history"]
     ][-1] == "launching"
+
+
+def test_reconcile_rejects_result_before_recording(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    jobs = JobRepository(settings)
+    assignments = AssignmentRepository(settings)
+    created = jobs.create(provision_request())
+    unit_name = f"alt-provision-{created.job_id}.service"
+    advance_to_employee(settings, created.job_id, unit_name)
+
+    manager = JobStageManager(settings)
+    manager.advance(created.job_id, "login_screen")
+    manager.advance(created.job_id, "verifying")
+    running = jobs.get(created.job_id)
+
+    atomic_write_json(
+        running.job_dir / "result.json",
+        successful_result(running.job_id),
+    )
+
+    def fake_systemctl(
+        command,
+        *,
+        shell,
+        text,
+        capture_output,
+        timeout,
+        check,
+    ):
+        assert shell is False
+        assert text is True
+        assert capture_output is True
+        assert timeout == 15
+        assert check is False
+        return missing_unit_result(command, unit_name)
+
+    monkeypatch.setattr(
+        "alt_deploy.job_reconcile.subprocess.run",
+        fake_systemctl,
+    )
+
+    with pytest.raises(ControlError) as exc:
+        JobReconciler(settings).reconcile()
+
+    assert exc.value.code == "job_reconcile_invalid_stage"
+
+    unchanged = jobs.get(running.job_id)
+    assert unchanged.state == "running"
+    assert unchanged.stage == "verifying"
+    assert [
+        item["stage"]
+        for item in unchanged.status["stage_history"]
+    ][-1] == "verifying"
+    assert assignments.get(running.machine_uuid) is None
