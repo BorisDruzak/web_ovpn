@@ -1,7 +1,11 @@
 # ALT Workstation Provisioning — next steps and acceptance checklist
 
 Status: continuation roadmap after the first verified end-to-end physical-machine
-provisioning run on 2026-07-17. Phases 0, 1, 2.1 and 2.2 are implemented.
+provisioning run on 2026-07-17. Phases 0, 1, 2.1, 2.2 and 2.3 are implemented
+in branch `feat/alt-workstation-provisioning-mvp`.
+
+Phase 2.3 runtime rollout remains a separate explicitly approved operation
+because the strict schema does not migrate old job directories automatically.
 
 Read first:
 
@@ -16,8 +20,8 @@ feat/alt-workstation-provisioning-mvp
 ```
 
 The current MVP is operational. Do not redesign or replace the verified CLI,
-job, assignment, Vault or Ansible boundaries without a specific failing
-requirement and regression coverage.
+job, assignment, Vault, structured-stage or Ansible boundaries without a
+specific failing requirement and regression coverage.
 
 ## Working rules for the next session
 
@@ -37,12 +41,12 @@ requirement and regression coverage.
 8. Keep the future UI on `192.168.100.30` separated from SSH keys and Vault on `192.168.100.17`.
 9. Preserve direct-IP SSH options including `StrictHostKeyChecking=yes`, isolated known-hosts and `ProxyCommand=none`.
 10. Preserve the current LightDM and AccountsService implementation. Do not reintroduce SDDM assumptions.
+11. Do not install Phase 2.3 into the controller runtime or delete old job state without separate approval.
+12. Do not synthesize `stage_history` for pre-Phase-2.3 jobs.
 
 ## Phase 0 — repository and documentation hygiene
 
 Status: implemented.
-
-Priority: immediate.
 
 ### 0.1 Verify branch contents and commit history
 
@@ -62,72 +66,39 @@ Acceptance:
 - all controller, Ansible, installer and ALT test files are present;
 - active secrets and runtime state are absent.
 
-### 0.2 Update stale design and plan references
+### 0.2 Keep historical documents explicitly historical
 
-Files:
-
-```text
-docs/superpowers/specs/2026-07-16-alt-workstation-provisioning-mvp-design.md
-docs/superpowers/plans/2026-07-16-alt-workstation-provisioning-mvp.md
-```
-
-Required corrections:
-
-- SDDM -> LightDM plus AccountsService;
-- `sddm_accounts` -> `lightdm_accounts`;
-- dotted logins such as `i.ivanov` -> `i-ivanov` or `i_ivanov`;
-- allowed login characters exclude `.`;
-- automatic SSH uses `ProxyCommand=none`;
-- provision playbook explicitly loads Vault through `vars_files`;
-- final displayed machine state is `assigned`;
-- sudo denial verification uses `LC_ALL=C` and the actual denial text;
-- first successful physical-machine acceptance run is recorded.
-
-Acceptance:
-
-```bash
-grep -RIn -E 'sddm|SDDM|i\.ivanov' \
-  docs/superpowers/specs/2026-07-16-alt-workstation-provisioning-mvp-design.md \
-  docs/superpowers/plans/2026-07-16-alt-workstation-provisioning-mvp.md
-```
-
-Any remaining matches must be explicitly labelled historical rather than current behavior.
-
-### 0.3 Add a concise deploy README
-
-Create or repair:
+Historical design files may still mention SDDM, dotted logins or coarse
+`stage=ansible`. Current behavior is defined by:
 
 ```text
+docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md
 deploy/alt-linux/README.md
 ```
 
-It should include:
+Any remaining obsolete assumption must be labelled historical rather than
+presented as runtime behavior.
 
-- architecture summary;
-- controller prerequisites;
-- installation command;
-- Vault creation and validation without exposing the secret;
-- CLI examples;
-- request JSON example using a non-dotted login;
-- state and log paths;
-- recovery and diagnostic commands;
-- link to the context and this roadmap.
+### 0.3 Maintain the deploy README
 
-Acceptance:
+The deploy README must continue to include:
 
-- no secret values;
-- commands match the installed implementation;
-- README installation procedure works on a clean controller snapshot.
+- architecture and security boundaries;
+- controller prerequisites and installation;
+- Vault preparation and validation without exposing secrets;
+- CLI examples and request schema;
+- job stages, reconciliation and retention;
+- state, log and recovery paths;
+- full verification commands;
+- links to this roadmap and the context document.
 
 ## Phase 1 — installer and controller hardening
 
 Status: implemented.
 
-Priority: before deploying additional production workstations.
+### 1.1 Dependency preflight
 
-### 1.1 Dependency preflight in the installer
-
-Audit and explicitly validate required controller commands and packages, including at least:
+The installer validates required commands before runtime mutation:
 
 ```text
 python3
@@ -135,87 +106,69 @@ ansible-playbook
 ansible-vault
 systemd-run
 install
-rsync or the actual copy mechanism
+cp
 ssh
 ssh-keyscan
-mkpasswd for initial Vault preparation
+mkpasswd
 ```
 
-The installer must fail early with a clear package/command diagnostic rather than partially installing.
-
-Tests:
-
-- missing dependency returns a nonzero exit;
-- error identifies the missing command;
-- no runtime files are partially replaced before dependency checks pass.
+A missing dependency fails early without partially replacing runtime files.
 
 ### 1.2 Preserve runtime secrets during reinstall
 
-The installer currently succeeded while preserving the active Vault. Add explicit regression coverage for:
+Verified boundary:
 
-- existing encrypted `group_vars/vault.yml` remains byte-identical;
-- mode remains `0600`;
-- owner remains `altserver`;
-- `.ansible-vault-pass` is never copied from the repository;
-- example Vault does not overwrite the active Vault.
+- active encrypted `group_vars/vault.yml` is not copied from the repository;
+- `.ansible-vault-pass` is never copied;
+- example Vault data cannot overwrite runtime Vault data;
+- runtime secret values are not printed by installer verification.
 
-### 1.3 Add a Vault health command
+### 1.3 Vault health command
 
-Preferred CLI addition:
+Implemented command:
 
 ```text
 workstationctl --json vault check
 ```
 
-It should verify without exposing values:
+It validates existence, ownership, mode, Vault header, decryption, required
+variable and yescrypt format without returning the hash.
 
-- Vault file exists;
-- Vault password file exists;
-- ownership and mode are acceptable;
-- file begins with an Ansible Vault header;
-- decryption succeeds;
-- `vault_employee_password_hash` exists;
-- hash format is yescrypt (`$y$`).
+### 1.4 Controller state permissions
 
-Do not return the hash.
-
-### 1.4 Validate controller state permissions
-
-Add tests and an operational audit for:
+Implemented commands:
 
 ```text
-/var/lib/alt-deploy
-/var/lib/alt-deploy/jobs
-/var/lib/alt-deploy/assignments
-/srv/alt-deploy/registration
-/home/altserver/.ssh
-/home/altserver/ansible/group_vars/vault.yml
-/home/altserver/.ansible-vault-pass
+workstationctl --json controller permissions
+workstationctl --json controller permissions repair
 ```
 
-Document expected owner/group/mode and repair only known-safe deviations.
+Repair is root-only and narrowly scoped to known paths and owner/group/mode.
 
 ## Phase 2 — reliability and recovery
 
-Priority: before operating at scale.
+Priority: complete the final repository gate and then perform a controlled
+runtime rollout before operating at scale.
 
 ### 2.1 Recover stale jobs after controller reboot
 
 Status: implemented.
-
-Defined behavior for jobs left in `queued` or `running` when the controller
-restarts or a transient unit disappears:
-
-- genuinely running unit -> report running;
-- queued job without unit -> mark recoverable failure;
-- running job without unit and without result -> mark failed with `worker_lost`;
-- result exists but status update was interrupted -> reconcile to successful only after result validation.
 
 Implemented command:
 
 ```text
 workstationctl --json jobs reconcile
 ```
+
+Current behavior:
+
+- genuinely running unit -> report `still_running` without mutation;
+- queued job without unit -> retryable failure preserving `created`;
+- queued job with a missing recorded unit -> retryable failure preserving `launching`;
+- running job without unit and result -> `worker_lost` while preserving its real stage;
+- valid result recovery -> only from `running/recording`;
+- malformed or invalid result -> retryable failure preserving `recording`;
+- result before `recording` -> fail closed with `job_reconcile_invalid_stage`.
 
 No automatic boot service invokes reconciliation yet.
 
@@ -234,51 +187,109 @@ Implemented contract:
 - successful and failed jobs are retained for 90 days;
 - assignment records are retained independently;
 - `ansible.log` is archived after 14 days as `ansible.log.gz` mode `0600`;
-- cleanup never removes or archives an active `queued` or `running` job;
+- active `queued` and `running` jobs are protected;
 - cleanup never follows symlinks outside the state root;
-- dry-run mode is the default;
+- dry-run is the default;
 - mutating cleanup requires root;
-- `jobs log` transparently reads active and gzip-archived logs.
+- malformed stage history fails closed and is not classified or removed.
 
-Dry-run:
+Commands:
 
 ```text
 workstationctl --json jobs cleanup
-```
-
-Apply:
-
-```text
 workstationctl --json jobs cleanup --apply
 ```
 
-No automatic cleanup service is installed. Both commands remain explicit
-operator actions.
+No automatic cleanup service is installed.
 
 ### 2.3 More precise job stages
 
-Current jobs largely report `stage=ansible`. Add structured stages useful to the UI and troubleshooting, such as:
+Status: implemented.
+
+Canonical sequence:
 
 ```text
-validating
-launching
-connecting
-identity
-employee
-login_screen
-verifying
-recording
-complete
+created -> launching -> validating -> connecting
+-> identity -> employee -> login_screen
+-> verifying -> recording -> complete
 ```
 
-Do not parse human Ansible output to derive authoritative state. Prefer callbacks or explicit stage records.
+Implemented contract:
+
+- every new job starts at `created` with a non-empty `stage_history`;
+- each history entry contains only `stage` and timezone-aware `entered_at`;
+- `state` remains separate from `stage`;
+- failure preserves the last reached stage;
+- successful jobs finish at `complete`;
+- direct stage writes through `JobRepository.update()` are forbidden;
+- transitions are atomic one-step operations through `JobStageManager`;
+- unknown, skipped, backward and terminal transitions fail closed;
+- repeated current-stage markers are byte-identical no-ops;
+- planner records `launching` and the transient systemd unit;
+- worker records `validating`, `connecting`, `recording` and `complete`;
+- Ansible records `identity`, `employee`, `login_screen` and `verifying`;
+- Ansible markers run on the controller only and do not parse task output;
+- `/usr/local/libexec/alt-job-stage` is internal and not a public operator command;
+- reconciliation never creates a synthetic `reconcile` stage;
+- retention and machine reads fail closed on malformed real job history.
+
+No automatic migration exists. Before runtime rollout, old job directories must
+be backed up and explicitly removed after review. The assigned reference UUID
+must not be provisioned again.
+
+Phase 2.3 acceptance gate:
+
+```bash
+.venv/bin/python -m pytest -q tests/alt_linux
+
+python3 -m py_compile \
+  deploy/alt-linux/control/alt_deploy/*.py \
+  deploy/alt-linux/api/process_pending.py \
+  deploy/alt-linux/control/alt-job-stage
+
+bash -n deploy/alt-linux/install-control-plane.sh
+bash -n deploy/alt-linux/bootstrap/bootstrap.sh
+
+ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
+  ansible-playbook --syntax-check \
+  deploy/alt-linux/ansible/playbooks/01-preflight.yml
+
+ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
+  ansible-playbook --syntax-check \
+  deploy/alt-linux/ansible/playbooks/02-provision-account.yml
+
+git diff --check
+test -z "$(git status --short)"
+```
+
+### 2.3.1 Controlled runtime rollout
+
+Status: not started; requires explicit approval.
+
+Required sequence:
+
+1. finish the clean repository gate;
+2. stop creating new jobs;
+3. inspect active jobs through `workstationctl`;
+4. back up `/var/lib/alt-deploy/jobs/` without printing private content;
+5. reconcile or resolve active legacy jobs before schema replacement;
+6. explicitly remove obsolete test job directories after approval;
+7. install with `install-control-plane.sh`;
+8. verify helper installation and executable mode;
+9. create a new job only for a disposable, non-assigned machine;
+10. verify full `stage_history` and recovery behavior.
+
+Rollback must restore the controller package and job-store backup together.
+Never try to downgrade while keeping newly structured jobs under an old runtime.
 
 ### 2.4 Failure injection tests
 
-Add automated or controlled live tests for:
+Status: next behavior phase.
+
+Add automated or controlled tests for:
 
 - SSH unavailable;
-- host key mismatch;
+- host-key mismatch;
 - SSSD proxy accidentally inherited;
 - Vault missing;
 - Vault decryption failure;
@@ -288,11 +299,15 @@ Add automated or controlled live tests for:
 - insufficient disk space;
 - AccountsService inactive;
 - LightDM inactive;
-- controller reboot during job;
-- target reboot during job;
-- assignment write failure after target verification.
+- controller reboot during a stage;
+- target reboot during a stage;
+- assignment write failure after target verification;
+- stage helper missing or non-executable;
+- stage marker rejection before a role;
+- malformed `stage_history` in each job reader.
 
-Every failure must preserve secrets, produce a specific error code and leave the machine safely retryable unless an assignment was completed.
+Every failure must preserve secrets, return a specific error code and retain the
+last reached stage. A machine remains retryable unless assignment completed.
 
 ## Phase 3 — second-machine acceptance and idempotency
 
@@ -300,7 +315,7 @@ Priority: before broad rollout.
 
 ### 3.1 Provision a second clean physical or VM target
 
-Do not reuse only the existing assigned reference machine.
+Do not reuse the existing assigned reference machine.
 
 Acceptance sequence:
 
@@ -310,11 +325,12 @@ Acceptance sequence:
 4. preflight success;
 5. preview success;
 6. root-only provision start;
-7. job success;
-8. reboot;
-9. LightDM account visibility check;
-10. graphical employee login;
-11. assignment and repeat-provision protection.
+7. complete structured stage history;
+8. job success;
+9. reboot;
+10. LightDM account visibility check;
+11. graphical employee login;
+12. assignment and repeat-provision protection.
 
 ### 3.2 Idempotency on a compatible partial state
 
@@ -326,7 +342,8 @@ Create controlled partial states and rerun provisioning:
 - AccountsService records already correct;
 - LightDM drop-in already correct.
 
-Expected result: no destructive changes, final verification succeeds, and unnecessary tasks report `ok` rather than `changed`.
+Expected result: no destructive changes, final verification succeeds, stages
+remain monotonic, and unnecessary tasks report `ok` rather than `changed`.
 
 ### 3.3 Conflict safety
 
@@ -352,30 +369,31 @@ workstationctl --json release preview <uuid> --vars-file <file>
 workstationctl --json release start <uuid> --vars-file <file>
 ```
 
-Decisions that must be explicit:
+Decisions must be explicit:
 
-- whether the previous local employee account is disabled, retained or archived;
+- whether the previous local account is disabled, retained or archived;
 - whether the home directory is retained, renamed, backed up or removed;
-- whether Nextcloud/browser/application data is retained;
+- whether Nextcloud, browser and application data are retained;
 - whether the shared employee password is reapplied;
-- whether the workstation hostname changes;
-- who can approve release;
+- whether the hostname changes;
+- who approves release;
 - audit fields and reason codes;
 - rollback behavior.
 
 Acceptance:
 
 - preview is non-mutating;
-- release requires root or a constrained privileged API action;
+- release requires a constrained privileged action;
 - data is never deleted by default;
 - previous and new assignments remain auditable;
-- a failed release does not leave the machine open for unsafe parallel provisioning.
+- failed release cannot open unsafe parallel provisioning.
 
 ## Phase 5 — constrained deployment API on 192.168.100.17
 
 Priority: prerequisite for the web UI.
 
-The API must wrap the existing domain layer and CLI behavior. It must not accept arbitrary shell commands, playbook paths, inventory text or Ansible extra vars.
+The API wraps the existing domain layer. It must not accept arbitrary shell
+commands, playbook paths, inventory text or Ansible extra vars.
 
 Suggested endpoints:
 
@@ -391,28 +409,17 @@ GET  /api/v1/provision-jobs/{job_id}/log
 
 Security requirements:
 
-- authentication between `192.168.100.30` and `192.168.100.17`;
-- TLS, preferably organization CA or mutual TLS;
+- authenticated and encrypted traffic between `.30` and `.17`;
 - network allowlist for the UI host;
 - strict request schemas;
-- no Vault values in API responses;
-- no private key access by the API caller;
-- audit operator identity, action, machine UUID, request summary and result;
+- no Vault values or private-key access;
+- audit operator, action, machine UUID, request summary and result;
 - rate limits and duplicate-request protection;
-- root transition only through a narrowly scoped helper, systemd/polkit action or sudo rule;
-- provision preview remains unprivileged and provision start remains explicitly privileged.
+- root transition through a narrowly scoped helper, systemd/polkit action or
+  exact sudo rule;
+- preview remains unprivileged and start remains explicitly privileged.
 
-### Privileged boundary design
-
-Do not run the whole API as root.
-
-Evaluate one constrained approach:
-
-1. root-owned helper that accepts only an existing validated job ID;
-2. systemd service template activated through a restricted D-Bus/polkit rule;
-3. sudoers rule permitting exactly `workstationctl provision start` with validated file ownership and path constraints.
-
-Write the threat model before implementation.
+Do not run the whole API as root. Write the threat model first.
 
 ## Phase 6 — web operator UI on 192.168.100.30
 
@@ -423,40 +430,41 @@ Use the existing `web_ovpn` authentication/session layer.
 Minimum UI:
 
 - workstation table with search and filters;
-- states: ready, preflight failed, awaiting assignment, provisioning, assigned;
+- ready, preflight-failed, awaiting-assignment, provisioning and assigned states;
+- current stage plus full `stage_history` timeline;
 - machine details and latest preflight checks;
-- provision form;
-- preview confirmation screen;
-- explicit destructive/privileged confirmation;
+- provision form and preview confirmation;
+- explicit privileged confirmation;
 - live or polled job status;
-- bounded job log viewer;
+- bounded log viewer;
 - assignment details;
 - clear error codes and remediation hints.
 
-The browser must never receive:
-
-- SSH private keys;
-- Vault ciphertext or password;
-- employee password hash;
-- arbitrary filesystem paths that enable traversal;
-- arbitrary Ansible arguments.
+The browser must never receive SSH private keys, Vault material, employee hashes,
+arbitrary filesystem paths or arbitrary Ansible arguments.
 
 ## Phase 7 — additional workstation roles
 
-Priority: add one independent role at a time after API/operational stability.
+Priority: add one independent role at a time after API and operational stability.
 
 Candidate order:
 
 1. organization local CA certificate installation;
-2. browser installation and managed policies;
-3. Nextcloud client installation and autostart;
-4. ONLYOFFICE Desktop Editors;
-5. network shares and `scan` share integration;
-6. desktop/menu shortcuts;
-7. standard printers;
-8. endpoint monitoring agent;
-9. approved security software;
-10. CryptoPro and certificate workflows, only after licensing and secret-handling design.
+2. managed Plasma profile and desktop defaults;
+3. browser installation and managed policies;
+4. Nextcloud client installation and autostart;
+5. ONLYOFFICE Desktop Editors;
+6. network shares and `scan` share integration;
+7. desktop and menu shortcuts;
+8. standard printers;
+9. endpoint monitoring agent;
+10. approved security software;
+11. CryptoPro and certificate workflows after licensing and secret-handling design.
+
+For Plasma, capture configuration from a clean reference account, separate
+portable settings from monitor/cache/session state, and deploy the profile
+before first graphical login. Do not copy an entire home `.config`, `.cache` or
+`.local/share` tree.
 
 Each role must have:
 
@@ -468,19 +476,21 @@ Each role must have:
 - explicit rollback or disable strategy;
 - structured result fields without secrets.
 
-Do not turn `02-provision-account.yml` into one large monolithic office-setup playbook. Add profile composition and versioning first.
+Do not turn `02-provision-account.yml` into one monolithic office-setup
+playbook. Add profile composition and versioning first.
 
 ## Phase 8 — profile and configuration model
 
 Current profile is fixed to `standard`.
 
-Before adding multiple profiles, define a versioned contract, for example:
+Before adding multiple profiles, define a versioned server-side contract:
 
 ```yaml
 profile: standard
 profile_version: 1
 roles:
   - local_account
+  - plasma_profile
   - organization_ca
   - browser
   - nextcloud
@@ -502,127 +512,105 @@ Consider adding:
 - last registration time;
 - last successful SSH check;
 - last preflight time;
-- OS version;
-- hardware summary;
-- current assigned employee;
-- assignment history;
+- OS version and hardware summary;
+- current assigned employee and assignment history;
 - last provision/update job;
 - stale/offline indication;
 - manual notes and location/department metadata.
 
-Keep DMI UUID as durable identity. Treat IP as current operational data and MAC as secondary identity.
+Keep DMI UUID as durable identity. Treat IP as current operational data and MAC
+as secondary identity.
 
-Do not move from JSON state to PostgreSQL merely for convenience. Introduce a database when concurrent API operations, querying, history or transactional requirements justify it. If migrating, preserve import/export and recovery tooling.
+Do not move from JSON state to PostgreSQL merely for convenience. Introduce a
+database when concurrent API operations, querying, history or transactional
+requirements justify it. Preserve import/export and recovery tooling.
 
 ## Phase 10 — security hardening
 
 ### Target SSH account
 
-Audit and consider restricting the `ansible` authorized key with options appropriate to Ansible operation. Evaluate carefully because overly restrictive `command=` rules can break modules.
-
-At minimum review:
-
-- agent forwarding;
-- port forwarding;
-- X11 forwarding;
-- PTY allocation;
-- SSH source-address restriction to the controller;
-- `AllowUsers ansible` or equivalent interaction with local admin access;
-- key rotation workflow;
-- host-key replacement workflow after reinstall.
+Review agent forwarding, port forwarding, X11 forwarding, PTY allocation,
+controller source restrictions, key rotation and host-key replacement. Avoid
+restrictions that break required Ansible module execution.
 
 ### Audit trail
 
-Record:
-
-- operator identity;
-- machine UUID;
-- action and request fields excluding secrets;
-- preview result;
-- approval/start time;
-- job ID;
-- completion or failure;
-- release/reassignment history.
+Record operator identity, machine UUID, action, non-secret request fields,
+preview, approval, job ID, completion/failure and release history.
 
 ### Secret rotation
 
-Add a documented process to:
-
-- rotate `.ansible-vault-pass`;
-- rekey `vault.yml`;
-- rotate the shared employee password hash;
-- decide whether existing employee accounts are updated immediately or through an explicit credential-rotation job;
-- verify no old hashes remain in backups or logs.
+Document Vault password rotation, `vault.yml` rekeying, employee hash rotation,
+existing-account update policy and backup/log sanitation.
 
 ## Phase 11 — observability and operations
 
-Add controller monitoring for:
+Add monitoring for:
 
 - registration API and static HTTP units;
 - pending processor path/service;
-- failed preflights;
-- failed provision jobs;
-- stale queued/running jobs;
+- failed preflights and jobs;
+- stale queued/running jobs and their current stages;
 - disk use under `/var/lib/alt-deploy`;
-- Vault health without exposing contents;
-- last successful machine registration;
+- Vault health without contents;
+- last successful registration;
 - SSH host-key mismatches.
 
-Possible outputs:
-
-- structured journal fields;
-- Prometheus textfile metrics;
-- Zabbix items/triggers;
-- daily operational summary.
+Possible outputs include structured journal fields, Prometheus textfile metrics,
+Zabbix items/triggers and a daily operational summary.
 
 ## Phase 12 — CI and review gate
 
-Add a GitHub Actions workflow or equivalent CI job that runs without real runtime secrets:
+Add CI that runs without runtime secrets:
 
 ```bash
 python -m pytest -q tests/alt_linux
+python -m py_compile deploy/alt-linux/control/alt_deploy/*.py
 ansible-playbook --syntax-check deploy/alt-linux/ansible/playbooks/01-preflight.yml
 ansible-playbook --syntax-check deploy/alt-linux/ansible/playbooks/02-provision-account.yml
 git diff --check
 ```
 
-Use fixture Vault data only where tests require it. Never add the runtime Vault or password file to CI secrets unless a later integration test has an approved threat model.
-
 Recommended merge gate:
 
 - ALT tests pass;
+- controller Python compiles;
+- installer and bootstrap Bash syntax pass;
 - both playbooks pass syntax check;
 - no forbidden secret paths in the diff;
-- documentation updated for contract changes;
-- at least one reviewer checks security-boundary changes;
-- live acceptance required for changes to SSH, accounts, LightDM, Vault or assignment semantics.
+- documentation is updated for contract changes;
+- security-boundary changes receive review;
+- SSH, accounts, LightDM, Vault and assignment changes receive live acceptance.
 
 ## Immediate next implementation slice
 
-Continue Phase 2 and Phase 3 in this order:
+Continue in this order:
 
-1. complete full Phase 2.2 verification and update controller runtime;
-2. run `jobs cleanup` dry-run only on the real controller and review its report;
-3. implement Phase 2.3 structured job stages through TDD;
-4. implement Phase 2.4 failure-injection coverage, beginning with controller-only fixtures;
-5. provision a second clean disposable machine for Phase 3.1 acceptance;
-6. verify partial-state idempotency and conflict safety;
-7. design Phase 4 release/reassignment before using the system for employee turnover;
-8. design the constrained API privilege boundary before beginning the web UI.
+1. run the full clean Phase 2.3 repository gate;
+2. review the complete diff and commit history;
+3. obtain explicit approval for runtime rollout;
+4. back up and retire incompatible legacy test jobs;
+5. install and smoke-test Phase 2.3 on a disposable non-assigned machine;
+6. implement Phase 2.4 failure-injection coverage;
+7. provision a second clean disposable machine for Phase 3.1 acceptance;
+8. verify partial-state idempotency and conflict safety;
+9. design release/reassignment before employee turnover;
+10. design the constrained API privilege boundary before the web UI.
 
-Do not begin the web UI before the constrained API and privilege-boundary design are documented and tested.
+Do not begin the web UI before the constrained API and privilege-boundary design
+are documented and tested.
 
 ## Definition of ready for broad workstation rollout
 
-The system is ready for a controlled multi-machine rollout only when all of the following are true:
+The system is ready for a controlled multi-machine rollout only when:
 
-- second clean machine passes the complete E2E flow;
+- the Phase 2.3 runtime rollout is complete and observed on a disposable target;
+- a second clean machine passes the complete E2E flow;
 - partial-state retry and conflict tests pass;
 - installer dependency and Vault-preservation tests pass;
-- stale job recovery policy is implemented;
-- job/log retention is implemented;
-- release/reassignment design is approved or rollout policy explicitly forbids reassignment;
+- stale job recovery and retention are operationally verified;
+- release/reassignment design is approved or reassignment is explicitly forbidden;
 - controller state and secret permissions are audited;
 - operational alerts exist for failed jobs and controller services;
-- old documentation no longer presents SDDM or dotted logins as current behavior;
-- a repeatable rollback/recovery procedure is documented.
+- documentation does not present SDDM, dotted logins or coarse stages as current;
+- rollback and recovery procedures are repeatable and documented.
