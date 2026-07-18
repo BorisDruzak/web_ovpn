@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -384,6 +385,10 @@ def test_nextcloud_probe_preserves_raw_status_values_for_strict_parser():
         ("directum", {"directumrx", "mongo", "rabbitmq", "redis", "iis", "dns"}),
         ("active_directory", {"dns", "ntds", "adws"}),
     ],
+)
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="requires PowerShell to execute generated Windows probe bodies",
 )
 def test_windows_probe_body_with_mocked_commands_emits_json(role, expected_services):
     calls = []
