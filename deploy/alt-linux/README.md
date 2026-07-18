@@ -146,14 +146,22 @@ Read-only audit:
 sudo -u altserver workstationctl --json controller permissions
 ```
 
+An unhealthy audit returns `error.code=controller_permissions_unhealthy` with
+boolean diagnostics and never returns file contents.
+
 Repair only these known paths as root:
 
 ```bash
 sudo workstationctl --json controller permissions repair
 ```
 
-Repair refuses missing paths, symbolic links and unexpected object types. It
-uses no-follow file descriptors and changes only owner, group and mode.
+Repair requires root, refuses missing paths, symbolic links and unexpected
+object types, and returns `controller_permissions_repair_blocked` when the
+pre-mutation safety check fails. It uses no-follow file descriptors, changes
+only owner, group and mode, and does not create a missing Vault file or password
+file. A system error during a permitted repair returns
+`controller_permissions_repair_failed`; run the read-only audit again before
+retrying.
 
 ## CLI and provision request
 
@@ -275,7 +283,8 @@ Possible actions:
   inactive-worker result; recovery records `recording -> complete`, writes the
   assignment and makes the job successful;
 - `result_rejected`: malformed or invalid results make the job a retryable
-  failure while preserving `recording`; no assignment is written.
+  failure while preserving `recording`, with
+  `error_code=invalid_provision_result`; no assignment is written.
 
 A result is never recovered while the worker is active. Recovery from any stage
 other than `recording` fails with `job_reconcile_invalid_stage`. Assignment,
