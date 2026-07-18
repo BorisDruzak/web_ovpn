@@ -13,7 +13,7 @@ from alt_deploy.job_stages import (
     validate_job_stage_status,
 )
 from alt_deploy.jobs import JobRepository
-from alt_deploy.jsonio import read_json
+from alt_deploy.jsonio import atomic_write_json, read_json
 
 from test_jobs import provision_request
 from test_registry_cli import make_settings
@@ -249,3 +249,24 @@ def test_new_job_has_created_stage_history(tmp_path: Path) -> None:
             "entered_at": status["created_at"],
         }
     ]
+
+
+def test_malformed_real_job_is_not_hidden_by_get_or_list(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    status = read_json(job.job_dir / "status.json")
+    status.pop("stage_history")
+    atomic_write_json(job.job_dir / "status.json", status)
+
+    with pytest.raises(ControlError) as exc:
+        repository.get(job.job_id)
+
+    assert exc.value.code == "job_stage_history_invalid"
+
+    with pytest.raises(ControlError) as exc:
+        repository.list()
+
+    assert exc.value.code == "job_stage_history_invalid"
