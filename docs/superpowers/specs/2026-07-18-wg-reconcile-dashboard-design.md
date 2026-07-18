@@ -22,11 +22,14 @@ read-only runtime state in the existing web dashboard.
 
 ### Policy reconciler
 
-`vpn-policy.sh` gains a `reconcile` command. It invokes its existing
-idempotent policy routine: when `wg0` exists, it installs `default dev wg0`,
-the mark rule, the mangle chain and the NAT chain; when `wg0` is absent, it
-installs the mark rule/mangle chain and `unreachable default`, with no WG NAT
-chain.
+`vpn-policy.sh` gains a `reconcile` command. It validates the existing
+active or fail-closed state before writing: when `wg0` exists and the current
+policy is healthy, it makes no changes; if that policy drifted, it installs
+`default dev wg0`, the mark rule, the mangle chain and the NAT chain. When
+`wg0` is absent and the fail-closed state is already healthy, it makes no
+changes; if it drifted, it installs the mark rule/mangle chain and
+`unreachable default`, with no WG NAT chain. This prevents the timer from
+flushing and recreating healthy PBR/NAT objects every minute.
 
 `vpn-policy-reconcile.service` runs that command as root. Its paired timer
 starts one minute after boot and every minute thereafter. It has no dependency

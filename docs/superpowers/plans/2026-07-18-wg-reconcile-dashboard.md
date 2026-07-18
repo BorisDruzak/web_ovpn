@@ -4,7 +4,7 @@
 
 **Goal:** Keep VLAN50 fail-closed and self-reconcile the existing WG policy, while showing sanitized runtime health in the web dashboard.
 
-**Architecture:** `vpn-policy.sh reconcile` remains the sole writer of table 123, mark 0x1 and the two managed iptables-nft chains. A root systemd timer invokes that command every minute but never starts or restarts WG. `vpnctl runtime-health` remains a read-only source; an API Bearer endpoint and a session-authenticated dashboard endpoint expose its sanitized JSON to the existing network dashboard.
+**Architecture:** `vpn-policy.sh reconcile` remains the sole writer of table 123, mark 0x1 and the two managed iptables-nft chains. A root systemd timer invokes that command every minute but never starts or restarts WG. It first verifies the appropriate active or fail-closed state and writes only when that state has drifted; it must not flush and recreate healthy chains on every tick. `vpnctl runtime-health` remains a read-only source; an API Bearer endpoint and a session-authenticated dashboard endpoint expose its sanitized JSON to the existing network dashboard.
 
 **Tech Stack:** Bash, systemd, iproute2, iptables-nft, Python 3 stdlib, FastAPI, Jinja2, browser Fetch API, pytest.
 
@@ -31,6 +31,8 @@
 
 **Interfaces:** `/usr/local/sbin/vpn-policy.sh reconcile` exits 0 after applying either the active-WG state or fail-closed state. `vpn-policy-reconcile.timer` invokes it one minute after boot and every minute thereafter.
 
+**Reconciliation invariant:** With `wg0` present, `reconcile` returns without writes if `status` already succeeds; otherwise it calls `start`. With `wg0` absent, it returns without writes if the mark/rule, mangle chain, unreachable table-123 default, and absence of the NAT chain/hook already form the fail-closed state; otherwise it calls `stop`.
+
 - [ ] **Step 1: Write failing asset tests**
 
 ```python
@@ -38,6 +40,18 @@ def test_policy_script_exposes_reconcile_command():
     text = (ROOT / "deploy" / "vpn-policy.sh").read_text(encoding="utf-8")
     assert "reconcile) reconcile ;;" in text
     assert 'usage: $0 {start|stop|reconcile|status}' in text
+
+
+def test_reconcile_does_not_rebuild_a_healthy_active_policy(tmp_path):
+    # Run against mocked ip/iptables commands and assert `reconcile` only
+    # probes a healthy active state; it must not flush or recreate chains.
+    ...
+
+
+def test_reconcile_repairs_only_a_drifted_policy_or_fail_closed_state(tmp_path):
+    # Mock a missing managed object, then assert `reconcile` calls `start` or
+    # `stop` respectively; no WireGuard/OpenVPN lifecycle command is allowed.
+    ...
 
 
 def test_reconcile_timer_is_root_scoped_and_does_not_manage_wg_service():
@@ -69,11 +83,21 @@ Expected: failures for the missing reconcile command and timer assets.
 - [ ] **Step 3: Add the idempotent reconciler command and systemd assets**
 
 ```bash
+fail_closed_status() {
+  ! ip link show dev "$WG_IF" >/dev/null
+  ip rule show | grep -Eq "^${PBR_PRIORITY}:.*fwmark ${PBR_MARK}.*lookup ${PBR_TABLE}"
+  ip route show table "$PBR_TABLE" | grep -Eq "^unreachable default"
+  iptables -w -t mangle -C PREROUTING -j "$MANGLE_CHAIN"
+  iptables -w -t mangle -C "$MANGLE_CHAIN" -i "$PBR_IN_IF" -j MARK --set-xmark "$PBR_MARK/$PBR_MASK"
+  ! iptables -w -t nat -C POSTROUTING -j "$NAT_CHAIN"
+  ! iptables -w -t nat -S "$NAT_CHAIN" >/dev/null 2>&1
+}
+
 reconcile() {
   if ip link show dev "$WG_IF" >/dev/null; then
-    start
+    status || start
   else
-    stop
+    fail_closed_status || stop
   fi
 }
 
