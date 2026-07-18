@@ -164,6 +164,8 @@ Expected addressing:
 
 The expected production design is routing without SNAT from OpenVPN to ViPNet. `nat-status` should report `mode=disabled_expected`; legacy `vipnet-openvpn-nat.service` and `VIPNET_OPENVPN_SNAT` should be inactive or absent.
 
+`openvpn-server@server.service` starts OpenVPN with `--status /run/openvpn-server/status-server.log`; this command-line setting overrides any `status` directive in `server.conf`. Set `STATUS_LOG` to that runtime path so `vpnctl connected --source status-log` uses the live fallback file.
+
 ## Route Update Behavior
 
 When client networks are changed from the web UI or API, the app writes CCD through `vpnctl`, runs auto sync, then calls `reconnect-client`. If the client is connected and OpenVPN management is available, the session is dropped so the client reconnects and receives fresh pushed routes. If the client is offline, the new CCD is applied at the next connection.

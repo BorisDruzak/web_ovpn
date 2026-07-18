@@ -31,7 +31,7 @@ elif cmd == "connected":
 elif cmd == "server-config":
     sub = args[2]
     if sub == "inspect":
-        print(json.dumps({"status": "ok", "server_conf": "/etc/openvpn/server/server.conf", "settings": {"server_network": "192.168.50.0/24", "server_tunnel_ip": "192.168.50.1", "status_path": "/var/log/openvpn/status.log", "status_interval": 10, "status_version": 2, "management_enabled": True, "management_socket": "/run/openvpn/server.sock", "management_client_group": "openvpn-web", "management_log_cache": 300}, "warnings": []}))
+        print(json.dumps({"status": "ok", "server_conf": "/etc/openvpn/server/server.conf", "settings": {"server_network": "192.168.50.0/24", "server_tunnel_ip": "192.168.50.1", "status_path": "/run/openvpn-server/status-server.log", "status_interval": 10, "status_version": 2, "management_enabled": True, "management_socket": "/run/openvpn/server.sock", "management_client_group": "openvpn-web", "management_log_cache": 300}, "warnings": []}))
     elif sub == "apply":
         print(json.dumps({"status": "ok", "changed": True, "settings": {"status_interval": 10, "status_version": 2}}))
     elif sub == "restart-openvpn":

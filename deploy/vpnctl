@@ -61,7 +61,9 @@ DEFAULTS = {
     "DNS_DOMAIN": "sosnadmin.local",
     "VIPNET_NETS_FILE": "/etc/openvpn/vipnet-nets.conf",
     "SERVER_CONF": "/etc/openvpn/server/server.conf",
-    "STATUS_LOG": "/var/log/openvpn/status.log",
+    # Debian's openvpn-server@.service supplies --status itself, overriding a
+    # server.conf status directive. Keep the fallback reader aligned with it.
+    "STATUS_LOG": "/run/openvpn-server/status-server.log",
     "SERVICE_NAME": "openvpn-server@server",
     "REGISTRY_DB": "/var/lib/openvpn-client-manager/openvpn-manager.sqlite",
     "NETWORKS_DB": "/var/lib/openvpn-client-manager/networks.json",
