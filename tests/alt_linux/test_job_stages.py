@@ -310,3 +310,45 @@ def test_repository_update_validates_result_before_write(
 
     assert exc.value.code == "job_stage_history_invalid"
     assert status_path.read_bytes() == before
+
+
+def test_stage_manager_advances_one_stage_atomically(
+    tmp_path: Path,
+) -> None:
+    from alt_deploy.job_stages import JobStageManager
+
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    entered_at = (
+        datetime.fromisoformat(job.created_at)
+        .astimezone(timezone.utc)
+        + timedelta(seconds=1)
+    ).isoformat()
+    manager = JobStageManager(
+        settings,
+        clock=lambda: entered_at,
+        repository=repository,
+    )
+    unit = f"alt-provision-{job.job_id}.service"
+
+    launched = manager.advance(
+        job.job_id,
+        "launching",
+        updates={"systemd_unit": unit},
+    )
+
+    assert launched.state == "queued"
+    assert launched.stage == "launching"
+    assert launched.status["systemd_unit"] == unit
+    assert launched.status["stage_history"] == [
+        {
+            "stage": "created",
+            "entered_at": job.created_at,
+        },
+        {
+            "stage": "launching",
+            "entered_at": entered_at,
+        },
+    ]
+    assert read_json(job.job_dir / "status.json") == launched.status
