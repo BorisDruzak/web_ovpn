@@ -187,6 +187,7 @@ sudo -u altserver workstationctl --json provision preview <uuid> \
 sudo -u altserver workstationctl --json jobs status <job_id>
 sudo -u altserver workstationctl --json jobs log <job_id>
 sudo -u altserver workstationctl --json jobs reconcile
+sudo -u altserver workstationctl --json jobs cleanup
 ```
 
 `jobs reconcile` is not read-only. It may update controller-side `status.json`
@@ -258,7 +259,41 @@ Possible actions:
 A result is never recovered while the worker is still active. Assignment-store,
 systemd and invalid-unit errors are not hidden as result-validation failures.
 
-Reconciliation is currently an explicit operator command. No automatic boot service invokes it yet.
+Reconciliation is currently an explicit operator command. No automatic boot
+service invokes it yet.
+
+## Job and log retention
+
+Retention applies only to:
+
+```text
+/var/lib/alt-deploy/jobs/<job_id>/
+```
+
+The current policy is:
+
+- successful and failed jobs are retained for 90 days;
+- their `ansible.log` files are archived after 14 days as `ansible.log.gz`;
+- `queued` and `running` jobs are never archived or deleted by cleanup;
+- assignment records under `/var/lib/alt-deploy/assignments/` are retained
+  independently;
+- cleanup does not follow symbolic links outside the jobs directory.
+
+Review the planned actions without changing state:
+
+```bash
+sudo -u altserver workstationctl --json jobs cleanup
+```
+
+Apply the reported archive and deletion actions explicitly as root:
+
+```bash
+sudo workstationctl --json jobs cleanup --apply
+```
+
+`jobs log` transparently reads both `ansible.log` and `ansible.log.gz` and
+returns `archived=true` for a gzip-backed log. No automatic cleanup service is
+installed; both dry-run and apply are explicit operator commands.
 
 ## State, diagnostics, and recovery
 
@@ -272,7 +307,7 @@ Controller state:
 ```
 
 Each job directory may contain `request.json`, `status.json`, `result.json`,
-`ansible.log` and `provision-result.json`.
+`ansible.log`, `ansible.log.gz` and `provision-result.json`.
 
 Target assignment state:
 
@@ -289,6 +324,7 @@ sudo -u altserver workstationctl --json controller permissions
 sudo -u altserver workstationctl --json jobs status <job_id>
 sudo -u altserver workstationctl --json jobs log <job_id>
 sudo -u altserver workstationctl --json jobs reconcile
+sudo -u altserver workstationctl --json jobs cleanup
 ```
 
 Controller service diagnostics:
@@ -337,6 +373,7 @@ deploy/alt-linux/
 │   ├── alt_deploy/
 │   │   ├── controller_permissions.py
 │   │   ├── job_reconcile.py
+│   │   ├── job_retention.py
 │   │   └── vault.py
 │   ├── workstationctl
 │   └── alt-provision-worker
