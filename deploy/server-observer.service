@@ -1,0 +1,31 @@
+[Unit]
+Description=OpenVPN gateway server health observer
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=openvpm
+Group=openvpn-web
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/openvpn-web/server-observer
+ExecStart=/usr/local/sbin/server-observer

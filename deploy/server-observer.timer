@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect OpenVPN gateway server health every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=server-observer.service
+
+[Install]
+WantedBy=timers.target

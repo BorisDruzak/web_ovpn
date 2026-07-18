@@ -47,6 +47,12 @@ sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
 sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
+sudo_cmd install -m 0755 "$SRC/deploy/server-observer" /usr/local/sbin/server-observer
+sudo_cmd install -d -m 0750 -o openvpm -g openvpn-web /var/lib/openvpn-web/server-observer
+if [[ ! -e /etc/openvpn-web/server-observer.json ]]; then
+  sudo_cmd install -m 0640 -o root -g openvpn-web \
+    "$SRC/deploy/server-observer.json.sample" /etc/openvpn-web/server-observer.json
+fi
 sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
 sudo_cmd chmod 0755 /etc/netctl /etc/netctl/sources.d
 sudo_cmd chown -R netctl:netctl /var/lib/netctl
@@ -232,12 +238,15 @@ sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.service" /etc/systemd
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.service" /etc/systemd/system/vpn-runtime-health.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
+sudo_cmd install -m 0644 "$SRC/deploy/server-observer.service" /etc/systemd/system/server-observer.service
+sudo_cmd install -m 0644 "$SRC/deploy/server-observer.timer" /etc/systemd/system/server-observer.timer
 sudo_cmd systemctl daemon-reload
 sudo_cmd systemctl enable openvpn-web.service
 sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
 sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer
+sudo_cmd systemctl enable --now server-observer.timer
 sudo_cmd systemctl restart openvpn-web.service
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'
 cat /tmp/openvpn-web-admin-password.txt
