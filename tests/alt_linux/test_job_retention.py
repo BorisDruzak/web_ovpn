@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gzip
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -133,3 +135,93 @@ def test_cleanup_dry_run_classifies_jobs_without_mutation(
     assert archivable_log.read_text(encoding="utf-8") == "archive me\n"
     assert not (archivable.job_dir / "ansible.log.gz").exists()
     assert assignments.get(expired.machine_uuid) == assignment
+
+
+def test_cleanup_apply_archives_log_atomically_and_idempotently(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    jobs = JobRepository(settings)
+    assignments = AssignmentRepository(settings)
+    now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+
+    archivable = jobs.create(provision_request())
+    _set_status(
+        archivable,
+        state="failed",
+        stage="ansible",
+        finished_at=(now - timedelta(days=30)).isoformat(),
+    )
+    log_path = archivable.job_dir / "ansible.log"
+    log_content = "first line\nsecond line\n"
+    log_path.write_text(log_content, encoding="utf-8")
+
+    active = jobs.create(provision_request())
+    _set_status(
+        active,
+        state="running",
+        stage="ansible",
+        created_at=(now - timedelta(days=400)).isoformat(),
+    )
+    active_log = active.job_dir / "ansible.log"
+    active_log.write_text("active log\n", encoding="utf-8")
+
+    assignment = assignment_payload(job_id=archivable.job_id)
+    assignments.write(archivable.machine_uuid, assignment)
+
+    report = JobRetentionManager(settings).cleanup(
+        apply=True,
+        now=now,
+        retention_days=90,
+        archive_after_days=14,
+    )
+
+    assert report["status"] == "ok"
+    assert report["dry_run"] is False
+    assert report["checked"] == 2
+    assert report["actions"] == [
+        {
+            "job_id": archivable.job_id,
+            "state": "failed",
+            "action": "archive_log",
+            "age_days": 30,
+            "applied": True,
+        }
+    ]
+    assert report["skipped"] == [
+        {
+            "job_id": active.job_id,
+            "state": "running",
+            "reason": "active_job",
+        }
+    ]
+
+    archive_path = archivable.job_dir / "ansible.log.gz"
+    assert archivable.job_dir.is_dir()
+    assert not log_path.exists()
+    assert archive_path.is_file()
+    assert stat.S_IMODE(archive_path.stat().st_mode) == 0o600
+    with gzip.open(archive_path, "rt", encoding="utf-8") as handle:
+        assert handle.read() == log_content
+
+    assert active.job_dir.is_dir()
+    assert active_log.read_text(encoding="utf-8") == "active log\n"
+    assert assignments.get(archivable.machine_uuid) == assignment
+
+    second = JobRetentionManager(settings).cleanup(
+        apply=True,
+        now=now,
+        retention_days=90,
+        archive_after_days=14,
+    )
+
+    assert second["actions"] == []
+    assert {
+        item["job_id"]: item["reason"]
+        for item in second["skipped"]
+    } == {
+        archivable.job_id: "retained",
+        active.job_id: "active_job",
+    }
+    assert archive_path.is_file()
+    assert assignments.get(archivable.machine_uuid) == assignment
