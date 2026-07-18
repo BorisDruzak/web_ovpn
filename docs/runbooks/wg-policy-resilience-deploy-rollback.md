@@ -110,9 +110,14 @@ reconciler timer.
 ```bash
 BACKUP_DIR=/root/wg-policy-backup-YYYYMMDD-HHMMSS
 # Prevent a current reconciler tick from mixing current and restored assets.
-sudo systemctl disable --now vpn-policy-reconcile.timer || true
-# Disabling the timer prevents new reconcile jobs; drain an existing oneshot/job
-# normally rather than interrupting a writer while its assets are replaced.
+if sudo systemctl cat vpn-policy-reconcile.timer >/dev/null 2>&1; then
+  if ! sudo systemctl disable --now vpn-policy-reconcile.timer; then
+    echo 'ERROR: cannot disable reconciler timer; aborting before asset restore.' >&2
+    exit 1
+  fi
+fi
+# A successful disable, or a confirmed absent unit, prevents new reconcile jobs;
+# drain an existing oneshot/job normally rather than interrupting a writer.
 reconcile_state="$(sudo systemctl show -p ActiveState --value vpn-policy-reconcile.service)"
 reconcile_jobs="$(sudo systemctl list-jobs --no-legend)"
 while [[ "$reconcile_state" == "active" || "$reconcile_state" == "activating" ]] \
