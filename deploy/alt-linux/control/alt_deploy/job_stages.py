@@ -248,6 +248,17 @@ class JobStageManager:
     ) -> JobRecord:
         job = self.jobs.get(job_id)
 
+        if job.state in TERMINAL_STATES:
+            raise ControlError(
+                code="job_stage_terminal",
+                message=(
+                    "Terminal provision job cannot "
+                    "change stage"
+                ),
+                exit_code=4,
+                details={"job_id": job.job_id},
+            )
+
         if next_stage not in STAGE_INDEX:
             raise ControlError(
                 code="invalid_job_stage_transition",
