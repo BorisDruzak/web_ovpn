@@ -134,6 +134,26 @@ def test_status_interval_validation(tmp_path):
     assert bad_high.returncode != 0
 
 
+def test_default_status_log_matches_systemd_openvpn_server_unit(tmp_path, monkeypatch):
+    env = vpnctl_env(tmp_path)
+    env.pop("STATUS_LOG", None)
+    monkeypatch.delenv("STATUS_LOG", raising=False)
+    server_conf = tmp_path / "server.conf"
+    server_conf.write_text("server 192.168.50.0 255.255.255.0\n", encoding="utf-8")
+    env["SERVER_CONF"] = str(server_conf)
+
+    proc = subprocess.run(
+        [sys.executable, str(VPNCTL), "--json", "server-config", "inspect"],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+
+    assert json_out(proc)["settings"]["status_path"] == "/run/openvpn-server/status-server.log"
+
+
 def test_management_socket_path_validation(tmp_path):
     tcp = run_vpnctl(
         tmp_path,

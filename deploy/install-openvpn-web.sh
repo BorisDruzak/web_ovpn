@@ -44,6 +44,7 @@ sudo_cmd rm -rf "$APP/.git" "$APP/.pytest_cache"
 sudo_cmd chown -R openvpn-web:openvpn-web "$APP"
 
 sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
+sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
 sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
@@ -226,9 +227,14 @@ sudo_cmd -u openvpn-web .venv/bin/pip install -r requirements.txt
 sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web.service" /etc/systemd/system/openvpn-web.service
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.service" /etc/systemd/system/netctl-collect.service
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.timer" /etc/systemd/system/netctl-collect.timer
+sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy.service" /etc/systemd/system/vpn-policy.service
+sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.service" /etc/systemd/system/vpn-runtime-health.service
+sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
 sudo_cmd systemctl daemon-reload
 sudo_cmd systemctl enable openvpn-web.service
+sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now netctl-collect.timer
+sudo_cmd systemctl enable --now vpn-runtime-health.timer
 sudo_cmd systemctl restart openvpn-web.service
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'
 cat /tmp/openvpn-web-admin-password.txt

@@ -164,6 +164,21 @@ Expected addressing:
 
 The expected production design is routing without SNAT from OpenVPN to ViPNet. `nat-status` should report `mode=disabled_expected`; legacy `vipnet-openvpn-nat.service` and `VIPNET_OPENVPN_SNAT` should be inactive or absent.
 
+`openvpn-server@server.service` starts OpenVPN with `--status /run/openvpn-server/status-server.log`; this command-line setting overrides any `status` directive in `server.conf`. Set `STATUS_LOG` to that runtime path so `vpnctl connected --source status-log` uses the live fallback file.
+
+## WireGuard policy-routing health
+
+The VLAN50 (`ens18.50`) egress policy is intentionally narrow: only mark `0x1`,
+priority `1000`, table `123`, and the `VPN_POLICY_MARK` / `VPN_POLICY_NAT`
+chains belong to `vpn-policy.service`. `wg0.conf` must retain `Table = off` so
+WireGuard cannot install a global default route. `vpn-runtime-health.timer`
+runs `vpnctl --json runtime-health --strict` once per minute and records an
+error in journald if OpenVPN management, `wg0`, the handshake, table 123 or its
+managed chains disappear. It never changes routes, firewall rules or services.
+
+Use the acceptance and maintenance-window procedure in
+[`wg-policy-resilience-deploy-rollback.md`](runbooks/wg-policy-resilience-deploy-rollback.md).
+
 ## Route Update Behavior
 
 When client networks are changed from the web UI or API, the app writes CCD through `vpnctl`, runs auto sync, then calls `reconnect-client`. If the client is connected and OpenVPN management is available, the session is dropped so the client reconnects and receives fresh pushed routes. If the client is offline, the new CCD is applied at the next connection.
