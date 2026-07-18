@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import math
 from pathlib import Path
+import re
 from typing import Any
 
 
@@ -29,6 +31,23 @@ _PUBLIC_CHECK_FIELDS = frozenset(
     {"name", "source", "status", "observed", "expected", "latency_ms", "error"}
 )
 _STATUS_PRIORITY = {"ok": 0, "warn": 1, "critical": 2, "error": 3}
+_SAFE_CHECK_NAMES = re.compile(r"[a-z][a-z0-9_]{0,63}$")
+_SAFE_VALUE_STRINGS = frozenset(
+    {
+        "active",
+        "inactive",
+        "available",
+        "unavailable",
+        "installed",
+        "maintenance",
+        "needs_db_upgrade",
+        "success",
+        "failure",
+    }
+)
+_SAFE_ERROR_CATEGORIES = frozenset(
+    {"timeout", "transport", "parse", "unexpected_response"}
+)
 
 
 def parse_utc(value: str) -> datetime:
@@ -104,16 +123,62 @@ def _combined_status(statuses: list[str]) -> str:
 
 def public_check(check: dict[str, Any]) -> dict[str, Any]:
     """Return only a check's API-safe fields, discarding raw probe material."""
-    return {key: value for key, value in check.items() if key in _PUBLIC_CHECK_FIELDS}
+    name = check.get("name")
+    if not isinstance(name, str) or not _SAFE_CHECK_NAMES.fullmatch(name):
+        raise ValueError("check name must be a safe identifier")
+    source = check.get("source")
+    if source not in ALLOWED_SOURCES:
+        raise ValueError("check source is not allowed")
+
+    public = {"name": name, "source": source}
+    status = check.get("status")
+    if status is not None:
+        if status not in _STATUS_PRIORITY:
+            raise ValueError("check status is not allowed")
+        public["status"] = status
+    for field in ("observed", "expected"):
+        if field in check and _is_safe_public_value(check[field]):
+            public[field] = check[field]
+    if "latency_ms" in check and _is_safe_nonnegative_number(check["latency_ms"]):
+        public["latency_ms"] = check["latency_ms"]
+    if check.get("error") in _SAFE_ERROR_CATEGORIES:
+        public["error"] = check["error"]
+    return public
+
+
+def _is_safe_public_value(value: Any) -> bool:
+    return (
+        value is None
+        or isinstance(value, bool)
+        or _is_safe_nonnegative_number(value)
+        or (isinstance(value, str) and value in _SAFE_VALUE_STRINGS)
+    )
+
+
+def _is_safe_nonnegative_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
 
 
 def public_target(target: dict[str, Any]) -> dict[str, Any]:
     """Return a target row without runtime topology or command output."""
-    checks = [public_check(_require_mapping(check, "check")) for check in target.get("checks", [])]
+    role = target.get("role")
+    if role not in ALLOWED_ROLES:
+        raise ValueError("target role is not allowed")
+    raw_checks = target.get("checks")
+    if not isinstance(raw_checks, list):
+        raise ValueError("target checks must be a list")
+    checks = [public_check(_require_mapping(check, "check")) for check in raw_checks]
     status = target.get("status") or _combined_status(
         [str(check.get("status", "ok")) for check in checks]
     )
-    return {"role": target["role"], "checks": checks, "status": status}
+    if status not in _STATUS_PRIORITY:
+        raise ValueError("target status is not allowed")
+    return {"role": role, "checks": checks, "status": status}
 
 
 def public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
