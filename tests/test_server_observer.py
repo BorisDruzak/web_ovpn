@@ -146,3 +146,15 @@ def test_snapshot_write_rejects_unknown_roles_and_sources(tmp_path, target):
         write_snapshot(path, snapshot)
 
     assert not path.exists()
+
+
+def test_snapshot_write_rejects_unsafe_overall_and_keeps_valid_status(tmp_path):
+    path = tmp_path / "latest.json"
+    base_snapshot = {"collected_at": "2026-07-18T20:00:00Z", "targets": []}
+
+    with pytest.raises(ValueError):
+        write_snapshot(path, {**base_snapshot, "overall": "ssh -i observer-key"})
+
+    write_snapshot(path, {**base_snapshot, "overall": "warn"})
+
+    assert json.loads(path.read_text(encoding="utf-8"))["overall"] == "warn"

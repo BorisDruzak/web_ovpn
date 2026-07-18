@@ -192,6 +192,8 @@ def public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     overall = snapshot.get("overall") or _combined_status(
         [str(target["status"]) for target in targets]
     )
+    if overall not in _STATUS_PRIORITY:
+        raise ValueError("overall status is not allowed")
     return {"collected_at": collected_at, "overall": overall, "targets": targets}
 
 
