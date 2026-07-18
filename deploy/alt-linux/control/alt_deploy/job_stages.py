@@ -247,6 +247,10 @@ class JobStageManager:
         updates: Mapping[str, object] | None = None,
     ) -> JobRecord:
         job = self.jobs.get(job_id)
+
+        if next_stage == job.stage:
+            return job
+
         entered_at = _parse_timestamp(
             self.clock(),
             job_id=job.job_id,
