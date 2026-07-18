@@ -5,6 +5,7 @@ import subprocess
 from .assignments import AssignmentRepository
 from .config import Settings
 from .errors import ControlError
+from .job_stages import JobStageManager
 from .jobs import ACTIVE_STATES, JobRepository, utc_now
 from .jsonio import read_json
 from .locks import exclusive_lock
@@ -25,6 +26,10 @@ class JobReconciler:
         self.settings = settings
         self.jobs = JobRepository(settings)
         self.assignments = AssignmentRepository(settings)
+        self.stages = JobStageManager(
+            settings,
+            repository=self.jobs,
+        )
 
     @staticmethod
     def _expected_unit(job: JobRecord) -> str:
@@ -221,12 +226,14 @@ class JobReconciler:
         self.assignments.write(job.machine_uuid, result)
 
         previous_state = job.state
-        self.jobs.update(
+        self.stages.advance_unlocked(
             job.job_id,
-            state="successful",
-            stage="complete",
-            finished_at=str(result["completed_at"]),
-            result_file=str(result_path),
+            "complete",
+            updates={
+                "state": "successful",
+                "finished_at": str(result["completed_at"]),
+                "result_file": str(result_path),
+            },
         )
 
         return {
