@@ -158,12 +158,16 @@ def test_provision_start_creates_and_launches_job(
         parsed_request(),
     )
 
-    assert job.state == "queued"
-    assert job.stage == "created"
     assert launcher.job_ids == [job.job_id]
 
     stored = JobRepository(settings).get(job.job_id)
 
+    assert stored.state == "queued"
+    assert stored.stage == "launching"
+    assert [
+        item["stage"]
+        for item in stored.status["stage_history"]
+    ] == ["created", "launching"]
     assert stored.status["systemd_unit"] == (
         f"alt-provision-{job.job_id}.service"
     )
@@ -223,9 +227,44 @@ def test_launch_failure_is_persisted(
 
     assert len(jobs) == 1
     assert jobs[0].state == "failed"
-    assert jobs[0].stage == "launch"
+    assert jobs[0].stage == "launching"
+    assert [
+        item["stage"]
+        for item in jobs[0].status["stage_history"]
+    ] == ["created", "launching"]
     assert jobs[0].status["finished_at"]
     assert "systemd-run failed" in jobs[0].status["error"]
+
+
+def test_launching_stage_is_persisted_before_launcher_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = prepare_preview_environment(tmp_path)
+    monkeypatch.setattr(
+        "alt_deploy.provision.os.geteuid",
+        lambda: 0,
+    )
+
+    class InspectingLauncher:
+        def launch(self, job_id: str) -> str:
+            stored = JobRepository(settings).get(job_id)
+            assert stored.stage == "launching"
+            assert stored.status["systemd_unit"] == (
+                f"alt-provision-{job_id}.service"
+            )
+            return f"alt-provision-{job_id}.service"
+
+    planner = ProvisionPlanner(
+        settings,
+        launcher=InspectingLauncher(),
+    )
+    job = planner.start(
+        MACHINE_UUID,
+        parsed_request(),
+    )
+
+    assert job.stage == "launching"
 
 
 def test_second_active_job_is_rejected(
