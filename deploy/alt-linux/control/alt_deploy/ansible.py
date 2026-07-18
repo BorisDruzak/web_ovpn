@@ -255,7 +255,6 @@ class AnsibleController:
 
             return result
 
-
     @property
     def provision_playbook(self) -> Path:
         return (
@@ -283,6 +282,9 @@ class AnsibleController:
             ),
             "request_file": (
                 job.job_dir / "request.json"
+            ),
+            "job_stage_helper": (
+                self.settings.job_stage_helper_path
             ),
         }
 
@@ -370,6 +372,11 @@ class AnsibleController:
             (
                 "provision_result_file="
                 f"{result_path}"
+            ),
+            "-e",
+            (
+                "job_stage_helper_path="
+                f"{self.settings.job_stage_helper_path}"
             ),
             str(self.provision_playbook),
         ]
