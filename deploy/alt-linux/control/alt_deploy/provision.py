@@ -11,6 +11,7 @@ from typing import Any
 from .assignments import AssignmentRepository
 from .config import Settings
 from .errors import ControlError
+from .job_stages import JobStageManager
 from .jobs import JobRepository, utc_now
 from .launcher import SystemdLauncher
 from .jsonio import read_json
@@ -221,6 +222,10 @@ class ProvisionPlanner:
         self.settings = settings
         self.machines = MachineRepository(settings)
         self.jobs = JobRepository(settings)
+        self.stages = JobStageManager(
+            settings,
+            repository=self.jobs,
+        )
         self.assignments = AssignmentRepository(settings)
         self.launcher = launcher or SystemdLauncher(
             settings
@@ -526,11 +531,12 @@ class ProvisionPlanner:
             )
 
             try:
-                job = self.jobs.update(
+                job = self.stages.advance_unlocked(
                     job.job_id,
-                    systemd_unit=(
-                        expected_systemd_unit
-                    ),
+                    "launching",
+                    updates={
+                        "systemd_unit": expected_systemd_unit,
+                    },
                 )
 
                 self._prepare_job_for_worker(job)
@@ -576,7 +582,6 @@ class ProvisionPlanner:
                 failed_job = self.jobs.update(
                     job.job_id,
                     state="failed",
-                    stage="launch",
                     finished_at=utc_now(),
                     error=error_text,
                 )
