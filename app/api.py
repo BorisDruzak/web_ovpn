@@ -207,6 +207,11 @@ def api_status(actor: str = Depends(require_api_actor)):
     return api_response(call_vpnctl(["status"]))
 
 
+@router.get("/runtime-health")
+def api_runtime_health(actor: str = Depends(require_api_actor)):
+    return api_response(call_vpnctl(["runtime-health"], timeout=15))
+
+
 @router.get("/openvpn/server-config")
 def api_openvpn_server_config(actor: str = Depends(require_api_actor)):
     return api_response(call_vpnctl(["server-config", "inspect"]))

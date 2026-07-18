@@ -33,6 +33,16 @@ elif cmd == "list":
     print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": "192.168.50.10"}]}))
 elif cmd == "status":
     print(json.dumps({"services": {}}))
+elif cmd == "runtime-health":
+    print(json.dumps({
+        "status": "error", "overall": "error",
+        "sections": {
+            "openvpn": {"service_active": True, "management_available": True},
+            "wireguard": {"service_active": True, "link_present": True, "mtu": 1420, "handshake_age_seconds": 25, "handshake_fresh": True},
+            "policy_routing": {"rule_present": True, "table_123_default": True, "mangle_chain_present": True, "nat_chain_present": True, "legacy_51820_rule_present": False},
+        },
+        "warnings": [], "errors": ["VPN_POLICY_NAT chain or hook is missing"],
+    }))
 else:
     print(json.dumps({"status": "ok"}))
 """,
@@ -143,6 +153,19 @@ def login(client: TestClient) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
+
+
+def test_network_runtime_health_requires_session_and_is_read_only(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+
+    unauthenticated = client.get("/network/runtime-health", follow_redirects=False)
+    assert unauthenticated.status_code == 303
+    assert unauthenticated.headers["location"] == "/login"
+    login(client)
+    response = client.get("/network/runtime-health")
+
+    assert response.status_code == 200
+    assert response.json()["overall"] == "error"
 
 
 def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch):
