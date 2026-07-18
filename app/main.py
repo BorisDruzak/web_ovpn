@@ -922,6 +922,15 @@ def network_root(request: Request, db: Session = Depends(get_db)):
     return redirect("/network/dashboard")
 
 
+@app.get("/network/runtime-health")
+def network_runtime_health(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    try:
+        return run_vpnctl(["runtime-health"], timeout=15)
+    except VpnctlError as exc:
+        raise HTTPException(status_code=502, detail=str(exc.message)) from exc
+
+
 @app.get("/network/dashboard", response_class=HTMLResponse)
 def network_dashboard(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)

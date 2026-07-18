@@ -171,10 +171,41 @@ The expected production design is routing without SNAT from OpenVPN to ViPNet. `
 The VLAN50 (`ens18.50`) egress policy is intentionally narrow: only mark `0x1`,
 priority `1000`, table `123`, and the `VPN_POLICY_MARK` / `VPN_POLICY_NAT`
 chains belong to `vpn-policy.service`. `wg0.conf` must retain `Table = off` so
-WireGuard cannot install a global default route. `vpn-runtime-health.timer`
-runs `vpnctl --json runtime-health --strict` once per minute and records an
-error in journald if OpenVPN management, `wg0`, the handshake, table 123 or its
-managed chains disappear. It never changes routes, firewall rules or services.
+WireGuard cannot install a global default route.
+
+`vpn-policy-reconcile.timer` runs once per minute and repairs only drift in
+those owned objects. It first probes the active state (when `wg0` exists) or
+the fail-closed state (when it does not); a healthy state is not flushed or
+rebuilt. The reconciler shares `/run/lock/vpn-policy.lock` with
+`vpn-policy.service`, so a timer tick cannot race the normal policy-service
+lifecycle. It never starts, restarts, stops, or reconfigures WireGuard or
+OpenVPN. If a WG peer fails, VLAN50 remains fail-closed until an operator or
+the normal WG service lifecycle brings `wg0` back.
+
+`vpn-runtime-health.timer` is deliberately separate and alarm-only: it runs
+`vpnctl --json runtime-health --strict` once per minute and records an error in
+journald if OpenVPN management, `wg0`, the handshake, table 123 or its managed
+chains disappear. It never changes routes, firewall rules, or services.
+
+Use these post-deploy checks or an explicit scoped repair:
+
+```bash
+sudo systemctl status vpn-policy-reconcile.timer vpn-runtime-health.timer --no-pager
+sudo systemctl start vpn-policy-reconcile.service
+sudo /usr/local/sbin/vpnctl --json runtime-health --strict
+curl -fsS -H "Authorization: Bearer $OPENVPN_WEB_API_TOKEN" http://127.0.0.1:8088/api/v1/runtime-health
+```
+
+`systemctl start vpn-policy-reconcile.service` is the explicit repair command:
+it only writes the managed PBR/NAT objects if its probe finds drift, and never
+starts, stops, or restarts WireGuard or OpenVPN. The other commands shown are
+read-only. The final command is the read-only Bearer integration endpoint. Browser users
+do not use that token: an authenticated session can view the same sanitized
+state in `/network/dashboard`, whose VPN Runtime card polls
+`/network/runtime-health` every 30 seconds. An unauthenticated request to the
+session endpoint redirects with HTTP 303 to `/login`. The card displays only
+the health fields and redacts key-like values, endpoint names, IP addresses,
+and ports from warning/error text before rendering it.
 
 Use the acceptance and maintenance-window procedure in
 [`wg-policy-resilience-deploy-rollback.md`](runbooks/wg-policy-resilience-deploy-rollback.md).

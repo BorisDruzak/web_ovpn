@@ -25,6 +25,13 @@
   <div class="metric"><span>ViPNet transit</span><strong>{{ summary.vipnet_transit or 0 }}</strong></div>
   <div class="metric"><span>Видели ранее</span><strong>{{ summary.seen or 0 }}</strong></div>
 </section>
+<section id="vpn-runtime-card" class="table-wrap" data-runtime-health-url="/network/runtime-health">
+  <h2>VPN Runtime</h2>
+  <p class="muted" data-runtime-health-state>Loading status...</p>
+  <dl class="details" data-runtime-health-details></dl>
+  <ul class="alert" data-runtime-health-warnings hidden></ul>
+  <ul class="alert bad" data-runtime-health-errors hidden></ul>
+</section>
 <section class="table-wrap">
   <table>
     <thead><tr><th>Источник</th><th>Driver</th><th>Host</th><th>Site</th><th>Role</th><th>Last collect</th><th>Status</th></tr></thead>

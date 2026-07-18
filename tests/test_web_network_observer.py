@@ -2,9 +2,12 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -33,6 +36,16 @@ elif cmd == "list":
     print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": "192.168.50.10"}]}))
 elif cmd == "status":
     print(json.dumps({"services": {}}))
+elif cmd == "runtime-health":
+    print(json.dumps({
+        "status": "error", "overall": "error",
+        "sections": {
+            "openvpn": {"service_active": True, "management_available": True},
+            "wireguard": {"service_active": True, "link_present": True, "mtu": 1420, "handshake_age_seconds": 25, "handshake_fresh": True},
+            "policy_routing": {"rule_present": True, "table_123_default": True, "mangle_chain_present": True, "nat_chain_present": True, "legacy_51820_rule_present": False},
+        },
+        "warnings": [], "errors": ["VPN_POLICY_NAT chain or hook is missing"],
+    }))
 else:
     print(json.dumps({"status": "ok"}))
 """,
@@ -143,6 +156,89 @@ def login(client: TestClient) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
+
+
+def test_network_runtime_health_requires_session_and_is_read_only(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+
+    unauthenticated = client.get("/network/runtime-health", follow_redirects=False)
+    assert unauthenticated.status_code == 303
+    assert unauthenticated.headers["location"] == "/login"
+    login(client)
+    response = client.get("/network/runtime-health")
+
+    assert response.status_code == 200
+    assert response.json()["overall"] == "error"
+
+
+def test_network_dashboard_contains_runtime_health_card_and_polling(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    page = client.get("/network/dashboard")
+
+    assert page.status_code == 200
+    assert 'id="vpn-runtime-card"' in page.text
+    assert "VPN Runtime" in page.text
+
+    script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    assert 'fetch("/network/runtime-health", {credentials: "same-origin"})' in script
+    assert "setInterval(loadVpnRuntimeHealth, 30000)" in script
+    assert "function runtimeHealthRows" in script
+    assert "innerHTML" not in script
+
+
+def test_runtime_health_messages_redact_peer_identifiers():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to exercise the browser-side redaction helper")
+
+    script = Path(__file__).resolve().parents[1] / "app" / "static" / "app.js"
+    key = "A" * 43 + "="
+    messages = [
+        "Endpoint vpn.example.test:51820 is unavailable",
+        "Peer route 192.0.2.8/32 has no handshake",
+        "Endpoint [2001:db8::8]:51820 is unavailable",
+        "hostname=branch-gateway is unreachable",
+        "hostname=branch-gateway:51820 is unreachable",
+        "remote_host: node-01:443 is unreachable",
+        f"WireGuard public key {key} is stale",
+    ]
+    node_program = """
+const fs = require("fs");
+const vm = require("vm");
+const context = {
+  document: {addEventListener() {}},
+  HTMLFormElement: function HTMLFormElement() {},
+  window: {},
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
+process.stdout.write(JSON.stringify(JSON.parse(process.argv[2]).map(context.runtimeHealthMessage)));
+"""
+    result = subprocess.run(
+        [node, "-e", node_program, str(script), json.dumps(messages)],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    redacted = json.loads(result.stdout)
+
+    assert "vpn.example.test" not in redacted[0]
+    assert "vpn.example" not in redacted[0]
+    assert "example.test" not in redacted[0]
+    assert "51820" not in redacted[0]
+    assert "192.0.2.8" not in redacted[1]
+    assert "/32" not in redacted[1]
+    assert "2001:db8::8" not in redacted[2]
+    assert "51820" not in redacted[2]
+    assert "branch-gateway" not in redacted[3]
+    assert "branch-gateway" not in redacted[4]
+    assert "51820" not in redacted[4]
+    assert "node-01" not in redacted[5]
+    assert "443" not in redacted[5]
+    assert key not in redacted[6]
+    assert "unavailable" in redacted[0]
 
 
 def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch):

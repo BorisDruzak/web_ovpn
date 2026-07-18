@@ -1,0 +1,9 @@
+[Unit]
+Description=Reconcile VLAN50 policy routing through WireGuard
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh reconcile
+StandardOutput=journal
+StandardError=journal

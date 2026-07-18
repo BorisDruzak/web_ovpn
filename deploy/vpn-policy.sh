@@ -13,7 +13,7 @@ MANGLE_CHAIN="VPN_POLICY_MARK"
 NAT_CHAIN="VPN_POLICY_NAT"
 
 usage() {
-  echo "usage: $0 {start|stop|status}" >&2
+  echo "usage: $0 {start|stop|reconcile|status}" >&2
   exit 2
 }
 
@@ -74,18 +74,39 @@ stop() {
 }
 
 status() {
-  ip link show dev "$WG_IF" >/dev/null
-  ip rule show | grep -Eq "^${PBR_PRIORITY}:.*fwmark ${PBR_MARK}.*lookup ${PBR_TABLE}"
-  ip route show table "$PBR_TABLE" | grep -Eq "^default dev ${WG_IF}( |$)"
-  iptables -w -t mangle -C PREROUTING -j "$MANGLE_CHAIN"
-  iptables -w -t mangle -C "$MANGLE_CHAIN" -i "$PBR_IN_IF" -j MARK --set-xmark "$PBR_MARK/$PBR_MASK"
-  iptables -w -t nat -C POSTROUTING -j "$NAT_CHAIN"
-  iptables -w -t nat -C "$NAT_CHAIN" -o "$WG_IF" -m mark --mark "$PBR_MARK/$PBR_MASK" -j MASQUERADE
+  ip link show dev "$WG_IF" >/dev/null &&
+    ip rule show | grep -Eq "^${PBR_PRIORITY}:.*fwmark ${PBR_MARK}.*lookup ${PBR_TABLE}" &&
+    ip route show table "$PBR_TABLE" | grep -Eq "^default dev ${WG_IF}( |$)" &&
+    iptables -w -t mangle -C PREROUTING -j "$MANGLE_CHAIN" &&
+    iptables -w -t mangle -C "$MANGLE_CHAIN" -i "$PBR_IN_IF" -j MARK --set-xmark "$PBR_MARK/$PBR_MASK" &&
+    iptables -w -t nat -C POSTROUTING -j "$NAT_CHAIN" &&
+    iptables -w -t nat -C "$NAT_CHAIN" -o "$WG_IF" -m mark --mark "$PBR_MARK/$PBR_MASK" -j MASQUERADE
+}
+
+fail_closed_status() {
+  ! ip link show dev "$WG_IF" >/dev/null &&
+    ip rule show | grep -Eq "^${PBR_PRIORITY}:.*fwmark ${PBR_MARK}.*lookup ${PBR_TABLE}" &&
+    ip route show table "$PBR_TABLE" | grep -Eq "^unreachable default" &&
+    iptables -w -t mangle -C PREROUTING -j "$MANGLE_CHAIN" &&
+    iptables -w -t mangle -C "$MANGLE_CHAIN" -i "$PBR_IN_IF" -j MARK --set-xmark "$PBR_MARK/$PBR_MASK" &&
+    ! iptables -w -t nat -C POSTROUTING -j "$NAT_CHAIN" &&
+    ! iptables -w -t nat -S "$NAT_CHAIN" >/dev/null 2>&1
+}
+
+reconcile() {
+  # Do not rebuild a healthy state. The timer is a drift repair mechanism,
+  # not a periodic tunnel or firewall reset.
+  if ip link show dev "$WG_IF" >/dev/null; then
+    status || start
+  else
+    fail_closed_status || stop
+  fi
 }
 
 case "${1:-}" in
   start) start ;;
   stop) stop ;;
+  reconcile) reconcile ;;
   status) status ;;
   *) usage ;;
 esac

@@ -25,6 +25,16 @@ if log_path:
 Path(sys.argv[-1]).write_text(json.dumps(args), encoding="utf-8") if args[-1].endswith(".argv") else None
 if cmd == "status":
     print(json.dumps({"services": {"openvpn": {"active": "active"}, "nat": {"active": "active"}}, "connected": []}))
+elif cmd == "runtime-health":
+    print(json.dumps({
+        "status": "error", "overall": "error",
+        "sections": {
+            "openvpn": {"service_active": True, "management_available": True},
+            "wireguard": {"service_active": True, "link_present": True, "mtu": 1420, "handshake_age_seconds": 25, "handshake_fresh": True},
+            "policy_routing": {"rule_present": True, "table_123_default": True, "mangle_chain_present": True, "nat_chain_present": True, "legacy_51820_rule_present": False},
+        },
+        "warnings": [], "errors": ["VPN_POLICY_NAT chain or hook is missing"],
+    }))
 elif cmd == "server-config":
     sub = args[2]
     if sub == "inspect":
@@ -138,6 +148,23 @@ def test_api_status_and_clients_use_vpnctl(tmp_path, monkeypatch):
     assert status.json()["data"]["services"]["openvpn"]["active"] == "active"
     assert clients.status_code == 200
     assert clients.json()["data"]["clients"][0]["name"] == "alpha"
+
+
+def test_runtime_health_api_returns_error_shaped_health_as_http_200(tmp_path, monkeypatch):
+    client, headers = make_api_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/v1/runtime-health", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["overall"] == "error"
+    assert response.json()["data"]["errors"] == ["VPN_POLICY_NAT chain or hook is missing"]
+    calls = [
+        json.loads(line)
+        for line in (tmp_path / "vpnctl-calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert ["--json", "runtime-health"] in calls
+    assert all("--strict" not in call for call in calls)
 
 
 def test_api_network_add_without_comment_omits_comment_flag(tmp_path, monkeypatch):
