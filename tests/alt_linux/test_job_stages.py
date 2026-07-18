@@ -377,3 +377,25 @@ def test_repeated_current_stage_is_byte_identical_noop(
     assert repeated.state == "queued"
     assert repeated.stage == "launching"
     assert status_path.read_bytes() == before
+
+
+def test_stage_manager_rejects_skipped_transition(
+    tmp_path: Path,
+) -> None:
+    from alt_deploy.job_stages import JobStageManager
+
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    status_path = job.job_dir / "status.json"
+    before = status_path.read_bytes()
+
+    with pytest.raises(ControlError) as exc:
+        JobStageManager(
+            settings,
+            repository=repository,
+        ).advance(job.job_id, "validating")
+
+    assert exc.value.code == "invalid_job_stage_transition"
+    assert status_path.read_bytes() == before
+    assert repository.get(job.job_id).stage == "created"
