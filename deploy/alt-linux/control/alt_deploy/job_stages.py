@@ -248,6 +248,17 @@ class JobStageManager:
     ) -> JobRecord:
         job = self.jobs.get(job_id)
 
+        if next_stage not in STAGE_INDEX:
+            raise ControlError(
+                code="invalid_job_stage_transition",
+                message="Provision job stage is unknown",
+                exit_code=4,
+                details={
+                    "job_id": job.job_id,
+                    "stage": next_stage,
+                },
+            )
+
         if next_stage == job.stage:
             return job
 
