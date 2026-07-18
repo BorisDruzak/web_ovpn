@@ -448,3 +448,28 @@ def test_terminal_job_rejects_repeated_stage(
 
     assert exc.value.code == "job_stage_terminal"
     assert status_path.read_bytes() == before
+
+
+def test_stage_manager_rejects_unapproved_update_fields(
+    tmp_path: Path,
+) -> None:
+    from alt_deploy.job_stages import JobStageManager
+
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    status_path = job.job_dir / "status.json"
+    before = status_path.read_bytes()
+
+    with pytest.raises(ControlError) as exc:
+        JobStageManager(
+            settings,
+            repository=repository,
+        ).advance(
+            job.job_id,
+            "launching",
+            updates={"error": "not allowed"},
+        )
+
+    assert exc.value.code == "invalid_job_stage_update"
+    assert status_path.read_bytes() == before
