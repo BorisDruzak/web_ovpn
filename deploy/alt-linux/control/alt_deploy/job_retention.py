@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import gzip
+import os
+import shutil
+import stat
 from datetime import datetime, timezone
 
 from .config import Settings
@@ -115,6 +119,7 @@ class JobRetentionManager:
         if (
             age_days >= archive_after_days
             and log_path.is_file()
+            and not log_path.is_symlink()
             and not archive_path.exists()
         ):
             return {
@@ -130,6 +135,72 @@ class JobRetentionManager:
             "reason": "retained",
         }
 
+    @staticmethod
+    def _archive_log(job: JobRecord) -> None:
+        log_path = job.job_dir / "ansible.log"
+        archive_path = job.job_dir / "ansible.log.gz"
+        temporary_path = job.job_dir / (
+            f".ansible.log.gz.{os.getpid()}.tmp"
+        )
+
+        try:
+            log_stat = log_path.lstat()
+        except OSError as exc:
+            raise ControlError(
+                code="job_log_archive_failed",
+                message="Unable to inspect provision job log",
+                exit_code=6,
+                details={"job_id": job.job_id},
+            ) from exc
+
+        if not stat.S_ISREG(log_stat.st_mode):
+            raise ControlError(
+                code="job_log_archive_unsafe",
+                message="Provision job log is not a regular file",
+                exit_code=4,
+                details={"job_id": job.job_id},
+            )
+
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+
+        try:
+            output_fd = os.open(
+                temporary_path,
+                flags,
+                0o600,
+            )
+            try:
+                with log_path.open("rb") as source:
+                    with os.fdopen(output_fd, "wb") as raw_output:
+                        output_fd = -1
+                        with gzip.GzipFile(
+                            filename="",
+                            mode="wb",
+                            fileobj=raw_output,
+                            mtime=0,
+                        ) as compressed:
+                            shutil.copyfileobj(source, compressed)
+                        raw_output.flush()
+                        os.fsync(raw_output.fileno())
+            finally:
+                if output_fd >= 0:
+                    os.close(output_fd)
+
+            os.chmod(temporary_path, 0o600)
+            os.replace(temporary_path, archive_path)
+            log_path.unlink()
+        except OSError as exc:
+            raise ControlError(
+                code="job_log_archive_failed",
+                message="Unable to archive provision job log",
+                exit_code=6,
+                details={"job_id": job.job_id},
+            ) from exc
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
     def cleanup(
         self,
         *,
@@ -142,13 +213,6 @@ class JobRetentionManager:
             retention_days,
             archive_after_days,
         )
-
-        if apply:
-            raise ControlError(
-                code="job_cleanup_apply_not_implemented",
-                message="Mutating job cleanup is not implemented yet",
-                exit_code=4,
-            )
 
         current_time = now or datetime.now(timezone.utc)
         if current_time.tzinfo is None:
@@ -172,13 +236,29 @@ class JobRetentionManager:
                     archive_after_days=archive_after_days,
                 )
                 if action is not None:
+                    if apply:
+                        if action["action"] == "archive_log":
+                            self._archive_log(job)
+                            action = {
+                                **action,
+                                "applied": True,
+                            }
+                        else:
+                            raise ControlError(
+                                code="job_cleanup_delete_not_implemented",
+                                message=(
+                                    "Expired job deletion is not implemented yet"
+                                ),
+                                exit_code=4,
+                                details={"job_id": job.job_id},
+                            )
                     actions.append(action)
                 if skip is not None:
                     skipped.append(skip)
 
         return {
             "status": "ok",
-            "dry_run": True,
+            "dry_run": not apply,
             "policy": {
                 "retention_days": retention_days,
                 "archive_after_days": archive_after_days,
