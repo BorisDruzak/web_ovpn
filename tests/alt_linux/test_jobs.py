@@ -11,6 +11,7 @@ import pytest
 
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.errors import ControlError
+from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
 from alt_deploy.jsonio import read_json
 from alt_deploy.locks import exclusive_lock
@@ -117,6 +118,12 @@ def test_create_job_uses_private_files_and_valid_id(
     assert status["machine_uuid"] == MACHINE_UUID
     assert status["state"] == "queued"
     assert status["stage"] == "created"
+    assert status["stage_history"] == [
+        {
+            "stage": "created",
+            "entered_at": status["created_at"],
+        }
+    ]
 
 
 def test_update_preserves_job_identity(
@@ -125,20 +132,22 @@ def test_update_preserves_job_identity(
     settings = make_settings(tmp_path)
     repository = JobRepository(settings)
     original = repository.create(provision_request())
+    unit = f"alt-provision-{original.job_id}.service"
 
-    updated = repository.update(
+    updated = JobStageManager(
+        settings,
+        repository=repository,
+    ).advance(
         original.job_id,
-        state="running",
-        stage="ansible",
-        machine_uuid=(
-            "00000000-0000-0000-0000-000000000000"
-        ),
+        "launching",
+        updates={"systemd_unit": unit},
     )
 
     assert updated.job_id == original.job_id
     assert updated.machine_uuid == MACHINE_UUID
-    assert updated.state == "running"
-    assert updated.stage == "ansible"
+    assert updated.state == "queued"
+    assert updated.stage == "launching"
+    assert updated.status["systemd_unit"] == unit
 
 
 def test_active_for_machine_accepts_only_queued_or_running(
@@ -147,33 +156,38 @@ def test_active_for_machine_accepts_only_queued_or_running(
     settings = make_settings(tmp_path)
     repository = JobRepository(settings)
     job = repository.create(provision_request())
-
-    active = repository.active_for_machine(MACHINE_UUID)
-
-    assert active is not None
-    assert active.job_id == job.job_id
-
-    repository.update(
-        job.job_id,
-        state="running",
-        stage="ansible",
+    manager = JobStageManager(
+        settings,
+        repository=repository,
     )
 
     active = repository.active_for_machine(MACHINE_UUID)
+    assert active is not None
+    assert active.state == "queued"
 
+    manager.advance(job.job_id, "launching")
+    manager.advance(
+        job.job_id,
+        "validating",
+        updates={
+            "state": "running",
+            "started_at": "2026-07-18T12:00:00+00:00",
+        },
+    )
+
+    active = repository.active_for_machine(MACHINE_UUID)
     assert active is not None
     assert active.state == "running"
+    assert active.stage == "validating"
 
     repository.update(
         job.job_id,
-        state="successful",
-        stage="complete",
+        state="failed",
+        finished_at="2026-07-18T12:01:00+00:00",
+        error="test failure",
     )
 
-    assert (
-        repository.active_for_machine(MACHINE_UUID)
-        is None
-    )
+    assert repository.active_for_machine(MACHINE_UUID) is None
 
 
 def test_read_log_returns_bounded_tail(
@@ -207,7 +221,6 @@ def test_read_log_reads_archived_gzip(
     log_path = job.job_dir / "ansible.log"
     archive_path = job.job_dir / "ansible.log.gz"
     content = "archived first line\narchived second line\n"
-
     with gzip.open(archive_path, "wt", encoding="utf-8") as handle:
         handle.write(content)
     log_path.unlink()
@@ -332,5 +345,4 @@ def test_exclusive_lock_blocks_second_process(
         assert receiver.recv() == "blocked"
 
         process.join(5)
-
         assert process.exitcode == 0
