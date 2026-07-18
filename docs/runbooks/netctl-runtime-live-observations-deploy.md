@@ -87,9 +87,9 @@ backup_dir="$runtime_backup_dir"
 ```
 
 If the migration outcome is unacceptable, restore only the captured
-`netctl-before-v4.sqlite` backup, with all application and collector services
-stopped and after explicit operator approval. Do not delete or edit findings
-in place; the pre-v4 backup is the rollback boundary.
+`$v4_backup_dir/netctl-before-v4.sqlite` backup, with all application and
+collector services stopped and after explicit operator approval. Do not delete
+or edit findings in place; the pre-v4 backup is the rollback boundary.
 
 ## 2. Apply migration once and verify its guards
 
@@ -102,7 +102,9 @@ configured sources.
 sudo -u netctl /usr/local/sbin/netctl --json dashboard \
   | sudo tee "$backup_dir/dashboard-migration-trigger.json"
 sudo -u netctl /usr/local/sbin/netctl --json runtime-assets status \
-  | sudo tee "$backup_dir/runtime-status-after-migration.json"
+  | sudo tee "$v4_backup_dir/runtime-status-after-v4.json"
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status open \
+  | sudo tee "$v4_backup_dir/runtime-open-findings-after-v4.json"
 sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status acknowledged \
   | sudo tee "$v4_backup_dir/runtime-acknowledged-after-v4.json"
 ```
@@ -224,7 +226,9 @@ must remain healthy. Preserve all JSON and Python-check outputs under
 
 Roll back for a failed integrity check, missing trigger, duplicate migration
 ledger entry, incorrect live-state transition, unreviewed conflict, failed
-legacy command, or unhealthy service. Stop the application/collector units.
+legacy command, or unhealthy service. For a migration-4 rollback, restore the
+exact `$v4_backup_dir/netctl-before-v4.sqlite` database copy; do not substitute
+the general runtime backup. Stop the application/collector units.
 Move the failed application tree aside before extracting the archive: extracting
 over the deployed directory is prohibited because files introduced only by the
 new release would otherwise survive rollback. Keep the failed tree recoverable
@@ -239,7 +243,7 @@ sudo mv "$app_dir" "$failed_app_dir"
 sudo tar -C /opt -xzf "$backup_dir/openvpn-web-before.tgz"
 sudo test -d "$app_dir"
 sudo rm -f "$db_path" "$db_path-wal" "$db_path-shm"
-sudo cp "$backup_dir/netctl-before.sqlite" "$db_path"
+sudo cp "$v4_backup_dir/netctl-before-v4.sqlite" "$db_path"
 sudo chown netctl:netctl "$db_path"
 sudo install -m 0755 "$backup_dir/netctl-wrapper-before" /usr/local/sbin/netctl
 sudo -u netctl /usr/local/sbin/netctl --json dashboard
@@ -264,10 +268,40 @@ rm -f "$expected_paths" "$restored_paths"
 ```
 
 Both `diff` and `tar --compare` must exit zero with no output. Also repeat the
-deployed-Python `PRAGMA integrity_check` block from section 1, capture the
-restored schema ledger using the deployed-Python block from section 2, and
-capture legacy dashboard output. Only then unmask and start
-`openvpn-web.service` and `netctl-collect.timer` as in section 4. Migration `3`
-is not removed in-place; the database backup is the rollback boundary. Retain
-`$failed_app_dir` through the rollback observation window; remove it only under
-the normal backup-retention procedure after the rollback is accepted.
+deployed-Python `PRAGMA integrity_check` block from section 1 and capture the
+restored migration-4 rollback ledger with the deployed Python. It must show
+only versions `[1, 2, 3]`; do not rerun the post-v4 assertion from section 2.
+
+```bash
+sudo -u netctl "$python_bin" - "$db_path" <<'PY' | sudo tee "$v4_backup_dir/migration-v4-rollback-verify.json"
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]).resolve()
+conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+try:
+    versions = conn.execute(
+        "SELECT version, COUNT(*) FROM schema_migrations GROUP BY version ORDER BY version"
+    ).fetchall()
+finally:
+    conn.close()
+
+payload = {"schema_migrations": [{"version": version, "count": count} for version, count in versions]}
+print(json.dumps(payload, sort_keys=True))
+assert payload["schema_migrations"] == [
+    {"version": 1, "count": 1},
+    {"version": 2, "count": 1},
+    {"version": 3, "count": 1},
+]
+PY
+```
+
+Capture legacy dashboard output only after that rollback-ledger check. Then
+unmask and start `openvpn-web.service` and `netctl-collect.timer` as in section
+4. Migration `4` is not removed in-place; the exact
+`$v4_backup_dir/netctl-before-v4.sqlite` backup is the rollback boundary.
+Retain `$failed_app_dir` through the rollback observation window; remove it
+only under the normal backup-retention procedure after the rollback is
+accepted.

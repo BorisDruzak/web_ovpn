@@ -1,7 +1,7 @@
 # Netctl live runtime identity and context readiness
 
 This is the sanitized production-readiness record for the runtime identity
-closure (migrations `2`, `3`, and `4`) and active-context classification. It records
+closure (migrations `2` and `3`) and active-context classification. It records
 aggregate outcomes only. Raw host inventories, MAC and IP values, source
 configuration, credentials, database rows, and protected backup artifacts are
 intentionally not committed.
@@ -16,7 +16,7 @@ Verified: 2026-07-18
 | Canonical `network_configuration` context commit | `6795a43b7e179870361944d280cc15f6b169395c` |
 | Imported active context revision | `1` |
 | Active context head | present and singular |
-| SQLite migration ledger | `1, 2, 3, 4` |
+| SQLite migration ledger | `1, 2, 3` |
 | SQLite integrity check | `ok` |
 | Context classifier fallback | `false` |
 
@@ -75,16 +75,35 @@ The post-cycle runtime status reported:
 | Runtime interfaces | 1,027 |
 | Current IP observations | 233 |
 | Current hostname observations | 50 |
+| Open historical-identity findings | 46,271 |
+| Open MAC-identity-collision findings | 5 |
+| Open IP-only findings | 1 |
+
+Historical findings are preserved evidence, not automatic asset merges. The
+five MAC-collision and one IP-only finding remain open and visible for operator
+review; none is silently promoted to a permanent identity and no asset merge
+or alias execution was performed. The historical conflicts in this deployed
+v3 evidence remain open pending the reviewed migration-4 deployment.
+
+## Post-deployment migration-4 verification target
+
+Migration `4` is not deployed in the evidence recorded above. After its
+approved deployment, verify the following aggregate findings state with the
+read-only status and findings commands before recording it as observed
+production evidence:
+
+| Expected post-deployment measure | Target value |
+| --- | ---: |
 | Acknowledged historical-identity findings | 46,271 |
 | Open MAC-identity-collision findings | 5 |
 | Open IP-only findings | 1 |
 
-Acknowledgement is a reviewed provenance classification for the historical
-identity findings, not automatic remediation or deletion. The five
-MAC-collision and one IP-only finding remain open and visible for operator
-review; none is silently promoted to a permanent identity and no asset merge
-or alias execution was performed. The acknowledged historical findings remain
-accessible through the read-only findings query.
+Acknowledgement is a reviewed provenance classification, not automatic
+remediation or deletion. The two open finding categories must remain
+operational and visible for operator review, and acknowledged historical
+findings must remain accessible through the read-only findings query. Do not
+replace the current v3 evidence above with this target until deployment has
+been verified.
 
 ## Service boundary and readiness decision
 
