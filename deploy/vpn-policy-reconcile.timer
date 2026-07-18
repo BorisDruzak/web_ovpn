@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile VLAN50 policy routing every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=vpn-policy-reconcile.service
+
+[Install]
+WantedBy=timers.target
