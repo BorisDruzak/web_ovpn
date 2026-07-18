@@ -198,6 +198,6 @@ def test_recovery_docs_record_phase_2_1_contract() -> None:
     )
 
     for relative_path in (README_DOC, CONTEXT_DOC):
-        content = read(relative_path)
+        content = " ".join(read(relative_path).split())
         missing = [fragment for fragment in required if fragment not in content]
         assert not missing, f"{relative_path}: recovery docs missing {missing}"
