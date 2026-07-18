@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -161,7 +162,20 @@ def validate_import_semantics(document: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def canonical_entity_json(entity: dict[str, Any]) -> str:
-    return json.dumps(entity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        entity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=_canonical_json_scalar,
+    )
+
+
+def _canonical_json_scalar(value: Any) -> str:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def canonical_entity_hash(entity: dict[str, Any]) -> str:

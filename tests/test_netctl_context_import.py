@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date, datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -245,6 +246,90 @@ def test_canonical_entity_hash_ignores_mapping_key_order() -> None:
 
     assert canonical_entity_json(first) == canonical_entity_json(second)
     assert canonical_entity_hash(first) == canonical_entity_hash(second)
+
+
+def test_context_cli_import_normalises_yaml_dates_in_canonical_entities(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    database_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    context_path = tmp_path / "network-context.yaml"
+    schema_path = tmp_path / "network-context.schema.json"
+    context_path.write_text(
+        """\
+schema_version: 2.2.0
+metadata:
+  context_id: test-network
+  updated_at: 2026-07-10
+devices:
+  - id: router
+  - id: switch
+links:
+  - id: router-switch
+    relation: connected_to
+    endpoint_a:
+      device: router
+    endpoint_b:
+      device: switch
+    evidence:
+      - source: operator
+        observed_at: 2026-07-09
+        captured_at: 2026-07-09T12:34:56Z
+""",
+        encoding="utf-8",
+    )
+    schema_path.write_text(json.dumps({"type": "object"}), encoding="utf-8")
+
+    import_rc, result = run_cli(
+        [
+            "--json", "--db", database_url, "context", "import",
+            "--path", str(context_path), "--schema", str(schema_path),
+            "--git-sha", "yaml-date-git-sha",
+        ],
+        capsys,
+    )
+
+    assert import_rc == 0
+    assert result["result"] == "success_imported"
+    conn = connect_import_db(tmp_path)
+    try:
+        stored = json.loads(
+            conn.execute(
+                "SELECT canonical_json FROM intent_links WHERE stable_id = 'router-switch'"
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+    assert stored["evidence"] == [
+        {
+            "source": "operator",
+            "observed_at": "2026-07-09",
+            "captured_at": "2026-07-09T12:34:56+00:00",
+        }
+    ]
+
+
+def test_canonical_entity_hash_treats_yaml_dates_as_their_iso_strings() -> None:
+    from netctl.context import canonical_entity_hash
+
+    parsed_yaml_entity = {
+        "id": "router",
+        "observed_at": date(2026, 7, 9),
+        "captured_at": datetime(2026, 7, 9, 12, 34, 56, tzinfo=timezone.utc),
+    }
+    json_entity = {
+        "id": "router",
+        "observed_at": "2026-07-09",
+        "captured_at": "2026-07-09T12:34:56+00:00",
+    }
+
+    assert canonical_entity_hash(parsed_yaml_entity) == canonical_entity_hash(json_entity)
+
+
+def test_canonical_entity_json_does_not_coerce_arbitrary_python_types() -> None:
+    from netctl.context import canonical_entity_json
+
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        canonical_entity_json({"id": "router", "unsupported": {"value"}})
 
 
 def test_normalise_import_entities_ignores_top_level_import_collection_order() -> None:
