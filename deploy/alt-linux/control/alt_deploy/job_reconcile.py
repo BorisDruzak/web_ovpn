@@ -187,6 +187,20 @@ class JobReconciler:
         if unit_state["ActiveState"] in RUNNING_UNIT_STATES:
             return None
 
+        if job.stage != "recording":
+            raise ControlError(
+                code="job_reconcile_invalid_stage",
+                message=(
+                    "Provision result recovery requires "
+                    "stage=recording"
+                ),
+                exit_code=4,
+                details={
+                    "job_id": job.job_id,
+                    "stage": job.stage,
+                },
+            )
+
         try:
             raw_result = read_json(result_path)
         except (OSError, ValueError):
