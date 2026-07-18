@@ -1978,7 +1978,11 @@ def runtime_health() -> Dict[str, Any]:
     nat_chain = runtime_output(runtime_command(["iptables", "-w", "-t", "nat", "-S", "VPN_POLICY_NAT"]))
     nat_hook = runtime_output(runtime_command(["iptables", "-w", "-t", "nat", "-S", "POSTROUTING"]))
     nat_present = (
-        f"-A VPN_POLICY_NAT -o {wg_if} -m mark --mark {pbr_mark}/0xffffffff -j MASQUERADE" in nat_chain
+        bool(re.search(
+            rf"^-A VPN_POLICY_NAT -o {re.escape(wg_if)} -m mark --mark {re.escape(pbr_mark)}(?:/0xffffffff)? -j MASQUERADE$",
+            nat_chain,
+            re.MULTILINE,
+        ))
         and "-A POSTROUTING -j VPN_POLICY_NAT" in nat_hook
     )
     if not nat_present:

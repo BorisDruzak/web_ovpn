@@ -18,7 +18,7 @@ def load_vpnctl():
     return module
 
 
-def healthy_run(calls, *, missing_table_route=False, legacy_51820=False, missing_wg=False, stale_handshake=False):
+def healthy_run(calls, *, missing_table_route=False, legacy_51820=False, missing_wg=False, stale_handshake=False, normalized_nat_mark=False):
     def fake_run(cmd, cwd=None, env=None, check=True):
         calls.append(cmd)
         if cmd[:2] == ["systemctl", "is-active"]:
@@ -52,7 +52,8 @@ def healthy_run(calls, *, missing_table_route=False, legacy_51820=False, missing
             if cmd[-1] == "POSTROUTING":
                 output = "-A POSTROUTING -j VPN_POLICY_NAT\n"
             else:
-                output = "-N VPN_POLICY_NAT\n-A VPN_POLICY_NAT -o wg0 -m mark --mark 0x1/0xffffffff -j MASQUERADE\n"
+                mark = "0x1" if normalized_nat_mark else "0x1/0xffffffff"
+                output = f"-N VPN_POLICY_NAT\n-A VPN_POLICY_NAT -o wg0 -m mark --mark {mark} -j MASQUERADE\n"
             return subprocess.CompletedProcess(cmd, 0, output, "")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -77,6 +78,13 @@ def test_runtime_health_reports_healthy_state(monkeypatch, capsys):
     assert data["overall"] == "ok"
     assert data["sections"]["policy_routing"]["table_123_default"] is True
     assert not any("add" in command or "replace" in command for command in calls)
+
+
+def test_runtime_health_accepts_iptables_normalized_nat_mark(monkeypatch, capsys):
+    data, returncode, _ = run_runtime_health(monkeypatch, capsys, normalized_nat_mark=True)
+
+    assert returncode == 0
+    assert data["sections"]["policy_routing"]["nat_chain_present"] is True
 
 
 def test_runtime_health_strict_fails_for_missing_route(monkeypatch, capsys):
