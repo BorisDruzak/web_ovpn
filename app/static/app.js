@@ -49,7 +49,7 @@ function runtimeHealthMessage(message) {
     .replace(/\[(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]*\](?::\d{1,5})?(?:\/\d{1,3})?/gi, "[redacted address]")
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d{1,5})?\b/g, "[redacted address]")
     .replace(/(^|[^0-9a-f:])(?:[0-9a-f]{0,4}:){2,}[0-9a-f:.]+(?=$|[^0-9a-f:])/gi, "$1[redacted address]")
-    .replace(/(\b(?:endpoint|peer(?:[ _-]?(?:host|hostname))?|hostname|host|remote(?:[ _-]?host)?|address)\s*(?:=|:)\s*)[A-Za-z0-9][A-Za-z0-9.-]*/gi, "$1[redacted address]")
+    .replace(/(\b(?:endpoint|peer(?:[ _-]?(?:host|hostname))?|hostname|host|remote(?:[ _-]?host)?|address)\s*(?:=|:)\s*)[A-Za-z0-9][A-Za-z0-9.-]*(?::\d{1,5})?/gi, "$1[redacted address]")
     .replace(/(^|[^A-Za-z0-9.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}:\d{1,5}(?=$|[^0-9])/g, "$1[redacted address]")
     .replace(/(^|[^A-Za-z0-9-])[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::\d{1,5})(?=$|[^0-9])/g, "$1[redacted address]")
     .replace(/(^|[^A-Za-z0-9.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?=$|[^A-Za-z0-9.-])/g, "$1[redacted address]");

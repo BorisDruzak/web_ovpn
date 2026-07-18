@@ -200,6 +200,8 @@ def test_runtime_health_messages_redact_peer_identifiers():
         "Peer route 192.0.2.8/32 has no handshake",
         "Endpoint [2001:db8::8]:51820 is unavailable",
         "hostname=branch-gateway is unreachable",
+        "hostname=branch-gateway:51820 is unreachable",
+        "remote_host: node-01:443 is unreachable",
         f"WireGuard public key {key} is stale",
     ]
     node_program = """
@@ -231,7 +233,11 @@ process.stdout.write(JSON.stringify(JSON.parse(process.argv[2]).map(context.runt
     assert "2001:db8::8" not in redacted[2]
     assert "51820" not in redacted[2]
     assert "branch-gateway" not in redacted[3]
-    assert key not in redacted[4]
+    assert "branch-gateway" not in redacted[4]
+    assert "51820" not in redacted[4]
+    assert "node-01" not in redacted[5]
+    assert "443" not in redacted[5]
+    assert key not in redacted[6]
     assert "unavailable" in redacted[0]
 
 
