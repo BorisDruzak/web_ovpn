@@ -73,6 +73,10 @@ install -o root -g root -m 0755 \
     "${ALT_ROOT}/control/alt-provision-worker" \
     /usr/local/libexec/alt-provision-worker
 
+install -o root -g root -m 0755 \
+    "${ALT_ROOT}/control/alt-job-stage" \
+    /usr/local/libexec/alt-job-stage
+
 echo "Preparing private controller state"
 
 install -d -o altserver -g altserver -m 0700 \
@@ -126,7 +130,8 @@ echo "Running verification"
 
 python3 -m py_compile \
     /opt/alt-deploy-control/alt_deploy/*.py \
-    /opt/alt-deploy-api/process_pending.py
+    /opt/alt-deploy-api/process_pending.py \
+    "${ALT_ROOT}/control/alt-job-stage"
 
 bash -n "${ALT_ROOT}/install-control-plane.sh"
 bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
