@@ -111,16 +111,20 @@ Each history item contains exactly `stage` and `entered_at`.
 
 A transition is valid only when all of the following hold:
 
-1. the job record and its history pass strict validation;
+1. the current job record and history pass strict validation;
 2. the job is not terminal;
 3. the requested stage is in the canonical allowlist;
 4. the requested stage is either the current stage or the immediately next
    stage;
-5. timestamps are timezone-aware UTC values and do not move backwards.
+5. the resulting status passes the complete state/stage/history schema;
+6. generated timestamps are timezone-aware UTC values and do not move
+   backwards.
 
 Behaviour:
 
-- requesting the current stage is an idempotent no-op;
+- terminal-state rejection happens before idempotency handling;
+- requesting the current stage on a non-terminal job is a byte-for-byte no-op:
+  no history entry, no `updated_at` change and no additional-field update;
 - requesting the immediately next stage appends one history item and changes
   `stage` in the same atomic `status.json` write;
 - skipping a stage fails with `invalid_job_stage_transition`;
@@ -128,7 +132,23 @@ Behaviour:
 - changing a terminal job fails with `job_stage_terminal`;
 - invalid history fails with `job_stage_history_invalid`.
 
-The transition API may atomically update additional non-stage status fields.
+The stage manager owns `entered_at` generation. Callers cannot supply stage
+timestamps. Tests may inject a clock into the manager for deterministic
+verification.
+
+Internal Python callers may atomically update only this closed allowlist with a
+real forward transition:
+
+```text
+state
+started_at
+finished_at
+systemd_unit
+result_file
+```
+
+The internal Ansible helper cannot submit any additional status fields.
+
 Examples:
 
 ```text
@@ -145,8 +165,10 @@ recording -> complete
 + result_file
 ```
 
-Ordinary `JobRepository.update()` must reject direct updates to `stage` and
-`stage_history`. All stage changes go through the domain stage manager.
+Ordinary `JobRepository.update()` rejects direct updates to `stage` or
+`stage_history` with `job_stage_update_forbidden`. It validates the complete
+resulting status before every atomic write. All stage changes go through the
+stage manager.
 
 ## 6. Components
 
@@ -162,12 +184,12 @@ Responsibilities:
 
 - define the canonical stage sequence and index;
 - build the initial `created` history entry;
-- validate `stage`, `stage_history` and timestamp ordering;
+- validate stage, history, state compatibility and timestamp ordering;
 - advance one stage atomically;
-- support idempotent current-stage calls;
-- accept a narrow set of additional status fields for the same atomic write;
+- support byte-identical current-stage no-op calls;
+- enforce the closed additional-field allowlist;
 - use the shared `workstationctl.lock` when called from an unlocked context;
-- expose an unlocked internal path for callers already holding that lock.
+- expose an unlocked internal method for callers already holding that lock.
 
 The module does not execute Ansible, inspect logs or contact workstations.
 
@@ -197,18 +219,26 @@ reconciliation and cleanup therefore fail closed when a real job record is
 damaged. This prevents a malformed active job from disappearing and allowing a
 parallel provision request.
 
+Every ordinary status update validates the resulting complete status before it
+is written. Failure updates can change `state`, error fields and completion
+time, but they cannot change stage fields.
+
 ### 6.3 Planner
 
-`ProvisionPlanner.start()` performs `created -> launching` before invoking the
-systemd launcher. The same transition atomically records the exact expected
-systemd unit.
+Immediately after creating a job, and before ownership preparation or systemd
+launch, `ProvisionPlanner.start()` performs `created -> launching`. The same
+transition atomically records the exact expected systemd unit.
 
-If the unit launch fails, the job becomes `state=failed` but remains
-`stage=launching`.
+If ownership preparation or unit launch fails, the job becomes `state=failed`
+but remains `stage=launching`.
+
+If the `created -> launching` transition itself cannot be persisted, no worker
+is launched. The job remains queued at `created`; reconciliation may later mark
+it failed with `worker_not_started` while preserving `stage=created`.
 
 ### 6.4 Worker
 
-The worker performs:
+The worker first loads and strictly validates the queued job, then performs:
 
 ```text
 launching -> validating -> connecting
@@ -216,18 +246,20 @@ launching -> validating -> connecting
 
 `launching -> validating` atomically sets `state=running` and `started_at`.
 
-`validating` covers loading and validating controller-side job and machine
-state. `connecting` is entered immediately before Ansible execution.
+`validating` covers controller-side machine lookup and prerequisite validation.
+`connecting` is entered immediately before calling Ansible provisioning.
 
-After Ansible returns a valid result, the worker performs:
+After Ansible has entered `verifying` and returns a valid public result, the
+worker performs:
 
 ```text
 verifying -> recording -> complete
 ```
 
-`recording` is entered before writing `result.json` and controller assignment.
-`complete` is entered only after both writes succeed and atomically sets
-`state=successful`, `finished_at` and `result_file`.
+`recording` is entered only after `_validate_result` succeeds and before writing
+`result.json` or controller assignment. `complete` is entered only after both
+writes succeed and atomically sets `state=successful`, `finished_at` and
+`result_file`.
 
 Any exception sets `state=failed`, `finished_at` and bounded `error` without
 changing the current stage.
@@ -237,28 +269,34 @@ changing the current stage.
 The playbook uses explicit marker tasks rather than Ansible log parsing or a
 callback plugin.
 
-Canonical placement:
+The current top-level `roles:` list is replaced by ordered `tasks` that
+interleave marker commands and `ansible.builtin.include_role` calls:
 
 ```text
 marker identity
-role workstation_identity
+include_role workstation_identity
 
 marker employee
-role local_employee
+include_role local_employee
 
 marker login_screen
-role lightdm_accounts
+include_role lightdm_accounts
 
 marker verifying
-role provision_verify
+include_role provision_verify
 ```
 
-Markers execute on the controller with:
+Every marker executes on the controller with:
 
 ```yaml
 delegate_to: localhost
 become: false
+run_once: true
+changed_when: false
 ```
+
+Markers are operational metadata, not target configuration changes, so they do
+not increase the Ansible changed count.
 
 A marker invokes the internal helper:
 
@@ -276,14 +314,18 @@ The helper:
 
 - runs as `altserver`;
 - accepts only a validated job ID and an allowlisted stage;
-- accepts no filesystem paths, JSON payloads, shell commands or arbitrary
-  Ansible arguments;
+- accepts no timestamp, status fields, filesystem paths, JSON payloads, shell
+  commands or arbitrary Ansible arguments;
 - imports the shared domain stage manager;
 - writes under the common lock;
-- returns short JSON without secret values;
+- returns short bounded JSON without secret values;
 - exits non-zero on any invalid or unsafe transition.
 
-A marker failure stops the playbook before the next role begins. This is a
+`AnsibleController._validate_provision_files()` includes the installed helper in
+its required-file checks. A missing helper therefore fails before Ansible starts
+and before the first workstation-mutating role.
+
+A marker failure stops the playbook before the following role begins. This is a
 fail-closed contract: workstation mutation does not continue when authoritative
 controller stage state cannot be recorded.
 
@@ -308,20 +350,21 @@ A valid history must satisfy all of the following:
 - `state=running` is permitted from `validating` through `recording`;
 - `state=failed` may retain any reached stage except `complete`.
 
-A missing or invalid history is `job_stage_history_invalid`.
+A missing or invalid history or state/stage combination is
+`job_stage_history_invalid`.
 
 ## 9. Reconciliation contract
 
 Reconciliation no longer writes `stage=reconcile`.
 
-- queued job without a worker keeps `stage=launching` and becomes failed with
-  `worker_not_started`;
+- a queued job without a worker may be at `created` or `launching`; it becomes
+  failed with `worker_not_started` and preserves its current stage;
 - a lost running worker becomes failed and keeps its last actual stage;
 - a rejected result keeps its last actual stage;
 - result recovery is accepted only from `state=running, stage=recording`;
 - after idempotent assignment recording, recovery advances
   `recording -> complete` and sets `state=successful`;
-- an active worker remains unchanged;
+- an active worker remains byte-for-byte unchanged;
 - malformed histories stop reconciliation explicitly.
 
 This preserves the location of the real failure instead of replacing it with a
@@ -348,9 +391,10 @@ Expected final stages for representative failures:
 
 | Failure point | Final stage |
 | --- | --- |
-| systemd unit launch | `launching` |
+| initial stage persistence before launch | `created` |
+| ownership preparation or systemd unit launch | `launching` |
 | worker/job/machine validation | `validating` |
-| SSH or Ansible connection/start | `connecting` |
+| helper precheck, SSH or Ansible connection/start | `connecting` |
 | hostname role | `identity` |
 | employee role | `employee` |
 | LightDM or AccountsService role | `login_screen` |
@@ -371,7 +415,8 @@ No failure history entry is created.
 ## 12. Security properties
 
 - stage values are a fixed allowlist;
-- the helper does not accept arbitrary paths or commands;
+- the helper does not accept arbitrary paths, timestamps, status fields or
+  commands;
 - job ID validation uses the existing strict job ID format;
 - marker tasks run locally and do not send controller paths or helper access to
   the workstation;
@@ -392,21 +437,25 @@ Implementation proceeds through small red-green TDD slices.
 - timezone-free or decreasing timestamps are rejected;
 - current stage/history mismatch is rejected;
 - invalid state/stage combinations are rejected;
-- a damaged real job is not hidden by list operations.
+- a damaged real job is not hidden by list operations;
+- every ordinary status update validates the resulting full schema.
 
 ### 13.2 Domain transitions
 
 - the next stage advances atomically;
-- the current stage is an idempotent no-op;
+- the current stage is a byte-identical no-op;
+- terminal state rejects even a repeated current-stage marker;
 - backwards and skipped transitions fail;
-- terminal jobs reject markers;
-- atomic additional status fields are recorded;
-- ordinary repository updates cannot mutate stages.
+- only allowlisted additional status fields are recorded;
+- helper calls cannot provide additional fields or timestamps;
+- ordinary repository stage mutation fails with
+  `job_stage_update_forbidden`.
 
 ### 13.3 Planner and worker
 
-- planner records `launching` and the exact systemd unit;
-- launch failure remains at `launching`;
+- planner records `launching` and the exact systemd unit before ownership prep;
+- ownership or launch failure remains at `launching`;
+- failed stage persistence launches no worker and remains at `created`;
 - worker records `validating` and `connecting`;
 - successful flow records `recording` and `complete`;
 - generic failure preserves the reached stage;
@@ -419,14 +468,17 @@ Implementation proceeds through small red-green TDD slices.
 - unknown jobs and invalid transitions fail;
 - output is bounded JSON without secret-like keys;
 - helper uses the common lock;
-- playbook markers appear immediately before their roles;
-- markers use localhost and `become: false`;
+- helper path is part of provision file validation;
+- playbook markers appear immediately before their `include_role` tasks;
+- markers use localhost, `become: false`, `run_once: true` and
+  `changed_when: false`;
 - missing helper is detected before the first workstation-mutating role;
 - both playbooks pass syntax checks.
 
 ### 13.5 Reconciliation and retention
 
 - reconciliation never creates `stage=reconcile`;
+- queued failure preserves either `created` or `launching`;
 - worker loss and result rejection preserve the actual stage;
 - result recovery is allowed only from `recording`;
 - successful recovery appends `complete` exactly once;
@@ -475,7 +527,8 @@ Phase 2.3 is accepted when:
 
 - every new job has a valid `stage_history` beginning at `created`;
 - all stage transitions follow the canonical sequence;
-- repeat markers are safe no-ops;
+- repeat markers are safe byte-identical no-ops on non-terminal jobs;
+- terminal jobs reject markers;
 - invalid transitions and damaged histories fail closed;
 - planner, worker, Ansible and reconciliation use one shared stage domain;
 - failures preserve the last reached stage;
