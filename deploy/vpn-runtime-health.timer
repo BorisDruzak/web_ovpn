@@ -1,0 +1,11 @@
+[Unit]
+Description=Run OpenVPN and WireGuard runtime health check every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=vpn-runtime-health.service
+
+[Install]
+WantedBy=timers.target

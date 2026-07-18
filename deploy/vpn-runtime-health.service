@@ -1,0 +1,9 @@
+[Unit]
+Description=Read-only OpenVPN and WireGuard runtime health check
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/vpnctl --json runtime-health --strict
+StandardOutput=journal
+StandardError=journal
