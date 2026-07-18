@@ -228,6 +228,11 @@ def run_job(
                 raw_result,
             )
 
+            job = stages.advance(
+                job.job_id,
+                "recording",
+            )
+
             atomic_write_json(
                 job.job_dir / "result.json",
                 result,
@@ -240,14 +245,16 @@ def run_job(
 
             finished_at = utc_now()
 
-            jobs.update(
+            stages.advance(
                 job.job_id,
-                state="successful",
-                stage="complete",
-                finished_at=finished_at,
-                result_file=str(
-                    job.job_dir / "result.json"
-                ),
+                "complete",
+                updates={
+                    "state": "successful",
+                    "finished_at": finished_at,
+                    "result_file": str(
+                        job.job_dir / "result.json"
+                    ),
+                },
             )
 
             log_stream.write(
