@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any
 
 from .db import get_source
+from .context_classifier import SegmentRule, legacy_segment_rules, load_active_segment_rules
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
 from .runtime_writer import (
     recompute_runtime_identity_findings,
@@ -216,7 +217,14 @@ def _upsert_host(conn: sqlite3.Connection, host: dict[str, Any]) -> int:
     return int(row["id"])
 
 
-def _demote_absent_noise_hosts(conn: sqlite3.Connection, source: dict[str, Any], current_ips: set[str], observed_at: str) -> None:
+def _demote_absent_noise_hosts(
+    conn: sqlite3.Connection,
+    source: dict[str, Any],
+    current_ips: set[str],
+    observed_at: str,
+    *,
+    segment_rules: list[SegmentRule],
+) -> None:
     rows = conn.execute(
         """
         SELECT id, ip FROM network_hosts
@@ -226,7 +234,7 @@ def _demote_absent_noise_hosts(conn: sqlite3.Connection, source: dict[str, Any],
     ).fetchall()
     for row in rows:
         ip = str(row["ip"])
-        if ip in current_ips or not is_stale_noise_ip(ip):
+        if ip in current_ips or not is_stale_noise_ip(ip, segment_rules=segment_rules):
             continue
         conn.execute(
             """
@@ -295,6 +303,11 @@ def _save_collection(
         "bridge_hosts": len(snapshot.get("bridge_hosts", [])),
         "firewall_address_lists": len(snapshot.get("firewall_address_lists", [])),
     }
+    segment_rules = load_active_segment_rules(conn)
+    classifier_fallback = not segment_rules
+    if classifier_fallback:
+        segment_rules = legacy_segment_rules()
+    counts["context_classifier_fallback"] = classifier_fallback
     _clear_current(conn, source_id)
 
     for item in snapshot.get("interfaces", []):
@@ -419,7 +432,7 @@ def _save_collection(
         _insert_observation(conn, source_id, observed_at, "neighbor", item)
 
     source_for_normalizer = dict(source)
-    hosts = normalize_hosts(source_for_normalizer, snapshot, observed_at)
+    hosts = normalize_hosts(source_for_normalizer, snapshot, observed_at, segment_rules=segment_rules)
     current_ips = {host["ip"] for host in hosts}
     for host in hosts:
         host_id = _upsert_host(conn, host)
@@ -427,7 +440,13 @@ def _save_collection(
             for item in snapshot.get(item_type, []):
                 if item.get("ip") == host["ip"] or item.get("address") == host["ip"]:
                     _insert_observation(conn, source_id, observed_at, item_type.rstrip("s"), item, host_id=host_id)
-    _demote_absent_noise_hosts(conn, source, current_ips, observed_at)
+    _demote_absent_noise_hosts(
+        conn,
+        source,
+        current_ips,
+        observed_at,
+        segment_rules=segment_rules,
+    )
 
     runtime_counts: dict[str, int] = {}
     finding_counts: dict[str, int] = {}
@@ -450,6 +469,21 @@ def _save_collection(
             "runtime_findings_open": finding_counts.get("open", 0),
         }
     )
+
+    if classifier_fallback:
+        conn.execute(
+            """
+            INSERT INTO network_events
+                (ts, source_id, host_id, severity, event_type, message, data_json)
+            VALUES (?, ?, NULL, 'warning', 'context_classifier_fallback', ?, ?)
+            """,
+            (
+                utc_now(),
+                source_id,
+                "no active context segment rules; using explicit legacy compatibility rules",
+                _json({"context_classifier_fallback": True}),
+            ),
+        )
 
     conn.execute(
         """

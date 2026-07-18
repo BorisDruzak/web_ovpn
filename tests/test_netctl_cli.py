@@ -126,6 +126,7 @@ def test_mikrotik_api_driver_parses_arp_and_dhcp_rows():
 
 
 def test_normalizer_merges_dhcp_and_arp_and_assigns_categories():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mock-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -145,7 +146,7 @@ def test_normalizer_merges_dhcp_and_arp_and_assigns_categories():
         "bridge_hosts": [{"mac": "AA:BB:CC:DD:EE:FF", "interface": "ether2"}],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.100.55"]["hostname"] == "pc-buh-01"
     assert hosts["192.168.100.55"]["category"] == "local_device"
@@ -157,6 +158,7 @@ def test_normalizer_merges_dhcp_and_arp_and_assigns_categories():
 
 
 def test_normalizer_creates_source_router_without_self_arp():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mikrotik-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -168,7 +170,7 @@ def test_normalizer_creates_source_router_without_self_arp():
         "bridge_hosts": [],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.100.250"]["category"] == "router"
     assert hosts["192.168.100.250"]["display_name"] == "sosn"
@@ -176,6 +178,7 @@ def test_normalizer_creates_source_router_without_self_arp():
 
 
 def test_normalizer_classifies_service_networks_and_ignores_incomplete_arp_noise():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mikrotik-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -197,7 +200,7 @@ def test_normalizer_classifies_service_networks_and_ignores_incomplete_arp_noise
         "bridge_hosts": [],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.0.12"]["category"] == "telephony"
     assert hosts["10.83.1.11"]["category"] == "mgmt"
@@ -210,6 +213,7 @@ def test_normalizer_classifies_service_networks_and_ignores_incomplete_arp_noise
 
 
 def test_normalizer_guesses_device_type_with_evidence():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mikrotik-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -228,7 +232,7 @@ def test_normalizer_guesses_device_type_with_evidence():
         ],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.0.221"]["device_type"] == "phone"
     assert hosts["192.168.0.221"]["device_confidence"] >= 80
@@ -528,6 +532,7 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     assert data["summary"]["runtime_ips_current"] >= 1
     assert data["summary"]["runtime_hostnames_current"] >= 1
     assert data["summary"]["runtime_findings_open"] >= 0
+    assert data["summary"]["context_classifier_fallback"] is True
 
     _, local_hosts = run_cli(
         ["--json", "--config", str(config_path), "--db", db_url, "hosts", "list", "--category", "local_device"],
