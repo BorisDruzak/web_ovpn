@@ -473,3 +473,37 @@ def test_stage_manager_rejects_unapproved_update_fields(
 
     assert exc.value.code == "invalid_job_stage_update"
     assert status_path.read_bytes() == before
+
+
+def test_stage_manager_uses_common_controller_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    from alt_deploy.job_stages import JobStageManager
+
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    locked_paths: list[Path] = []
+
+    @contextmanager
+    def fake_lock(path: Path):
+        locked_paths.append(path)
+        yield
+
+    monkeypatch.setattr(
+        "alt_deploy.job_stages.exclusive_lock",
+        fake_lock,
+    )
+
+    JobStageManager(
+        settings,
+        repository=repository,
+    ).advance(
+        job.job_id,
+        "launching",
+    )
+
+    assert locked_paths == [settings.lock_file]
