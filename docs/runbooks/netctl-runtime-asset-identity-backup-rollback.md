@@ -12,6 +12,42 @@ record the changed paths in the manifest. Do not put passwords, API tokens,
 private keys, source YAML, or other credentials in the manifest, shell history,
 or deployment record.
 
+## 0. Verify and retain the approved release fingerprint
+
+Start from a clean checkout of the approved branch. The release commit must
+match its remote branch before an archive is created. Save the commit and the
+SHA-256 values of the migration implementation, runtime-asset helper, and
+runtime-asset tests in the same protected backup directory used below. This
+lets an operator compare the deployed files with the reviewed release without
+placing application configuration or database contents in Git.
+
+```bash
+set -euo pipefail
+
+git switch main
+git pull --ff-only
+release_sha="$(git rev-parse HEAD)"
+remote_main_sha="$(git rev-parse origin/main)"
+test "$release_sha" = "$remote_main_sha"
+
+export stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+export backup_dir="/var/backups/netctl/runtime-asset-identity-$stamp"
+sudo install -d -m 0750 "$backup_dir"
+{
+  printf 'release_commit=%s\n' "$release_sha"
+  sha256sum \
+    netctl/migrations.py \
+    netctl/runtime_assets.py \
+    tests/test_netctl_runtime_assets.py
+} | sudo tee "$backup_dir/release-fingerprint.txt" >/dev/null
+sudo chmod 0640 "$backup_dir/release-fingerprint.txt"
+```
+
+Before invoking the deployed code, compare the three deployed files to this
+record. Stop the deployment if the commit or any digest differs. The
+fingerprint is release evidence only; it does not replace the database,
+application, wrapper, and manifest backups required in the next section.
+
 ## 1. Stop services and capture the rollback set
 
 Run these commands in one privileged production shell. They stop the web
@@ -19,16 +55,22 @@ application, collector timer, and any in-flight collector before a SQLite
 backup is taken. The `.backup` command is required: do not copy the live
 database file with `cp` while WAL mode is in use.
 
+Run this section in the same shell as section 0. If a new shell is necessary,
+set `stamp` and `backup_dir` to the existing release-fingerprint directory
+before continuing; do not create a second directory for the same deployment.
+
 ```bash
 set -euo pipefail
+
+test -n "${stamp:-}"
+test -n "${backup_dir:-}"
+test -f "$backup_dir/release-fingerprint.txt"
 
 sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service
 if sudo systemctl is-active --quiet openvpn-web.service; then echo 'openvpn-web.service is still active' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.timer; then echo 'netctl-collect.timer is still active' >&2; exit 1; fi
 if sudo systemctl is-active --quiet netctl-collect.service; then echo 'netctl-collect.service is still active' >&2; exit 1; fi
 
-stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-backup_dir="/var/backups/netctl/runtime-asset-identity-$stamp"
 db_path="/var/lib/netctl/netctl.sqlite"
 app_path="/opt/openvpn-web"
 wrapper_path="/usr/local/sbin/netctl"
