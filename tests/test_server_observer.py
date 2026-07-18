@@ -300,6 +300,8 @@ def test_windows_service_probes_require_running_status():
     active_directory = next(
         command[-1] for command in calls if "server_observer:active_directory" in command[-1]
     )
+    assert directum.index("$running=") < directum.index("[pscustomobject]@{")
+    assert active_directory.index("$running=") < active_directory.index("[pscustomobject]@{")
     assert "Status -eq 'Running'" in directum
     assert "Status -eq 'Running'" in active_directory
     assert all(
@@ -310,6 +312,60 @@ def test_windows_service_probes_require_running_status():
         f"& $running '{service}'" in active_directory
         for service in ("DNS", "NTDS", "ADWS")
     )
+
+
+def test_nextcloud_probe_preserves_raw_status_values_for_strict_parser():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    probe = next(command[-1] for command in calls if "server_observer:nextcloud" in command[-1])
+    assert '"installed"=>$s["installed"]' in probe
+    assert '"maintenance"=>$s["maintenance"]' in probe
+    assert '"needsDbUpgrade"=>$s["needsDbUpgrade"]' in probe
+    assert "(bool)$s[" not in probe
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_services"),
+    [
+        ("directum", {"directumrx", "mongo", "rabbitmq", "redis", "iis", "dns"}),
+        ("active_directory", {"dns", "ntds", "adws"}),
+    ],
+)
+def test_windows_probe_body_with_mocked_commands_emits_json(role, expected_services):
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    probe = next(command[-1] for command in calls if f"server_observer:{role}" in command[-1])
+    body = probe.split(' -Command "', 1)[1].rsplit('" # ', 1)[0]
+    mocks = """
+function Get-CimInstance { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments=$true)]$Rest) [pscustomobject]@{ FreeSpace = 34; Size = 100 } }
+function Get-Item { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments=$true)]$Rest) [pscustomobject]@{ Length = 1 } }
+function Get-Service { [CmdletBinding()] param([string]$Name) [pscustomobject]@{ Status = 'Running' } }
+function Resolve-DnsName { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments=$true)]$Rest) [pscustomobject]@{} }
+"""
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", mocks + body],
+        capture_output=True,
+        text=True,
+        shell=False,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert set(payload["services"]) == expected_services
+    assert all(payload["services"].values())
 
 
 @pytest.mark.parametrize(
