@@ -5,8 +5,12 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from alt_deploy.assignments import AssignmentRepository
+from alt_deploy.errors import ControlError
 from alt_deploy.job_retention import JobRetentionManager
+from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
 from alt_deploy.jsonio import atomic_write_json, read_json
 
@@ -14,27 +18,107 @@ from test_jobs import assignment_payload, provision_request
 from test_registry_cli import make_settings
 
 
-def _set_status(
-    job,
+def _advance_to_stage(
+    settings,
+    job_id: str,
+    target: str,
+) -> None:
+    manager = JobStageManager(settings)
+
+    for stage in (
+        "launching",
+        "validating",
+        "connecting",
+        "identity",
+        "employee",
+        "login_screen",
+        "verifying",
+        "recording",
+    ):
+        current = manager.jobs.get(job_id)
+        if current.stage == target:
+            return
+
+        updates = None
+        if stage == "validating":
+            updates = {
+                "state": "running",
+                "started_at": current.updated_at,
+            }
+
+        manager.advance(
+            job_id,
+            stage,
+            updates=updates,
+        )
+
+        if stage == target:
+            return
+
+    raise AssertionError(
+        f"Unable to advance {job_id} to {target}"
+    )
+
+
+def _finish_job(
+    settings,
+    job_id: str,
     *,
     state: str,
-    stage: str,
-    created_at: str | None = None,
-    finished_at: str | None = None,
+    finished_at: str,
 ) -> None:
-    status = read_json(job.job_dir / "status.json")
-    status["state"] = state
-    status["stage"] = stage
+    manager = JobStageManager(settings)
 
-    if created_at is not None:
-        status["created_at"] = created_at
-        status["updated_at"] = created_at
+    if state == "successful":
+        _advance_to_stage(
+            settings,
+            job_id,
+            "recording",
+        )
+        current = manager.jobs.get(job_id)
+        manager.advance(
+            job_id,
+            "complete",
+            updates={
+                "state": "successful",
+                "finished_at": finished_at,
+                "result_file": str(
+                    current.job_dir / "result.json"
+                ),
+            },
+        )
+        return
 
-    if finished_at is not None:
-        status["finished_at"] = finished_at
-        status["updated_at"] = finished_at
+    if state != "failed":
+        raise AssertionError(
+            f"Unsupported terminal fixture state: {state}"
+        )
 
-    atomic_write_json(job.job_dir / "status.json", status)
+    _advance_to_stage(
+        settings,
+        job_id,
+        "verifying",
+    )
+    manager.jobs.update(
+        job_id,
+        state="failed",
+        finished_at=finished_at,
+        error="fixture failure",
+    )
+
+
+def _set_created_at(
+    job,
+    created_at: str,
+) -> None:
+    status = read_json(
+        job.job_dir / "status.json"
+    )
+    status["created_at"] = created_at
+    atomic_write_json(
+        job.job_dir / "status.json",
+        status,
+    )
 
 
 def test_cleanup_dry_run_classifies_jobs_without_mutation(
@@ -46,39 +130,37 @@ def test_cleanup_dry_run_classifies_jobs_without_mutation(
     now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
 
     expired = jobs.create(provision_request())
-    _set_status(
-        expired,
+    _finish_job(
+        settings,
+        expired.job_id,
         state="successful",
-        stage="complete",
         finished_at=(now - timedelta(days=120)).isoformat(),
     )
     expired_log = expired.job_dir / "ansible.log"
     expired_log.write_text("expired log\n", encoding="utf-8")
 
     archivable = jobs.create(provision_request())
-    _set_status(
-        archivable,
+    _finish_job(
+        settings,
+        archivable.job_id,
         state="failed",
-        stage="ansible",
         finished_at=(now - timedelta(days=30)).isoformat(),
     )
     archivable_log = archivable.job_dir / "ansible.log"
     archivable_log.write_text("archive me\n", encoding="utf-8")
 
     recent = jobs.create(provision_request())
-    _set_status(
-        recent,
+    _finish_job(
+        settings,
+        recent.job_id,
         state="successful",
-        stage="complete",
         finished_at=(now - timedelta(days=5)).isoformat(),
     )
 
     active = jobs.create(provision_request())
-    _set_status(
+    _set_created_at(
         active,
-        state="queued",
-        stage="created",
-        created_at=(now - timedelta(days=400)).isoformat(),
+        (now - timedelta(days=400)).isoformat(),
     )
 
     assignment = assignment_payload(job_id=expired.job_id)
@@ -146,10 +228,10 @@ def test_cleanup_apply_archives_log_atomically_and_idempotently(
     now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
 
     archivable = jobs.create(provision_request())
-    _set_status(
-        archivable,
+    _finish_job(
+        settings,
+        archivable.job_id,
         state="failed",
-        stage="ansible",
         finished_at=(now - timedelta(days=30)).isoformat(),
     )
     log_path = archivable.job_dir / "ansible.log"
@@ -157,11 +239,14 @@ def test_cleanup_apply_archives_log_atomically_and_idempotently(
     log_path.write_text(log_content, encoding="utf-8")
 
     active = jobs.create(provision_request())
-    _set_status(
+    _advance_to_stage(
+        settings,
+        active.job_id,
+        "validating",
+    )
+    _set_created_at(
         active,
-        state="running",
-        stage="ansible",
-        created_at=(now - timedelta(days=400)).isoformat(),
+        (now - timedelta(days=400)).isoformat(),
     )
     active_log = active.job_dir / "ansible.log"
     active_log.write_text("active log\n", encoding="utf-8")
@@ -236,10 +321,10 @@ def test_cleanup_apply_deletes_expired_job_without_following_symlinks(
     now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
 
     expired = jobs.create(provision_request())
-    _set_status(
-        expired,
+    _finish_job(
+        settings,
+        expired.job_id,
         state="successful",
-        stage="complete",
         finished_at=(now - timedelta(days=120)).isoformat(),
     )
 
@@ -300,3 +385,30 @@ def test_cleanup_apply_deletes_expired_job_without_following_symlinks(
         "outside job survives\n"
     )
     assert assignments.get(expired.machine_uuid) == assignment
+
+
+def test_cleanup_fails_closed_on_malformed_real_job(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    jobs = JobRepository(settings)
+    job = jobs.create(provision_request())
+    status = read_json(job.job_dir / "status.json")
+    status.pop("stage_history")
+    atomic_write_json(job.job_dir / "status.json", status)
+
+    with pytest.raises(ControlError) as exc:
+        JobRetentionManager(settings).cleanup(
+            apply=False,
+            now=datetime(
+                2026,
+                7,
+                18,
+                12,
+                0,
+                tzinfo=timezone.utc,
+            ),
+        )
+
+    assert exc.value.code == "job_stage_history_invalid"
+    assert job.job_dir.is_dir()
