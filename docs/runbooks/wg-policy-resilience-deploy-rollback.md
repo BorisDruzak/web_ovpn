@@ -110,7 +110,11 @@ reconciler timer.
 ```bash
 BACKUP_DIR=/root/wg-policy-backup-YYYYMMDD-HHMMSS
 # Prevent a current reconciler tick from mixing current and restored assets.
-if sudo systemctl cat vpn-policy-reconcile.timer >/dev/null 2>&1; then
+if ! reconcile_timer_load_state="$(sudo systemctl show -p LoadState --value vpn-policy-reconcile.timer)"; then
+  echo 'ERROR: cannot determine reconciler timer LoadState; aborting before asset restore.' >&2
+  exit 1
+fi
+if [[ "$reconcile_timer_load_state" != "not-found" ]]; then
   if ! sudo systemctl disable --now vpn-policy-reconcile.timer; then
     echo 'ERROR: cannot disable reconciler timer; aborting before asset restore.' >&2
     exit 1
