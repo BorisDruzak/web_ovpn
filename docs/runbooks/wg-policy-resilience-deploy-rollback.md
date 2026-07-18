@@ -5,6 +5,8 @@
 This runbook installs the self-healing lifecycle for the existing VLAN50
 policy route through `wg0`. It owns only table `123`, rule priority `1000` with
 mark `0x1`, and the `VPN_POLICY_MARK` / `VPN_POLICY_NAT` iptables-nft chains.
+The reconciler uses the same `/run/lock/vpn-policy.lock` flock as the normal
+policy service, so it cannot race a controlled policy-service start or stop.
 
 Do not use this procedure to change OpenVPN profiles, MSS/MTU, OPNsense,
 MikroTik or WireGuard peer configuration. In particular, `Table = off` remains
@@ -28,6 +30,8 @@ stamp="$(date +%Y%m%d-%H%M%S)"
 sudo install -d -m 0700 "/root/wg-policy-backup-$stamp"
 sudo cp -a /usr/local/sbin/vpn-policy.sh \
   /etc/systemd/system/vpn-policy.service \
+  /etc/systemd/system/vpn-policy-reconcile.service \
+  /etc/systemd/system/vpn-policy-reconcile.timer \
   /etc/systemd/system/vpn-runtime-health.service \
   /etc/systemd/system/vpn-runtime-health.timer \
   "/root/wg-policy-backup-$stamp/" 2>/dev/null || true
@@ -35,20 +39,26 @@ SUDO_PASSWORD='*** supplied securely ***' ./deploy/install-openvpn-web.sh
 ```
 
 The installer places the assets, reloads systemd, enables `vpn-policy.service`
-for the next boot and starts the one-minute health timer. It intentionally does
-not restart `wg0`; use the maintenance-window check below to prove the new
-lifecycle behavior.
+for the next boot, and starts both one-minute timers. The
+`vpn-policy-reconcile.timer` is probe-first: it writes only when the active or
+fail-closed policy has drifted. `vpn-runtime-health.timer` is alarm-only and
+writes nothing. Neither timer starts, stops, restarts, or reconfigures `wg0`;
+a failed peer remains fail-closed until an operator or normal service lifecycle
+restores the interface.
 
 ## Non-mutating acceptance checks
 
 Wait for one timer run, then run:
 
 ```bash
+sudo systemctl status vpn-policy-reconcile.timer vpn-runtime-health.timer --no-pager
+sudo systemctl start vpn-policy-reconcile.service
 sudo /usr/local/sbin/vpnctl --json runtime-health --strict
-sudo systemctl status wg-quick@wg0.service vpn-policy.service vpn-runtime-health.timer
+curl -fsS -H "Authorization: Bearer $OPENVPN_WEB_API_TOKEN" http://127.0.0.1:8088/api/v1/runtime-health
+sudo systemctl status wg-quick@wg0.service vpn-policy.service --no-pager
 sudo ip rule show
 sudo ip route show table 123
-sudo journalctl -u vpn-runtime-health.service -n 20 --no-pager
+sudo journalctl -u vpn-policy-reconcile.service -u vpn-runtime-health.service -n 20 --no-pager
 ```
 
 Expected results: exactly the marked policy rule points to table 123, that
@@ -56,10 +66,20 @@ table has `default dev wg0`, both managed chains are present, no rule mentions
 table `51820`, and `runtime-health --strict` exits 0. The command reports
 handshake age and byte counters but never prints WireGuard key material.
 
-## Controlled restart verification
+The Bearer endpoint returns a normal health payload even when its `overall`
+field is `error`; this permits an integration to see the failed component. Do
+not put its Bearer token in browser code. The authenticated
+`/network/dashboard` card uses the session-only `/network/runtime-health`
+endpoint instead; an unauthenticated browser request gets HTTP 303 to
+`/login`. The card redacts key-like values, addresses, endpoint names, and
+ports from runtime warning/error messages before inserting text into the DOM.
 
-Use an approved maintenance window. Keep an OpenVPN client session and an
-independent console path available before restarting WireGuard.
+## Optional operator-directed WG recovery verification
+
+Use an approved maintenance window only when an operator intentionally needs
+to restart WireGuard. Keep an OpenVPN client session and an independent console
+path available first. This is not a reconciler action: the reconciler itself
+never starts or restarts WireGuard.
 
 ```bash
 sudo systemctl restart wg-quick@wg0.service
@@ -75,21 +95,27 @@ back the policy assets.
 ## Rollback
 
 Replace `BACKUP_DIR` with the timestamped directory created before deployment.
-This restores only the four WG-policy assets; it does not modify peer keys,
-OpenVPN configuration or router settings.
+This restores the six WG-policy assets captured above; it does not modify peer
+keys, OpenVPN configuration, router settings, or the WireGuard service
+lifecycle. The commands intentionally do not restart `wg-quick@wg0.service`.
 
 ```bash
 BACKUP_DIR=/root/wg-policy-backup-YYYYMMDD-HHMMSS
 sudo install -m 0755 "$BACKUP_DIR/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo install -m 0644 "$BACKUP_DIR/vpn-policy.service" /etc/systemd/system/vpn-policy.service
+sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.service" /etc/systemd/system/vpn-policy-reconcile.service
+sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
 sudo install -m 0644 "$BACKUP_DIR/vpn-runtime-health.service" /etc/systemd/system/vpn-runtime-health.service
 sudo install -m 0644 "$BACKUP_DIR/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
 sudo systemctl daemon-reload
-sudo systemctl restart wg-quick@wg0.service
 sudo systemctl start vpn-policy.service
+sudo systemctl enable --now vpn-policy-reconcile.timer
+sudo systemctl enable --now vpn-runtime-health.timer
+sudo systemctl status vpn-policy-reconcile.timer vpn-runtime-health.timer --no-pager
 sudo /usr/local/sbin/vpnctl --json runtime-health --strict
 ```
 
 If a pre-existing installation did not yet have one of these files, its backup
-will be absent; remove only that newly installed asset after confirming the
-exact path, then reload systemd and rerun the acceptance checks.
+will be absent; disable the corresponding timer and remove only that newly
+installed asset after confirming the exact path, then reload systemd and rerun
+the acceptance checks. Do not restart WireGuard as part of that cleanup.

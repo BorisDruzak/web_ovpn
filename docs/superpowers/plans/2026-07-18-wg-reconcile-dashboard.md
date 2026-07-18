@@ -16,6 +16,7 @@
 - With no `wg0`, VLAN50 remains marked and table `123` contains `unreachable default`.
 - API/UI must never emit WG private, preshared, or public keys; health data is read-only.
 - `/api/v1/runtime-health` uses Bearer auth; browser polling uses a separate session-authenticated `/network/runtime-health` endpoint because browser sessions do not contain the API Bearer token.
+- Reconciler and `vpn-policy.service` use the shared `/run/lock/vpn-policy.lock` flock so timer repair serializes with the policy lifecycle.
 
 ---
 
@@ -118,7 +119,7 @@ Description=Reconcile VLAN50 policy routing through WireGuard
 [Service]
 Type=oneshot
 User=root
-ExecStart=/usr/local/sbin/vpn-policy.sh reconcile
+ExecStart=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh reconcile
 StandardOutput=journal
 StandardError=journal
 
@@ -190,7 +191,9 @@ def test_runtime_health_api_returns_error_shaped_health_as_http_200(tmp_path, mo
 
 def test_network_runtime_health_requires_session_and_is_read_only(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
-    assert client.get("/network/runtime-health").status_code == 401
+    unauthenticated = client.get("/network/runtime-health", follow_redirects=False)
+    assert unauthenticated.status_code == 303
+    assert unauthenticated.headers["location"] == "/login"
     login(client)
     response = client.get("/network/runtime-health")
     assert response.status_code == 200
@@ -305,7 +308,7 @@ async function loadVpnRuntimeHealth() {
 }
 ```
 
-Implement `runtimeHealthRows` with `document.createElement` and `textContent`, never `innerHTML`; include only OpenVPN service/management, WG service/link/handshake age/MTU, and policy table/chains/legacy-51820 booleans. Call it on `DOMContentLoaded` and every 30 seconds.
+Implement `runtimeHealthRows` with `document.createElement` and `textContent`, never `innerHTML`; include only OpenVPN service/management, WG service/link/handshake age/MTU, and policy table/chains/legacy-51820 booleans. Redact key-like values, IP addresses, endpoint/host names, and ports from warning/error messages before inserting them as text nodes. Call it on `DOMContentLoaded` and every 30 seconds.
 
 - [ ] **Step 4: Verify dashboard tests**
 

@@ -17,6 +17,8 @@ read-only runtime state in the existing web dashboard.
   main routing table.
 - Runtime API and UI are read-only. They must not emit WireGuard private,
   preshared, or public key material.
+- The reconciler shares `/run/lock/vpn-policy.lock` with `vpn-policy.service`;
+  a timer invocation must serialize with controlled policy lifecycle work.
 
 ## Components
 
@@ -34,7 +36,9 @@ flushing and recreating healthy PBR/NAT objects every minute.
 `vpn-policy-reconcile.service` runs that command as root. Its paired timer
 starts one minute after boot and every minute thereafter. It has no dependency
 that would start WG; each invocation exits successfully after making the
-appropriate active or fail-closed state. The existing
+appropriate active or fail-closed state. The service invokes the script through
+the shared `flock` lock, so this scoped repair cannot race `vpn-policy.service`.
+The existing
 `vpn-runtime-health.timer` remains a separate read-only alarm.
 
 ### Read-only web status
@@ -48,15 +52,19 @@ The existing `/network/dashboard` page gains a compact "VPN Runtime" card.
 It shows OpenVPN service/management state, WG service/link/handshake age/MTU,
 policy-rule/table/chain state, the legacy-51820 regression flag, and any
 warnings/errors. The browser polls the new endpoint on page load and every
-30 seconds. It never includes peer keys or packet addresses.
+30 seconds. It never includes peer keys or packet addresses. Browser access is
+session-authenticated rather than Bearer-authenticated: an unauthenticated
+request to `/network/runtime-health` redirects with HTTP 303 to `/login`.
 
 ## Error handling
 
 If `vpnctl` cannot run, the API uses the existing controlled `VpnctlError`
 path. If a normal health response says `overall=error`, the API returns HTTP
 200 with that response; the card uses an error state and displays only its
-sanitized `errors` strings. A transient browser fetch failure preserves an
-explicit "status unavailable" display until the next poll.
+sanitized `warnings`/`errors` strings. Before rendering those messages, the
+browser redacts key-like values, IP addresses, endpoint/host names, and ports;
+all values are inserted with text nodes. A transient browser fetch failure
+preserves an explicit "status unavailable" display until the next poll.
 
 ## Verification
 
