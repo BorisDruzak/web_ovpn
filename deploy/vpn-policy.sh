@@ -32,35 +32,45 @@ delete_jump() {
   done
 }
 
-stop() {
-  delete_rule
-  while ip route del default dev "$WG_IF" table "$PBR_TABLE" 2>/dev/null; do
-    :
-  done
-
-  delete_jump mangle PREROUTING "$MANGLE_CHAIN"
-  iptables -w -t mangle -F "$MANGLE_CHAIN" 2>/dev/null || true
-  iptables -w -t mangle -X "$MANGLE_CHAIN" 2>/dev/null || true
-
+clear_nat() {
   delete_jump nat POSTROUTING "$NAT_CHAIN"
   iptables -w -t nat -F "$NAT_CHAIN" 2>/dev/null || true
   iptables -w -t nat -X "$NAT_CHAIN" 2>/dev/null || true
 }
 
-start() {
-  ip link show dev "$WG_IF" >/dev/null
-  stop
-
-  ip route replace default dev "$WG_IF" table "$PBR_TABLE"
+ensure_marking() {
+  delete_rule
   ip rule add fwmark "$PBR_MARK/$PBR_MASK" lookup "$PBR_TABLE" priority "$PBR_PRIORITY"
 
+  delete_jump mangle PREROUTING "$MANGLE_CHAIN"
+  iptables -w -t mangle -F "$MANGLE_CHAIN" 2>/dev/null || true
+  iptables -w -t mangle -X "$MANGLE_CHAIN" 2>/dev/null || true
   iptables -w -t mangle -N "$MANGLE_CHAIN" 2>/dev/null || true
   iptables -w -t mangle -A "$MANGLE_CHAIN" -i "$PBR_IN_IF" -j MARK --set-xmark "$PBR_MARK/$PBR_MASK"
   iptables -w -t mangle -A PREROUTING -j "$MANGLE_CHAIN"
+}
+
+start() {
+  if ! ip link show dev "$WG_IF" >/dev/null; then
+    stop
+    return 0
+  fi
+  clear_nat
+  ensure_marking
+  ip route replace default dev "$WG_IF" table "$PBR_TABLE"
 
   iptables -w -t nat -N "$NAT_CHAIN" 2>/dev/null || true
   iptables -w -t nat -A "$NAT_CHAIN" -o "$WG_IF" -m mark --mark "$PBR_MARK/$PBR_MASK" -j MASQUERADE
   iptables -w -t nat -A POSTROUTING -j "$NAT_CHAIN"
+}
+
+stop() {
+  # Preserve the mark/rule and make its table explicitly unreachable. This
+  # prevents VLAN50 traffic from falling through to the host's main table
+  # while wg0 is down or still waiting for endpoint DNS at boot.
+  ensure_marking
+  clear_nat
+  ip route replace unreachable default table "$PBR_TABLE"
 }
 
 status() {

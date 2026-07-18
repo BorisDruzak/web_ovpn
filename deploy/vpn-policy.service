@@ -1,8 +1,7 @@
 [Unit]
 Description=Policy routing for VLAN50 through WireGuard
-Requires=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
 After=network-online.target wg-quick@wg0.service
-BindsTo=wg-quick@wg0.service
 PartOf=wg-quick@wg0.service
 
 [Service]

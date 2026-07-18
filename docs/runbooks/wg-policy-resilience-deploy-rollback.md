@@ -10,6 +10,13 @@ Do not use this procedure to change OpenVPN profiles, MSS/MTU, OPNsense,
 MikroTik or WireGuard peer configuration. In particular, `Table = off` remains
 required in `/etc/wireguard/wg0.conf`.
 
+`vpn-policy.service` deliberately uses `Wants=` (not `Requires=` or
+`BindsTo=`) for `wg-quick@wg0.service`. This lets it install the marked,
+`unreachable default` route even if WireGuard is temporarily unavailable at
+boot (for example while endpoint DNS is unavailable). `PartOf=` still makes a
+controlled WG restart rerun the policy reconciler; once `wg0` exists, it
+replaces the unreachable route with `default dev wg0` and reinstates NAT.
+
 ## Deploy without restarting tunnels
 
 Run from the repository checkout copied to `openvpm`; the deploy account must
