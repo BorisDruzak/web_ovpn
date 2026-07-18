@@ -1,16 +1,214 @@
 import json
+import subprocess
 
 import pytest
 
 from app.server_observer import (
     classify_directum_logs,
     classify_disk,
+    collect,
     load_runtime_config,
     load_snapshot,
     parse_utc,
     snapshot_status,
     write_snapshot,
 )
+
+
+def runtime_config():
+    """Topology fixture uses documentation-only address space."""
+    return {
+        "ssh_key": "C:/runtime/observer_key",
+        "tunnel_source": "198.51.100.50",
+        "targets": [
+            {
+                "role": "file_server",
+                "host": "192.0.2.10",
+                "user": "observer",
+                "checks": [{"name": "file_server_probe", "source": "gateway"}],
+            },
+            {
+                "role": "directum",
+                "host": "192.0.2.11",
+                "user": "observer",
+                "checks": [{"name": "directum_probe", "source": "gateway"}],
+            },
+            {
+                "role": "active_directory",
+                "host": "192.0.2.12",
+                "user": "observer",
+                "checks": [{"name": "active_directory_probe", "source": "gateway"}],
+            },
+            {
+                "role": "nextcloud",
+                "host": "192.0.2.13",
+                "user": "observer",
+                "checks": [{"name": "nextcloud_probe", "source": "vpn_path"}],
+            },
+            {
+                "role": "onlyoffice",
+                "host": "192.0.2.14",
+                "user": "observer",
+                "checks": [{"name": "onlyoffice_probe", "source": "gateway"}],
+            },
+            {
+                "role": "opnsense_dns",
+                "host": "192.0.2.15",
+                "user": "observer",
+                "checks": [{"name": "opnsense_dns_probe", "source": "gateway"}],
+            },
+        ],
+    }
+
+
+def target(snapshot, role):
+    return next(item for item in snapshot["targets"] if item["role"] == role)
+
+
+def healthy_runner(command, **kwargs):
+    assert isinstance(command, list)
+    assert kwargs == {"capture_output": True, "text": True, "shell": False}
+    return subprocess.CompletedProcess(
+        command,
+        0,
+        json.dumps(
+            {
+                "free_percent": 34,
+                "data_free_percent": 34,
+                "log_bytes": 1,
+                "services": {
+                    "sshd": True,
+                    "directumrx": True,
+                    "mongo": True,
+                    "rabbitmq": True,
+                    "redis": True,
+                    "iis": True,
+                    "dns": True,
+                    "ntds": True,
+                    "adws": True,
+                    "nginx": True,
+                    "php": True,
+                    "postgresql": True,
+                    "docker": True,
+                    "containerd": True,
+                    "unbound": True,
+                },
+                "internal_dns": True,
+                "external_dns": True,
+                "installed": True,
+                "maintenance": False,
+                "needsDbUpgrade": False,
+                "https_ok": True,
+                "adguard_listener": True,
+                "adguard_query": True,
+                "raw": "authorized_keys ssh 192.168.100.99",
+            }
+        ),
+        "",
+    )
+
+
+def test_collect_binds_vpn_path_probe_and_continues_after_target_error():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if "nextcloud" in command[-1]:
+            raise subprocess.TimeoutExpired(command, 8)
+        return subprocess.CompletedProcess(command, 0, '{"free_percent": 34}', "")
+
+    snapshot = collect(
+        runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z")
+    )
+
+    assert any(command[:3] == ["ssh", "-b", "198.51.100.50"] for command in calls)
+    assert target(snapshot, "nextcloud")["status"] == "error"
+    assert target(snapshot, "directum")["status"] in {"ok", "warn", "critical"}
+
+
+def test_collect_covers_the_allow_listed_role_checks():
+    snapshot = collect(
+        runtime_config(), runner=healthy_runner, now=parse_utc("2026-07-18T20:00:00Z")
+    )
+
+    assert {item["role"] for item in snapshot["targets"]} == {
+        "file_server",
+        "directum",
+        "active_directory",
+        "nextcloud",
+        "onlyoffice",
+        "opnsense_dns",
+    }
+    assert snapshot["overall"] == "ok"
+    assert {check["name"] for check in target(snapshot, "file_server")["checks"]} == {
+        "sshd_active",
+        "data_disk_free",
+    }
+    assert {check["name"] for check in target(snapshot, "directum")["checks"]} == {
+        "c_disk_free", "rxdata_log_bytes", "directumrx_active", "mongo_active",
+        "rabbitmq_active", "redis_active", "iis_active", "dns_active",
+    }
+    assert {check["name"] for check in target(snapshot, "active_directory")["checks"]} == {
+        "c_disk_free", "dns_active", "ntds_active", "adws_active", "internal_dns",
+        "external_dns",
+    }
+    assert {check["name"] for check in target(snapshot, "nextcloud")["checks"]} == {
+        "nextcloud_status", "root_disk_free", "data_disk_free", "nginx_active",
+        "php_active", "postgresql_active", "redis_active",
+    }
+    assert {check["name"] for check in target(snapshot, "onlyoffice")["checks"]} == {
+        "https_healthcheck", "docker_active", "containerd_active", "root_disk_free",
+    }
+    assert {check["name"] for check in target(snapshot, "opnsense_dns")["checks"]} == {
+        "adguard_listener", "adguard_query", "unbound_active", "internal_dns",
+        "external_dns",
+    }
+
+
+def test_public_collection_never_contains_host_command_or_raw_output():
+    snapshot = collect(
+        runtime_config(), runner=healthy_runner, now=parse_utc("2026-07-18T20:00:00Z")
+    )
+
+    encoded = json.dumps(snapshot)
+    assert "192.168." not in encoded
+    assert "ssh " not in encoded
+    assert "authorized_keys" not in encoded
+    assert "observer_key" not in encoded
+
+
+def test_collect_uses_read_only_argv_probes():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, '{"free_percent": 34}', "")
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    forbidden = {"rm", "mv", "cp", "tee", "chmod", "chown", "sudo", "authorized_keys"}
+    assert all(not forbidden.intersection(command[-1].split()) for command in calls)
+
+
+@pytest.mark.parametrize(
+    ("result", "category"),
+    [
+        (subprocess.CompletedProcess([], 255, "remote failure", ""), "transport"),
+        (subprocess.CompletedProcess([], 0, "not-json", ""), "parse"),
+        (subprocess.CompletedProcess([], 0, "[]", ""), "unexpected_response"),
+    ],
+)
+def test_collect_redacts_non_timeout_probe_failures(result, category):
+    config = runtime_config()
+    config["targets"] = [config["targets"][0]]
+
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, result.returncode, result.stdout, result.stderr)
+
+    snapshot = collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    assert snapshot["overall"] == "error"
+    assert {check["error"] for check in snapshot["targets"][0]["checks"]} == {category}
 
 
 def test_capacity_thresholds_and_directum_log_thresholds():
