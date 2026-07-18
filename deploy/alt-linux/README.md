@@ -14,7 +14,7 @@ Authoritative documentation:
 
 The controller runs on `192.168.100.17` under the `altserver` service account.
 It owns `workstationctl`, Ansible, SSH host-key handling, Vault, provision jobs,
-logs, assignments and job reconciliation.
+structured stage history, logs, assignments, retention and reconciliation.
 
 The future operator web interface runs on `192.168.100.30`. It must use a
 constrained API on the controller and must not receive SSH private keys, Vault
@@ -47,7 +47,8 @@ sudo bash deploy/alt-linux/install-control-plane.sh
 
 The installer:
 
-- installs `workstationctl` and the asynchronous provision worker;
+- installs `workstationctl`, the asynchronous provision worker and the internal
+  stage helper;
 - installs the Ansible project without copying an active Vault;
 - prepares private job and assignment directories;
 - installs the pending-registration processor;
@@ -121,10 +122,9 @@ sudo -u altserver workstationctl --json vault check
 ```
 
 The command checks file presence, ownership, mode `0600`, the Ansible Vault
-header, successful decryption, the required variable and yescrypt format. A
-healthy Vault returns only boolean checks. An unhealthy Vault returns
-`error.code=vault_unhealthy` and boolean diagnostics; neither response contains
-the hash, decrypted YAML or Vault password.
+header, successful decryption, the required variable and yescrypt format. An
+unhealthy Vault returns `error.code=vault_unhealthy` and boolean diagnostics;
+neither response contains the hash, decrypted YAML or Vault password.
 
 ## Controller state permissions
 
@@ -140,16 +140,11 @@ Expected controller permission contract:
 | `/home/altserver/ansible/group_vars/vault.yml` | `altserver` | `altserver` | `0600` | regular file |
 | `/home/altserver/.ansible-vault-pass` | `altserver` | `altserver` | `0600` | regular file |
 
-Run the read-only audit as the service account:
+Read-only audit:
 
 ```bash
 sudo -u altserver workstationctl --json controller permissions
 ```
-
-A healthy audit returns boolean checks for existence, owner, group, mode and
-object type. An unhealthy audit returns
-`error.code=controller_permissions_unhealthy`. It never reads or returns file
-contents.
 
 Repair only these known paths as root:
 
@@ -157,20 +152,8 @@ Repair only these known paths as root:
 sudo workstationctl --json controller permissions repair
 ```
 
-The repair command:
-
-- requires root;
-- validates every expected path before changing any path;
-- refuses missing paths, symbolic links and unexpected object types;
-- does not create a missing Vault file or password file;
-- opens objects with no-follow semantics and changes only owner, group and mode;
-- returns the symbolic path keys that were changed, not secret contents.
-
-A blocked repair returns
-`error.code=controller_permissions_repair_blocked`. A system error during
-sequential `fchown` or `fchmod` returns
-`error.code=controller_permissions_repair_failed`; run the read-only audit again
-to see the resulting state before retrying.
+Repair refuses missing paths, symbolic links and unexpected object types. It
+uses no-follow file descriptors and changes only owner, group and mode.
 
 ## CLI and provision request
 
@@ -206,8 +189,8 @@ The provision request contains no password or password hash:
 }
 ```
 
-Employee logins may contain lowercase ASCII letters, digits, `_` and `-`.
-A dot is not allowed.
+Employee logins may contain lowercase ASCII letters, digits, `_` and `-`. A dot
+is not allowed.
 
 `provision start` requires root because it creates the transient systemd job:
 
@@ -216,15 +199,57 @@ sudo workstationctl --json provision start <uuid> \
   --vars-file /path/to/request.json
 ```
 
-Permission repair also requires root:
-
-```bash
-sudo workstationctl --json controller permissions repair
-```
-
 Do not run `provision start` for a machine whose derived state is `assigned`.
 A repeat request is rejected with `machine_already_assigned`. An explicit
 release or reassignment workflow must be implemented first.
+
+## Structured provision job stages
+
+Phase 2.3 uses one strict, timestamped sequence:
+
+```text
+created launching validating connecting identity employee login_screen verifying recording complete
+```
+
+The state and stage have different meanings:
+
+- `state` is one of `queued`, `running`, `successful` or `failed`;
+- `stage` is the last successfully entered provisioning step;
+- failure preserves the last reached stage rather than creating a failure
+  stage;
+- successful jobs must end at `stage=complete`;
+- skipped, backward and unknown transitions fail closed.
+
+Every new job has a non-empty `stage_history`. Each history entry contains only:
+
+```json
+{
+  "stage": "employee",
+  "entered_at": "2026-07-18T12:00:00+00:00"
+}
+```
+
+`jobs status` returns the current stage and the complete `stage_history`.
+Repeating the current stage on a non-terminal job is a byte-for-byte no-op.
+Direct `stage` or `stage_history` updates through `JobRepository.update()` are
+forbidden.
+
+Ansible role markers call the internal controller helper:
+
+```text
+/usr/local/libexec/alt-job-stage
+```
+
+This helper is not a public operator or API command. Marker tasks use
+`delegate_to: localhost`, `become: false`, `run_once: true` and
+`changed_when: false`. A failed marker stops the next role; authoritative stage
+state is never derived by parsing human Ansible output or task names.
+
+No automatic migration exists. Existing pre-Phase-2.3 job directories are not
+repaired or synthesized. Before runtime rollout, back up and explicitly remove
+old test jobs under `/var/lib/alt-deploy/jobs/`, then install the strict schema
+only after separate approval. The assigned reference UUID must not be
+provisioned again.
 
 ## Job reconciliation after controller restart
 
@@ -241,26 +266,23 @@ uses the exact recorded unit name `alt-provision-<job_id>.service`.
 
 Possible actions:
 
-- `still_running`: the unit is `active`, `activating` or `reloading`; the job
-  record remains unchanged and the systemd states are returned in `unchanged`;
-- `queued_recoverable`: a queued job has no recorded unit, or its recorded unit
-  has `LoadState=not-found`; the job becomes `failed`, receives
-  `error_code=worker_not_started` and `retryable=true`;
-- `worker_lost`: a running job has no unit and no result; the job becomes
-  `failed` with `stage=reconcile` and `error_code=worker_lost`;
-- `result_recovered`: an inactive worker left a valid `result.json`; the result
-  is validated with the same contract as the worker, the assignment is written
-  idempotently, and the job becomes `successful / complete`;
-- `result_rejected`: an inactive worker left malformed JSON or a result that
-  fails result verification; no assignment is written, the original result file
-  is retained, and the job becomes retryable failure with
-  `error_code=invalid_provision_result`.
+- `still_running`: an active unit is reported without changing the job;
+- `queued_recoverable`: the job becomes `failed` while preserving `created` or
+  `launching`, with `error_code=worker_not_started` and `retryable=true`;
+- `worker_lost`: the running job becomes `failed` while preserving its current
+  real stage, with `error_code=worker_lost`;
+- `result_recovered`: only `state=running, stage=recording` may recover a valid
+  inactive-worker result; recovery records `recording -> complete`, writes the
+  assignment and makes the job successful;
+- `result_rejected`: malformed or invalid results make the job a retryable
+  failure while preserving `recording`; no assignment is written.
 
-A result is never recovered while the worker is still active. Assignment-store,
+A result is never recovered while the worker is active. Recovery from any stage
+other than `recording` fails with `job_reconcile_invalid_stage`. Assignment,
 systemd and invalid-unit errors are not hidden as result-validation failures.
 
-Reconciliation is currently an explicit operator command. No automatic boot
-service invokes it yet.
+Reconciliation remains an explicit operator command. No automatic boot service
+invokes it yet.
 
 ## Job and log retention
 
@@ -275,25 +297,25 @@ The current policy is:
 - successful and failed jobs are retained for 90 days;
 - their `ansible.log` files are archived after 14 days as `ansible.log.gz`;
 - `queued` and `running` jobs are never archived or deleted by cleanup;
-- assignment records under `/var/lib/alt-deploy/assignments/` are retained
-  independently;
-- cleanup does not follow symbolic links outside the jobs directory.
+- assignment records are retained independently;
+- cleanup does not follow symbolic links outside the jobs directory;
+- malformed real stage history fails closed with
+  `job_stage_history_invalid`; it is not skipped, repaired or deleted.
 
-Review the planned actions without changing state:
+Dry-run:
 
 ```bash
 sudo -u altserver workstationctl --json jobs cleanup
 ```
 
-Apply the reported archive and deletion actions explicitly as root:
+Apply explicitly as root:
 
 ```bash
 sudo workstationctl --json jobs cleanup --apply
 ```
 
-`jobs log` transparently reads both `ansible.log` and `ansible.log.gz` and
-returns `archived=true` for a gzip-backed log. No automatic cleanup service is
-installed; both dry-run and apply are explicit operator commands.
+`jobs log` transparently reads both `ansible.log` and `ansible.log.gz`. No
+automatic cleanup service is installed.
 
 ## State, diagnostics, and recovery
 
@@ -343,16 +365,12 @@ UserKnownHostsFile=/home/altserver/.ssh/known_hosts_autoinstall
 ProxyCommand=none
 ```
 
-`ProxyCommand=none` bypasses inherited SSSD SSH proxy configuration without
-weakening strict host-key checking.
-
 For a failed, unassigned machine, inspect the structured error and bounded job
 log, correct the cause, rerun preview, and start a new job only after preview
 succeeds.
 
-Do not delete assignment JSON manually. Do not rerun provisioning for an
-assigned machine. Release and reassignment require a dedicated audited
-workflow.
+Do not delete assignment JSON manually. Release and reassignment require a
+dedicated audited workflow.
 
 ## Repository layout
 
@@ -370,13 +388,16 @@ deploy/alt-linux/
 │       └── provision_verify/
 ├── api/process_pending.py
 ├── control/
-│   ├── alt_deploy/
-│   │   ├── controller_permissions.py
-│   │   ├── job_reconcile.py
-│   │   ├── job_retention.py
-│   │   └── vault.py
+│   ├── alt-job-stage
+│   ├── alt-provision-worker
 │   ├── workstationctl
-│   └── alt-provision-worker
+│   └── alt_deploy/
+│       ├── controller_permissions.py
+│       ├── job_reconcile.py
+│       ├── job_retention.py
+│       ├── job_stage_helper.py
+│       ├── job_stages.py
+│       └── vault.py
 ├── install-control-plane.sh
 ├── autoinstall/
 ├── bootstrap/
@@ -391,6 +412,14 @@ require `/etc/openvpn/vpnctl.env`.
 
 ```bash
 .venv/bin/python -m pytest -q tests/alt_linux
+
+python3 -m py_compile \
+  deploy/alt-linux/control/alt_deploy/*.py \
+  deploy/alt-linux/api/process_pending.py \
+  deploy/alt-linux/control/alt-job-stage
+
+bash -n deploy/alt-linux/install-control-plane.sh
+bash -n deploy/alt-linux/bootstrap/bootstrap.sh
 
 ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
   ansible-playbook --syntax-check \
