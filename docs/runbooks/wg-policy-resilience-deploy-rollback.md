@@ -111,16 +111,16 @@ reconciler timer.
 BACKUP_DIR=/root/wg-policy-backup-YYYYMMDD-HHMMSS
 # Prevent a current reconciler tick from mixing current and restored assets.
 sudo systemctl disable --now vpn-policy-reconcile.timer || true
-# Do not interrupt a writing oneshot; wait for any already-started run to finish.
+# Disabling the timer prevents new reconcile jobs; drain an existing oneshot/job
+# normally rather than interrupting a writer while its assets are replaced.
 reconcile_state="$(sudo systemctl show -p ActiveState --value vpn-policy-reconcile.service)"
-while [[ "$reconcile_state" == "activating" ]]; do
+reconcile_jobs="$(sudo systemctl list-jobs --no-legend)"
+while [[ "$reconcile_state" == "active" || "$reconcile_state" == "activating" ]] \
+  || grep -Fq "vpn-policy-reconcile.service" <<<"$reconcile_jobs"; do
   sleep 1
   reconcile_state="$(sudo systemctl show -p ActiveState --value vpn-policy-reconcile.service)"
+  reconcile_jobs="$(sudo systemctl list-jobs --no-legend)"
 done
-if [[ "$reconcile_state" != "inactive" ]]; then
-  echo "ERROR: reconciler service is $reconcile_state; investigate before restoring assets." >&2
-  exit 1
-fi
 
 sudo install -m 0755 "$BACKUP_DIR/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo install -m 0644 "$BACKUP_DIR/vpn-policy.service" /etc/systemd/system/vpn-policy.service
@@ -145,7 +145,7 @@ else
 fi
 
 sudo systemctl daemon-reload
-sudo systemctl restart vpn-policy.service
+sudo /usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh start
 if [[ "$restore_reconciler" == "1" ]]; then
   sudo systemctl enable --now vpn-policy-reconcile.timer
 fi
@@ -157,13 +157,13 @@ fi
 sudo /usr/local/sbin/vpnctl --json runtime-health --strict
 ```
 
-`vpn-policy.service` uses `RemainAfterExit=yes`, so rollback uses `restart`,
-not `start`, to apply the restored unit and script even when the service is
-already active. The restart executes only the restored service's
-`ExecStop`/`ExecStart` policy operations; it does not issue a restart for
-`wg-quick@wg0.service` or OpenVPN. Current reconciler and policy units serialize
-their normal operations with the shared `flock`, but a restored older policy
-unit may predate that lock and is not represented as using it here.
+Rollback applies the restored policy script through the shared `flock` directly,
+rather than starting or restarting `vpn-policy.service`. This avoids a systemd
+transaction for that unit (which has `Wants=wg-quick@wg0.service`), changes only
+the managed PBR/NAT policy state, and never invokes the WG or OpenVPN service
+lifecycle. Current reconciler and policy units serialize their normal operations
+with the shared `flock`, but a restored older policy unit may predate that lock
+and is not represented as using it here.
 
 If only one of the two reconciler backup files is present, treat it as an
 incomplete pre-feature backup: leave the reconciler disabled and remove both
