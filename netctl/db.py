@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import load_config_sources
+from .config import load_config_sources, normalize_snmp_driver_options
 from .migrations import apply_migrations
 from .util import utc_now
 
@@ -22,7 +22,7 @@ CONTEXT_IMPORT_RUN_STATUSES = frozenset(
 )
 CONTEXT_IMPORT_RUN_FINAL_STATUSES = CONTEXT_IMPORT_RUN_STATUSES - {"running"}
 PRIVATE_SOURCE_KEYS = frozenset(
-    {"community", "password", "resolved_secret", "resolved_secrets", "secret_value"}
+    {"password", "resolved_secret", "resolved_secrets", "secret_value"}
 )
 
 
@@ -393,7 +393,9 @@ def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:
 
 def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
     now = utc_now()
-    driver_options_json = _encode_driver_options(source.get("driver_options", {}))
+    driver_options_json = _encode_driver_options(
+        str(source.get("driver") or ""), source.get("driver_options", {})
+    )
     conn.execute(
         """
         INSERT INTO network_sources
@@ -454,7 +456,15 @@ def sync_config_sources(conn: sqlite3.Connection, config_path: str | Path) -> No
 
 
 def source_public(source: dict[str, Any]) -> dict[str, Any]:
-    result = _redact_source_value(dict(source))
+    result = dict(source)
+    if str(source.get("driver") or "") == "snmp_switch" and "driver_options" in source:
+        try:
+            result["driver_options"] = normalize_snmp_driver_options(
+                source["driver_options"]
+            )
+        except ValueError as exc:
+            raise ValueError("SNMP driver_options are invalid") from exc
+    result = _redact_source_value(result)
     result.pop("driver_options_json", None)
     for key in ["id", "tls", "verify_tls", "enabled"]:
         if key in result and key != "id":
@@ -475,10 +485,19 @@ def list_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def _is_private_source_key(key: Any) -> bool:
+    normalized = str(key).lower()
+    return (
+        normalized in PRIVATE_SOURCE_KEYS
+        or "community" in normalized
+        or normalized.startswith("resolved_")
+    )
+
+
 def _contains_private_source_key(value: Any) -> bool:
     if isinstance(value, dict):
         return any(
-            str(key).lower() in PRIVATE_SOURCE_KEYS
+            _is_private_source_key(key)
             or _contains_private_source_key(nested_value)
             for key, nested_value in value.items()
         )
@@ -487,12 +506,17 @@ def _contains_private_source_key(value: Any) -> bool:
     return False
 
 
-def _encode_driver_options(value: Any) -> str:
+def _encode_driver_options(driver: str, value: Any) -> str:
     if value is None:
         value = {}
     if not isinstance(value, dict):
         raise ValueError("driver_options must be a mapping")
-    if _contains_private_source_key(value):
+    if driver == "snmp_switch":
+        try:
+            value = normalize_snmp_driver_options(value)
+        except ValueError as exc:
+            raise ValueError("SNMP driver_options are invalid") from exc
+    elif _contains_private_source_key(value):
         raise ValueError("driver_options must not contain resolved secret material")
     return json.dumps(
         value,
@@ -510,8 +534,18 @@ def _source_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
     try:
         options = json.loads(str(raw_options or "{}"))
     except (TypeError, ValueError, json.JSONDecodeError):
+        if source.get("driver") == "snmp_switch":
+            raise ValueError("stored SNMP driver_options are invalid") from None
         options = {}
-    source["driver_options"] = options if isinstance(options, dict) else {}
+    if source.get("driver") == "snmp_switch":
+        try:
+            source["driver_options"] = normalize_snmp_driver_options(options)
+        except ValueError:
+            raise ValueError("stored SNMP driver_options are invalid") from None
+    elif not isinstance(options, dict) or _contains_private_source_key(options):
+        raise ValueError("stored driver_options are invalid")
+    elif options:
+        source["driver_options"] = options
     return source
 
 
@@ -520,7 +554,7 @@ def _redact_source_value(value: Any) -> Any:
         return {
             key: _redact_source_value(nested_value)
             for key, nested_value in value.items()
-            if str(key).lower() not in PRIVATE_SOURCE_KEYS
+            if not _is_private_source_key(key)
         }
     if isinstance(value, list):
         return [_redact_source_value(item) for item in value]

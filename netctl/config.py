@@ -29,6 +29,7 @@ SNMP_OPTION_YAML_KEYS = {
     "intent_context_id": "intent_context_id",
     "intent_stable_id": "intent_stable_id",
 }
+SNMP_DRIVER_OPTION_KEYS = frozenset(SNMP_OPTION_YAML_KEYS)
 
 
 def sources_dir(config_path: str | Path) -> Path:
@@ -157,27 +158,76 @@ def _bounded_int(
     minimum: int,
     maximum: int,
 ) -> int:
-    try:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer")
+    if isinstance(value, int):
+        normalized = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError(f"{field} must be an integer")
         normalized = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be an integer") from exc
+    elif isinstance(value, str):
+        stripped = value.strip()
+        digits = stripped[1:] if stripped.startswith(("+", "-")) else stripped
+        if not digits.isdigit():
+            raise ValueError(f"{field} must be an integer")
+        normalized = int(stripped)
+    else:
+        raise ValueError(f"{field} must be an integer")
     if not minimum <= normalized <= maximum:
         raise ValueError(f"{field} must be between {minimum} and {maximum}")
     return normalized
 
 
+def _snmp_bool(value: Any, *, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    raise ValueError(f"{field} must be a boolean")
+
+
+def _snmp_string(value: Any, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    return value
+
+
 def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
     nested_options = source.get("driver_options")
+    if nested_options is not None and not isinstance(nested_options, dict):
+        raise ValueError("SNMP driver_options must be a mapping")
     if "community" in source or (
         isinstance(nested_options, dict) and "community" in nested_options
     ):
         raise ValueError("SNMP community must be configured through secret_ref")
+    if isinstance(nested_options, dict) and (
+        set(nested_options) - SNMP_DRIVER_OPTION_KEYS
+    ):
+        raise ValueError("unsupported SNMP driver option")
+    if any(
+        ("community" in str(key).lower())
+        or (
+            str(key).startswith("snmp_")
+            and str(key) not in SNMP_OPTION_YAML_KEYS.values()
+        )
+        for key in source
+    ):
+        raise ValueError("unsupported SNMP source option")
 
-    version = str(_snmp_option(source, "snmp_version", "2c"))
+    version = _snmp_string(
+        _snmp_option(source, "snmp_version", "2c"), field="snmp_version"
+    )
     if version != "2c":
         raise ValueError("snmp_version must be 2c")
 
-    profile = str(_snmp_option(source, "profile_hint", "generic")).strip().lower()
+    profile = _snmp_string(
+        _snmp_option(source, "profile_hint", "generic"), field="snmp_profile_hint"
+    ).strip().lower()
     if profile not in SNMP_PROFILES:
         raise ValueError("snmp_profile_hint is unsupported")
 
@@ -208,7 +258,9 @@ def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
             minimum=1,
             maximum=8760,
         ),
-        "raw_capture": parse_bool(_snmp_option(source, "raw_capture", False), False),
+        "raw_capture": _snmp_bool(
+            _snmp_option(source, "raw_capture", False), field="snmp_raw_capture"
+        ),
         "raw_retention_hours": _bounded_int(
             _snmp_option(source, "raw_retention_hours", 24),
             field="snmp_raw_retention_hours",
@@ -239,10 +291,24 @@ def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
             minimum=1,
             maximum=10**15,
         ),
-        "runtime_asset_key": str(_snmp_option(source, "runtime_asset_key", "")),
-        "intent_context_id": str(_snmp_option(source, "intent_context_id", "")),
-        "intent_stable_id": str(_snmp_option(source, "intent_stable_id", "")),
+        "runtime_asset_key": _snmp_string(
+            _snmp_option(source, "runtime_asset_key", ""), field="runtime_asset_key"
+        ),
+        "intent_context_id": _snmp_string(
+            _snmp_option(source, "intent_context_id", ""), field="intent_context_id"
+        ),
+        "intent_stable_id": _snmp_string(
+            _snmp_option(source, "intent_stable_id", ""), field="intent_stable_id"
+        ),
     }
+
+
+def normalize_snmp_driver_options(options: Any) -> dict[str, Any]:
+    if not isinstance(options, dict):
+        raise ValueError("SNMP driver_options must be a mapping")
+    if set(options) - SNMP_DRIVER_OPTION_KEYS:
+        raise ValueError("unsupported SNMP driver option")
+    return _normalize_snmp_options({"driver_options": options})
 
 
 def secret_env_name(secret_ref: str) -> str:

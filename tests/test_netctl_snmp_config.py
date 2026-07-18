@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -248,6 +249,100 @@ def test_snmp_options_persist_as_sorted_json_and_decode(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_snmp_database_boundary_rejects_unknown_option_alias(tmp_path: Path) -> None:
+    from netctl.config import normalize_source
+    from netctl.db import connect, upsert_source
+
+    conn = connect(_db_url(tmp_path / "unknown-option.sqlite"))
+    try:
+        normalized = normalize_source(_snmp_source())
+        normalized["driver_options"] = {
+            **normalized["driver_options"],
+            "community_string": None,
+        }
+
+        with pytest.raises(ValueError) as error:
+            upsert_source(conn, normalized)
+
+        assert error.value.args == ("SNMP driver_options are invalid",)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM network_sources WHERE name = ?",
+            (normalized["name"],),
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "driver_options_json",
+    [
+        '{"community_string":null}',
+        '{"profile_hint":"dgs","unknown_option":null}',
+        "not-json",
+    ],
+)
+def test_source_reads_fail_closed_for_direct_invalid_snmp_json(
+    tmp_path: Path, driver_options_json: str
+) -> None:
+    from netctl.db import connect, get_source, list_sources
+    from netctl.util import utc_now
+
+    conn = connect(_db_url(tmp_path / "invalid-read.sqlite"))
+    try:
+        now = utc_now()
+        conn.execute(
+            """
+            INSERT INTO network_sources
+                (name, driver, host, port, username, secret_ref, created_at, updated_at,
+                 driver_options_json)
+            VALUES ('switch-invalid-docs', 'snmp_switch', '192.0.2.22', 161, '',
+                    'switch-invalid-docs', ?, ?, ?)
+            """,
+            (now, now, driver_options_json),
+        )
+
+        with pytest.raises(ValueError) as get_error:
+            get_source(conn, "switch-invalid-docs")
+        with pytest.raises(ValueError) as list_error:
+            list_sources(conn)
+
+        assert get_error.value.args == ("stored SNMP driver_options are invalid",)
+        assert list_error.value.args == ("stored SNMP driver_options are invalid",)
+    finally:
+        conn.close()
+
+
+def test_source_reads_fail_closed_for_direct_private_legacy_options(
+    tmp_path: Path,
+) -> None:
+    from netctl.db import connect, get_source, list_sources
+    from netctl.util import utc_now
+
+    conn = connect(_db_url(tmp_path / "invalid-legacy-read.sqlite"))
+    try:
+        now = utc_now()
+        conn.execute(
+            """
+            INSERT INTO network_sources
+                (name, driver, host, port, username, secret_ref, created_at, updated_at,
+                 driver_options_json)
+            VALUES ('legacy-invalid-docs', 'mock', '192.0.2.23', 1, '',
+                    'legacy-invalid-docs', ?, ?, '{"resolved_token":null}')
+            """,
+            (now, now),
+        )
+
+        with pytest.raises(ValueError) as get_error:
+            get_source(conn, "legacy-invalid-docs")
+        with pytest.raises(ValueError) as list_error:
+            list_sources(conn)
+
+        assert get_error.value.args == ("stored driver_options are invalid",)
+        assert list_error.value.args == ("stored driver_options are invalid",)
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [
@@ -267,6 +362,35 @@ def test_snmp_rejects_unsupported_version_profile_and_retention(
         normalize_source(_snmp_source(**override))
 
 
+@pytest.mark.parametrize("value", [True, 2.5, "2.5"])
+def test_snmp_integer_options_reject_bool_and_nonintegral_values(value: object) -> None:
+    from netctl.config import normalize_source
+
+    with pytest.raises(ValueError) as error:
+        normalize_source(_snmp_source(snmp_timeout_seconds=value))
+
+    assert error.value.args == ("snmp_timeout_seconds must be an integer",)
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"snmp_raw_capture": "sometimes"}, "snmp_raw_capture must be a boolean"),
+        ({"runtime_asset_key": {"nested": None}}, "runtime_asset_key must be a string"),
+        ({"driver_options": []}, "SNMP driver_options must be a mapping"),
+    ],
+)
+def test_snmp_options_reject_noncanonical_types(
+    override: dict[str, object], message: str
+) -> None:
+    from netctl.config import normalize_source
+
+    with pytest.raises(ValueError) as error:
+        normalize_source(_snmp_source(**override))
+
+    assert error.value.args == (message,)
+
+
 def test_snmp_rejects_yaml_community_key_without_echoing_material() -> None:
     from netctl.config import normalize_source
 
@@ -275,6 +399,15 @@ def test_snmp_rejects_yaml_community_key_without_echoing_material() -> None:
 
     assert "community" in str(error.value).lower()
     assert error.value.args == ("SNMP community must be configured through secret_ref",)
+
+
+def test_snmp_rejects_community_alias_key() -> None:
+    from netctl.config import normalize_source
+
+    with pytest.raises(ValueError) as error:
+        normalize_source(_snmp_source(community_string=None))
+
+    assert error.value.args == ("unsupported SNMP source option",)
 
 
 def test_snmp_secret_env_name_is_distinct_from_password_env_name() -> None:
@@ -295,9 +428,14 @@ def test_source_public_removes_resolved_secret_material_recursively() -> None:
         {
             "name": "switch-docs-example",
             "community": resolved_material,
+            "community_string": resolved_material,
             "password": resolved_material,
             "resolved_secret": resolved_material,
-            "driver_options": {"community": resolved_material, "profile_hint": "dgs"},
+            "driver_options": {
+                "community": resolved_material,
+                "resolved_community": resolved_material,
+                "profile_hint": "dgs",
+            },
         }
     )
 
@@ -306,6 +444,21 @@ def test_source_public_removes_resolved_secret_material_recursively() -> None:
         "driver_options": {"profile_hint": "dgs"},
     }
     assert resolved_material not in public.values()
+
+
+def test_source_public_fails_closed_for_invalid_snmp_options() -> None:
+    from netctl.db import source_public
+
+    with pytest.raises(ValueError) as error:
+        source_public(
+            {
+                "name": "switch-invalid-docs",
+                "driver": "snmp_switch",
+                "driver_options": {"community_string": None},
+            }
+        )
+
+    assert error.value.args == ("SNMP driver_options are invalid",)
 
 
 def test_existing_mikrotik_normalization_is_unchanged() -> None:
@@ -344,3 +497,102 @@ def test_existing_mikrotik_normalization_is_unchanged() -> None:
         "ssh_connect_timeout": 8,
         "enabled": True,
     }
+
+
+def test_mikrotik_source_reads_omit_empty_driver_options(tmp_path: Path) -> None:
+    from netctl.config import normalize_source
+    from netctl.db import connect, get_source, list_sources, source_public, upsert_source
+
+    conn = connect(_db_url(tmp_path / "mikrotik-shape.sqlite"))
+    try:
+        normalized = normalize_source(
+            {
+                "name": "mikrotik-docs",
+                "driver": "mikrotik_api",
+                "host": "192.0.2.1",
+            }
+        )
+        upsert_source(conn, normalized)
+
+        loaded = get_source(conn, "mikrotik-docs")
+        listed = list_sources(conn)
+
+        assert loaded is not None
+        assert "driver_options" not in loaded
+        assert "driver_options" not in source_public(loaded)
+        assert len(listed) == 1
+        assert "driver_options" not in listed[0]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("table", "columns", "values"),
+    [
+        (
+            "switch_ports",
+            "source_id, port_key, last_seen_at, collector_run_id",
+            "?, 'port:1', ?, ?",
+        ),
+        (
+            "current_switch_fdb",
+            (
+                "source_id, vlan_key, mac, port_key, first_seen_at, last_seen_at, "
+                "collector_run_id"
+            ),
+            "?, 'vid:1', '02:00:00:00:00:22', 'port:1', ?, ?, ?",
+        ),
+        (
+            "switch_fdb_events",
+            (
+                "source_id, vlan_key, mac, event_type, observed_at, "
+                "collector_run_id"
+            ),
+            "?, 'vid:1', '02:00:00:00:00:22', 'appeared', ?, ?",
+        ),
+    ],
+)
+def test_switch_children_reject_collection_run_from_another_source(
+    tmp_path: Path, table: str, columns: str, values: str
+) -> None:
+    from netctl.db import connect
+    from netctl.util import utc_now
+
+    conn = connect(_db_url(tmp_path / f"cross-source-{table}.sqlite"))
+    try:
+        now = utc_now()
+        for name in ("switch-docs-a", "switch-docs-b"):
+            conn.execute(
+                """
+                INSERT INTO network_sources
+                    (name, driver, host, port, username, secret_ref, created_at, updated_at)
+                VALUES (?, 'snmp_switch', '192.0.2.30', 161, '', ?, ?, ?)
+                """,
+                (name, name, now, now),
+            )
+        source_a, source_b = [
+            row[0]
+            for row in conn.execute(
+                "SELECT id FROM network_sources ORDER BY name"
+            ).fetchall()
+        ]
+        run_id = conn.execute(
+            """
+            INSERT INTO switch_collection_runs (source_id, started_at, status)
+            VALUES (?, ?, 'running')
+            """,
+            (source_a, now),
+        ).lastrowid
+
+        parameters = (
+            (source_b, now, run_id)
+            if table != "current_switch_fdb"
+            else (source_b, now, now, run_id)
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                f"INSERT INTO {table} ({columns}) VALUES ({values})",
+                parameters,
+            )
+    finally:
+        conn.close()
