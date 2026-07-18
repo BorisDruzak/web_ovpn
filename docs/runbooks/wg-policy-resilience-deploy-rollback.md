@@ -46,9 +46,13 @@ writes nothing. Neither timer starts, stops, restarts, or reconfigures `wg0`;
 a failed peer remains fail-closed until an operator or normal service lifecycle
 restores the interface.
 
-## Non-mutating acceptance checks
+## Post-deploy status and explicit repair verification
 
-Wait for one timer run, then run:
+Wait for one timer run, then run the checks below. All commands except
+`systemctl start vpn-policy-reconcile.service` are read-only. That command is
+an explicit scoped repair: it first probes the policy and changes only the
+managed PBR/NAT objects when it finds drift. It never starts, stops, or restarts
+WireGuard or OpenVPN.
 
 ```bash
 sudo systemctl status vpn-policy-reconcile.timer vpn-runtime-health.timer --no-pager
@@ -95,27 +99,44 @@ back the policy assets.
 ## Rollback
 
 Replace `BACKUP_DIR` with the timestamped directory created before deployment.
-This restores the six WG-policy assets captured above; it does not modify peer
-keys, OpenVPN configuration, router settings, or the WireGuard service
-lifecycle. The commands intentionally do not restart `wg-quick@wg0.service`.
+This restores the policy assets captured by that version's backup; it does not
+modify peer keys, OpenVPN configuration, router settings, or the WireGuard
+service lifecycle. The commands intentionally do not restart
+`wg-quick@wg0.service`. A backup made before the reconciler existed must not
+enable the new reconciler again.
 
 ```bash
 BACKUP_DIR=/root/wg-policy-backup-YYYYMMDD-HHMMSS
 sudo install -m 0755 "$BACKUP_DIR/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo install -m 0644 "$BACKUP_DIR/vpn-policy.service" /etc/systemd/system/vpn-policy.service
-sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.service" /etc/systemd/system/vpn-policy-reconcile.service
-sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
 sudo install -m 0644 "$BACKUP_DIR/vpn-runtime-health.service" /etc/systemd/system/vpn-runtime-health.service
 sudo install -m 0644 "$BACKUP_DIR/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
+
+if sudo test -f "$BACKUP_DIR/vpn-policy-reconcile.service" \
+  && sudo test -f "$BACKUP_DIR/vpn-policy-reconcile.timer"; then
+  sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.service" /etc/systemd/system/vpn-policy-reconcile.service
+  sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
+  restore_reconciler=1
+else
+  sudo systemctl disable --now vpn-policy-reconcile.timer || true
+  sudo rm -f /etc/systemd/system/vpn-policy-reconcile.service /etc/systemd/system/vpn-policy-reconcile.timer
+  restore_reconciler=0
+fi
+
 sudo systemctl daemon-reload
 sudo systemctl start vpn-policy.service
-sudo systemctl enable --now vpn-policy-reconcile.timer
+if [[ "$restore_reconciler" == "1" ]]; then
+  sudo systemctl enable --now vpn-policy-reconcile.timer
+fi
 sudo systemctl enable --now vpn-runtime-health.timer
-sudo systemctl status vpn-policy-reconcile.timer vpn-runtime-health.timer --no-pager
+sudo systemctl status vpn-runtime-health.timer --no-pager
+if [[ "$restore_reconciler" == "1" ]]; then
+  sudo systemctl status vpn-policy-reconcile.timer --no-pager
+fi
 sudo /usr/local/sbin/vpnctl --json runtime-health --strict
 ```
 
-If a pre-existing installation did not yet have one of these files, its backup
-will be absent; disable the corresponding timer and remove only that newly
-installed asset after confirming the exact path, then reload systemd and rerun
-the acceptance checks. Do not restart WireGuard as part of that cleanup.
+If only one of the two reconciler backup files is present, treat it as an
+incomplete pre-feature backup: leave the reconciler disabled and remove both
+new unit files as shown above. Do not restart WireGuard as part of rollback or
+cleanup.

@@ -187,7 +187,7 @@ the normal WG service lifecycle brings `wg0` back.
 journald if OpenVPN management, `wg0`, the handshake, table 123 or its managed
 chains disappear. It never changes routes, firewall rules, or services.
 
-Use these acceptance checks after deployment or a repair:
+Use these post-deploy checks or an explicit scoped repair:
 
 ```bash
 sudo systemctl status vpn-policy-reconcile.timer vpn-runtime-health.timer --no-pager
@@ -196,7 +196,10 @@ sudo /usr/local/sbin/vpnctl --json runtime-health --strict
 curl -fsS -H "Authorization: Bearer $OPENVPN_WEB_API_TOKEN" http://127.0.0.1:8088/api/v1/runtime-health
 ```
 
-The final command is the read-only Bearer integration endpoint. Browser users
+`systemctl start vpn-policy-reconcile.service` is the explicit repair command:
+it only writes the managed PBR/NAT objects if its probe finds drift, and never
+starts, stops, or restarts WireGuard or OpenVPN. The other commands shown are
+read-only. The final command is the read-only Bearer integration endpoint. Browser users
 do not use that token: an authenticated session can view the same sanitized
 state in `/network/dashboard`, whose VPN Runtime card polls
 `/network/runtime-health` every 30 seconds. An unauthenticated request to the
