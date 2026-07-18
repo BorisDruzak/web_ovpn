@@ -8,6 +8,7 @@ from typing import Any, TextIO
 from alt_deploy.ansible import AnsibleController
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.errors import ControlError
+from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
 from alt_deploy.jsonio import atomic_write_json, read_json
 from alt_deploy.worker import (
@@ -82,8 +83,42 @@ def assert_no_secret_keys(
             )
 
 
+def launch_job(
+    settings,
+    jobs: JobRepository,
+    job_id: str,
+) -> None:
+    JobStageManager(
+        settings,
+        repository=jobs,
+    ).advance(
+        job_id,
+        "launching",
+        updates={
+            "systemd_unit": (
+                f"alt-provision-{job_id}.service"
+            )
+        },
+    )
+
+
+def advance_ansible_stages(
+    settings,
+    job_id: str,
+) -> None:
+    manager = JobStageManager(settings)
+    for stage in (
+        "identity",
+        "employee",
+        "login_screen",
+        "verifying",
+    ):
+        manager.advance(job_id, stage)
+
+
 class SuccessfulController:
-    def __init__(self) -> None:
+    def __init__(self, settings) -> None:
+        self.settings = settings
         self.received_job_id = ""
 
     def run_provision(
@@ -92,6 +127,10 @@ class SuccessfulController:
         log_stream: TextIO,
     ) -> dict[str, Any]:
         self.received_job_id = job.job_id
+        advance_ansible_stages(
+            self.settings,
+            job.job_id,
+        )
 
         log_stream.write(
             "TASK [local_employee : Create employee]\n"
@@ -112,6 +151,46 @@ class FailingController:
         log_stream.flush()
 
         raise RuntimeError("X" * 12000)
+
+
+class FailedVerificationController:
+    def __init__(self, settings) -> None:
+        self.settings = settings
+
+    def run_provision(
+        self,
+        job,
+        log_stream: TextIO,
+    ) -> dict[str, Any]:
+        advance_ansible_stages(
+            self.settings,
+            job.job_id,
+        )
+        result = successful_result(job.job_id)
+        result["verification"]["hostname"] = False
+
+        log_stream.write(
+            "Provision returned failed verification\n"
+        )
+        log_stream.flush()
+
+        return result
+
+
+class RecordingResultController:
+    def __init__(self, settings) -> None:
+        self.settings = settings
+
+    def run_provision(
+        self,
+        job,
+        log_stream: TextIO,
+    ) -> dict[str, Any]:
+        advance_ansible_stages(
+            self.settings,
+            job.job_id,
+        )
+        return successful_result(job.job_id)
 
 
 def test_ansible_run_provision_uses_safe_command(
@@ -266,7 +345,8 @@ def test_worker_success_finalizes_assignment(
     assignments = AssignmentRepository(settings)
 
     job = jobs.create(valid_request())
-    controller = SuccessfulController()
+    launch_job(settings, jobs, job.job_id)
+    controller = SuccessfulController(settings)
 
     result_code = run_job(
         job.job_id,
@@ -281,6 +361,21 @@ def test_worker_success_finalizes_assignment(
 
     assert stored_job.state == "successful"
     assert stored_job.stage == "complete"
+    assert [
+        item["stage"]
+        for item in stored_job.status["stage_history"]
+    ] == [
+        "created",
+        "launching",
+        "validating",
+        "connecting",
+        "identity",
+        "employee",
+        "login_screen",
+        "verifying",
+        "recording",
+        "complete",
+    ]
     assert stored_job.status["started_at"]
     assert stored_job.status["finished_at"]
 
@@ -320,6 +415,7 @@ def test_worker_failure_preserves_log_without_assignment(
     assignments = AssignmentRepository(settings)
 
     job = jobs.create(valid_request())
+    launch_job(settings, jobs, job.job_id)
 
     result_code = run_job(
         job.job_id,
@@ -332,7 +428,7 @@ def test_worker_failure_preserves_log_without_assignment(
     stored_job = jobs.get(job.job_id)
 
     assert stored_job.state == "failed"
-    assert stored_job.stage == "ansible"
+    assert stored_job.stage == "connecting"
     assert stored_job.status["finished_at"]
     assert len(stored_job.status["error"]) <= 10000
 
@@ -349,23 +445,6 @@ def test_worker_failure_preserves_log_without_assignment(
     assert "Provision failed" in log
 
 
-class FailedVerificationController:
-    def run_provision(
-        self,
-        job,
-        log_stream: TextIO,
-    ) -> dict[str, Any]:
-        result = successful_result(job.job_id)
-        result["verification"]["hostname"] = False
-
-        log_stream.write(
-            "Provision returned failed verification\n"
-        )
-        log_stream.flush()
-
-        return result
-
-
 def test_worker_rejects_failed_verification(
     tmp_path: Path,
 ) -> None:
@@ -374,11 +453,12 @@ def test_worker_rejects_failed_verification(
     assignments = AssignmentRepository(settings)
 
     job = jobs.create(valid_request())
+    launch_job(settings, jobs, job.job_id)
 
     result_code = run_job(
         job.job_id,
         settings,
-        FailedVerificationController(),
+        FailedVerificationController(settings),
     )
 
     assert result_code == 1
@@ -386,13 +466,55 @@ def test_worker_rejects_failed_verification(
     stored_job = jobs.get(job.job_id)
 
     assert stored_job.state == "failed"
-    assert stored_job.stage == "ansible"
+    assert stored_job.stage == "verifying"
     assert "invalid_provision_result" in (
         stored_job.status["error"].lower()
     )
 
     assert assignments.get(MACHINE_UUID) is None
     assert not (job.job_dir / "result.json").exists()
+
+
+def test_assignment_failure_remains_at_recording(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = prepare_preview_environment(tmp_path)
+    jobs = JobRepository(settings)
+    job = jobs.create(valid_request())
+    launch_job(settings, jobs, job.job_id)
+
+    def fail_assignment(
+        self,
+        machine_uuid,
+        payload,
+    ) -> None:
+        raise ControlError(
+            code="assignment_write_failed",
+            message="fixture assignment failure",
+            exit_code=7,
+        )
+
+    monkeypatch.setattr(
+        "alt_deploy.worker.AssignmentRepository.write",
+        fail_assignment,
+    )
+
+    result_code = run_job(
+        job.job_id,
+        settings,
+        RecordingResultController(settings),
+    )
+
+    assert result_code == 1
+
+    stored_job = jobs.get(job.job_id)
+    assert stored_job.state == "failed"
+    assert stored_job.stage == "recording"
+    assert "assignment_write_failed" in (
+        stored_job.status["error"].lower()
+    )
+    assert (job.job_dir / "result.json").is_file()
 
 
 def test_worker_verification_contract_uses_lightdm() -> None:
