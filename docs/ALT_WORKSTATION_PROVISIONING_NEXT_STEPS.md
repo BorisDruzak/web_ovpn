@@ -1,6 +1,7 @@
 # ALT Workstation Provisioning — next steps and acceptance checklist
 
-Status: continuation roadmap after the first verified end-to-end physical-machine provisioning run on 2026-07-17.
+Status: continuation roadmap after the first verified end-to-end physical-machine
+provisioning run on 2026-07-17. Phases 0, 1, 2.1 and 2.2 are implemented.
 
 Read first:
 
@@ -14,7 +15,9 @@ Repository branch:
 feat/alt-workstation-provisioning-mvp
 ```
 
-The current MVP is operational. Do not redesign or replace the verified CLI, job, assignment, Vault or Ansible boundaries without a specific failing requirement and regression coverage.
+The current MVP is operational. Do not redesign or replace the verified CLI,
+job, assignment, Vault or Ansible boundaries without a specific failing
+requirement and regression coverage.
 
 ## Working rules for the next session
 
@@ -36,6 +39,8 @@ The current MVP is operational. Do not redesign or replace the verified CLI, job
 10. Preserve the current LightDM and AccountsService implementation. Do not reintroduce SDDM assumptions.
 
 ## Phase 0 — repository and documentation hygiene
+
+Status: implemented.
 
 Priority: immediate.
 
@@ -116,6 +121,8 @@ Acceptance:
 
 ## Phase 1 — installer and controller hardening
 
+Status: implemented.
+
 Priority: before deploying additional production workstations.
 
 ### 1.1 Dependency preflight in the installer
@@ -194,37 +201,59 @@ Priority: before operating at scale.
 
 ### 2.1 Recover stale jobs after controller reboot
 
-Define behavior for jobs left in `queued` or `running` when the controller restarts or a transient unit disappears.
+Status: implemented.
 
-Required states:
+Defined behavior for jobs left in `queued` or `running` when the controller
+restarts or a transient unit disappears:
 
 - genuinely running unit -> report running;
-- queued job without unit -> relaunch or mark recoverable according to an explicit policy;
+- queued job without unit -> mark recoverable failure;
 - running job without unit and without result -> mark failed with `worker_lost`;
 - result exists but status update was interrupted -> reconcile to successful only after result validation.
 
-Add a reconciliation command or service, for example:
+Implemented command:
 
 ```text
 workstationctl --json jobs reconcile
 ```
 
+No automatic boot service invokes reconciliation yet.
+
 ### 2.2 Job and log retention
 
-Define retention for:
+Status: implemented.
+
+Retention root:
 
 ```text
 /var/lib/alt-deploy/jobs/<job_id>/
 ```
 
-Requirements:
+Implemented contract:
 
-- successful and failed jobs retained for an explicit period;
-- assignment records retained independently;
-- logs rotated or archived safely;
-- cleanup never removes an active job;
+- successful and failed jobs are retained for 90 days;
+- assignment records are retained independently;
+- `ansible.log` is archived after 14 days as `ansible.log.gz` mode `0600`;
+- cleanup never removes or archives an active `queued` or `running` job;
 - cleanup never follows symlinks outside the state root;
-- dry-run mode available.
+- dry-run mode is the default;
+- mutating cleanup requires root;
+- `jobs log` transparently reads active and gzip-archived logs.
+
+Dry-run:
+
+```text
+workstationctl --json jobs cleanup
+```
+
+Apply:
+
+```text
+workstationctl --json jobs cleanup --apply
+```
+
+No automatic cleanup service is installed. Both commands remain explicit
+operator actions.
 
 ### 2.3 More precise job stages
 
@@ -570,17 +599,16 @@ Recommended merge gate:
 
 ## Immediate next implementation slice
 
-Start with Phase 0 and Phase 1, in this order:
+Continue Phase 2 and Phase 3 in this order:
 
-1. verify the feature branch and clean worktree;
-2. update stale design/plan references from SDDM to LightDM and remove dotted-login examples;
-3. create or repair `deploy/alt-linux/README.md`;
-4. add installer dependency validation through a failing test;
-5. add explicit regression coverage that reinstall preserves active Vault bytes, ownership and mode;
-6. add `workstationctl --json vault check` through TDD;
-7. rerun the 80-test baseline and both playbook syntax checks;
-8. install on the controller and confirm the already assigned machine remains `assigned` without rerunning provisioning;
-9. commit and push a small reviewed change set.
+1. complete full Phase 2.2 verification and update controller runtime;
+2. run `jobs cleanup` dry-run only on the real controller and review its report;
+3. implement Phase 2.3 structured job stages through TDD;
+4. implement Phase 2.4 failure-injection coverage, beginning with controller-only fixtures;
+5. provision a second clean disposable machine for Phase 3.1 acceptance;
+6. verify partial-state idempotency and conflict safety;
+7. design Phase 4 release/reassignment before using the system for employee turnover;
+8. design the constrained API privilege boundary before beginning the web UI.
 
 Do not begin the web UI before the constrained API and privilege-boundary design are documented and tested.
 
