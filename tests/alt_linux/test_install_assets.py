@@ -16,6 +16,14 @@ INSTALLER = (
     / "install-control-plane.sh"
 )
 
+STAGE_HELPER = (
+    REPO_ROOT
+    / "deploy"
+    / "alt-linux"
+    / "control"
+    / "alt-job-stage"
+)
+
 
 REQUIRED_CONTROLLER_COMMANDS = (
     "python3",
@@ -44,6 +52,22 @@ def test_install_script_exists() -> None:
     assert INSTALLER.is_file(), (
         "Missing deploy/alt-linux/install-control-plane.sh"
     )
+
+
+def test_stage_helper_wrapper_exists_and_delegates() -> None:
+    assert STAGE_HELPER.is_file(), (
+        "Missing deploy/alt-linux/control/alt-job-stage"
+    )
+
+    wrapper = STAGE_HELPER.read_text(encoding="utf-8")
+
+    assert wrapper.startswith("#!/usr/bin/python3\n")
+    assert 'Path("/opt/alt-deploy-control")' in wrapper
+    assert (
+        "from alt_deploy.job_stage_helper import main"
+        in wrapper
+    )
+    assert "raise SystemExit(main())" in wrapper
 
 
 @pytest.fixture
@@ -93,6 +117,33 @@ def test_installer_installs_root_owned_control_files(
         "find /opt/alt-deploy-control "
         "-type f -exec chmod 0644"
         in installer_text
+    )
+
+
+def test_installer_installs_and_compiles_stage_helper(
+    installer_text: str,
+) -> None:
+    expected_install = (
+        "install -o root -g root -m 0755 \\\n"
+        '    "${ALT_ROOT}/control/alt-job-stage" \\\n'
+        "    /usr/local/libexec/alt-job-stage"
+    )
+    assert expected_install in installer_text
+
+    compile_start = installer_text.index(
+        "python3 -m py_compile"
+    )
+    compile_end = installer_text.index(
+        "bash -n",
+        compile_start,
+    )
+    compile_block = installer_text[
+        compile_start:compile_end
+    ]
+
+    assert (
+        '"${ALT_ROOT}/control/alt-job-stage"'
+        in compile_block
     )
 
 
