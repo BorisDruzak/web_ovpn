@@ -241,6 +241,17 @@ class JobRepository:
         job_id: str,
         **fields: object,
     ) -> JobRecord:
+        if {"stage", "stage_history"} & set(fields):
+            raise ControlError(
+                code="job_stage_update_forbidden",
+                message=(
+                    "Provision job stages must be changed "
+                    "through JobStageManager"
+                ),
+                exit_code=4,
+                details={"job_id": job_id},
+            )
+
         job = self.get(job_id)
         status_payload = dict(job.status)
 
