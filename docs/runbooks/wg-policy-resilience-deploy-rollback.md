@@ -103,12 +103,24 @@ This restores the policy assets captured by that version's backup; it does not
 modify peer keys, OpenVPN configuration, router settings, or the WireGuard
 service lifecycle. The commands intentionally do not restart
 `wg-quick@wg0.service`. A backup made before the reconciler existed must not
-enable the new reconciler again.
+enable the new reconciler again. A backup with legacy policy/reconciler units
+that lack the common blocking `flock` also must not automatically re-enable its
+reconciler timer.
 
 ```bash
 BACKUP_DIR=/root/wg-policy-backup-YYYYMMDD-HHMMSS
 # Prevent a current reconciler tick from mixing current and restored assets.
 sudo systemctl disable --now vpn-policy-reconcile.timer || true
+# Do not interrupt a writing oneshot; wait for any already-started run to finish.
+reconcile_state="$(sudo systemctl show -p ActiveState --value vpn-policy-reconcile.service)"
+while [[ "$reconcile_state" == "activating" ]]; do
+  sleep 1
+  reconcile_state="$(sudo systemctl show -p ActiveState --value vpn-policy-reconcile.service)"
+done
+if [[ "$reconcile_state" != "inactive" ]]; then
+  echo "ERROR: reconciler service is $reconcile_state; investigate before restoring assets." >&2
+  exit 1
+fi
 
 sudo install -m 0755 "$BACKUP_DIR/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo install -m 0644 "$BACKUP_DIR/vpn-policy.service" /etc/systemd/system/vpn-policy.service
@@ -119,7 +131,14 @@ if sudo test -f "$BACKUP_DIR/vpn-policy-reconcile.service" \
   && sudo test -f "$BACKUP_DIR/vpn-policy-reconcile.timer"; then
   sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.service" /etc/systemd/system/vpn-policy-reconcile.service
   sudo install -m 0644 "$BACKUP_DIR/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
-  restore_reconciler=1
+  if sudo grep -Fqx 'ExecStart=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh reconcile' "$BACKUP_DIR/vpn-policy-reconcile.service" \
+    && sudo grep -Fqx 'ExecStart=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh start' "$BACKUP_DIR/vpn-policy.service" \
+    && sudo grep -Fqx 'ExecStop=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh stop' "$BACKUP_DIR/vpn-policy.service"; then
+    restore_reconciler=1
+  else
+    restore_reconciler=0
+    echo 'WARNING: legacy backup lacks the common blocking flock; reconciler timer remains disabled.' >&2
+  fi
 else
   sudo rm -f /etc/systemd/system/vpn-policy-reconcile.service /etc/systemd/system/vpn-policy-reconcile.timer
   restore_reconciler=0
@@ -148,5 +167,7 @@ unit may predate that lock and is not represented as using it here.
 
 If only one of the two reconciler backup files is present, treat it as an
 incomplete pre-feature backup: leave the reconciler disabled and remove both
-new unit files as shown above. Do not restart WireGuard as part of rollback or
-cleanup.
+new unit files as shown above. If both files are present but either restored
+service lacks the expected common blocking `flock`, the commands retain the
+timer disabled and print a warning; do not enable that legacy reconciler
+automatically. Do not restart WireGuard as part of rollback or cleanup.
