@@ -9,9 +9,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import math
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tempfile
+import time
 from time import perf_counter
 from typing import Any, Callable
 
@@ -28,6 +32,10 @@ ALLOWED_ROLES = frozenset(
 )
 ALLOWED_SOURCES = frozenset({"gateway", "vpn_path", "target"})
 STALE_AFTER = timedelta(minutes=15)
+SSH_TIMEOUT_SECONDS = 20
+SNAPSHOT_FILE_MODE = 0o640
+SNAPSHOT_REPLACE_ATTEMPTS = 3
+SNAPSHOT_REPLACE_RETRY_SECONDS = 0.01
 _PUBLIC_CHECK_FIELDS = frozenset(
     {"name", "source", "status", "observed", "expected", "latency_ms", "error"}
 )
@@ -229,7 +237,13 @@ def collect(
         command = _ssh_command(configured_target, ssh_key, tunnel_source, source)
         started = perf_counter()
         try:
-            completed = runner(command, capture_output=True, text=True, shell=False)
+            completed = runner(
+                command,
+                capture_output=True,
+                text=True,
+                shell=False,
+                timeout=SSH_TIMEOUT_SECONDS,
+            )
             latency_ms = round((perf_counter() - started) * 1000, 3)
             if not isinstance(completed, subprocess.CompletedProcess) or completed.returncode != 0:
                 raise _ProbeFailure("transport")
@@ -571,9 +585,35 @@ def write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
     """Atomically persist an API-safe snapshot without exposing collector inputs."""
     public = public_snapshot(snapshot)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(".tmp")
-    temporary_path.write_text(json.dumps(public, sort_keys=True), encoding="utf-8")
-    temporary_path.replace(path)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = SNAPSHOT_FILE_MODE
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+            json.dump(public, temporary_file, sort_keys=True)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.chmod(temporary_path, mode)
+        for attempt in range(SNAPSHOT_REPLACE_ATTEMPTS):
+            try:
+                os.replace(temporary_path, path)
+                break
+            except PermissionError:
+                if attempt == SNAPSHOT_REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(SNAPSHOT_REPLACE_RETRY_SECONDS)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except (FileNotFoundError, OSError):
+            pass
+        raise
 
 
 def load_snapshot(path: Path, now: datetime) -> dict[str, Any]:

@@ -74,7 +74,7 @@ Expected: import failure because `app.server_observer` does not exist.
 
 - [ ] **Step 3: Implement the value-only helpers and strict config validation**
 
-Implement immutable allowed roles (`file_server`, `directum`, `active_directory`, `nextcloud`, `onlyoffice`, `opnsense_dns`), allowed source values (`gateway`, `vpn_path`, `target`), ISO-8601 UTC timestamps, atomic write through `path.with_suffix(".tmp")` plus `Path.replace`, and no raw host/output fields in `public_snapshot`.
+Implement immutable allowed roles (`file_server`, `directum`, `active_directory`, `nextcloud`, `onlyoffice`, `opnsense_dns`), allowed source values (`gateway`, `vpn_path`, `target`), ISO-8601 UTC timestamps, atomic write through a unique same-directory temporary file plus `os.replace`, and no raw host/output fields in `public_snapshot`.
 
 ```python
 def classify_disk(free_percent: float) -> str:

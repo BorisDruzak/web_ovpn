@@ -1,5 +1,5 @@
 {
-  "ssh_key": "REPLACE_WITH_EXISTING_OBSERVER_KEY_PATH",
+  "ssh_key": "/etc/openvpn-web/server-observer.key",
   "tunnel_source": "REPLACE_WITH_VPN_SOURCE_ADDRESS",
   "targets": [
     {

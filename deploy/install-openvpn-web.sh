@@ -53,6 +53,10 @@ if [[ ! -e /etc/openvpn-web/server-observer.json ]]; then
   sudo_cmd install -m 0640 -o root -g openvpn-web \
     "$SRC/deploy/server-observer.json.sample" /etc/openvpn-web/server-observer.json
 fi
+if [[ -e /etc/openvpn-web/server-observer.key ]]; then
+  sudo_cmd chown root:openvpn-web /etc/openvpn-web/server-observer.key
+  sudo_cmd chmod 0640 /etc/openvpn-web/server-observer.key
+fi
 sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
 sudo_cmd chmod 0755 /etc/netctl /etc/netctl/sources.d
 sudo_cmd chown -R netctl:netctl /var/lib/netctl

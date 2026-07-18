@@ -1,8 +1,12 @@
 import json
+import os
 import subprocess
+import threading
+from pathlib import Path
 
 import pytest
 
+from app import server_observer
 from app.server_observer import (
     classify_directum_logs,
     classify_disk,
@@ -101,7 +105,12 @@ def healthy_payload():
 
 def healthy_runner(command, **kwargs):
     assert isinstance(command, list)
-    assert kwargs == {"capture_output": True, "text": True, "shell": False}
+    assert kwargs == {
+        "capture_output": True,
+        "text": True,
+        "shell": False,
+        "timeout": 20,
+    }
     return subprocess.CompletedProcess(command, 0, json.dumps(healthy_payload()), "")
 
 
@@ -121,6 +130,26 @@ def test_collect_binds_vpn_path_probe_and_continues_after_target_error():
     assert any(command[:3] == ["ssh", "-b", "198.51.100.50"] for command in calls)
     assert target(snapshot, "nextcloud")["status"] == "error"
     assert target(snapshot, "directum")["status"] in {"ok", "warn", "critical"}
+
+
+def test_collect_bounds_each_ssh_probe_and_redacts_timeout_text():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(kwargs)
+        if "nextcloud" in command[-1]:
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], output="raw host response")
+        return healthy_runner(command, **kwargs)
+
+    snapshot = collect(
+        runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z")
+    )
+
+    assert calls and {call["timeout"] for call in calls} == {20}
+    assert target(snapshot, "nextcloud")["status"] == "error"
+    assert {check["error"] for check in target(snapshot, "nextcloud")["checks"]} == {"timeout"}
+    assert target(snapshot, "directum")["status"] == "ok"
+    assert "raw host response" not in json.dumps(snapshot)
 
 
 def test_collect_covers_the_allow_listed_role_checks():
@@ -411,7 +440,72 @@ def test_snapshot_write_is_atomic_and_loaded_snapshot_is_redacted(tmp_path):
 
     assert loaded["overall"] == "ok"
     assert "host" not in loaded["targets"][0]
-    assert not path.with_suffix(".tmp").exists()
+    assert not list(tmp_path.glob(f".{path.name}.*.tmp"))
+
+
+def test_snapshot_concurrent_writes_are_atomic_and_leave_no_temporary_files(tmp_path, monkeypatch):
+    path = tmp_path / "latest.json"
+    barrier = threading.Barrier(2)
+    errors = []
+    original_write_text = Path.write_text
+
+    def synchronized_write_text(self, *args, **kwargs):
+        result = original_write_text(self, *args, **kwargs)
+        if self == path.with_suffix(".tmp"):
+            barrier.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(Path, "write_text", synchronized_write_text)
+    snapshots = [
+        {"collected_at": "2026-07-18T20:00:00Z", "targets": [{"role": "directum", "checks": []}]},
+        {"collected_at": "2026-07-18T20:00:01Z", "targets": [{"role": "nextcloud", "checks": []}]},
+    ]
+
+    def write(snapshot):
+        try:
+            write_snapshot(path, snapshot)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    workers = [threading.Thread(target=write, args=(snapshot,)) for snapshot in snapshots]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=3)
+
+    assert not any(worker.is_alive() for worker in workers)
+    assert errors == []
+    assert load_snapshot(path, now=parse_utc("2026-07-18T20:01:00Z"))["overall"] == "ok"
+    assert not list(tmp_path.glob(f".{path.name}.*.tmp"))
+
+
+def test_snapshot_write_preserves_mode_and_cleans_temporary_file_after_replace_error(tmp_path, monkeypatch):
+    path = tmp_path / "latest.json"
+    path.write_text("{}", encoding="utf-8")
+    os.chmod(path, 0o640)
+    chmod_calls = []
+    original_chmod = server_observer.os.chmod
+
+    def record_chmod(target, mode):
+        chmod_calls.append((target, mode))
+        original_chmod(target, mode)
+
+    monkeypatch.setattr(server_observer.stat, "S_IMODE", lambda mode: 0o640)
+    monkeypatch.setattr(server_observer.os, "chmod", record_chmod)
+
+    write_snapshot(
+        path,
+        {"collected_at": "2026-07-18T20:00:00Z", "targets": [{"role": "directum", "checks": []}]},
+    )
+    assert [mode for _, mode in chmod_calls] == [0o640]
+
+    monkeypatch.setattr(server_observer.os, "replace", lambda source, destination: (_ for _ in ()).throw(OSError("replace failed")))
+    with pytest.raises(OSError, match="replace failed"):
+        write_snapshot(
+            path,
+            {"collected_at": "2026-07-18T20:00:01Z", "targets": [{"role": "directum", "checks": []}]},
+        )
+    assert not list(tmp_path.glob(f".{path.name}.*.tmp"))
 
 
 def test_snapshot_status_is_stale_after_fifteen_minutes():
