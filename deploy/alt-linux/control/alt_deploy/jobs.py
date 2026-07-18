@@ -13,6 +13,7 @@ from typing import Any, BinaryIO
 from .assignments import assert_safe_payload
 from .config import Settings
 from .errors import ControlError
+from .job_stages import initial_stage_history
 from .jsonio import (
     atomic_write_json,
     ensure_private_dir,
@@ -159,6 +160,7 @@ class JobRepository:
             "machine_uuid": machine_uuid,
             "state": "queued",
             "stage": "created",
+            "stage_history": initial_stage_history(timestamp),
             "created_at": timestamp,
             "updated_at": timestamp,
         }
