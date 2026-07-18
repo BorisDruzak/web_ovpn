@@ -1,7 +1,7 @@
 # Netctl live runtime identity and context readiness
 
 This is the sanitized production-readiness record for the runtime identity
-closure (migrations `2` and `3`) and active-context classification. It records
+closure (migrations `2`, `3`, and `4`) and active-context classification. It records
 aggregate outcomes only. Raw host inventories, MAC and IP values, source
 configuration, credentials, database rows, and protected backup artifacts are
 intentionally not committed.
@@ -16,7 +16,7 @@ Verified: 2026-07-18
 | Canonical `network_configuration` context commit | `6795a43b7e179870361944d280cc15f6b169395c` |
 | Imported active context revision | `1` |
 | Active context head | present and singular |
-| SQLite migration ledger | `1, 2, 3` |
+| SQLite migration ledger | `1, 2, 3, 4` |
 | SQLite integrity check | `ok` |
 | Context classifier fallback | `false` |
 
@@ -75,15 +75,16 @@ The post-cycle runtime status reported:
 | Runtime interfaces | 1,027 |
 | Current IP observations | 233 |
 | Current hostname observations | 50 |
-| Open historical-identity findings | 46,271 |
+| Acknowledged historical-identity findings | 46,271 |
 | Open MAC-identity-collision findings | 5 |
 | Open IP-only findings | 1 |
 
-Historical findings are preserved evidence, not automatic asset merges. The
-five MAC-collision and one IP-only finding remain visible for operator review;
-none is silently promoted to a permanent identity and no asset merge or alias
-execution was performed. The prior migration-2 legacy conflict records remain
-historical and were reviewed under the retained production acknowledgement.
+Acknowledgement is a reviewed provenance classification for the historical
+identity findings, not automatic remediation or deletion. The five
+MAC-collision and one IP-only finding remain open and visible for operator
+review; none is silently promoted to a permanent identity and no asset merge
+or alias execution was performed. The acknowledged historical findings remain
+accessible through the read-only findings query.
 
 ## Service boundary and readiness decision
 

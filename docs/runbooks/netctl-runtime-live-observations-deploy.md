@@ -128,13 +128,31 @@ PY
 The status output's `migration_only_current.total` must be zero:
 migration-created IP and hostname observations are historical, not live state.
 
-Review the migration-2 report summary in the status JSON. Review every
-`historical_identity_conflict` backfill before acknowledging or resolving it:
+### Migration 4: acknowledge reviewed historical provenance
+
+Before starting the updated application, capture the dedicated pre-v4 database
+backup. This operation records the reviewed historical-identity provenance; it
+does not remediate or delete findings.
 
 ```bash
-sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status open \
-  | sudo tee "$backup_dir/runtime-open-findings.json"
+backup_dir="/var/backups/netctl/findings-ack-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo install -d -m 0700 "$backup_dir"
+sudo cp --preserve=mode,timestamps /var/lib/netctl/netctl.sqlite "$backup_dir/netctl-before-v4.sqlite"
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets status
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status open
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status acknowledged
 ```
+
+Normal application startup applies ledgered migration `4`; do not apply it with
+ad-hoc SQL. After startup, confirm the status output includes migration `4`.
+Acknowledged rows remain accessible through the read-only `findings --status
+acknowledged` command, while unresolved MAC-collision and IP-only findings
+remain open for operator review.
+
+If the migration outcome is unacceptable, restore only the captured
+`netctl-before-v4.sqlite` backup, with all application and collector services
+stopped and after explicit operator approval. Do not delete or edit findings
+in place; the pre-v4 backup is the rollback boundary.
 
 ## 3. Prove live writer behavior
 
