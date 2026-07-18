@@ -7,6 +7,7 @@ from pathlib import Path
 
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.cli import main
+from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
 from alt_deploy.jsonio import atomic_write_json
 
@@ -45,6 +46,52 @@ def _systemctl_result(
     )
 
 
+def _advance_to_stage(
+    settings,
+    job_id: str,
+    target: str,
+    *,
+    unit_name: str | None = None,
+):
+    manager = JobStageManager(settings)
+
+    for stage in (
+        "launching",
+        "validating",
+        "connecting",
+        "identity",
+        "employee",
+        "login_screen",
+        "verifying",
+        "recording",
+    ):
+        current = manager.jobs.get(job_id)
+        if current.stage == target:
+            return current
+
+        updates = None
+        if stage == "launching" and unit_name is not None:
+            updates = {"systemd_unit": unit_name}
+        elif stage == "validating":
+            updates = {
+                "state": "running",
+                "started_at": current.updated_at,
+            }
+
+        manager.advance(
+            job_id,
+            stage,
+            updates=updates,
+        )
+
+        if stage == target:
+            return manager.jobs.get(job_id)
+
+    raise AssertionError(
+        f"Unable to advance {job_id} to {target}"
+    )
+
+
 def test_jobs_reconcile_marks_missing_running_worker_failed(
     monkeypatch,
     tmp_path: Path,
@@ -53,13 +100,11 @@ def test_jobs_reconcile_marks_missing_running_worker_failed(
     jobs = JobRepository(settings)
     created = jobs.create(provision_request())
     unit_name = f"alt-provision-{created.job_id}.service"
-
-    running = jobs.update(
+    running = _advance_to_stage(
+        settings,
         created.job_id,
-        state="running",
-        stage="ansible",
-        started_at="2026-07-17T12:00:00+00:00",
-        systemd_unit=unit_name,
+        "employee",
+        unit_name=unit_name,
     )
 
     def fake_systemctl(
@@ -116,9 +161,13 @@ def test_jobs_reconcile_marks_missing_running_worker_failed(
 
     reconciled = jobs.get(running.job_id)
     assert reconciled.state == "failed"
-    assert reconciled.stage == "reconcile"
+    assert reconciled.stage == "employee"
     assert reconciled.status["error_code"] == "worker_lost"
     assert reconciled.status["finished_at"]
+    assert [
+        item["stage"]
+        for item in reconciled.status["stage_history"]
+    ][-1] == "employee"
     assert not (reconciled.job_dir / "result.json").exists()
 
 
@@ -130,13 +179,11 @@ def test_jobs_reconcile_reports_genuinely_running_worker(
     jobs = JobRepository(settings)
     created = jobs.create(provision_request())
     unit_name = f"alt-provision-{created.job_id}.service"
-
-    running = jobs.update(
+    running = _advance_to_stage(
+        settings,
         created.job_id,
-        state="running",
-        stage="ansible",
-        started_at="2026-07-17T12:00:00+00:00",
-        systemd_unit=unit_name,
+        "employee",
+        unit_name=unit_name,
     )
     status_before = dict(running.status)
 
@@ -208,7 +255,9 @@ def test_jobs_reconcile_marks_unlaunched_queue_retryable(
     queued = jobs.create(provision_request())
 
     def fail_if_systemctl_runs(*args, **kwargs):
-        raise AssertionError("queued job without unit must not query systemd")
+        raise AssertionError(
+            "queued job without unit must not query systemd"
+        )
 
     monkeypatch.setattr(subprocess, "run", fail_if_systemctl_runs)
 
@@ -242,7 +291,7 @@ def test_jobs_reconcile_marks_unlaunched_queue_retryable(
 
     reconciled = jobs.get(queued.job_id)
     assert reconciled.state == "failed"
-    assert reconciled.stage == "reconcile"
+    assert reconciled.stage == "created"
     assert reconciled.status["error_code"] == "worker_not_started"
     assert reconciled.status["retryable"] is True
     assert reconciled.status["finished_at"]
@@ -257,9 +306,11 @@ def test_jobs_reconcile_marks_queued_missing_unit_retryable(
     jobs = JobRepository(settings)
     created = jobs.create(provision_request())
     unit_name = f"alt-provision-{created.job_id}.service"
-    queued = jobs.update(
+    queued = _advance_to_stage(
+        settings,
         created.job_id,
-        systemd_unit=unit_name,
+        "launching",
+        unit_name=unit_name,
     )
 
     def fake_systemctl(
@@ -316,7 +367,7 @@ def test_jobs_reconcile_marks_queued_missing_unit_retryable(
 
     reconciled = jobs.get(queued.job_id)
     assert reconciled.state == "failed"
-    assert reconciled.stage == "reconcile"
+    assert reconciled.stage == "launching"
     assert reconciled.status["error_code"] == "worker_not_started"
     assert reconciled.status["retryable"] is True
     assert reconciled.status["finished_at"]
@@ -332,13 +383,11 @@ def test_jobs_reconcile_recovers_validated_result_after_interruption(
     assignments = AssignmentRepository(settings)
     created = jobs.create(provision_request())
     unit_name = f"alt-provision-{created.job_id}.service"
-
-    running = jobs.update(
+    running = _advance_to_stage(
+        settings,
         created.job_id,
-        state="running",
-        stage="ansible",
-        started_at="2026-07-17T12:00:00+00:00",
-        systemd_unit=unit_name,
+        "recording",
+        unit_name=unit_name,
     )
     result = successful_result(running.job_id)
     atomic_write_json(running.job_dir / "result.json", result)
@@ -398,7 +447,11 @@ def test_jobs_reconcile_recovers_validated_result_after_interruption(
     recovered = jobs.get(running.job_id)
     assert recovered.state == "successful"
     assert recovered.stage == "complete"
-    assert recovered.status["finished_at"]
+    assert [
+        item["stage"]
+        for item in recovered.status["stage_history"]
+    ][-2:] == ["recording", "complete"]
+    assert recovered.status["finished_at"] == result["completed_at"]
     assert recovered.status["result_file"] == str(
         running.job_dir / "result.json"
     )
