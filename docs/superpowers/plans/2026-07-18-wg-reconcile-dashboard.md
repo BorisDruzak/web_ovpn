@@ -34,7 +34,7 @@
 
 **Reconciliation invariant:** With `wg0` present, `reconcile` returns without writes if `status` already succeeds; otherwise it calls `start`. With `wg0` absent, it returns without writes if the mark/rule, mangle chain, unreachable table-123 default, and absence of the NAT chain/hook already form the fail-closed state; otherwise it calls `stop`.
 
-- [ ] **Step 1: Write failing asset tests**
+- [x] **Step 1: Write failing asset tests**
 
 ```python
 def test_policy_script_exposes_reconcile_command():
@@ -75,13 +75,13 @@ def test_installer_enables_reconcile_timer_without_tunnel_restart():
     assert "restart openvpn-server@server.service" not in text
 ```
 
-- [ ] **Step 2: Verify tests fail**
+- [x] **Step 2: Verify tests fail**
 
 Run: `pytest -q tests/test_deploy_vpn_policy_assets.py tests/test_deploy_vpn_runtime_health_timer.py`
 
 Expected: failures for the missing reconcile command and timer assets.
 
-- [ ] **Step 3: Add the idempotent reconciler command and systemd assets**
+- [x] **Step 3: Add the idempotent reconciler command and systemd assets**
 
 ```bash
 fail_closed_status() {
@@ -139,7 +139,7 @@ WantedBy=timers.target
 
 Install both units, reload systemd and enable only the reconciler timer; do not add a WG/OpenVPN systemctl command to the installer.
 
-- [ ] **Step 4: Verify assets and shell syntax**
+- [x] **Step 4: Verify assets and shell syntax**
 
 Run: `pytest -q tests/test_deploy_vpn_policy_assets.py tests/test_deploy_vpn_runtime_health_timer.py`
 
@@ -147,7 +147,7 @@ Run: `bash -n deploy/vpn-policy.sh`
 
 Expected: all selected tests pass and Bash returns 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add deploy/vpn-policy.sh deploy/vpn-policy-reconcile.service deploy/vpn-policy-reconcile.timer deploy/install-openvpn-web.sh tests/test_deploy_vpn_policy_assets.py tests/test_deploy_vpn_runtime_health_timer.py
@@ -167,7 +167,7 @@ git commit -m "feat: reconcile WG policy routing"
 - `GET /network/runtime-health` returns `<vpnctl health>` for an authenticated web session.
 - Both invoke `vpnctl --json runtime-health` without `--strict`; `overall=error` remains HTTP 200.
 
-- [ ] **Step 1: Extend fake vpnctl output and write failing API/session tests**
+- [x] **Step 1: Extend fake vpnctl output and write failing API/session tests**
 
 ```python
 # In the existing fake vpnctl command dispatcher.
@@ -200,13 +200,13 @@ def test_network_runtime_health_requires_session_and_is_read_only(tmp_path, monk
     assert response.json()["overall"] == "error"
 ```
 
-- [ ] **Step 2: Verify tests fail**
+- [x] **Step 2: Verify tests fail**
 
 Run: `pytest -q tests/test_api_routes.py tests/test_web_network_observer.py -k runtime_health`
 
 Expected: 404 responses or missing fake command support.
 
-- [ ] **Step 3: Implement one read-only health helper and both endpoints**
+- [x] **Step 3: Implement one read-only health helper and both endpoints**
 
 ```python
 # app/api.py
@@ -226,13 +226,13 @@ def network_runtime_health(request: Request, db: Session = Depends(get_db)):
 
 Do not add `--strict` to either route and do not write audit records for these GET requests.
 
-- [ ] **Step 4: Verify endpoint behavior**
+- [x] **Step 4: Verify endpoint behavior**
 
 Run: `pytest -q tests/test_api_routes.py tests/test_web_network_observer.py -k runtime_health`
 
 Expected: all selected tests pass; health `overall=error` still has HTTP 200.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/api.py app/main.py tests/test_api_routes.py tests/test_web_network_observer.py
@@ -248,7 +248,7 @@ git commit -m "feat: expose VPN runtime health"
 
 **Interfaces:** `#vpn-runtime-card` loads `/network/runtime-health` on page load and every 30 seconds. The card renders only `sections`, `warnings`, and `errors` fields from the sanitized health response.
 
-- [ ] **Step 1: Write failing render and static-poll tests**
+- [x] **Step 1: Write failing render and static-poll tests**
 
 ```python
 def test_network_dashboard_contains_runtime_health_card_and_polling(tmp_path, monkeypatch):
@@ -264,13 +264,13 @@ def test_network_dashboard_contains_runtime_health_card_and_polling(tmp_path, mo
     assert "setInterval(loadVpnRuntimeHealth, 30000)" in script
 ```
 
-- [ ] **Step 2: Verify tests fail**
+- [x] **Step 2: Verify tests fail**
 
 Run: `pytest -q tests/test_web_network_observer.py -k runtime_health_card`
 
 Expected: failure because no card or polling function exists.
 
-- [ ] **Step 3: Add safe card markup and rendering function**
+- [x] **Step 3: Add safe card markup and rendering function**
 
 ```html
 <section id="vpn-runtime-card" class="table-wrap" data-runtime-health-url="/network/runtime-health">
@@ -310,13 +310,13 @@ async function loadVpnRuntimeHealth() {
 
 Implement `runtimeHealthRows` with `document.createElement` and `textContent`, never `innerHTML`; include only OpenVPN service/management, WG service/link/handshake age/MTU, and policy table/chains/legacy-51820 booleans. Redact key-like values, IP addresses, endpoint/host names, and ports from warning/error messages before inserting them as text nodes. Call it on `DOMContentLoaded` and every 30 seconds.
 
-- [ ] **Step 4: Verify dashboard tests**
+- [x] **Step 4: Verify dashboard tests**
 
 Run: `pytest -q tests/test_web_network_observer.py -k "runtime_health or network_pages"`
 
 Expected: all selected tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/templates/network_dashboard.html app/static/app.js tests/test_web_network_observer.py
@@ -332,7 +332,7 @@ git commit -m "feat: show VPN runtime health dashboard"
 
 **Interfaces:** Operators use `vpn-policy-reconcile.timer` for automatic scoped reconciliation, `vpn-runtime-health.timer` for alarm-only checks, `/api/v1/runtime-health` for Bearer integrations, and `/network/dashboard` for session UI.
 
-- [ ] **Step 1: Add exact acceptance and rollback commands**
+- [x] **Step 1: Add exact acceptance and rollback commands**
 
 ```bash
 sudo systemctl status vpn-policy-reconcile.timer vpn-runtime-health.timer --no-pager
@@ -343,13 +343,13 @@ curl -fsS -H "Authorization: Bearer $OPENVPN_WEB_API_TOKEN" http://127.0.0.1:808
 
 State explicitly that the reconciler never starts WG: a failed peer remains fail-closed until an operator or normal service lifecycle restores `wg0`.
 
-- [ ] **Step 2: Run complete local verification**
+- [x] **Step 2: Run complete local verification**
 
 Run: `git diff --check && pytest -q`
 
 Expected: no whitespace errors and all tests pass.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/DEPLOYMENT.md docs/runbooks/wg-policy-resilience-deploy-rollback.md docs/superpowers/specs/2026-07-18-wg-reconcile-dashboard-design.md
