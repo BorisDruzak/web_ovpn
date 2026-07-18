@@ -1,6 +1,7 @@
 # Netctl runtime live observations deployment and rollback
 
-Use this runbook to deploy migration `3` and the runtime-observation writer.
+Use this runbook to deploy migrations `3` and `4` and the runtime-observation
+writer.
 It is additive: the legacy collector tables and commands remain the operational
 compatibility surface. The target host does not provide the `sqlite3` CLI;
 every database check below uses the deployed application virtual environment.
