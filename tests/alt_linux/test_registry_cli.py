@@ -4,10 +4,14 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.cli import main
 from alt_deploy.config import Settings
-from alt_deploy.jsonio import atomic_write_json
+from alt_deploy.errors import ControlError
+from alt_deploy.jobs import JobRepository
+from alt_deploy.jsonio import atomic_write_json, read_json
 from alt_deploy.registry import MachineRepository
 
 
@@ -190,3 +194,27 @@ def test_machine_with_assignment_reports_assigned_status(
 
     assert refreshed.assignment is not None
     assert refreshed.to_public_dict()["status"] == "assigned"
+
+
+def test_machine_list_fails_closed_on_malformed_job(
+    tmp_path: Path,
+) -> None:
+    from test_jobs import provision_request
+
+    settings = make_settings(tmp_path)
+    write_machine(
+        settings,
+        "ready",
+        "2026-07-18T12:00:00+00:00",
+    )
+    job = JobRepository(settings).create(
+        provision_request()
+    )
+    status = read_json(job.job_dir / "status.json")
+    status["stage_history"] = []
+    atomic_write_json(job.job_dir / "status.json", status)
+
+    with pytest.raises(ControlError) as exc:
+        MachineRepository(settings).list()
+
+    assert exc.value.code == "job_stage_history_invalid"
