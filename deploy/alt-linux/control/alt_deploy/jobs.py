@@ -13,7 +13,10 @@ from typing import Any, BinaryIO
 from .assignments import assert_safe_payload
 from .config import Settings
 from .errors import ControlError
-from .job_stages import initial_stage_history
+from .job_stages import (
+    initial_stage_history,
+    validate_job_stage_status,
+)
 from .jsonio import (
     atomic_write_json,
     ensure_private_dir,
@@ -80,6 +83,11 @@ class JobRepository:
                 ),
                 exit_code=4,
             ) from exc
+
+        validate_job_stage_status(
+            status_payload,
+            job_id=job_dir.name,
+        )
 
         return JobRecord(
             job_id=str(
@@ -217,12 +225,7 @@ class JobRepository:
             if not stat.S_ISDIR(entry_stat.st_mode):
                 continue
 
-            try:
-                jobs.append(
-                    self._load_from_dir(job_dir)
-                )
-            except ControlError:
-                continue
+            jobs.append(self._load_from_dir(job_dir))
 
         return sorted(
             jobs,
