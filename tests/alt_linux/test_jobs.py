@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import gzip
 import multiprocessing
 import re
 import stat
@@ -194,6 +195,28 @@ def test_read_log_returns_bounded_tail(
     assert len(result["log"].encode("utf-8")) == 2_000_000
     assert result["log"].startswith("B")
     assert result["log"].endswith("B")
+
+
+def test_read_log_reads_archived_gzip(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+
+    log_path = job.job_dir / "ansible.log"
+    archive_path = job.job_dir / "ansible.log.gz"
+    content = "archived first line\narchived second line\n"
+
+    with gzip.open(archive_path, "wt", encoding="utf-8") as handle:
+        handle.write(content)
+    log_path.unlink()
+
+    result = repository.read_log(job.job_id)
+
+    assert result["archived"] is True
+    assert result["truncated"] is False
+    assert result["log"] == content
 
 
 @pytest.mark.parametrize(
