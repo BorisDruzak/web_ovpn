@@ -5,10 +5,15 @@ import os
 import shutil
 import stat
 from datetime import datetime, timezone
+from pathlib import Path
 
 from .config import Settings
 from .errors import ControlError
-from .jobs import ACTIVE_STATES, JobRepository
+from .jobs import (
+    ACTIVE_STATES,
+    JOB_ID_RE,
+    JobRepository,
+)
 from .locks import exclusive_lock
 from .models import JobRecord
 
@@ -201,6 +206,97 @@ class JobRetentionManager:
         finally:
             temporary_path.unlink(missing_ok=True)
 
+    def _unsafe_job_entries(self) -> list[dict[str, object]]:
+        if not self.settings.jobs_dir.exists():
+            return []
+
+        skipped: list[dict[str, object]] = []
+        for entry in sorted(self.settings.jobs_dir.glob("job-*")):
+            if not JOB_ID_RE.fullmatch(entry.name):
+                continue
+
+            try:
+                entry_stat = entry.lstat()
+            except OSError:
+                skipped.append(
+                    {
+                        "job_id": entry.name,
+                        "state": "",
+                        "reason": "unsafe_job_entry",
+                    }
+                )
+                continue
+
+            if not stat.S_ISDIR(entry_stat.st_mode):
+                skipped.append(
+                    {
+                        "job_id": entry.name,
+                        "state": "",
+                        "reason": "unsafe_job_entry",
+                    }
+                )
+
+        return skipped
+
+    @classmethod
+    def _remove_entry_no_follow(
+        cls,
+        path: Path,
+        *,
+        require_directory: bool = False,
+    ) -> None:
+        entry_stat = path.lstat()
+
+        if require_directory and not stat.S_ISDIR(entry_stat.st_mode):
+            raise ControlError(
+                code="job_cleanup_delete_unsafe",
+                message="Provision job path is not a real directory",
+                exit_code=4,
+                details={"job_id": path.name},
+            )
+
+        if stat.S_ISDIR(entry_stat.st_mode):
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    child = path / entry.name
+                    if entry.is_dir(follow_symlinks=False):
+                        cls._remove_entry_no_follow(child)
+                    else:
+                        child.unlink()
+            path.rmdir()
+            return
+
+        path.unlink()
+
+    def _delete_job(self, job: JobRecord) -> None:
+        expected_path = self.settings.jobs_dir / job.job_id
+        if (
+            not JOB_ID_RE.fullmatch(job.job_id)
+            or job.job_dir != expected_path
+            or job.job_dir.parent != self.settings.jobs_dir
+        ):
+            raise ControlError(
+                code="job_cleanup_delete_unsafe",
+                message="Provision job path is outside the jobs root",
+                exit_code=4,
+                details={"job_id": job.job_id},
+            )
+
+        try:
+            self._remove_entry_no_follow(
+                job.job_dir,
+                require_directory=True,
+            )
+        except ControlError:
+            raise
+        except OSError as exc:
+            raise ControlError(
+                code="job_cleanup_delete_failed",
+                message="Unable to delete expired provision job",
+                exit_code=6,
+                details={"job_id": job.job_id},
+            ) from exc
+
     def cleanup(
         self,
         *,
@@ -224,9 +320,10 @@ class JobRetentionManager:
         current_time = current_time.astimezone(timezone.utc)
 
         with exclusive_lock(self.settings.lock_file):
+            unsafe_entries = self._unsafe_job_entries()
             jobs = self.jobs.list()
             actions: list[dict[str, object]] = []
-            skipped: list[dict[str, object]] = []
+            skipped: list[dict[str, object]] = list(unsafe_entries)
 
             for job in jobs:
                 action, skip = self._classify(
@@ -239,19 +336,12 @@ class JobRetentionManager:
                     if apply:
                         if action["action"] == "archive_log":
                             self._archive_log(job)
-                            action = {
-                                **action,
-                                "applied": True,
-                            }
-                        else:
-                            raise ControlError(
-                                code="job_cleanup_delete_not_implemented",
-                                message=(
-                                    "Expired job deletion is not implemented yet"
-                                ),
-                                exit_code=4,
-                                details={"job_id": job.job_id},
-                            )
+                        elif action["action"] == "delete_job":
+                            self._delete_job(job)
+                        action = {
+                            **action,
+                            "applied": True,
+                        }
                     actions.append(action)
                 if skip is not None:
                     skipped.append(skip)
