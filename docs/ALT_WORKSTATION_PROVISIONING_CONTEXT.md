@@ -1,8 +1,12 @@
 # ALT Workstation Provisioning — verified implementation context
 
 Status: verified end to end on 2026-07-17 and subsequently hardened through
-Phase 1 controller work, Phase 2.1 job reconciliation and Phase 2.2 job and log
-retention.
+Phase 1 controller work, Phase 2.1 job reconciliation, Phase 2.2 job and log
+retention, and Phase 2.3 structured job stages.
+
+Phase 2.3 is implemented and tested in branch
+`feat/alt-workstation-provisioning-mvp`. Runtime rollout of the strict schema is
+not implicit and requires separate approval.
 
 Repository: `BorisDruzak/web_ovpn`
 
@@ -27,6 +31,7 @@ ALT autoinstall
   -> awaiting_assignment
   -> provision preview
   -> root-approved asynchronous provision job
+  -> structured stage progression
   -> final verification
   -> assignment records
   -> assigned
@@ -51,7 +56,8 @@ Responsibilities:
 - Ansible playbooks and roles;
 - Ansible Vault and non-secret Vault health checks;
 - controller permission audit and narrowly scoped repair;
-- provision jobs, logs, results, assignments and recovery;
+- provision jobs, structured stages, logs, results and assignments;
+- reconciliation and retention;
 - constrained API in a future stage.
 
 Important runtime paths:
@@ -59,6 +65,7 @@ Important runtime paths:
 ```text
 /usr/local/sbin/workstationctl
 /usr/local/libexec/alt-provision-worker
+/usr/local/libexec/alt-job-stage
 /opt/alt-deploy-control/alt_deploy/
 /opt/alt-deploy-api/process_pending.py
 /home/altserver/ansible/
@@ -109,16 +116,19 @@ Main implementation root:
 deploy/alt-linux/
 ```
 
-Key components:
+Key controller components:
 
 ```text
 deploy/alt-linux/install-control-plane.sh
 deploy/alt-linux/api/process_pending.py
 deploy/alt-linux/control/workstationctl
 deploy/alt-linux/control/alt-provision-worker
+deploy/alt-linux/control/alt-job-stage
 deploy/alt-linux/control/alt_deploy/controller_permissions.py
 deploy/alt-linux/control/alt_deploy/job_reconcile.py
 deploy/alt-linux/control/alt_deploy/job_retention.py
+deploy/alt-linux/control/alt_deploy/job_stage_helper.py
+deploy/alt-linux/control/alt_deploy/job_stages.py
 deploy/alt-linux/control/alt_deploy/vault.py
 deploy/alt-linux/ansible/playbooks/01-preflight.yml
 deploy/alt-linux/ansible/playbooks/02-provision-account.yml
@@ -134,7 +144,7 @@ The installer:
 
 1. validates required commands before runtime mutation;
 2. requires root and the `altserver` service account;
-3. installs the controller package, CLI and worker;
+3. installs the controller package, CLI, worker and internal stage helper;
 4. copies playbooks and roles without overwriting unrelated Ansible files;
 5. does not copy or mutate the active Vault or Vault password file;
 6. prepares private controller job and assignment directories;
@@ -202,6 +212,10 @@ Provision request fields:
 
 The request never contains a password or password hash.
 
+The stage helper `/usr/local/libexec/alt-job-stage` is intentionally not a
+public `workstationctl` command. It is an internal localhost-only integration
+boundary used by the provision playbook.
+
 ## 5. Validation rules
 
 ### Employee login
@@ -267,24 +281,81 @@ configuration without weakening strict host-key checking.
 The provision job:
 
 1. validates the request, machine, preflight, Vault and uniqueness constraints;
-2. sets and verifies the final hostname;
-3. creates or reconciles the local primary group;
-4. creates or reconciles the employee account;
-5. applies the Vault-provided yescrypt password hash;
-6. verifies the employee is not in `wheel`;
-7. verifies sudo policy denies the employee;
-8. hides only `ansible` through AccountsService;
-9. keeps the employee visible through AccountsService;
-10. disables LightDM autologin through a managed drop-in;
-11. verifies LightDM, AccountsService, account and sudo state;
-12. writes target and controller assignment records only after verification;
-13. validates the structured public result before accepting success.
+2. enters `launching` after the transient unit is accepted;
+3. validates worker input and enters `validating`;
+4. enters `connecting` before Ansible establishes target access;
+5. sets and verifies the final hostname in stage `identity`;
+6. creates or reconciles the local employee in stage `employee`;
+7. applies AccountsService and LightDM state in stage `login_screen`;
+8. verifies hostname, account, sudo and display-manager state in `verifying`;
+9. validates and records the public result in `recording`;
+10. writes target and controller assignment records only after verification;
+11. enters `complete` only with `state=successful`.
 
 The sudo denial check uses `LC_ALL=C` and accepts the actual ALT text
 `User <login> is not allowed to run sudo ...`. A zero return code from
 `sudo -l -U` means the listing operation succeeded; it does not grant sudo.
 
-## 8. LightDM and AccountsService state
+## 8. Phase 2.3 structured job stages
+
+Canonical sequence:
+
+```text
+created -> launching -> validating -> connecting
+-> identity -> employee -> login_screen
+-> verifying -> recording -> complete
+```
+
+The canonical stage names are exactly:
+
+```text
+created launching validating connecting identity employee login_screen verifying recording complete
+```
+
+Stage and state are independent:
+
+- `state` is `queued`, `running`, `successful` or `failed`;
+- `stage` identifies the last entered provisioning step;
+- failure preserves the last reached stage;
+- failure is not a stage;
+- a successful job must end at `complete`;
+- backward, skipped and unknown transitions fail closed;
+- repeating the current stage on a non-terminal job is a byte-identical no-op.
+
+Every new job begins with:
+
+```text
+state=queued
+stage=created
+```
+
+and a non-empty `stage_history`. Each history entry has exactly `stage` and a
+timezone-aware `entered_at` timestamp normalized to UTC. `jobs status` exposes
+both the current stage and `stage_history`.
+
+`JobRepository.update()` rejects direct writes to `stage` and `stage_history`.
+All transitions go through `JobStageManager` under the common controller lock.
+
+Ansible markers execute only on the controller with:
+
+```text
+delegate_to: localhost
+become: false
+run_once: true
+changed_when: false
+```
+
+The helper delegates to the same stage manager. Human Ansible output and task
+names are never parsed as authoritative stage state. If a marker fails, the
+next role is not started.
+
+No automatic migration exists. Pre-Phase-2.3 job directories do not receive a
+synthetic history and malformed real jobs fail closed with
+`job_stage_history_invalid`. Before runtime installation, back up and explicitly
+remove old test job directories. Runtime installation and job cleanup require
+separate approval.
+
+## 9. LightDM and AccountsService state
 
 Managed files on the workstation:
 
@@ -318,7 +389,7 @@ autologin-user-timeout=0
 The role does not restart LightDM during provisioning. AccountsService is
 restarted only when managed visibility files change.
 
-## 9. Vault and secrets
+## 10. Vault and secrets
 
 Runtime Vault:
 
@@ -338,9 +409,6 @@ Required encrypted variable:
 vault_employee_password_hash: "$y$..."
 ```
 
-`02-provision-account.yml` explicitly loads `../group_vars/vault.yml` through
-`vars_files`. An inline host inventory does not load this file automatically.
-
 Rules:
 
 - never commit the active `vault.yml`;
@@ -355,11 +423,7 @@ Vault health command:
 sudo -u altserver workstationctl --json vault check
 ```
 
-It verifies file presence, owner, mode, Vault header, decryption, required
-variable and yescrypt prefix `$y$`. An unhealthy response uses
-`error.code=vault_unhealthy`; no secret value is returned.
-
-## 10. Controller permission contract
+## 11. Controller permission contract
 
 Expected owner, group, mode and object type:
 
@@ -385,11 +449,11 @@ Root-only repair:
 sudo workstationctl --json controller permissions repair
 ```
 
-Repair validates all seven paths before mutation, blocks on missing paths,
-symbolic links or unexpected types, uses no-follow file descriptors, changes
-only owner/group/mode and never creates missing Vault files.
+Repair validates all paths before mutation, blocks on missing paths, symbolic
+links or unexpected types, uses no-follow file descriptors, changes only
+owner/group/mode and never creates missing Vault files.
 
-## 11. Job reconciliation after controller restart
+## 12. Job reconciliation after controller restart
 
 Manual command:
 
@@ -399,10 +463,10 @@ sudo -u altserver workstationctl --json jobs reconcile
 
 Reconciliation:
 
-- holds the common `workstationctl.lock` used by provision preview/start;
+- holds the common `workstationctl.lock`;
 - considers only jobs in `queued` or `running`;
-- verifies the exact recorded unit name `alt-provision-<job_id>.service`;
-- queries `LoadState`, `ActiveState` and `SubState` through `systemctl show`;
+- verifies the exact unit `alt-provision-<job_id>.service`;
+- queries `LoadState`, `ActiveState` and `SubState`;
 - never follows arbitrary unit names from job state;
 - does not contact or mutate the workstation directly.
 
@@ -410,48 +474,42 @@ Verified outcomes:
 
 ### `still_running`
 
-A unit in `active`, `activating` or `reloading` is reported in `unchanged` with
-its systemd states. The job record remains byte-for-byte unchanged.
+An active unit is reported in `unchanged`. The job record remains byte-for-byte
+unchanged.
 
 ### `queued_recoverable`
 
-A queued job with no recorded unit, or a recorded unit with
-`LoadState=not-found`, becomes:
+A queued job without a unit keeps `stage=created`. A queued job whose recorded
+unit is missing keeps `stage=launching` and the recorded unit. Both become:
 
 ```text
 state=failed
-stage=reconcile
 error_code=worker_not_started
 retryable=true
 action=queued_recoverable
 ```
 
-A queued job without a recorded unit does not invoke `systemctl`.
-
 ### `worker_lost`
 
-A running job whose unit disappeared before producing `result.json` becomes:
-
-```text
-state=failed
-stage=reconcile
-error_code=worker_lost
-action=worker_lost
-```
-
-It no longer blocks a new preview through `active_for_machine`.
+A running job whose unit disappeared before producing `result.json` becomes
+`failed` with `error_code=worker_lost`. Its real stage, such as `employee`, is
+preserved in both `stage` and `stage_history`.
 
 ### `result_recovered`
 
-When the worker is inactive and a `result.json` exists:
+Recovery is accepted only from:
 
-1. JSON is read as an object;
-2. the same `_validate_result` contract used by the worker is applied;
-3. assignment is written through the idempotent `AssignmentRepository`;
-4. the job becomes `successful / complete`;
-5. `finished_at` is taken from the validated `completed_at` field.
+```text
+state=running
+stage=recording
+```
 
-No result is recovered while its worker remains active.
+The result is validated with the worker contract, assignment is written
+idempotently, and `JobStageManager.advance_unlocked()` records
+`recording -> complete` with `state=successful`.
+
+A result found at any other stage produces `job_reconcile_invalid_stage` before
+reading the result or writing an assignment.
 
 ### `result_rejected`
 
@@ -459,20 +517,17 @@ Malformed JSON or a result that fails verification produces:
 
 ```text
 state=failed
-stage=reconcile
+stage=recording
 error_code=invalid_provision_result
 retryable=true
 action=result_rejected
 ```
 
-The original `result.json` is retained for diagnostics and no assignment is
-written. Assignment conflicts, invalid systemd unit records and systemd query
-failures remain explicit errors rather than being hidden as result rejection.
+The original result is retained and no assignment is written.
 
-Reconciliation is currently an explicit operator command. No automatic boot
-service invokes it yet.
+Reconciliation is explicit. No automatic boot service invokes it yet.
 
-## 11.1 Phase 2.2 job and log retention
+## 13. Phase 2.2 job and log retention
 
 Implementation: `deploy/alt-linux/control/alt_deploy/job_retention.py`.
 
@@ -482,10 +537,9 @@ The verified policy is:
 - logs are archived after 14 days from terminal completion;
 - the archive is `ansible.log.gz` mode `0600`;
 - active `queued` and `running` jobs are never archived or deleted;
-- assignment records are retained independently from job cleanup;
+- assignment records are retained independently;
 - job-directory and log access use no-follow checks;
-- symlinks inside an expired job are removed as links without touching their
-  external targets.
+- malformed stage history fails closed and is never omitted or deleted.
 
 Dry-run:
 
@@ -499,11 +553,9 @@ Apply:
 sudo workstationctl --json jobs cleanup --apply
 ```
 
-`jobs log` reads either `ansible.log` or `ansible.log.gz` and reports whether the
-log is archived. No automatic cleanup service is installed; cleanup remains an
-explicit operator action.
+No automatic cleanup service is installed.
 
-## 12. Verified reference run
+## 14. Verified reference run
 
 Reference target:
 
@@ -536,7 +588,7 @@ Verified result:
 The assigned reference UUID must not be provisioned again. Release and
 reassignment require a dedicated workflow.
 
-## 13. Machine state model
+## 15. Machine state model
 
 Displayed machine state is derived from registration, latest preflight, active
 job and assignment.
@@ -553,7 +605,10 @@ assigned
 A successful assignment produces `assigned` without rewriting the original
 registration record. Repeated preview returns `machine_already_assigned`.
 
-## 14. Verification baseline
+Machine list/show fail closed when a real job has malformed stage history; the
+job is not silently omitted from derived state.
+
+## 16. Verification baseline
 
 Use the latest successful full command output as the exact test-count baseline;
 do not rely on an old hard-coded count in documentation.
@@ -575,7 +630,7 @@ The full repository suite contains unrelated OpenVPN tests that require
 `/etc/openvpn/vpnctl.env`. For this workstream use `tests/alt_linux` unless that
 environment is intentionally prepared.
 
-## 15. Safe operational commands
+## 17. Safe operational commands
 
 ```bash
 cd /home/altserver/web_ovpn-src/.worktrees/alt-workstation-mvp
@@ -595,15 +650,29 @@ Install or update controller runtime only with explicit approval:
 sudo bash deploy/alt-linux/install-control-plane.sh
 ```
 
-Repair known permission deviations only after reviewing the audit:
-
-```bash
-sudo workstationctl --json controller permissions repair
-```
-
 Do not rerun `provision start` for the assigned reference machine.
 
-## 16. Historical differences
+## 18. Runtime rollout boundary for Phase 2.3
+
+The repository implementation is complete, but existing runtime jobs are not
+compatible with the strict non-empty history requirement.
+
+Before rollout:
+
+1. verify the complete ALT suite and syntax gates;
+2. stop creating new provision jobs;
+3. back up `/var/lib/alt-deploy/jobs/` without printing private content;
+4. review active jobs and reconcile them under the old runtime if required;
+5. explicitly remove old test job directories only after approval;
+6. install the controller through `install-control-plane.sh`;
+7. create a new disposable test job on a non-assigned machine;
+8. verify `stage_history`, markers, failure preservation and reconciliation.
+
+No automatic migration exists and rollout must not synthesize history for old
+jobs. The assigned UUID `53b03180-5d78-11f0-bd95-f027db877a00` remains excluded
+from any new provisioning test.
+
+## 19. Historical differences
 
 Do not copy obsolete assumptions into new code:
 
@@ -614,9 +683,11 @@ Do not copy obsolete assumptions into new code:
 - Vault loading remains explicit through `vars_files`;
 - automated SSH retains `ProxyCommand=none`;
 - `provision start` remains root-only;
-- sudo denial verification uses `LC_ALL=C` and actual ALT denial text.
+- sudo denial verification uses `LC_ALL=C` and actual ALT denial text;
+- `stage=ansible` and `stage=reconcile` are historical and not valid Phase 2.3
+  stages.
 
-## 17. Continuation document
+## 20. Continuation document
 
 Remaining work and acceptance checks are maintained in:
 
