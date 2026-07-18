@@ -8,6 +8,7 @@ deployment backup.
 ## Release and rollback evidence
 
 - deployed release commit: `7427e08f0ce7bdb3957cf407d2d9db1e8c0e36a9`
+- deployed_at_utc: `2026-07-18T09:24:45Z` (migration trigger started)
 - deployment backup directory: `/var/backups/netctl/runtime-asset-identity-20260718T092445Z`
 - rollback manifest and SHA256SUMS: retained in the protected backup directory
 - migration-report review acknowledgement: retained in the protected backup directory
@@ -17,9 +18,9 @@ Approved-release SHA-256 values:
 
 | File | SHA-256 |
 | --- | --- |
-| `netctl/migrations.py` | `fbf68b5a0b693978770d8c4cba7a3867e3f207f7dc790dbaf6667479c49c9b09` |
-| `netctl/runtime_assets.py` | `adef3ba7b2a02bddf2796e871beca15d967b2b76b1230f681ad0ccb96b7dbe5d` |
-| `tests/test_netctl_runtime_assets.py` | `3738e69438c9caefb223a7324b87d11f566d1809b2f219d3d200ba966ae2816e` |
+| `netctl/migrations.py` | `140884a12523374579a609121ebc0fae31f6a817467907a4056068ae385799af` |
+| `netctl/runtime_assets.py` | `fb6a8f0ff0e87d8048373bfa16ceb34253e08baac874c40b7f33e25c134a6a4c` |
+| `tests/test_netctl_runtime_assets.py` | `148f82c4cbe691be7754961da3c787f6ea372d52f710ea43619726d639e3ad41` |
 
 ## Database verification
 
