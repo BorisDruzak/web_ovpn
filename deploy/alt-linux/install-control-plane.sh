@@ -78,7 +78,8 @@ echo "Preparing private controller state"
 install -d -o altserver -g altserver -m 0700 \
     /var/lib/alt-deploy \
     /var/lib/alt-deploy/jobs \
-    /var/lib/alt-deploy/assignments
+    /var/lib/alt-deploy/assignments \
+    /srv/alt-deploy/registration
 
 echo "Installing Ansible project"
 
