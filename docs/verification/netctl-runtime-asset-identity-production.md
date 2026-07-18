@@ -75,7 +75,7 @@ committed to Git.
 
 ## Application verification
 
-- focused regression: `84 passed`
+- focused regression: `84 passed in 4.04s`
 - full regression: `171 passed, 1 skipped, 5360 warnings in 34.46s`
 - legacy read commands: verified successfully against the deployed database
 - `openvpn-web.service`: active
