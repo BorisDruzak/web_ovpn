@@ -66,6 +66,31 @@ sudo cp -a /usr/local/sbin/netctl "$backup_dir/netctl-wrapper-before"
 Continue only when `integrity_check` is `ok`, the backup has a non-zero size,
 and the release artefacts are recorded in the change record.
 
+### Migration 4: capture pre-transition evidence
+
+Before installing or starting the updated application, use the currently
+deployed pre-v4 release to capture the dedicated SQLite rollback copy and
+read-only findings evidence. Do not run any command from the updated release
+until this block has completed. This operation records reviewed
+historical-identity provenance; it does not remediate or delete findings.
+
+```bash
+runtime_backup_dir="$backup_dir"
+backup_dir="/var/backups/netctl/findings-ack-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo install -d -m 0700 "$backup_dir"
+sudo cp --preserve=mode,timestamps /var/lib/netctl/netctl.sqlite "$backup_dir/netctl-before-v4.sqlite"
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets status
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status open
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status acknowledged
+v4_backup_dir="$backup_dir"
+backup_dir="$runtime_backup_dir"
+```
+
+If the migration outcome is unacceptable, restore only the captured
+`netctl-before-v4.sqlite` backup, with all application and collector services
+stopped and after explicit operator approval. Do not delete or edit findings
+in place; the pre-v4 backup is the rollback boundary.
+
 ## 2. Apply migration once and verify its guards
 
 Install the verified release while the units remain masked. Trigger normal
@@ -78,14 +103,16 @@ sudo -u netctl /usr/local/sbin/netctl --json dashboard \
   | sudo tee "$backup_dir/dashboard-migration-trigger.json"
 sudo -u netctl /usr/local/sbin/netctl --json runtime-assets status \
   | sudo tee "$backup_dir/runtime-status-after-migration.json"
+sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status acknowledged \
+  | sudo tee "$v4_backup_dir/runtime-acknowledged-after-v4.json"
 ```
 
-Verify the ledger and both migration-3 interface guard triggers with the
-deployed Python. The command exits nonzero unless each required version occurs
-exactly once and both expected guards exist:
+Verify the post-startup ledger and both migration-3 interface guard triggers
+with the deployed Python. The command exits nonzero unless versions `1`
+through `4` each occur exactly once and both expected guards exist:
 
 ```bash
-sudo -u netctl "$python_bin" - "$db_path" <<'PY' | sudo tee "$backup_dir/migration-3-verify.json"
+sudo -u netctl "$python_bin" - "$db_path" <<'PY' | sudo tee "$backup_dir/migration-4-verify.json"
 import json
 import sqlite3
 import sys
@@ -117,6 +144,7 @@ assert payload["schema_migrations"] == [
     {"version": 1, "count": 1},
     {"version": 2, "count": 1},
     {"version": 3, "count": 1},
+    {"version": 4, "count": 1},
 ]
 assert payload["guard_triggers"] == [
     "ip_observations_interface_asset_insert_guard",
@@ -128,31 +156,11 @@ PY
 The status output's `migration_only_current.total` must be zero:
 migration-created IP and hostname observations are historical, not live state.
 
-### Migration 4: acknowledge reviewed historical provenance
-
-Before starting the updated application, capture the dedicated pre-v4 database
-backup. This operation records the reviewed historical-identity provenance; it
-does not remediate or delete findings.
-
-```bash
-backup_dir="/var/backups/netctl/findings-ack-$(date -u +%Y%m%dT%H%M%SZ)"
-sudo install -d -m 0700 "$backup_dir"
-sudo cp --preserve=mode,timestamps /var/lib/netctl/netctl.sqlite "$backup_dir/netctl-before-v4.sqlite"
-sudo -u netctl /usr/local/sbin/netctl --json runtime-assets status
-sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status open
-sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status acknowledged
-```
-
 Normal application startup applies ledgered migration `4`; do not apply it with
-ad-hoc SQL. After startup, confirm the status output includes migration `4`.
+ad-hoc SQL. The post-startup ledger check above must show `[1, 2, 3, 4]`.
 Acknowledged rows remain accessible through the read-only `findings --status
 acknowledged` command, while unresolved MAC-collision and IP-only findings
 remain open for operator review.
-
-If the migration outcome is unacceptable, restore only the captured
-`netctl-before-v4.sqlite` backup, with all application and collector services
-stopped and after explicit operator approval. Do not delete or edit findings
-in place; the pre-v4 backup is the rollback boundary.
 
 ## 3. Prove live writer behavior
 
