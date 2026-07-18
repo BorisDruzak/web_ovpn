@@ -18,6 +18,7 @@ class Settings:
     ansible_playbook_path: Path
     systemd_run_path: Path
     worker_path: Path
+    job_stage_helper_path: Path
     workstationctl_path: Path
     service_user: str = "altserver"
     service_group: str = "altserver"
@@ -78,6 +79,12 @@ class Settings:
                 os.environ.get(
                     "ALT_DEPLOY_WORKER",
                     "/usr/local/libexec/alt-provision-worker",
+                )
+            ),
+            job_stage_helper_path=Path(
+                os.environ.get(
+                    "ALT_DEPLOY_JOB_STAGE_HELPER",
+                    "/usr/local/libexec/alt-job-stage",
                 )
             ),
             workstationctl_path=Path(
