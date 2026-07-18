@@ -515,6 +515,19 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     assert rc == 0
     assert data["status"] == "ok"
     assert data["summary"]["arp"] >= 1
+    assert {
+        "arp",
+        "dhcp_leases",
+        "interfaces",
+        "routes",
+        "neighbors",
+        "bridge_hosts",
+        "firewall_address_lists",
+    } <= data["summary"].keys()
+    assert data["summary"]["runtime_assets_touched"] >= 1
+    assert data["summary"]["runtime_ips_current"] >= 1
+    assert data["summary"]["runtime_hostnames_current"] >= 1
+    assert data["summary"]["runtime_findings_open"] >= 0
 
     _, local_hosts = run_cli(
         ["--json", "--config", str(config_path), "--db", db_url, "hosts", "list", "--category", "local_device"],

@@ -12,6 +12,7 @@ from netctl.runtime_writer import (
     recompute_runtime_identity_findings,
     sync_runtime_hosts,
 )
+from netctl.store import save_collection
 
 
 @pytest.fixture
@@ -70,6 +71,186 @@ def _finding(conn: sqlite3.Connection, finding_key: str) -> sqlite3.Row:
     ).fetchone()
     assert row is not None
     return row
+
+
+def _collection_snapshot(
+    ip: str = "192.0.2.90",
+    mac: str = "00:11:22:33:44:90",
+) -> dict[str, Any]:
+    return {
+        "identity": [{"name": "test-router"}],
+        "interfaces": [],
+        "routes": [],
+        "dhcp_leases": [
+            {
+                "ip": ip,
+                "mac": mac,
+                "hostname": "collected-host",
+                "status": "bound",
+            }
+        ],
+        "arp": [
+            {
+                "ip": ip,
+                "mac": mac,
+                "interface": "bridge-lan",
+                "complete": True,
+            }
+        ],
+        "neighbors": [],
+        "bridge_hosts": [],
+        "firewall_address_lists": [],
+    }
+
+
+def test_successful_collection_commits_legacy_and_runtime_together(
+    runtime_conn: sqlite3.Connection,
+) -> None:
+    source = _source(20, site="central")
+    _seed_source(runtime_conn, source)
+    runtime_conn.commit()
+
+    counts = save_collection(
+        runtime_conn,
+        source,
+        _collection_snapshot(),
+        "2026-07-18T04:00:00Z",
+    )
+
+    assert runtime_conn.execute("SELECT COUNT(*) FROM network_hosts").fetchone()[0] == 1
+    assert runtime_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
+    assert runtime_conn.execute("SELECT COUNT(*) FROM collection_runs").fetchone()[0] == 1
+    assert counts["runtime_assets_touched"] == 1
+    assert counts["runtime_ips_current"] == 1
+    assert counts["runtime_hostnames_current"] == 1
+    assert counts["runtime_findings_open"] == 0
+
+
+def test_runtime_writer_exception_rolls_back_all_collection_writes(
+    runtime_conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netctl.store as store
+
+    source = _source(21, site="central")
+    _seed_source(runtime_conn, source)
+    runtime_conn.commit()
+
+    def fail_after_runtime_writes(
+        conn: sqlite3.Connection,
+        *,
+        source: dict[str, Any],
+        hosts: list[dict[str, Any]],
+        observed_at: str,
+    ) -> dict[str, int]:
+        sync_runtime_hosts(
+            conn,
+            source=source,
+            hosts=hosts,
+            observed_at=observed_at,
+        )
+        raise RuntimeError("runtime writer failure")
+
+    monkeypatch.setattr(
+        store,
+        "sync_runtime_hosts",
+        fail_after_runtime_writes,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="runtime writer failure"):
+        save_collection(
+            runtime_conn,
+            source,
+            _collection_snapshot(),
+            "2026-07-18T04:00:00Z",
+        )
+
+    for table in (
+        "network_hosts",
+        "host_observations",
+        "arp_entries",
+        "dhcp_leases",
+        "assets",
+        "asset_interfaces",
+        "ip_observations",
+        "hostname_observations",
+        "collection_runs",
+        "network_events",
+    ):
+        assert runtime_conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    source_row = runtime_conn.execute(
+        "SELECT last_collect_at, last_status, last_error FROM network_sources WHERE id = ?",
+        (source["id"],),
+    ).fetchone()
+    assert tuple(source_row) == (None, None, None)
+
+
+def test_failed_status_does_not_demote_current_runtime_rows(
+    runtime_conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netctl.store as store
+
+    source = _source(22, site="central")
+    _seed_source(runtime_conn, source)
+    runtime_conn.commit()
+    save_collection(
+        runtime_conn,
+        source,
+        _collection_snapshot(),
+        "2026-07-18T04:00:00Z",
+    )
+
+    def unexpected_runtime_call(*_args: Any, **_kwargs: Any) -> dict[str, int]:
+        raise AssertionError("runtime writer must not run for failed collection")
+
+    monkeypatch.setattr(store, "sync_runtime_hosts", unexpected_runtime_call)
+    monkeypatch.setattr(
+        store,
+        "recompute_runtime_identity_findings",
+        unexpected_runtime_call,
+    )
+
+    counts = save_collection(
+        runtime_conn,
+        source,
+        _collection_snapshot(ip="192.0.2.91", mac="00:11:22:33:44:91"),
+        "2026-07-18T05:00:00Z",
+        status="error",
+        message="collector unavailable",
+    )
+
+    assert runtime_conn.execute(
+        "SELECT COUNT(*) FROM ip_observations WHERE is_current = 1"
+    ).fetchone()[0] == 1
+    assert runtime_conn.execute(
+        "SELECT COUNT(*) FROM hostname_observations WHERE is_current = 1"
+    ).fetchone()[0] == 1
+    assert counts["runtime_assets_touched"] == 0
+    assert counts["runtime_ips_current"] == 0
+    assert counts["runtime_hostnames_current"] == 0
+    assert counts["runtime_findings_open"] == 0
+
+
+def test_same_successful_collection_snapshot_is_runtime_idempotent(
+    runtime_conn: sqlite3.Connection,
+) -> None:
+    source = _source(23, site="central")
+    _seed_source(runtime_conn, source)
+    runtime_conn.commit()
+    snapshot = _collection_snapshot()
+
+    save_collection(runtime_conn, source, snapshot, "2026-07-18T04:00:00Z")
+    second = save_collection(runtime_conn, source, snapshot, "2026-07-18T05:00:00Z")
+
+    assert runtime_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
+    assert runtime_conn.execute("SELECT COUNT(*) FROM asset_interfaces").fetchone()[0] == 1
+    assert runtime_conn.execute("SELECT COUNT(*) FROM ip_observations").fetchone()[0] == 1
+    assert runtime_conn.execute("SELECT COUNT(*) FROM hostname_observations").fetchone()[0] == 1
+    assert second["runtime_assets_touched"] == 1
+    assert second["runtime_ips_current"] == 1
+    assert second["runtime_hostnames_current"] == 1
 
 
 def test_new_mac_creates_asset_and_interface_then_reuses_them(

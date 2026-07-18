@@ -5,8 +5,12 @@ import ipaddress
 import sqlite3
 from typing import Any
 
-from .db import get_source, insert_event
+from .db import get_source
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
+from .runtime_writer import (
+    recompute_runtime_identity_findings,
+    sync_runtime_hosts,
+)
 from .util import utc_now
 
 
@@ -252,6 +256,34 @@ def save_collection(
     status: str = "ok",
     message: str = "",
 ) -> dict[str, Any]:
+    conn.execute("SAVEPOINT save_collection")
+    try:
+        counts = _save_collection(
+            conn,
+            source,
+            snapshot,
+            started_at,
+            status=status,
+            message=message,
+        )
+        conn.execute("RELEASE SAVEPOINT save_collection")
+        conn.commit()
+        return counts
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT save_collection")
+        conn.execute("RELEASE SAVEPOINT save_collection")
+        conn.rollback()
+        raise
+
+
+def _save_collection(
+    conn: sqlite3.Connection,
+    source: dict[str, Any],
+    snapshot: dict[str, Any],
+    started_at: str,
+    status: str = "ok",
+    message: str = "",
+) -> dict[str, Any]:
     source_id = int(source["id"])
     observed_at = utc_now()
     counts = {
@@ -397,6 +429,28 @@ def save_collection(
                     _insert_observation(conn, source_id, observed_at, item_type.rstrip("s"), item, host_id=host_id)
     _demote_absent_noise_hosts(conn, source, current_ips, observed_at)
 
+    runtime_counts: dict[str, int] = {}
+    finding_counts: dict[str, int] = {}
+    if status == "ok":
+        runtime_counts = sync_runtime_hosts(
+            conn,
+            source=source,
+            hosts=hosts,
+            observed_at=observed_at,
+        )
+        finding_counts = recompute_runtime_identity_findings(
+            conn,
+            observed_at=observed_at,
+        )
+    counts.update(
+        {
+            "runtime_assets_touched": runtime_counts.get("assets_touched", 0),
+            "runtime_ips_current": runtime_counts.get("ips_current", 0),
+            "runtime_hostnames_current": runtime_counts.get("hostnames_current", 0),
+            "runtime_findings_open": finding_counts.get("open", 0),
+        }
+    )
+
     conn.execute(
         """
         INSERT INTO collection_runs (source_id, started_at, finished_at, status, message, counts_json)
@@ -408,8 +462,20 @@ def save_collection(
         "UPDATE network_sources SET last_collect_at = ?, last_status = ?, last_error = ? WHERE id = ?",
         (observed_at, status, message if status != "ok" else "", source_id),
     )
-    insert_event(conn, "info" if status == "ok" else "error", "collect", message or f"collect {source['name']}", source_id=source_id, data=counts)
-    conn.commit()
+    conn.execute(
+        """
+        INSERT INTO network_events
+            (ts, source_id, host_id, severity, event_type, message, data_json)
+        VALUES (?, ?, NULL, ?, 'collect', ?, ?)
+        """,
+        (
+            utc_now(),
+            source_id,
+            "info" if status == "ok" else "error",
+            message or f"collect {source['name']}",
+            _json(counts),
+        ),
+    )
     return counts
 
 
