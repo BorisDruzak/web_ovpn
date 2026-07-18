@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from copy import deepcopy
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
+from .assignments import assert_safe_payload
+from .config import Settings
 from .errors import ControlError
+from .jsonio import atomic_write_json
+
+if TYPE_CHECKING:
+    from .jobs import JobRepository
+    from .models import JobRecord
 
 
 CANONICAL_STAGES: tuple[str, ...] = (
@@ -41,6 +50,8 @@ TERMINAL_STATES = frozenset(
     }
 )
 
+Clock = Callable[[], str]
+
 
 def _invalid(
     job_id: str,
@@ -76,6 +87,10 @@ def _parse_timestamp(
         )
 
     return parsed.astimezone(timezone.utc)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def initial_stage_history(
@@ -204,4 +219,75 @@ def validate_job_stage_status(
         raise _invalid(
             job_id,
             "Provision job state is unknown",
+        )
+
+
+class JobStageManager:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        clock: Clock | None = None,
+        repository: JobRepository | None = None,
+    ) -> None:
+        if repository is None:
+            from .jobs import JobRepository
+
+            repository = JobRepository(settings)
+
+        self.settings = settings
+        self.clock = clock or _utc_now
+        self.jobs = repository
+
+    def advance_unlocked(
+        self,
+        job_id: str,
+        next_stage: str,
+        *,
+        updates: Mapping[str, object] | None = None,
+    ) -> JobRecord:
+        job = self.jobs.get(job_id)
+        entered_at = _parse_timestamp(
+            self.clock(),
+            job_id=job.job_id,
+        ).isoformat()
+        history = deepcopy(job.status["stage_history"])
+        history.append(
+            {
+                "stage": next_stage,
+                "entered_at": entered_at,
+            }
+        )
+
+        status_payload = dict(job.status)
+        status_payload.update(dict(updates or {}))
+        status_payload["stage"] = next_stage
+        status_payload["stage_history"] = history
+        status_payload["job_id"] = job.job_id
+        status_payload["machine_uuid"] = job.machine_uuid
+        status_payload["created_at"] = job.created_at
+        status_payload["updated_at"] = entered_at
+
+        assert_safe_payload(status_payload)
+        validate_job_stage_status(
+            status_payload,
+            job_id=job.job_id,
+        )
+        atomic_write_json(
+            job.job_dir / "status.json",
+            status_payload,
+        )
+        return self.jobs.get(job.job_id)
+
+    def advance(
+        self,
+        job_id: str,
+        next_stage: str,
+        *,
+        updates: Mapping[str, object] | None = None,
+    ) -> JobRecord:
+        return self.advance_unlocked(
+            job_id,
+            next_stage,
+            updates=updates,
         )
