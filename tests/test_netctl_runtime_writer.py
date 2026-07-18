@@ -252,6 +252,32 @@ def test_persistent_ip_only_condition_preserves_acknowledged_status(
     )["status"] == "acknowledged"
 
 
+def test_later_snapshot_from_other_source_does_not_resolve_ip_only_finding(
+    runtime_conn: sqlite3.Connection,
+) -> None:
+    source_a = _source(12, site="central")
+    source_b = _source(13, site="branch")
+    _seed_source(runtime_conn, source_a)
+    _seed_source(runtime_conn, source_b)
+    sync_runtime_hosts(
+        runtime_conn,
+        source=source_a,
+        hosts=[_host("192.0.2.42", None)],
+        observed_at="2026-07-18T01:00:00Z",
+    )
+
+    sync_runtime_hosts(
+        runtime_conn,
+        source=source_b,
+        hosts=[],
+        observed_at="2026-07-18T02:00:00Z",
+    )
+
+    finding = _finding(runtime_conn, "unresolved-ip-only:12:192.0.2.42")
+    assert finding["source_id"] == 12
+    assert finding["status"] == "open"
+
+
 def test_collector_fills_blank_fields_but_does_not_overwrite_manual_values(
     runtime_conn: sqlite3.Connection,
 ) -> None:
@@ -349,7 +375,7 @@ def test_same_current_ip_on_different_assets_opens_duplicate_then_resolves(
     assert _finding(runtime_conn, finding["finding_key"])["status"] == "resolved"
 
 
-def test_recompute_resolves_ip_only_but_keeps_historical_movement_open(
+def test_source_snapshot_resolves_ip_only_but_keeps_historical_movement_open(
     runtime_conn: sqlite3.Connection,
 ) -> None:
     source = _source(10, site="central")
@@ -373,23 +399,16 @@ def test_recompute_resolves_ip_only_but_keeps_historical_movement_open(
         ("2026-07-18T01:00:00Z", "2026-07-18T01:00:00Z"),
     )
 
-    sync_runtime_hosts(
+    counts = sync_runtime_hosts(
         runtime_conn,
         source=source,
         hosts=[],
         observed_at="2026-07-18T02:00:00Z",
     )
-    runtime_conn.execute(
-        """
-        UPDATE runtime_identity_findings
-        SET status = 'open', last_seen_at = '2026-07-18T02:00:00Z'
-        WHERE finding_key = 'unresolved-ip-only:10:192.0.2.80'
-        """
-    )
-    counts = recompute_runtime_identity_findings(
+    recompute_runtime_identity_findings(
         runtime_conn, observed_at="2026-07-18T03:00:00Z"
     )
 
-    assert counts["resolved"] >= 1
+    assert counts["findings_resolved"] >= 1
     assert _finding(runtime_conn, "unresolved-ip-only:10:192.0.2.80")["status"] == "resolved"
     assert _finding(runtime_conn, "ip-moved:10:192.0.2.81:1:2")["status"] == "open"

@@ -575,27 +575,13 @@ def recompute_runtime_identity_findings(
             )
         )
 
-    active_keys.update(
-        str(row["finding_key"])
-        for row in conn.execute(
-            """
-            SELECT finding_key
-            FROM runtime_identity_findings
-            WHERE finding_type = 'unresolved_ip_only_runtime'
-              AND status != 'resolved' AND last_seen_at = ?
-            """,
-            (observed_at,),
-        )
-    )
-
     existing_rows = conn.execute(
         """
         SELECT finding_key
         FROM runtime_identity_findings
         WHERE finding_type IN (
             'mac_identity_collision',
-            'duplicate_current_ip',
-            'unresolved_ip_only_runtime'
+            'duplicate_current_ip'
         )
           AND status != 'resolved'
         """
