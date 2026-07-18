@@ -26,6 +26,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -92,6 +93,13 @@ DEFAULTS = {
     "MANAGEMENT_PORT": "",
     "MANAGEMENT_PASSWORD_FILE": "",
     "DOWNLOAD_FILE_GROUP": "openvpn-web",
+    "WG_INTERFACE": "wg0",
+    "WG_SERVICE": "wg-quick@wg0.service",
+    "PBR_IN_IF": "ens18.50",
+    "PBR_TABLE": "123",
+    "PBR_MARK": "0x1",
+    "PBR_PRIORITY": "1000",
+    "WG_HANDSHAKE_MAX_AGE_SECONDS": "180",
 }
 
 PROFILE_DESCRIPTIONS = {
@@ -1839,15 +1847,168 @@ def management_status_clients(socket_path: Optional[str] = None) -> List[Dict[st
     return parse_management_status(text)
 
 
-def management_test(socket_path: Optional[str] = None) -> Dict[str, Any]:
+def management_test(socket_path: Optional[str] = None, *, record: bool = True) -> Dict[str, Any]:
     path = socket_path or management_socket_path()
     try:
         clients = management_status_clients(path)
     except Exception as exc:
-        record_operation("management-test", None, "error", repr(exc))
+        if record:
+            record_operation("management-test", None, "error", repr(exc))
         return {"status": "ok", "socket": path, "available": False, "message": repr(exc)}
-    record_operation("management-test", None, "ok", f"socket={path}")
+    if record:
+        record_operation("management-test", None, "ok", f"socket={path}")
     return {"status": "ok", "socket": path, "available": True, "clients_seen": len(clients)}
+
+
+def runtime_command(cmd: List[str]) -> Optional[subprocess.CompletedProcess]:
+    """Run one inspection command without allowing it to mutate or raise."""
+    try:
+        return run(cmd, check=False)
+    except OSError:
+        return None
+
+
+def runtime_output(proc: Optional[subprocess.CompletedProcess]) -> str:
+    return str(proc.stdout or "") if proc is not None else ""
+
+
+def runtime_ok(proc: Optional[subprocess.CompletedProcess]) -> bool:
+    return bool(proc is not None and proc.returncode == 0)
+
+
+def runtime_health() -> Dict[str, Any]:
+    """Inspect OpenVPN, WireGuard and the managed policy route without writes."""
+    errors: List[str] = []
+    warnings: List[str] = []
+    wg_if = CFG.WG_INTERFACE
+    pbr_table = CFG.PBR_TABLE
+    pbr_mark = CFG.PBR_MARK
+    pbr_priority = CFG.PBR_PRIORITY
+
+    openvpn_service = runtime_command(["systemctl", "is-active", "--quiet", CFG.SERVICE_NAME])
+    openvpn_active = runtime_ok(openvpn_service)
+    if not openvpn_active:
+        errors.append(f"OpenVPN service {CFG.SERVICE_NAME} is inactive")
+    management = management_test(record=False)
+    management_available = bool(management.get("available"))
+    if not management_available:
+        errors.append("OpenVPN management socket is unavailable")
+
+    wg_service = runtime_command(["systemctl", "is-active", "--quiet", CFG.WG_SERVICE])
+    wg_service_active = runtime_ok(wg_service)
+    if not wg_service_active:
+        errors.append(f"WireGuard service {CFG.WG_SERVICE} is inactive")
+    link = runtime_command(["ip", "link", "show", "dev", wg_if])
+    link_present = runtime_ok(link)
+    link_text = runtime_output(link)
+    mtu_match = re.search(r"\bmtu\s+(\d+)", link_text)
+    mtu = int(mtu_match.group(1)) if mtu_match else None
+    if not link_present:
+        errors.append(f"WireGuard interface {wg_if} is missing")
+
+    handshakes = runtime_command(["wg", "show", wg_if, "latest-handshakes"])
+    handshake_timestamps: List[int] = []
+    if runtime_ok(handshakes):
+        for line in runtime_output(handshakes).splitlines():
+            parts = line.rsplit(maxsplit=1)
+            if len(parts) != 2:
+                continue
+            try:
+                value = int(parts[1])
+            except ValueError:
+                continue
+            if value > 0:
+                handshake_timestamps.append(value)
+    latest_handshake = max(handshake_timestamps, default=0)
+    handshake_age = int(time.time()) - latest_handshake if latest_handshake else None
+    try:
+        handshake_max_age = int(CFG.WG_HANDSHAKE_MAX_AGE_SECONDS)
+    except ValueError:
+        handshake_max_age = 180
+        warnings.append("WG_HANDSHAKE_MAX_AGE_SECONDS is invalid; using 180")
+    handshake_fresh = bool(handshake_age is not None and handshake_age <= handshake_max_age)
+    if not handshake_fresh:
+        errors.append(f"WireGuard handshake is missing or older than {handshake_max_age} seconds")
+
+    transfers = runtime_command(["wg", "show", wg_if, "transfer"])
+    transfer_rx = 0
+    transfer_tx = 0
+    transfer_available = False
+    if runtime_ok(transfers):
+        for line in runtime_output(transfers).splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            try:
+                transfer_rx += int(parts[-2])
+                transfer_tx += int(parts[-1])
+                transfer_available = True
+            except ValueError:
+                continue
+    if not transfer_available:
+        errors.append("WireGuard transfer counters are unavailable")
+
+    rules = runtime_command(["ip", "rule", "show"])
+    rules_text = runtime_output(rules)
+    rule_present = bool(re.search(
+        rf"^\s*{re.escape(pbr_priority)}:.*fwmark\s+{re.escape(pbr_mark)}(?:/0xffffffff)?\s+.*lookup\s+{re.escape(pbr_table)}\b",
+        rules_text,
+        re.MULTILINE,
+    ))
+    if not rule_present:
+        errors.append(f"policy rule fwmark {pbr_mark} lookup {pbr_table} is missing")
+    legacy_51820 = bool(re.search(r"\blookup\s+51820\b", rules_text))
+    if legacy_51820:
+        errors.append("legacy WireGuard table 51820 rule is present")
+
+    table_route = runtime_command(["ip", "route", "show", "table", pbr_table])
+    table_route_present = bool(re.search(rf"^default\s+dev\s+{re.escape(wg_if)}(?:\s|$)", runtime_output(table_route), re.MULTILINE))
+    if not table_route_present:
+        errors.append(f"table {pbr_table} default route is missing")
+
+    mangle_chain = runtime_output(runtime_command(["iptables", "-w", "-t", "mangle", "-S", "VPN_POLICY_MARK"]))
+    mangle_hook = runtime_output(runtime_command(["iptables", "-w", "-t", "mangle", "-S", "PREROUTING"]))
+    mangle_present = (
+        f"-A VPN_POLICY_MARK -i {CFG.PBR_IN_IF} -j MARK --set-xmark {pbr_mark}/0xffffffff" in mangle_chain
+        and "-A PREROUTING -j VPN_POLICY_MARK" in mangle_hook
+    )
+    if not mangle_present:
+        errors.append("VPN_POLICY_MARK chain or hook is missing")
+
+    nat_chain = runtime_output(runtime_command(["iptables", "-w", "-t", "nat", "-S", "VPN_POLICY_NAT"]))
+    nat_hook = runtime_output(runtime_command(["iptables", "-w", "-t", "nat", "-S", "POSTROUTING"]))
+    nat_present = (
+        f"-A VPN_POLICY_NAT -o {wg_if} -m mark --mark {pbr_mark}/0xffffffff -j MASQUERADE" in nat_chain
+        and "-A POSTROUTING -j VPN_POLICY_NAT" in nat_hook
+    )
+    if not nat_present:
+        errors.append("VPN_POLICY_NAT chain or hook is missing")
+
+    sections = {
+        "openvpn": {
+            "service_active": openvpn_active,
+            "management_available": management_available,
+        },
+        "wireguard": {
+            "service_active": wg_service_active,
+            "link_present": link_present,
+            "mtu": mtu,
+            "handshake_age_seconds": handshake_age,
+            "handshake_fresh": handshake_fresh,
+            "transfer_counters_available": transfer_available,
+            "transfer_rx_bytes": transfer_rx,
+            "transfer_tx_bytes": transfer_tx,
+        },
+        "policy_routing": {
+            "rule_present": rule_present,
+            "table_123_default": table_route_present,
+            "mangle_chain_present": mangle_present,
+            "nat_chain_present": nat_present,
+            "legacy_51820_rule_present": legacy_51820,
+        },
+    }
+    overall = "ok" if not errors else "error"
+    return {"status": overall, "overall": overall, "sections": sections, "warnings": warnings, "errors": errors}
 
 
 def management_status() -> Dict[str, Any]:
@@ -2732,6 +2893,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("validate-network-plan", help="validate OpenVPN tunnel, CCDs, site routes and legacy NAT")
 
+    p = sub.add_parser("runtime-health", help="inspect OpenVPN, WireGuard and policy-routing runtime health")
+    p.add_argument("--strict", action="store_true", help="exit non-zero when health has errors")
+
     return parser
 
 
@@ -3026,6 +3190,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             data = validate_network_plan()
             emit(data, args)
             return 0
+
+        if args.cmd == "runtime-health":
+            data = runtime_health()
+            emit(data, args)
+            return 2 if args.strict and data["overall"] == "error" else 0
 
         parser.print_help()
         return 2
