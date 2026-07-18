@@ -13,6 +13,7 @@ from .assignments import (
 )
 from .config import Settings
 from .errors import ControlError
+from .job_stages import JobStageManager
 from .jobs import JobRepository, utc_now
 from .jsonio import atomic_write_json
 from .models import JobRecord
@@ -130,6 +131,10 @@ def run_job(
     controller: Any,
 ) -> int:
     jobs = JobRepository(settings)
+    stages = JobStageManager(
+        settings,
+        repository=jobs,
+    )
     assignments = AssignmentRepository(settings)
     machines = MachineRepository(settings)
 
@@ -161,11 +166,17 @@ def run_job(
 
         started_at = utc_now()
 
-        job = jobs.update(
+        job = stages.advance(
             job.job_id,
-            state="running",
-            stage="ansible",
-            started_at=started_at,
+            "validating",
+            updates={
+                "state": "running",
+                "started_at": started_at,
+            },
+        )
+        job = stages.advance(
+            job.job_id,
+            "connecting",
         )
 
         with log_path.open(
@@ -270,7 +281,6 @@ def run_job(
         jobs.update(
             job.job_id,
             state="failed",
-            stage="ansible",
             finished_at=utc_now(),
             error=error_text,
         )
