@@ -294,3 +294,19 @@ def test_repository_update_rejects_direct_stage_fields(
 
     assert exc.value.code == "job_stage_update_forbidden"
     assert status_path.read_bytes() == before
+
+
+def test_repository_update_validates_result_before_write(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    repository = JobRepository(settings)
+    job = repository.create(provision_request())
+    status_path = job.job_dir / "status.json"
+    before = status_path.read_bytes()
+
+    with pytest.raises(ControlError) as exc:
+        repository.update(job.job_id, state="successful")
+
+    assert exc.value.code == "job_stage_history_invalid"
+    assert status_path.read_bytes() == before
