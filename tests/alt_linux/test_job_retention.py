@@ -225,3 +225,78 @@ def test_cleanup_apply_archives_log_atomically_and_idempotently(
     }
     assert archive_path.is_file()
     assert assignments.get(archivable.machine_uuid) == assignment
+
+
+def test_cleanup_apply_deletes_expired_job_without_following_symlinks(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    jobs = JobRepository(settings)
+    assignments = AssignmentRepository(settings)
+    now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
+
+    expired = jobs.create(provision_request())
+    _set_status(
+        expired,
+        state="successful",
+        stage="complete",
+        finished_at=(now - timedelta(days=120)).isoformat(),
+    )
+
+    outside_target = tmp_path / "outside-target"
+    outside_target.mkdir()
+    outside_file = outside_target / "keep.txt"
+    outside_file.write_text("must survive\n", encoding="utf-8")
+    (expired.job_dir / "outside-link").symlink_to(
+        outside_target,
+        target_is_directory=True,
+    )
+
+    outside_job = tmp_path / "outside-job"
+    outside_job.mkdir()
+    outside_job_file = outside_job / "keep.txt"
+    outside_job_file.write_text("outside job survives\n", encoding="utf-8")
+    unsafe_job_id = "job-20200101T000000Z-deadbeef"
+    unsafe_job_link = settings.jobs_dir / unsafe_job_id
+    unsafe_job_link.symlink_to(
+        outside_job,
+        target_is_directory=True,
+    )
+
+    assignment = assignment_payload(job_id=expired.job_id)
+    assignments.write(expired.machine_uuid, assignment)
+
+    report = JobRetentionManager(settings).cleanup(
+        apply=True,
+        now=now,
+        retention_days=90,
+        archive_after_days=14,
+    )
+
+    assert report["status"] == "ok"
+    assert report["dry_run"] is False
+    assert report["checked"] == 1
+    assert report["actions"] == [
+        {
+            "job_id": expired.job_id,
+            "state": "successful",
+            "action": "delete_job",
+            "age_days": 120,
+            "applied": True,
+        }
+    ]
+    assert report["skipped"] == [
+        {
+            "job_id": unsafe_job_id,
+            "state": "",
+            "reason": "unsafe_job_entry",
+        }
+    ]
+
+    assert not expired.job_dir.exists()
+    assert outside_file.read_text(encoding="utf-8") == "must survive\n"
+    assert unsafe_job_link.is_symlink()
+    assert outside_job_file.read_text(encoding="utf-8") == (
+        "outside job survives\n"
+    )
+    assert assignments.get(expired.machine_uuid) == assignment
