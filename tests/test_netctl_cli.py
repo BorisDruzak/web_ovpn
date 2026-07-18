@@ -670,6 +670,52 @@ def test_runtime_assets_inspect_and_findings_commands_are_read_only(tmp_path, ca
     }
 
 
+def test_runtime_assets_commands_do_not_modify_database_or_sync_sources(tmp_path, capsys):
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    rc, _ = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "collect", "mock-main"],
+        capsys,
+    )
+    assert rc == 0
+
+    conn = connect(db_url)
+    try:
+        conn.execute(
+            "UPDATE network_sources SET updated_at = ? WHERE name = ?",
+            ("2000-01-01T00:00:00Z", "mock-main"),
+        )
+        conn.commit()
+        before = "\n".join(conn.iterdump())
+    finally:
+        conn.close()
+
+    for args in (
+        ["runtime-assets", "status"],
+        ["runtime-assets", "inspect", "--asset-key", "mac:AA:BB:CC:DD:EE:FF"],
+        ["runtime-assets", "findings", "--status", "open"],
+    ):
+        rc, data = run_cli(
+            ["--json", "--config", str(config_path), "--db", db_url, *args],
+            capsys,
+        )
+        assert rc == 0
+        assert data["status"] == "ok"
+
+    conn = connect(db_url)
+    try:
+        assert conn.execute(
+            "SELECT updated_at FROM network_sources WHERE name = ?",
+            ("mock-main",),
+        ).fetchone()["updated_at"] == "2000-01-01T00:00:00Z"
+        assert "\n".join(conn.iterdump()) == before
+    finally:
+        conn.close()
+
+
 def test_collect_lock_prevents_parallel_run(tmp_path, capsys):
     from netctl.collect_lock import collect_lock_path
 

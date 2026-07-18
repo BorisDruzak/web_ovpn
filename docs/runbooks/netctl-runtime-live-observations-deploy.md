@@ -2,20 +2,63 @@
 
 Use this runbook to deploy migration `3` and the runtime-observation writer.
 It is additive: the legacy collector tables and commands remain the operational
-compatibility surface. Do not run a collection while the database and code
-backup are being captured.
+compatibility surface. The target host does not provide the `sqlite3` CLI;
+every database check below uses the deployed application virtual environment.
+Do not run a collection while the database and code backup are being captured.
+The OpenVPN service is out of scope and must stay running.
 
-## 1. Preflight and backups
+## 1. Quiesce the application and create backups
 
-Record the release SHA and stop only the web/collector services that open the
-database. Preserve the VPN service. Set the paths for the deployment:
+Record the release SHA. As root, mask and stop the application/collector units
+before any backup or migration, then verify both conditions. Do not unmask or
+start them until all checks in this runbook have passed.
 
 ```bash
+set -euo pipefail
+units=(openvpn-web.service netctl-collect.timer netctl-collect.service)
+for unit in "${units[@]}"; do sudo systemctl mask --runtime "$unit"; done
+for unit in "${units[@]}"; do sudo systemctl stop "$unit"; done
+for unit in "${units[@]}"; do
+  if sudo systemctl is-active --quiet "$unit"; then
+    echo "unit is still active: $unit" >&2
+    exit 1
+  fi
+  test "$(sudo readlink -f "/run/systemd/system/$unit")" = /dev/null
+done
+
+app_dir=/opt/openvpn-web
+python_bin="$app_dir/.venv/bin/python"
 db_path=/var/lib/netctl/netctl.sqlite
 backup_dir=/var/backups/netctl/runtime-live-$(date -u +%Y%m%dT%H%M%SZ)
-sudo install -d -m 0700 "$backup_dir"
-sudo -u netctl sqlite3 "$db_path" ".backup '$backup_dir/netctl-before.sqlite'"
-sudo sqlite3 "$db_path" 'PRAGMA integrity_check;' | sudo tee "$backup_dir/integrity-before.txt"
+sudo install -d -o netctl -g netctl -m 0700 "$backup_dir"
+sudo -u netctl "$python_bin" - "$db_path" "$backup_dir/netctl-before.sqlite" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
+
+source_path = Path(sys.argv[1]).resolve()
+target_path = Path(sys.argv[2])
+source = sqlite3.connect(f"{source_path.as_uri()}?mode=ro", uri=True)
+target = sqlite3.connect(target_path)
+try:
+    source.backup(target)
+finally:
+    target.close()
+    source.close()
+PY
+sudo -u netctl "$python_bin" - "$db_path" <<'PY' | sudo tee "$backup_dir/integrity-before.txt"
+import sqlite3
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]).resolve()
+conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+try:
+    print(conn.execute("PRAGMA integrity_check").fetchone()[0])
+finally:
+    conn.close()
+PY
+sudo test -s "$backup_dir/netctl-before.sqlite"
 sudo tar -C /opt -czf "$backup_dir/openvpn-web-before.tgz" openvpn-web
 sudo cp -a /usr/local/sbin/netctl "$backup_dir/netctl-wrapper-before"
 ```
@@ -23,32 +66,67 @@ sudo cp -a /usr/local/sbin/netctl "$backup_dir/netctl-wrapper-before"
 Continue only when `integrity_check` is `ok`, the backup has a non-zero size,
 and the release artefacts are recorded in the change record.
 
-## 2. Apply migration once
+## 2. Apply migration once and verify its guards
 
-Install the verified release, then trigger normal application startup once as
-the collector user. Do not invoke migration functions directly.
+Install the verified release while the units remain masked. Trigger normal
+application startup once as the collector user; it owns schema migration. The
+subsequent `runtime-assets` commands are read-only and do not synchronize
+configured sources.
 
 ```bash
+sudo -u netctl /usr/local/sbin/netctl --json dashboard \
+  | sudo tee "$backup_dir/dashboard-migration-trigger.json"
 sudo -u netctl /usr/local/sbin/netctl --json runtime-assets status \
-  | sudo tee "$backup_dir/runtime-status-after-startup.json"
-sudo sqlite3 "$db_path" \
-  'SELECT version, COUNT(*) AS count FROM schema_migrations GROUP BY version ORDER BY version;' \
-  | sudo tee "$backup_dir/schema-migrations-after.txt"
+  | sudo tee "$backup_dir/runtime-status-after-migration.json"
 ```
 
-The ledger must contain versions `1`, `2`, and `3`, each exactly once. Verify
-both migration-3 interface guards exist:
+Verify the ledger and both migration-3 interface guard triggers with the
+deployed Python. The command exits nonzero unless each required version occurs
+exactly once and both expected guards exist:
 
 ```bash
-sudo sqlite3 "$db_path" \
-  "SELECT name FROM sqlite_master WHERE type='trigger' AND name IN
-   ('ip_observations_interface_asset_insert_guard',
-    'ip_observations_interface_asset_update_guard') ORDER BY name;"
+sudo -u netctl "$python_bin" - "$db_path" <<'PY' | sudo tee "$backup_dir/migration-3-verify.json"
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]).resolve()
+conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+try:
+    versions = conn.execute(
+        "SELECT version, COUNT(*) FROM schema_migrations GROUP BY version ORDER BY version"
+    ).fetchall()
+    guards = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = ? AND name IN (?, ?) ORDER BY name",
+        (
+            "trigger",
+            "ip_observations_interface_asset_insert_guard",
+            "ip_observations_interface_asset_update_guard",
+        ),
+    ).fetchall()
+finally:
+    conn.close()
+
+payload = {
+    "schema_migrations": [{"version": version, "count": count} for version, count in versions],
+    "guard_triggers": [name for (name,) in guards],
+}
+print(json.dumps(payload, sort_keys=True))
+assert payload["schema_migrations"] == [
+    {"version": 1, "count": 1},
+    {"version": 2, "count": 1},
+    {"version": 3, "count": 1},
+]
+assert payload["guard_triggers"] == [
+    "ip_observations_interface_asset_insert_guard",
+    "ip_observations_interface_asset_update_guard",
+]
+PY
 ```
 
-Both names must be returned. The status output's `migration_only_current.total`
-must be zero: migration-created IP and hostname observations are historical,
-not live state.
+The status output's `migration_only_current.total` must be zero:
+migration-created IP and hostname observations are historical, not live state.
 
 Review the migration-2 report summary in the status JSON. Review every
 `historical_identity_conflict` backfill before acknowledging or resolving it:
@@ -60,8 +138,8 @@ sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status op
 
 ## 3. Prove live writer behavior
 
-Run one successful collection for a non-production test source or during the
-approved collection window:
+While the timer remains masked, run one successful collection for a
+non-production test source or during the approved collection window:
 
 ```bash
 sudo -u netctl /usr/local/sbin/netctl --json collect <source> \
@@ -91,21 +169,30 @@ sudo -u netctl /usr/local/sbin/netctl --json runtime-assets findings --status op
 Record the findings disposition in the change record. Do not silently delete
 findings or historical observations.
 
-## 4. Compatibility and health
+## 4. Compatibility and service restoration
 
-Confirm legacy commands still work, then restore the services and inspect
-their status:
+Confirm legacy commands while the units remain masked:
 
 ```bash
 sudo -u netctl /usr/local/sbin/netctl --json dashboard
 sudo -u netctl /usr/local/sbin/netctl --json hosts list
-sudo systemctl unmask --runtime openvpn-web.service netctl-collect.timer netctl-collect.service
+```
+
+Only after all migration, writer, finding, and legacy checks have passed,
+unmask and start the services:
+
+```bash
+for unit in "${units[@]}"; do sudo systemctl unmask --runtime "$unit"; done
+sudo systemctl daemon-reload
 sudo systemctl start openvpn-web.service netctl-collect.timer
+sudo systemctl is-active --quiet openvpn-web.service
+sudo systemctl is-active --quiet netctl-collect.timer
 sudo systemctl --no-pager --full status openvpn-web.service netctl-collect.timer
 ```
 
-The web service and collector timer must be active, and the VPN service must
-remain healthy. Preserve all JSON and SQL outputs under `$backup_dir`.
+The web service and collector timer must be active, and the OpenVPN service
+must remain healthy. Preserve all JSON and Python-check outputs under
+`$backup_dir`.
 
 ## 5. Rollback
 
@@ -116,16 +203,18 @@ restore the archived code and wrapper, then restore the SQLite backup as one
 file (including no stale `-wal`/`-shm` sidecars):
 
 ```bash
-sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service
+for unit in "${units[@]}"; do sudo systemctl stop "$unit"; done
 sudo rm -f "$db_path" "$db_path-wal" "$db_path-shm"
 sudo cp "$backup_dir/netctl-before.sqlite" "$db_path"
 sudo chown netctl:netctl "$db_path"
 sudo tar -C /opt -xzf "$backup_dir/openvpn-web-before.tgz"
 sudo install -m 0755 "$backup_dir/netctl-wrapper-before" /usr/local/sbin/netctl
 sudo -u netctl /usr/local/sbin/netctl --json dashboard
-sudo systemctl start openvpn-web.service netctl-collect.timer
 ```
 
-After rollback, capture `PRAGMA integrity_check`, the schema ledger, legacy
-dashboard output, and service status. Migration `3` is not removed in-place;
-the database backup is the rollback boundary.
+Before restoring services, repeat the deployed-Python `PRAGMA integrity_check`
+block from section 1, capture the restored schema ledger using the
+deployed-Python block from section 2, and capture legacy dashboard output.
+Only then unmask and start `openvpn-web.service` and `netctl-collect.timer` as
+in section 4. Migration `3` is not removed in-place; the database backup is
+the rollback boundary.

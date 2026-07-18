@@ -12,7 +12,7 @@ from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_sour
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
-from .db import context_revision_public, connect, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
+from .db import context_revision_public, connect, connect_read_only, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for
 from .runtime_assets import (
     inspect_runtime_asset,
@@ -363,7 +363,7 @@ def cmd_runtime_assets(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             finding_status=args.finding_status,
         )
 
-    conn = prepare_conn(args)
+    conn = connect_read_only(args.db)
     try:
         if args.runtime_assets_command == "status":
             return 0, ok(runtime_identity=runtime_identity_status(conn))

@@ -41,6 +41,16 @@ def connect(db_url: str) -> sqlite3.Connection:
     return conn
 
 
+def connect_read_only(db_url: str) -> sqlite3.Connection:
+    """Open an existing SQLite database without schema or data side effects."""
+    path = db_path_from_url(db_url).resolve()
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
