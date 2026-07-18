@@ -18,7 +18,7 @@ def make_settings(tmp_path: Path) -> Settings:
     registration = tmp_path / "registration"
     state = tmp_path / "state"
 
-    return Settings(
+    settings = Settings(
         registration_root=registration,
         state_root=state,
         jobs_dir=state / "jobs",
@@ -39,6 +39,12 @@ def make_settings(tmp_path: Path) -> Settings:
             "/usr/local/sbin/workstationctl"
         ),
     )
+    settings.job_stage_helper_path.write_text(
+        "#!/usr/bin/python3\n",
+        encoding="utf-8",
+    )
+    settings.job_stage_helper_path.chmod(0o755)
+    return settings
 
 
 def write_machine(
