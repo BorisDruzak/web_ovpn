@@ -65,47 +65,44 @@ def target(snapshot, role):
     return next(item for item in snapshot["targets"] if item["role"] == role)
 
 
+def healthy_payload():
+    return {
+        "free_percent": 34,
+        "data_free_percent": 34,
+        "log_bytes": 1,
+        "services": {
+            "sshd": True,
+            "directumrx": True,
+            "mongo": True,
+            "rabbitmq": True,
+            "redis": True,
+            "iis": True,
+            "dns": True,
+            "ntds": True,
+            "adws": True,
+            "nginx": True,
+            "php": True,
+            "postgresql": True,
+            "docker": True,
+            "containerd": True,
+            "unbound": True,
+        },
+        "internal_dns": True,
+        "external_dns": True,
+        "installed": True,
+        "maintenance": False,
+        "needsDbUpgrade": False,
+        "https_ok": True,
+        "adguard_listener": True,
+        "adguard_query": True,
+        "raw": "authorized_keys ssh 192.168.100.99",
+    }
+
+
 def healthy_runner(command, **kwargs):
     assert isinstance(command, list)
     assert kwargs == {"capture_output": True, "text": True, "shell": False}
-    return subprocess.CompletedProcess(
-        command,
-        0,
-        json.dumps(
-            {
-                "free_percent": 34,
-                "data_free_percent": 34,
-                "log_bytes": 1,
-                "services": {
-                    "sshd": True,
-                    "directumrx": True,
-                    "mongo": True,
-                    "rabbitmq": True,
-                    "redis": True,
-                    "iis": True,
-                    "dns": True,
-                    "ntds": True,
-                    "adws": True,
-                    "nginx": True,
-                    "php": True,
-                    "postgresql": True,
-                    "docker": True,
-                    "containerd": True,
-                    "unbound": True,
-                },
-                "internal_dns": True,
-                "external_dns": True,
-                "installed": True,
-                "maintenance": False,
-                "needsDbUpgrade": False,
-                "https_ok": True,
-                "adguard_listener": True,
-                "adguard_query": True,
-                "raw": "authorized_keys ssh 192.168.100.99",
-            }
-        ),
-        "",
-    )
+    return subprocess.CompletedProcess(command, 0, json.dumps(healthy_payload()), "")
 
 
 def test_collect_binds_vpn_path_probe_and_continues_after_target_error():
@@ -115,7 +112,7 @@ def test_collect_binds_vpn_path_probe_and_continues_after_target_error():
         calls.append(command)
         if "nextcloud" in command[-1]:
             raise subprocess.TimeoutExpired(command, 8)
-        return subprocess.CompletedProcess(command, 0, '{"free_percent": 34}', "")
+        return healthy_runner(command, **kwargs)
 
     snapshot = collect(
         runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z")
@@ -182,12 +179,137 @@ def test_collect_uses_read_only_argv_probes():
 
     def runner(command, **kwargs):
         calls.append(command)
-        return subprocess.CompletedProcess(command, 0, '{"free_percent": 34}', "")
+        return healthy_runner(command, **kwargs)
 
     collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
 
     forbidden = {"rm", "mv", "cp", "tee", "chmod", "chown", "sudo", "authorized_keys"}
     assert all(not forbidden.intersection(command[-1].split()) for command in calls)
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [
+        ("user", "-oProxyCommand=local-command"),
+        ("user", "observer name"),
+        ("host", "-oProxyCommand=local-command"),
+        ("host", "192.0.2.10\nunsafe"),
+    ],
+)
+def test_collect_rejects_ssh_option_injection_before_calling_runner(field, unsafe_value):
+    config = runtime_config()
+    config["targets"][0][field] = unsafe_value
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        raise AssertionError("runner must not receive an unsafe SSH destination")
+
+    with pytest.raises(ValueError):
+        collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    assert calls == []
+
+
+def test_collect_uses_ssh_end_of_options_before_destination():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    assert all(command[-3] == "--" for command in calls)
+    assert all(command[-2].startswith("observer@") for command in calls)
+
+
+@pytest.mark.parametrize(
+    ("role", "missing_field"),
+    [
+        ("file_server", "data_free_percent"),
+        ("directum", "log_bytes"),
+        ("active_directory", "internal_dns"),
+        ("nextcloud", "needsDbUpgrade"),
+        ("onlyoffice", "https_ok"),
+        ("opnsense_dns", "adguard_query"),
+    ],
+)
+def test_collect_rejects_partial_role_payloads(role, missing_field):
+    config = runtime_config()
+    config["targets"] = [item for item in config["targets"] if item["role"] == role]
+    payload = healthy_payload()
+    del payload[missing_field]
+
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    snapshot = collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    assert snapshot["overall"] == "error"
+    assert {check["error"] for check in snapshot["targets"][0]["checks"]} == {
+        "unexpected_response"
+    }
+
+
+@pytest.mark.parametrize("invalid_status", [None, "false", 0])
+def test_collect_rejects_malformed_nextcloud_status_fields(invalid_status):
+    config = runtime_config()
+    config["targets"] = [item for item in config["targets"] if item["role"] == "nextcloud"]
+    payload = healthy_payload()
+    payload["needsDbUpgrade"] = invalid_status
+
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    snapshot = collect(config, runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    assert snapshot["overall"] == "error"
+    assert {check["error"] for check in snapshot["targets"][0]["checks"]} == {
+        "unexpected_response"
+    }
+
+
+def test_collect_continues_after_unexpected_runner_exception_without_leaking_text():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if "file_server" in command[-1]:
+            raise RuntimeError("sensitive remote exception text")
+        return healthy_runner(command, **kwargs)
+
+    snapshot = collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    assert target(snapshot, "file_server")["status"] == "error"
+    assert target(snapshot, "directum")["status"] == "ok"
+    assert "sensitive remote exception text" not in json.dumps(snapshot)
+    assert len(calls) == 6
+
+
+def test_windows_service_probes_require_running_status():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
+
+    directum = next(command[-1] for command in calls if "server_observer:directum" in command[-1])
+    active_directory = next(
+        command[-1] for command in calls if "server_observer:active_directory" in command[-1]
+    )
+    assert "Status -eq 'Running'" in directum
+    assert "Status -eq 'Running'" in active_directory
+    assert all(
+        f"& $running '{service}'" in directum
+        for service in ("DirectumRX", "MongoDB", "RabbitMQ", "Redis", "W3SVC", "DNS")
+    )
+    assert all(
+        f"& $running '{service}'" in active_directory
+        for service in ("DNS", "NTDS", "ADWS")
+    )
 
 
 @pytest.mark.parametrize(

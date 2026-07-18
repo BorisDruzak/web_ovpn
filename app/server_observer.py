@@ -33,6 +33,8 @@ _PUBLIC_CHECK_FIELDS = frozenset(
 )
 _STATUS_PRIORITY = {"ok": 0, "warn": 1, "critical": 2, "error": 3}
 _SAFE_CHECK_NAMES = re.compile(r"[a-z][a-z0-9_]{0,63}$")
+_SAFE_SSH_USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
+_SAFE_SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 _SAFE_VALUE_STRINGS = frozenset(
     {
         "active",
@@ -54,7 +56,7 @@ _SAFE_ERROR_CATEGORIES = frozenset(
 # target and route, but can never supply a remote command.
 _ROLE_PROBES = {
     "file_server": (
-        "sh -c 'printf \"{\\\"free_percent\\\":%s,\\\"services\\\":{\\\"sshd\\\":%s}}\\n\" "
+        "sh -c 'printf \"{\\\"data_free_percent\\\":%s,\\\"services\\\":{\\\"sshd\\\":%s}}\\n\" "
         "\"$(df -P /data | awk \"NR==2 {printf \\\"%.2f\\\", 100-$5}\")\" "
         "\"$(systemctl is-active --quiet sshd && printf true || printf false)\"' "
         "# server_observer:file_server"
@@ -62,18 +64,19 @@ _ROLE_PROBES = {
     "directum": (
         "powershell -NoProfile -NonInteractive -Command \"$c=Get-CimInstance Win32_LogicalDisk "
         "-Filter 'DeviceID=\\\"C:\\\"';[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
-        "log_bytes=(Get-Item 'C:\\rxdata\\log' -ErrorAction SilentlyContinue).Length;services=@{directumrx="
-        "[bool](Get-Service DirectumRX -ErrorAction SilentlyContinue);mongo=[bool](Get-Service MongoDB "
-        "-ErrorAction SilentlyContinue);rabbitmq=[bool](Get-Service RabbitMQ -ErrorAction SilentlyContinue);"
-        "redis=[bool](Get-Service Redis -ErrorAction SilentlyContinue);iis=[bool](Get-Service W3SVC "
-        "-ErrorAction SilentlyContinue);dns=[bool](Get-Service DNS -ErrorAction SilentlyContinue)}}|ConvertTo-Json "
+        "log_bytes=(Get-Item 'C:\\rxdata\\log' -ErrorAction SilentlyContinue).Length;"
+        "$running={param([string]$n)$s=Get-Service -Name $n -ErrorAction SilentlyContinue;"
+        "[bool]($s -and $s.Status -eq 'Running')};services=@{directumrx=[bool](& $running 'DirectumRX');"
+        "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
+        "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}}|ConvertTo-Json "
         "-Compress\" # server_observer:directum"
     ),
     "active_directory": (
         "powershell -NoProfile -NonInteractive -Command \"$c=Get-CimInstance Win32_LogicalDisk "
         "-Filter 'DeviceID=\\\"C:\\\"';[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
-        "services=@{dns=[bool](Get-Service DNS -ErrorAction SilentlyContinue);ntds=[bool](Get-Service NTDS "
-        "-ErrorAction SilentlyContinue);adws=[bool](Get-Service ADWS -ErrorAction SilentlyContinue)};"
+        "$running={param([string]$n)$s=Get-Service -Name $n -ErrorAction SilentlyContinue;"
+        "[bool]($s -and $s.Status -eq 'Running')};services=@{dns=[bool](& $running 'DNS');"
+        "ntds=[bool](& $running 'NTDS');adws=[bool](& $running 'ADWS')};"
         "internal_dns=[bool](Resolve-DnsName localhost -ErrorAction SilentlyContinue);external_dns="
         "[bool](Resolve-DnsName example.com -ErrorAction SilentlyContinue)}|ConvertTo-Json -Compress\" "
         "# server_observer:active_directory"
@@ -169,8 +172,10 @@ def _validate_runtime_target(value: Any) -> None:
         raise ValueError("target fields must be role, host, user, and checks only")
     if target["role"] not in ALLOWED_ROLES:
         raise ValueError("target role is not allowed")
-    if not all(isinstance(target[field], str) and target[field] for field in ("host", "user")):
-        raise ValueError("target host and user must be non-empty strings")
+    if not isinstance(target["user"], str) or not _SAFE_SSH_USER.fullmatch(target["user"]):
+        raise ValueError("target user must be a safe SSH destination component")
+    if not isinstance(target["host"], str) or not _SAFE_SSH_HOST.fullmatch(target["host"]):
+        raise ValueError("target host must be a safe SSH destination component")
     if not isinstance(target["checks"], list):
         raise ValueError("target checks must be a list")
     for check in target["checks"]:
@@ -234,6 +239,8 @@ def collect(
             checks = _failure_checks(role, source, exc.category)
         except (OSError, subprocess.SubprocessError, TypeError):
             checks = _failure_checks(role, source, "transport")
+        except Exception:
+            checks = _failure_checks(role, source, "transport")
         collected_targets.append({"role": role, "checks": checks})
 
     timestamp = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -268,6 +275,7 @@ def _ssh_command(
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=8",
+            "--",
             f"{target['user']}@{target['host']}",
             _ROLE_PROBES[target["role"]],
         ]
@@ -290,11 +298,11 @@ def _parse_probe_payload(stdout: Any) -> dict[str, Any]:
 def _checks_from_payload(
     role: str, source: str, payload: dict[str, Any], latency_ms: float
 ) -> list[dict[str, Any]]:
+    _require_role_payload(role, payload)
     checks: list[dict[str, Any]] = []
     if role == "file_server":
         _append_service_check(checks, source, payload, "sshd", "sshd_active", latency_ms)
         _append_disk_check(checks, source, payload, "data_free_percent", "data_disk_free", latency_ms)
-        _append_disk_check(checks, source, payload, "free_percent", "data_disk_free", latency_ms)
     elif role == "directum":
         _append_disk_check(checks, source, payload, "free_percent", "c_disk_free", latency_ms)
         _append_log_check(checks, source, payload, latency_ms)
@@ -333,6 +341,50 @@ def _checks_from_payload(
     if not checks:
         raise _ProbeFailure("unexpected_response")
     return checks
+
+
+def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
+    number_fields = {
+        "file_server": ("data_free_percent",),
+        "directum": ("free_percent", "log_bytes"),
+        "active_directory": ("free_percent",),
+        "nextcloud": ("free_percent", "data_free_percent"),
+        "onlyoffice": ("free_percent",),
+        "opnsense_dns": (),
+    }
+    boolean_fields = {
+        "file_server": (),
+        "directum": (),
+        "active_directory": ("internal_dns", "external_dns"),
+        "nextcloud": ("installed", "maintenance", "needsDbUpgrade"),
+        "onlyoffice": ("https_ok",),
+        "opnsense_dns": (
+            "adguard_listener", "adguard_query", "internal_dns", "external_dns",
+        ),
+    }
+    service_fields = {
+        "file_server": ("sshd",),
+        "directum": ("directumrx", "mongo", "rabbitmq", "redis", "iis", "dns"),
+        "active_directory": ("dns", "ntds", "adws"),
+        "nextcloud": ("nginx", "php", "postgresql", "redis"),
+        "onlyoffice": ("docker", "containerd"),
+        "opnsense_dns": ("unbound",),
+    }
+    for field in number_fields[role]:
+        value = payload.get(field)
+        if not _is_safe_nonnegative_number(value) or (field != "log_bytes" and value > 100):
+            raise _ProbeFailure("unexpected_response")
+        if field == "log_bytes" and not isinstance(value, int):
+            raise _ProbeFailure("unexpected_response")
+    for field in boolean_fields[role]:
+        if not isinstance(payload.get(field), bool):
+            raise _ProbeFailure("unexpected_response")
+    services = payload.get("services")
+    if not isinstance(services, dict):
+        raise _ProbeFailure("unexpected_response")
+    for service in service_fields[role]:
+        if not isinstance(services.get(service), bool):
+            raise _ProbeFailure("unexpected_response")
 
 
 def _append_disk_check(
