@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,6 +13,7 @@ from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
 from .errors import ControlError
 from .job_reconcile import JobReconciler
+from .job_retention import JobRetentionManager
 from .jobs import JobRepository
 from .jsonio import read_json
 from .provision import (
@@ -85,6 +87,12 @@ def build_parser() -> argparse.ArgumentParser:
     job_log.add_argument("job_id")
 
     job_commands.add_parser("reconcile")
+
+    job_cleanup = job_commands.add_parser("cleanup")
+    job_cleanup.add_argument(
+        "--apply",
+        action="store_true",
+    )
 
     vault = commands.add_parser("vault")
     vault_commands = vault.add_subparsers(
@@ -292,6 +300,27 @@ def main(
                 "reconciliation": JobReconciler(
                     active_settings
                 ).reconcile(),
+            }
+
+        elif (
+            parsed.command == "jobs"
+            and parsed.job_command == "cleanup"
+        ):
+            if parsed.apply and os.geteuid() != 0:
+                raise ControlError(
+                    code="root_required",
+                    message=(
+                        "Mutating job cleanup must be executed "
+                        "as root"
+                    ),
+                    exit_code=6,
+                )
+
+            payload = {
+                "status": "ok",
+                "cleanup": JobRetentionManager(
+                    active_settings
+                ).cleanup(apply=parsed.apply),
             }
 
         elif (
