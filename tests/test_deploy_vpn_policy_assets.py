@@ -16,8 +16,8 @@ def test_policy_unit_follows_wg_lifecycle():
     assert "PartOf=wg-quick@wg0.service" in text
     assert "Requires=wg-quick@wg0.service" not in text
     assert "BindsTo=wg-quick@wg0.service" not in text
-    assert "ExecStart=/usr/local/sbin/vpn-policy.sh start" in text
-    assert "ExecStop=/usr/local/sbin/vpn-policy.sh stop" in text
+    assert "ExecStart=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh start" in text
+    assert "ExecStop=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh stop" in text
 
 
 def test_policy_script_uses_only_managed_objects():

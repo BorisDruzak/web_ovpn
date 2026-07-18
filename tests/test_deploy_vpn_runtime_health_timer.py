@@ -37,11 +37,26 @@ def test_reconcile_timer_is_root_scoped_and_does_not_manage_wg_service():
     timer = (ROOT / "deploy" / "vpn-policy-reconcile.timer").read_text(encoding="utf-8")
 
     assert "User=root" in service
-    assert "ExecStart=/usr/local/sbin/vpn-policy.sh reconcile" in service
+    assert "ExecStart=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh reconcile" in service
     assert "wg-quick" not in service
     assert "OnBootSec=1min" in timer
     assert "OnUnitActiveSec=1min" in timer
     assert "Persistent=true" in timer
+
+
+def test_policy_units_share_a_blocking_exclusive_lifecycle_lock():
+    policy = (ROOT / "deploy" / "vpn-policy.service").read_text(encoding="utf-8")
+    reconcile = (ROOT / "deploy" / "vpn-policy-reconcile.service").read_text(encoding="utf-8")
+
+    lock = "/usr/bin/flock --exclusive /run/lock/vpn-policy.lock"
+    assert f"ExecStart={lock} /usr/local/sbin/vpn-policy.sh start" in policy
+    assert f"ExecStop={lock} /usr/local/sbin/vpn-policy.sh stop" in policy
+    assert f"ExecStart={lock} /usr/local/sbin/vpn-policy.sh reconcile" in reconcile
+    assert "--nonblock" not in policy
+    assert "--nonblock" not in reconcile
+    exec_lines = "\n".join(line for line in (policy + reconcile).splitlines() if line.startswith("Exec"))
+    assert "wg-quick" not in exec_lines
+    assert "openvpn" not in exec_lines
 
 
 def test_installer_enables_reconcile_timer_without_tunnel_restart():

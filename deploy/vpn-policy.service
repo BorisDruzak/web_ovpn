@@ -6,8 +6,8 @@ PartOf=wg-quick@wg0.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/vpn-policy.sh start
-ExecStop=/usr/local/sbin/vpn-policy.sh stop
+ExecStart=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh start
+ExecStop=/usr/bin/flock --exclusive /run/lock/vpn-policy.lock /usr/local/sbin/vpn-policy.sh stop
 RemainAfterExit=yes
 
 [Install]
