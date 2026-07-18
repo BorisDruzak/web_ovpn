@@ -18,11 +18,75 @@
           - profile == 'standard'
           - job_id | length > 0
           - provision_result_file | length > 0
+          - job_stage_helper_path | length > 0
           - vault_employee_password_hash | length > 0
         fail_msg: Required provision variables are missing
 
-  roles:
-    - role: workstation_identity
-    - role: local_employee
-    - role: lightdm_accounts
-    - role: provision_verify
+  tasks:
+    - name: Record identity provision stage
+      ansible.builtin.command:
+        argv:
+          - "{{ job_stage_helper_path }}"
+          - --job-id
+          - "{{ job_id }}"
+          - --stage
+          - identity
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+
+    - name: Run workstation identity role
+      ansible.builtin.include_role:
+        name: workstation_identity
+
+    - name: Record employee provision stage
+      ansible.builtin.command:
+        argv:
+          - "{{ job_stage_helper_path }}"
+          - --job-id
+          - "{{ job_id }}"
+          - --stage
+          - employee
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+
+    - name: Run local employee role
+      ansible.builtin.include_role:
+        name: local_employee
+
+    - name: Record login screen provision stage
+      ansible.builtin.command:
+        argv:
+          - "{{ job_stage_helper_path }}"
+          - --job-id
+          - "{{ job_id }}"
+          - --stage
+          - login_screen
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+
+    - name: Run LightDM accounts role
+      ansible.builtin.include_role:
+        name: lightdm_accounts
+
+    - name: Record verification provision stage
+      ansible.builtin.command:
+        argv:
+          - "{{ job_stage_helper_path }}"
+          - --job-id
+          - "{{ job_id }}"
+          - --stage
+          - verifying
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+
+    - name: Run provision verification role
+      ansible.builtin.include_role:
+        name: provision_verify
