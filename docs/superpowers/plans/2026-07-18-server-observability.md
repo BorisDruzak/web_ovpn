@@ -124,7 +124,7 @@ def test_collect_binds_vpn_path_probe_and_continues_after_target_error():
         return subprocess.CompletedProcess(command, 0, '{"free_percent": 34}', "")
 
     snapshot = collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
-    assert any(command[:3] == ["ssh", "-b", "192.168.50.1"] for command in calls)
+    assert any(command[:3] == ["ssh", "-b", "198.51.100.50"] for command in calls)
     assert target(snapshot, "nextcloud")["status"] == "error"
     assert target(snapshot, "directum")["status"] in {"ok", "warn", "critical"}
 ```
