@@ -238,7 +238,6 @@ class JobReconciler:
         self.jobs.update(
             job.job_id,
             state="failed",
-            stage="reconcile",
             finished_at=utc_now(),
             error_code="worker_lost",
             error=(
