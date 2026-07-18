@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import os
 import re
 import secrets
@@ -7,7 +8,7 @@ import stat
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from .assignments import assert_safe_payload
 from .config import Settings
@@ -69,7 +70,7 @@ class JobRepository:
 
         try:
             request = read_json(request_path)
-            status = read_json(status_path)
+            status_payload = read_json(status_path)
         except (OSError, ValueError) as exc:
             raise ControlError(
                 code="job_invalid",
@@ -80,23 +81,30 @@ class JobRepository:
             ) from exc
 
         return JobRecord(
-            job_id=str(status.get("job_id") or job_dir.name),
+            job_id=str(
+                status_payload.get("job_id")
+                or job_dir.name
+            ),
             machine_uuid=str(
-                status.get("machine_uuid")
+                status_payload.get("machine_uuid")
                 or request.get("machine_uuid")
                 or ""
             ),
-            state=str(status.get("state") or ""),
-            stage=str(status.get("stage") or ""),
+            state=str(
+                status_payload.get("state") or ""
+            ),
+            stage=str(
+                status_payload.get("stage") or ""
+            ),
             created_at=str(
-                status.get("created_at") or ""
+                status_payload.get("created_at") or ""
             ),
             updated_at=str(
-                status.get("updated_at") or ""
+                status_payload.get("updated_at") or ""
             ),
             job_dir=job_dir,
             request=request,
-            status=status,
+            status=status_payload,
         )
 
     def create(
@@ -173,7 +181,15 @@ class JobRepository:
     def get(self, job_id: str) -> JobRecord:
         job_dir = self._job_dir(job_id)
 
-        if not job_dir.is_dir():
+        try:
+            entry_stat = job_dir.lstat()
+        except OSError:
+            entry_stat = None
+
+        if (
+            entry_stat is None
+            or not stat.S_ISDIR(entry_stat.st_mode)
+        ):
             raise ControlError(
                 code="job_not_found",
                 message=f"Job not found: {job_id}",
@@ -258,21 +274,128 @@ class JobRepository:
 
         return None
 
+    @staticmethod
+    def _open_regular_binary(path: Path) -> BinaryIO:
+        try:
+            entry_stat = path.lstat()
+        except OSError as exc:
+            raise ControlError(
+                code="job_log_not_found",
+                message="Provision job log was not found",
+                exit_code=3,
+            ) from exc
+
+        if not stat.S_ISREG(entry_stat.st_mode):
+            raise ControlError(
+                code="job_log_unsafe",
+                message="Provision job log is not a regular file",
+                exit_code=4,
+            )
+
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise ControlError(
+                code="job_log_read_failed",
+                message="Unable to open provision job log",
+                exit_code=4,
+            ) from exc
+
+        return os.fdopen(descriptor, "rb")
+
+    @staticmethod
+    def _read_stream_tail(
+        handle: BinaryIO,
+        max_bytes: int,
+    ) -> tuple[bytes, bool]:
+        tail = bytearray()
+        total = 0
+
+        while True:
+            chunk = handle.read(64 * 1024)
+            if not chunk:
+                break
+
+            total += len(chunk)
+            tail.extend(chunk)
+
+            if len(tail) > max_bytes:
+                del tail[:-max_bytes]
+
+        return bytes(tail), total > max_bytes
+
     def read_log(
         self,
         job_id: str,
         max_bytes: int = 2_000_000,
     ) -> dict[str, Any]:
+        if max_bytes < 1:
+            raise ControlError(
+                code="invalid_log_limit",
+                message="Log byte limit must be positive",
+                exit_code=4,
+            )
+
         job = self.get(job_id)
         log_path = job.job_dir / "ansible.log"
+        archive_path = job.job_dir / "ansible.log.gz"
 
-        size = log_path.stat().st_size
-        truncated = size > max_bytes
+        try:
+            log_stat = log_path.lstat()
+        except FileNotFoundError:
+            log_stat = None
+        except OSError as exc:
+            raise ControlError(
+                code="job_log_read_failed",
+                message="Unable to inspect provision job log",
+                exit_code=4,
+            ) from exc
 
-        with log_path.open("rb") as handle:
-            if truncated:
-                handle.seek(-max_bytes, os.SEEK_END)
-            raw = handle.read()
+        archived = False
+
+        if log_stat is not None:
+            if not stat.S_ISREG(log_stat.st_mode):
+                raise ControlError(
+                    code="job_log_unsafe",
+                    message="Provision job log is not a regular file",
+                    exit_code=4,
+                )
+
+            with self._open_regular_binary(log_path) as handle:
+                size = log_stat.st_size
+                truncated = size > max_bytes
+                if truncated:
+                    handle.seek(-max_bytes, os.SEEK_END)
+                raw = handle.read()
+        else:
+            archived = True
+
+            try:
+                with self._open_regular_binary(
+                    archive_path
+                ) as raw_archive:
+                    with gzip.GzipFile(
+                        fileobj=raw_archive,
+                        mode="rb",
+                    ) as archive:
+                        raw, truncated = self._read_stream_tail(
+                            archive,
+                            max_bytes,
+                        )
+            except (
+                gzip.BadGzipFile,
+                EOFError,
+                OSError,
+            ) as exc:
+                raise ControlError(
+                    code="job_log_archive_invalid",
+                    message="Archived provision job log is invalid",
+                    exit_code=4,
+                ) from exc
 
         return {
             "job_id": job.job_id,
@@ -284,4 +407,5 @@ class JobRepository:
                 errors="replace",
             ),
             "truncated": truncated,
+            "archived": archived,
         }
