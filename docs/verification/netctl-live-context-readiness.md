@@ -1,7 +1,7 @@
 # Netctl live runtime identity and context readiness
 
 This is the sanitized production-readiness record for the runtime identity
-closure (migrations `2` and `3`) and active-context classification. It records
+closure (migrations `2`, `3`, and `4`) and active-context classification. It records
 aggregate outcomes only. Raw host inventories, MAC and IP values, source
 configuration, credentials, database rows, and protected backup artifacts are
 intentionally not committed.
@@ -13,11 +13,12 @@ Verified: 2026-07-18
 | Item | Verified value |
 | --- | --- |
 | Deployed `web_ovpn` release | `58575134b85e6fe50fdccd7cb98b97d55d32eec5` |
+| Migration-4 source file | `web_ovpn` `main` `1ca9b1f` |
 | Canonical `network_configuration` context commit | `6795a43b7e179870361944d280cc15f6b169395c` |
 | Imported active context revision | `1` |
 | Active context head | present and singular |
-| SQLite migration ledger | `1, 2, 3` |
-| SQLite integrity check | `ok` |
+| SQLite migration ledger | `1, 2, 3, 4` |
+| Verification backup | protected `/var/backups/netctl/runtime-findings-v4-20260718T154659Z`; integrity `ok` |
 | Context classifier fallback | `false` |
 
 The release contains the reviewed runtime rollout followed by the relation and
@@ -65,9 +66,9 @@ run did not change the prior current runtime state. This is retained evidence
 of the writer's all-or-nothing failure boundary, not evidence of a successful
 source collection.
 
-## Current runtime health and findings
+## Observed migration-4 runtime health and findings
 
-The post-cycle runtime status reported:
+The post-migration runtime status reported:
 
 | Measure | Value |
 | --- | ---: |
@@ -75,35 +76,18 @@ The post-cycle runtime status reported:
 | Runtime interfaces | 1,027 |
 | Current IP observations | 233 |
 | Current hostname observations | 50 |
-| Open historical-identity findings | 46,271 |
-| Open MAC-identity-collision findings | 5 |
-| Open IP-only findings | 1 |
-
-Historical findings are preserved evidence, not automatic asset merges. The
-five MAC-collision and one IP-only finding remain open and visible for operator
-review; none is silently promoted to a permanent identity and no asset merge
-or alias execution was performed. The historical conflicts in this deployed
-v3 evidence remain open pending the reviewed migration-4 deployment.
-
-## Post-deployment migration-4 verification target
-
-Migration `4` is not deployed in the evidence recorded above. After its
-approved deployment, verify the following aggregate findings state with the
-read-only status and findings commands before recording it as observed
-production evidence:
-
-| Expected post-deployment measure | Target value |
-| --- | ---: |
 | Acknowledged historical-identity findings | 46,271 |
-| Open MAC-identity-collision findings | 5 |
+| Open MAC-identity-collision findings | 4 |
+| Resolved MAC-identity-collision findings | 1 |
 | Open IP-only findings | 1 |
 
 Acknowledgement is a reviewed provenance classification, not automatic
-remediation or deletion. The two open finding categories must remain
-operational and visible for operator review, and acknowledged historical
-findings must remain accessible through the read-only findings query. Do not
-replace the current v3 evidence above with this target until deployment has
-been verified.
+remediation or deletion. The acknowledged historical findings remain
+accessible through the read-only findings query. The four open MAC-collision
+findings and the one open IP-only finding remain operational and visible for
+operator review. This record contains aggregate lifecycle evidence only; it
+does not include identities, addresses, secrets, raw database rows, or
+collection output.
 
 ## Service boundary and readiness decision
 
