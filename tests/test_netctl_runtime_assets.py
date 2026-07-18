@@ -208,20 +208,27 @@ def _seed_network_source(db_url: str, source_id: int) -> None:
         conn.close()
 
 
-def _seed_legacy_tags(db_url: str, tags: list[dict[str, str]]) -> None:
+def _seed_legacy_tags(db_url: str, tags: list[dict[str, Any]]) -> None:
     db_path = Path(db_url.removeprefix("sqlite:///"))
     conn = sqlite3.connect(db_path)
     try:
+        values = [
+            {
+                "created_at": "2026-07-16T00:00:00Z",
+                "updated_at": "2026-07-16T00:00:00Z",
+                **tag,
+            }
+            for tag in tags
+        ]
         conn.executemany(
             """
             INSERT INTO network_device_tags (
                 device_key, match_type, tags_json, created_at, updated_at
             ) VALUES (
-                :device_key, :match_type, :tags_json,
-                '2026-07-16T00:00:00Z', '2026-07-16T00:00:00Z'
+                :device_key, :match_type, :tags_json, :created_at, :updated_at
             )
             """,
-            tags,
+            values,
         )
         conn.commit()
     finally:
@@ -863,7 +870,8 @@ def test_same_mac_aggregate_uses_timestamp_fallbacks_and_reports_conflicts(
                 "id": 93,
                 "ip": "10.0.0.93",
                 "mac": "0011.2233.4491",
-                "device_type": "router",
+                "device_type": "unknown",
+                "category": "router",
                 "status": "online",
                 "site": "main",
                 "display_name": "Current router",
@@ -954,6 +962,46 @@ def test_same_mac_aggregate_uses_timestamp_fallbacks_and_reports_conflicts(
                 "selected_value": "online",
                 "type": "same_mac_aggregation_conflict",
             },
+        ]
+    finally:
+        conn.close()
+
+
+def test_runtime_kind_uses_legacy_category_for_blank_or_unknown_device_type(
+    pr_1b_database: str,
+) -> None:
+    from netctl.db import connect
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {
+                "id": 94,
+                "ip": "10.0.0.94",
+                "mac": "00:11:22:33:44:94",
+                "category": "local_device",
+                "device_type": "",
+            },
+            {
+                "id": 95,
+                "ip": "10.0.0.95",
+                "mac": "00:11:22:33:44:95",
+                "category": "local_device",
+                "device_type": "unknown",
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT asset_key, kind FROM assets ORDER BY asset_key"
+            ).fetchall()
+        ] == [
+            ("mac:00:11:22:33:44:94", "local_device"),
+            ("mac:00:11:22:33:44:95", "local_device"),
         ]
     finally:
         conn.close()
@@ -1057,6 +1105,92 @@ def test_mac_and_ip_tags_migrate_once_with_legacy_binding_source(
                 "SELECT device_key, tags_json FROM network_device_tags ORDER BY device_key"
             ).fetchall()
         ] == sorted((tag["device_key"], tag["tags_json"]) for tag in legacy_tags)
+    finally:
+        conn.close()
+
+
+def test_legacy_tag_timestamps_are_preserved_with_deterministic_fallbacks(
+    pr_1b_database: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netctl import migrations
+    from netctl.db import connect
+
+    migration_time = "2026-07-17T12:00:00Z"
+    monkeypatch.setattr(migrations, "utc_now", lambda: migration_time)
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [
+            {"id": 112, "ip": "10.0.0.112", "mac": "00:11:22:33:44:B2"},
+            {"id": 113, "ip": "10.0.0.113", "mac": "00:11:22:33:44:B3"},
+        ],
+    )
+    _seed_legacy_tags(
+        pr_1b_database,
+        [
+            {
+                "device_key": "mac:00:11:22:33:44:B2",
+                "match_type": "mac",
+                "tags_json": '["mac-only","shared"]',
+                "created_at": "2026-07-10T08:00:00Z",
+                "updated_at": "2026-07-12T08:00:00Z",
+            },
+            {
+                "device_key": "ip:10.0.0.112",
+                "match_type": "ip",
+                "tags_json": '["shared","updated-only"]',
+                "created_at": "   ",
+                "updated_at": "2026-07-14T08:00:00Z",
+            },
+            {
+                "device_key": "mac:00:11:22:33:44:B3",
+                "match_type": "mac",
+                "tags_json": '["fallback"]',
+                "created_at": "",
+                "updated_at": "",
+            },
+        ],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                """
+                SELECT assets.asset_key, bindings.tag,
+                       bindings.first_seen_at, bindings.last_seen_at
+                FROM asset_tag_bindings AS bindings
+                JOIN assets ON assets.id = bindings.asset_id
+                ORDER BY assets.asset_key, bindings.tag
+                """
+            ).fetchall()
+        ] == [
+            (
+                "mac:00:11:22:33:44:B2",
+                "mac-only",
+                "2026-07-10T08:00:00Z",
+                "2026-07-12T08:00:00Z",
+            ),
+            (
+                "mac:00:11:22:33:44:B2",
+                "shared",
+                "2026-07-10T08:00:00Z",
+                "2026-07-14T08:00:00Z",
+            ),
+            (
+                "mac:00:11:22:33:44:B2",
+                "updated-only",
+                "2026-07-14T08:00:00Z",
+                "2026-07-14T08:00:00Z",
+            ),
+            (
+                "mac:00:11:22:33:44:B3",
+                "fallback",
+                migration_time,
+                migration_time,
+            ),
+        ]
     finally:
         conn.close()
 
@@ -1837,5 +1971,36 @@ def test_read_helper_runtime_identity_report_decodes_arrays_and_does_not_write(
 
         assert get_runtime_asset_by_key(conn, "mac:00:11:22:33:44:E1") is not None
         assert conn.execute("SELECT COUNT(*) FROM asset_intent_bindings").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("stored_json", ["{broken-json", '{"not":"an-array"}'])
+def test_runtime_identity_report_surfaces_corrupt_or_non_array_json(
+    pr_1b_database: str,
+    stored_json: str,
+) -> None:
+    from netctl.db import connect
+    from netctl.runtime_assets import runtime_identity_report
+
+    _seed_legacy_hosts(
+        pr_1b_database,
+        [{"id": 192, "ip": "10.0.0.192", "mac": "00:11:22:33:44:E2"}],
+    )
+
+    conn = connect(pr_1b_database)
+    try:
+        conn.execute(
+            """
+            UPDATE runtime_asset_migration_reports
+            SET aggregation_conflicts_json = ?
+            WHERE migration_version = 2
+            """,
+            (stored_json,),
+        )
+        conn.commit()
+
+        with pytest.raises(ValueError, match="aggregation_conflicts_json"):
+            runtime_identity_report(conn)
     finally:
         conn.close()

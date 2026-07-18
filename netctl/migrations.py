@@ -427,7 +427,7 @@ def _copy_legacy_runtime_assets(conn: sqlite3.Connection) -> None:
     tag_rows = _dict_rows(
         conn.execute(
             """
-            SELECT device_key, tags_json
+            SELECT device_key, tags_json, created_at, updated_at
             FROM network_device_tags
             ORDER BY device_key
             """
@@ -510,15 +510,27 @@ def _copy_legacy_runtime_assets(conn: sqlite3.Connection) -> None:
             continue
 
         asset_id = next(iter(asset_matches))
+        tag_first_seen_at = _first_nonblank(
+            tag_row["created_at"],
+            tag_row["updated_at"],
+            migration_time,
+        )
+        tag_last_seen_at = _first_nonblank(
+            tag_row["updated_at"],
+            tag_row["created_at"],
+            migration_time,
+        )
         conn.executemany(
             """
             INSERT INTO asset_tag_bindings (
                 asset_id, tag, binding_source, first_seen_at, last_seen_at
             ) VALUES (?, ?, 'legacy_manual_tag', ?, ?)
-            ON CONFLICT(asset_id, tag, binding_source) DO NOTHING
+            ON CONFLICT(asset_id, tag, binding_source) DO UPDATE SET
+                first_seen_at = MIN(asset_tag_bindings.first_seen_at, excluded.first_seen_at),
+                last_seen_at = MAX(asset_tag_bindings.last_seen_at, excluded.last_seen_at)
             """,
             [
-                (asset_id, tag, migration_time, migration_time)
+                (asset_id, tag, tag_first_seen_at, tag_last_seen_at)
                 for tag in normalized_tags
             ],
         )
@@ -722,7 +734,7 @@ def _first_nonblank(*values: Any) -> str:
 
 def _legacy_representative_values(host: dict[str, Any], asset_key: str) -> dict[str, str]:
     return {
-        "kind": _first_nonblank(host["device_type"], host["category"], "unknown"),
+        "kind": _legacy_kind(host),
         "status": _first_nonblank(host["status"], "unknown"),
         "site": _first_nonblank(host["site"], ""),
         "display_name": _first_nonblank(
@@ -733,6 +745,13 @@ def _legacy_representative_values(host: dict[str, Any], asset_key: str) -> dict[
         ),
         "comment": _first_nonblank(host["comment"], ""),
     }
+
+
+def _legacy_kind(host: dict[str, Any]) -> str:
+    device_type = _first_nonblank(host["device_type"])
+    if device_type and device_type != "unknown":
+        return device_type
+    return _first_nonblank(host["category"], device_type, "unknown")
 
 
 def _legacy_aggregation_conflicts(

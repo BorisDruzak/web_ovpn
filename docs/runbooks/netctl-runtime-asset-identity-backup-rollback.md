@@ -224,10 +224,16 @@ sudo diff -u "$backup_dir/legacy-counts-before.txt" "$backup_dir/legacy-counts-a
 ```
 
 The post-deployment ledger must contain version `2` exactly once (the command
-asserts `COUNT(*) = 1`), and the
-legacy count diff must be empty. Inspect the migration report: mapped legacy
-hosts must equal legacy hosts, and all four unresolved/conflict JSON fields
-must be `[]`. Treat any other value as a failed verification and roll back.
+asserts `COUNT(*) = 1`), and the legacy count diff must be empty. The migration
+report has two verification levels:
+
+1. Structural checks require exactly one version `2` report, equal legacy and
+   mapped-host counts, and four valid JSON arrays. A structural failure requires
+   rollback.
+2. Non-empty unresolved/conflict arrays are preserved migration records, not a
+   structural failure. An operator must review them and explicitly acknowledge
+   them before release. Roll back if a record is unacceptable or cannot be
+   explained from the untouched legacy data.
 
 ```bash
 set -euo pipefail
@@ -243,20 +249,64 @@ FROM runtime_asset_migration_reports
 WHERE migration_version = 2;
 SQL
 
-report_assertion="$(sudo sqlite3 "$db_path" <<'SQL'
+report_structure_assertion="$(sudo sqlite3 "$db_path" <<'SQL'
+WITH report AS (
+  SELECT *
+  FROM runtime_asset_migration_reports
+  WHERE migration_version = 2
+), validated AS (
+  SELECT *,
+         CASE WHEN json_valid(unresolved_legacy_host_ids_json)
+              THEN json_type(unresolved_legacy_host_ids_json) END AS unresolved_host_type,
+         CASE WHEN json_valid(unresolved_observation_ids_json)
+              THEN json_type(unresolved_observation_ids_json) END AS unresolved_observation_type,
+         CASE WHEN json_valid(unresolved_tag_records_json)
+              THEN json_type(unresolved_tag_records_json) END AS unresolved_tag_type,
+         CASE WHEN json_valid(aggregation_conflicts_json)
+              THEN json_type(aggregation_conflicts_json) END AS aggregation_conflict_type
+  FROM report
+)
 SELECT CASE WHEN COUNT(*) = 1
               AND MIN(legacy_host_count) = MIN(mapped_legacy_host_count)
-              AND MIN(unresolved_legacy_host_ids_json) = '[]'
-              AND MIN(unresolved_observation_ids_json) = '[]'
-              AND MIN(unresolved_tag_records_json) = '[]'
-              AND MIN(aggregation_conflicts_json) = '[]'
-            THEN 'runtime_asset_migration_report_ok'
-            ELSE 'runtime_asset_migration_report_invalid' END
+              AND MIN(unresolved_host_type) = 'array'
+              AND MIN(unresolved_observation_type) = 'array'
+              AND MIN(unresolved_tag_type) = 'array'
+              AND MIN(aggregation_conflict_type) = 'array'
+            THEN 'runtime_asset_migration_report_structurally_valid'
+            ELSE 'runtime_asset_migration_report_structurally_invalid' END
+FROM validated;
+SQL
+)"
+test "$report_structure_assertion" = 'runtime_asset_migration_report_structurally_valid'
+
+sudo sqlite3 -header -column "$db_path" <<'SQL' | sudo tee "$backup_dir/migration-report-review.txt" >/dev/null
+SELECT json_array_length(unresolved_legacy_host_ids_json) AS unresolved_hosts,
+       json_array_length(unresolved_observation_ids_json) AS unresolved_observations,
+       json_array_length(unresolved_tag_records_json) AS unresolved_tags,
+       json_array_length(aggregation_conflicts_json) AS aggregation_conflicts
+FROM runtime_asset_migration_reports
+WHERE migration_version = 2;
+SQL
+
+preserved_record_count="$(sudo sqlite3 "$db_path" <<'SQL'
+SELECT json_array_length(unresolved_legacy_host_ids_json)
+     + json_array_length(unresolved_observation_ids_json)
+     + json_array_length(unresolved_tag_records_json)
+     + json_array_length(aggregation_conflicts_json)
 FROM runtime_asset_migration_reports
 WHERE migration_version = 2;
 SQL
 )"
-test "$report_assertion" = 'runtime_asset_migration_report_ok'
+if (( preserved_record_count > 0 )); then
+  sudo cat "$backup_dir/migration-report.txt"
+  sudo cat "$backup_dir/migration-report-review.txt"
+  echo 'Review every preserved record against the untouched legacy tables.' >&2
+  read -r -p 'Type ACK_RUNTIME_ASSET_PRESERVED_RECORDS after review: ' report_ack
+  test "$report_ack" = 'ACK_RUNTIME_ASSET_PRESERVED_RECORDS'
+  printf 'acknowledged_by=%s\nacknowledged_at=%s\npreserved_record_count=%s\n' \
+    "$(id -un)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$preserved_record_count" \
+    | sudo tee "$backup_dir/migration-report-review-ack.txt" >/dev/null
+fi
 
 sudo sqlite3 -header -column "$db_path" <<'SQL' | sudo tee "$backup_dir/ip-indexes.txt" >/dev/null
 WITH indexes AS (
@@ -355,7 +405,8 @@ report output, and verification result in the deployment ticket.
 ## 4. Roll back safely
 
 Roll back on a failed install, failed migration, any non-empty legacy count
-diff, unexpected report data, incorrect PRAGMAs, or a failed legacy command.
+diff, a structurally invalid migration report, unacknowledged or unacceptable
+preserved migration records, incorrect PRAGMAs, or a failed legacy command.
 First preserve the failed application and database for diagnosis. Then restore
 the **old application tree and old wrapper before restoring the old database**;
 the old database must never be started beneath the new code.

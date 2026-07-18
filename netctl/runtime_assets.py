@@ -79,13 +79,16 @@ def runtime_identity_report(conn: sqlite3.Connection) -> dict[str, Any] | None:
         "unresolved_tag_records",
         "aggregation_conflicts",
     ):
-        report[field] = _decode_json_array(report.pop(f"{field}_json", "[]"))
+        json_field = f"{field}_json"
+        report[field] = _decode_json_array(report.pop(json_field), json_field)
     return report
 
 
-def _decode_json_array(value: Any) -> list[Any]:
+def _decode_json_array(value: Any, field: str) -> list[Any]:
     try:
-        decoded = json.loads(value or "[]")
-    except (TypeError, json.JSONDecodeError):
-        return []
-    return decoded if isinstance(decoded, list) else []
+        decoded = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field} contains invalid JSON") from exc
+    if not isinstance(decoded, list):
+        raise ValueError(f"{field} must contain a JSON array")
+    return decoded
