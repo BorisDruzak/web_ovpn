@@ -29,6 +29,10 @@ IMPORT_COLLECTIONS: dict[str, tuple[str, str]] = {
     "links": ("intent_links", "link"),
 }
 
+RELATION_ALIASES: dict[str, str] = {
+    "connected_to": "CONNECTED_TO",
+}
+
 RELATION_TYPES: frozenset[str] = frozenset(
     {
         "CONNECTED_TO",
@@ -40,6 +44,7 @@ RELATION_TYPES: frozenset[str] = frozenset(
         "CAN_ACCESS",
         "AFFECTED_BY",
         "RESOLVED_BY",
+        *RELATION_ALIASES,
     }
 )
 
@@ -161,6 +166,11 @@ def canonical_entity_json(entity: dict[str, Any]) -> str:
 
 def canonical_entity_hash(entity: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_entity_json(entity).encode("utf-8")).hexdigest()
+
+
+def normalise_relation_type(relation: str) -> str:
+    """Map an accepted context relation to its queryable SQLite value."""
+    return RELATION_ALIASES.get(relation, relation)
 
 
 def normalise_import_entities(document: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:

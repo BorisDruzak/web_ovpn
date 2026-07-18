@@ -208,6 +208,35 @@ def test_validate_import_semantics_allows_ids_reused_in_different_collections() 
     assert validate_import_semantics(document) == []
 
 
+def test_canonical_connected_to_relation_validates_and_imports(tmp_path: Path) -> None:
+    from netctl.context import validate_import_semantics
+    from netctl.context_import import import_context, load_active_snapshot
+
+    conn = connect_import_db(tmp_path)
+    document = import_document()
+    for link in document["links"]:
+        link["relation"] = "connected_to"
+
+    try:
+        assert validate_import_semantics(document) == []
+
+        result = import_context(
+            conn,
+            document,
+            raw_document(document),
+            tmp_path / "network-context.yaml",
+            "canonical-connected-to-git-sha",
+        )
+
+        assert result["result"] == "success_imported"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM intent_links WHERE relation = 'CONNECTED_TO'"
+        ).fetchone()[0] == 2
+        assert load_active_snapshot(conn, "test-network")["link"]["router-switch"]["relation"] == "connected_to"
+    finally:
+        conn.close()
+
+
 def test_canonical_entity_hash_ignores_mapping_key_order() -> None:
     from netctl.context import canonical_entity_hash, canonical_entity_json
 
