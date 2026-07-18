@@ -32,14 +32,33 @@ class SegmentRule:
 
 
 def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
+    eligible_heads = conn.execute(
+        """
+        SELECT heads.context_id, heads.context_revision_id
+        FROM context_heads AS heads
+        WHERE EXISTS (
+            SELECT 1
+            FROM intent_segments AS candidate_segments
+            WHERE candidate_segments.context_revision_id = heads.context_revision_id
+              AND candidate_segments.lifecycle = 'active'
+        )
+        ORDER BY heads.context_id
+        """
+    ).fetchall()
+    if not eligible_heads:
+        return []
+    if len(eligible_heads) != 1:
+        context_ids = ", ".join(str(row["context_id"]) for row in eligible_heads)
+        raise ValueError(f"multiple active network contexts: {context_ids}")
+    revision_id = int(eligible_heads[0]["context_revision_id"])
     rows = conn.execute(
         """
         SELECT segments.stable_id, segments.canonical_json
-        FROM context_heads AS heads
-        JOIN intent_segments AS segments
-          ON segments.context_revision_id = heads.context_revision_id
-        WHERE segments.lifecycle = 'active'
-        """
+        FROM intent_segments AS segments
+        WHERE segments.context_revision_id = ?
+          AND segments.lifecycle = 'active'
+        """,
+        (revision_id,),
     ).fetchall()
     rules: list[SegmentRule] = []
     for row in rows:
@@ -71,6 +90,18 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
     return sorted(rules, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))
 
 
+def match_segment_rule(ip: str, *, rules: list[SegmentRule]) -> SegmentRule | None:
+    address = ipaddress.ip_address(ip)
+    matches = [
+        rule
+        for rule in rules
+        if rule.network.version == address.version and address in rule.network
+    ]
+    if not matches:
+        return None
+    return min(matches, key=lambda item: (-item.network.prefixlen, item.segment_id))
+
+
 def classify_address(
     ip: str,
     *,
@@ -89,14 +120,9 @@ def classify_address(
             pass
     if network_infra:
         return "network_infra"
-    matches = [
-        rule
-        for rule in rules
-        if rule.network.version == address.version and address in rule.network
-    ]
-    if not matches:
+    rule = match_segment_rule(ip, rules=rules)
+    if rule is None:
         return "unknown"
-    rule = min(matches, key=lambda item: (-item.network.prefixlen, item.segment_id))
     if rule.observer_category == "local_device" and not has_name:
         return "unknown"
     return rule.observer_category

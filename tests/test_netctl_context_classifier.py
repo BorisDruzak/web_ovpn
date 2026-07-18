@@ -23,8 +23,13 @@ def test_observer_categories_match_canonical_schema_contract():
     )
 
 
-def _activate_segments(conn, segments: list[dict[str, object]], *, revision: int = 1) -> None:
-    context_id = "classifier-test"
+def _activate_segments(
+    conn,
+    segments: list[dict[str, object]],
+    *,
+    revision: int = 1,
+    context_id: str = "classifier-test",
+) -> None:
     revision_row = conn.execute(
         """
         INSERT INTO context_revisions
@@ -140,6 +145,86 @@ def test_active_context_cidr_change_changes_classification_without_python_change
         )
         after = load_active_segment_rules(conn)
         assert classify_address("10.31.0.10", rules=after, source={}, has_name=True, network_infra=False) == "site_device"
+    finally:
+        conn.close()
+
+
+def test_multiple_eligible_context_heads_fail_closed(tmp_path):
+    from netctl.context_classifier import load_active_segment_rules
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(
+            conn,
+            [{"id": "first-lan", "cidr": "10.31.0.0/24", "observer_category": "local_device"}],
+            context_id="first-context",
+        )
+        _activate_segments(
+            conn,
+            [{"id": "second-lan", "cidr": "10.32.0.0/24", "observer_category": "site_device"}],
+            revision=2,
+            context_id="second-context",
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=r"multiple active network contexts: first-context, second-context",
+        ):
+            load_active_segment_rules(conn)
+    finally:
+        conn.close()
+
+
+def test_context_segment_site_change_updates_legacy_and_runtime_observation_rows(tmp_path):
+    from netctl.db import connect
+    from netctl.store import save_collection
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        source = _source(conn)
+        assert source is not None
+        snapshot = {
+            "dhcp_leases": [
+                {
+                    "ip": "10.33.0.8",
+                    "mac": "00:11:22:33:44:55",
+                    "hostname": "workstation",
+                    "status": "bound",
+                }
+            ],
+            "arp": [],
+            "neighbors": [],
+            "bridge_hosts": [],
+        }
+        _activate_segments(
+            conn,
+            [{"id": "branch", "cidr": "10.33.0.0/24", "observer_category": "site_device", "site": "west"}],
+        )
+        save_collection(conn, source, snapshot, "2026-07-18T01:00:00Z")
+
+        assert conn.execute(
+            "SELECT site FROM network_hosts WHERE ip = '10.33.0.8'"
+        ).fetchone()[0] == "west"
+        assert conn.execute(
+            "SELECT site FROM ip_observations WHERE ip = '10.33.0.8' AND is_current = 1"
+        ).fetchone()[0] == "west"
+
+        _activate_segments(
+            conn,
+            [{"id": "branch", "cidr": "10.33.0.0/24", "observer_category": "site_device", "site": "east"}],
+            revision=2,
+        )
+        save_collection(conn, source, snapshot, "2026-07-18T02:00:00Z")
+
+        legacy = conn.execute(
+            "SELECT category, site FROM network_hosts WHERE ip = '10.33.0.8'"
+        ).fetchone()
+        runtime = conn.execute(
+            "SELECT site FROM ip_observations WHERE ip = '10.33.0.8' AND is_current = 1"
+        ).fetchone()
+        assert tuple(legacy) == ("site_device", "east")
+        assert runtime[0] == "east"
     finally:
         conn.close()
 

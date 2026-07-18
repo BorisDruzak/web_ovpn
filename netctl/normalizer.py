@@ -4,7 +4,7 @@ import ipaddress
 import re
 from typing import Any
 
-from .context_classifier import SegmentRule, classify_address
+from .context_classifier import SegmentRule, classify_address, match_segment_rule
 
 
 MAC_RE = re.compile(r"^[0-9A-F]{12}$")
@@ -178,6 +178,9 @@ def normalize_hosts(
 
     for host in hosts.values():
         has_name = bool(host.get("hostname") or host.get("display_name"))
+        segment_rule = match_segment_rule(str(host["ip"]), rules=segment_rules or [])
+        if segment_rule is not None and segment_rule.site:
+            host["site"] = segment_rule.site
         host["category"] = classify_address(
             str(host["ip"]),
             rules=segment_rules or [],

@@ -198,23 +198,50 @@ must remain healthy. Preserve all JSON and Python-check outputs under
 
 Roll back for a failed integrity check, missing trigger, duplicate migration
 ledger entry, incorrect live-state transition, unreviewed conflict, failed
-legacy command, or unhealthy service. Stop the application/collector units,
-restore the archived code and wrapper, then restore the SQLite backup as one
-file (including no stale `-wal`/`-shm` sidecars):
+legacy command, or unhealthy service. Stop the application/collector units.
+Move the failed application tree aside before extracting the archive: extracting
+over the deployed directory is prohibited because files introduced only by the
+new release would otherwise survive rollback. Keep the failed tree recoverable
+until the rollback change is closed. Then restore the SQLite backup as one file
+(including no stale `-wal`/`-shm` sidecars):
 
 ```bash
 for unit in "${units[@]}"; do sudo systemctl stop "$unit"; done
+failed_app_dir="/opt/openvpn-web.failed-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo test ! -e "$failed_app_dir"
+sudo mv "$app_dir" "$failed_app_dir"
+sudo tar -C /opt -xzf "$backup_dir/openvpn-web-before.tgz"
+sudo test -d "$app_dir"
 sudo rm -f "$db_path" "$db_path-wal" "$db_path-shm"
 sudo cp "$backup_dir/netctl-before.sqlite" "$db_path"
 sudo chown netctl:netctl "$db_path"
-sudo tar -C /opt -xzf "$backup_dir/openvpn-web-before.tgz"
 sudo install -m 0755 "$backup_dir/netctl-wrapper-before" /usr/local/sbin/netctl
 sudo -u netctl /usr/local/sbin/netctl --json dashboard
 ```
 
-Before restoring services, repeat the deployed-Python `PRAGMA integrity_check`
-block from section 1, capture the restored schema ledger using the
-deployed-Python block from section 2, and capture legacy dashboard output.
-Only then unmask and start `openvpn-web.service` and `netctl-collect.timer` as
-in section 4. Migration `3` is not removed in-place; the database backup is
-the rollback boundary.
+Before restoring services, verify that the restored application contains
+exactly the paths captured in the archive and that their archived content and
+metadata compare cleanly. The path comparison explicitly rejects any new-only
+file left in the restored tree:
+
+```bash
+expected_paths=$(mktemp)
+restored_paths=$(mktemp)
+sudo tar -tzf "$backup_dir/openvpn-web-before.tgz" \
+  | sed -E 's#^openvpn-web/?##; s#/$##; /^$/d' \
+  | sort -u >"$expected_paths"
+sudo find "$app_dir" -mindepth 1 -printf '%P\n' \
+  | sort -u >"$restored_paths"
+diff -u "$expected_paths" "$restored_paths"
+sudo tar -C /opt -dzf "$backup_dir/openvpn-web-before.tgz"
+rm -f "$expected_paths" "$restored_paths"
+```
+
+Both `diff` and `tar --compare` must exit zero with no output. Also repeat the
+deployed-Python `PRAGMA integrity_check` block from section 1, capture the
+restored schema ledger using the deployed-Python block from section 2, and
+capture legacy dashboard output. Only then unmask and start
+`openvpn-web.service` and `netctl-collect.timer` as in section 4. Migration `3`
+is not removed in-place; the database backup is the rollback boundary. Retain
+`$failed_app_dir` through the rollback observation window; remove it only under
+the normal backup-retention procedure after the rollback is accepted.
