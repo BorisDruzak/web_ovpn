@@ -57,6 +57,8 @@ def prepare_provision_files(
             encoding="utf-8",
         )
         settings.job_stage_helper_path.chmod(0o755)
+    else:
+        settings.job_stage_helper_path.unlink(missing_ok=True)
 
     return settings, fake_ansible, playbook
 
