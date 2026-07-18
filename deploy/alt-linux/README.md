@@ -258,8 +258,7 @@ Possible actions:
 A result is never recovered while the worker is still active. Assignment-store,
 systemd and invalid-unit errors are not hidden as result-validation failures.
 
-Reconciliation is currently an explicit operator command; no automatic boot
-service invokes it yet.
+Reconciliation is currently an explicit operator command. No automatic boot service invokes it yet.
 
 ## State, diagnostics, and recovery
 
