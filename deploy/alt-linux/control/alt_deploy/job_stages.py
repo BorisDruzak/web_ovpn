@@ -239,6 +239,27 @@ class JobStageManager:
         self.clock = clock or _utc_now
         self.jobs = repository
 
+    @staticmethod
+    def _validate_updates(
+        updates: Mapping[str, object],
+        *,
+        job_id: str,
+    ) -> None:
+        unexpected = set(updates) - FORWARD_UPDATE_FIELDS
+        if unexpected:
+            raise ControlError(
+                code="invalid_job_stage_update",
+                message=(
+                    "Provision job stage update contains "
+                    "unsupported fields"
+                ),
+                exit_code=4,
+                details={
+                    "job_id": job_id,
+                    "fields": sorted(unexpected),
+                },
+            )
+
     def advance_unlocked(
         self,
         job_id: str,
@@ -246,6 +267,12 @@ class JobStageManager:
         *,
         updates: Mapping[str, object] | None = None,
     ) -> JobRecord:
+        requested_updates = dict(updates or {})
+        self._validate_updates(
+            requested_updates,
+            job_id=job_id,
+        )
+
         job = self.jobs.get(job_id)
 
         if job.state in TERMINAL_STATES:
@@ -273,11 +300,7 @@ class JobStageManager:
         if next_stage == job.stage:
             return job
 
-        if (
-            next_stage in STAGE_INDEX
-            and STAGE_INDEX[next_stage]
-            != STAGE_INDEX[job.stage] + 1
-        ):
+        if STAGE_INDEX[next_stage] != STAGE_INDEX[job.stage] + 1:
             raise ControlError(
                 code="invalid_job_stage_transition",
                 message=(
@@ -305,7 +328,7 @@ class JobStageManager:
         )
 
         status_payload = dict(job.status)
-        status_payload.update(dict(updates or {}))
+        status_payload.update(requested_updates)
         status_payload["stage"] = next_stage
         status_payload["stage_history"] = history
         status_payload["job_id"] = job.job_id
