@@ -34,6 +34,7 @@ def make_settings(tmp_path: Path) -> Settings:
         worker_path=Path(
             "/usr/local/libexec/alt-provision-worker"
         ),
+        job_stage_helper_path=tmp_path / "alt-job-stage",
         workstationctl_path=Path(
             "/usr/local/sbin/workstationctl"
         ),
