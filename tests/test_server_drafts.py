@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from pathlib import Path
 import subprocess
 from uuid import uuid4
@@ -76,6 +77,28 @@ def test_confirm_requires_exact_scanned_fingerprint(tmp_path, fake_runner):
 
     with pytest.raises(DraftWorkerError, match="fingerprint"):
         process_request(request, paths, fake_runner)
+
+
+def test_confirm_publishes_completed_pin_as_safe_ok_result(tmp_path, fake_runner):
+    request = draft_request("confirm", expected_fingerprint="SHA256:scanned")
+    paths = draft_paths(tmp_path)
+    paths.private_dir.mkdir(parents=True)
+    candidate = "server.example ssh-ed25519 AAA\n"
+    (paths.private_dir / f"{request.id}.candidate").write_text(candidate, encoding="utf-8")
+    fake_runner.return_value = subprocess.CompletedProcess(
+        ["ssh-keygen"], 0, stdout="256 SHA256:scanned server\n", stderr="raw private diagnostic"
+    )
+
+    process_request(request, paths, fake_runner)
+
+    result = read_public_result(paths.results_dir, request.id)
+    assert set(result) == {"status", "fingerprint", "checked_at"}
+    assert result["status"] == "ok"
+    assert result["fingerprint"] == "SHA256:scanned"
+    assert datetime.fromisoformat(result["checked_at"].replace("Z", "+00:00")).tzinfo is not None
+    assert (paths.private_dir / f"{request.id}.known_hosts").read_text(encoding="utf-8") == candidate
+    assert "AAA" not in json.dumps(result)
+    assert "diagnostic" not in json.dumps(result)
 
 
 def test_check_uses_fixed_true_and_strict_known_host(tmp_path, fake_runner):

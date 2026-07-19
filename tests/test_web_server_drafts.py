@@ -1,9 +1,12 @@
 import hashlib
 import importlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from app.models import ServerDraft, WebAuditLog
 
@@ -91,6 +94,30 @@ def test_create_requires_csrf_and_queues_scan(tmp_path, monkeypatch):
     assert queued_action(tmp_path)["action"] == "scan"
 
 
+def test_create_does_not_queue_scan_when_database_persistence_fails(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    original_commit = Session.commit
+
+    def fail_draft_commit(session):
+        if any(isinstance(item, ServerDraft) for item in session.new):
+            raise SQLAlchemyError("forced persistence failure")
+        return original_commit(session)
+
+    monkeypatch.setattr(Session, "commit", fail_draft_commit)
+
+    response = post_with_csrf(
+        client,
+        "/network/server-drafts/new",
+        {"name": "new", "host": "server.example", "ssh_user": "observer", "port": "22"},
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/network/server-drafts/new"
+    assert not list((tmp_path / "queue").glob("*.json"))
+    with db_session() as db:
+        assert db.query(ServerDraft).count() == 0
+
+
 def test_public_key_download_excludes_private_material(tmp_path, monkeypatch):
     client = make_logged_in_client(tmp_path, monkeypatch, public_key="ssh-ed25519 AAA observer")
 
@@ -129,7 +156,7 @@ def test_confirm_uses_stored_fingerprint_and_audits_uuid(tmp_path, monkeypatch):
         assert "server.example" not in audit.message
 
 
-def test_check_requires_confirmed_pending_result_and_queues_check(tmp_path, monkeypatch):
+def test_check_cannot_overwrite_queued_confirm_before_pin_completion(tmp_path, monkeypatch):
     client = make_logged_in_client(tmp_path, monkeypatch)
     draft_id = create_draft(client, tmp_path)
     (tmp_path / "queue" / f"{draft_id}.json").unlink()
@@ -142,10 +169,48 @@ def test_check_requires_confirmed_pending_result_and_queues_check(tmp_path, monk
     assert not list((tmp_path / "queue").glob("*.json"))
 
     assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/confirm", {}).status_code == 303
-    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    queued_confirm = queued_action(tmp_path)
 
     assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
-    assert queued_action(tmp_path)["action"] == "check"
+    assert queued_action(tmp_path) == queued_confirm
+    assert queued_confirm["action"] == "confirm"
+    assert f'/network/server-drafts/{draft_id}/check' not in client.get("/network/server-drafts").text
+
+
+def test_completed_pin_allows_one_check_that_confirm_cannot_overwrite(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    results = tmp_path / "results"
+    results.mkdir(exist_ok=True)
+    result_path = results / f"{draft_id}.json"
+    result_path.write_text(
+        json.dumps({"status": "pending", "fingerprint": "SHA256:expected"}), encoding="utf-8"
+    )
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/confirm", {}).status_code == 303
+
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "fingerprint": "SHA256:expected",
+                "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert f'/network/server-drafts/{draft_id}/check' in client.get("/network/server-drafts").text
+
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
+    queued_check = queued_action(tmp_path)
+    assert queued_check["action"] == "check"
+
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
+    assert queued_action(tmp_path) == queued_check
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/confirm", {}).status_code == 303
+    assert queued_action(tmp_path) == queued_check
+    assert f'/network/server-drafts/{draft_id}/check' not in client.get("/network/server-drafts").text
 
 
 def test_delete_queues_cleanup_and_removes_public_record(tmp_path, monkeypatch):

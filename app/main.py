@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -142,16 +144,41 @@ def queue_server_draft(draft: ServerDraft, action: str, expected_fingerprint: st
     create_draft_request(get_settings().server_draft_queue_dir, request)
 
 
-def is_confirmed_server_draft(db: Session, draft_id: str) -> bool:
+def has_server_draft_audit(
+    db: Session, draft_id: str, action: str, since: datetime | None = None
+) -> bool:
+    statement = select(WebAuditLog.id).where(
+        WebAuditLog.action == action,
+        WebAuditLog.result == "ok",
+        WebAuditLog.target_client == draft_id,
+    )
+    if since is not None:
+        statement = statement.where(WebAuditLog.ts >= since)
+    return db.scalar(statement) is not None
+
+
+def server_draft_confirmation_time(result: dict[str, str]) -> datetime | None:
+    if result.get("status") != "ok" or not result.get("fingerprint"):
+        return None
+    try:
+        completed_at = datetime.fromisoformat(result.get("checked_at", "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return completed_at if completed_at.tzinfo is not None else None
+
+
+def is_server_draft_queued(draft_id: str) -> bool:
+    return (get_settings().server_draft_queue_dir / f"{draft_id}.json").is_file()
+
+
+def is_confirmed_server_draft(
+    db: Session, draft_id: str, result: dict[str, str]
+) -> tuple[bool, datetime | None]:
+    completed_at = server_draft_confirmation_time(result)
     return (
-        db.scalar(
-            select(WebAuditLog.id).where(
-                WebAuditLog.action == "server-draft-confirm",
-                WebAuditLog.result == "ok",
-                WebAuditLog.target_client == draft_id,
-            )
-        )
-        is not None
+        completed_at is not None
+        and has_server_draft_audit(db, draft_id, "server-draft-confirm"),
+        completed_at,
     )
 
 
@@ -173,15 +200,22 @@ def server_drafts_page(request: Request, db: Session = Depends(get_db)):
     rows = []
     for draft in db.scalars(select(ServerDraft).order_by(ServerDraft.created_at.desc())):
         result = read_public_result(get_settings().server_draft_results_dir, draft.id)
-        confirmed = is_confirmed_server_draft(db, draft.id)
+        confirmed, completed_at = is_confirmed_server_draft(db, draft.id, result)
+        queued = is_server_draft_queued(draft.id)
+        check_queued = bool(
+            completed_at
+            and has_server_draft_audit(db, draft.id, "server-draft-check", since=completed_at)
+        )
         rows.append(
             {
                 "draft": draft,
                 "result": result,
                 "confirmed": confirmed,
-                "can_confirm": result.get("status") == "pending" and bool(result.get("fingerprint")) and not confirmed,
-                "can_check": result.get("status") == "pending" and bool(result.get("fingerprint")) and confirmed,
-                "can_scan": result.get("status") != "pending",
+                "can_confirm": (
+                    result.get("status") == "pending" and bool(result.get("fingerprint")) and not queued
+                ),
+                "can_check": confirmed and not queued and not check_queued,
+                "can_scan": result.get("status") != "pending" and not confirmed and not queued,
             }
         )
     return render(request, "server_drafts.html", {"drafts": rows}, db)
@@ -216,13 +250,28 @@ async def server_draft_create(request: Request, db: Session = Depends(get_db)):
         if not 1 <= len(name) <= 120 or "\n" in name or "\r" in name:
             raise ValueError("name is invalid")
         draft = ServerDraft(id=str(uuid.uuid4()), name=name, host=host, ssh_user=ssh_user, port=port)
-        queue_server_draft(draft, "scan")
+        make_draft_request(draft.id, draft.host, draft.ssh_user, draft.port, "scan")
     except (TypeError, ValueError):
         write_audit(db, request, user, "server-draft-create", "error", "invalid request")
         add_flash(request, "bad", "Проверьте параметры тестового сервера")
         return redirect("/network/server-drafts/new")
     db.add(draft)
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        try:
+            write_audit(db, request, user, "server-draft-create", "error", "persistence unavailable")
+        except SQLAlchemyError:
+            db.rollback()
+        add_flash(request, "bad", "Не удалось сохранить тестовый сервер")
+        return redirect("/network/server-drafts/new")
+    try:
+        queue_server_draft(draft, "scan")
+    except (OSError, ValueError):
+        write_audit(db, request, user, "server-draft-create", "error", "queue unavailable", target_client=draft.id)
+        add_flash(request, "bad", "Сервер сохранен, но проверка не поставлена в очередь")
+        return redirect("/network/server-drafts")
     write_audit(db, request, user, "server-draft-create", "ok", "queued", target_client=draft.id)
     add_flash(request, "ok", "Проверка сервера поставлена в очередь")
     return redirect("/network/server-drafts")
@@ -250,7 +299,15 @@ async def server_draft_confirm(draft_id: str, request: Request, db: Session = De
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
     result = read_public_result(get_settings().server_draft_results_dir, draft.id)
-    fingerprint = result.get("fingerprint") if result.get("status") == "pending" else None
+    fingerprint = (
+        result.get("fingerprint")
+        if result.get("status") == "pending" and not is_server_draft_queued(draft.id)
+        else None
+    )
+    if not fingerprint:
+        write_audit(db, request, user, "server-draft-confirm", "error", "not confirmable", target_client=draft.id)
+        add_flash(request, "bad", "Нет подтверждаемого отпечатка")
+        return redirect("/network/server-drafts")
     try:
         queue_server_draft(draft, "confirm", fingerprint)
     except ValueError:
@@ -268,7 +325,12 @@ async def server_draft_check(draft_id: str, request: Request, db: Session = Depe
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
     result = read_public_result(get_settings().server_draft_results_dir, draft.id)
-    if result.get("status") != "pending" or not result.get("fingerprint") or not is_confirmed_server_draft(db, draft.id):
+    confirmed, completed_at = is_confirmed_server_draft(db, draft.id, result)
+    already_checked = bool(
+        completed_at
+        and has_server_draft_audit(db, draft.id, "server-draft-check", since=completed_at)
+    )
+    if not confirmed or already_checked or is_server_draft_queued(draft.id):
         write_audit(db, request, user, "server-draft-check", "error", "not confirmed", target_client=draft.id)
         add_flash(request, "bad", "Сначала подтвердите найденный отпечаток")
         return redirect("/network/server-drafts")

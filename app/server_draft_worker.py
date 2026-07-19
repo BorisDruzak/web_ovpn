@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -128,7 +129,15 @@ def _confirm(request: DraftRequest, paths: DraftPaths, runner: Runner) -> None:
     if fingerprint != request.expected_fingerprint:
         raise DraftWorkerError("fingerprint does not match scanned candidate")
     _write_private(_known_hosts_path(paths, request.id), candidate)
-    write_public_result(paths.results_dir, request.id, {"status": "pending", "fingerprint": fingerprint})
+    write_public_result(
+        paths.results_dir,
+        request.id,
+        {
+            "status": "ok",
+            "fingerprint": fingerprint,
+            "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        },
+    )
 
 
 def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> None:
