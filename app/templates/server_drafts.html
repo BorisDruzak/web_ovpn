@@ -4,6 +4,8 @@
 {% block content %}
 <section class="card">
   <div class="section-header"><div><h2>SSH access check</h2><p class="muted">Compare the fingerprint out of band before confirmation.</p></div><div><a class="button secondary" href="/network/server-drafts/public-key">Download public key</a> <a class="button" href="/network/server-drafts/new">Add server</a></div></div>
+  <label>Observer public key<textarea class="textarea-code" data-observer-public-key readonly aria-label="Observer public key"></textarea></label>
+  <div><button class="button secondary" type="button" data-copy-observer-key disabled>Copy public key</button> <span class="muted" data-observer-key-status aria-live="polite">Loading public key…</span></div>
 </section>
 <section class="card">
   <h2>Test servers</h2>

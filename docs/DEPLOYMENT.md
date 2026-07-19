@@ -79,6 +79,25 @@ ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/net
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json dashboard"
 ```
 
+## SSH Server Draft Checks
+
+The Test servers page verifies an existing SSH target from the gateway; it does
+not enroll the target as a Network Observer collector. The observer private key
+remains gateway-only and is never downloaded, displayed, copied, or stored with
+the draft.
+
+For each target:
+
+1. Download or copy the displayed observer public key from `/network/server-drafts`.
+2. Install that public key in the target account's `~/.ssh/authorized_keys`.
+3. Create a server draft with the target name, host, SSH user, and port; the worker scans the target host key.
+4. Compare the displayed host-key fingerprint with a trusted, out-of-band source, then confirm the fingerprint in the page.
+5. Wait for the worker to complete the pinned SSH check, then read its fixed SSH result in the draft list.
+
+Drafts only request these scan, confirmation, and pinned-check actions. They do
+not add collector targets, change the target's host key, or expose host keys or
+private storage beyond the fixed check result.
+
 ## Network Observer Setup
 
 The installer creates:

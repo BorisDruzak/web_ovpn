@@ -147,6 +147,15 @@ def test_public_key_download_excludes_private_material(tmp_path, monkeypatch):
     assert "PRIVATE" not in response.text
 
 
+def test_draft_key_copy_uses_safe_dom_only():
+    template = Path("app/templates/server_drafts.html").read_text()
+    script = Path("app/static/app.js").read_text()
+    assert "data-copy-observer-key" in template
+    assert "navigator.clipboard.writeText" in script
+    assert "innerHTML" not in script
+    assert "server-observer.key" not in template
+
+
 def test_confirm_uses_stored_fingerprint_and_audits_uuid(tmp_path, monkeypatch):
     client = make_logged_in_client(tmp_path, monkeypatch)
     draft_id = create_draft(client, tmp_path)
