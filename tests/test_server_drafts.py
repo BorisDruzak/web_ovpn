@@ -17,6 +17,7 @@ from app.server_drafts import (
 from app.server_draft_worker import (
     DraftPaths,
     DraftWorkerError,
+    process_queue,
     process_request,
 )
 
@@ -113,14 +114,62 @@ def test_cleanup_removes_only_the_uuid_private_files(tmp_path, fake_runner):
     fake_runner.assert_not_called()
 
 
-def test_duplicate_check_is_not_run_twice(tmp_path, fake_runner):
+def test_cleanup_queue_request_ignores_malformed_unrelated_fields(tmp_path, fake_runner):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    for directory, suffix in ((paths.private_dir, ".candidate"), (paths.private_dir, ".known_hosts")):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{draft_id}{suffix}").write_text("private", encoding="utf-8")
+    paths.queue_dir.mkdir(parents=True)
+    request_path = paths.queue_dir / f"{draft_id}.json"
+    request_path.write_text(
+        json.dumps({"id": draft_id, "action": "cleanup", "host": None, "ssh_user": "bad;user", "port": 0}),
+        encoding="utf-8",
+    )
+    paths.results_dir.mkdir(parents=True)
+    (paths.results_dir / f"{draft_id}.json").write_text('{"status": "pending"}', encoding="utf-8")
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, fake_runner) == 1
+
+    assert not list(paths.private_dir.glob(f"{draft_id}.*"))
+    assert not request_path.exists()
+    assert not (paths.results_dir / f"{draft_id}.json").exists()
+    fake_runner.assert_not_called()
+
+
+def test_duplicate_check_private_claim_is_not_run_twice(tmp_path, fake_runner):
     request = draft_request("check")
     paths = draft_paths(tmp_path)
-    paths.results_dir.mkdir(parents=True)
-    (paths.results_dir / f"{request.id}.json").write_text('{"status": "checking"}', encoding="utf-8")
+    paths.private_dir.mkdir(parents=True)
+    (paths.private_dir / f"{request.id}.known_hosts").write_text(
+        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
+    )
+    (paths.private_dir / f"{request.id}.check.lock").write_text("", encoding="utf-8")
 
     assert process_request(request, paths, fake_runner) == 0
     fake_runner.assert_not_called()
+    assert read_public_result(paths.results_dir, request.id) == {"status": "pending"}
+
+
+def test_check_never_publishes_internal_claim_status(tmp_path, fake_runner):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    paths.private_dir.mkdir(parents=True)
+    (paths.private_dir / f"{request.id}.known_hosts").write_text(
+        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
+    )
+    paths.results_dir.mkdir(parents=True)
+    (paths.results_dir / f"{request.id}.json").write_text('{"status": "pending"}', encoding="utf-8")
+
+    def runner(*_args, **_kwargs):
+        assert read_public_result(paths.results_dir, request.id) == {"status": "pending"}
+        assert (paths.private_dir / f"{request.id}.check.lock").exists()
+        return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+    process_request(request, paths, runner)
+
+    assert read_public_result(paths.results_dir, request.id) == {"status": "ok"}
+    assert not (paths.private_dir / f"{request.id}.check.lock").exists()
 
 
 def test_timeout_writes_only_safe_category(tmp_path, fake_runner):

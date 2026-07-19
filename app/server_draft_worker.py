@@ -68,12 +68,13 @@ def process_queue(queue_dir: Path, results_dir: Path, private_dir: Path, runner:
 
 def process_request(request: DraftRequest, paths: DraftPaths, runner: Runner = subprocess.run) -> int:
     """Process exactly one validated request; return zero for a duplicate check."""
+    if request.action == "cleanup":
+        cleanup_request = make_draft_request(request.id, "cleanup", "cleanup", 22, "cleanup")
+        _cleanup(cleanup_request.id, paths)
+        return 1
     request = make_draft_request(
         request.id, request.host, request.ssh_user, request.port, request.action, request.expected_fingerprint
     )
-    if request.action == "cleanup":
-        _cleanup(request.id, paths)
-        return 1
     if request.action == "scan":
         _scan(request, paths, runner)
         return 1
@@ -81,9 +82,12 @@ def process_request(request: DraftRequest, paths: DraftPaths, runner: Runner = s
         _confirm(request, paths, runner)
         return 1
     if request.action == "check":
-        if _raw_status(paths.results_dir, request.id) == "checking":
+        if not _claim_check(paths, request.id):
             return 0
-        _check(request, paths, runner)
+        try:
+            _check(request, paths, runner)
+        finally:
+            _release_check(paths, request.id)
         return 1
     raise DraftWorkerError("action is not allowed")
 
@@ -131,8 +135,6 @@ def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> None:
     known_hosts = _known_hosts_path(paths, request.id)
     if not known_hosts.is_file():
         raise DraftWorkerError("confirmed known-hosts file is unavailable")
-    # ``checking`` is an internal sentinel read only by this worker.
-    _write_raw_result(paths.results_dir / f"{request.id}.json", {"status": "checking"})
     command = [
         "ssh", "-i", OBSERVER_KEY_PATH, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
         "-o", f"UserKnownHostsFile={known_hosts}", "-p", str(request.port),
@@ -180,6 +182,8 @@ def _read_request(path: Path) -> DraftRequest:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("request must be an object")
+    if payload.get("action") == "cleanup":
+        return make_draft_request(payload.get("id"), "cleanup", "cleanup", 22, "cleanup")
     return make_draft_request(
         payload.get("id"), payload.get("host"), payload.get("ssh_user"), payload.get("port"),
         payload.get("action"), payload.get("expected_fingerprint"),
@@ -194,6 +198,27 @@ def _known_hosts_path(paths: DraftPaths, draft_id: str) -> Path:
     return paths.private_dir / f"{draft_id}.known_hosts"
 
 
+def _check_lock_path(paths: DraftPaths, draft_id: str) -> Path:
+    return paths.private_dir / f"{draft_id}.check.lock"
+
+
+def _claim_check(paths: DraftPaths, draft_id: str) -> bool:
+    paths.private_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(_check_lock_path(paths, draft_id), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    os.close(descriptor)
+    return True
+
+
+def _release_check(paths: DraftPaths, draft_id: str) -> None:
+    try:
+        _check_lock_path(paths, draft_id).unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _cleanup(draft_id: str, paths: DraftPaths) -> None:
     for path in (_candidate_path(paths, draft_id), _known_hosts_path(paths, draft_id),
                  paths.queue_dir / f"{draft_id}.json", paths.results_dir / f"{draft_id}.json"):
@@ -206,11 +231,6 @@ def _cleanup(draft_id: str, paths: DraftPaths) -> None:
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, text, 0o600)
-
-
-def _write_raw_result(path: Path, result: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write(path, json.dumps(result, sort_keys=True), 0o640)
 
 
 def _atomic_write(path: Path, text: str, mode: int) -> None:
@@ -229,14 +249,6 @@ def _atomic_write(path: Path, text: str, mode: int) -> None:
         except FileNotFoundError:
             pass
         raise
-
-
-def _raw_status(results_dir: Path, draft_id: str) -> str | None:
-    try:
-        value = json.loads((results_dir / f"{draft_id}.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        return None
-    return value.get("status") if isinstance(value, dict) and isinstance(value.get("status"), str) else None
 
 
 def main(argv: list[str] | None = None) -> int:
