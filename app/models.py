@@ -60,3 +60,23 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(160), unique=True, index=True, nullable=False)
     value: Mapped[str] = mapped_column(Text, default="", nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ServerDraft(Base):
+    """Public metadata for an SSH access-check draft.
+
+    Private key material and raw host keys are deliberately owned by the
+    separate worker and are never represented in the web database.
+    """
+
+    __tablename__ = "server_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    host: Mapped[str] = mapped_column(String(253), nullable=False)
+    ssh_user: Mapped[str] = mapped_column(String(64), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, default=22, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )

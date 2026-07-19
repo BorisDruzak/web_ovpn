@@ -35,6 +35,10 @@ class Settings:
     share_out_dir: Path
     archive_dir: Path
     routeros_backup_dir: Path
+    server_draft_queue_dir: Path
+    server_draft_results_dir: Path
+    server_draft_private_dir: Path
+    observer_public_key_path: Path
     download_ttl_minutes: int
     session_cookie_name: str
 
@@ -62,6 +66,18 @@ def get_settings() -> Settings:
         share_out_dir=_path_env("SHARE_OUT_DIR", "/mnt/antares_soft/vpn_config"),
         archive_dir=_path_env("ARCHIVE_DIR", "/etc/openvpn/client-generator/archive"),
         routeros_backup_dir=_path_env("ROUTEROS_BACKUP_DIR", "/var/backups/routeros"),
+        server_draft_queue_dir=_path_env(
+            "SERVER_DRAFT_QUEUE_DIR", "/var/lib/openvpn-web/server-drafts/queue"
+        ),
+        server_draft_results_dir=_path_env(
+            "SERVER_DRAFT_RESULTS_DIR", "/var/lib/openvpn-web/server-drafts/results"
+        ),
+        server_draft_private_dir=_path_env(
+            "SERVER_DRAFT_PRIVATE_DIR", "/var/lib/openvpn-web/server-drafts/private"
+        ),
+        observer_public_key_path=_path_env(
+            "OBSERVER_PUBLIC_KEY_PATH", "/etc/openvpn-web/server-observer.pub"
+        ),
         download_ttl_minutes=int(os.environ.get("DOWNLOAD_TOKEN_TTL_MINUTES", "15")),
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
     )
