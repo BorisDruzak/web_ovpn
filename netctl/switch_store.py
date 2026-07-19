@@ -5,10 +5,12 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from .snmp.models import (
     CapabilityResult,
+    SwitchCounterSample,
     SwitchFdbEntry,
     SwitchPort,
     SwitchSnapshot,
@@ -32,6 +34,7 @@ _EMPTY_COUNTS = {
 _MAC = re.compile(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\Z")
 _VLAN_KEY = re.compile(r"(vid|fid):([1-9][0-9]*)\Z")
 _FDB_STATUSES = frozenset({"other", "invalid", "learned", "self", "mgmt"})
+_SQLITE_INTEGER_MAX = 2**63 - 1
 
 
 class SwitchDriver(Protocol):
@@ -52,9 +55,18 @@ def collect_and_save_switch(
 
     Only an explicit, internally consistent successful FDB capability replaces
     ``current_switch_fdb``. Transport failures and malformed snapshots are
-    recorded with fixed messages and never interpreted as an empty FDB.
+    reported with fixed messages and never interpreted as an empty FDB.
     """
-    source_id = _source_id(conn, source)
+    try:
+        source_id = _source_id(conn, source)
+    except SwitchPersistenceError:
+        raise
+    except Exception:
+        raise SwitchPersistenceError("Switch collection persistence failed") from None
+    try:
+        started_time = _parse_started_at(started_at)
+    except Exception:
+        raise SwitchPersistenceError("Switch collection persistence failed") from None
     try:
         snapshot = driver.collect()
     except Exception:
@@ -66,22 +78,25 @@ def collect_and_save_switch(
             error_message="Switch collection failed",
         )
 
-    validation_error = _validate_snapshot(snapshot)
+    try:
+        validation_error = _validate_snapshot(snapshot)
+        if not validation_error:
+            assert isinstance(snapshot, SwitchSnapshot)
+            fdb_capability = next(
+                capability
+                for capability in snapshot.capabilities
+                if capability.capability == "fdb"
+            )
+            fdb_outcome = fdb_capability.outcome.value
+    except Exception:
+        validation_error = "invalid_snapshot"
     if validation_error:
-        return _record_failed_run(
+        return _invalid_snapshot_result(
             conn,
             source_id=source_id,
-            started_at=started_at,
-            error_class="invalid_snapshot",
-            error_message="Switch snapshot is invalid",
         )
 
     assert isinstance(snapshot, SwitchSnapshot)
-    fdb_capability = next(
-        capability
-        for capability in snapshot.capabilities
-        if capability.capability == "fdb"
-    )
     try:
         with _atomic(conn):
             run_id = _create_run(
@@ -91,17 +106,37 @@ def collect_and_save_switch(
                 profile_id=snapshot.profile_id,
                 sys_uptime_ticks=snapshot.system.sys_uptime_ticks,
             )
-            _upsert_device(conn, source_id, run_id, snapshot, started_at)
-            _upsert_ports(conn, source_id, run_id, snapshot.ports, started_at)
-            _upsert_capabilities(
-                conn,
-                source_id,
-                snapshot,
-                checked_at=started_at,
-            )
-
             outcome = fdb_capability.outcome
-            if outcome in _REPLACING_FDB_OUTCOMES:
+            outcomes = {
+                capability.capability: capability.outcome.value
+                for capability in snapshot.capabilities
+            }
+            if outcome not in _REPLACING_FDB_OUTCOMES:
+                counts = dict(_EMPTY_COUNTS)
+                counts["fdb_current"] = _current_fdb_count(conn, source_id)
+                status = "failed"
+                error_class = "fdb_unavailable"
+                error_message = "Switch FDB collection was not successful"
+            elif _has_newer_or_equal_success(
+                conn,
+                source_id=source_id,
+                started_time=started_time,
+                exclude_run_id=run_id,
+            ):
+                counts = dict(_EMPTY_COUNTS)
+                counts["fdb_current"] = _current_fdb_count(conn, source_id)
+                status = "failed"
+                error_class = "stale_snapshot"
+                error_message = "Switch snapshot is not newer than current state"
+            else:
+                _upsert_device(conn, source_id, snapshot, started_at)
+                _upsert_ports(conn, source_id, run_id, snapshot.ports, started_at)
+                _upsert_capabilities(
+                    conn,
+                    source_id,
+                    snapshot,
+                    checked_at=started_at,
+                )
                 counts = _replace_fdb(
                     conn,
                     source_id=source_id,
@@ -112,17 +147,7 @@ def collect_and_save_switch(
                 status = "success"
                 error_class = ""
                 error_message = ""
-            else:
-                counts = dict(_EMPTY_COUNTS)
-                counts["fdb_current"] = _current_fdb_count(conn, source_id)
-                status = "partial"
-                error_class = "fdb_unavailable"
-                error_message = "Switch FDB collection was not successful"
-            counts["ports"] = len(snapshot.ports)
-            outcomes = {
-                capability.capability: capability.outcome.value
-                for capability in snapshot.capabilities
-            }
+                counts["ports"] = len(snapshot.ports)
             _finish_run(
                 conn,
                 run_id=run_id,
@@ -134,14 +159,14 @@ def collect_and_save_switch(
                 outcomes=outcomes,
                 counts=counts,
             )
-    except (sqlite3.Error, ValueError, TypeError, OverflowError):
+    except Exception:
         raise SwitchPersistenceError("Switch collection persistence failed") from None
 
     return _result(
         run_id=run_id,
         source_id=source_id,
         status=status,
-        fdb_outcome=fdb_capability.outcome.value,
+        fdb_outcome=fdb_outcome,
         counts=counts,
         error_class=error_class,
         error_message=error_message,
@@ -150,7 +175,11 @@ def collect_and_save_switch(
 
 def _source_id(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
     value = source.get("id")
-    if isinstance(value, bool) or not isinstance(value, int):
+    if (
+        type(value) is not int
+        or value < 1
+        or value > _SQLITE_INTEGER_MAX
+    ):
         raise SwitchPersistenceError("Switch collection source is invalid")
     try:
         row = conn.execute(
@@ -164,11 +193,11 @@ def _source_id(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
 
 
 def _validate_snapshot(snapshot: object) -> str:
-    if not isinstance(snapshot, SwitchSnapshot):
+    if type(snapshot) is not SwitchSnapshot:
         return "invalid_type"
-    if snapshot.snapshot_kind != "snmp_switch":
+    if type(snapshot.snapshot_kind) is not str or snapshot.snapshot_kind != "snmp_switch":
         return "invalid_kind"
-    if not isinstance(snapshot.system, SwitchSystem) or not _valid_system(
+    if type(snapshot.system) is not SwitchSystem or not _valid_system(
         snapshot.system
     ):
         return "invalid_system"
@@ -176,21 +205,36 @@ def _validate_snapshot(snapshot: object) -> str:
         snapshot.profile_fingerprint
     ):
         return "invalid_profile"
-    if not isinstance(snapshot.ports, tuple) or not all(
-        isinstance(port, SwitchPort) and _valid_port(port)
+    if type(snapshot.ports) is not tuple or not all(
+        type(port) is SwitchPort and _valid_port(port)
         for port in snapshot.ports
     ):
         return "invalid_ports"
-    if not isinstance(snapshot.fdb, tuple) or not all(
-        isinstance(entry, SwitchFdbEntry) and _valid_fdb_entry(entry)
+    if type(snapshot.fdb) is not tuple or not all(
+        type(entry) is SwitchFdbEntry and _valid_fdb_entry(entry)
         for entry in snapshot.fdb
     ):
         return "invalid_fdb"
-    if not isinstance(snapshot.capabilities, tuple) or not all(
-        isinstance(capability, CapabilityResult) and _valid_capability(capability)
+    if type(snapshot.capabilities) is not tuple or not all(
+        type(capability) is CapabilityResult and _valid_capability(capability)
         for capability in snapshot.capabilities
     ):
         return "invalid_capabilities"
+    if type(snapshot.vlan_memberships) is not tuple or not all(
+        type(row) is dict for row in snapshot.vlan_memberships
+    ):
+        return "invalid_vlan_memberships"
+    if snapshot.stp is not None and type(snapshot.stp) is not dict:
+        return "invalid_stp"
+    if type(snapshot.lldp_neighbors) is not tuple or not all(
+        type(row) is dict for row in snapshot.lldp_neighbors
+    ):
+        return "invalid_lldp"
+    if type(snapshot.counter_samples) is not tuple or not all(
+        type(sample) is SwitchCounterSample and _valid_counter_sample(sample)
+        for sample in snapshot.counter_samples
+    ):
+        return "invalid_counter_samples"
 
     port_keys = [port.port_key for port in snapshot.ports]
     if any(not _valid_text(key) for key in port_keys) or len(port_keys) != len(
@@ -240,12 +284,12 @@ def _validate_snapshot(snapshot: object) -> str:
 
 
 def _valid_text(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
+    return type(value) is str and bool(value.strip())
 
 
 def _valid_system(system: SwitchSystem) -> bool:
     return all(
-        isinstance(value, str)
+        type(value) is str
         for value in (
             system.sys_descr,
             system.sys_object_id,
@@ -261,8 +305,8 @@ def _valid_port(port: SwitchPort) -> bool:
         and _valid_optional_int(port.if_index, minimum=1, maximum=2_147_483_647)
         and _valid_optional_int(port.bridge_port, minimum=1, maximum=65_535)
         and _valid_optional_int(port.physical_port, minimum=1, maximum=65_535)
-        and isinstance(port.name, str)
-        and isinstance(port.alias, str)
+        and type(port.name) is str
+        and type(port.alias) is str
         and (port.mac is None or _valid_mac(port.mac))
         and _valid_text(port.admin_status)
         and _valid_text(port.oper_status)
@@ -278,10 +322,10 @@ def _valid_fdb_entry(entry: SwitchFdbEntry) -> bool:
         and _valid_optional_int(entry.bridge_port, minimum=1, maximum=65_535)
         and _valid_optional_int(entry.if_index, minimum=1, maximum=2_147_483_647)
         and _valid_optional_int(entry.physical_port, minimum=1, maximum=65_535)
-        and isinstance(entry.port_name, str)
-        and isinstance(entry.status, str)
+        and type(entry.port_name) is str
+        and type(entry.status) is str
         and entry.status in _FDB_STATUSES
-        and isinstance(entry.vlan_key, str)
+        and type(entry.vlan_key) is str
     ):
         return False
     if entry.vlan_key == "legacy:unknown":
@@ -305,32 +349,50 @@ def _valid_capability(capability: CapabilityResult) -> bool:
     return (
         _valid_text(capability.capability)
         and isinstance(capability.outcome, SnmpOutcome)
-        and isinstance(capability.rows, tuple)
+        and type(capability.rows) is tuple
         and all(_valid_varbind(row) for row in capability.rows)
-        and isinstance(capability.error_code, str)
-        and isinstance(capability.error_message, str)
-        and isinstance(capability.details, dict)
+        and type(capability.error_code) is str
+        and type(capability.error_message) is str
+        and type(capability.details) is dict
+    )
+
+
+def _valid_counter_sample(sample: SwitchCounterSample) -> bool:
+    return (
+        _valid_text(sample.port_key)
+        and _valid_optional_int(sample.if_index, minimum=1, maximum=2_147_483_647)
+        and _valid_optional_int(sample.sys_uptime_ticks, minimum=0)
+        and all(
+            _valid_optional_int(value, minimum=0)
+            for value in (
+                sample.in_errors,
+                sample.in_discards,
+                sample.out_errors,
+                sample.out_discards,
+                sample.in_octets,
+                sample.out_octets,
+            )
+        )
     )
 
 
 def _valid_varbind(row: object) -> bool:
-    if not isinstance(row, SnmpVarBind):
+    if type(row) is not SnmpVarBind:
         return False
     return (
-        isinstance(row.oid, tuple)
+        type(row.oid) is tuple
         and bool(row.oid)
         and all(
-            isinstance(part, int) and not isinstance(part, bool) and part >= 0
+            type(part) is int and part >= 0
             for part in row.oid
         )
         and _valid_text(row.value_type)
-        and not isinstance(row.value, bool)
-        and isinstance(row.value, (int, str, bytes))
+        and type(row.value) in (int, str, bytes)
     )
 
 
 def _valid_mac(value: object) -> bool:
-    return isinstance(value, str) and _MAC.fullmatch(value) is not None
+    return type(value) is str and _MAC.fullmatch(value) is not None
 
 
 def _valid_optional_int(
@@ -341,9 +403,20 @@ def _valid_optional_int(
 ) -> bool:
     if value is None:
         return True
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+    if type(value) is not int or value < minimum:
         return False
-    return maximum is None or value <= maximum
+    effective_maximum = _SQLITE_INTEGER_MAX if maximum is None else maximum
+    return value <= effective_maximum
+
+
+def _parse_started_at(value: object) -> datetime:
+    if type(value) is not str:
+        raise ValueError("started_at is invalid")
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("started_at is invalid")
+    return parsed.astimezone(timezone.utc)
 
 
 @contextmanager
@@ -458,7 +531,7 @@ def _record_failed_run(
                 outcomes={"fdb": SnmpOutcome.PARSE_ERROR.value},
                 counts=counts,
             )
-    except (sqlite3.Error, ValueError, TypeError, OverflowError):
+    except Exception:
         raise SwitchPersistenceError("Switch collection persistence failed") from None
     return _result(
         run_id=run_id,
@@ -471,10 +544,48 @@ def _record_failed_run(
     )
 
 
+def _invalid_snapshot_result(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+) -> dict[str, Any]:
+    try:
+        counts = dict(_EMPTY_COUNTS)
+        counts["fdb_current"] = _current_fdb_count(conn, source_id)
+    except Exception:
+        raise SwitchPersistenceError("Switch collection persistence failed") from None
+    return _result(
+        run_id=None,
+        source_id=source_id,
+        status="failed",
+        fdb_outcome=SnmpOutcome.PARSE_ERROR.value,
+        counts=counts,
+        error_class="invalid_snapshot",
+        error_message="Switch snapshot is invalid",
+    )
+
+
+def _has_newer_or_equal_success(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+    started_time: datetime,
+    exclude_run_id: int,
+) -> bool:
+    rows = conn.execute(
+        """
+        SELECT started_at
+        FROM switch_collection_runs
+        WHERE source_id = ? AND status = 'success' AND id != ?
+        """,
+        (source_id, exclude_run_id),
+    ).fetchall()
+    return any(_parse_started_at(row[0]) >= started_time for row in rows)
+
+
 def _upsert_device(
     conn: sqlite3.Connection,
     source_id: int,
-    run_id: int,
     snapshot: SwitchSnapshot,
     observed_at: str,
 ) -> None:
@@ -765,7 +876,7 @@ def _json(value: dict[str, Any]) -> str:
 
 def _result(
     *,
-    run_id: int,
+    run_id: int | None,
     source_id: int,
     status: str,
     fdb_outcome: str,

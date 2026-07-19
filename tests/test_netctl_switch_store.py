@@ -39,6 +39,25 @@ class _FailCommitConnection(sqlite3.Connection):
         super().commit()
 
 
+class _ExplodingStr(str):
+    def strip(self, chars: str | None = None) -> str:
+        raise RuntimeError("private validation detail")
+
+
+class _EqualitySpoofStr(str):
+    def __eq__(self, other: object) -> bool:
+        return other == "legacy:unknown"
+
+
+class _InequalitySpoofStr(str):
+    def __ne__(self, other: object) -> bool:
+        return False
+
+
+class _TupleSubclass(tuple):
+    pass
+
+
 def _source(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
     upsert_source(
         conn,
@@ -349,37 +368,90 @@ def test_failed_fdb_preserves_all_current_rows_and_emits_no_disappeared(
         _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
         "2026-07-19T10:00:00Z",
     )
-    before = _rows(
-        switch_conn,
-        "SELECT * FROM current_switch_fdb WHERE source_id = ?",
-        (source["id"],),
+    protected_tables = (
+        "switch_devices",
+        "switch_ports",
+        "switch_capabilities",
+        "current_switch_fdb",
+        "switch_fdb_events",
     )
-    event_count = switch_conn.execute(
-        "SELECT COUNT(*) FROM switch_fdb_events WHERE source_id = ?", (source["id"],)
-    ).fetchone()[0]
+    before = {
+        table: _rows(switch_conn, f"SELECT * FROM {table}")
+        for table in protected_tables
+    }
 
+    failed_snapshot = replace(
+        _snapshot((_entry("02:00:00:00:00:09", 9),), outcome=outcome),
+        system=replace(_snapshot(()).system, sys_name="older-failed-system"),
+        fdb=(),
+    )
     result = collect_and_save_switch(
         switch_conn,
         source,
-        _FakeDriver(_snapshot((), outcome=outcome)),
+        _FakeDriver(failed_snapshot),
         "2026-07-19T11:00:00Z",
     )
 
-    assert (result["status"], result["fdb_outcome"]) == ("partial", outcome.value)
-    assert _rows(
+    assert (result["status"], result["fdb_outcome"]) == ("failed", outcome.value)
+    assert result["error_class"] == "fdb_unavailable"
+    assert {
+        table: _rows(switch_conn, f"SELECT * FROM {table}")
+        for table in protected_tables
+    } == before
+    run = _rows(
         switch_conn,
-        "SELECT * FROM current_switch_fdb WHERE source_id = ?",
+        "SELECT status, error_class, outcomes_json FROM switch_collection_runs "
+        "WHERE id = ?",
+        (result["run_id"],),
+    )[0]
+    assert (run["status"], run["error_class"]) == ("failed", "fdb_unavailable")
+    assert f'"fdb":"{outcome.value}"' in run["outcomes_json"]
+
+
+def test_optional_capability_failure_does_not_block_confirmed_fdb_replacement(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_a")
+    snapshot = _snapshot((_entry("02:00:00:00:00:01", 1),))
+    snapshot = replace(
+        snapshot,
+        capabilities=(
+            CapabilityResult("optional_lldp", SnmpOutcome.TIMEOUT),
+            *snapshot.capabilities,
+        ),
+    )
+
+    result = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(snapshot), "2026-07-19T10:00:00Z"
+    )
+
+    assert (result["status"], result["fdb_outcome"]) == (
+        "success",
+        "success_with_rows",
+    )
+    assert result["counts"]["appeared"] == 1
+    capabilities = _rows(
+        switch_conn,
+        "SELECT capability, outcome FROM switch_capabilities "
+        "WHERE source_id = ? ORDER BY capability",
         (source["id"],),
-    ) == before
-    assert switch_conn.execute(
-        "SELECT COUNT(*) FROM switch_fdb_events WHERE source_id = ?", (source["id"],)
-    ).fetchone()[0] == event_count
+    )
+    assert capabilities == [
+        {"capability": "fdb", "outcome": "success_with_rows"},
+        {"capability": "optional_lldp", "outcome": "timeout"},
+    ]
 
 
 @pytest.mark.parametrize(
     "malformed",
     [
         {"snapshot_kind": "snmp_switch"},
+        replace(
+            _snapshot(()),
+            snapshot_kind=_InequalitySpoofStr("malformed-kind"),
+        ),
         _snapshot((), outcome=SnmpOutcome.SUCCESS_WITH_ROWS),
         _snapshot((_entry("02:00:00:00:00:02", 2),), outcome=SnmpOutcome.SUCCESS_EMPTY),
         replace(
@@ -389,6 +461,11 @@ def test_failed_fdb_preserves_all_current_rows_and_emits_no_disappeared(
                 _entry("02:00:00:00:00:02", 3),
             ),
         ),
+        replace(
+            _snapshot((_entry("02:00:00:00:00:02", 2),)),
+            fdb=_TupleSubclass((_entry("02:00:00:00:00:02", 2),)),
+        ),
+        replace(_snapshot(()), lldp_neighbors=_TupleSubclass(())),
     ],
 )
 def test_malformed_snapshot_fails_closed_without_changing_current(
@@ -403,21 +480,30 @@ def test_malformed_snapshot_fails_closed_without_changing_current(
         _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
         "2026-07-19T10:00:00Z",
     )
-    before = _rows(switch_conn, "SELECT * FROM current_switch_fdb")
-    event_count = switch_conn.execute(
-        "SELECT COUNT(*) FROM switch_fdb_events"
-    ).fetchone()[0]
+    protected_tables = (
+        "switch_collection_runs",
+        "switch_devices",
+        "switch_ports",
+        "switch_capabilities",
+        "current_switch_fdb",
+        "switch_fdb_events",
+    )
+    before = {
+        table: _rows(switch_conn, f"SELECT * FROM {table}")
+        for table in protected_tables
+    }
 
     result = collect_and_save_switch(
         switch_conn, source, _FakeDriver(malformed), "2026-07-19T11:00:00Z"
     )
 
     assert (result["status"], result["fdb_outcome"]) == ("failed", "parse_error")
+    assert result["run_id"] is None
     assert result["error_message"] == "Switch snapshot is invalid"
-    assert _rows(switch_conn, "SELECT * FROM current_switch_fdb") == before
-    assert switch_conn.execute(
-        "SELECT COUNT(*) FROM switch_fdb_events"
-    ).fetchone()[0] == event_count
+    assert {
+        table: _rows(switch_conn, f"SELECT * FROM {table}")
+        for table in protected_tables
+    } == before
 
 
 @pytest.mark.parametrize(
@@ -431,11 +517,24 @@ def test_malformed_snapshot_fails_closed_without_changing_current(
             ),
         ),
         replace(
+            _snapshot(()),
+            system=replace(_snapshot(()).system, sys_uptime_ticks=2**63),
+        ),
+        replace(
             _snapshot((_entry("02:00:00:00:00:02", 2),)),
             ports=(
                 replace(
                     _snapshot((_entry("02:00:00:00:00:02", 2),)).ports[0],
                     speed_bps="not-an-integer",  # type: ignore[arg-type]
+                ),
+            ),
+        ),
+        replace(
+            _snapshot((_entry("02:00:00:00:00:02", 2),)),
+            ports=(
+                replace(
+                    _snapshot((_entry("02:00:00:00:00:02", 2),)).ports[0],
+                    speed_bps=2**63,
                 ),
             ),
         ),
@@ -484,6 +583,18 @@ def test_malformed_snapshot_fails_closed_without_changing_current(
                 ),
             ),
         ),
+        replace(_snapshot(()), profile_id=_ExplodingStr("test-profile")),
+        replace(
+            _snapshot((_entry("02:00:00:00:00:02", 2),)),
+            fdb=(
+                replace(
+                    _entry("02:00:00:00:00:02", 2),
+                    fdb_id=None,
+                    vlan_id=None,
+                    vlan_key=_EqualitySpoofStr("invalid-vlan-key"),
+                ),
+            ),
+        ),
     ],
 )
 def test_typed_but_malformed_snapshot_fails_before_any_state_replacement(
@@ -499,6 +610,7 @@ def test_typed_but_malformed_snapshot_fails_before_any_state_replacement(
         "2026-07-19T10:00:00Z",
     )
     protected_tables = (
+        "switch_collection_runs",
         "switch_devices",
         "switch_ports",
         "switch_capabilities",
@@ -521,10 +633,97 @@ def test_typed_but_malformed_snapshot_fails_before_any_state_replacement(
         "failed",
         "invalid_snapshot",
     )
+    assert result["run_id"] is None
     assert {
         table: _rows(switch_conn, f"SELECT * FROM {table}")
         for table in protected_tables
     } == before
+
+
+@pytest.mark.parametrize(
+    ("first_time", "first_port", "second_time", "second_port", "second_status"),
+    [
+        (
+            "2026-07-19T10:00:00Z",
+            1,
+            "2026-07-19T11:00:00Z",
+            9,
+            "success",
+        ),
+        (
+            "2026-07-19T11:00:00Z",
+            9,
+            "2026-07-19T10:00:00Z",
+            1,
+            "failed",
+        ),
+        (
+            "2026-07-19T10:00:00Z",
+            2,
+            "2026-07-19T10:00:00Z",
+            3,
+            "failed",
+        ),
+    ],
+)
+def test_collection_order_never_allows_older_snapshot_to_reverse_current_state(
+    switch_conn: sqlite3.Connection,
+    first_time: str,
+    first_port: int,
+    second_time: str,
+    second_port: int,
+    second_status: str,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_a")
+    mac = "02:00:00:00:00:01"
+    first = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_snapshot((_entry(mac, first_port),))),
+        first_time,
+    )
+    second = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_snapshot((_entry(mac, second_port),))),
+        second_time,
+    )
+
+    assert second["status"] == second_status
+    current = _rows(
+        switch_conn,
+        "SELECT port_key, last_seen_at, collector_run_id FROM current_switch_fdb",
+    )
+    if second_status == "success":
+        assert current == [
+            {
+                "port_key": "ifindex:9",
+                "last_seen_at": second_time,
+                "collector_run_id": second["run_id"],
+            }
+        ]
+        assert second["counts"]["moved"] == 1
+    else:
+        assert (second["error_class"], second["error_message"]) == (
+            "stale_snapshot",
+            "Switch snapshot is not newer than current state",
+        )
+        assert current == [
+            {
+                "port_key": f"ifindex:{first_port}",
+                "last_seen_at": first_time,
+                "collector_run_id": first["run_id"],
+            }
+        ]
+        assert second["counts"]["moved"] == 0
+        assert _rows(
+            switch_conn,
+            "SELECT event_type, old_port_key, new_port_key FROM switch_fdb_events "
+            "WHERE collector_run_id = ?",
+            (second["run_id"],),
+        ) == []
 
 
 def test_sources_have_isolated_current_rows_and_events(
