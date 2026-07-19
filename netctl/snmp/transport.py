@@ -17,7 +17,11 @@ from pysnmp.hlapi.v3arch.asyncio import (
 )
 from pysnmp.proto import errind, rfc1902, rfc1905
 
-from netctl.config import load_secrets, snmp_community_env_name
+from netctl.config import (
+    load_secrets,
+    normalize_snmp_driver_options,
+    snmp_community_env_name,
+)
 
 from .models import CapabilityResult, SnmpVarBind
 from .oids import NumericOid, oid_text, require_numeric_oid
@@ -37,6 +41,9 @@ class SnmpBackend(Protocol):
 
 
 BackendFactory = Callable[..., SnmpBackend]
+DEFAULT_MAX_WALK_RESPONSES = 100
+DEFAULT_MAX_WALK_ROWS = 10_000
+MAX_WALK_DEADLINE_SECONDS = 3_600.0
 
 
 def collect_on_worker_loop(factory: Callable[[], Awaitable[T]]) -> T:
@@ -119,6 +126,15 @@ def _bounded_int(
     if value < minimum or value > maximum:
         raise ValueError(f"{field} is invalid")
     return value
+
+
+def _bounded_deadline(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("SNMP walk deadline is invalid")
+    deadline = float(value)
+    if deadline <= 0 or deadline > MAX_WALK_DEADLINE_SECONDS:
+        raise ValueError("SNMP walk deadline is invalid")
+    return deadline
 
 
 def _status_code(error_status: object) -> int | str:
@@ -255,6 +271,9 @@ class SnmpTransport:
         timeout_seconds: int = 2,
         retries: int = 1,
         max_repetitions: int = 25,
+        max_walk_responses: int = DEFAULT_MAX_WALK_RESPONSES,
+        max_walk_rows: int = DEFAULT_MAX_WALK_ROWS,
+        walk_deadline_seconds: float | None = None,
         backend_factory: BackendFactory | None = None,
     ) -> None:
         if snmp_version != "2c":
@@ -272,6 +291,24 @@ class SnmpTransport:
             minimum=1,
             maximum=100,
         )
+        max_walk_responses = _bounded_int(
+            max_walk_responses,
+            field="SNMP walk response limit",
+            minimum=1,
+            maximum=DEFAULT_MAX_WALK_RESPONSES,
+        )
+        max_walk_rows = _bounded_int(
+            max_walk_rows,
+            field="SNMP walk row limit",
+            minimum=1,
+            maximum=DEFAULT_MAX_WALK_ROWS,
+        )
+        if walk_deadline_seconds is None:
+            walk_deadline_seconds = min(
+                MAX_WALK_DEADLINE_SECONDS,
+                float(timeout_seconds * (retries + 1) * max_walk_responses),
+            )
+        walk_deadline_seconds = _bounded_deadline(walk_deadline_seconds)
         if not isinstance(community, str) or not community:
             raise ValueError("SNMP community secret is not configured")
 
@@ -281,6 +318,9 @@ class SnmpTransport:
         self._timeout_seconds = timeout_seconds
         self._retries = retries
         self._max_repetitions = max_repetitions
+        self._max_walk_responses = max_walk_responses
+        self._max_walk_rows = max_walk_rows
+        self._walk_deadline_seconds = walk_deadline_seconds
         factory = backend_factory or _PySnmpBackend
         try:
             self._backend = factory(
@@ -299,7 +339,9 @@ class SnmpTransport:
             f"SnmpTransport(host={self._host!r}, port={self._port!r}, "
             f"snmp_version={self._snmp_version!r}, "
             f"timeout_seconds={self._timeout_seconds!r}, retries={self._retries!r}, "
-            f"max_repetitions={self._max_repetitions!r}, community=<redacted>)"
+            f"max_repetitions={self._max_repetitions!r}, "
+            f"max_walk_responses={self._max_walk_responses!r}, "
+            f"max_walk_rows={self._max_walk_rows!r}, community=<redacted>)"
         )
 
     @classmethod
@@ -310,12 +352,13 @@ class SnmpTransport:
         secrets: Mapping[str, str] | None = None,
         backend_factory: BackendFactory | None = None,
     ) -> SnmpTransport:
-        options_value = source.get("driver_options", {})
-        if not isinstance(options_value, Mapping):
-            raise ValueError("SNMP driver options are invalid")
-        version = options_value.get("snmp_version", "2c")
-        if version != "2c":
-            raise ValueError("SNMP version is unsupported")
+        if source.get("driver") != "snmp_switch":
+            raise ValueError("SNMP source driver is unsupported")
+        if any("community" in str(key).lower() for key in source):
+            raise ValueError("SNMP community must be configured through secret_ref")
+        if any(str(key).startswith("snmp_") for key in source):
+            raise ValueError("unsupported SNMP source option")
+        options_value = normalize_snmp_driver_options(source.get("driver_options"))
 
         secret_ref = source.get("secret_ref")
         if not isinstance(secret_ref, str) or not secret_ref:
@@ -329,10 +372,10 @@ class SnmpTransport:
             host=source.get("host"),  # type: ignore[arg-type]
             port=source.get("port", 161),  # type: ignore[arg-type]
             community=community,
-            snmp_version=version,
-            timeout_seconds=options_value.get("timeout_seconds", 2),  # type: ignore[arg-type]
-            retries=options_value.get("retries", 1),  # type: ignore[arg-type]
-            max_repetitions=options_value.get("max_repetitions", 25),  # type: ignore[arg-type]
+            snmp_version=options_value["snmp_version"],
+            timeout_seconds=options_value["timeout_seconds"],
+            retries=options_value["retries"],
+            max_repetitions=options_value["max_repetitions"],
             backend_factory=backend_factory,
         )
 
@@ -369,13 +412,33 @@ class SnmpTransport:
     ) -> CapabilityResult:
         numeric = require_numeric_oid(oid)
         name = capability or oid_text(numeric)
-        responses: list[RawResponse] = []
+        rows: list[SnmpVarBind] = []
+        iterator = self._backend.walk(numeric)
         try:
-            async for response in self._backend.walk(numeric):
-                responses.append(response)
-                failure = _classify_response_error(name, response[0], response[1])
-                if failure is not None:
-                    return failure
+            async with asyncio.timeout(self._walk_deadline_seconds):
+                for _ in range(self._max_walk_responses):
+                    try:
+                        response = await anext(iterator)
+                    except StopAsyncIteration:
+                        return self._success_result(name, rows)
+                    failure = self._consume_response(
+                        name, response, rows, row_limit=self._max_walk_rows
+                    )
+                    if failure is not None:
+                        return failure
+                return _failure_result(
+                    name,
+                    SnmpOutcome.PARSE_ERROR,
+                    "walk_response_limit",
+                    "SNMP walk response limit reached",
+                )
+        except TimeoutError:
+            return _failure_result(
+                name,
+                SnmpOutcome.TIMEOUT,
+                "walk_deadline_exceeded",
+                "SNMP walk deadline exceeded",
+            )
         except Exception:
             return _failure_result(
                 name,
@@ -383,7 +446,13 @@ class SnmpTransport:
                 "transport_error",
                 "SNMP transport failed",
             )
-        return self._consume_responses(name, responses)
+        finally:
+            closer = getattr(iterator, "aclose", None)
+            if closer is not None:
+                try:
+                    await closer()
+                except Exception:
+                    pass
 
     def walk_numeric(
         self, oid: tuple[int, ...], *, capability: str = ""
@@ -405,31 +474,9 @@ class SnmpTransport:
         rows: list[SnmpVarBind] = []
         try:
             for response in responses:  # type: ignore[union-attr]
-                error_indication, error_status, _error_index, var_binds = response
-                failure = _classify_response_error(
-                    capability, error_indication, error_status
-                )
+                failure = SnmpTransport._consume_response(capability, response, rows)
                 if failure is not None:
                     return failure
-                for var_bind in var_binds:
-                    value = var_bind[1]
-                    if isinstance(value, rfc1905.EndOfMibView):
-                        continue
-                    if isinstance(value, rfc1905.NoSuchObject):
-                        return _failure_result(
-                            capability,
-                            SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
-                            "no_such_object",
-                            "SNMP object is unsupported",
-                        )
-                    if isinstance(value, rfc1905.NoSuchInstance):
-                        return _failure_result(
-                            capability,
-                            SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
-                            "no_such_instance",
-                            "SNMP object is unsupported",
-                        )
-                    rows.append(_convert_var_bind(var_bind))
         except Exception:
             return _failure_result(
                 capability,
@@ -438,6 +485,10 @@ class SnmpTransport:
                 "SNMP response value is malformed",
             )
 
+        return SnmpTransport._success_result(capability, rows)
+
+    @staticmethod
+    def _success_result(capability: str, rows: list[SnmpVarBind]) -> CapabilityResult:
         return CapabilityResult(
             capability=capability,
             outcome=(
@@ -445,3 +496,51 @@ class SnmpTransport:
             ),
             rows=tuple(rows),
         )
+
+    @staticmethod
+    def _consume_response(
+        capability: str,
+        response: RawResponse,
+        rows: list[SnmpVarBind],
+        *,
+        row_limit: int | None = None,
+    ) -> CapabilityResult | None:
+        try:
+            error_indication, error_status, _error_index, var_binds = response
+            failure = _classify_response_error(capability, error_indication, error_status)
+            if failure is not None:
+                return failure
+            for var_bind in var_binds:
+                value = var_bind[1]
+                if isinstance(value, rfc1905.EndOfMibView):
+                    continue
+                if isinstance(value, rfc1905.NoSuchObject):
+                    return _failure_result(
+                        capability,
+                        SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+                        "no_such_object",
+                        "SNMP object is unsupported",
+                    )
+                if isinstance(value, rfc1905.NoSuchInstance):
+                    return _failure_result(
+                        capability,
+                        SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+                        "no_such_instance",
+                        "SNMP object is unsupported",
+                    )
+                if row_limit is not None and len(rows) >= row_limit:
+                    return _failure_result(
+                        capability,
+                        SnmpOutcome.PARSE_ERROR,
+                        "walk_row_limit",
+                        "SNMP walk row limit reached",
+                    )
+                rows.append(_convert_var_bind(var_bind))
+        except Exception:
+            return _failure_result(
+                capability,
+                SnmpOutcome.PARSE_ERROR,
+                "malformed_value",
+                "SNMP response value is malformed",
+            )
+        return None

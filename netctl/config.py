@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ SNMP_OPTION_YAML_KEYS = {
     "intent_stable_id": "intent_stable_id",
 }
 SNMP_DRIVER_OPTION_KEYS = frozenset(SNMP_OPTION_YAML_KEYS)
+SNMP_SECRET_REF_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*\Z")
 
 
 def sources_dir(config_path: str | Path) -> Path:
@@ -317,8 +319,9 @@ def secret_env_name(secret_ref: str) -> str:
 
 
 def snmp_community_env_name(secret_ref: str) -> str:
-    token = "".join(ch if ch.isalnum() else "_" for ch in secret_ref.upper())
-    return f"NETCTL_SECRET_{token}_COMMUNITY"
+    if not isinstance(secret_ref, str) or not SNMP_SECRET_REF_PATTERN.fullmatch(secret_ref):
+        raise ValueError("SNMP secret_ref is invalid")
+    return f"NETCTL_SECRET_{secret_ref.upper()}_COMMUNITY"
 
 
 def load_secrets(path: str | Path | None = None) -> dict[str, str]:

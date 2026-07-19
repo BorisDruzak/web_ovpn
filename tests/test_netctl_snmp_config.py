@@ -413,11 +413,21 @@ def test_snmp_rejects_community_alias_key() -> None:
 def test_snmp_secret_env_name_is_distinct_from_password_env_name() -> None:
     from netctl.config import secret_env_name, snmp_community_env_name
 
-    secret_ref = "switch-docs-example"
+    secret_ref = "switch_docs_example"
     assert snmp_community_env_name(secret_ref) == (
         "NETCTL_SECRET_SWITCH_DOCS_EXAMPLE_COMMUNITY"
     )
     assert snmp_community_env_name(secret_ref) != secret_env_name(secret_ref)
+
+
+@pytest.mark.parametrize("secret_ref", ["switch-docs", "switch docs", "switch__docs", "1switch"])
+def test_snmp_community_env_name_rejects_ambiguous_secret_references(secret_ref: str) -> None:
+    from netctl.config import snmp_community_env_name
+
+    with pytest.raises(ValueError) as error:
+        snmp_community_env_name(secret_ref)
+
+    assert error.value.args == ("SNMP secret_ref is invalid",)
 
 
 def test_source_public_removes_resolved_secret_material_recursively() -> None:

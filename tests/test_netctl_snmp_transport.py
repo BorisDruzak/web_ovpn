@@ -206,6 +206,106 @@ def test_walk_stops_consuming_backend_after_first_timeout() -> None:
     assert result.error_code == "timeout"
 
 
+def test_walk_collects_multiple_pages_incrementally_within_limits() -> None:
+    from netctl.snmp import SnmpOutcome
+
+    backend = FakeBackend(
+        [
+            _response((rfc1902.ObjectName(BASE_OID + (1,)), rfc1902.Integer32(1))),
+            _response((rfc1902.ObjectName(BASE_OID + (2,)), rfc1902.Integer32(2))),
+        ]
+    )
+
+    result = asyncio.run(_transport(backend).walk(BASE_OID))
+
+    assert result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+    assert [row.value for row in result.rows] == [1, 2]
+
+
+def test_walk_response_limit_closes_iterator_and_returns_sanitized_outcome() -> None:
+    from netctl.snmp import SnmpOutcome
+
+    class EndlessBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.generator_closed = False
+
+        async def walk(
+            self, oid: tuple[int, ...]
+        ) -> AsyncIterator[
+            tuple[object, object, object, tuple[tuple[object, object], ...]]
+        ]:
+            self.requested_oids.append(oid)
+            try:
+                while True:
+                    yield _response(
+                        (rfc1902.ObjectName(BASE_OID), rfc1902.Integer32(1))
+                    )
+            finally:
+                self.generator_closed = True
+
+    backend = EndlessBackend()
+    result = asyncio.run(
+        _transport(backend, max_walk_responses=2, max_walk_rows=10).walk(BASE_OID)
+    )
+
+    assert result.outcome is SnmpOutcome.PARSE_ERROR
+    assert result.error_code == "walk_response_limit"
+    assert result.rows == ()
+    assert backend.generator_closed is True
+
+
+def test_walk_row_limit_returns_sanitized_outcome_without_retaining_more_rows() -> None:
+    from netctl.snmp import SnmpOutcome
+
+    backend = FakeBackend(
+        [
+            _response(
+                (rfc1902.ObjectName(BASE_OID + (1,)), rfc1902.Integer32(1)),
+                (rfc1902.ObjectName(BASE_OID + (2,)), rfc1902.Integer32(2)),
+            )
+        ]
+    )
+
+    result = asyncio.run(_transport(backend, max_walk_rows=1).walk(BASE_OID))
+
+    assert result.outcome is SnmpOutcome.PARSE_ERROR
+    assert result.error_code == "walk_row_limit"
+    assert result.rows == ()
+
+
+def test_walk_deadline_cancels_injected_backend_and_returns_sanitized_outcome() -> None:
+    from netctl.snmp import SnmpOutcome
+
+    class SlowBackend(FakeBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = False
+
+        async def walk(
+            self, oid: tuple[int, ...]
+        ) -> AsyncIterator[
+            tuple[object, object, object, tuple[tuple[object, object], ...]]
+        ]:
+            self.requested_oids.append(oid)
+            try:
+                await asyncio.sleep(1)
+                yield _response()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    backend = SlowBackend()
+    result = asyncio.run(
+        _transport(backend, walk_deadline_seconds=0.01).walk(BASE_OID)
+    )
+
+    assert result.outcome is SnmpOutcome.TIMEOUT
+    assert result.error_code == "walk_deadline_exceeded"
+    assert result.rows == ()
+    assert backend.cancelled is True
+
+
 @pytest.mark.parametrize("error_status", ["authorizationError", "noAccess"])
 def test_only_explicit_authorization_errors_are_classified_as_auth_failure(
     error_status: str,
@@ -342,9 +442,10 @@ def test_source_factory_uses_distinct_community_environment_name() -> None:
 
     transport = SnmpTransport.from_source(
         {
+            "driver": "snmp_switch",
             "host": "192.0.2.44",
             "port": 161,
-            "secret_ref": "switch-docs",
+            "secret_ref": "switch_docs",
             "driver_options": {
                 "snmp_version": "2c",
                 "timeout_seconds": 2,
@@ -366,15 +467,46 @@ def test_missing_community_has_fixed_secret_safe_error() -> None:
     with pytest.raises(ValueError) as error:
         SnmpTransport.from_source(
             {
+                "driver": "snmp_switch",
                 "host": "192.0.2.44",
                 "port": 161,
-                "secret_ref": "switch-docs",
+                "secret_ref": "switch_docs",
                 "driver_options": {"snmp_version": "2c"},
             },
             secrets={},
         )
 
     assert error.value.args == ("SNMP community secret is not configured",)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"driver": "mikrotik_api", "secret_ref": "switch_docs", "driver_options": {}},
+        {"driver": "snmp_switch", "secret_ref": "switch-docs", "driver_options": {}},
+        {"driver": "snmp_switch", "secret_ref": "switch_docs", "community": SECRET, "driver_options": {}},
+        {"driver": "snmp_switch", "secret_ref": "switch_docs", "driver_options": {"community": SECRET}},
+        {"driver": "snmp_switch", "secret_ref": "switch_docs", "driver_options": {"unknown": 1}},
+    ],
+)
+def test_source_factory_fails_closed_before_secret_or_backend_for_invalid_source(
+    source: dict[str, object],
+) -> None:
+    from netctl.snmp.transport import SnmpTransport
+
+    class UnreadableSecrets(dict[str, str]):
+        def get(self, key: object, default: object = None) -> str:  # type: ignore[override]
+            raise AssertionError("secret lookup must not run")
+
+    def backend_factory(**_: object) -> FakeBackend:
+        raise AssertionError("backend factory must not run")
+
+    with pytest.raises(ValueError):
+        SnmpTransport.from_source(
+            source,
+            secrets=UnreadableSecrets(),
+            backend_factory=backend_factory,
+        )
 
 
 def test_public_models_are_frozen_and_use_tuple_rows() -> None:
