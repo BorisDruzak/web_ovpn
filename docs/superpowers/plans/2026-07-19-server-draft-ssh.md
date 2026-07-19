@@ -102,7 +102,7 @@ Expected: pass.
 
 **Interfaces:**
 - process_queue(queue_dir, results_dir, private_dir, runner) returns processed request count.
-- Worker actions are exactly scan, confirm, and check.
+- Worker actions are exactly scan, confirm, check, and cleanup.
 - Worker owns private candidate and known-hosts files named by UUID; web never reads them.
 
 - [ ] **Step 1: Write failing worker tests**
@@ -128,6 +128,13 @@ Expected: pass.
         assert "BatchMode=yes" in command
         assert "StrictHostKeyChecking=yes" in command
 
+    def test_cleanup_removes_only_the_uuid_private_files(tmp_path, fake_runner):
+        save_candidate(paths(tmp_path), "draft-id", "server.example ssh-ed25519 AAA")
+        pin_candidate(paths(tmp_path), "draft-id", "server.example ssh-ed25519 AAA")
+        process_request(request_for("cleanup"), paths(tmp_path), fake_runner)
+        assert not private_files(paths(tmp_path), "draft-id")
+        fake_runner.assert_not_called()
+
 - [ ] **Step 2: Run RED**
 
 Run: py -3 -m pytest tests/test_server_drafts.py -q
@@ -136,7 +143,7 @@ Expected: failures because worker module and workflow are absent.
 
 - [ ] **Step 3: Implement worker with fixed commands**
 
-For scan, invoke only ssh-keyscan with port, eight-second scan timeout, ED25519 selection, and validated host. Derive fingerprint with ssh-keygen. Save raw scan output only in private worker storage. Confirm compares the browser-independent expected fingerprint with the derived candidate fingerprint, then atomically creates the UUID known-hosts file. Check invokes SSH with observer key, draft known-hosts path, BatchMode, StrictHostKeyChecking, port, validated user at host, and final command true. Use subprocess timeout 20, errors replace, and map every non-success condition to an allowed status without persisting output.
+For scan, invoke only ssh-keyscan with port, eight-second scan timeout, ED25519 selection, and validated host. Derive fingerprint with ssh-keygen. Save raw scan output only in private worker storage. Confirm compares the browser-independent expected fingerprint with the derived candidate fingerprint, then atomically creates the UUID known-hosts file. Check invokes SSH with observer key, draft known-hosts path, BatchMode, StrictHostKeyChecking, port, validated user at host, and final command true. Cleanup accepts only a UUID and removes only its candidate, known-hosts, request, and public result files without invoking a subprocess. Use subprocess timeout 20, errors replace, and map every non-success condition to an allowed status without persisting output.
 
 - [ ] **Step 4: Add duplicate and timeout tests**
 
