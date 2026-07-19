@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from netctl.config import load_config_sources
 from netctl.snmp.models import (
     CapabilityResult,
     SwitchFdbEntry,
@@ -17,7 +18,36 @@ from netctl.snmp.models import (
 from netctl.snmp.outcomes import SnmpOutcome
 
 
-def test_installer_and_documented_snmp_examples_cannot_enable_or_embed_secret() -> None:
+def _load_documented_source(
+    example: str,
+    temp_directory: Path,
+) -> tuple[dict[str, Any], set[str]]:
+    keys: list[str] = []
+    for line in example.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        assert ":" in stripped, "documented source contains a non-mapping line"
+        key = stripped.split(":", 1)[0].strip()
+        assert key not in keys, f"documented source contains duplicate key: {key}"
+        keys.append(key)
+
+    config_path = temp_directory / "netctl.yaml"
+    source_directory = temp_directory / "sources.d"
+    source_directory.mkdir(parents=True)
+    (source_directory / "documented-snmp.yaml").write_text(
+        example.strip() + "\n",
+        encoding="utf-8",
+    )
+    sources = load_config_sources(config_path)
+    assert len(sources) == 1
+    assert sources[0]["enabled"] is False, "documented source must set enabled to false"
+    return sources[0], set(keys)
+
+
+def test_installer_and_documented_snmp_examples_cannot_enable_or_embed_secret(
+    tmp_path: Path,
+) -> None:
     repository = Path(__file__).resolve().parents[1]
     readme = (repository / "README.md").read_text(encoding="utf-8")
     installer = (repository / "deploy" / "install-openvpn-web.sh").read_text(
@@ -30,13 +60,68 @@ def test_installer_and_documented_snmp_examples_cannot_enable_or_embed_secret() 
     snmp_examples = [block for block in yaml_blocks if "driver: snmp_switch" in block]
 
     assert len(snmp_examples) == 1
-    assert "enabled: false" in snmp_examples[0]
-    assert "community" not in snmp_examples[0].lower()
+    example = snmp_examples[0]
+    source, source_keys = _load_documented_source(example, tmp_path / "valid")
+    assert source["driver"] == "snmp_switch"
+    assert "community" not in {key.lower() for key in source_keys}
+    with pytest.raises(AssertionError, match="enabled"):
+        _load_documented_source(
+            example.replace("enabled: false", "enabled: true"),
+            tmp_path / "enabled",
+        )
+    with pytest.raises(AssertionError, match="duplicate key: enabled"):
+        _load_documented_source(
+            example.replace("enabled: false", "enabled: false\nenabled: true"),
+            tmp_path / "duplicate",
+        )
     assert "driver: snmp_switch" not in installer
     assert "add-snmp-switch" not in installer
     assert not re.search(
         r"NETCTL_SECRET_[A-Z0-9_]*_COMMUNITY\s*=", readme + installer + runbook
     )
+
+
+def test_dgs_pilot_runbook_gates_timer_and_verifies_all_rollback_artifacts() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    runbook = (
+        repository / "docs" / "runbooks" / "netctl-snmp-dgs-pilot.md"
+    ).read_text(encoding="utf-8")
+    active_gate = 'test "$(systemctl is-active netctl-collect.timer)" = inactive'
+    enabled_gate = 'test "$(systemctl is-enabled netctl-collect.timer)" = disabled'
+    source_command = runbook.index("sources add-snmp-switch")
+    manual_command = runbook.index('netctl --json collect "$pilot_source"')
+
+    assert "sudo systemctl disable --now netctl-collect.timer" in runbook
+    assert runbook.count(active_gate) >= 3
+    assert runbook.count(enabled_gate) >= 3
+    assert runbook.rfind(active_gate, 0, source_command) > runbook.index(
+        "## 3. Stage a disabled source"
+    )
+    assert runbook.rfind(enabled_gate, 0, source_command) > runbook.index(
+        "## 3. Stage a disabled source"
+    )
+    assert runbook.rfind(active_gate, 0, manual_command) > runbook.index(
+        "## 4. Two controlled manual collections"
+    )
+    assert runbook.rfind(enabled_gate, 0, manual_command) > runbook.index(
+        "## 4. Two controlled manual collections"
+    )
+
+    checksum_command = re.search(
+        r'sudo sha256sum (?P<artifacts>.*?)\| sudo tee "\$checksums"',
+        runbook,
+        flags=re.DOTALL,
+    )
+    assert checksum_command is not None
+    assert {
+        '"$db_backup"',
+        '"$app_backup"',
+        '"$wrapper_backup"',
+        '"$sources_backup"',
+        '"$secrets_backup"',
+    } <= set(re.findall(r'"\$[a-z_]+"', checksum_command.group("artifacts")))
+    rollback = runbook.split("## Evidence and rollback", 1)[1]
+    assert 'sudo sha256sum -c "$checksums"' in rollback
 
 
 def _run_cli(args: list[str], capsys) -> tuple[int, dict[str, Any]]:

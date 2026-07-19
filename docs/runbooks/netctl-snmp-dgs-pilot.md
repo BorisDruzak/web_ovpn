@@ -17,8 +17,10 @@ gate and roll back before restarting normal collection.
 - A change window and explicit approval for the DGS read-only pilot exist.
 - The operator has confirmed adequate free space for a database and application
   rollback set.
-- The collection timer remains stopped for the entire migration and manual
-  pilot. A live SNMP source is never added by the installer.
+- The collection timer remains disabled and stopped for the entire migration
+  and manual pilot. The installer does not add a live SNMP source, but it does
+  run `systemctl enable --now netctl-collect.timer`; the post-deploy gate below
+  must therefore disable and stop it again before any source is staged.
 - The automated preservation tests pass before production access:
 
 ```bash
@@ -35,7 +37,8 @@ and checksums with the change record. Adjust the application path only when the
 deployed service definition proves it is different.
 
 ```bash
-sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service
+sudo systemctl stop openvpn-web.service netctl-collect.service
+sudo systemctl disable --now netctl-collect.timer
 sudo install -d -m 0750 /var/backups/netctl
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 db_backup="/var/backups/netctl/netctl-before-snmp-dgs-$stamp.sqlite"
@@ -44,6 +47,7 @@ wrapper_backup="/var/backups/netctl/netctl-before-snmp-dgs-$stamp"
 sources_backup="/var/backups/netctl/sources-before-snmp-dgs-$stamp.tgz"
 secrets_backup="/var/backups/netctl/secrets-before-snmp-dgs-$stamp.env"
 manifest='/var/backups/netctl/snmp-dgs-rollback.paths'
+checksums='/var/backups/netctl/snmp-dgs-rollback.sha256'
 sudo sqlite3 /var/lib/netctl/netctl.sqlite ".backup '$db_backup'"
 sudo sqlite3 "$db_backup" 'PRAGMA integrity_check;'
 sudo tar -C /opt -czf "$app_backup" openvpn-web
@@ -56,28 +60,40 @@ sudo install -m 0600 /etc/netctl/secrets.env "$secrets_backup"
   printf 'wrapper_backup=%s\n' "$wrapper_backup"
   printf 'sources_backup=%s\n' "$sources_backup"
   printf 'secrets_backup=%s\n' "$secrets_backup"
+  printf 'checksums=%s\n' "$checksums"
 } | sudo tee "$manifest" >/dev/null
-sudo chmod 0640 "$manifest"
+sudo sha256sum "$db_backup" "$app_backup" "$wrapper_backup" \
+  "$sources_backup" "$secrets_backup" | sudo tee "$checksums" >/dev/null
+sudo chmod 0640 "$manifest" "$checksums"
 sudo tar -tzf "$app_backup" >/dev/null
 sudo tar -tzf "$sources_backup" >/dev/null
 sudo test -s "$secrets_backup"
-sudo sha256sum "$db_backup" "$app_backup" "$wrapper_backup" "$sources_backup"
+test "$(sudo awk 'END { print NR }' "$checksums")" = 5
+sudo sha256sum -c "$checksums" >/dev/null
 ```
 
 `PRAGMA integrity_check` must return exactly `ok`. Do not continue if the
-database backup, application archive, wrapper copy, manifest, or checksums
-cannot be verified.
+database backup, application archive, wrapper copy, source archive, protected
+secret backup, path manifest, or the five-entry protected checksum manifest
+cannot be verified. Checksum verification reads the backup files but never
+prints their contents or secret values.
 
 ## 2. Deploy with every SNMP source disabled
 
-Deploy the reviewed release by the normal application procedure while the
-timer is stopped. Export `RELEASE_SHA` from the approved release manifest (the
-deployed application tree intentionally has no `.git` directory), compare the
-deployed file checksums with that manifest, and verify the pinned SNMP
-dependency from the deployed virtual environment. Then run a non-collection
-command to apply migrations and verify the complete ledger.
+Deploy the reviewed release by the normal application procedure. The installer
+enables and starts `netctl-collect.timer`, so immediately disable and stop it
+again before running any `netctl` command. Export `RELEASE_SHA` from the
+approved release manifest (the deployed application tree intentionally has no
+`.git` directory), compare the deployed file checksums with that manifest, and
+verify the pinned SNMP dependency from the deployed virtual environment. Then
+run a non-collection command to apply migrations and verify the complete
+ledger.
 
 ```bash
+sudo systemctl disable --now netctl-collect.timer
+sudo systemctl stop netctl-collect.service
+test "$(systemctl is-active netctl-collect.timer)" = inactive
+test "$(systemctl is-enabled netctl-collect.timer)" = disabled
 test -n "$RELEASE_SHA"
 printf 'approved_release_commit=%s\n' "$RELEASE_SHA"
 sudo sha256sum /opt/openvpn-web/netctl/cli.py /opt/openvpn-web/requirements.txt \
@@ -106,6 +122,8 @@ the approved deployment record.
 pilot_source='replace-with-approved-source-name'
 pilot_host='replace-with-approved-management-address'
 pilot_secret_ref='switch_dgs_pilot_snmp'
+test "$(systemctl is-active netctl-collect.timer)" = inactive
+test "$(systemctl is-enabled netctl-collect.timer)" = disabled
 sudo /usr/local/sbin/netctl --json sources add-snmp-switch \
   "$pilot_source" --host "$pilot_host" --secret-ref "$pilot_secret_ref" \
   --profile-hint dgs
@@ -148,6 +166,8 @@ SNMP source is enabled while the timer remains stopped.
 ```bash
 pilot_yaml="/etc/netctl/sources.d/$pilot_source.yaml"
 pilot_yaml_backup="/var/backups/netctl/$pilot_source-before-manual-$stamp.yaml"
+test "$(systemctl is-active netctl-collect.timer)" = inactive
+test "$(systemctl is-enabled netctl-collect.timer)" = disabled
 sudo install -m 0640 "$pilot_yaml" "$pilot_yaml_backup"
 sudoedit "$pilot_yaml"
 sudo -u netctl /usr/local/sbin/netctl --json sources list
@@ -247,13 +267,18 @@ app_backup="$(sudo sed -n 's/^app_backup=//p' "$manifest")"
 wrapper_backup="$(sudo sed -n 's/^wrapper_backup=//p' "$manifest")"
 sources_backup="$(sudo sed -n 's/^sources_backup=//p' "$manifest")"
 secrets_backup="$(sudo sed -n 's/^secrets_backup=//p' "$manifest")"
+checksums="$(sudo sed -n 's/^checksums=//p' "$manifest")"
 test -n "$db_backup" && test -n "$app_backup" && test -n "$wrapper_backup"
 test -n "$sources_backup" && test -n "$secrets_backup"
+test -n "$checksums"
 sudo test -f "$db_backup"
 sudo test -f "$app_backup"
 sudo test -x "$wrapper_backup"
 sudo test -f "$sources_backup"
 sudo test -s "$secrets_backup"
+sudo test -s "$checksums"
+test "$(sudo awk 'END { print NR }' "$checksums")" = 5
+sudo sha256sum -c "$checksums" >/dev/null || exit 1
 sudo systemctl stop openvpn-web.service netctl-collect.timer netctl-collect.service
 rollback_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 sudo test ! -e "/opt/openvpn-web.failed-$rollback_stamp"
@@ -275,5 +300,8 @@ sudo systemctl start openvpn-web.service netctl-collect.timer
 sudo systemctl is-active openvpn-web.service netctl-collect.timer
 ```
 
-Do not restart services unless the restored database returns `ok` and the
-restored application and wrapper match the backup manifest.
+Do not start rollback or restart services unless the protected checksum
+manifest validates all five backup artifacts. Do not restart services unless
+the restored database returns `ok` and the restored application and wrapper
+match the backup manifest. Checksum verification must remain silent except for
+its exit status; never print or inspect the protected secret backup contents.
