@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,28 @@ from netctl.snmp.models import (
     SwitchSystem,
 )
 from netctl.snmp.outcomes import SnmpOutcome
+
+
+def test_installer_and_documented_snmp_examples_cannot_enable_or_embed_secret() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    readme = (repository / "README.md").read_text(encoding="utf-8")
+    installer = (repository / "deploy" / "install-openvpn-web.sh").read_text(
+        encoding="utf-8"
+    )
+    runbook = (
+        repository / "docs" / "runbooks" / "netctl-snmp-dgs-pilot.md"
+    ).read_text(encoding="utf-8")
+    yaml_blocks = re.findall(r"```yaml\n(.*?)```", readme, flags=re.DOTALL)
+    snmp_examples = [block for block in yaml_blocks if "driver: snmp_switch" in block]
+
+    assert len(snmp_examples) == 1
+    assert "enabled: false" in snmp_examples[0]
+    assert "community" not in snmp_examples[0].lower()
+    assert "driver: snmp_switch" not in installer
+    assert "add-snmp-switch" not in installer
+    assert not re.search(
+        r"NETCTL_SECRET_[A-Z0-9_]*_COMMUNITY\s*=", readme + installer + runbook
+    )
 
 
 def _run_cli(args: list[str], capsys) -> tuple[int, dict[str, Any]]:

@@ -120,6 +120,35 @@ Main files:
 - `/var/lib/netctl/netctl.sqlite` - SQLite snapshots owned by the `netctl` service user.
 - `netctl-collect.timer` - automatic collection every 5 minutes as the `netctl` user.
 
+### Read-only SNMP switch readiness
+
+PR 3A provides a disabled-by-default SNMPv2c switch collector core and the
+sanitized DGS profile tests. The installer does not create an SNMP source, the
+collector issues no SNMP SET requests, and this release does not authorize a
+production pilot. Follow the
+[DGS SNMP pilot gate](docs/runbooks/netctl-snmp-dgs-pilot.md) only after a
+separate deployment approval.
+
+This documentation-only source uses an IANA TEST-NET address. Replace its
+metadata during an approved pilot; keep it disabled while staging and testing:
+
+```yaml
+name: switch-dgs-pilot
+driver: snmp_switch
+host: 192.0.2.10
+port: 161
+secret_ref: switch_dgs_pilot_snmp
+site: documentation
+role: access-switch
+snmp_version: 2c
+snmp_profile_hint: dgs
+enabled: false
+```
+
+The source file stores only `secret_ref`. The corresponding secret value is
+entered interactively into the protected environment file during the approved
+pilot and must never be placed in YAML, shell history, logs, test data, or Git.
+
 Default source:
 
 ```yaml
@@ -175,7 +204,7 @@ Recommended MikroTik setup:
 - Use a strong password.
 - Do not expose API to WAN.
 - SSH is only fallback/debug.
-- SNMP can be added later for metrics.
+- SNMP switch sources remain disabled pending the separately approved pilot.
 
 Remote hEX SSH requirements:
 
