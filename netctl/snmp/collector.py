@@ -148,46 +148,44 @@ async def collect_switch_snapshot(
         qbridge_status = await transport.walk(
             DOT1Q_FDB_STATUS, capability="qbridge_status"
         )
-        vlan_fdb_id = await transport.walk(
-            DOT1Q_VLAN_FDB_ID, capability="vlan_fdb_id"
-        )
-        capabilities.extend((qbridge_status, vlan_fdb_id))
-        failure = next(
-            (
-                result
-                for result in (qbridge_status, vlan_fdb_id)
-                if result.outcome
-                not in {
-                    SnmpOutcome.SUCCESS_WITH_ROWS,
-                    SnmpOutcome.SUCCESS_EMPTY,
-                    SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
-                }
-            ),
-            None,
-        )
-        if failure is not None:
-            final_fdb = _propagate_fdb_failure(failure)
+        capabilities.append(qbridge_status)
+        if qbridge_status.outcome not in {
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            SnmpOutcome.SUCCESS_EMPTY,
+        }:
+            final_fdb = _propagate_fdb_failure(qbridge_status)
         else:
-            try:
-                fdb = parse_qbridge_fdb(
-                    qbridge_port,
-                    qbridge_status,
-                    vlan_fdb_id,
-                    profile=profile,
-                    ports=ports,
-                    bridge_to_ifindex=bridge_to_ifindex,
-                )
-            except ValueError:
-                fdb = ()
-                final_fdb = _final_fdb_result(
-                    SnmpOutcome.PARSE_ERROR,
-                    error_code="malformed_fdb",
-                    error_message="SNMP FDB rows are malformed",
-                )
+            vlan_fdb_id = await transport.walk(
+                DOT1Q_VLAN_FDB_ID, capability="vlan_fdb_id"
+            )
+            capabilities.append(vlan_fdb_id)
+            if vlan_fdb_id.outcome not in {
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                SnmpOutcome.SUCCESS_EMPTY,
+                SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+            }:
+                final_fdb = _propagate_fdb_failure(vlan_fdb_id)
             else:
-                final_fdb = _final_fdb_result(
-                    SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb
-                )
+                try:
+                    fdb = parse_qbridge_fdb(
+                        qbridge_port,
+                        qbridge_status,
+                        vlan_fdb_id,
+                        profile=profile,
+                        ports=ports,
+                        bridge_to_ifindex=bridge_to_ifindex,
+                    )
+                except ValueError:
+                    fdb = ()
+                    final_fdb = _final_fdb_result(
+                        SnmpOutcome.PARSE_ERROR,
+                        error_code="malformed_fdb",
+                        error_message="SNMP FDB rows are malformed",
+                    )
+                else:
+                    final_fdb = _final_fdb_result(
+                        SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb
+                    )
     elif qbridge_port.outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT:
         legacy_address = await transport.walk(
             DOT1D_FDB_ADDRESS, capability="legacy_address"

@@ -56,7 +56,7 @@ def test_system_scalars_are_strictly_typed_and_serialized() -> None:
         (
             _vb(SYS_DESCR, b"Fixture switch", "octet_string"),
             _vb(SYS_OBJECT_ID, "1.3.6.1.4.1.99999", "object_identifier"),
-            _vb(SYS_NAME, "switch-fixture", "string"),
+            _vb(SYS_NAME, b"switch-fixture", "octet_string"),
             _vb(SYS_LOCATION, b"lab", "octet_string"),
             _vb(SYS_UPTIME, 12345, "time_ticks"),
         )
@@ -78,6 +78,13 @@ def test_system_rejects_wrong_scalar_type() -> None:
         parse_system((_vb(SYS_NAME, 7),))
 
 
+def test_system_uptime_requires_timeticks_not_another_integer_type() -> None:
+    from netctl.snmp.system import parse_system
+
+    with pytest.raises(ValueError, match="sysUpTime"):
+        parse_system((_vb(SYS_UPTIME, 7, "counter32"),))
+
+
 def test_interfaces_join_if_table_ifx_table_and_bridge_map() -> None:
     from netctl.snmp.interfaces import parse_bridge_port_map, parse_interfaces
 
@@ -95,7 +102,7 @@ def test_interfaces_join_if_table_ifx_table_and_bridge_map() -> None:
         ),
         (
             _vb(IF_NAME + (101,), b"Gi1/0/7", "octet_string"),
-            _vb(IF_ALIAS + (101,), "uplink fixture", "string"),
+            _vb(IF_ALIAS + (101,), b"uplink fixture", "octet_string"),
             _vb(IF_HIGH_SPEED + (101,), 1000, "gauge32"),
         ),
         bridge_map,
@@ -132,6 +139,42 @@ def test_interface_parser_rejects_conflicting_duplicate_and_ambiguous_bridge_map
             )
         )
 
+
+def test_interface_and_bridge_indices_require_integer_asn1_type() -> None:
+    from netctl.snmp.interfaces import parse_bridge_port_map, parse_interfaces
+
+    with pytest.raises(ValueError, match="ifIndex"):
+        parse_interfaces((_vb(IF_INDEX + (5,), 5, "time_ticks"),), (), {})
+
+    with pytest.raises(ValueError, match="dot1dBasePortIfIndex"):
+        parse_bridge_port_map(
+            (_vb(DOT1D_BASE_PORT_IFINDEX + (5,), 5, "time_ticks"),)
+        )
+
+
+def test_interface_status_rejects_values_outside_asn1_domain() -> None:
+    from netctl.snmp.interfaces import parse_interfaces
+
+    with pytest.raises(ValueError, match="ifAdminStatus"):
+        parse_interfaces(
+            (
+                _vb(IF_INDEX + (5,), 5),
+                _vb(IF_ADMIN_STATUS + (5,), 4),
+            ),
+            (),
+            {},
+        )
+
+
+def test_bridge_map_rejects_ifindex_missing_from_parsed_interfaces() -> None:
+    from netctl.snmp.interfaces import parse_interfaces
+
+    with pytest.raises(ValueError, match="unknown ifIndex"):
+        parse_interfaces(
+            (_vb(IF_INDEX + (5,), 5),),
+            (),
+            {1: 5, 2: 6},
+        )
 
 def _one_port() -> tuple[object, dict[int, int]]:
     from netctl.snmp.interfaces import parse_interfaces
@@ -188,7 +231,10 @@ def test_qbridge_maps_exactly_one_vid_to_fid_but_not_multiple_vids() -> None:
     )
     single = parse_qbridge_fdb(
         *base,
-        _result("vlan_fdb_id", _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55)),
+        _result(
+            "vlan_fdb_id",
+            _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55, "unsigned32"),
+        ),
         profile=GenericProfile(),
         ports=ports,
         bridge_to_ifindex=bridge_map,
@@ -197,8 +243,8 @@ def test_qbridge_maps_exactly_one_vid_to_fid_but_not_multiple_vids() -> None:
         *base,
         _result(
             "vlan_fdb_id",
-            _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55),
-            _vb(DOT1Q_VLAN_FDB_ID + (0, 30), 55),
+            _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55, "unsigned32"),
+            _vb(DOT1Q_VLAN_FDB_ID + (0, 30), 55, "unsigned32"),
         ),
         profile=GenericProfile(),
         ports=ports,
@@ -207,6 +253,63 @@ def test_qbridge_maps_exactly_one_vid_to_fid_but_not_multiple_vids() -> None:
 
     assert (single[0].vlan_key, single[0].vlan_id) == ("vid:20", 20)
     assert (multiple[0].vlan_key, multiple[0].vlan_id) == ("fid:55", None)
+
+
+def test_vlan_fdb_mapping_requires_timemark_and_vlan_index() -> None:
+    from netctl.snmp.fdb import parse_qbridge_fdb
+    from netctl.snmp.profiles import GenericProfile
+
+    ports, bridge_map = _one_port()
+    index = (55, 2, 0, 0, 0, 0, 1)
+    with pytest.raises(ValueError, match="VLAN FDB OID index"):
+        parse_qbridge_fdb(
+            _result("qbridge_port", _vb(DOT1Q_FDB_PORT + index, 7)),
+            _result("qbridge_status", _vb(DOT1Q_FDB_STATUS + index, 3)),
+            _result(
+                "vlan_fdb_id",
+                _vb(DOT1Q_VLAN_FDB_ID + (20,), 55, "unsigned32"),
+            ),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
+
+
+def test_fdb_status_requires_integer_not_counter64() -> None:
+    from netctl.snmp.fdb import parse_qbridge_fdb
+    from netctl.snmp.profiles import GenericProfile
+
+    ports, bridge_map = _one_port()
+    index = (55, 2, 0, 0, 0, 0, 1)
+    with pytest.raises(ValueError, match="FDB status"):
+        parse_qbridge_fdb(
+            _result("qbridge_port", _vb(DOT1Q_FDB_PORT + index, 7)),
+            _result(
+                "qbridge_status",
+                _vb(DOT1Q_FDB_STATUS + index, 3, "counter64"),
+            ),
+            _result("vlan_fdb_id"),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
+
+
+def test_fdb_status_rejects_values_outside_asn1_domain() -> None:
+    from netctl.snmp.fdb import parse_qbridge_fdb
+    from netctl.snmp.profiles import GenericProfile
+
+    ports, bridge_map = _one_port()
+    index = (55, 2, 0, 0, 0, 0, 1)
+    with pytest.raises(ValueError, match="FDB status"):
+        parse_qbridge_fdb(
+            _result("qbridge_port", _vb(DOT1Q_FDB_PORT + index, 7)),
+            _result("qbridge_status", _vb(DOT1Q_FDB_STATUS + index, 6)),
+            _result("vlan_fdb_id"),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
 
 
 @pytest.mark.parametrize("bad_octet", [-1, 256])
@@ -329,6 +432,32 @@ def test_collector_prefers_qbridge_rows_and_never_queries_legacy() -> None:
     assert snapshot.fdb[0].vlan_key == "fid:44"
     assert DOT1D_FDB_PORT not in transport.walked
     assert next(cap for cap in snapshot.capabilities if cap.capability == "fdb").outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+
+
+def test_qbridge_status_unsupported_is_explicit_and_does_not_fall_back() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    index = (44, 0, 1, 2, 3, 4, 5)
+    transport = _FixtureTransport(
+        {
+            IF_INDEX: _result("if_index", _vb(IF_INDEX + (9,), 9)),
+            DOT1D_BASE_PORT_IFINDEX: _result(
+                "bridge_port_ifindex", _vb(DOT1D_BASE_PORT_IFINDEX + (9,), 9)
+            ),
+            DOT1Q_FDB_PORT: _result(
+                "qbridge_port", _vb(DOT1Q_FDB_PORT + index, 9)
+            ),
+            DOT1Q_FDB_STATUS: _result(
+                "qbridge_status", outcome=SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    final = next(cap for cap in snapshot.capabilities if cap.capability == "fdb")
+    assert final.outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
+    assert DOT1D_FDB_ADDRESS not in transport.walked
 
 
 @pytest.mark.parametrize(

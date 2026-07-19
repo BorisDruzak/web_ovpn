@@ -17,10 +17,6 @@ from .oids import (
 )
 
 
-_INTEGER_TYPES = frozenset(
-    {"integer", "counter32", "counter64", "gauge32", "unsigned32", "time_ticks"}
-)
-_TEXT_TYPES = frozenset({"string", "octet_string"})
 _INTERFACE_COLUMNS = (
     IF_INDEX,
     IF_DESCR,
@@ -44,22 +40,26 @@ def _rows(values: Iterable[SnmpVarBind | CapabilityResult]) -> Iterable[SnmpVarB
             raise ValueError("interface row is invalid")
 
 
-def _integer(row: SnmpVarBind, field: str, *, minimum: int = 0) -> int:
+def _integer(
+    row: SnmpVarBind,
+    field: str,
+    *,
+    value_type: str,
+    minimum: int = 0,
+    maximum: int = 4_294_967_295,
+) -> int:
     if (
-        row.value_type not in _INTEGER_TYPES
+        row.value_type != value_type
         or isinstance(row.value, bool)
         or not isinstance(row.value, int)
         or row.value < minimum
+        or row.value > maximum
     ):
         raise ValueError(f"{field} has invalid type")
     return row.value
 
 
 def _text(row: SnmpVarBind, field: str) -> str:
-    if row.value_type not in _TEXT_TYPES:
-        raise ValueError(f"{field} has invalid type")
-    if row.value_type == "string" and isinstance(row.value, str):
-        return row.value
     if row.value_type == "octet_string" and isinstance(row.value, bytes):
         try:
             return row.value.decode("utf-8")
@@ -82,7 +82,7 @@ def _column(row: SnmpVarBind) -> tuple[tuple[int, ...], int] | None:
     for base in _INTERFACE_COLUMNS:
         if row.oid[: len(base)] == base:
             suffix = row.oid[len(base) :]
-            if len(suffix) != 1 or suffix[0] <= 0:
+            if len(suffix) != 1 or not 0 < suffix[0] <= 2_147_483_647:
                 raise ValueError("interface OID index is invalid")
             return base, suffix[0]
     return None
@@ -110,10 +110,16 @@ def parse_bridge_port_map(
         if row.oid[: len(DOT1D_BASE_PORT_IFINDEX)] != DOT1D_BASE_PORT_IFINDEX:
             continue
         suffix = row.oid[len(DOT1D_BASE_PORT_IFINDEX) :]
-        if len(suffix) != 1 or suffix[0] <= 0:
+        if len(suffix) != 1 or not 0 < suffix[0] <= 65_535:
             raise ValueError("bridge port OID index is invalid")
         bridge_port = suffix[0]
-        if_index = _integer(row, "dot1dBasePortIfIndex", minimum=1)
+        if_index = _integer(
+            row,
+            "dot1dBasePortIfIndex",
+            value_type="integer",
+            minimum=1,
+            maximum=2_147_483_647,
+        )
         if bridge_port in result and result[bridge_port] != if_index:
             raise ValueError("conflicting bridge port mapping")
         if if_index in reverse and reverse[if_index] != bridge_port:
@@ -147,7 +153,13 @@ def parse_interfaces(
             continue
         column, oid_index = located
         if column == IF_INDEX:
-            value: object = _integer(row, "ifIndex", minimum=1)
+            value: object = _integer(
+                row,
+                "ifIndex",
+                value_type="integer",
+                minimum=1,
+                maximum=2_147_483_647,
+            )
             existing = table.get(oid_index, {}).get(IF_INDEX)
             if existing is not None and existing != value:
                 raise ValueError("conflicting ifIndex")
@@ -159,8 +171,26 @@ def parse_interfaces(
             if row.value_type != "octet_string" or not isinstance(row.value, bytes):
                 raise ValueError("ifPhysAddress has invalid type")
             value = None if not row.value else normalize_mac(row.value)
+        elif column in (IF_SPEED, IF_HIGH_SPEED):
+            value = _integer(row, "interface speed", value_type="gauge32")
+        elif column == IF_ADMIN_STATUS:
+            value = _integer(
+                row,
+                "ifAdminStatus",
+                value_type="integer",
+                minimum=1,
+                maximum=3,
+            )
+        elif column == IF_OPER_STATUS:
+            value = _integer(
+                row,
+                "ifOperStatus",
+                value_type="integer",
+                minimum=1,
+                maximum=7,
+            )
         else:
-            value = _integer(row, "interface integer")
+            raise ValueError("interface column is unsupported")
         _store(table, oid_index, column, value)
 
     bridge_map = dict(bridge_to_ifindex or {})
@@ -169,10 +199,10 @@ def parse_interfaces(
         if (
             isinstance(bridge_port, bool)
             or not isinstance(bridge_port, int)
-            or bridge_port <= 0
+            or not 0 < bridge_port <= 65_535
             or isinstance(if_index, bool)
             or not isinstance(if_index, int)
-            or if_index <= 0
+            or not 0 < if_index <= 2_147_483_647
         ):
             raise ValueError("bridge port mapping is invalid")
         if if_index in bridge_by_ifindex and bridge_by_ifindex[if_index] != bridge_port:
@@ -221,4 +251,7 @@ def parse_interfaces(
                 speed_bps=speed_bps,
             )
         )
+    known_ifindexes = {port.if_index for port in ports}
+    if any(if_index not in known_ifindexes for if_index in bridge_map.values()):
+        raise ValueError("bridge port mapping references unknown ifIndex")
     return tuple(ports)

@@ -16,9 +16,6 @@ from .outcomes import SnmpOutcome
 from .profiles import PortProfile
 
 
-_INTEGER_TYPES = frozenset(
-    {"integer", "counter32", "counter64", "gauge32", "unsigned32", "time_ticks"}
-)
 _FDB_STATUS = {1: "other", 2: "invalid", 3: "learned", 4: "self", 5: "mgmt"}
 
 
@@ -31,12 +28,20 @@ def _successful_rows(result: CapabilityResult) -> tuple[SnmpVarBind, ...]:
     return result.rows
 
 
-def _integer(row: SnmpVarBind, field: str, *, minimum: int = 0) -> int:
+def _integer(
+    row: SnmpVarBind,
+    field: str,
+    *,
+    value_type: str,
+    minimum: int = 0,
+    maximum: int = 4_294_967_295,
+) -> int:
     if (
-        row.value_type not in _INTEGER_TYPES
+        row.value_type != value_type
         or isinstance(row.value, bool)
         or not isinstance(row.value, int)
         or row.value < minimum
+        or row.value > maximum
     ):
         raise ValueError(f"{field} has invalid type")
     return row.value
@@ -72,12 +77,17 @@ def _vids_by_fid(result: CapabilityResult) -> dict[int, set[int]]:
         if row.oid[: len(DOT1Q_VLAN_FDB_ID)] != DOT1Q_VLAN_FDB_ID:
             raise ValueError("VLAN FDB row has unexpected numeric OID")
         suffix = row.oid[len(DOT1Q_VLAN_FDB_ID) :]
-        if len(suffix) not in {1, 2}:
+        if len(suffix) != 2:
             raise ValueError("VLAN FDB OID index is invalid")
+        time_mark = suffix[0]
         vid = suffix[-1]
+        if not 0 <= time_mark <= 4_294_967_295:
+            raise ValueError("VLAN time mark is invalid")
         if not 1 <= vid <= 4094:
             raise ValueError("VLAN ID is invalid")
-        fdb_id = _integer(row, "dot1qVlanFdbId", minimum=1)
+        fdb_id = _integer(
+            row, "dot1qVlanFdbId", value_type="unsigned32", minimum=1
+        )
         if vid in seen_vids and seen_vids[vid] != fdb_id:
             raise ValueError("conflicting VLAN FDB mapping")
         seen_vids[vid] = fdb_id
@@ -86,8 +96,10 @@ def _vids_by_fid(result: CapabilityResult) -> dict[int, set[int]]:
 
 
 def _status(row: SnmpVarBind) -> str:
-    value = _integer(row, "FDB status", minimum=1)
-    return _FDB_STATUS.get(value, f"unknown:{value}")
+    value = _integer(
+        row, "FDB status", value_type="integer", minimum=1, maximum=5
+    )
+    return _FDB_STATUS[value]
 
 
 def parse_qbridge_fdb(
@@ -108,13 +120,19 @@ def parse_qbridge_fdb(
     entries: list[SwitchFdbEntry] = []
     for index in sorted(port_rows):
         fdb_id, *mac_octets = index
-        if fdb_id <= 0:
+        if not 0 < fdb_id <= 4_294_967_295:
             raise ValueError("FDB ID is invalid")
         mac = normalize_mac(tuple(mac_octets))
         status_row = status_rows.get(index)
         if status_row is None:
             raise ValueError("FDB status row is missing")
-        raw_port = _integer(port_rows[index], "Q-BRIDGE FDB port", minimum=1)
+        raw_port = _integer(
+            port_rows[index],
+            "Q-BRIDGE FDB port",
+            value_type="integer",
+            minimum=1,
+            maximum=65_535,
+        )
         resolution = profile.resolve_fdb_port(
             raw_fdb_port=raw_port,
             fdb_mode="qbridge",
@@ -172,7 +190,13 @@ def parse_legacy_fdb(
         status_row = status_rows.get(index)
         if port_row is None or status_row is None:
             raise ValueError("legacy FDB row is incomplete")
-        raw_port = _integer(port_row, "legacy FDB port", minimum=1)
+        raw_port = _integer(
+            port_row,
+            "legacy FDB port",
+            value_type="integer",
+            minimum=1,
+            maximum=65_535,
+        )
         resolution = profile.resolve_fdb_port(
             raw_fdb_port=raw_port,
             fdb_mode="legacy",

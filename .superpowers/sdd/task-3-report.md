@@ -47,3 +47,11 @@ No source was enabled and no live network operation, community value, secret res
 - Targeted private-topology/community scan of new Task 3 code/tests: no matches.
 
 Pytest emitted only the repository's pre-existing `pytest-asyncio` deprecation warning about `asyncio_default_fixture_loop_scope` being unset.
+
+## Review follow-up fixes
+
+- Corrected Q-BRIDGE companion-table handling: only `dot1qVlanFdbId` may be explicitly unsupported as an optional mapping. An unsupported status table now remains `UNSUPPORTED_NO_SUCH_OBJECT`, is non-replacing, and never triggers legacy fallback.
+- Replaced generic integer-like acceptance with field-specific ASN.1 validation and bounds. System uptime requires `time_ticks`; ifIndex, bridge mappings, FDB ports and status require `integer`; interface speeds require `gauge32`; and VLAN FDB IDs require `unsigned32`. Enumerated interface/FDB statuses are range-checked.
+- Bridge-port mappings are now rejected when any mapped ifIndex is absent from the parsed interface table, including collections whose FDB is empty.
+- `dot1qVlanFdbId` now requires the complete TimeMark plus VLAN numeric OID suffix; the formerly accepted one-component suffix is rejected.
+- Added six direct review regressions plus domain-boundary coverage. Focused parser/profile verification after the fixes reports `33 passed`; the final combined Task 1/2/3 suite reports `116 passed in 1.01s`.

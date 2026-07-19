@@ -6,12 +6,6 @@ from .models import CapabilityResult, SnmpVarBind, SwitchSystem
 from .oids import SYS_DESCR, SYS_LOCATION, SYS_NAME, SYS_OBJECT_ID, SYS_UPTIME
 
 
-_TEXT_TYPES = frozenset({"string", "octet_string"})
-_INTEGER_TYPES = frozenset(
-    {"integer", "counter32", "counter64", "gauge32", "unsigned32", "time_ticks"}
-)
-
-
 def _rows(values: Iterable[SnmpVarBind | CapabilityResult]) -> Iterable[SnmpVarBind]:
     for value in values:
         if isinstance(value, CapabilityResult):
@@ -23,10 +17,6 @@ def _rows(values: Iterable[SnmpVarBind | CapabilityResult]) -> Iterable[SnmpVarB
 
 
 def _text(row: SnmpVarBind, field: str) -> str:
-    if row.value_type not in _TEXT_TYPES:
-        raise ValueError(f"{field} has invalid type")
-    if row.value_type == "string" and isinstance(row.value, str):
-        return row.value
     if row.value_type == "octet_string" and isinstance(row.value, bytes):
         try:
             return row.value.decode("utf-8")
@@ -46,10 +36,11 @@ def _object_identifier(row: SnmpVarBind) -> str:
 
 def _uptime(row: SnmpVarBind) -> int:
     if (
-        row.value_type not in _INTEGER_TYPES
+        row.value_type != "time_ticks"
         or isinstance(row.value, bool)
         or not isinstance(row.value, int)
         or row.value < 0
+        or row.value > 4_294_967_295
     ):
         raise ValueError("sysUpTime has invalid type")
     return row.value
