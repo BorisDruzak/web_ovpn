@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -40,9 +41,16 @@ def sources_dir(config_path: str | Path) -> Path:
 
 def _parse_scalar(value: str) -> Any:
     raw = value.strip()
+    if raw.startswith('"') and raw.endswith('"'):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw[1:-1]
+        if isinstance(parsed, str):
+            return parsed
     if raw.lower() in {"true", "false"}:
         return raw.lower() == "true"
-    if (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"')):
+    if raw.startswith("'") and raw.endswith("'"):
         return raw[1:-1]
     try:
         return int(raw)
@@ -122,6 +130,8 @@ def _render_source_yaml_scalar(value: Any) -> str:
     rendered = str(value)
     if rendered and rendered.splitlines() != [rendered]:
         raise ValueError("source YAML values must be a single line")
+    if isinstance(value, str):
+        return json.dumps(rendered, ensure_ascii=True)
     return rendered
 
 

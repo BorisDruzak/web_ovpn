@@ -272,13 +272,44 @@ def test_add_snmp_switch_is_disabled_and_yaml_is_secret_free(
         encoding="utf-8"
     )
     assert "enabled: false" in yaml_text
-    assert "secret_ref: switch_test_snmp" in yaml_text
+    assert 'secret_ref: "switch_test_snmp"' in yaml_text
     assert "community" not in yaml_text.lower()
     from netctl.config import load_config_sources
 
     reloaded = load_config_sources(config_path)
     assert len(reloaded) == 1
     assert reloaded[0]["enabled"] is False
+
+
+@pytest.mark.parametrize("runtime_asset_key", ["123", "false"])
+def test_add_snmp_switch_preserves_string_scalars_across_yaml_reload(
+    tmp_path: Path, capsys, runtime_asset_key: str
+) -> None:
+    from netctl.config import load_config_sources
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + [
+            "sources",
+            "add-snmp-switch",
+            "switch-test",
+            "--host",
+            "192.0.2.10",
+            "--secret-ref",
+            "switch_test_snmp",
+            "--runtime-asset-key",
+            runtime_asset_key,
+        ],
+        capsys,
+    )
+
+    assert rc == 0
+    assert data["source"]["driver_options"]["runtime_asset_key"] == runtime_asset_key
+    reloaded = load_config_sources(config_path)
+    assert reloaded[0]["driver_options"]["runtime_asset_key"] == runtime_asset_key
 
 
 @pytest.mark.parametrize(
