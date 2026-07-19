@@ -2,6 +2,7 @@
 set -euo pipefail
 
 APP=/opt/openvpn-web
+cd "$APP"
 exec "$APP/.venv/bin/python" -m app.server_observer_cli \
   --config /etc/openvpn-web/server-observer.json \
   --snapshot /var/lib/openvpn-web/server-observer/latest.json \

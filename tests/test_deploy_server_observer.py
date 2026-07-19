@@ -49,6 +49,7 @@ def test_wrapper_executes_venv_cli_with_external_config_and_snapshot_paths_only(
     wrapper = Path("deploy/server-observer").read_text(encoding="utf-8")
 
     assert wrapper.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
+    assert 'cd "$APP"' in wrapper
     assert "-m app.server_observer_cli" in wrapper
     assert f"--config {RUNTIME_CONFIG}" in wrapper
     assert f"--snapshot {SNAPSHOT_DIR}/latest.json" in wrapper
