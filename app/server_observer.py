@@ -6,6 +6,7 @@ stripped before a snapshot is persisted or returned to the web application.
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime, timedelta, timezone
 import json
 import math
@@ -64,20 +65,26 @@ _SAFE_ERROR_CATEGORIES = frozenset(
 
 # These are fixed, read-only remote probes.  Runtime configuration may select a
 # target and route, but can never supply a remote command.
+def _powershell_probe(body: str, role: str) -> str:
+    body = f"{body} # server_observer:{role}"
+    encoded = base64.b64encode(body.encode("utf-16le")).decode("ascii")
+    return f"powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}"
+
+
 _ROLE_PROBES = {
-    "file_server": (
-        "powershell -NoProfile -NonInteractive -Command \"$running={param([string]$n)"
+    "file_server": _powershell_probe(
+        "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
-        "$e=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\\\"E:\\\"';"
+        "$e=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"E:\"' -ErrorAction Stop;"
         "[pscustomobject]@{data_free_percent=[math]::Round(100*$e.FreeSpace/$e.Size,2);"
         "services=@{sshd=[bool](& $running 'sshd');smb=[bool](& $running 'LanmanServer')}}|ConvertTo-Json "
-        "-Compress\" "
-        "# server_observer:file_server"
+        "-Compress",
+        "file_server",
     ),
-    "directum": (
-        "powershell -NoProfile -NonInteractive -Command \"$running={param([string]$n)"
+    "directum": _powershell_probe(
+        "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
-        "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\\\"C:\\\"';"
+        "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"C:\"' -ErrorAction Stop;"
         "$logs=Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse -ErrorAction SilentlyContinue|"
         "Measure-Object -Property Length -Sum;"
         "[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
@@ -85,33 +92,35 @@ _ROLE_PROBES = {
         "services=@{directumrx=[bool](& $running 'DirectumRX');"
         "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
         "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}}|ConvertTo-Json "
-        "-Compress\" # server_observer:directum"
+        "-Compress",
+        "directum",
     ),
-    "active_directory": (
-        "powershell -NoProfile -NonInteractive -Command \"$running={param([string]$n)"
+    "active_directory": _powershell_probe(
+        "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
-        "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\\\"C:\\\"';"
+        "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\"C:\"' -ErrorAction Stop;"
         "[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
         "services=@{dns=[bool](& $running 'DNS');"
         "ntds=[bool](& $running 'NTDS');adws=[bool](& $running 'ADWS')};"
         "internal_dns=[bool](Resolve-DnsName localhost -ErrorAction SilentlyContinue);external_dns="
-        "[bool](Resolve-DnsName example.com -ErrorAction SilentlyContinue)}|ConvertTo-Json -Compress\" "
-        "# server_observer:active_directory"
+        "[bool](Resolve-DnsName example.com -ErrorAction SilentlyContinue)}|ConvertTo-Json -Compress",
+        "active_directory",
     ),
     "nextcloud": (
-        "php -r '$s=json_decode(shell_exec(\"curl -fsS http://127.0.0.1/status.php\"),true);"
-        "$d=static function($p){return (float)shell_exec(\"df -P $p | awk \\\"NR==2 {print 100-$5}\\\"\");};"
+        "php -r '$s=json_decode(shell_exec(\"curl -kfsS https://127.0.0.1/status.php\"),true);"
+        "$d=static function($p){return round(100*disk_free_space($p)/disk_total_space($p),2);};"
         "$a=static function($n){return trim(shell_exec(\"systemctl is-active $n\"))===\"active\";};"
+        "$p=static function(){return trim(shell_exec(\"pgrep -f php-fpm\"))!==\"\";};"
         "echo json_encode([\"installed\"=>$s[\"installed\"],\"maintenance\"=>$s[\"maintenance\"],"
         "\"needsDbUpgrade\"=>$s[\"needsDbUpgrade\"],\"free_percent\"=>$d(\"/\"),"
-        "\"data_free_percent\"=>$d(\"/var/www/nextcloud/data\"),\"services\"=>[\"nginx\"=>$a(\"nginx\"),"
-        "\"php\"=>$a(\"php-fpm\"),\"postgresql\"=>$a(\"postgresql\"),\"redis\"=>$a(\"redis\")]]);' "
+        "\"data_free_percent\"=>$d(\"/var/www/nextcloud\"),\"services\"=>[\"nginx\"=>$a(\"nginx\"),"
+        "\"php\"=>$p(),\"postgresql\"=>$a(\"postgresql\"),\"redis\"=>$a(\"redis\")]]);' "
         "# server_observer:nextcloud"
     ),
     "onlyoffice": (
         "sh -c 'printf \"{\\\"free_percent\\\":%s,\\\"https_ok\\\":%s,\\\"services\\\":{\\\"docker\\\":%s,\\\"containerd\\\":%s}}\\n\" "
-        "\"$(df -P / | awk \"NR==2 {printf \\\"%.2f\\\", 100-$5}\")\" "
-        "\"$(curl -fsS https://127.0.0.1/healthcheck | grep -qx true && printf true || printf false)\" "
+        "\"$(set -- $(df -P / | tail -1); used=$(echo \"$5\" | tr -d %); echo $((100-used)))\" "
+        "\"$(curl -kfsS https://127.0.0.1/healthcheck | grep -qx true && printf true || printf false)\" "
         "\"$(systemctl is-active --quiet docker && printf true || printf false)\" "
         "\"$(systemctl is-active --quiet containerd && printf true || printf false)\"' "
         "# server_observer:onlyoffice"
@@ -119,9 +128,9 @@ _ROLE_PROBES = {
     "opnsense_dns": (
         "sh -c 'printf \"{\\\"adguard_listener\\\":%s,\\\"adguard_query\\\":%s,\\\"services\\\":{\\\"unbound\\\":%s},"
         "\\\"internal_dns\\\":%s,\\\"external_dns\\\":%s}\\n\" "
-        "\"$(sockstat -4 -l | grep -q AdGuardHome && printf true || printf false)\" "
+        "\"$(pgrep -x AdGuardHome >/dev/null && printf true || printf false)\" "
         "\"$(drill @127.0.0.1 example.com >/dev/null 2>&1 && printf true || printf false)\" "
-        "\"$(service unbound onestatus >/dev/null 2>&1 && printf true || printf false)\" "
+        "\"$(pgrep -x unbound >/dev/null && printf true || printf false)\" "
         "\"$(drill @127.0.0.1 localhost >/dev/null 2>&1 && printf true || printf false)\" "
         "\"$(drill @127.0.0.1 example.com >/dev/null 2>&1 && printf true || printf false)\"' "
         "# server_observer:opnsense_dns"
@@ -250,6 +259,7 @@ def collect(
                 text=True,
                 shell=False,
                 timeout=SSH_TIMEOUT_SECONDS,
+                errors="replace",
             )
             latency_ms = round((perf_counter() - started) * 1000, 3)
             if not isinstance(completed, subprocess.CompletedProcess) or completed.returncode != 0:

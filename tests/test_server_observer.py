@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import shutil
@@ -114,6 +115,7 @@ def healthy_runner(command, **kwargs):
         "text": True,
         "shell": False,
         "timeout": 20,
+        "errors": "replace",
     }
     return subprocess.CompletedProcess(command, 0, json.dumps(healthy_payload()), "")
 
@@ -324,7 +326,7 @@ def test_collect_continues_after_unexpected_runner_exception_without_leaking_tex
 
     def runner(command, **kwargs):
         calls.append(command)
-        if "file_server" in command[-1]:
+        if command[-1] == server_observer._ROLE_PROBES["file_server"]:
             raise RuntimeError("sensitive remote exception text")
         return healthy_runner(command, **kwargs)
 
@@ -345,10 +347,8 @@ def test_windows_service_probes_require_running_status():
 
     collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
 
-    directum = next(command[-1] for command in calls if "server_observer:directum" in command[-1])
-    active_directory = next(
-        command[-1] for command in calls if "server_observer:active_directory" in command[-1]
-    )
+    directum = decode_windows_probe(role_probe(calls, "directum"))
+    active_directory = decode_windows_probe(role_probe(calls, "active_directory"))
     assert directum.index("$running=") < directum.index("[pscustomobject]@{")
     assert active_directory.index("$running=") < active_directory.index("[pscustomobject]@{")
     assert "Status -eq 'Running'" in directum
@@ -372,9 +372,9 @@ def test_file_server_probe_checks_windows_e_volume_smb_and_ssh():
 
     collect(runtime_config(), runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
 
-    probe = next(command[-1] for command in calls if "server_observer:file_server" in command[-1])
+    probe = decode_windows_probe(role_probe(calls, "file_server"))
     assert "Get-CimInstance Win32_LogicalDisk" in probe
-    assert 'DeviceID=\\"E:\\"' in probe
+    assert 'DeviceID="E:"' in probe
     assert "& $running 'LanmanServer'" in probe
     assert "& $running 'sshd'" in probe
 
@@ -388,7 +388,7 @@ def test_directum_probe_recursively_sums_rxdata_logs():
 
     collect(runtime_config(), runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
 
-    probe = next(command[-1] for command in calls if "server_observer:directum" in command[-1])
+    probe = decode_windows_probe(role_probe(calls, "directum"))
     assert "Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse" in probe
     assert "Measure-Object -Property Length -Sum" in probe
     assert "Get-Item 'C:\\rxdata\\log'" not in probe
@@ -408,6 +408,62 @@ def test_nextcloud_probe_preserves_raw_status_values_for_strict_parser():
     assert '"maintenance"=>$s["maintenance"]' in probe
     assert '"needsDbUpgrade"=>$s["needsDbUpgrade"]' in probe
     assert "(bool)$s[" not in probe
+
+
+def test_linux_probes_are_compatible_with_local_https_and_shell_expansion():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
+
+    nextcloud = next(command[-1] for command in calls if "server_observer:nextcloud" in command[-1])
+    onlyoffice = next(command[-1] for command in calls if "server_observer:onlyoffice" in command[-1])
+    assert "curl -kfsS https://127.0.0.1/status.php" in nextcloud
+    assert "disk_free_space($p)" in nextcloud
+    assert '$d("/var/www/nextcloud")' in nextcloud
+    assert 'pgrep -f php-fpm' in nextcloud
+    assert 'set -- $(df -P / | tail -1)' in onlyoffice
+    assert "curl -kfsS https://127.0.0.1/healthcheck" in onlyoffice
+
+
+def test_opnsense_probe_checks_running_processes_not_rc_service_status():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
+
+    probe = next(command[-1] for command in calls if "server_observer:opnsense_dns" in command[-1])
+    assert "pgrep -x AdGuardHome" in probe
+    assert "pgrep -x unbound" in probe
+    assert "service unbound onestatus" not in probe
+
+
+def test_windows_probes_hide_role_markers_inside_encoded_bodies():
+    for role in ("file_server", "directum", "active_directory"):
+        probe = server_observer._ROLE_PROBES[role]
+        assert " # server_observer:" not in probe
+        assert decode_windows_probe(probe).endswith(f"# server_observer:{role}")
+
+
+def test_collect_replaces_non_utf8_probe_stderr():
+    config = runtime_config()
+    config["targets"] = [item for item in config["targets"] if item["role"] == "directum"]
+    kwargs_seen = []
+
+    def runner(command, **kwargs):
+        kwargs_seen.append(kwargs)
+        return healthy_runner(command, **kwargs)
+
+    snapshot = collect(config, runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
+
+    assert snapshot["overall"] == "ok"
+    assert kwargs_seen == [{"capture_output": True, "text": True, "shell": False, "timeout": 20, "errors": "replace"}]
 
 
 @pytest.mark.parametrize(
@@ -430,8 +486,8 @@ def test_windows_probe_body_with_mocked_commands_emits_json(role, expected_servi
 
     collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
 
-    probe = next(command[-1] for command in calls if f"server_observer:{role}" in command[-1])
-    body = probe.split(' -Command "', 1)[1].rsplit('" # ', 1)[0]
+    probe = role_probe(calls, role)
+    body = decode_windows_probe(probe)
     mocks = """
 function Get-CimInstance { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments=$true)]$Rest) [pscustomobject]@{ FreeSpace = 34; Size = 100 } }
 function Get-Item { [CmdletBinding()] param([Parameter(ValueFromRemainingArguments=$true)]$Rest) [pscustomobject]@{ Length = 1 } }
@@ -450,6 +506,15 @@ function Resolve-DnsName { [CmdletBinding()] param([Parameter(ValueFromRemaining
     payload = json.loads(completed.stdout)
     assert set(payload["services"]) == expected_services
     assert all(payload["services"].values())
+
+
+def decode_windows_probe(probe):
+    encoded = probe.split(" -EncodedCommand ", 1)[1].split(" #", 1)[0]
+    return base64.b64decode(encoded).decode("utf-16le")
+
+
+def role_probe(calls, role):
+    return next(command[-1] for command in calls if command[-1] == server_observer._ROLE_PROBES[role])
 
 
 @pytest.mark.parametrize(
