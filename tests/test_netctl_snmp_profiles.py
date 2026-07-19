@@ -8,6 +8,7 @@ import pytest
 
 from netctl.snmp import CapabilityResult, SnmpOutcome, SnmpVarBind
 from netctl.snmp.collector import collect_switch_snapshot
+from netctl.snmp.models import SwitchSystem
 
 
 _DGS_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "dgs.json"
@@ -98,7 +99,7 @@ def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> N
     from netctl.snmp.profiles import DgsProfile, GenericProfile, detect_profile
 
     dgs_system = SwitchSystem(
-        "DGS-SYNTHETIC", "1.3.6.1.4.1.99999.42", "dgs-synthetic", "", None
+        "WS6-DGS-1210-52", "1.3.6.1.4.1.171.999.52", "dgs-synthetic", "", None
     )
     non_dgs_system = SwitchSystem(
         "Synthetic switch", "1.3.6.1.4.1.99999.42", "synthetic", "", None
@@ -132,6 +133,127 @@ def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> N
         bridge_to_ifindex={11: 101},
         ports_by_ifindex={101: port},
     ).physical_port == 11
+
+
+@pytest.mark.parametrize(
+    "system",
+    (
+        SwitchSystem(
+            "DGS-SYNTHETIC", "1.3.6.1.4.1.171.999.52", "false-prefix", "", None
+        ),
+        SwitchSystem(
+            "WS6-DGS-1210-52", "1.3.6.1.4.1.99999.52", "wrong-vendor", "", None
+        ),
+        SwitchSystem(
+            "Generic switch", "1.3.6.1.4.1.171.999.52", "generic", "", None
+        ),
+    ),
+)
+def test_dgs_selection_requires_documented_identity_and_vendor_evidence(
+    system: object,
+) -> None:
+    from netctl.snmp.models import SwitchSystem
+    from netctl.snmp.profiles import DgsProfile, GenericProfile, detect_profile
+
+    documented = SwitchSystem(
+        "WS6-DGS-1210-52", "1.3.6.1.4.1.171.999.52", "dgs", "", None
+    )
+
+    assert isinstance(detect_profile(documented), DgsProfile)
+    assert isinstance(detect_profile(system), GenericProfile)
+
+
+def test_dgs_physical_port_requires_bounded_unique_front_panel_mapping() -> None:
+    from netctl.snmp.models import SwitchPort
+    from netctl.snmp.profiles import DgsProfile
+
+    front = SwitchPort(
+        "ifindex:101", 101, 11, None, "front-11", "", None, "up", "up", None
+    )
+    cpu = SwitchPort(
+        "ifindex:102", 102, 52, None, "cpu", "", None, "up", "up", None
+    )
+    invalid = SwitchPort(
+        "ifindex:103", 103, 65535, None, "front-65535", "", None, "up", "up", None
+    )
+    duplicate = SwitchPort(
+        "ifindex:104", 104, 13, None, "front-11", "", None, "up", "up", None
+    )
+    aggregate = SwitchPort(
+        "ifindex:105", 105, 12, None, "aggregate", "", None, "up", "up", None
+    )
+    unknown = SwitchPort(
+        "ifindex:106", 106, 13, None, "unknown", "", None, "up", "up", None
+    )
+    ports = {
+        101: front,
+        102: cpu,
+        103: invalid,
+        104: duplicate,
+        105: aggregate,
+        106: unknown,
+    }
+    bridge_map = {52: 102, 65535: 103, 12: 105, 13: 106}
+    profile = DgsProfile()
+
+    known = profile.resolve_fdb_port(
+        raw_fdb_port=11,
+        fdb_mode="qbridge",
+        bridge_to_ifindex={11: 101},
+        ports_by_ifindex={101: front},
+    )
+    cpu_resolution = profile.resolve_fdb_port(
+        raw_fdb_port=52,
+        fdb_mode="qbridge",
+        bridge_to_ifindex=bridge_map,
+        ports_by_ifindex=ports,
+    )
+    invalid_resolution = profile.resolve_fdb_port(
+        raw_fdb_port=65535,
+        fdb_mode="qbridge",
+        bridge_to_ifindex=bridge_map,
+        ports_by_ifindex=ports,
+    )
+    duplicate_resolution = profile.resolve_fdb_port(
+        raw_fdb_port=11,
+        fdb_mode="qbridge",
+        bridge_to_ifindex={11: 104},
+        ports_by_ifindex=ports,
+    )
+    aggregate_resolution = profile.resolve_fdb_port(
+        raw_fdb_port=12,
+        fdb_mode="qbridge",
+        bridge_to_ifindex=bridge_map,
+        ports_by_ifindex=ports,
+    )
+    unknown_resolution = profile.resolve_fdb_port(
+        raw_fdb_port=13,
+        fdb_mode="qbridge",
+        bridge_to_ifindex=bridge_map,
+        ports_by_ifindex=ports,
+    )
+
+    assert (known.port_key, known.physical_port) == ("ifindex:101", 11)
+    assert (cpu_resolution.port_key, cpu_resolution.physical_port) == (
+        "ifindex:102",
+        None,
+    )
+    assert (invalid_resolution.port_key, invalid_resolution.physical_port) == (
+        "ifindex:103",
+        None,
+    )
+    assert (duplicate_resolution.port_key, duplicate_resolution.physical_port) == (
+        "ifindex:104",
+        None,
+    )
+    assert (aggregate_resolution.port_key, aggregate_resolution.physical_port) == (
+        "ifindex:105",
+        None,
+    )
+    assert (unknown_resolution.port_key, unknown_resolution.physical_port) == (
+        "ifindex:106",
+        None,
+    )
 
 
 def test_dgs_fixture_is_synthetic_numeric_oid_data_without_source_or_secrets() -> None:

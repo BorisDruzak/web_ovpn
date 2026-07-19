@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 
 from .models import PortResolution, SwitchPort, SwitchSystem
+
+
+_DGS_1210_52_SYSTEM_DESCRIPTION = "WS6-DGS-1210-52"
+_DLINK_ENTERPRISE_OID_PREFIX = "1.3.6.1.4.1.171."
+_DGS_1210_52_FRONT_PANEL_PORTS = range(1, 53)
+_DGS_FRONT_PANEL_NAME = re.compile(r"front-([1-9][0-9]*)\Z")
 
 
 class PortProfile:
@@ -86,7 +93,20 @@ class DgsProfile(GenericProfile):
 
     @staticmethod
     def matches(system: SwitchSystem) -> bool:
-        return system.sys_descr.upper().startswith("DGS-")
+        return (
+            system.sys_descr == _DGS_1210_52_SYSTEM_DESCRIPTION
+            and system.sys_object_id.startswith(_DLINK_ENTERPRISE_OID_PREFIX)
+        )
+
+    @staticmethod
+    def _front_panel_port(port: SwitchPort) -> int | None:
+        match = _DGS_FRONT_PANEL_NAME.fullmatch(port.name)
+        if match is None:
+            return None
+        physical_port = int(match.group(1))
+        if physical_port not in _DGS_1210_52_FRONT_PANEL_PORTS:
+            return None
+        return physical_port
 
     def resolve_fdb_port(
         self,
@@ -104,11 +124,24 @@ class DgsProfile(GenericProfile):
         )
         if fdb_mode != "qbridge":
             return resolution
+        port = ports_by_ifindex.get(resolution.if_index)
+        if port is None:
+            return resolution
+        physical_port = self._front_panel_port(port)
+        if physical_port != raw_fdb_port:
+            return resolution
+        matching_ports = [
+            candidate
+            for candidate in ports_by_ifindex.values()
+            if self._front_panel_port(candidate) == raw_fdb_port
+        ]
+        if matching_ports != [port]:
+            return resolution
         return PortResolution(
             port_key=resolution.port_key,
             if_index=resolution.if_index,
             bridge_port=resolution.bridge_port,
-            physical_port=raw_fdb_port,
+            physical_port=physical_port,
             port_name=resolution.port_name,
         )
 
