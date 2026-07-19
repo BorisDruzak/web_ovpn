@@ -220,7 +220,7 @@ def _release_check(paths: DraftPaths, draft_id: str) -> None:
 
 
 def _cleanup(draft_id: str, paths: DraftPaths) -> None:
-    for path in (_candidate_path(paths, draft_id), _known_hosts_path(paths, draft_id),
+    for path in (_candidate_path(paths, draft_id), _known_hosts_path(paths, draft_id), _check_lock_path(paths, draft_id),
                  paths.queue_dir / f"{draft_id}.json", paths.results_dir / f"{draft_id}.json"):
         try:
             path.unlink()

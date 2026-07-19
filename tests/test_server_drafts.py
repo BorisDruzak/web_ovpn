@@ -114,6 +114,23 @@ def test_cleanup_removes_only_the_uuid_private_files(tmp_path, fake_runner):
     fake_runner.assert_not_called()
 
 
+def test_cleanup_removes_its_stale_check_lock_without_running_runner(tmp_path, fake_runner):
+    request = draft_request("cleanup")
+    other_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    paths.private_dir.mkdir(parents=True)
+    lock_path = paths.private_dir / f"{request.id}.check.lock"
+    other_lock_path = paths.private_dir / f"{other_id}.check.lock"
+    lock_path.write_text("", encoding="utf-8")
+    other_lock_path.write_text("", encoding="utf-8")
+
+    process_request(request, paths, fake_runner)
+
+    assert not lock_path.exists()
+    assert other_lock_path.exists()
+    fake_runner.assert_not_called()
+
+
 def test_cleanup_queue_request_ignores_malformed_unrelated_fields(tmp_path, fake_runner):
     draft_id = str(uuid4())
     paths = draft_paths(tmp_path)
