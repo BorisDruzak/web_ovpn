@@ -3,12 +3,29 @@ import importlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import ServerDraft, WebAuditLog
+
+
+VALID_FINGERPRINT = "SHA256:" + "Q" * 43
+
+
+def scanned_result():
+    return {"status": "pending", "algorithm": "ssh-ed25519", "fingerprint": VALID_FINGERPRINT}
+
+
+def pinned_result(generation):
+    return {
+        "status": "ok",
+        "fingerprint": VALID_FINGERPRINT,
+        "checked_at": datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "pin_generation": generation,
+    }
 
 
 def make_client(tmp_path, monkeypatch, public_key="ssh-ed25519 AAA observer"):
@@ -136,7 +153,7 @@ def test_confirm_uses_stored_fingerprint_and_audits_uuid(tmp_path, monkeypatch):
     results = tmp_path / "results"
     results.mkdir(exist_ok=True)
     (results / f"{draft_id}.json").write_text(
-        json.dumps({"status": "pending", "fingerprint": "SHA256:expected"}), encoding="utf-8"
+        json.dumps(scanned_result()), encoding="utf-8"
     )
 
     response = post_with_csrf(client, f"/network/server-drafts/{draft_id}/confirm", {})
@@ -148,7 +165,8 @@ def test_confirm_uses_stored_fingerprint_and_audits_uuid(tmp_path, monkeypatch):
         "host": "server.example",
         "ssh_user": "observer",
         "port": 22,
-        "expected_fingerprint": "SHA256:expected",
+        "expected_fingerprint": VALID_FINGERPRINT,
+        "pin_generation": queued_action(tmp_path)["pin_generation"],
     }
     with db_session() as db:
         audit = db.query(WebAuditLog).filter_by(action="server-draft-confirm").one()
@@ -163,7 +181,7 @@ def test_check_cannot_overwrite_queued_confirm_before_pin_completion(tmp_path, m
     results = tmp_path / "results"
     results.mkdir(exist_ok=True)
     (results / f"{draft_id}.json").write_text(
-        json.dumps({"status": "pending", "fingerprint": "SHA256:expected"}), encoding="utf-8"
+        json.dumps(scanned_result()), encoding="utf-8"
     )
     assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
     assert not list((tmp_path / "queue").glob("*.json"))
@@ -185,19 +203,14 @@ def test_completed_pin_allows_one_check_that_confirm_cannot_overwrite(tmp_path, 
     results.mkdir(exist_ok=True)
     result_path = results / f"{draft_id}.json"
     result_path.write_text(
-        json.dumps({"status": "pending", "fingerprint": "SHA256:expected"}), encoding="utf-8"
+        json.dumps(scanned_result()), encoding="utf-8"
     )
     assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/confirm", {}).status_code == 303
+    generation = queued_action(tmp_path)["pin_generation"]
 
     (tmp_path / "queue" / f"{draft_id}.json").unlink()
     result_path.write_text(
-        json.dumps(
-            {
-                "status": "ok",
-                "fingerprint": "SHA256:expected",
-                "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            }
-        ),
+        json.dumps(pinned_result(generation)),
         encoding="utf-8",
     )
     assert f'/network/server-drafts/{draft_id}/check' in client.get("/network/server-drafts").text
@@ -213,7 +226,75 @@ def test_completed_pin_allows_one_check_that_confirm_cannot_overwrite(tmp_path, 
     assert f'/network/server-drafts/{draft_id}/check' not in client.get("/network/server-drafts").text
 
 
-def test_delete_queues_cleanup_and_removes_public_record(tmp_path, monkeypatch):
+def test_check_is_authorized_and_consumed_by_current_pin_generation(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    results = tmp_path / "results"
+    results.mkdir(exist_ok=True)
+    generation = str(uuid4())
+    (results / f"{draft_id}.json").write_text(
+        json.dumps(pinned_result(generation)), encoding="utf-8"
+    )
+    with db_session() as db:
+        db.add(
+            WebAuditLog(
+                actor="admin",
+                action="server-draft-confirm",
+                target_client=draft_id,
+                result="ok",
+                message=f"pin-generation:{uuid4()}",
+            )
+        )
+        db.commit()
+
+    assert f'/network/server-drafts/{draft_id}/check' not in client.get("/network/server-drafts").text
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
+    assert not list((tmp_path / "queue").glob("*.json"))
+
+    with db_session() as db:
+        db.add(
+            WebAuditLog(
+                actor="admin",
+                action="server-draft-confirm",
+                target_client=draft_id,
+                result="ok",
+                message=f"pin-generation:{generation}",
+            )
+        )
+        db.commit()
+
+    assert f'/network/server-drafts/{draft_id}/check' in client.get("/network/server-drafts").text
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
+    first_check = queued_action(tmp_path)
+    assert first_check["action"] == "check"
+    assert first_check["pin_generation"] == generation
+
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
+    assert queued_action(tmp_path) == first_check
+    with db_session() as db:
+        consumed = db.query(WebAuditLog).filter_by(
+            action="server-draft-check", result="ok", target_client=draft_id,
+            message=f"pin-generation:{generation}",
+        ).count()
+        assert consumed == 1
+
+
+def test_direct_scan_post_cannot_replace_a_confirmable_fingerprint(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    results = tmp_path / "results"
+    results.mkdir(exist_ok=True)
+    (results / f"{draft_id}.json").write_text(json.dumps(scanned_result()), encoding="utf-8")
+
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/scan", {}).status_code == 303
+
+    assert not list((tmp_path / "queue").glob("*.json"))
+    assert json.loads((results / f"{draft_id}.json").read_text(encoding="utf-8")) == scanned_result()
+
+
+def test_delete_queues_cleanup_before_worker_removes_public_record(tmp_path, monkeypatch):
     client = make_logged_in_client(tmp_path, monkeypatch)
     draft_id = create_draft(client, tmp_path)
     (tmp_path / "queue" / f"{draft_id}.json").unlink()
@@ -226,6 +307,27 @@ def test_delete_queues_cleanup_and_removes_public_record(tmp_path, monkeypatch):
 
     assert response.status_code == 303
     assert queued_action(tmp_path)["action"] == "cleanup"
-    assert not result_path.exists()
+    assert result_path.exists()
     with db_session() as db:
         assert db.get(ServerDraft, draft_id) is None
+
+
+def test_delete_rolls_back_before_cleanup_when_database_flush_fails(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    original_flush = Session.flush
+
+    def fail_draft_delete(session, *args, **kwargs):
+        if any(isinstance(item, ServerDraft) and item.id == draft_id for item in session.deleted):
+            raise SQLAlchemyError("forced delete failure")
+        return original_flush(session, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "flush", fail_draft_delete)
+
+    response = post_with_csrf(client, f"/network/server-drafts/{draft_id}/delete", {})
+
+    assert response.status_code == 303
+    assert not list((tmp_path / "queue").glob("*.cleanup.json"))
+    with db_session() as db:
+        assert db.get(ServerDraft, draft_id) is not None

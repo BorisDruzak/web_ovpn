@@ -23,7 +23,7 @@ from app.server_drafts import DraftRequest, make_draft_request, write_public_res
 COMMAND_TIMEOUT_SECONDS = 20
 SCAN_TIMEOUT_SECONDS = 8
 OBSERVER_KEY_PATH = "/etc/openvpn-web/server-observer.key"
-_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{1,86}={0,2}")
+_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}(?![A-Za-z0-9+/=])")
 _CANDIDATE = re.compile(r"^[^\s]+\s+ssh-ed25519\s+[A-Za-z0-9+/]+={0,3}\s*$")
 
 
@@ -42,12 +42,17 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def process_queue(queue_dir: Path, results_dir: Path, private_dir: Path, runner: Runner = subprocess.run) -> int:
-    """Consume valid JSON requests once, returning the number dispatched."""
+    """Claim immutable requests once, then process terminal cleanup intents."""
     paths = DraftPaths(Path(queue_dir), Path(results_dir), Path(private_dir))
     processed = 0
-    for request_path in sorted(paths.queue_dir.glob("*.json")):
+    for request_path in sorted(
+        path for path in paths.queue_dir.glob("*.json") if not path.name.endswith(".cleanup.json")
+    ):
+        claim_path = _claim_request(request_path)
+        if claim_path is None:
+            continue
         try:
-            request = _read_request(request_path)
+            request = _read_request(claim_path)
             process_request(request, paths, runner)
         except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
             # Do not expose malformed requests or tool diagnostics to the web layer.
@@ -60,10 +65,27 @@ def process_queue(queue_dir: Path, results_dir: Path, private_dir: Path, runner:
         else:
             processed += 1
         finally:
-            try:
-                request_path.unlink()
-            except FileNotFoundError:
-                pass
+            _release_claim(request_path, claim_path, remove_request=True)
+    for cleanup_path in sorted(paths.queue_dir.glob("*.cleanup.json")):
+        draft_id = cleanup_path.name.removesuffix(".cleanup.json")
+        request_path = paths.queue_dir / f"{draft_id}.json"
+        if request_path.exists() or _claim_path(request_path).exists():
+            continue
+        claim_path = _claim_request(cleanup_path)
+        if claim_path is None:
+            continue
+        completed = False
+        try:
+            request = _read_request(claim_path)
+            process_request(request, paths, runner)
+            os.replace(cleanup_path, paths.queue_dir / f"{draft_id}.deleted")
+            completed = True
+            processed += 1
+        except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
+            # Keep cleanup durable for a later retry.
+            pass
+        finally:
+            _release_claim(cleanup_path, claim_path, remove_request=completed)
     return processed
 
 
@@ -74,7 +96,8 @@ def process_request(request: DraftRequest, paths: DraftPaths, runner: Runner = s
         _cleanup(cleanup_request.id, paths)
         return 1
     request = make_draft_request(
-        request.id, request.host, request.ssh_user, request.port, request.action, request.expected_fingerprint
+        request.id, request.host, request.ssh_user, request.port, request.action,
+        request.expected_fingerprint, request.pin_generation,
     )
     if request.action == "scan":
         _scan(request, paths, runner)
@@ -119,8 +142,8 @@ def _scan(request: DraftRequest, paths: DraftPaths, runner: Runner) -> None:
 
 
 def _confirm(request: DraftRequest, paths: DraftPaths, runner: Runner) -> None:
-    if request.expected_fingerprint is None:
-        raise DraftWorkerError("fingerprint is required")
+    if request.expected_fingerprint is None or request.pin_generation is None:
+        raise DraftWorkerError("fingerprint and pin generation are required")
     try:
         candidate = _candidate_path(paths, request.id).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -129,13 +152,15 @@ def _confirm(request: DraftRequest, paths: DraftPaths, runner: Runner) -> None:
     if fingerprint != request.expected_fingerprint:
         raise DraftWorkerError("fingerprint does not match scanned candidate")
     _write_private(_known_hosts_path(paths, request.id), candidate)
+    _write_private(_pin_generation_path(paths, request.id), request.pin_generation + "\n")
     write_public_result(
         paths.results_dir,
         request.id,
         {
             "status": "ok",
             "fingerprint": fingerprint,
-            "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "checked_at": datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            "pin_generation": request.pin_generation,
         },
     )
 
@@ -144,6 +169,12 @@ def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> None:
     known_hosts = _known_hosts_path(paths, request.id)
     if not known_hosts.is_file():
         raise DraftWorkerError("confirmed known-hosts file is unavailable")
+    try:
+        pinned_generation = _pin_generation_path(paths, request.id).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DraftWorkerError("pin generation is unavailable") from exc
+    if request.pin_generation != pinned_generation:
+        raise DraftWorkerError("pin generation is stale")
     command = [
         "ssh", "-i", OBSERVER_KEY_PATH, "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
         "-o", f"UserKnownHostsFile={known_hosts}", "-p", str(request.port),
@@ -195,7 +226,7 @@ def _read_request(path: Path) -> DraftRequest:
         return make_draft_request(payload.get("id"), "cleanup", "cleanup", 22, "cleanup")
     return make_draft_request(
         payload.get("id"), payload.get("host"), payload.get("ssh_user"), payload.get("port"),
-        payload.get("action"), payload.get("expected_fingerprint"),
+        payload.get("action"), payload.get("expected_fingerprint"), payload.get("pin_generation"),
     )
 
 
@@ -205,6 +236,10 @@ def _candidate_path(paths: DraftPaths, draft_id: str) -> Path:
 
 def _known_hosts_path(paths: DraftPaths, draft_id: str) -> Path:
     return paths.private_dir / f"{draft_id}.known_hosts"
+
+
+def _pin_generation_path(paths: DraftPaths, draft_id: str) -> Path:
+    return paths.private_dir / f"{draft_id}.pin-generation"
 
 
 def _check_lock_path(paths: DraftPaths, draft_id: str) -> Path:
@@ -229,12 +264,43 @@ def _release_check(paths: DraftPaths, draft_id: str) -> None:
 
 
 def _cleanup(draft_id: str, paths: DraftPaths) -> None:
-    for path in (_candidate_path(paths, draft_id), _known_hosts_path(paths, draft_id), _check_lock_path(paths, draft_id),
-                 paths.queue_dir / f"{draft_id}.json", paths.results_dir / f"{draft_id}.json"):
+    for path in (
+        _candidate_path(paths, draft_id),
+        _known_hosts_path(paths, draft_id),
+        _pin_generation_path(paths, draft_id),
+        _check_lock_path(paths, draft_id),
+        paths.results_dir / f"{draft_id}.json",
+    ):
         try:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def _claim_path(request_path: Path) -> Path:
+    return request_path.with_name(f".{request_path.name}.claim")
+
+
+def _claim_request(request_path: Path) -> Path | None:
+    claim_path = _claim_path(request_path)
+    try:
+        os.link(request_path, claim_path)
+    except (FileExistsError, FileNotFoundError):
+        return None
+    return claim_path
+
+
+def _release_claim(request_path: Path, claim_path: Path, *, remove_request: bool) -> None:
+    if remove_request:
+        try:
+            if os.path.samefile(request_path, claim_path):
+                request_path.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        claim_path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _write_private(path: Path, text: str) -> None:

@@ -1,4 +1,5 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 import subprocess
@@ -14,6 +15,7 @@ from app.server_drafts import (
     make_draft_request,
     observer_public_key,
     read_public_result,
+    write_public_result,
 )
 from app.server_draft_worker import (
     DraftPaths,
@@ -21,6 +23,10 @@ from app.server_draft_worker import (
     process_queue,
     process_request,
 )
+
+
+VALID_FINGERPRINT = "SHA256:" + "Q" * 43
+OTHER_FINGERPRINT = "SHA256:" + "R" * 43
 
 
 @pytest.fixture
@@ -35,6 +41,8 @@ def draft_paths(tmp_path):
 
 
 def draft_request(action, **kwargs):
+    if action in {"confirm", "check"}:
+        kwargs.setdefault("pin_generation", str(uuid4()))
     return make_draft_request(
         kwargs.pop("draft_id", str(uuid4())),
         kwargs.pop("host", "server.example"),
@@ -49,11 +57,21 @@ def completed_scan(output):
     return subprocess.CompletedProcess(["ssh-keyscan"], 0, stdout=output, stderr="")
 
 
+def seed_pinned_private(paths, request):
+    paths.private_dir.mkdir(parents=True, exist_ok=True)
+    (paths.private_dir / f"{request.id}.known_hosts").write_text(
+        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
+    )
+    (paths.private_dir / f"{request.id}.pin-generation").write_text(
+        f"{request.pin_generation}\n", encoding="utf-8"
+    )
+
+
 def test_scan_returns_only_algorithm_and_fingerprint(tmp_path, fake_runner):
     request = draft_request("scan")
     fake_runner.side_effect = [
         completed_scan("server.example ssh-ed25519 AAA"),
-        subprocess.CompletedProcess(["ssh-keygen"], 0, stdout="256 SHA256:scanned server\n", stderr=""),
+        subprocess.CompletedProcess(["ssh-keygen"], 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""),
     ]
 
     process_request(request, draft_paths(tmp_path), fake_runner)
@@ -65,14 +83,14 @@ def test_scan_returns_only_algorithm_and_fingerprint(tmp_path, fake_runner):
 
 
 def test_confirm_requires_exact_scanned_fingerprint(tmp_path, fake_runner):
-    request = draft_request("confirm", expected_fingerprint="SHA256:other")
+    request = draft_request("confirm", expected_fingerprint=OTHER_FINGERPRINT)
     paths = draft_paths(tmp_path)
     paths.private_dir.mkdir(parents=True)
     (paths.private_dir / f"{request.id}.candidate").write_text(
         "server.example ssh-ed25519 AAA", encoding="utf-8"
     )
     fake_runner.return_value = subprocess.CompletedProcess(
-        ["ssh-keygen"], 0, stdout="256 SHA256:scanned server\n", stderr=""
+        ["ssh-keygen"], 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
     )
 
     with pytest.raises(DraftWorkerError, match="fingerprint"):
@@ -80,21 +98,22 @@ def test_confirm_requires_exact_scanned_fingerprint(tmp_path, fake_runner):
 
 
 def test_confirm_publishes_completed_pin_as_safe_ok_result(tmp_path, fake_runner):
-    request = draft_request("confirm", expected_fingerprint="SHA256:scanned")
+    request = draft_request("confirm", expected_fingerprint=VALID_FINGERPRINT)
     paths = draft_paths(tmp_path)
     paths.private_dir.mkdir(parents=True)
     candidate = "server.example ssh-ed25519 AAA\n"
     (paths.private_dir / f"{request.id}.candidate").write_text(candidate, encoding="utf-8")
     fake_runner.return_value = subprocess.CompletedProcess(
-        ["ssh-keygen"], 0, stdout="256 SHA256:scanned server\n", stderr="raw private diagnostic"
+        ["ssh-keygen"], 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr="raw private diagnostic"
     )
 
     process_request(request, paths, fake_runner)
 
     result = read_public_result(paths.results_dir, request.id)
-    assert set(result) == {"status", "fingerprint", "checked_at"}
+    assert set(result) == {"status", "fingerprint", "checked_at", "pin_generation"}
     assert result["status"] == "ok"
-    assert result["fingerprint"] == "SHA256:scanned"
+    assert result["fingerprint"] == VALID_FINGERPRINT
+    assert result["pin_generation"] == request.pin_generation
     assert datetime.fromisoformat(result["checked_at"].replace("Z", "+00:00")).tzinfo is not None
     assert (paths.private_dir / f"{request.id}.known_hosts").read_text(encoding="utf-8") == candidate
     assert "AAA" not in json.dumps(result)
@@ -104,10 +123,7 @@ def test_confirm_publishes_completed_pin_as_safe_ok_result(tmp_path, fake_runner
 def test_check_uses_fixed_true_and_strict_known_host(tmp_path, fake_runner):
     request = draft_request("check")
     paths = draft_paths(tmp_path)
-    paths.private_dir.mkdir(parents=True)
-    (paths.private_dir / f"{request.id}.known_hosts").write_text(
-        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
-    )
+    seed_pinned_private(paths, request)
     fake_runner.return_value = subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
 
     process_request(request, paths, fake_runner)
@@ -132,7 +148,7 @@ def test_cleanup_removes_only_the_uuid_private_files(tmp_path, fake_runner):
     process_request(request, paths, fake_runner)
 
     assert not list(paths.private_dir.glob(f"{request.id}.*"))
-    assert not (paths.queue_dir / f"{request.id}.json").exists()
+    assert (paths.queue_dir / f"{request.id}.json").exists()
     assert not (paths.results_dir / f"{request.id}.json").exists()
     fake_runner.assert_not_called()
 
@@ -161,7 +177,7 @@ def test_cleanup_queue_request_ignores_malformed_unrelated_fields(tmp_path, fake
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f"{draft_id}{suffix}").write_text("private", encoding="utf-8")
     paths.queue_dir.mkdir(parents=True)
-    request_path = paths.queue_dir / f"{draft_id}.json"
+    request_path = paths.queue_dir / f"{draft_id}.cleanup.json"
     request_path.write_text(
         json.dumps({"id": draft_id, "action": "cleanup", "host": None, "ssh_user": "bad;user", "port": 0}),
         encoding="utf-8",
@@ -173,6 +189,7 @@ def test_cleanup_queue_request_ignores_malformed_unrelated_fields(tmp_path, fake
 
     assert not list(paths.private_dir.glob(f"{draft_id}.*"))
     assert not request_path.exists()
+    assert (paths.queue_dir / f"{draft_id}.deleted").is_file()
     assert not (paths.results_dir / f"{draft_id}.json").exists()
     fake_runner.assert_not_called()
 
@@ -180,10 +197,7 @@ def test_cleanup_queue_request_ignores_malformed_unrelated_fields(tmp_path, fake
 def test_duplicate_check_private_claim_is_not_run_twice(tmp_path, fake_runner):
     request = draft_request("check")
     paths = draft_paths(tmp_path)
-    paths.private_dir.mkdir(parents=True)
-    (paths.private_dir / f"{request.id}.known_hosts").write_text(
-        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
-    )
+    seed_pinned_private(paths, request)
     (paths.private_dir / f"{request.id}.check.lock").write_text("", encoding="utf-8")
 
     assert process_request(request, paths, fake_runner) == 0
@@ -194,15 +208,15 @@ def test_duplicate_check_private_claim_is_not_run_twice(tmp_path, fake_runner):
 def test_check_never_publishes_internal_claim_status(tmp_path, fake_runner):
     request = draft_request("check")
     paths = draft_paths(tmp_path)
-    paths.private_dir.mkdir(parents=True)
-    (paths.private_dir / f"{request.id}.known_hosts").write_text(
-        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
-    )
+    seed_pinned_private(paths, request)
     paths.results_dir.mkdir(parents=True)
-    (paths.results_dir / f"{request.id}.json").write_text('{"status": "pending"}', encoding="utf-8")
+    (paths.results_dir / f"{request.id}.json").write_text(
+        json.dumps({"status": "pending", "algorithm": "ssh-ed25519", "fingerprint": VALID_FINGERPRINT}),
+        encoding="utf-8",
+    )
 
     def runner(*_args, **_kwargs):
-        assert read_public_result(paths.results_dir, request.id) == {"status": "pending"}
+        assert read_public_result(paths.results_dir, request.id)["status"] == "pending"
         assert (paths.private_dir / f"{request.id}.check.lock").exists()
         return subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
 
@@ -215,10 +229,7 @@ def test_check_never_publishes_internal_claim_status(tmp_path, fake_runner):
 def test_timeout_writes_only_safe_category(tmp_path, fake_runner):
     request = draft_request("check")
     paths = draft_paths(tmp_path)
-    paths.private_dir.mkdir(parents=True)
-    (paths.private_dir / f"{request.id}.known_hosts").write_text(
-        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
-    )
+    seed_pinned_private(paths, request)
     fake_runner.side_effect = subprocess.TimeoutExpired(["ssh"], 20, output="raw response")
 
     process_request(request, paths, fake_runner)
@@ -307,7 +318,123 @@ def test_queue_is_atomic_and_has_no_private_material(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".*.tmp"))
 
 
-def test_public_result_removes_host_key_and_stderr(tmp_path):
+def test_concurrent_request_publication_reserves_one_action_without_replacement(tmp_path):
+    draft_id = str(uuid4())
+    scan = make_draft_request(draft_id, "server.example", "observer", 22, "scan")
+    check = make_draft_request(
+        draft_id, "server.example", "observer", 22, "check", pin_generation=str(uuid4())
+    )
+
+    def publish(request):
+        try:
+            return create_draft_request(tmp_path, request).read_text(encoding="utf-8")
+        except FileExistsError:
+            return "reserved"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(publish, (scan, check)))
+
+    assert outcomes.count("reserved") == 1
+    queued = json.loads((tmp_path / f"{draft_id}.json").read_text(encoding="utf-8"))
+    assert queued["action"] in {"scan", "check"}
+
+
+def test_worker_claim_does_not_unlink_a_newer_replacement(tmp_path):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    create_draft_request(
+        paths.queue_dir,
+        make_draft_request(draft_id, "server.example", "observer", 22, "scan"),
+    )
+    replacement = make_draft_request(draft_id, "new.example", "observer", 22, "scan")
+
+    def runner(command, **_kwargs):
+        if command[0] == "ssh-keyscan":
+            (paths.queue_dir / f"{draft_id}.json").unlink()
+            create_draft_request(paths.queue_dir, replacement)
+            return completed_scan("server.example ssh-ed25519 AAA")
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
+        )
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, runner) == 1
+
+    queued = json.loads((paths.queue_dir / f"{draft_id}.json").read_text(encoding="utf-8"))
+    assert queued["host"] == "new.example"
+
+
+def test_cleanup_intent_survives_an_active_request_and_becomes_terminal(tmp_path):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    create_draft_request(
+        paths.queue_dir,
+        make_draft_request(draft_id, "server.example", "observer", 22, "scan"),
+    )
+
+    def runner(command, **_kwargs):
+        if command[0] == "ssh-keyscan":
+            create_draft_request(
+                paths.queue_dir,
+                make_draft_request(draft_id, "cleanup", "cleanup", 22, "cleanup"),
+            )
+            return completed_scan("server.example ssh-ed25519 AAA")
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
+        )
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, runner) == 2
+
+    assert not (paths.queue_dir / f"{draft_id}.json").exists()
+    assert not (paths.queue_dir / f"{draft_id}.cleanup.json").exists()
+    assert (paths.queue_dir / f"{draft_id}.deleted").is_file()
+    assert not (paths.results_dir / f"{draft_id}.json").exists()
+    assert not list(paths.private_dir.glob(f"{draft_id}.*"))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "ok", "fingerprint": VALID_FINGERPRINT, "checked_at": "2026-07-19T00:00:00Z"},
+        {
+            "status": "ok",
+            "fingerprint": "SHA256:short",
+            "checked_at": "2026-07-19T00:00:00.000000Z",
+            "pin_generation": str(uuid4()),
+        },
+        {
+            "status": "ok",
+            "fingerprint": VALID_FINGERPRINT,
+            "checked_at": "2026-07-19T05:00:00+05:00",
+            "pin_generation": str(uuid4()),
+        },
+        {"status": "transport", "stderr": "private"},
+    ],
+)
+def test_public_result_rejects_noncanonical_or_nonexact_worker_projection(tmp_path, payload):
+    draft_id = str(uuid4())
+    (tmp_path / f"{draft_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert read_public_result(tmp_path, draft_id) == {"status": "invalid_response"}
+    with pytest.raises(ValueError):
+        write_public_result(tmp_path, draft_id, payload)
+
+
+def test_completed_pin_projection_requires_and_preserves_generation(tmp_path):
+    draft_id = str(uuid4())
+    generation = str(uuid4())
+    result = {
+        "status": "ok",
+        "fingerprint": VALID_FINGERPRINT,
+        "checked_at": "2026-07-19T00:00:00.000000Z",
+        "pin_generation": generation,
+    }
+
+    write_public_result(tmp_path, draft_id, result)
+
+    assert read_public_result(tmp_path, draft_id) == result
+
+
+def test_public_result_rejects_host_key_and_stderr_instead_of_projecting_them(tmp_path):
     draft_id = str(uuid4())
     (tmp_path / f"{draft_id}.json").write_text(
         json.dumps(
@@ -323,12 +450,7 @@ def test_public_result_removes_host_key_and_stderr(tmp_path):
         encoding="utf-8",
     )
 
-    assert read_public_result(tmp_path, draft_id) == {
-        "status": "transport",
-        "algorithm": "ssh-ed25519",
-        "fingerprint": "SHA256:public",
-        "checked_at": "2026-07-19T00:00:00Z",
-    }
+    assert read_public_result(tmp_path, draft_id) == {"status": "invalid_response"}
 
 
 def test_public_helpers_reject_private_or_unsafe_inputs(tmp_path):

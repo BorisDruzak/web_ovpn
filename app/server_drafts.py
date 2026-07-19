@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -16,11 +17,12 @@ REQUEST_FILE_MODE = 0o640
 _SAFE_SSH_USER = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
 _SAFE_SSH_HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9.-]{0,253}$")
 _SAFE_ACTIONS = frozenset({"scan", "confirm", "check", "cleanup"})
-_SAFE_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{1,86}={0,2}$")
+_SAFE_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}$")
 _SAFE_PUBLIC_KEY = re.compile(
     r"(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,3}(?: [^\r\n]+)?"
 )
-_PUBLIC_RESULT_FIELDS = frozenset({"status", "algorithm", "fingerprint", "checked_at"})
+_CANONICAL_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+_PUBLIC_RESULT_FIELDS = frozenset({"status", "algorithm", "fingerprint", "checked_at", "pin_generation"})
 _SAFE_STATUSES = frozenset(
     {"pending", "ok", "timeout", "host_key_mismatch", "authentication", "transport", "invalid_response"}
 )
@@ -34,6 +36,7 @@ class DraftRequest:
     ssh_user: str
     port: int
     expected_fingerprint: str | None = None
+    pin_generation: str | None = None
 
 
 def make_draft_request(
@@ -43,6 +46,7 @@ def make_draft_request(
     port: int,
     action: str,
     expected_fingerprint: str | None = None,
+    pin_generation: str | None = None,
 ) -> DraftRequest:
     """Build a request after rejecting data that cannot be SSH arguments."""
     _validate_uuid(draft_id)
@@ -58,11 +62,19 @@ def make_draft_request(
         not isinstance(expected_fingerprint, str) or not _SAFE_FINGERPRINT.fullmatch(expected_fingerprint)
     ):
         raise ValueError("expected_fingerprint must be an SSH SHA-256 fingerprint")
-    return DraftRequest(draft_id, action, host, ssh_user, port, expected_fingerprint)
+    if pin_generation is not None:
+        _validate_uuid(pin_generation)
+    if action == "confirm" and (expected_fingerprint is None or pin_generation is None):
+        raise ValueError("confirm requires a fingerprint and pin generation")
+    if action == "check" and (expected_fingerprint is not None or pin_generation is None):
+        raise ValueError("check requires only a pin generation")
+    if action in {"scan", "cleanup"} and (expected_fingerprint is not None or pin_generation is not None):
+        raise ValueError("action does not accept pin state")
+    return DraftRequest(draft_id, action, host, ssh_user, port, expected_fingerprint, pin_generation)
 
 
 def create_draft_request(queue_dir: Path, request: DraftRequest) -> Path:
-    """Atomically place a validated, public-only request in the worker queue."""
+    """Publish one immutable request without replacing a pending or active action."""
     validated = make_draft_request(
         request.id,
         request.host,
@@ -70,6 +82,7 @@ def create_draft_request(queue_dir: Path, request: DraftRequest) -> Path:
         request.port,
         request.action,
         request.expected_fingerprint,
+        request.pin_generation,
     )
     payload: dict[str, Any] = {
         "id": validated.id,
@@ -80,8 +93,20 @@ def create_draft_request(queue_dir: Path, request: DraftRequest) -> Path:
     }
     if validated.expected_fingerprint is not None:
         payload["expected_fingerprint"] = validated.expected_fingerprint
-    destination = Path(queue_dir) / f"{validated.id}.json"
-    _atomic_json_write(destination, payload, REQUEST_FILE_MODE)
+    if validated.pin_generation is not None:
+        payload["pin_generation"] = validated.pin_generation
+    queue_path = Path(queue_dir)
+    cleanup_path = queue_path / f"{validated.id}.cleanup.json"
+    terminal_path = queue_path / f"{validated.id}.deleted"
+    if validated.action == "cleanup":
+        destination = cleanup_path
+        if destination.is_file() or terminal_path.is_file():
+            return destination if destination.is_file() else terminal_path
+    else:
+        if cleanup_path.is_file() or terminal_path.is_file():
+            raise FileExistsError("draft cleanup is already reserved")
+        destination = queue_path / f"{validated.id}.json"
+    _exclusive_json_publish(destination, payload, REQUEST_FILE_MODE)
     return destination
 
 
@@ -95,27 +120,17 @@ def read_public_result(results_dir: Path, draft_id: str) -> dict[str, str]:
         return {"status": "pending"}
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {"status": "invalid_response"}
-    if not isinstance(result, dict) or result.get("status") not in _SAFE_STATUSES:
+    try:
+        safe_result = _validate_public_result(result)
+    except ValueError:
         return {"status": "invalid_response"}
-    return {
-        field: value
-        for field, value in result.items()
-        if field in _PUBLIC_RESULT_FIELDS and isinstance(value, str)
-    }
+    return safe_result
 
 
 def write_public_result(results_dir: Path, draft_id: str, result: dict[str, str]) -> Path:
     """Atomically save a result after enforcing its deliberately small schema."""
     _validate_uuid(draft_id)
-    if not isinstance(result, dict) or result.get("status") not in _SAFE_STATUSES:
-        raise ValueError("result status is not allowed")
-    safe_result = {
-        field: value
-        for field, value in result.items()
-        if field in _PUBLIC_RESULT_FIELDS and isinstance(value, str)
-    }
-    if safe_result.get("status") != result["status"]:
-        raise ValueError("result status is not allowed")
+    safe_result = _validate_public_result(result)
     path = Path(results_dir) / f"{draft_id}.json"
     _atomic_json_write(path, safe_result, REQUEST_FILE_MODE)
     return path
@@ -136,9 +151,70 @@ def _validate_uuid(value: str) -> None:
     if not isinstance(value, str):
         raise ValueError("draft id must be a UUID")
     try:
-        UUID(value)
+        parsed = UUID(value)
     except (ValueError, AttributeError, TypeError) as exc:
         raise ValueError("draft id must be a UUID") from exc
+    if str(parsed) != value:
+        raise ValueError("draft id must be a canonical UUID")
+
+
+def _validate_public_result(result: object) -> dict[str, str]:
+    if not isinstance(result, dict) or not all(isinstance(key, str) for key in result):
+        raise ValueError("result must be an object")
+    if not all(isinstance(value, str) for value in result.values()):
+        raise ValueError("result values must be strings")
+    if not set(result) <= _PUBLIC_RESULT_FIELDS or result.get("status") not in _SAFE_STATUSES:
+        raise ValueError("result fields or status are not allowed")
+    status = result["status"]
+    fields = set(result)
+    if status == "pending":
+        if fields != {"status", "algorithm", "fingerprint"} or result["algorithm"] != "ssh-ed25519":
+            raise ValueError("pending result is not an exact scan projection")
+        _validate_fingerprint(result["fingerprint"])
+    elif status == "ok" and fields != {"status"}:
+        if fields != {"status", "fingerprint", "checked_at", "pin_generation"}:
+            raise ValueError("completed pin is not an exact projection")
+        _validate_fingerprint(result["fingerprint"])
+        _validate_canonical_utc(result["checked_at"])
+        _validate_uuid(result["pin_generation"])
+    elif fields != {"status"}:
+        raise ValueError("worker outcome must contain only its safe status")
+    return dict(result)
+
+
+def _validate_fingerprint(value: str) -> None:
+    if not _SAFE_FINGERPRINT.fullmatch(value):
+        raise ValueError("fingerprint must be an SSH SHA-256 fingerprint")
+
+
+def _validate_canonical_utc(value: str) -> None:
+    if not _CANONICAL_UTC.fullmatch(value):
+        raise ValueError("checked_at must be canonical UTC")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("checked_at must be canonical UTC") from exc
+    if parsed.tzinfo != timezone.utc:
+        raise ValueError("checked_at must be canonical UTC")
+
+
+def _exclusive_json_publish(path: Path, payload: dict[str, Any], mode: int) -> None:
+    """Link a complete temp file into place; hard-link creation is exclusive."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+            json.dump(payload, temporary_file, sort_keys=True)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.chmod(temporary_path, mode)
+        os.link(temporary_path, path)
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any], mode: int) -> None:

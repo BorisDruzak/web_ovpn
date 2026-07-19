@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import re
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -137,49 +136,55 @@ def server_draft_or_404(db: Session, draft_id: str) -> ServerDraft:
     return draft
 
 
-def queue_server_draft(draft: ServerDraft, action: str, expected_fingerprint: str | None = None) -> None:
+def queue_server_draft(
+    draft: ServerDraft,
+    action: str,
+    expected_fingerprint: str | None = None,
+    pin_generation: str | None = None,
+) -> Path:
     request = make_draft_request(
-        draft.id, draft.host, draft.ssh_user, draft.port, action, expected_fingerprint
+        draft.id, draft.host, draft.ssh_user, draft.port, action, expected_fingerprint, pin_generation
     )
-    create_draft_request(get_settings().server_draft_queue_dir, request)
+    return create_draft_request(get_settings().server_draft_queue_dir, request)
 
 
 def has_server_draft_audit(
-    db: Session, draft_id: str, action: str, since: datetime | None = None
+    db: Session, draft_id: str, action: str, pin_generation: str
 ) -> bool:
     statement = select(WebAuditLog.id).where(
         WebAuditLog.action == action,
         WebAuditLog.result == "ok",
         WebAuditLog.target_client == draft_id,
+        WebAuditLog.message == f"pin-generation:{pin_generation}",
     )
-    if since is not None:
-        statement = statement.where(WebAuditLog.ts >= since)
     return db.scalar(statement) is not None
 
 
-def server_draft_confirmation_time(result: dict[str, str]) -> datetime | None:
-    if result.get("status") != "ok" or not result.get("fingerprint"):
-        return None
-    try:
-        completed_at = datetime.fromisoformat(result.get("checked_at", "").replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return completed_at if completed_at.tzinfo is not None else None
-
-
 def is_server_draft_queued(draft_id: str) -> bool:
-    return (get_settings().server_draft_queue_dir / f"{draft_id}.json").is_file()
+    queue_dir = get_settings().server_draft_queue_dir
+    return any(
+        (queue_dir / name).is_file()
+        for name in (
+            f"{draft_id}.json",
+            f".{draft_id}.json.claim",
+            f"{draft_id}.cleanup.json",
+            f".{draft_id}.cleanup.json.claim",
+            f"{draft_id}.deleted",
+        )
+    )
 
 
 def is_confirmed_server_draft(
     db: Session, draft_id: str, result: dict[str, str]
-) -> tuple[bool, datetime | None]:
-    completed_at = server_draft_confirmation_time(result)
-    return (
-        completed_at is not None
-        and has_server_draft_audit(db, draft_id, "server-draft-confirm"),
-        completed_at,
+) -> tuple[bool, str | None]:
+    pin_generation = result.get("pin_generation") if result.get("status") == "ok" else None
+    confirmed = bool(
+        pin_generation
+        and result.get("fingerprint")
+        and result.get("checked_at")
+        and has_server_draft_audit(db, draft_id, "server-draft-confirm", pin_generation)
     )
+    return confirmed, pin_generation
 
 
 def require_client_name(client: str) -> str:
@@ -200,11 +205,11 @@ def server_drafts_page(request: Request, db: Session = Depends(get_db)):
     rows = []
     for draft in db.scalars(select(ServerDraft).order_by(ServerDraft.created_at.desc())):
         result = read_public_result(get_settings().server_draft_results_dir, draft.id)
-        confirmed, completed_at = is_confirmed_server_draft(db, draft.id, result)
+        confirmed, pin_generation = is_confirmed_server_draft(db, draft.id, result)
         queued = is_server_draft_queued(draft.id)
         check_queued = bool(
-            completed_at
-            and has_server_draft_audit(db, draft.id, "server-draft-check", since=completed_at)
+            pin_generation
+            and has_server_draft_audit(db, draft.id, "server-draft-check", pin_generation)
         )
         rows.append(
             {
@@ -215,7 +220,7 @@ def server_drafts_page(request: Request, db: Session = Depends(get_db)):
                     result.get("status") == "pending" and bool(result.get("fingerprint")) and not queued
                 ),
                 "can_check": confirmed and not queued and not check_queued,
-                "can_scan": result.get("status") != "pending" and not confirmed and not queued,
+                "can_scan": not result.get("fingerprint") and not confirmed and not queued,
             }
         )
     return render(request, "server_drafts.html", {"drafts": rows}, db)
@@ -282,9 +287,14 @@ async def server_draft_scan(draft_id: str, request: Request, db: Session = Depen
     user = require_user(request, db)
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
+    result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+    if result.get("fingerprint"):
+        write_audit(db, request, user, "server-draft-scan", "error", "invalid state", target_client=draft.id)
+        add_flash(request, "bad", "Сначала завершите текущую проверку отпечатка")
+        return redirect("/network/server-drafts")
     try:
         queue_server_draft(draft, "scan")
-    except ValueError:
+    except (OSError, ValueError):
         write_audit(db, request, user, "server-draft-scan", "error", "invalid request", target_client=draft.id)
         add_flash(request, "bad", "Не удалось поставить проверку в очередь")
     else:
@@ -299,22 +309,22 @@ async def server_draft_confirm(draft_id: str, request: Request, db: Session = De
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
     result = read_public_result(get_settings().server_draft_results_dir, draft.id)
-    fingerprint = (
-        result.get("fingerprint")
-        if result.get("status") == "pending" and not is_server_draft_queued(draft.id)
-        else None
-    )
+    fingerprint = result.get("fingerprint") if result.get("status") == "pending" else None
     if not fingerprint:
         write_audit(db, request, user, "server-draft-confirm", "error", "not confirmable", target_client=draft.id)
         add_flash(request, "bad", "Нет подтверждаемого отпечатка")
         return redirect("/network/server-drafts")
     try:
-        queue_server_draft(draft, "confirm", fingerprint)
-    except ValueError:
+        pin_generation = str(uuid.uuid4())
+        queue_server_draft(draft, "confirm", fingerprint, pin_generation)
+    except (OSError, ValueError):
         write_audit(db, request, user, "server-draft-confirm", "error", "not confirmable", target_client=draft.id)
         add_flash(request, "bad", "Нет подтверждаемого отпечатка")
     else:
-        write_audit(db, request, user, "server-draft-confirm", "ok", "queued", target_client=draft.id)
+        write_audit(
+            db, request, user, "server-draft-confirm", "ok",
+            f"pin-generation:{pin_generation}", target_client=draft.id,
+        )
         add_flash(request, "ok", "Отпечаток подтвержден и поставлен в очередь")
     return redirect("/network/server-drafts")
 
@@ -325,22 +335,25 @@ async def server_draft_check(draft_id: str, request: Request, db: Session = Depe
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
     result = read_public_result(get_settings().server_draft_results_dir, draft.id)
-    confirmed, completed_at = is_confirmed_server_draft(db, draft.id, result)
+    confirmed, pin_generation = is_confirmed_server_draft(db, draft.id, result)
     already_checked = bool(
-        completed_at
-        and has_server_draft_audit(db, draft.id, "server-draft-check", since=completed_at)
+        pin_generation
+        and has_server_draft_audit(db, draft.id, "server-draft-check", pin_generation)
     )
-    if not confirmed or already_checked or is_server_draft_queued(draft.id):
+    if not confirmed or not pin_generation or already_checked:
         write_audit(db, request, user, "server-draft-check", "error", "not confirmed", target_client=draft.id)
         add_flash(request, "bad", "Сначала подтвердите найденный отпечаток")
         return redirect("/network/server-drafts")
     try:
-        queue_server_draft(draft, "check")
-    except ValueError:
+        queue_server_draft(draft, "check", pin_generation=pin_generation)
+    except (OSError, ValueError):
         write_audit(db, request, user, "server-draft-check", "error", "invalid request", target_client=draft.id)
         add_flash(request, "bad", "Не удалось поставить проверку в очередь")
     else:
-        write_audit(db, request, user, "server-draft-check", "ok", "queued", target_client=draft.id)
+        write_audit(
+            db, request, user, "server-draft-check", "ok",
+            f"pin-generation:{pin_generation}", target_client=draft.id,
+        )
         add_flash(request, "ok", "SSH-проверка поставлена в очередь")
     return redirect("/network/server-drafts")
 
@@ -350,15 +363,34 @@ async def server_draft_delete(draft_id: str, request: Request, db: Session = Dep
     user = require_user(request, db)
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
+    db.delete(draft)
     try:
-        queue_server_draft(draft, "cleanup")
-        (get_settings().server_draft_results_dir / f"{draft.id}.json").unlink(missing_ok=True)
+        db.flush()
+    except SQLAlchemyError:
+        db.rollback()
+        write_audit(db, request, user, "server-draft-delete", "error", "persistence unavailable", target_client=draft.id)
+        add_flash(request, "bad", "Не удалось удалить тестовый сервер")
+        return redirect("/network/server-drafts")
+    try:
+        cleanup_path = queue_server_draft(draft, "cleanup")
     except (OSError, ValueError):
+        db.rollback()
         write_audit(db, request, user, "server-draft-delete", "error", "cleanup unavailable", target_client=draft.id)
         add_flash(request, "bad", "Не удалось удалить тестовый сервер")
         return redirect("/network/server-drafts")
-    db.delete(draft)
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        claim_path = cleanup_path.with_name(f".{cleanup_path.name}.claim")
+        if not claim_path.exists():
+            try:
+                cleanup_path.unlink()
+            except FileNotFoundError:
+                pass
+        write_audit(db, request, user, "server-draft-delete", "error", "persistence unavailable", target_client=draft.id)
+        add_flash(request, "bad", "Не удалось удалить тестовый сервер")
+        return redirect("/network/server-drafts")
     write_audit(db, request, user, "server-draft-delete", "ok", "cleanup queued", target_client=draft.id)
     add_flash(request, "ok", "Тестовый сервер удален")
     return redirect("/network/server-drafts")
