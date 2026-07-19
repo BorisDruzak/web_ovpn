@@ -7,13 +7,13 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from .switch_profile_hints import SUPPORTED_SNMP_PROFILE_HINTS
 from .util import parse_bool, validate_source_name
 
 DEFAULT_CONFIG = Path("/etc/netctl/netctl.yaml")
 DEFAULT_DB_URL = "sqlite:////var/lib/netctl/netctl.sqlite"
 DEFAULT_SECRETS = Path("/etc/netctl/secrets.env")
 
-SNMP_PROFILES = frozenset({"generic", "dgs", "snr", "tplink", "css326"})
 SNMP_OPTION_YAML_KEYS = {
     "snmp_version": "snmp_version",
     "timeout_seconds": "snmp_timeout_seconds",
@@ -165,7 +165,7 @@ def normalize_source(source: dict[str, Any]) -> dict[str, Any]:
         "ssh_identity_file": str(source.get("ssh_identity_file") or ""),
         "ssh_proxy_jump": str(source.get("ssh_proxy_jump") or ""),
         "ssh_connect_timeout": int(source.get("ssh_connect_timeout") or 8),
-        "enabled": parse_bool(source.get("enabled"), True),
+        "enabled": parse_bool(source.get("enabled"), driver != "snmp_switch"),
     }
     if driver == "snmp_switch":
         snmp_community_env_name(normalized["secret_ref"])
@@ -260,7 +260,7 @@ def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
     profile = _snmp_string(
         _snmp_option(source, "profile_hint", "generic"), field="snmp_profile_hint"
     ).strip().lower()
-    if profile not in SNMP_PROFILES:
+    if profile not in SUPPORTED_SNMP_PROFILE_HINTS:
         raise ValueError("snmp_profile_hint is unsupported")
 
     return {

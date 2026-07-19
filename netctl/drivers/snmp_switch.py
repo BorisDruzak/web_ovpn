@@ -25,4 +25,4 @@ class SnmpSwitchDriver:
         return collect_on_worker_loop(collect)
 
     def test(self) -> dict[str, Any]:
-        return self.collect().to_dict()
+        return self.collect().to_test_summary()

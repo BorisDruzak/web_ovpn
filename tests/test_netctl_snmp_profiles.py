@@ -322,6 +322,48 @@ def test_only_supported_profile_hint_is_accepted() -> None:
         detect_profile(system, profile_hint="dgs")
 
 
+@pytest.mark.parametrize("profile_hint", ["snr", "tplink", "css326"])
+def test_pr3a_config_and_runtime_reject_non_dgs_vendor_profiles(
+    profile_hint: str,
+) -> None:
+    from netctl.config import normalize_source
+    from netctl.snmp.models import SwitchSystem
+    from netctl.snmp.profiles import detect_profile
+
+    source = {
+        "name": "switch-profile-parity",
+        "driver": "snmp_switch",
+        "host": "192.0.2.18",
+        "secret_ref": "switch_profile_parity_snmp",
+        "snmp_profile_hint": profile_hint,
+    }
+    system = SwitchSystem("fixture", "1.3.6.1.4.1.99999", "sw", "", None)
+
+    with pytest.raises(ValueError, match="profile_hint"):
+        normalize_source(source)
+    with pytest.raises(ValueError, match="profile_hint"):
+        detect_profile(system, profile_hint=profile_hint)
+
+
+@pytest.mark.parametrize("profile_hint", ["generic", "dgs"])
+def test_pr3a_config_accepts_every_runtime_profile_hint(profile_hint: str) -> None:
+    from netctl.config import normalize_source
+    from netctl.switch_profile_hints import SUPPORTED_SNMP_PROFILE_HINTS
+
+    normalized = normalize_source(
+        {
+            "name": "switch-profile-parity",
+            "driver": "snmp_switch",
+            "host": "192.0.2.18",
+            "secret_ref": "switch_profile_parity_snmp",
+            "snmp_profile_hint": profile_hint,
+        }
+    )
+
+    assert normalized["driver_options"]["profile_hint"] == profile_hint
+    assert SUPPORTED_SNMP_PROFILE_HINTS == frozenset({"generic", "dgs"})
+
+
 def test_generic_profile_requires_explicit_fid_mapping() -> None:
     from netctl.snmp.profiles import GenericProfile
 

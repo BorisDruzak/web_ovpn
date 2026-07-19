@@ -5,7 +5,7 @@ import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from .snmp.models import (
@@ -65,6 +65,7 @@ def collect_and_save_switch(
         raise SwitchPersistenceError("Switch collection persistence failed") from None
     try:
         started_time = _parse_started_at(started_at)
+        capability_ttl_hours = _capability_ttl_hours(source)
     except Exception:
         raise SwitchPersistenceError("Switch collection persistence failed") from None
     try:
@@ -136,6 +137,7 @@ def collect_and_save_switch(
                     source_id,
                     snapshot,
                     checked_at=started_at,
+                    capability_ttl_hours=capability_ttl_hours,
                 )
                 counts = _replace_fdb(
                     conn,
@@ -419,6 +421,16 @@ def _parse_started_at(value: object) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _capability_ttl_hours(source: dict[str, Any]) -> int:
+    options = source.get("driver_options", {})
+    if not isinstance(options, dict):
+        raise ValueError("source driver options are invalid")
+    value = options.get("capability_ttl_hours", 168)
+    if type(value) is not int or not 1 <= value <= 8760:
+        raise ValueError("capability TTL is invalid")
+    return value
+
+
 @contextmanager
 def _atomic(conn: sqlite3.Connection) -> Iterator[None]:
     if conn.in_transaction:
@@ -674,7 +686,11 @@ def _upsert_capabilities(
     snapshot: SwitchSnapshot,
     *,
     checked_at: str,
+    capability_ttl_hours: int,
 ) -> None:
+    expires_at = (
+        _parse_started_at(checked_at) + timedelta(hours=capability_ttl_hours)
+    ).isoformat().replace("+00:00", "Z")
     for capability in snapshot.capabilities:
         rows_seen = (
             len(snapshot.fdb)
@@ -702,7 +718,7 @@ def _upsert_capabilities(
                 rows_seen,
                 snapshot.profile_fingerprint,
                 checked_at,
-                checked_at,
+                expires_at,
             ),
         )
 

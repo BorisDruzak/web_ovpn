@@ -240,6 +240,33 @@ def test_initial_success_persists_current_rows_and_appeared_events(
     assert "private detail" not in stored_text
 
 
+def test_capability_expiry_honors_source_ttl_hours(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_ttl")
+    source["driver_options"]["capability_ttl_hours"] = 6
+
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
+        "2026-07-19T10:00:00Z",
+    )
+
+    assert result["status"] == "success"
+    capability = _rows(
+        switch_conn,
+        "SELECT checked_at, expires_at FROM switch_capabilities WHERE source_id = ?",
+        (source["id"],),
+    )[0]
+    assert capability == {
+        "checked_at": "2026-07-19T10:00:00Z",
+        "expires_at": "2026-07-19T16:00:00Z",
+    }
+
+
 def test_identical_success_retains_first_seen_and_emits_no_event(
     switch_conn: sqlite3.Connection,
 ) -> None:

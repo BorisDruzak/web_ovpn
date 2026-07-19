@@ -6,6 +6,16 @@ from typing import Any
 from .outcomes import SnmpOutcome
 
 
+_TEST_SUMMARY_CAPABILITY_LIMIT = 32
+
+
+def _bounded_identity_text(value: object, *, limit: int) -> str:
+    if type(value) is not str:
+        return ""
+    normalized = " ".join(value.split())
+    return normalized[:limit]
+
+
 @dataclass(frozen=True)
 class SnmpVarBind:
     oid: tuple[int, ...]
@@ -178,4 +188,46 @@ class SwitchSnapshot:
             "lldp_neighbors": [dict(row) for row in self.lldp_neighbors],
             "counter_samples": [sample.to_dict() for sample in self.counter_samples],
             "capabilities": [capability_to_dict(row) for row in self.capabilities],
+        }
+
+    def to_test_summary(self) -> dict[str, Any]:
+        """Return the bounded public result for ``sources test``.
+
+        Detailed ports and FDB rows are intentionally available only through
+        the paginated switch query commands.
+        """
+        capabilities = []
+        for result in self.capabilities[:_TEST_SUMMARY_CAPABILITY_LIMIT]:
+            if type(result) is not CapabilityResult or not isinstance(
+                result.outcome, SnmpOutcome
+            ):
+                continue
+            capabilities.append(
+                {
+                    "capability": _bounded_identity_text(
+                        result.capability, limit=64
+                    ),
+                    "outcome": result.outcome.value,
+                }
+            )
+        return {
+            "profile": {
+                "id": _bounded_identity_text(self.profile_id, limit=64),
+                "fingerprint": _bounded_identity_text(
+                    self.profile_fingerprint, limit=128
+                ),
+            },
+            "system": {
+                "sys_descr": _bounded_identity_text(
+                    self.system.sys_descr, limit=256
+                ),
+                "sys_object_id": _bounded_identity_text(
+                    self.system.sys_object_id, limit=128
+                ),
+                "sys_name": _bounded_identity_text(
+                    self.system.sys_name, limit=128
+                ),
+            },
+            "capabilities": capabilities,
+            "counts": {"ports": len(self.ports), "fdb": len(self.fdb)},
         }

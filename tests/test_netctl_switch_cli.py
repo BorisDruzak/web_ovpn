@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +123,20 @@ def test_dgs_pilot_runbook_gates_timer_and_verifies_all_rollback_artifacts() -> 
     } <= set(re.findall(r'"\$[a-z_]+"', checksum_command.group("artifacts")))
     rollback = runbook.split("## Evidence and rollback", 1)[1]
     assert 'sudo sha256sum -c "$checksums"' in rollback
+    assert 'timer_enabled_before="$(systemctl is-enabled netctl-collect.timer' in runbook
+    assert 'timer_active_before="$(systemctl is-active netctl-collect.timer' in runbook
+    assert "printf 'timer_enabled_before=%s\\n' \"$timer_enabled_before\"" in runbook
+    assert "printf 'timer_active_before=%s\\n' \"$timer_active_before\"" in runbook
+    assert 'test "$enabled_snmp_before_stage" = 0' in runbook
+    assert 'test "$enabled_snmp_before_manual" = 1' in runbook
+    assert 'test "$enabled_snmp_before_failure" = 1' in runbook
+    assert 'test "$enabled_snmp_after_restore" = 0' in runbook
+    assert runbook.count(
+        'test "$(systemctl is-enabled netctl-collect.timer)" = "$timer_enabled_before"'
+    ) >= 2
+    assert runbook.count(
+        'test "$(systemctl is-active netctl-collect.timer)" = "$timer_active_before"'
+    ) >= 2
 
 
 def _run_cli(args: list[str], capsys) -> tuple[int, dict[str, Any]]:
@@ -211,7 +226,7 @@ class _FakeSwitchDriver:
         return self.snapshot
 
     def test(self) -> dict[str, Any]:
-        return self.collect().to_dict()
+        return self.collect().to_test_summary()
 
 
 def _write_switch_source(
@@ -321,10 +336,63 @@ def test_real_snmp_driver_closes_transport_and_uses_safe_snapshot_serialization(
     ).test()
 
     assert transport.close_calls == 1
-    assert result == snapshot.to_dict()
+    assert result == snapshot.to_test_summary()
     rendered = json.dumps(result).lower()
     assert "raw_varbind" not in rendered
     assert '"details"' not in rendered
+    assert "port_key" not in rendered
+    assert '"fdb": [' not in rendered
+
+
+def test_snmp_test_summary_is_bounded_and_contains_only_safe_aggregates() -> None:
+    capabilities = tuple(
+        CapabilityResult(
+            capability=f"capability-{index}-" + ("x" * 500),
+            outcome=SnmpOutcome.SUCCESS_EMPTY,
+            error_code="private-code-" + ("x" * 500),
+            error_message="private-message-" + ("x" * 500),
+            details={"raw": "private-detail"},
+        )
+        for index in range(100)
+    )
+    base = _snapshot(100)
+    snapshot = replace(
+        base,
+        profile_id="generic\n" + ("p" * 500),
+        profile_fingerprint="generic:v1\r" + ("f" * 500),
+        system=SwitchSystem(
+            sys_descr="description\n" + ("d" * 10_000),
+            sys_object_id="1.3.6.1.4.1.99999.1\r" + ("o" * 500),
+            sys_name="switch\u2028" + ("n" * 500),
+            sys_location="must-not-be-returned",
+            sys_uptime_ticks=123,
+        ),
+        capabilities=capabilities,
+    )
+
+    summary = snapshot.to_test_summary()
+    rendered = json.dumps(summary)
+
+    assert set(summary) == {"profile", "system", "capabilities", "counts"}
+    assert set(summary["profile"]) == {"id", "fingerprint"}
+    assert set(summary["system"]) == {"sys_descr", "sys_object_id", "sys_name"}
+    assert set(summary["counts"]) == {"ports", "fdb"}
+    assert summary["counts"] == {"ports": 100, "fdb": 100}
+    assert len(summary["capabilities"]) <= 32
+    assert all(set(row) == {"capability", "outcome"} for row in summary["capabilities"])
+    assert len(rendered) < 8192
+    for forbidden in (
+        "private-code",
+        "private-message",
+        "private-detail",
+        "must-not-be-returned",
+        "port_key",
+        '"fdb": [',
+        "\n",
+        "\r",
+        "\u2028",
+    ):
+        assert forbidden not in rendered
 
 
 def test_real_snmp_driver_closes_transport_when_collector_raises(monkeypatch) -> None:
@@ -601,6 +669,9 @@ def test_source_inspect_and_test_never_expose_secret_or_raw_capability_details(
     assert "raw_varbind" not in rendered
     assert "must-not-be-printed" not in rendered
     assert '"details"' not in rendered
+    assert "port_key" not in rendered
+    assert '"fdb": [' not in rendered
+    assert tested["result"]["counts"] == {"ports": 3, "fdb": 3}
 
 
 def test_collect_all_isolates_failed_snmp_source_from_other_sources(

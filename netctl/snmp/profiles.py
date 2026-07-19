@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 import re
 
+from netctl.switch_profile_hints import SUPPORTED_SNMP_PROFILE_HINTS
+
 from .models import PortResolution, SwitchPort, SwitchSystem
 
 
@@ -163,7 +165,7 @@ def detect_profile(
     system: SwitchSystem, *, profile_hint: str | None = None
 ) -> PortProfile:
     is_dgs = DgsProfile.matches(system)
-    if profile_hint not in (None, "generic", "dgs"):
+    if profile_hint is not None and profile_hint not in SUPPORTED_SNMP_PROFILE_HINTS:
         raise ValueError("SNMP profile_hint is unsupported")
     if profile_hint == "dgs" and not is_dgs:
         raise ValueError("SNMP profile_hint does not match the switch")

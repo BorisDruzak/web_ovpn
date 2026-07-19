@@ -103,23 +103,40 @@ def snmp_source_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return source
 
 
-def _sanitize_snmp_result(value: Any) -> Any:
-    if isinstance(value, dict):
-        result = {}
-        for key, nested in value.items():
-            normalized = str(key).lower()
-            if (
-                normalized in {"details", "rows", "raw", "password"}
-                or "varbind" in normalized
-                or "community" in normalized
-                or normalized.startswith("resolved_")
-            ):
-                continue
-            result[key] = _sanitize_snmp_result(nested)
-        return result
-    if isinstance(value, (list, tuple)):
-        return [_sanitize_snmp_result(item) for item in value]
-    return value
+def _sanitize_snmp_result(value: Any) -> dict[str, Any]:
+    """Fail closed to the bounded ``sources test`` public contract."""
+    if not isinstance(value, dict):
+        return {"profile": {}, "system": {}, "capabilities": [], "counts": {}}
+    profile = value.get("profile")
+    system = value.get("system")
+    counts = value.get("counts")
+    capabilities = value.get("capabilities")
+    return {
+        "profile": {
+            key: profile[key]
+            for key in ("id", "fingerprint")
+            if isinstance(profile, dict) and key in profile
+        },
+        "system": {
+            key: system[key]
+            for key in ("sys_descr", "sys_object_id", "sys_name")
+            if isinstance(system, dict) and key in system
+        },
+        "capabilities": [
+            {
+                key: row[key]
+                for key in ("capability", "outcome")
+                if key in row
+            }
+            for row in (capabilities[:32] if isinstance(capabilities, list) else [])
+            if isinstance(row, dict)
+        ],
+        "counts": {
+            key: counts[key]
+            for key in ("ports", "fdb")
+            if isinstance(counts, dict) and key in counts
+        },
+    }
 
 
 def prepare_conn(args: argparse.Namespace):

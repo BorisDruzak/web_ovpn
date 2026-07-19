@@ -222,6 +222,45 @@ def test_snmp_scalar_yaml_round_trips_as_driver_options(tmp_path: Path) -> None:
     }
 
 
+def test_snmp_omitted_enabled_defaults_to_disabled() -> None:
+    from netctl.config import normalize_source
+
+    source = _snmp_source()
+    source.pop("enabled")
+
+    assert normalize_source(source)["enabled"] is False
+
+
+def test_snmp_omitted_enabled_syncs_to_disabled_database_row(tmp_path: Path) -> None:
+    from netctl.db import connect, sync_config_sources
+
+    config_path = tmp_path / "netctl.yaml"
+    source_directory = tmp_path / "sources.d"
+    source_directory.mkdir()
+    (source_directory / "switch-omitted-enabled.yaml").write_text(
+        "\n".join(
+            [
+                "name: switch-omitted-enabled",
+                "driver: snmp_switch",
+                "host: 192.0.2.17",
+                "port: 161",
+                "secret_ref: switch_omitted_enabled_snmp",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    conn = connect(_db_url(tmp_path / "omitted-enabled.sqlite"))
+    try:
+        sync_config_sources(conn, config_path)
+        assert conn.execute(
+            "SELECT enabled FROM network_sources WHERE name = ?",
+            ("switch-omitted-enabled",),
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_snmp_options_persist_as_sorted_json_and_decode(tmp_path: Path) -> None:
     from netctl.config import normalize_source
     from netctl.db import connect, get_source, upsert_source

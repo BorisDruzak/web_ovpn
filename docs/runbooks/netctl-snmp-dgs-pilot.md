@@ -37,6 +37,10 @@ and checksums with the change record. Adjust the application path only when the
 deployed service definition proves it is different.
 
 ```bash
+timer_enabled_before="$(systemctl is-enabled netctl-collect.timer 2>/dev/null || true)"
+timer_active_before="$(systemctl is-active netctl-collect.timer 2>/dev/null || true)"
+case "$timer_enabled_before" in enabled|disabled) ;; *) exit 1 ;; esac
+case "$timer_active_before" in active|inactive) ;; *) exit 1 ;; esac
 sudo systemctl stop openvpn-web.service netctl-collect.service
 sudo systemctl disable --now netctl-collect.timer
 sudo install -d -m 0750 /var/backups/netctl
@@ -61,6 +65,8 @@ sudo install -m 0600 /etc/netctl/secrets.env "$secrets_backup"
   printf 'sources_backup=%s\n' "$sources_backup"
   printf 'secrets_backup=%s\n' "$secrets_backup"
   printf 'checksums=%s\n' "$checksums"
+  printf 'timer_enabled_before=%s\n' "$timer_enabled_before"
+  printf 'timer_active_before=%s\n' "$timer_active_before"
 } | sudo tee "$manifest" >/dev/null
 sudo sha256sum "$db_backup" "$app_backup" "$wrapper_backup" \
   "$sources_backup" "$secrets_backup" | sudo tee "$checksums" >/dev/null
@@ -104,8 +110,9 @@ sudo -u netctl /usr/local/sbin/netctl --json sources list
 sudo sqlite3 /var/lib/netctl/netctl.sqlite \
   "SELECT group_concat(version, ',') FROM (SELECT version FROM schema_migrations ORDER BY version);"
 sudo sqlite3 /var/lib/netctl/netctl.sqlite 'PRAGMA integrity_check;'
-sudo sqlite3 /var/lib/netctl/netctl.sqlite \
-  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;"
+enabled_snmp_before_stage="$(sudo sqlite3 /var/lib/netctl/netctl.sqlite \
+  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;")"
+test "$enabled_snmp_before_stage" = 0
 ```
 
 The required results are the reviewed PySNMP version, migration ledger
@@ -128,6 +135,9 @@ sudo /usr/local/sbin/netctl --json sources add-snmp-switch \
   "$pilot_source" --host "$pilot_host" --secret-ref "$pilot_secret_ref" \
   --profile-hint dgs
 sudo -u netctl /usr/local/sbin/netctl --json sources inspect "$pilot_source"
+enabled_snmp_after_stage="$(sudo sqlite3 /var/lib/netctl/netctl.sqlite \
+  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;")"
+test "$enabled_snmp_after_stage" = 0
 ```
 
 The environment variable name derived from this documentation placeholder is
@@ -171,8 +181,9 @@ test "$(systemctl is-enabled netctl-collect.timer)" = disabled
 sudo install -m 0640 "$pilot_yaml" "$pilot_yaml_backup"
 sudoedit "$pilot_yaml"
 sudo -u netctl /usr/local/sbin/netctl --json sources list
-sudo sqlite3 /var/lib/netctl/netctl.sqlite \
-  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;"
+enabled_snmp_before_manual="$(sudo sqlite3 /var/lib/netctl/netctl.sqlite \
+  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;")"
+test "$enabled_snmp_before_manual" = 1
 sudo -u netctl /usr/local/sbin/netctl --json collect "$pilot_source"
 sudo -u netctl /usr/local/sbin/netctl --json switches status
 sudo -u netctl /usr/local/sbin/netctl --json switches capabilities \
@@ -216,6 +227,9 @@ file untouched. The expected manual collection failure must be secret-safe.
 ```bash
 preserved_digest="$fdb_digest_after"
 preserved_events="$events_after"
+enabled_snmp_before_failure="$(sudo sqlite3 /var/lib/netctl/netctl.sqlite \
+  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;")"
+test "$enabled_snmp_before_failure" = 1
 sudoedit "$pilot_yaml"
 if sudo -u netctl /usr/local/sbin/netctl --json collect "$pilot_source"; then
   echo 'expected the synthetic missing-secret collection to fail' >&2
@@ -238,11 +252,16 @@ copy also restores `enabled: false`. Verify zero enabled SNMP sources before
 starting any service:
 
 ```bash
-sudo sqlite3 /var/lib/netctl/netctl.sqlite \
-  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;"
+enabled_snmp_after_restore="$(sudo sqlite3 /var/lib/netctl/netctl.sqlite \
+  "SELECT COUNT(*) FROM network_sources WHERE driver='snmp_switch' AND enabled<>0;")"
+test "$enabled_snmp_after_restore" = 0
 sudo sqlite3 /var/lib/netctl/netctl.sqlite 'PRAGMA integrity_check;'
-sudo systemctl start openvpn-web.service netctl-collect.timer
-sudo systemctl is-active openvpn-web.service netctl-collect.timer
+sudo systemctl start openvpn-web.service
+case "$timer_enabled_before" in enabled) sudo systemctl enable netctl-collect.timer ;; disabled) sudo systemctl disable netctl-collect.timer ;; esac
+case "$timer_active_before" in active) sudo systemctl start netctl-collect.timer ;; inactive) sudo systemctl stop netctl-collect.timer ;; esac
+test "$(systemctl is-enabled netctl-collect.timer)" = "$timer_enabled_before"
+test "$(systemctl is-active netctl-collect.timer)" = "$timer_active_before"
+test "$(systemctl is-active openvpn-web.service)" = active
 ```
 
 This readiness gate ends with the source disabled. Enabling scheduled DGS
@@ -268,9 +287,13 @@ wrapper_backup="$(sudo sed -n 's/^wrapper_backup=//p' "$manifest")"
 sources_backup="$(sudo sed -n 's/^sources_backup=//p' "$manifest")"
 secrets_backup="$(sudo sed -n 's/^secrets_backup=//p' "$manifest")"
 checksums="$(sudo sed -n 's/^checksums=//p' "$manifest")"
+timer_enabled_before="$(sudo sed -n 's/^timer_enabled_before=//p' "$manifest")"
+timer_active_before="$(sudo sed -n 's/^timer_active_before=//p' "$manifest")"
 test -n "$db_backup" && test -n "$app_backup" && test -n "$wrapper_backup"
 test -n "$sources_backup" && test -n "$secrets_backup"
 test -n "$checksums"
+case "$timer_enabled_before" in enabled|disabled) ;; *) exit 1 ;; esac
+case "$timer_active_before" in active|inactive) ;; *) exit 1 ;; esac
 sudo test -f "$db_backup"
 sudo test -f "$app_backup"
 sudo test -x "$wrapper_backup"
@@ -296,8 +319,12 @@ sudo mv /var/lib/netctl/netctl.sqlite \
 sudo install -m 0640 -o netctl -g netctl "$db_backup" \
   /var/lib/netctl/netctl.sqlite
 sudo sqlite3 /var/lib/netctl/netctl.sqlite 'PRAGMA integrity_check;'
-sudo systemctl start openvpn-web.service netctl-collect.timer
-sudo systemctl is-active openvpn-web.service netctl-collect.timer
+sudo systemctl start openvpn-web.service
+case "$timer_enabled_before" in enabled) sudo systemctl enable netctl-collect.timer ;; disabled) sudo systemctl disable netctl-collect.timer ;; esac
+case "$timer_active_before" in active) sudo systemctl start netctl-collect.timer ;; inactive) sudo systemctl stop netctl-collect.timer ;; esac
+test "$(systemctl is-enabled netctl-collect.timer)" = "$timer_enabled_before"
+test "$(systemctl is-active netctl-collect.timer)" = "$timer_active_before"
+test "$(systemctl is-active openvpn-web.service)" = active
 ```
 
 Do not start rollback or restart services unless the protected checksum
