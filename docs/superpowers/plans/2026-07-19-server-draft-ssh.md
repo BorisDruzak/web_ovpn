@@ -348,7 +348,7 @@ Expected: no failures.
 ## Plan Self-Review
 
 - Spec coverage: Task 1 creates drafts and queue boundary; Task 2 implements scan, confirmation, strict check, timeouts, and redaction; Task 3 isolates the service and derives public key; Task 4 adds authenticated web and audit workflow; Task 5 provides safe copying and operator guide; Task 6 provides handoff and rollback.
-- Placeholder scan: no TODO or TBD entries are present; every task includes files, interfaces, a failing test, command, implementation direction, verification, and commit.
+- Placeholder scan: no unresolved implementation markers are present; every task includes files, interfaces, a failing test, command, implementation direction, verification, and commit.
 - Type consistency: Task 1 defines ServerDraft and DraftRequest; Task 2 consumes DraftRequest; Task 3 deploys the worker module from Task 2; Task 4 uses the same UUID and public result fields.
 
 ## Execution Handoff
