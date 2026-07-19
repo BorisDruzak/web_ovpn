@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}New test server{% endblock %}
+{% block page_title %}New test server{% endblock %}
+{% block content %}
+<section class="card"><h2>Add test server</h2>
+  <form method="post" action="/network/server-drafts/new" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>Name<input name="name" required maxlength="120"></label>
+    <label>Host<input name="host" required maxlength="253" autocomplete="off"></label>
+    <label>SSH user<input name="ssh_user" required maxlength="64" value="observer" autocomplete="username"></label>
+    <label>Port<input name="port" required type="number" min="1" max="65535" value="22"></label>
+    <div><button class="button" type="submit">Scan server key</button></div>
+  </form>
+</section>
+{% endblock %}

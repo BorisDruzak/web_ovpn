@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -20,10 +21,11 @@ from .auto_sync import force_client_sync, maybe_client_sync
 from .config import get_settings
 from .db import get_db, init_db
 from .download_tokens import assert_allowed_file, consume_download_token
-from .models import WebUser
+from .models import ServerDraft, WebAuditLog, WebUser
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
 from .routeros_backups import list_routeros_backups
+from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -123,6 +125,36 @@ def redirect(path: str) -> RedirectResponse:
     return RedirectResponse(path, status_code=303)
 
 
+def server_draft_or_404(db: Session, draft_id: str) -> ServerDraft:
+    try:
+        draft = db.get(ServerDraft, str(uuid.UUID(draft_id)))
+    except ValueError as exc:
+        raise HTTPException(status_code=404) from exc
+    if draft is None:
+        raise HTTPException(status_code=404)
+    return draft
+
+
+def queue_server_draft(draft: ServerDraft, action: str, expected_fingerprint: str | None = None) -> None:
+    request = make_draft_request(
+        draft.id, draft.host, draft.ssh_user, draft.port, action, expected_fingerprint
+    )
+    create_draft_request(get_settings().server_draft_queue_dir, request)
+
+
+def is_confirmed_server_draft(db: Session, draft_id: str) -> bool:
+    return (
+        db.scalar(
+            select(WebAuditLog.id).where(
+                WebAuditLog.action == "server-draft-confirm",
+                WebAuditLog.result == "ok",
+                WebAuditLog.target_client == draft_id,
+            )
+        )
+        is not None
+    )
+
+
 def require_client_name(client: str) -> str:
     if not CLIENT_RE.match(client or ""):
         raise HTTPException(status_code=400, detail="Недопустимое имя клиента")
@@ -133,6 +165,141 @@ def require_source_name(source: str) -> str:
     if not SOURCE_RE.match(source or ""):
         raise HTTPException(status_code=400, detail="Недопустимое имя источника")
     return source
+
+
+@app.get("/network/server-drafts", response_class=HTMLResponse)
+def server_drafts_page(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    rows = []
+    for draft in db.scalars(select(ServerDraft).order_by(ServerDraft.created_at.desc())):
+        result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+        confirmed = is_confirmed_server_draft(db, draft.id)
+        rows.append(
+            {
+                "draft": draft,
+                "result": result,
+                "confirmed": confirmed,
+                "can_confirm": result.get("status") == "pending" and bool(result.get("fingerprint")) and not confirmed,
+                "can_check": result.get("status") == "pending" and bool(result.get("fingerprint")) and confirmed,
+                "can_scan": result.get("status") != "pending",
+            }
+        )
+    return render(request, "server_drafts.html", {"drafts": rows}, db)
+
+
+@app.get("/network/server-drafts/new", response_class=HTMLResponse)
+def server_draft_new_page(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return render(request, "server_draft_new.html", {}, db)
+
+
+@app.get("/network/server-drafts/public-key")
+def server_draft_public_key(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    try:
+        key = observer_public_key(get_settings().observer_public_key_path)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Observer public key is unavailable") from None
+    return PlainTextResponse(key, headers={"Content-Disposition": 'attachment; filename="openvpm-observer.pub"'})
+
+
+@app.post("/network/server-drafts/new")
+async def server_draft_create(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    host = str(form.get("host") or "").strip()
+    ssh_user = str(form.get("ssh_user") or "").strip()
+    try:
+        port = int(str(form.get("port") or "22"))
+        if not 1 <= len(name) <= 120 or "\n" in name or "\r" in name:
+            raise ValueError("name is invalid")
+        draft = ServerDraft(id=str(uuid.uuid4()), name=name, host=host, ssh_user=ssh_user, port=port)
+        queue_server_draft(draft, "scan")
+    except (TypeError, ValueError):
+        write_audit(db, request, user, "server-draft-create", "error", "invalid request")
+        add_flash(request, "bad", "Проверьте параметры тестового сервера")
+        return redirect("/network/server-drafts/new")
+    db.add(draft)
+    db.commit()
+    write_audit(db, request, user, "server-draft-create", "ok", "queued", target_client=draft.id)
+    add_flash(request, "ok", "Проверка сервера поставлена в очередь")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/scan")
+async def server_draft_scan(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    try:
+        queue_server_draft(draft, "scan")
+    except ValueError:
+        write_audit(db, request, user, "server-draft-scan", "error", "invalid request", target_client=draft.id)
+        add_flash(request, "bad", "Не удалось поставить проверку в очередь")
+    else:
+        write_audit(db, request, user, "server-draft-scan", "ok", "queued", target_client=draft.id)
+        add_flash(request, "ok", "Проверка сервера поставлена в очередь")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/confirm")
+async def server_draft_confirm(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+    fingerprint = result.get("fingerprint") if result.get("status") == "pending" else None
+    try:
+        queue_server_draft(draft, "confirm", fingerprint)
+    except ValueError:
+        write_audit(db, request, user, "server-draft-confirm", "error", "not confirmable", target_client=draft.id)
+        add_flash(request, "bad", "Нет подтверждаемого отпечатка")
+    else:
+        write_audit(db, request, user, "server-draft-confirm", "ok", "queued", target_client=draft.id)
+        add_flash(request, "ok", "Отпечаток подтвержден и поставлен в очередь")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/check")
+async def server_draft_check(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+    if result.get("status") != "pending" or not result.get("fingerprint") or not is_confirmed_server_draft(db, draft.id):
+        write_audit(db, request, user, "server-draft-check", "error", "not confirmed", target_client=draft.id)
+        add_flash(request, "bad", "Сначала подтвердите найденный отпечаток")
+        return redirect("/network/server-drafts")
+    try:
+        queue_server_draft(draft, "check")
+    except ValueError:
+        write_audit(db, request, user, "server-draft-check", "error", "invalid request", target_client=draft.id)
+        add_flash(request, "bad", "Не удалось поставить проверку в очередь")
+    else:
+        write_audit(db, request, user, "server-draft-check", "ok", "queued", target_client=draft.id)
+        add_flash(request, "ok", "SSH-проверка поставлена в очередь")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/delete")
+async def server_draft_delete(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    try:
+        queue_server_draft(draft, "cleanup")
+        (get_settings().server_draft_results_dir / f"{draft.id}.json").unlink(missing_ok=True)
+    except (OSError, ValueError):
+        write_audit(db, request, user, "server-draft-delete", "error", "cleanup unavailable", target_client=draft.id)
+        add_flash(request, "bad", "Не удалось удалить тестовый сервер")
+        return redirect("/network/server-drafts")
+    db.delete(draft)
+    db.commit()
+    write_audit(db, request, user, "server-draft-delete", "ok", "cleanup queued", target_client=draft.id)
+    add_flash(request, "ok", "Тестовый сервер удален")
+    return redirect("/network/server-drafts")
 
 
 def cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
