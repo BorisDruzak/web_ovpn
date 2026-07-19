@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import subprocess
 from uuid import uuid4
 
 import pytest
@@ -13,6 +14,137 @@ from app.server_drafts import (
     observer_public_key,
     read_public_result,
 )
+from app.server_draft_worker import (
+    DraftPaths,
+    DraftWorkerError,
+    process_request,
+)
+
+
+@pytest.fixture
+def fake_runner():
+    from unittest.mock import Mock
+
+    return Mock()
+
+
+def draft_paths(tmp_path):
+    return DraftPaths(tmp_path / "queue", tmp_path / "results", tmp_path / "private")
+
+
+def draft_request(action, **kwargs):
+    return make_draft_request(
+        kwargs.pop("draft_id", str(uuid4())),
+        kwargs.pop("host", "server.example"),
+        kwargs.pop("ssh_user", "observer"),
+        kwargs.pop("port", 22),
+        action,
+        **kwargs,
+    )
+
+
+def completed_scan(output):
+    return subprocess.CompletedProcess(["ssh-keyscan"], 0, stdout=output, stderr="")
+
+
+def test_scan_returns_only_algorithm_and_fingerprint(tmp_path, fake_runner):
+    request = draft_request("scan")
+    fake_runner.side_effect = [
+        completed_scan("server.example ssh-ed25519 AAA"),
+        subprocess.CompletedProcess(["ssh-keygen"], 0, stdout="256 SHA256:scanned server\n", stderr=""),
+    ]
+
+    process_request(request, draft_paths(tmp_path), fake_runner)
+
+    result = read_public_result(draft_paths(tmp_path).results_dir, request.id)
+    assert result["status"] == "pending"
+    assert result["fingerprint"].startswith("SHA256:")
+    assert "AAA" not in json.dumps(result)
+
+
+def test_confirm_requires_exact_scanned_fingerprint(tmp_path, fake_runner):
+    request = draft_request("confirm", expected_fingerprint="SHA256:other")
+    paths = draft_paths(tmp_path)
+    paths.private_dir.mkdir(parents=True)
+    (paths.private_dir / f"{request.id}.candidate").write_text(
+        "server.example ssh-ed25519 AAA", encoding="utf-8"
+    )
+    fake_runner.return_value = subprocess.CompletedProcess(
+        ["ssh-keygen"], 0, stdout="256 SHA256:scanned server\n", stderr=""
+    )
+
+    with pytest.raises(DraftWorkerError, match="fingerprint"):
+        process_request(request, paths, fake_runner)
+
+
+def test_check_uses_fixed_true_and_strict_known_host(tmp_path, fake_runner):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    paths.private_dir.mkdir(parents=True)
+    (paths.private_dir / f"{request.id}.known_hosts").write_text(
+        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
+    )
+    fake_runner.return_value = subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+    process_request(request, paths, fake_runner)
+
+    command = fake_runner.call_args.args[0]
+    assert command[-1] == "true"
+    assert "BatchMode=yes" in command
+    assert "StrictHostKeyChecking=yes" in command
+
+
+def test_cleanup_removes_only_the_uuid_private_files(tmp_path, fake_runner):
+    request = draft_request("cleanup")
+    paths = draft_paths(tmp_path)
+    for directory, suffix in ((paths.private_dir, ".candidate"), (paths.private_dir, ".known_hosts")):
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{request.id}{suffix}").write_text("private", encoding="utf-8")
+    paths.queue_dir.mkdir(parents=True)
+    (paths.queue_dir / f"{request.id}.json").write_text("{}", encoding="utf-8")
+    paths.results_dir.mkdir(parents=True)
+    (paths.results_dir / f"{request.id}.json").write_text("{}", encoding="utf-8")
+
+    process_request(request, paths, fake_runner)
+
+    assert not list(paths.private_dir.glob(f"{request.id}.*"))
+    assert not (paths.queue_dir / f"{request.id}.json").exists()
+    assert not (paths.results_dir / f"{request.id}.json").exists()
+    fake_runner.assert_not_called()
+
+
+def test_duplicate_check_is_not_run_twice(tmp_path, fake_runner):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    paths.results_dir.mkdir(parents=True)
+    (paths.results_dir / f"{request.id}.json").write_text('{"status": "checking"}', encoding="utf-8")
+
+    assert process_request(request, paths, fake_runner) == 0
+    fake_runner.assert_not_called()
+
+
+def test_timeout_writes_only_safe_category(tmp_path, fake_runner):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    paths.private_dir.mkdir(parents=True)
+    (paths.private_dir / f"{request.id}.known_hosts").write_text(
+        "server.example ssh-ed25519 AAA\n", encoding="utf-8"
+    )
+    fake_runner.side_effect = subprocess.TimeoutExpired(["ssh"], 20, output="raw response")
+
+    process_request(request, paths, fake_runner)
+
+    assert read_public_result(paths.results_dir, request.id) == {"status": "timeout"}
+
+
+def test_scan_timeout_writes_only_safe_category(tmp_path, fake_runner):
+    request = draft_request("scan")
+    paths = draft_paths(tmp_path)
+    fake_runner.side_effect = subprocess.TimeoutExpired(["ssh-keyscan"], 20, output="raw host key")
+
+    process_request(request, paths, fake_runner)
+
+    assert read_public_result(paths.results_dir, request.id) == {"status": "timeout"}
 
 
 def test_server_draft_persists_only_public_metadata():

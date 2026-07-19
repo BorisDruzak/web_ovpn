@@ -104,6 +104,23 @@ def read_public_result(results_dir: Path, draft_id: str) -> dict[str, str]:
     }
 
 
+def write_public_result(results_dir: Path, draft_id: str, result: dict[str, str]) -> Path:
+    """Atomically save a result after enforcing its deliberately small schema."""
+    _validate_uuid(draft_id)
+    if not isinstance(result, dict) or result.get("status") not in _SAFE_STATUSES:
+        raise ValueError("result status is not allowed")
+    safe_result = {
+        field: value
+        for field, value in result.items()
+        if field in _PUBLIC_RESULT_FIELDS and isinstance(value, str)
+    }
+    if safe_result.get("status") != result["status"]:
+        raise ValueError("result status is not allowed")
+    path = Path(results_dir) / f"{draft_id}.json"
+    _atomic_json_write(path, safe_result, REQUEST_FILE_MODE)
+    return path
+
+
 def observer_public_key(path: Path) -> str:
     """Read one OpenSSH public-key line without ever accepting private material."""
     try:
