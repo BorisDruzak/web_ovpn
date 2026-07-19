@@ -1,6 +1,151 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from pathlib import Path
+
 import pytest
+
+from netctl.snmp import CapabilityResult, SnmpOutcome, SnmpVarBind
+from netctl.snmp.collector import collect_switch_snapshot
+
+
+_DGS_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "dgs.json"
+
+
+class _PagedFixtureTransport:
+    def __init__(self, pages: list[dict[str, object]]) -> None:
+        self.results: dict[tuple[int, ...], CapabilityResult] = {}
+        for page in pages:
+            request_oid = tuple(page["request_oid"])
+            prior = self.results.get(request_oid)
+            rows = tuple(
+                SnmpVarBind(
+                    oid=tuple(row["oid"]),
+                    value_type=row["value_type"],
+                    value=(
+                        row["value"].encode("utf-8")
+                        if row["value_type"] == "octet_string"
+                        else row["value"]
+                    ),
+                )
+                for row in page["rows"]
+            )
+            outcome = SnmpOutcome(page["outcome"])
+            self.results[request_oid] = CapabilityResult(
+                capability=page["capability"],
+                outcome=outcome,
+                rows=(prior.rows if prior else ()) + rows,
+            )
+
+    async def get(
+        self, oid: tuple[int, ...], *, capability: str = ""
+    ) -> CapabilityResult:
+        return self.results.get(
+            oid, CapabilityResult(capability, SnmpOutcome.SUCCESS_EMPTY)
+        )
+
+    async def walk(
+        self, oid: tuple[int, ...], *, capability: str = ""
+    ) -> CapabilityResult:
+        return self.results.get(
+            oid, CapabilityResult(capability, SnmpOutcome.SUCCESS_EMPTY)
+        )
+
+
+def _dgs_fixture_transport() -> _PagedFixtureTransport:
+    fixture = json.loads(_DGS_FIXTURE.read_text(encoding="utf-8"))
+    return _PagedFixtureTransport(fixture["pages"])
+
+
+def test_dgs_fixture_selects_profile_and_normalizes_paginated_qbridge_fdb() -> None:
+    snapshot = asyncio.run(collect_switch_snapshot({}, _dgs_fixture_transport()))
+
+    assert (snapshot.profile_id, snapshot.profile_fingerprint) == (
+        "dgs",
+        "dgs:v1",
+    )
+    assert len(snapshot.fdb) == 3
+    assert snapshot.ports[0].to_dict() == {
+        "port_key": "ifindex:101",
+        "if_index": 101,
+        "bridge_port": 11,
+        "physical_port": None,
+        "name": "front-11",
+        "alias": "",
+        "mac": None,
+        "admin_status": "unknown",
+        "oper_status": "unknown",
+        "speed_bps": None,
+    }
+    assert snapshot.fdb[0].to_dict() == {
+        "fdb_id": 200,
+        "vlan_key": "vid:200",
+        "vlan_id": 200,
+        "mac": "02:00:00:00:00:01",
+        "port_key": "ifindex:101",
+        "bridge_port": 11,
+        "if_index": 101,
+        "physical_port": 11,
+        "port_name": "front-11",
+        "status": "learned",
+    }
+    assert snapshot.fdb[-1].to_dict()["vlan_key"] == "vid:30"
+
+
+def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> None:
+    from netctl.snmp.models import SwitchPort, SwitchSystem
+    from netctl.snmp.profiles import DgsProfile, GenericProfile, detect_profile
+
+    dgs_system = SwitchSystem(
+        "DGS-SYNTHETIC", "1.3.6.1.4.1.99999.42", "dgs-synthetic", "", None
+    )
+    non_dgs_system = SwitchSystem(
+        "Synthetic switch", "1.3.6.1.4.1.99999.42", "synthetic", "", None
+    )
+    port = SwitchPort(
+        "ifindex:101", 101, 11, None, "front-11", "", None, "up", "up", None
+    )
+
+    assert isinstance(detect_profile(dgs_system), DgsProfile)
+    assert isinstance(detect_profile(non_dgs_system), GenericProfile)
+    assert detect_profile(dgs_system).resolve_fdb_vlan(fdb_id=200, vids_by_fid={}) == (
+        "vid:200",
+        200,
+    )
+    assert detect_profile(dgs_system).resolve_fdb_vlan(fdb_id=5000, vids_by_fid={}) == (
+        "fid:5000",
+        None,
+    )
+    assert detect_profile(non_dgs_system).resolve_fdb_vlan(
+        fdb_id=200, vids_by_fid={}
+    ) == ("fid:200", None)
+    assert GenericProfile().resolve_fdb_port(
+        raw_fdb_port=11,
+        fdb_mode="qbridge",
+        bridge_to_ifindex={11: 101},
+        ports_by_ifindex={101: port},
+    ).physical_port is None
+    assert detect_profile(dgs_system).resolve_fdb_port(
+        raw_fdb_port=11,
+        fdb_mode="qbridge",
+        bridge_to_ifindex={11: 101},
+        ports_by_ifindex={101: port},
+    ).physical_port == 11
+
+
+def test_dgs_fixture_is_synthetic_numeric_oid_data_without_source_or_secrets() -> None:
+    fixture = json.loads(_DGS_FIXTURE.read_text(encoding="utf-8"))
+    serialized = _DGS_FIXTURE.read_text(encoding="utf-8").lower()
+
+    assert fixture["fixture_kind"] == "sanitized_numeric_oid_pages"
+    assert sum(page.get("capability") == "qbridge_port" for page in fixture["pages"]) == 2
+    assert all(
+        all(isinstance(part, int) for part in page["request_oid"])
+        for page in fixture["pages"]
+    )
+    for forbidden in ("community", "secret", "host", "address", "backup", "production"):
+        assert forbidden not in serialized
 
 
 def test_unknown_identity_selects_generic_profile() -> None:

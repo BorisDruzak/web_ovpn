@@ -78,10 +78,62 @@ class GenericProfile(PortProfile):
         )
 
 
+class DgsProfile(GenericProfile):
+    """DGS-specific Q-BRIDGE normalization proven by the sanitized fixture."""
+
+    profile_id = "dgs"
+    profile_fingerprint = "dgs:v1"
+
+    @staticmethod
+    def matches(system: SwitchSystem) -> bool:
+        return system.sys_descr.upper().startswith("DGS-")
+
+    def resolve_fdb_port(
+        self,
+        *,
+        raw_fdb_port: int,
+        fdb_mode: str,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        resolution = super().resolve_fdb_port(
+            raw_fdb_port=raw_fdb_port,
+            fdb_mode=fdb_mode,
+            bridge_to_ifindex=bridge_to_ifindex,
+            ports_by_ifindex=ports_by_ifindex,
+        )
+        if fdb_mode != "qbridge":
+            return resolution
+        return PortResolution(
+            port_key=resolution.port_key,
+            if_index=resolution.if_index,
+            bridge_port=resolution.bridge_port,
+            physical_port=raw_fdb_port,
+            port_name=resolution.port_name,
+        )
+
+    def resolve_fdb_vlan(
+        self,
+        *,
+        fdb_id: int,
+        vids_by_fid: Mapping[int, set[int]],
+    ) -> tuple[str, int | None]:
+        vlan_key, vlan_id = super().resolve_fdb_vlan(
+            fdb_id=fdb_id, vids_by_fid=vids_by_fid
+        )
+        if vlan_id is None and not vids_by_fid.get(fdb_id) and fdb_id <= 4094:
+            return f"vid:{fdb_id}", fdb_id
+        return vlan_key, vlan_id
+
+
 def detect_profile(
     system: SwitchSystem, *, profile_hint: str | None = None
 ) -> PortProfile:
-    del system
-    if profile_hint not in (None, "generic"):
+    is_dgs = DgsProfile.matches(system)
+    if profile_hint not in (None, "generic", "dgs"):
         raise ValueError("SNMP profile_hint is unsupported")
+    if profile_hint == "dgs" and not is_dgs:
+        raise ValueError("SNMP profile_hint does not match the switch")
+    if profile_hint == "dgs" or (profile_hint is None and is_dgs):
+        return DgsProfile()
     return GenericProfile()
