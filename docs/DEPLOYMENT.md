@@ -98,6 +98,74 @@ Drafts only request these scan, confirmation, and pinned-check actions. They do
 not add collector targets, change the target's host key, or expose host keys or
 private storage beyond the fixed check result.
 
+## SSH Server Draft Worker Handoff and Rollback
+
+This is a deliberately narrow handoff for the SSH server-draft worker. It must
+not be used to change Network Observer collection or OpenVPN. In particular,
+do **not** restart OpenVPN, and do **not** create, edit, remove, test, or
+otherwise modify any collector configuration, `/etc/netctl`, or
+`netctl-collect` unit.
+
+Before running the installer, make a timestamped backup containing **only**
+the draft-worker systemd units and the draft state directory:
+
+```bash
+sudo install -d -m 0700 /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS
+sudo cp -a \
+  /etc/systemd/system/server-draft-worker.service \
+  /etc/systemd/system/server-draft-worker.path \
+  /var/lib/openvpn-web/server-drafts \
+  /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/
+```
+
+Copy the reviewed source bundle to the host as described in [Deploy To OpenVPN
+Host](#deploy-to-openvpn-host), then invoke the installer from the extracted
+source directory:
+
+```bash
+cd /tmp/openvpn-web-src
+SUDO_PASSWORD='<sudo-password>' bash deploy/install-openvpn-web.sh
+```
+
+The only new background trigger to enable for this handoff is
+`server-draft-worker.path`; do not enable or start
+`server-draft-worker.service` directly. The installer enables the path unit,
+which starts the worker only when a public queue entry changes. Verify that
+boundary and the public-key access required by the web application:
+
+```bash
+sudo systemctl is-enabled server-draft-worker.path
+sudo systemctl is-active server-draft-worker.path
+sudo systemctl status server-draft-worker.path --no-pager
+sudo stat -c '%U:%G %a %n' /etc/openvpn-web/server-observer.pub
+sudo -u openvpn-web test -r /etc/openvpn-web/server-observer.pub
+```
+
+The public key must be readable through the `openvpn-web` group (the installer
+sets it to `root:openvpn-web` with mode `0644`). Do not run a target SSH test
+as part of this deployment rehearsal. A target interaction begins only after
+an operator has intentionally created a draft in `/network/server-drafts` and
+completed the documented fingerprint-confirmation workflow.
+
+### Rollback
+
+If this handoff must be rolled back, disable only the draft-worker path unit,
+restore only the draft-worker units and `server-drafts` directory from the
+timestamped backup, then reload systemd:
+
+```bash
+sudo systemctl disable --now server-draft-worker.path
+sudo cp -a /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/server-draft-worker.service /etc/systemd/system/
+sudo cp -a /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/server-draft-worker.path /etc/systemd/system/
+sudo rm -rf /var/lib/openvpn-web/server-drafts
+sudo cp -a /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/server-drafts /var/lib/openvpn-web/
+sudo systemctl daemon-reload
+```
+
+Do not disable or restart OpenVPN, and do not change collector configuration or
+collector timers during rollback. This rollback intentionally leaves all
+non-draft services and assets untouched.
+
 ## Network Observer Setup
 
 The installer creates:
