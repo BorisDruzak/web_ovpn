@@ -66,17 +66,22 @@ _SAFE_ERROR_CATEGORIES = frozenset(
 # target and route, but can never supply a remote command.
 _ROLE_PROBES = {
     "file_server": (
-        "sh -c 'printf \"{\\\"data_free_percent\\\":%s,\\\"services\\\":{\\\"sshd\\\":%s}}\\n\" "
-        "\"$(df -P /data | awk \"NR==2 {printf \\\"%.2f\\\", 100-$5}\")\" "
-        "\"$(systemctl is-active --quiet sshd && printf true || printf false)\"' "
+        "powershell -NoProfile -NonInteractive -Command \"$running={param([string]$n)"
+        "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
+        "$e=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\\\"E:\\\"';"
+        "[pscustomobject]@{data_free_percent=[math]::Round(100*$e.FreeSpace/$e.Size,2);"
+        "services=@{sshd=[bool](& $running 'sshd');smb=[bool](& $running 'LanmanServer')}}|ConvertTo-Json "
+        "-Compress\" "
         "# server_observer:file_server"
     ),
     "directum": (
         "powershell -NoProfile -NonInteractive -Command \"$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
         "$c=Get-CimInstance Win32_LogicalDisk -Filter 'DeviceID=\\\"C:\\\"';"
+        "$logs=Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse -ErrorAction SilentlyContinue|"
+        "Measure-Object -Property Length -Sum;"
         "[pscustomobject]@{free_percent=[math]::Round(100*$c.FreeSpace/$c.Size,2);"
-        "log_bytes=(Get-Item 'C:\\rxdata\\log' -ErrorAction SilentlyContinue).Length;"
+        "log_bytes=[int64]$logs.Sum;"
         "services=@{directumrx=[bool](& $running 'DirectumRX');"
         "mongo=[bool](& $running 'MongoDB');rabbitmq=[bool](& $running 'RabbitMQ');"
         "redis=[bool](& $running 'Redis');iis=[bool](& $running 'W3SVC');dns=[bool](& $running 'DNS')}}|ConvertTo-Json "
@@ -124,7 +129,7 @@ _ROLE_PROBES = {
 }
 
 _ROLE_CHECK_NAMES = {
-    "file_server": ("sshd_active", "data_disk_free"),
+    "file_server": ("sshd_active", "smb_active", "data_disk_free"),
     "directum": (
         "c_disk_free", "rxdata_log_bytes", "directumrx_active", "mongo_active",
         "rabbitmq_active", "redis_active", "iis_active", "dns_active",
@@ -324,6 +329,7 @@ def _checks_from_payload(
     checks: list[dict[str, Any]] = []
     if role == "file_server":
         _append_service_check(checks, source, payload, "sshd", "sshd_active", latency_ms)
+        _append_service_check(checks, source, payload, "smb", "smb_active", latency_ms)
         _append_disk_check(checks, source, payload, "data_free_percent", "data_disk_free", latency_ms)
     elif role == "directum":
         _append_disk_check(checks, source, payload, "free_percent", "c_disk_free", latency_ms)
@@ -385,7 +391,7 @@ def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
         ),
     }
     service_fields = {
-        "file_server": ("sshd",),
+        "file_server": ("sshd", "smb"),
         "directum": ("directumrx", "mongo", "rabbitmq", "redis", "iis", "dns"),
         "active_directory": ("dns", "ntds", "adws"),
         "nextcloud": ("nginx", "php", "postgresql", "redis"),

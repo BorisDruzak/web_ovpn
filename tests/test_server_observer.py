@@ -92,6 +92,7 @@ def healthy_payload():
             "postgresql": True,
             "docker": True,
             "containerd": True,
+            "smb": True,
             "unbound": True,
         },
         "internal_dns": True,
@@ -170,8 +171,7 @@ def test_collect_covers_the_allow_listed_role_checks():
     }
     assert snapshot["overall"] == "ok"
     assert {check["name"] for check in target(snapshot, "file_server")["checks"]} == {
-        "sshd_active",
-        "data_disk_free",
+        "sshd_active", "smb_active", "data_disk_free",
     }
     assert {check["name"] for check in target(snapshot, "directum")["checks"]} == {
         "c_disk_free", "rxdata_log_bytes", "directumrx_active", "mongo_active",
@@ -361,6 +361,37 @@ def test_windows_service_probes_require_running_status():
         f"& $running '{service}'" in active_directory
         for service in ("DNS", "NTDS", "ADWS")
     )
+
+
+def test_file_server_probe_checks_windows_e_volume_smb_and_ssh():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
+
+    probe = next(command[-1] for command in calls if "server_observer:file_server" in command[-1])
+    assert "Get-CimInstance Win32_LogicalDisk" in probe
+    assert 'DeviceID=\\"E:\\"' in probe
+    assert "& $running 'LanmanServer'" in probe
+    assert "& $running 'sshd'" in probe
+
+
+def test_directum_probe_recursively_sums_rxdata_logs():
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return healthy_runner(command, **kwargs)
+
+    collect(runtime_config(), runner=runner, now=parse_utc("2026-07-19T10:00:00Z"))
+
+    probe = next(command[-1] for command in calls if "server_observer:directum" in command[-1])
+    assert "Get-ChildItem -LiteralPath 'C:\\rxdata\\logs' -File -Recurse" in probe
+    assert "Measure-Object -Property Length -Sum" in probe
+    assert "Get-Item 'C:\\rxdata\\log'" not in probe
 
 
 def test_nextcloud_probe_preserves_raw_status_values_for_strict_parser():
