@@ -6,8 +6,8 @@ import re
 from .models import PortResolution, SwitchPort, SwitchSystem
 
 
-_DGS_1210_52_SYSTEM_DESCRIPTION = "WS6-DGS-1210-52"
-_DLINK_ENTERPRISE_OID_PREFIX = "1.3.6.1.4.1.171."
+_DGS_1210_52_SYSTEM_DESCRIPTION = re.compile(r"WS6-DGS-1210-52(?=$|[ /])")
+_DGS_1210_52_SYS_OBJECT_ID = "1.3.6.1.4.1.171.10.153.7.1"
 _DGS_1210_52_FRONT_PANEL_PORTS = range(1, 53)
 _DGS_FRONT_PANEL_NAME = re.compile(r"front-([1-9][0-9]*)\Z")
 
@@ -94,8 +94,8 @@ class DgsProfile(GenericProfile):
     @staticmethod
     def matches(system: SwitchSystem) -> bool:
         return (
-            system.sys_descr == _DGS_1210_52_SYSTEM_DESCRIPTION
-            and system.sys_object_id.startswith(_DLINK_ENTERPRISE_OID_PREFIX)
+            _DGS_1210_52_SYSTEM_DESCRIPTION.match(system.sys_descr) is not None
+            and system.sys_object_id == _DGS_1210_52_SYS_OBJECT_ID
         )
 
     @staticmethod

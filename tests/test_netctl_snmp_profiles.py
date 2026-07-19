@@ -99,7 +99,11 @@ def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> N
     from netctl.snmp.profiles import DgsProfile, GenericProfile, detect_profile
 
     dgs_system = SwitchSystem(
-        "WS6-DGS-1210-52", "1.3.6.1.4.1.171.999.52", "dgs-synthetic", "", None
+        "WS6-DGS-1210-52/F1 6.20.007",
+        "1.3.6.1.4.1.171.10.153.7.1",
+        "dgs-synthetic",
+        "",
+        None,
     )
     non_dgs_system = SwitchSystem(
         "Synthetic switch", "1.3.6.1.4.1.99999.42", "synthetic", "", None
@@ -136,30 +140,58 @@ def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> N
 
 
 @pytest.mark.parametrize(
+    "description",
+    (
+        "WS6-DGS-1210-52/F1 6.20.007",
+        "WS6-DGS-1210-52/F9 9.99.999",
+    ),
+)
+def test_dgs_selection_accepts_documented_model_with_firmware_suffix(
+    description: str,
+) -> None:
+    from netctl.snmp.profiles import DgsProfile, detect_profile
+
+    system = SwitchSystem(
+        description, "1.3.6.1.4.1.171.10.153.7.1", "dgs", "", None
+    )
+
+    assert isinstance(detect_profile(system), DgsProfile)
+
+
+@pytest.mark.parametrize(
     "system",
     (
         SwitchSystem(
-            "DGS-SYNTHETIC", "1.3.6.1.4.1.171.999.52", "false-prefix", "", None
+            "DGS-SYNTHETIC", "1.3.6.1.4.1.171.10.153.7.1", "false-prefix", "", None
         ),
         SwitchSystem(
-            "WS6-DGS-1210-52", "1.3.6.1.4.1.99999.52", "wrong-vendor", "", None
+            "WS6-DGS-1210-520/F1 6.20.007",
+            "1.3.6.1.4.1.171.10.153.7.1",
+            "near-prefix",
+            "",
+            None,
         ),
         SwitchSystem(
-            "Generic switch", "1.3.6.1.4.1.171.999.52", "generic", "", None
+            "WS6-DGS-1210-48/F1 6.20.007",
+            "1.3.6.1.4.1.171.10.153.7.1",
+            "other-model",
+            "",
+            None,
+        ),
+        SwitchSystem(
+            "WS6-DGS-1210-52/F1 6.20.007",
+            "1.3.6.1.4.1.171.10.153.7.2",
+            "wrong-oid",
+            "",
+            None,
         ),
     ),
 )
-def test_dgs_selection_requires_documented_identity_and_vendor_evidence(
+def test_dgs_selection_rejects_prefixes_other_models_and_wrong_oid(
     system: object,
 ) -> None:
-    from netctl.snmp.models import SwitchSystem
-    from netctl.snmp.profiles import DgsProfile, GenericProfile, detect_profile
+    from netctl.snmp.profiles import GenericProfile, detect_profile
 
-    documented = SwitchSystem(
-        "WS6-DGS-1210-52", "1.3.6.1.4.1.171.999.52", "dgs", "", None
-    )
-
-    assert isinstance(detect_profile(documented), DgsProfile)
     assert isinstance(detect_profile(system), GenericProfile)
 
 
