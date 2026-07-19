@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import time
 from collections.abc import AsyncIterator
 from dataclasses import asdict
 from typing import Any
@@ -306,6 +308,41 @@ def test_walk_deadline_cancels_injected_backend_and_returns_sanitized_outcome() 
     assert backend.cancelled is True
 
 
+def test_sync_walk_creation_exception_is_sanitized() -> None:
+    from netctl.snmp import SnmpOutcome
+
+    class RaisingBackend(FakeBackend):
+        def walk(self, oid: tuple[int, ...]) -> AsyncIterator[object]:
+            raise RuntimeError(SECRET)
+
+    result = asyncio.run(_transport(RaisingBackend()).walk(BASE_OID))
+
+    assert result.outcome is SnmpOutcome.PARSE_ERROR
+    assert result.error_code == "transport_error"
+    assert SECRET not in repr(result)
+
+
+def test_blocking_iterator_cleanup_is_bounded_by_walk_deadline() -> None:
+    class BlockingCloseBackend(FakeBackend):
+        def walk(self, oid: tuple[int, ...]) -> AsyncIterator[object]:
+            class Iterator:
+                async def __anext__(self) -> object:
+                    raise StopAsyncIteration
+
+                async def aclose(self) -> None:
+                    await asyncio.sleep(1)
+
+            return Iterator()  # type: ignore[return-value]
+
+    started = time.monotonic()
+    result = asyncio.run(
+        _transport(BlockingCloseBackend(), walk_deadline_seconds=0.01).walk(BASE_OID)
+    )
+
+    assert result.error_code == ""
+    assert time.monotonic() - started < 0.2
+
+
 @pytest.mark.parametrize("error_status", ["authorizationError", "noAccess"])
 def test_only_explicit_authorization_errors_are_classified_as_auth_failure(
     error_status: str,
@@ -509,6 +546,22 @@ def test_source_factory_fails_closed_before_secret_or_backend_for_invalid_source
         )
 
 
+def test_invalid_secret_ref_does_not_call_default_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    from netctl.snmp.transport import SnmpTransport
+
+    monkeypatch.setattr(
+        "netctl.snmp.transport.load_secrets",
+        lambda: (_ for _ in ()).throw(RuntimeError(SECRET)),
+    )
+
+    with pytest.raises(ValueError) as error:
+        SnmpTransport.from_source(
+            {"driver": "snmp_switch", "secret_ref": "Switch_docs", "driver_options": {}}
+        )
+
+    assert error.value.args == ("SNMP secret_ref is invalid",)
+
+
 def test_public_models_are_frozen_and_use_tuple_rows() -> None:
     from netctl.snmp import CapabilityResult, SnmpOutcome, SnmpTransport, SnmpVarBind
 
@@ -570,3 +623,9 @@ def test_bounds_are_rejected_before_backend_factory(override: dict[str, int]) ->
         )
 
     assert calls == 0
+
+
+@pytest.mark.parametrize("deadline", [math.nan, math.inf, -math.inf])
+def test_nonfinite_walk_deadlines_are_rejected(deadline: float) -> None:
+    with pytest.raises(ValueError, match="walk deadline"):
+        _transport(FakeBackend(), walk_deadline_seconds=deadline)

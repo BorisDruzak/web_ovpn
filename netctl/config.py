@@ -31,7 +31,7 @@ SNMP_OPTION_YAML_KEYS = {
     "intent_stable_id": "intent_stable_id",
 }
 SNMP_DRIVER_OPTION_KEYS = frozenset(SNMP_OPTION_YAML_KEYS)
-SNMP_SECRET_REF_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)*\Z")
+SNMP_SECRET_REF_PATTERN = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
 
 
 def sources_dir(config_path: str | Path) -> Path:
@@ -139,6 +139,7 @@ def normalize_source(source: dict[str, Any]) -> dict[str, Any]:
         "enabled": parse_bool(source.get("enabled"), True),
     }
     if driver == "snmp_switch":
+        snmp_community_env_name(normalized["secret_ref"])
         normalized["driver_options"] = _normalize_snmp_options(source)
     return normalized
 

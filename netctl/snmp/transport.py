@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol, TypeVar
@@ -132,7 +133,7 @@ def _bounded_deadline(value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError("SNMP walk deadline is invalid")
     deadline = float(value)
-    if deadline <= 0 or deadline > MAX_WALK_DEADLINE_SECONDS:
+    if not math.isfinite(deadline) or deadline <= 0 or deadline > MAX_WALK_DEADLINE_SECONDS:
         raise ValueError("SNMP walk deadline is invalid")
     return deadline
 
@@ -363,8 +364,9 @@ class SnmpTransport:
         secret_ref = source.get("secret_ref")
         if not isinstance(secret_ref, str) or not secret_ref:
             raise ValueError("SNMP community secret is not configured")
+        community_env_name = snmp_community_env_name(secret_ref)
         secret_values = secrets if secrets is not None else load_secrets()
-        community = secret_values.get(snmp_community_env_name(secret_ref))
+        community = secret_values.get(community_env_name)
         if not isinstance(community, str) or not community:
             raise ValueError("SNMP community secret is not configured")
 
@@ -413,9 +415,12 @@ class SnmpTransport:
         numeric = require_numeric_oid(oid)
         name = capability or oid_text(numeric)
         rows: list[SnmpVarBind] = []
-        iterator = self._backend.walk(numeric)
+        iterator: AsyncIterator[RawResponse] | None = None
+        loop = asyncio.get_running_loop()
+        deadline_at = loop.time() + self._walk_deadline_seconds
         try:
             async with asyncio.timeout(self._walk_deadline_seconds):
+                iterator = self._backend.walk(numeric)
                 for _ in range(self._max_walk_responses):
                     try:
                         response = await anext(iterator)
@@ -450,7 +455,9 @@ class SnmpTransport:
             closer = getattr(iterator, "aclose", None)
             if closer is not None:
                 try:
-                    await closer()
+                    remaining = deadline_at - loop.time()
+                    if remaining > 0:
+                        await asyncio.wait_for(closer(), timeout=min(remaining, 0.1))
                 except Exception:
                     pass
 

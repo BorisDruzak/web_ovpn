@@ -430,6 +430,16 @@ def test_snmp_community_env_name_rejects_ambiguous_secret_references(secret_ref:
     assert error.value.args == ("SNMP secret_ref is invalid",)
 
 
+def test_snmp_source_normalization_uses_same_canonical_secret_ref_grammar() -> None:
+    from netctl.config import normalize_source
+
+    source = _snmp_source(name="switch_docs", secret_ref="Switch_docs")
+    with pytest.raises(ValueError) as error:
+        normalize_source(source)
+
+    assert error.value.args == ("SNMP secret_ref is invalid",)
+
+
 def test_source_public_removes_resolved_secret_material_recursively() -> None:
     from netctl.db import source_public
 
