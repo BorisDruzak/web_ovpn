@@ -1,0 +1,36 @@
+[Unit]
+Description=Process isolated OpenVPN server draft SSH checks
+
+[Service]
+Type=oneshot
+User=openvpm
+Group=openvpn-web
+WorkingDirectory=/opt/openvpn-web
+UMask=0027
+TimeoutStartSec=3min
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=tmpfs
+ProtectSystem=strict
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+BindReadOnlyPaths=/etc/openvpn-web/server-observer.key
+InaccessiblePaths=/etc/openvpn-web/openvpn-web.env
+InaccessiblePaths=/etc/openvpn/client-generator
+InaccessiblePaths=-/mnt/antares_soft/vpn_config
+InaccessiblePaths=-/var/lib/openvpn-web/openvpn-web.sqlite
+ReadWritePaths=/var/lib/openvpn-web/server-drafts
+ExecStart=/usr/local/sbin/server-draft-worker

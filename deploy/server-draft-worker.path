@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the public OpenVPN server draft request queue
+
+[Path]
+PathChanged=/var/lib/openvpn-web/server-drafts/queue
+Unit=server-draft-worker.service
+
+[Install]
+WantedBy=multi-user.target
