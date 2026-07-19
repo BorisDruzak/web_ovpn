@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.models import ServerDraft, WebAuditLog
+from app.models import ServerDraft, ServerDraftCleanupOutbox, WebAuditLog
+from app.server_draft_worker import process_queue
 
 
 VALID_FINGERPRINT = "SHA256:" + "Q" * 43
@@ -331,3 +332,96 @@ def test_delete_rolls_back_before_cleanup_when_database_flush_fails(tmp_path, mo
     assert not list((tmp_path / "queue").glob("*.cleanup.json"))
     with db_session() as db:
         assert db.get(ServerDraft, draft_id) is not None
+
+
+def test_delete_commit_failure_never_exposes_cleanup_or_discards_draft_material(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    result_path = tmp_path / "results" / f"{draft_id}.json"
+    result_path.parent.mkdir(exist_ok=True)
+    result_path.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+    private_path = tmp_path / "private" / f"{draft_id}.known_hosts"
+    private_path.parent.mkdir(exist_ok=True)
+    private_path.write_text("private", encoding="utf-8")
+    original_commit = Session.commit
+
+    def fail_delete_commit(session):
+        if any(isinstance(item, ServerDraft) and item.id == draft_id for item in session.deleted):
+            raise SQLAlchemyError("forced delete commit failure")
+        return original_commit(session)
+
+    monkeypatch.setattr(Session, "commit", fail_delete_commit)
+
+    response = post_with_csrf(client, f"/network/server-drafts/{draft_id}/delete", {})
+
+    assert response.status_code == 303
+    assert not list((tmp_path / "queue").glob("*.cleanup.json"))
+    assert result_path.exists()
+    assert private_path.exists()
+    with db_session() as db:
+        assert db.get(ServerDraft, draft_id) is not None
+        assert db.query(ServerDraftCleanupOutbox).count() == 0
+
+
+def test_cleanup_publication_failure_is_durable_visible_and_retryable(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+
+    import app.main
+
+    original_publish = app.main.create_draft_request
+
+    def fail_cleanup_publish(queue_dir, request):
+        if request.action == "cleanup":
+            raise OSError("forced queue failure")
+        return original_publish(queue_dir, request)
+
+    monkeypatch.setattr(app.main, "create_draft_request", fail_cleanup_publish)
+
+    response = post_with_csrf(client, f"/network/server-drafts/{draft_id}/delete", {})
+
+    assert response.status_code == 303
+    assert not list((tmp_path / "queue").glob("*.cleanup.json"))
+    page = client.get("/network/server-drafts")
+    assert draft_id in page.text
+    assert "retry required" in page.text
+    with db_session() as db:
+        outbox = db.query(ServerDraftCleanupOutbox).one()
+        assert db.get(ServerDraft, draft_id) is None
+        assert outbox.draft_id == draft_id
+        assert outbox.status == "pending"
+        assert outbox.attempts == 1
+        assert outbox.last_error == "queue unavailable"
+
+    monkeypatch.setattr(app.main, "create_draft_request", original_publish)
+    response = post_with_csrf(client, "/network/server-drafts/cleanup-retry", {})
+
+    assert response.status_code == 303
+    assert queued_action(tmp_path) == {"id": draft_id, "action": "cleanup"}
+    with db_session() as db:
+        outbox = db.query(ServerDraftCleanupOutbox).one()
+        assert outbox.status == "published"
+        assert outbox.attempts == 2
+        assert outbox.last_error == ""
+
+
+def test_committed_cleanup_intent_drives_normal_worker_cleanup(tmp_path, monkeypatch):
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    result_path = tmp_path / "results" / f"{draft_id}.json"
+    result_path.parent.mkdir(exist_ok=True)
+    result_path.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+    private_path = tmp_path / "private" / f"{draft_id}.candidate"
+    private_path.parent.mkdir(exist_ok=True)
+    private_path.write_text("private", encoding="utf-8")
+
+    assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/delete", {}).status_code == 303
+    assert queued_action(tmp_path) == {"id": draft_id, "action": "cleanup"}
+    assert process_queue(tmp_path / "queue", tmp_path / "results", tmp_path / "private") == 1
+
+    assert (tmp_path / "queue" / f"{draft_id}.deleted").is_file()
+    assert not result_path.exists()
+    assert not private_path.exists()

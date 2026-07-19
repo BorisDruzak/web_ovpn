@@ -22,7 +22,7 @@ from .auto_sync import force_client_sync, maybe_client_sync
 from .config import get_settings
 from .db import get_db, init_db
 from .download_tokens import assert_allowed_file, consume_download_token
-from .models import ServerDraft, WebAuditLog, WebUser
+from .models import ServerDraft, ServerDraftCleanupOutbox, WebAuditLog, WebUser, utcnow
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
 from .routeros_backups import list_routeros_backups
@@ -148,6 +148,40 @@ def queue_server_draft(
     return create_draft_request(get_settings().server_draft_queue_dir, request)
 
 
+def publish_cleanup_outbox(db: Session) -> list[ServerDraftCleanupOutbox]:
+    """Publish committed cleanup intents and leave failed attempts retryable.
+
+    The only worker-visible operation happens here, after the deletion and
+    outbox record have committed.  Re-publishing is safe because cleanup queue
+    publication is exclusive and returns the existing terminal reservation.
+    """
+    pending = list(
+        db.scalars(
+            select(ServerDraftCleanupOutbox)
+            .where(ServerDraftCleanupOutbox.status == "pending")
+            .order_by(ServerDraftCleanupOutbox.id)
+        )
+    )
+    for intent in pending:
+        intent.attempts += 1
+        try:
+            request = make_draft_request(intent.draft_id, "cleanup", "cleanup", 22, "cleanup")
+            create_draft_request(get_settings().server_draft_queue_dir, request)
+        except (OSError, ValueError):
+            intent.last_error = "queue unavailable"
+        else:
+            intent.status = "published"
+            intent.last_error = ""
+            intent.published_at = utcnow()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            # The existing durable intent remains pending if this status update
+            # cannot commit.  Its idempotent queue publication can be retried.
+            db.rollback()
+    return pending
+
+
 def has_server_draft_audit(
     db: Session, draft_id: str, action: str, pin_generation: str
 ) -> bool:
@@ -223,7 +257,14 @@ def server_drafts_page(request: Request, db: Session = Depends(get_db)):
                 "can_scan": not result.get("fingerprint") and not confirmed and not queued,
             }
         )
-    return render(request, "server_drafts.html", {"drafts": rows}, db)
+    cleanup_outbox = list(
+        db.scalars(
+            select(ServerDraftCleanupOutbox)
+            .where(ServerDraftCleanupOutbox.status == "pending")
+            .order_by(ServerDraftCleanupOutbox.created_at)
+        )
+    )
+    return render(request, "server_drafts.html", {"drafts": rows, "cleanup_outbox": cleanup_outbox}, db)
 
 
 @app.get("/network/server-drafts/new", response_class=HTMLResponse)
@@ -363,36 +404,37 @@ async def server_draft_delete(draft_id: str, request: Request, db: Session = Dep
     user = require_user(request, db)
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
+    draft_id = draft.id
     db.delete(draft)
-    try:
-        db.flush()
-    except SQLAlchemyError:
-        db.rollback()
-        write_audit(db, request, user, "server-draft-delete", "error", "persistence unavailable", target_client=draft.id)
-        add_flash(request, "bad", "Не удалось удалить тестовый сервер")
-        return redirect("/network/server-drafts")
-    try:
-        cleanup_path = queue_server_draft(draft, "cleanup")
-    except (OSError, ValueError):
-        db.rollback()
-        write_audit(db, request, user, "server-draft-delete", "error", "cleanup unavailable", target_client=draft.id)
-        add_flash(request, "bad", "Не удалось удалить тестовый сервер")
-        return redirect("/network/server-drafts")
+    db.add(ServerDraftCleanupOutbox(draft_id=draft_id))
     try:
         db.commit()
     except SQLAlchemyError:
         db.rollback()
-        claim_path = cleanup_path.with_name(f".{cleanup_path.name}.claim")
-        if not claim_path.exists():
-            try:
-                cleanup_path.unlink()
-            except FileNotFoundError:
-                pass
-        write_audit(db, request, user, "server-draft-delete", "error", "persistence unavailable", target_client=draft.id)
+        write_audit(db, request, user, "server-draft-delete", "error", "persistence unavailable", target_client=draft_id)
         add_flash(request, "bad", "Не удалось удалить тестовый сервер")
         return redirect("/network/server-drafts")
-    write_audit(db, request, user, "server-draft-delete", "ok", "cleanup queued", target_client=draft.id)
-    add_flash(request, "ok", "Тестовый сервер удален")
+    published = publish_cleanup_outbox(db)
+    if any(intent.draft_id == draft_id and intent.status == "published" for intent in published):
+        write_audit(db, request, user, "server-draft-delete", "ok", "cleanup published", target_client=draft_id)
+        add_flash(request, "ok", "Тестовый сервер удален")
+    else:
+        write_audit(db, request, user, "server-draft-delete", "error", "cleanup pending", target_client=draft_id)
+        add_flash(request, "bad", "Тестовый сервер удален, очистка ожидает повторной отправки")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/cleanup-retry")
+async def server_draft_cleanup_retry(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    pending = publish_cleanup_outbox(db)
+    if any(intent.status == "pending" for intent in pending):
+        write_audit(db, request, user, "server-draft-cleanup-retry", "error", "cleanup pending")
+        add_flash(request, "bad", "Не удалось повторно отправить очистку")
+    else:
+        write_audit(db, request, user, "server-draft-cleanup-retry", "ok", "cleanup published")
+        add_flash(request, "ok", "Очистка повторно отправлена")
     return redirect("/network/server-drafts")
 
 

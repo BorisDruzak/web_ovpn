@@ -21,4 +21,12 @@
   </table></div>
   {% else %}<p class="muted">No test servers have been added.</p>{% endif %}
 </section>
+{% if cleanup_outbox %}
+<section class="card">
+  <h2>Pending cleanup</h2>
+  <p class="muted">{{ cleanup_outbox|length }} cleanup intent(s): retry required.</p>
+  <ul>{% for intent in cleanup_outbox %}<li>{{ intent.draft_id }} ({{ intent.attempts }} attempt(s))</li>{% endfor %}</ul>
+  <form method="post" action="/network/server-drafts/cleanup-retry"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Retry cleanup</button></form>
+</section>
+{% endif %}
 {% endblock %}

@@ -84,13 +84,13 @@ def create_draft_request(queue_dir: Path, request: DraftRequest) -> Path:
         request.expected_fingerprint,
         request.pin_generation,
     )
-    payload: dict[str, Any] = {
-        "id": validated.id,
-        "action": validated.action,
-        "host": validated.host,
-        "ssh_user": validated.ssh_user,
-        "port": validated.port,
-    }
+    payload: dict[str, Any] = {"id": validated.id, "action": validated.action}
+    if validated.action != "cleanup":
+        payload.update(
+            host=validated.host,
+            ssh_user=validated.ssh_user,
+            port=validated.port,
+        )
     if validated.expected_fingerprint is not None:
         payload["expected_fingerprint"] = validated.expected_fingerprint
     if validated.pin_generation is not None:

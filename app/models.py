@@ -80,3 +80,21 @@ class ServerDraft(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+class ServerDraftCleanupOutbox(Base):
+    """Durable, public-only cleanup intent for a deleted server draft.
+
+    This intentionally has no foreign key: the draft row and its cleanup
+    intent are committed atomically, and the draft must then be removable.
+    """
+
+    __tablename__ = "server_draft_cleanup_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
