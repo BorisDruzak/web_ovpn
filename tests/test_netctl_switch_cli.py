@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from netctl.snmp.models import (
     CapabilityResult,
     SwitchFdbEntry,
@@ -145,6 +147,103 @@ def test_driver_registration_returns_thin_typed_snmp_driver() -> None:
     assert isinstance(driver, SnmpSwitchDriver)
 
 
+def test_driver_factories_keep_legacy_and_typed_switch_contracts_separate() -> None:
+    from netctl.drivers import (
+        NetworkDriver,
+        SnmpSwitchDriver,
+        legacy_driver_for,
+        snmp_driver_for,
+    )
+
+    switch = snmp_driver_for(
+        {
+            "name": "switch-test",
+            "driver": "snmp_switch",
+            "host": "192.0.2.10",
+            "port": 161,
+            "secret_ref": "switch_test_snmp",
+            "driver_options": {},
+        },
+        {},
+    )
+    legacy = legacy_driver_for(
+        {"name": "mock-test", "driver": "mock"},
+        {},
+    )
+
+    assert isinstance(switch, SnmpSwitchDriver)
+    assert not isinstance(switch, NetworkDriver)
+    assert isinstance(legacy, NetworkDriver)
+    with pytest.raises(ValueError, match="unsupported legacy driver"):
+        legacy_driver_for({"driver": "snmp_switch"}, {})
+    with pytest.raises(ValueError, match="unsupported switch driver"):
+        snmp_driver_for({"driver": "mock"}, {})
+
+
+class _LifecycleTransport:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_real_snmp_driver_closes_transport_and_uses_safe_snapshot_serialization(
+    monkeypatch,
+) -> None:
+    import netctl.drivers.snmp_switch as snmp_driver_module
+    from netctl.drivers import SnmpSwitchDriver
+
+    transport = _LifecycleTransport()
+    snapshot = _snapshot()
+
+    async def collect(_source, actual_transport):
+        assert actual_transport is transport
+        return snapshot
+
+    monkeypatch.setattr(
+        snmp_driver_module.SnmpTransport,
+        "from_source",
+        classmethod(lambda _cls, _source, *, secrets: transport),
+    )
+    monkeypatch.setattr(snmp_driver_module, "collect_switch_snapshot", collect)
+
+    result = SnmpSwitchDriver(
+        {"driver": "snmp_switch", "driver_options": {}}, {}
+    ).test()
+
+    assert transport.close_calls == 1
+    assert result == snapshot.to_dict()
+    rendered = json.dumps(result).lower()
+    assert "raw_varbind" not in rendered
+    assert '"details"' not in rendered
+
+
+def test_real_snmp_driver_closes_transport_when_collector_raises(monkeypatch) -> None:
+    import netctl.drivers.snmp_switch as snmp_driver_module
+    from netctl.drivers import SnmpSwitchDriver
+
+    transport = _LifecycleTransport()
+
+    async def collect(_source, actual_transport):
+        assert actual_transport is transport
+        raise RuntimeError("synthetic collector failure")
+
+    monkeypatch.setattr(
+        snmp_driver_module.SnmpTransport,
+        "from_source",
+        classmethod(lambda _cls, _source, *, secrets: transport),
+    )
+    monkeypatch.setattr(snmp_driver_module, "collect_switch_snapshot", collect)
+
+    with pytest.raises(RuntimeError, match="synthetic collector failure"):
+        SnmpSwitchDriver(
+            {"driver": "snmp_switch", "driver_options": {}}, {}
+        ).collect()
+
+    assert transport.close_calls == 1
+
+
 def test_add_snmp_switch_is_disabled_and_yaml_is_secret_free(
     tmp_path: Path, capsys
 ) -> None:
@@ -175,6 +274,97 @@ def test_add_snmp_switch_is_disabled_and_yaml_is_secret_free(
     assert "enabled: false" in yaml_text
     assert "secret_ref: switch_test_snmp" in yaml_text
     assert "community" not in yaml_text.lower()
+    from netctl.config import load_config_sources
+
+    reloaded = load_config_sources(config_path)
+    assert len(reloaded) == 1
+    assert reloaded[0]["enabled"] is False
+
+
+@pytest.mark.parametrize(
+    "separator",
+    ["\n", "\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"],
+)
+def test_source_yaml_rejects_every_python_line_separator(
+    tmp_path: Path, separator: str
+) -> None:
+    from netctl.config import write_source_yaml
+
+    with pytest.raises(ValueError, match="single line"):
+        write_source_yaml(
+            tmp_path / "netctl.yaml",
+            {
+                "name": "switch-test",
+                "driver": "snmp_switch",
+                "host": "192.0.2.10",
+                "secret_ref": "switch_test_snmp",
+                "role": f"access{separator}switch",
+                "enabled": False,
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--host", "192.0.2.10\u2028injected"),
+        ("--secret-ref", "switch_test\u2028snmp"),
+        ("--site", "test\u2028injected"),
+        ("--role", "access\u2028switch"),
+        ("--snmp-version", "2c\u2028injected"),
+        ("--profile-hint", "generic\u2028injected"),
+        ("--runtime-asset-key", "asset\u2028injected"),
+        ("--intent-context-id", "context\u2028injected"),
+        ("--intent-stable-id", "switch\u2028injected"),
+    ],
+)
+def test_add_snmp_switch_rejects_line_separator_in_every_yaml_string_option(
+    tmp_path: Path, capsys, option: str, value: str
+) -> None:
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    args = _base_args(config_path, db_path) + [
+        "sources",
+        "add-snmp-switch",
+        "switch-test",
+        "--host",
+        "192.0.2.10",
+        "--secret-ref",
+        "switch_test_snmp",
+        option,
+        value,
+    ]
+
+    rc, data = _run_cli(args, capsys)
+
+    assert rc == 2
+    assert data["status"] == "error"
+    assert not (tmp_path / "sources.d" / "switch-test.yaml").exists()
+
+
+def test_add_snmp_switch_rejects_line_separator_in_source_name(
+    tmp_path: Path, capsys
+) -> None:
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + [
+            "sources",
+            "add-snmp-switch",
+            "switch\u2028injected",
+            "--host",
+            "192.0.2.10",
+            "--secret-ref",
+            "switch_test_snmp",
+        ],
+        capsys,
+    )
+
+    assert rc == 2
+    assert data["status"] == "error"
+    assert not (tmp_path / "sources.d" / "switch-test.yaml").exists()
 
 
 def test_add_snmp_switch_rejects_invalid_options_before_driver_dispatch(
@@ -301,12 +491,18 @@ def test_collect_all_isolates_failed_snmp_source_from_other_sources(
         encoding="utf-8",
     )
 
-    def fake_driver(source: dict[str, Any], secrets: dict[str, str]):
-        if source["driver"] == "snmp_switch":
-            return _FakeSwitchDriver(RuntimeError("resolved-secret-value"))
-        return MockDriver(source, secrets)
-
-    monkeypatch.setattr(cli, "driver_for", fake_driver)
+    monkeypatch.setattr(
+        cli,
+        "snmp_driver_for",
+        lambda _source, _secrets: _FakeSwitchDriver(
+            RuntimeError("resolved-secret-value")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "legacy_driver_for",
+        lambda source, secrets: MockDriver(source, secrets),
+    )
 
     rc, data = _run_cli(
         _base_args(config_path, db_path) + ["collect", "all"], capsys
@@ -330,7 +526,9 @@ def test_snmp_collect_dispatches_typed_snapshot_to_switch_store_only(
     db_path = tmp_path / "netctl.sqlite"
     _write_switch_source(config_path)
     monkeypatch.setattr(
-        cli, "driver_for", lambda _source, _secrets: _FakeSwitchDriver(_snapshot())
+        cli,
+        "snmp_driver_for",
+        lambda _source, _secrets: _FakeSwitchDriver(_snapshot()),
     )
     monkeypatch.setattr(
         cli,
@@ -392,11 +590,12 @@ def test_switch_fdb_query_is_read_only_bounded_and_raw_free(
     finally:
         conn.close()
 
-    monkeypatch.setattr(
-        cli,
-        "driver_for",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("driver called by query")),
-    )
+    def fail_factory(*_args):
+        raise AssertionError("driver called by query")
+
+    monkeypatch.setattr(cli, "driver_for", fail_factory)
+    monkeypatch.setattr(cli, "snmp_driver_for", fail_factory)
+    monkeypatch.setattr(cli, "legacy_driver_for", fail_factory)
     rc, data = _run_cli(
         _base_args(config_path, db_path)
         + [

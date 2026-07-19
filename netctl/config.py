@@ -65,9 +65,6 @@ def read_simple_yaml(path: Path) -> dict[str, Any]:
 
 def write_source_yaml(config_path: str | Path, source: dict[str, Any]) -> Path:
     validate_source_name(str(source["name"]))
-    directory = sources_dir(config_path)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{source['name']}.yaml"
     ordered = [
         "name",
         "driver",
@@ -92,18 +89,40 @@ def write_source_yaml(config_path: str | Path, source: dict[str, Any]) -> Path:
                 if option_key in options:
                     values[yaml_key] = options[option_key]
         ordered.extend(SNMP_OPTION_YAML_KEYS.values())
+    rendered_values = {
+        key: _render_source_yaml_scalar(values[key])
+        for key in ordered
+        if key in values
+    }
+    directory = sources_dir(config_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{source['name']}.yaml"
     lines = []
     for key in ordered:
-        if key not in values:
+        if key not in rendered_values:
             continue
-        value = values[key]
-        if isinstance(value, bool):
-            rendered = "true" if value else "false"
-        else:
-            rendered = str(value)
-        lines.append(f"{key}: {rendered}")
+        lines.append(f"{key}: {rendered_values[key]}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def validate_source_yaml_scalars(source: dict[str, Any]) -> None:
+    """Reject values that the line-oriented source format cannot preserve."""
+    for value in source.values():
+        if isinstance(value, dict):
+            for nested_value in value.values():
+                _render_source_yaml_scalar(nested_value)
+        else:
+            _render_source_yaml_scalar(value)
+
+
+def _render_source_yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    rendered = str(value)
+    if rendered and rendered.splitlines() != [rendered]:
+        raise ValueError("source YAML values must be a single line")
+    return rendered
 
 
 def load_config_sources(config_path: str | Path) -> list[dict[str, Any]]:

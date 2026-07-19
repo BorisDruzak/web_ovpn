@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .collect_lock import CollectLock
-from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, write_source_yaml
+from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
 from .db import context_revision_public, connect, connect_read_only, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
-from .drivers import driver_for
+from .drivers import driver_for, legacy_driver_for, snmp_driver_for
 from .runtime_assets import (
     inspect_runtime_asset,
     list_runtime_identity_findings,
@@ -46,7 +46,7 @@ def err(message: str, **data: Any) -> dict[str, Any]:
 
 
 def source_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    return normalize_source(
+    source = normalize_source(
         {
             "name": args.source,
             "driver": "mikrotik_api",
@@ -61,6 +61,8 @@ def source_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "enabled": True,
         }
     )
+    validate_source_yaml_scalars(source)
+    return source
 
 
 def snmp_source_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -69,16 +71,7 @@ def snmp_source_from_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("SNMP host is invalid")
     if type(args.port) is not int or not 1 <= args.port <= 65535:
         raise ValueError("SNMP port must be between 1 and 65535")
-    for value in (
-        args.site,
-        args.role,
-        args.runtime_asset_key,
-        args.intent_context_id,
-        args.intent_stable_id,
-    ):
-        if "\n" in value or "\r" in value:
-            raise ValueError("SNMP source text must be a single line")
-    return normalize_source(
+    source = normalize_source(
         {
             "name": args.source,
             "driver": "snmp_switch",
@@ -106,6 +99,8 @@ def snmp_source_from_args(args: argparse.Namespace) -> dict[str, Any]:
             "intent_stable_id": args.intent_stable_id,
         }
     )
+    validate_source_yaml_scalars(source)
+    return source
 
 
 def _sanitize_snmp_result(value: Any) -> Any:
@@ -202,8 +197,8 @@ def collect_one(conn, args: argparse.Namespace, source_name: str) -> tuple[int, 
         return 1, err("source disabled", source=source_name)
     started = utc_now()
     try:
-        driver = driver_for(source, load_secrets())
         if source.get("driver") == "snmp_switch":
+            driver = snmp_driver_for(source, load_secrets())
             result = collect_and_save_switch(conn, source, driver, started)
             succeeded = result["status"] == "success"
             conn.execute(
@@ -235,6 +230,7 @@ def collect_one(conn, args: argparse.Namespace, source_name: str) -> tuple[int, 
                 run_id=result["run_id"],
                 fdb_outcome=result["fdb_outcome"],
             )
+        driver = legacy_driver_for(source, load_secrets())
         snapshot = driver.collect(
             include_connections=bool(getattr(args, "include_connections", False))
         )
@@ -381,7 +377,7 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _ipsec_source_status(source: dict[str, Any]) -> dict[str, Any]:
-    snapshot = driver_for(source, load_secrets()).ipsec_status()
+    snapshot = legacy_driver_for(source, load_secrets()).ipsec_status()
     policies = list(snapshot.get("policies", []))
     active_peers = list(snapshot.get("active_peers", []))
     installed_sas = list(snapshot.get("installed_sas", []))
