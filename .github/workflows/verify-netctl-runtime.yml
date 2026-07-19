@@ -27,6 +27,12 @@ jobs:
           tests/test_netctl_context_import.py
           tests/test_netctl_context_migrations.py
           tests/test_netctl_cli.py
+          tests/test_netctl_snmp_config.py
+          tests/test_netctl_snmp_transport.py
+          tests/test_netctl_snmp_parsers.py
+          tests/test_netctl_snmp_profiles.py
+          tests/test_netctl_switch_store.py
+          tests/test_netctl_switch_cli.py
 
   full-regression:
     runs-on: ubuntu-24.04

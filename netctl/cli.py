@@ -20,6 +20,16 @@ from .runtime_assets import (
     runtime_identity_status,
 )
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
+from .switch_queries import (
+    DEFAULT_PAGE_SIZE,
+    query_switch_capabilities,
+    query_switch_events,
+    query_switch_fdb,
+    query_switch_ports,
+    query_switch_status,
+    validate_pagination,
+)
+from .switch_store import collect_and_save_switch
 from .util import utc_now, validate_source_name
 
 
@@ -53,6 +63,70 @@ def source_from_args(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def snmp_source_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    host = str(args.host)
+    if not host or any(character.isspace() for character in host):
+        raise ValueError("SNMP host is invalid")
+    if type(args.port) is not int or not 1 <= args.port <= 65535:
+        raise ValueError("SNMP port must be between 1 and 65535")
+    for value in (
+        args.site,
+        args.role,
+        args.runtime_asset_key,
+        args.intent_context_id,
+        args.intent_stable_id,
+    ):
+        if "\n" in value or "\r" in value:
+            raise ValueError("SNMP source text must be a single line")
+    return normalize_source(
+        {
+            "name": args.source,
+            "driver": "snmp_switch",
+            "host": args.host,
+            "port": args.port,
+            "secret_ref": args.secret_ref,
+            "tls": False,
+            "verify_tls": False,
+            "site": args.site,
+            "role": args.role,
+            "enabled": False,
+            "snmp_version": args.snmp_version,
+            "snmp_timeout_seconds": args.timeout_seconds,
+            "snmp_retries": args.retries,
+            "snmp_max_repetitions": args.max_repetitions,
+            "snmp_profile_hint": args.profile_hint,
+            "snmp_capability_ttl_hours": args.capability_ttl_hours,
+            "snmp_raw_retention_hours": args.raw_retention_hours,
+            "snmp_counter_retention_days": args.counter_retention_days,
+            "snmp_event_retention_days": args.event_retention_days,
+            "snmp_access_port_mac_threshold": args.access_port_mac_threshold,
+            "snmp_low_speed_threshold_bps": args.low_speed_threshold_bps,
+            "runtime_asset_key": args.runtime_asset_key,
+            "intent_context_id": args.intent_context_id,
+            "intent_stable_id": args.intent_stable_id,
+        }
+    )
+
+
+def _sanitize_snmp_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        result = {}
+        for key, nested in value.items():
+            normalized = str(key).lower()
+            if (
+                normalized in {"details", "rows", "raw", "password"}
+                or "varbind" in normalized
+                or "community" in normalized
+                or normalized.startswith("resolved_")
+            ):
+                continue
+            result[key] = _sanitize_snmp_result(nested)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_snmp_result(item) for item in value]
+    return value
+
+
 def prepare_conn(args: argparse.Namespace):
     conn = connect(args.db)
     sync_config_sources(conn, args.config)
@@ -78,6 +152,14 @@ def cmd_sources(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             upsert_source(conn, source)
             write_source_yaml(args.config, source)
             return 0, ok(source=source_public(source))
+        if args.sources_command == "add-snmp-switch":
+            try:
+                source = snmp_source_from_args(args)
+            except ValueError as exc:
+                return 2, err(str(exc))
+            upsert_source(conn, source)
+            write_source_yaml(args.config, source)
+            return 0, ok(source=source_public(source))
         if args.sources_command == "disable":
             validate_source_name(args.source)
             conn.execute("UPDATE network_sources SET enabled = 0, updated_at = ? WHERE name = ?", (utc_now(), args.source))
@@ -91,14 +173,21 @@ def cmd_sources(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             try:
                 result = driver_for(source, load_secrets()).test()
             except Exception as exc:
+                message = (
+                    "SNMP source test failed"
+                    if source.get("driver") == "snmp_switch"
+                    else str(exc)
+                )
                 conn.execute(
                     "UPDATE network_sources SET last_status = ?, last_error = ? WHERE id = ?",
-                    ("error", str(exc), source["id"]),
+                    ("error", message, source["id"]),
                 )
                 conn.commit()
-                return 1, err(str(exc), source=args.source)
+                return 1, err(message, source=args.source)
             conn.execute("UPDATE network_sources SET last_status = ?, last_error = ? WHERE id = ?", ("ok", "", source["id"]))
             conn.commit()
+            if source.get("driver") == "snmp_switch":
+                result = _sanitize_snmp_result(result)
             return 0, ok(source=args.source, result=result)
     finally:
         conn.close()
@@ -113,15 +202,55 @@ def collect_one(conn, args: argparse.Namespace, source_name: str) -> tuple[int, 
         return 1, err("source disabled", source=source_name)
     started = utc_now()
     try:
-        snapshot = driver_for(source, load_secrets()).collect(include_connections=bool(getattr(args, "include_connections", False)))
+        driver = driver_for(source, load_secrets())
+        if source.get("driver") == "snmp_switch":
+            result = collect_and_save_switch(conn, source, driver, started)
+            succeeded = result["status"] == "success"
+            conn.execute(
+                """
+                UPDATE network_sources
+                SET last_collect_at = ?, last_status = ?, last_error = ?
+                WHERE id = ?
+                """,
+                (
+                    started if succeeded else source.get("last_collect_at"),
+                    result["status"],
+                    result["error_message"],
+                    source["id"],
+                ),
+            )
+            conn.commit()
+            if not succeeded:
+                return 1, err(
+                    result["error_message"],
+                    source=source_name,
+                    error_class=result["error_class"],
+                    summary=result["counts"],
+                    run_id=result["run_id"],
+                )
+            return 0, ok(
+                source=source_name,
+                collected_at=started,
+                summary=result["counts"],
+                run_id=result["run_id"],
+                fdb_outcome=result["fdb_outcome"],
+            )
+        snapshot = driver.collect(
+            include_connections=bool(getattr(args, "include_connections", False))
+        )
         counts = save_collection(conn, source, snapshot, started)
     except Exception as exc:
+        message = (
+            "SNMP collection failed"
+            if source.get("driver") == "snmp_switch"
+            else str(exc)
+        )
         conn.execute(
             "UPDATE network_sources SET last_status = ?, last_error = ? WHERE id = ?",
-            ("error", str(exc), source["id"]),
+            ("error", message, source["id"]),
         )
         conn.commit()
-        return 1, err(str(exc), source=source_name)
+        return 1, err(message, source=source_name)
     return 0, ok(source=source_name, collected_at=utc_now(), summary=counts)
 
 
@@ -201,6 +330,52 @@ def cmd_table(args: argparse.Namespace, table: str, key: str) -> tuple[int, dict
     conn = prepare_conn(args)
     try:
         return 0, ok(**{key: _rows(conn, table, getattr(args, "source", "") or "")})
+    finally:
+        conn.close()
+
+
+def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    source = getattr(args, "source", "") or ""
+    if source:
+        try:
+            validate_source_name(source)
+        except ValueError as exc:
+            return 2, err(str(exc))
+    if args.switches_command != "status":
+        try:
+            validate_pagination(args.limit, args.offset)
+        except ValueError as exc:
+            return 2, err(str(exc))
+    if args.switches_command == "fdb" and args.vlan is not None:
+        if not 1 <= args.vlan <= 4094:
+            return 2, err("vlan must be between 1 and 4094")
+
+    conn = connect_read_only(args.db)
+    try:
+        if args.switches_command == "status":
+            return 0, ok(switches=query_switch_status(conn))
+        common = {
+            "source": source,
+            "limit": args.limit,
+            "offset": args.offset,
+        }
+        if args.switches_command == "ports":
+            page = query_switch_ports(conn, **common)
+            return 0, ok(ports=page["items"], pagination=page["pagination"])
+        if args.switches_command == "fdb":
+            page = query_switch_fdb(conn, vlan=args.vlan, **common)
+            return 0, ok(fdb=page["items"], pagination=page["pagination"])
+        if args.switches_command == "events":
+            page = query_switch_events(
+                conn, event_type=args.event_type, **common
+            )
+            return 0, ok(events=page["items"], pagination=page["pagination"])
+        if args.switches_command == "capabilities":
+            page = query_switch_capabilities(conn, **common)
+            return 0, ok(
+                capabilities=page["items"], pagination=page["pagination"]
+            )
+        return 2, err("unsupported switches command")
     finally:
         conn.close()
 
@@ -509,6 +684,29 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--verify-tls", action="store_true")
     add.add_argument("--site", default="main")
     add.add_argument("--role", default="core-router")
+    add_snmp = sources_sub.add_parser("add-snmp-switch")
+    add_snmp.add_argument("source")
+    add_snmp.add_argument("--host", required=True)
+    add_snmp.add_argument("--port", type=int, default=161)
+    add_snmp.add_argument("--secret-ref", required=True)
+    add_snmp.add_argument("--site", default="main")
+    add_snmp.add_argument("--role", default="access-switch")
+    add_snmp.add_argument("--snmp-version", default="2c")
+    add_snmp.add_argument("--timeout-seconds", type=int, default=2)
+    add_snmp.add_argument("--retries", type=int, default=1)
+    add_snmp.add_argument("--max-repetitions", type=int, default=25)
+    add_snmp.add_argument("--profile-hint", default="generic")
+    add_snmp.add_argument("--capability-ttl-hours", type=int, default=168)
+    add_snmp.add_argument("--raw-retention-hours", type=int, default=24)
+    add_snmp.add_argument("--counter-retention-days", type=int, default=14)
+    add_snmp.add_argument("--event-retention-days", type=int, default=180)
+    add_snmp.add_argument("--access-port-mac-threshold", type=int, default=10)
+    add_snmp.add_argument(
+        "--low-speed-threshold-bps", type=int, default=100_000_000
+    )
+    add_snmp.add_argument("--runtime-asset-key", default="")
+    add_snmp.add_argument("--intent-context-id", default="")
+    add_snmp.add_argument("--intent-stable-id", default="")
 
     collect = sub.add_parser("collect")
     collect.add_argument("source")
@@ -554,6 +752,25 @@ def build_parser() -> argparse.ArgumentParser:
     observations_sub = observations.add_subparsers(dest="observations_command", required=True)
     observations_list = observations_sub.add_parser("list")
     observations_list.add_argument("--host", default="")
+
+    switches = sub.add_parser("switches")
+    switches_sub = switches.add_subparsers(
+        dest="switches_command", required=True
+    )
+    switches_sub.add_parser("status")
+    for name in ("capabilities", "ports", "fdb", "events"):
+        switch_query = switches_sub.add_parser(name)
+        switch_query.add_argument("--source", default="")
+        switch_query.add_argument("--limit", type=int, default=DEFAULT_PAGE_SIZE)
+        switch_query.add_argument("--offset", type=int, default=0)
+        if name == "fdb":
+            switch_query.add_argument("--vlan", type=int)
+        if name == "events":
+            switch_query.add_argument(
+                "--event-type",
+                choices=("appeared", "moved", "disappeared"),
+                default="",
+            )
 
     ipsec = sub.add_parser("ipsec")
     ipsec_sub = ipsec.add_subparsers(dest="ipsec_command", required=True)
@@ -617,6 +834,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_table(args, args.table, args.table_key)
     if args.command == "observations":
         return cmd_table(args, "host_observations", "observations")
+    if args.command == "switches":
+        return cmd_switches(args)
     if args.command == "ipsec":
         return cmd_ipsec(args)
     if args.command == "dashboard":
