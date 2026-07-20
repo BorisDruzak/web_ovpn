@@ -886,23 +886,78 @@ def test_unknown_identity_selects_generic_profile() -> None:
     assert isinstance(detect_profile(system), GenericProfile)
 
 
-def test_only_supported_profile_hint_is_accepted() -> None:
-    from netctl.snmp.models import SwitchSystem
-    from netctl.snmp.profiles import GenericProfile, detect_profile
+@pytest.mark.parametrize(
+    ("profile_hint", "system"),
+    [
+        (
+            "generic",
+            SwitchSystem("fixture", "1.3.6.1.4.1.99999", "sw", "", None),
+        ),
+        (
+            "dgs",
+            SwitchSystem(
+                "WS6-DGS-1210-52/F1 6.20.007",
+                "1.3.6.1.4.1.171.10.153.7.1",
+                "dgs-fixture",
+                "",
+                None,
+            ),
+        ),
+        (
+            "snr",
+            SwitchSystem(
+                "SNR fixture",
+                "1.3.6.1.4.1.57206.1.1",
+                "snr-fixture",
+                "",
+                None,
+            ),
+        ),
+        (
+            "tplink",
+            SwitchSystem(
+                "TP-Link T1600G-52TS fixture",
+                "1.3.6.1.4.1.11863.1.1",
+                "tplink-fixture",
+                "",
+                None,
+            ),
+        ),
+        (
+            "css326",
+            SwitchSystem(
+                "MikroTik CSS326-24G-2S+ fixture",
+                "1.3.6.1.4.1.14988.2",
+                "css326-fixture",
+                "",
+                None,
+            ),
+        ),
+    ],
+)
+def test_every_supported_explicit_profile_hint_selects_a_matching_profile(
+    profile_hint: str,
+    system: SwitchSystem,
+) -> None:
+    from netctl.snmp.profiles import detect_profile
+
+    assert detect_profile(system, profile_hint=profile_hint).profile_id == profile_hint
+
+
+@pytest.mark.parametrize("profile_hint", ["dgs", "snr", "tplink", "css326"])
+def test_explicit_vendor_profile_hint_rejects_a_nonmatching_switch(
+    profile_hint: str,
+) -> None:
+    from netctl.snmp.profiles import detect_profile
 
     system = SwitchSystem("fixture", "1.3.6.1.4.1.99999", "sw", "", None)
 
-    assert isinstance(detect_profile(system, profile_hint="generic"), GenericProfile)
     with pytest.raises(ValueError, match="profile_hint"):
-        detect_profile(system, profile_hint="dgs")
+        detect_profile(system, profile_hint=profile_hint)
 
 
-@pytest.mark.parametrize("profile_hint", ["snr", "tplink", "css326"])
-def test_pr3a_config_and_runtime_reject_non_dgs_vendor_profiles(
-    profile_hint: str,
-) -> None:
+def test_config_and_runtime_reject_an_invalid_profile_hint() -> None:
     from netctl.config import normalize_source
-    from netctl.snmp.models import SwitchSystem
     from netctl.snmp.profiles import detect_profile
 
     source = {
@@ -910,17 +965,17 @@ def test_pr3a_config_and_runtime_reject_non_dgs_vendor_profiles(
         "driver": "snmp_switch",
         "host": "192.0.2.18",
         "secret_ref": "switch_profile_parity_snmp",
-        "snmp_profile_hint": profile_hint,
+        "snmp_profile_hint": "unsupported",
     }
     system = SwitchSystem("fixture", "1.3.6.1.4.1.99999", "sw", "", None)
 
     with pytest.raises(ValueError, match="profile_hint"):
         normalize_source(source)
     with pytest.raises(ValueError, match="profile_hint"):
-        detect_profile(system, profile_hint=profile_hint)
+        detect_profile(system, profile_hint="unsupported")
 
 
-@pytest.mark.parametrize("profile_hint", ["generic", "dgs"])
+@pytest.mark.parametrize("profile_hint", ["generic", "dgs", "snr", "tplink", "css326"])
 def test_pr3a_config_accepts_every_runtime_profile_hint(profile_hint: str) -> None:
     from netctl.config import normalize_source
     from netctl.switch_profile_hints import SUPPORTED_SNMP_PROFILE_HINTS
@@ -936,7 +991,43 @@ def test_pr3a_config_accepts_every_runtime_profile_hint(profile_hint: str) -> No
     )
 
     assert normalized["driver_options"]["profile_hint"] == profile_hint
-    assert SUPPORTED_SNMP_PROFILE_HINTS == frozenset({"generic", "dgs"})
+    assert SUPPORTED_SNMP_PROFILE_HINTS == frozenset(
+        {"generic", "dgs", "snr", "tplink", "css326"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("profile_id", "sys_object_id"),
+    [
+        ("snr", "1.3.6.1.4.1.57206.1.1"),
+        ("tplink", "1.3.6.1.4.1.11863.1.1"),
+        ("css326", "1.3.6.1.4.1.14988.2"),
+    ],
+)
+def test_normalized_hint_free_source_auto_detects_vendor_fixture_profile(
+    profile_id: str,
+    sys_object_id: str,
+) -> None:
+    from netctl.config import normalize_source
+
+    source = normalize_source(
+        {
+            "name": f"switch-{profile_id}",
+            "driver": "snmp_switch",
+            "host": "192.0.2.18",
+            "secret_ref": f"switch_{profile_id}_snmp",
+        }
+    )
+    transport_factory = {
+        "snr": _snr_fixture_transport,
+        "tplink": _tplink_fixture_transport,
+        "css326": _css326_fixture_transport,
+    }[profile_id]
+
+    assert "profile_hint" not in source["driver_options"]
+    snapshot = asyncio.run(collect_switch_snapshot(source, transport_factory()))
+    assert snapshot.profile_id == profile_id
+    assert snapshot.system.sys_object_id == sys_object_id
 
 
 def test_generic_profile_requires_explicit_fid_mapping() -> None:

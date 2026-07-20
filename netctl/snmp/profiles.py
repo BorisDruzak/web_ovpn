@@ -451,20 +451,24 @@ class Css326Profile(GenericProfile):
 def detect_profile(
     system: SwitchSystem, *, profile_hint: str | None = None
 ) -> PortProfile:
-    is_dgs = DgsProfile.matches(system)
-    is_snr = SnrProfile.matches(system)
-    is_tplink = TplinkProfile.matches(system)
-    is_css326 = Css326Profile.matches(system)
     if profile_hint is not None and profile_hint not in SUPPORTED_SNMP_PROFILE_HINTS:
         raise ValueError("SNMP profile_hint is unsupported")
-    if profile_hint == "dgs" and not is_dgs:
-        raise ValueError("SNMP profile_hint does not match the switch")
-    if profile_hint == "dgs" or (profile_hint is None and is_dgs):
-        return DgsProfile()
-    if profile_hint is None and is_snr:
-        return SnrProfile()
-    if profile_hint is None and is_tplink:
-        return TplinkProfile()
-    if profile_hint is None and is_css326:
-        return Css326Profile()
+    if profile_hint == "generic":
+        return GenericProfile()
+
+    vendor_profiles = {
+        "dgs": DgsProfile,
+        "snr": SnrProfile,
+        "tplink": TplinkProfile,
+        "css326": Css326Profile,
+    }
+    if profile_hint is not None:
+        hinted_profile = vendor_profiles[profile_hint]
+        if not hinted_profile.matches(system):
+            raise ValueError("SNMP profile_hint does not match the switch")
+        return hinted_profile()
+
+    for profile in vendor_profiles.values():
+        if profile.matches(system):
+            return profile()
     return GenericProfile()

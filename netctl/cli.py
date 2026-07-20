@@ -728,7 +728,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_snmp.add_argument("--timeout-seconds", type=int, default=2)
     add_snmp.add_argument("--retries", type=int, default=1)
     add_snmp.add_argument("--max-repetitions", type=int, default=25)
-    add_snmp.add_argument("--profile-hint", default="generic")
+    add_snmp.add_argument("--profile-hint")
     add_snmp.add_argument("--capability-ttl-hours", type=int, default=168)
     add_snmp.add_argument("--raw-retention-hours", type=int, default=24)
     add_snmp.add_argument("--counter-retention-days", type=int, default=14)

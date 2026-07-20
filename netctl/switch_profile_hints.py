@@ -3,4 +3,6 @@
 from __future__ import annotations
 
 
-SUPPORTED_SNMP_PROFILE_HINTS = frozenset({"generic", "dgs"})
+SUPPORTED_SNMP_PROFILE_HINTS = frozenset(
+    {"generic", "dgs", "snr", "tplink", "css326"}
+)

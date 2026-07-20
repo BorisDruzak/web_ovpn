@@ -257,13 +257,16 @@ def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
     if version != "2c":
         raise ValueError("snmp_version must be 2c")
 
-    profile = _snmp_string(
-        _snmp_option(source, "profile_hint", "generic"), field="snmp_profile_hint"
-    ).strip().lower()
-    if profile not in SUPPORTED_SNMP_PROFILE_HINTS:
-        raise ValueError("snmp_profile_hint is unsupported")
+    profile_value = _snmp_option(source, "profile_hint", None)
+    profile = None
+    if profile_value is not None:
+        profile = _snmp_string(
+            profile_value, field="snmp_profile_hint"
+        ).strip().lower()
+        if profile not in SUPPORTED_SNMP_PROFILE_HINTS:
+            raise ValueError("snmp_profile_hint is unsupported")
 
-    return {
+    normalized = {
         "snmp_version": version,
         "timeout_seconds": _bounded_int(
             _snmp_option(source, "timeout_seconds", 2),
@@ -283,7 +286,6 @@ def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
             minimum=1,
             maximum=100,
         ),
-        "profile_hint": profile,
         "capability_ttl_hours": _bounded_int(
             _snmp_option(source, "capability_ttl_hours", 168),
             field="snmp_capability_ttl_hours",
@@ -333,6 +335,9 @@ def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
             _snmp_option(source, "intent_stable_id", ""), field="intent_stable_id"
         ),
     }
+    if profile is not None:
+        normalized["profile_hint"] = profile
+    return normalized
 
 
 def normalize_snmp_driver_options(options: Any) -> dict[str, Any]:

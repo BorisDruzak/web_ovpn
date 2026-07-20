@@ -498,6 +498,36 @@ def test_add_snmp_switch_is_disabled_and_yaml_is_secret_free(
     assert reloaded[0]["enabled"] is False
 
 
+def test_add_snmp_switch_without_profile_hint_preserves_auto_detection(
+    tmp_path: Path, capsys
+) -> None:
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + [
+            "sources",
+            "add-snmp-switch",
+            "switch-auto",
+            "--host",
+            "192.0.2.10",
+            "--secret-ref",
+            "switch_auto_snmp",
+        ],
+        capsys,
+    )
+
+    assert rc == 0
+    assert "profile_hint" not in data["source"]["driver_options"]
+    yaml_text = (tmp_path / "sources.d" / "switch-auto.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "snmp_profile_hint" not in yaml_text
+    [reloaded] = load_config_sources(config_path)
+    assert "profile_hint" not in reloaded["driver_options"]
+
+
 @pytest.mark.parametrize("runtime_asset_key", ["123", "false"])
 def test_add_snmp_switch_preserves_string_scalars_across_yaml_reload(
     tmp_path: Path, capsys, runtime_asset_key: str
