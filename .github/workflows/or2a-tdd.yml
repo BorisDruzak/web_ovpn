@@ -1,0 +1,29 @@
+name: OR-2A TDD
+
+on:
+  push:
+    branches:
+      - docs/alt-or2a-ssh-preflight-classification-design-20260720
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: OR-2A focused tests
+        run: >-
+          python -m pytest -q
+          tests/alt_linux/test_or2a_preflight_failures.py
+          tests/alt_linux/test_operational_reliability_contract.py
