@@ -104,6 +104,23 @@ def _propagate_fdb_failure(result: CapabilityResult) -> CapabilityResult:
     )
 
 
+def _optional_parse_errors(
+    results: tuple[CapabilityResult, ...],
+    *,
+    error_code: str,
+    error_message: str,
+) -> tuple[CapabilityResult, ...]:
+    return tuple(
+        CapabilityResult(
+            capability=result.capability,
+            outcome=SnmpOutcome.PARSE_ERROR,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        for result in results
+    )
+
+
 async def collect_switch_snapshot(
     source: Mapping[str, object], transport: CollectorTransport
 ) -> SwitchSnapshot:
@@ -274,6 +291,12 @@ async def collect_switch_snapshot(
                 )
             except ValueError:
                 vlan_memberships = ()
+                vlan_results = _optional_parse_errors(
+                    vlan_results,
+                    error_code="malformed_vlan",
+                    error_message="SNMP VLAN rows are malformed",
+                )
+                capabilities[-len(vlan_results) :] = vlan_results
 
         stp_results = (
             await transport.get(DOT1D_STP_PROTOCOL, capability="stp_protocol"),
@@ -297,6 +320,12 @@ async def collect_switch_snapshot(
                 )
             except ValueError:
                 stp = None
+                stp_results = _optional_parse_errors(
+                    stp_results,
+                    error_code="malformed_stp",
+                    error_message="SNMP STP rows are malformed",
+                )
+                capabilities[-len(stp_results) :] = stp_results
     return SwitchSnapshot(
         snapshot_kind="snmp_switch",
         profile_id=profile.profile_id,

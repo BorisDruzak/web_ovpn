@@ -276,6 +276,64 @@ def test_snr_profile_uses_ifindex_qbridge_ports_and_proven_exceptions() -> None:
         "physical_port": None,
         "port_name": "po1",
     }
+    assert profile.resolve_fdb_vlan(fdb_id=4094, vids_by_fid={}) == ("vid:4094", 4094)
+    assert profile.resolve_fdb_vlan(fdb_id=4095, vids_by_fid={}) == ("fid:4095", None)
+
+
+def test_snr_malformed_optional_vlan_is_a_sanitized_nonblocking_parse_error() -> None:
+    from netctl.snmp.oids import DOT1Q_VLAN_CURRENT_EGRESS
+
+    transport = _snr_fixture_transport()
+    transport.results[DOT1Q_VLAN_CURRENT_EGRESS] = CapabilityResult(
+        "vlan_current_egress",
+        SnmpOutcome.SUCCESS_WITH_ROWS,
+        (
+            SnmpVarBind(
+                DOT1Q_VLAN_CURRENT_EGRESS + (0, 20), "integer", 31071
+            ),
+        ),
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    capability = next(
+        row for row in snapshot.capabilities if row.capability == "vlan_current_egress"
+    )
+
+    assert len(snapshot.fdb) == 180
+    assert snapshot.vlan_memberships == ()
+    assert capability.outcome is SnmpOutcome.PARSE_ERROR
+    assert capability.error_code == "malformed_vlan"
+    assert capability.error_message == "SNMP VLAN rows are malformed"
+    assert capability.details == {}
+    assert "31071" not in repr(snapshot.to_dict()["capabilities"])
+
+
+def test_snr_malformed_optional_stp_is_a_sanitized_nonblocking_parse_error() -> None:
+    from netctl.snmp.oids import DOT1D_STP_DESIGNATED_ROOT
+
+    transport = _snr_fixture_transport()
+    transport.results[DOT1D_STP_DESIGNATED_ROOT] = CapabilityResult(
+        "stp_designated_root",
+        SnmpOutcome.SUCCESS_WITH_ROWS,
+        (
+            SnmpVarBind(
+                DOT1D_STP_DESIGNATED_ROOT, "octet_string", b"untrusted-payload"
+            ),
+        ),
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    capability = next(
+        row for row in snapshot.capabilities if row.capability == "stp_designated_root"
+    )
+
+    assert len(snapshot.fdb) == 180
+    assert snapshot.stp is None
+    assert capability.outcome is SnmpOutcome.PARSE_ERROR
+    assert capability.error_code == "malformed_stp"
+    assert capability.error_message == "SNMP STP rows are malformed"
+    assert capability.details == {}
+    assert "untrusted-payload" not in repr(snapshot.to_dict()["capabilities"])
 
 
 def test_dgs_fixture_selects_profile_and_normalizes_paginated_qbridge_fdb() -> None:

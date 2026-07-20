@@ -195,7 +195,7 @@ class SnrProfile(GenericProfile):
 
     profile_id = "snr"
     profile_fingerprint = "snr:v1"
-    qbridge_fid_mode = "proven_equals_vid"
+    qbridge_fid_mode = "mapped_only"
 
     @staticmethod
     def matches(system: SwitchSystem) -> bool:
@@ -292,6 +292,19 @@ class SnrProfile(GenericProfile):
             bridge_to_ifindex=bridge_to_ifindex,
             ports_by_ifindex=ports_by_ifindex,
         )
+
+    def resolve_fdb_vlan(
+        self,
+        *,
+        fdb_id: int,
+        vids_by_fid: Mapping[int, set[int]],
+    ) -> tuple[str, int | None]:
+        vlan_key, vlan_id = super().resolve_fdb_vlan(
+            fdb_id=fdb_id, vids_by_fid=vids_by_fid
+        )
+        if vlan_id is not None or vids_by_fid.get(fdb_id) or fdb_id > 4094:
+            return vlan_key, vlan_id
+        return f"vid:{fdb_id}", fdb_id
 
     def resolve_stp_root_port(
         self,
