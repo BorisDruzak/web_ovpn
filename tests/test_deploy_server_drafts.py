@@ -171,6 +171,43 @@ def test_scoped_installer_locks_and_validates_the_draft_namespace_before_mutatio
         assert installer.index(validation) < first_root_mutation
 
 
+def test_scoped_installer_legacy_parent_lock_executes_chmod_immediately_after_chown(
+    tmp_path,
+):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+    branch = installer.split(
+        'if [[ "$draft_parent_metadata" == "openvpn-web:openvpn-web:755" ]]; then',
+        1,
+    )[1].split("# Recheck after the parent is locked.", 1)[0]
+    trace = tmp_path / "legacy-lock.trace"
+    script = f'''set -euo pipefail
+TRACE="$1"
+draft_parent_metadata=openvpn-web:openvpn-web:755
+DRAFT_PARENT=/var/lib/openvpn-web
+sudo_cmd() {{ printf '%s\\n' "$*" >> "$TRACE"; }}
+if [[ "$draft_parent_metadata" == "openvpn-web:openvpn-web:755" ]]; then
+{branch.split("else", 1)[0]}
+fi
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "legacy-lock", trace.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert trace.read_text(encoding="utf-8").splitlines() == [
+        "chown root:openvpn-web /var/lib/openvpn-web",
+        "chmod 1750 /var/lib/openvpn-web",
+    ]
+
+
 def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources():
     deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
@@ -196,13 +233,14 @@ def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources
     ):
         assert validation in handoff
 
-    first_mutation = handoff.index("sudo systemctl stop server-draft-worker.path")
+    rollback = handoff.split("### Rollback", 1)[1]
+    first_mutation = rollback.index("sudo systemctl stop server-draft-worker.path")
     for source_check in (
         'asset_state server-draft-worker.service -f "$BACKUP_ROOT/server-draft-worker.service"',
         'asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path"',
         'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
     ):
-        assert handoff.index(source_check) < first_mutation
+        assert rollback.index(source_check) < first_mutation
 
     assert "sudo systemctl disable server-draft-worker.path" in handoff
     assert "sudo systemctl stop server-draft-worker.service" in handoff
@@ -286,6 +324,136 @@ def test_worker_handoff_backup_root_is_exclusive_and_validated_before_use():
         assert backup.index(validation) < first_copy
 
 
+def test_worker_handoff_backup_quiesces_trigger_and_restores_prior_state_on_failure(
+    tmp_path,
+):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup = handoff.split("### Rollback", 1)[0]
+    state_management = backup.split("# BEGIN draft-worker backup quiescence", 1)[1].split(
+        "# END draft-worker backup quiescence", 1
+    )[0]
+    assert backup.index("# END draft-worker backup quiescence") < backup.index(
+        'rollback_manifest="$BACKUP_ROOT/rollback.assets"'
+    )
+    assert backup.index("# END draft-worker backup quiescence") < backup.index(
+        "backup_asset server-draft-worker -f"
+    )
+    trace = tmp_path / "backup-state.trace"
+    script = f'''set -euo pipefail
+TRACE="$1"
+sudo() {{
+  printf '%s\\n' "$*" >> "$TRACE"
+  if [[ "$*" == "systemctl is-active --quiet server-draft-worker.path" ]]; then
+    return 0
+  fi
+  if [[ "$*" == "systemctl is-active --quiet server-draft-worker.service" ]]; then
+    return 1
+  fi
+  return 0
+}}
+sleep() {{ :; }}
+{state_management}
+exit 23
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "backup-state", trace.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 23, result.stderr
+    calls = trace.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        "systemctl is-active --quiet server-draft-worker.path",
+        "systemctl stop server-draft-worker.path",
+        "systemctl is-active --quiet server-draft-worker.service",
+        "systemctl start server-draft-worker.path",
+    ]
+
+
+def test_worker_handoff_rollback_executes_parent_lock_before_draft_restore(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    rollback = handoff.split("### Rollback", 1)[1]
+    function_text = rollback.split("lock_draft_parent_for_restore() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    lock_call = rollback.index("lock_draft_parent_for_restore\n")
+    for source_validation in (
+        'worker_wrapper_state="$(asset_state server-draft-worker ',
+        'worker_service_state="$(asset_state server-draft-worker.service ',
+        'worker_path_state="$(asset_state server-draft-worker.path ',
+        'worker_path_wants_state="$(asset_state server-draft-worker.path.wants ',
+        'observer_public_key_state="$(asset_state server-observer.pub ',
+        'draft_state="$(asset_state server-drafts',
+        'parent_metadata_archive="$BACKUP_ROOT/openvpn-web-parent.tar"',
+        "draft-worker parent metadata archive is incomplete or unsafe",
+        "draft-worker rollback manifest lacks one prior path active state",
+    ):
+        assert rollback.index(source_validation) < lock_call
+    assert lock_call < rollback.index("sudo systemctl stop server-draft-worker.path")
+    assert lock_call < rollback.index("sudo rm -rf -- /var/lib/openvpn-web/server-drafts")
+
+    trace = tmp_path / "rollback-parent-lock.trace"
+    mode_state = tmp_path / "parent-mode"
+    mode_state.write_text("1770", encoding="utf-8")
+    script = f'''set -euo pipefail
+TRACE="$1"
+MODE_STATE="$2"
+DRAFT_PARENT=/var/lib/openvpn-web
+sudo() {{
+  printf '%s\\n' "$*" >> "$TRACE"
+  case "$*" in
+    "test -L "*) return 1 ;;
+    "test -d "*) return 0 ;;
+    "readlink -e -- "*) printf '%s\\n' "${{*:4}}" ;;
+    "stat -c %U:%G:%a -- /var"|"stat -c %U:%G:%a -- /var/lib") printf '%s\\n' root:root:755 ;;
+    "stat -c %U:%G:%a -- /var/lib/openvpn-web") printf 'root:openvpn-web:%s\\n' "$(<"$MODE_STATE")" ;;
+    "chown root:openvpn-web /var/lib/openvpn-web") ;;
+    "chmod 1750 /var/lib/openvpn-web") printf 1750 > "$MODE_STATE" ;;
+    *) return 99 ;;
+  esac
+}}
+lock_draft_parent_for_restore() {{
+{function_text}
+}}
+lock_draft_parent_for_restore
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "rollback-lock", trace.as_posix(), mode_state.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = trace.read_text(encoding="utf-8").splitlines()
+    chown_index = calls.index("chown root:openvpn-web /var/lib/openvpn-web")
+    for root_path in ("/var", "/var/lib"):
+        assert calls.index(f"test -L {root_path}") < chown_index
+        assert calls.index(f"readlink -e -- {root_path}") < chown_index
+        assert calls.index(f"stat -c %U:%G:%a -- {root_path}") < chown_index
+    assert calls[chown_index + 1] == "chmod 1750 /var/lib/openvpn-web"
+    assert calls[-1] == "stat -c %U:%G:%a -- /var/lib/openvpn-web"
+    assert mode_state.read_text(encoding="utf-8") == "1750"
+
+
 def test_worker_handoff_rollback_restores_enablement_and_preserved_metadata():
     deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
@@ -297,8 +465,9 @@ def test_worker_handoff_rollback_restores_enablement_and_preserved_metadata():
         "backup_asset server-draft-worker.path.wants -L "
         "/etc/systemd/system/multi-user.target.wants/server-draft-worker.path"
     ) in backup
-    assert 'server-draft-worker.path.active=active' in backup
-    assert 'server-draft-worker.path.active=inactive' in backup
+    assert "draft_worker_path_was_active=inactive" in backup
+    assert "draft_worker_path_was_active=active" in backup
+    assert "printf 'server-draft-worker.path.active=%s\\n'" in backup
     assert 'sudo cp --archive --preserve=all --' in backup
     assert 'sudo cp --archive --preserve=all --' in rollback
     assert 'asset_state server-draft-worker.path.wants -L ' in rollback

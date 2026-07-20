@@ -118,8 +118,10 @@ observer public key, the draft state directory, and the metadata of its
 `/var/lib/openvpn-web` parent. The parent is archived without recursion. GNU
 `cp` and `tar` preserve ownership, mode, timestamps, ACLs, xattrs, and SELinux
 context. The manifest distinguishes an existing prior asset from an asset
-absent before a first deployment. Wait for any old worker invocation to finish;
-the backup refuses to continue while the oneshot service is active.
+absent before a first deployment. The backup first stops the path trigger, then
+waits for any already-running oneshot worker to finish before copying any
+asset. An EXIT trap restores the path unit's prior active state on both success
+and failure; its enablement state is never changed by the backup.
 
 ```bash
 (
@@ -166,13 +168,51 @@ case "$draft_parent_metadata" in
     exit 2
     ;;
 esac
-rollback_manifest="$BACKUP_ROOT/rollback.assets"
-sudo install -m 0600 /dev/null "$rollback_manifest"
 
-if sudo systemctl is-active --quiet server-draft-worker.service; then
-  echo 'wait for server-draft-worker.service to become inactive before backup' >&2
+# BEGIN draft-worker backup quiescence
+draft_worker_path_was_active=inactive
+restore_draft_worker_path_after_backup() {
+  if [[ "$draft_worker_path_was_active" == active ]]; then
+    sudo systemctl start server-draft-worker.path
+  fi
+}
+finish_draft_worker_backup() {
+  local backup_rc=$? restore_rc=0
+  trap - EXIT
+  restore_draft_worker_path_after_backup || restore_rc=$?
+  if (( restore_rc != 0 )); then
+    echo 'failed to restore the prior draft-worker path active state' >&2
+    if (( backup_rc == 0 )); then
+      backup_rc="$restore_rc"
+    fi
+  fi
+  exit "$backup_rc"
+}
+trap finish_draft_worker_backup EXIT
+
+if sudo systemctl is-active --quiet server-draft-worker.path; then
+  draft_worker_path_was_active=active
+fi
+sudo systemctl stop server-draft-worker.path
+
+# Stopping the path prevents a new activation. Let an invocation that already
+# started finish normally instead of terminating it during a state write.
+draft_worker_quiesced=false
+for _ in {1..180}; do
+  if ! sudo systemctl is-active --quiet server-draft-worker.service; then
+    draft_worker_quiesced=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$draft_worker_quiesced" != true ]]; then
+  echo 'draft worker did not quiesce within 180 seconds; no backup was taken' >&2
   exit 2
 fi
+# END draft-worker backup quiescence
+
+rollback_manifest="$BACKUP_ROOT/rollback.assets"
+sudo install -m 0600 /dev/null "$rollback_manifest"
 
 # Each manifest line records whether the prior asset was present or absent.
 # "absent" is the expected, distinct first-deployment state; symlinked or
@@ -211,11 +251,8 @@ sudo tar --create --file="$BACKUP_ROOT/openvpn-web-parent.tar" \
   --acls --xattrs --selinux --numeric-owner --no-recursion \
   --directory=/ var/lib/openvpn-web/
 printf 'openvpn-web-parent-metadata=present\n' | sudo tee -a "$rollback_manifest" >/dev/null
-if sudo systemctl is-active --quiet server-draft-worker.path; then
-  printf 'server-draft-worker.path.active=active\n' | sudo tee -a "$rollback_manifest" >/dev/null
-else
-  printf 'server-draft-worker.path.active=inactive\n' | sudo tee -a "$rollback_manifest" >/dev/null
-fi
+printf 'server-draft-worker.path.active=%s\n' "$draft_worker_path_was_active" \
+  | sudo tee -a "$rollback_manifest" >/dev/null
 sudo test -s "$rollback_manifest"
 printf 'Draft-worker rollback backup: %s\n' "$BACKUP_ROOT"
 )
@@ -369,10 +406,96 @@ else
   exit 2
 fi
 
+# The deployed parent is normally group-writable so the web SQLite file remains
+# usable. Lock it before any target revalidation, removal, or archive copy. The
+# metadata-only archive validated above restores the captured pre-handoff state
+# after the draft root is safely restored.
+DRAFT_PARENT=/var/lib/openvpn-web
+lock_draft_parent_for_restore() {
+  local path resolved metadata
+  for path in /var /var/lib; do
+    if sudo test -L "$path" || ! sudo test -d "$path"; then
+      echo "unsafe rollback namespace component: $path" >&2
+      exit 2
+    fi
+    resolved="$(sudo readlink -e -- "$path")"
+    metadata="$(sudo stat -c '%U:%G:%a' -- "$path")"
+    if [[ "$resolved" != "$path" ]] || [[ "$metadata" != root:root:755 ]]; then
+      echo "unexpected rollback namespace metadata: $path" >&2
+      exit 2
+    fi
+  done
+  if sudo test -L "$DRAFT_PARENT" || ! sudo test -d "$DRAFT_PARENT"; then
+    echo 'draft-worker rollback parent is not a real directory' >&2
+    exit 2
+  fi
+  resolved="$(sudo readlink -e -- "$DRAFT_PARENT")"
+  metadata="$(sudo stat -c '%U:%G:%a' -- "$DRAFT_PARENT")"
+  if [[ "$resolved" != "$DRAFT_PARENT" ]]; then
+    echo 'draft-worker rollback parent is outside its canonical path' >&2
+    exit 2
+  fi
+  case "$metadata" in
+    openvpn-web:openvpn-web:755|root:openvpn-web:1770|root:openvpn-web:1750) ;;
+    *)
+      echo 'draft-worker rollback parent has unconstrained ownership or mode' >&2
+      exit 2
+      ;;
+  esac
+
+  # /var/lib is root-owned and was just validated, so the parent entry cannot
+  # be replaced. Keep chmod immediately adjacent to chown: after these two
+  # commands neither the web owner nor openvpn-web group can mutate children.
+  sudo chown root:openvpn-web "$DRAFT_PARENT"
+  sudo chmod 1750 "$DRAFT_PARENT"
+
+  for path in /var /var/lib; do
+    if sudo test -L "$path" || ! sudo test -d "$path" \
+      || [[ "$(sudo readlink -e -- "$path")" != "$path" ]] \
+      || [[ "$(sudo stat -c '%U:%G:%a' -- "$path")" != root:root:755 ]]; then
+      echo "rollback namespace changed while locking: $path" >&2
+      exit 2
+    fi
+  done
+  if sudo test -L "$DRAFT_PARENT" || ! sudo test -d "$DRAFT_PARENT" \
+    || [[ "$(sudo readlink -e -- "$DRAFT_PARENT")" != "$DRAFT_PARENT" ]]; then
+    echo 'draft-worker rollback parent changed while locking' >&2
+    exit 2
+  fi
+  metadata="$(sudo stat -c '%U:%G:%a' -- "$DRAFT_PARENT")"
+  if [[ "$metadata" != root:openvpn-web:1750 ]]; then
+    echo 'draft-worker rollback parent lock did not hold' >&2
+    exit 2
+  fi
+}
+
+validate_locked_live_draft_root() {
+  local draft_root=/var/lib/openvpn-web/server-drafts resolved metadata
+  if sudo test -L "$draft_root"; then
+    echo 'refusing a symlinked live draft root during rollback' >&2
+    exit 2
+  elif sudo test -e "$draft_root"; then
+    if ! sudo test -d "$draft_root"; then
+      echo 'live draft root has an unexpected type during rollback' >&2
+      exit 2
+    fi
+    resolved="$(sudo readlink -e -- "$draft_root")"
+    metadata="$(sudo stat -c '%U:%G:%a' -- "$draft_root")"
+    if [[ "$resolved" != "$draft_root" ]] \
+      || [[ "$metadata" != root:openvpn-web:750 ]]; then
+      echo 'live draft root is outside the locked rollback contract' >&2
+      exit 2
+    fi
+  fi
+}
+
+lock_draft_parent_for_restore
+
 # From this point every failure stops the procedure before later mutations.
 sudo systemctl stop server-draft-worker.path
 sudo systemctl disable server-draft-worker.path
 sudo systemctl stop server-draft-worker.service
+validate_locked_live_draft_root
 
 restore_asset() {
   local state="$1" asset_type="$2" source_path="$3" target_path="$4"
@@ -405,7 +528,13 @@ fi
 
 Do not disable or restart OpenVPN, and do not change collector configuration or
 collector timers during rollback. This rollback intentionally leaves all
-non-draft services and assets untouched.
+non-draft services and assets untouched. It validates the complete backup set
+before locking `/var/lib/openvpn-web` to `root:openvpn-web 1750`; only then does
+it stop the draft units, revalidate the live root, remove it, and copy the
+archive into a destination the web group cannot replace. A successful rollback
+restores the captured parent metadata last. If rollback fails after the lock,
+leave the parent locked and resume the same validated procedure rather than
+reopening a partially restored namespace by hand.
 
 ## Network Observer Setup
 

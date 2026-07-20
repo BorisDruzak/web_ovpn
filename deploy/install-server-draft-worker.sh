@@ -133,6 +133,7 @@ if [[ "$draft_parent_metadata" == "openvpn-web:openvpn-web:755" ]]; then
   # /var/lib is root-owned and already validated, so the parent cannot be
   # replaced while this ownership change is made.
   sudo_cmd chown root:openvpn-web "$DRAFT_PARENT"
+  sudo_cmd chmod 1750 "$DRAFT_PARENT"
   draft_root_action=legacy_locked
 else
   # Temporarily remove group write even from an already-hardened sticky parent.
