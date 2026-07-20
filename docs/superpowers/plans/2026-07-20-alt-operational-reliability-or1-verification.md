@@ -1,16 +1,49 @@
 # OR-1 verification status
 
-Verification commands required before merge:
+Дата проверки: 2026-07-20.
 
-```bash
-.venv/bin/python -m pytest -q \
-  tests/alt_linux/test_operational_reliability_contract.py \
-  tests/alt_linux/test_operational_reliability_scenarios.py
+Проверенный code SHA:
 
-.venv/bin/python -m pytest -q tests/alt_linux
-.venv/bin/python -m pytest -q
-
-git diff --check origin/main...HEAD
+```text
+59f2b69df29a3e52a3970c0674db73fee6eb609b
 ```
 
-Current connector session cannot execute repository commands because no local checkout is available and outbound GitHub DNS is unavailable. GitHub reports no workflow runs for branch commits. Therefore this document intentionally records no PASS status or test counts.
+GitHub Actions run:
+
+```text
+OR-1 branch verification
+run_id: 29745447263
+job_id: 88362146055
+conclusion: success
+```
+
+Фактические результаты:
+
+```text
+Focused OR-1 tests:
+17 passed in 0.32s
+
+ALT Linux suite:
+183 passed in 1.21s
+
+Full repository suite:
+404 passed, 89 warnings in 26.35s
+
+git diff --check origin/main...HEAD:
+PASS
+```
+
+Дополнительные штатные repository workflows на том же test-only изменении:
+
+```text
+Verify netctl context stage: PASS
+Verify netctl context stage / full-regression: PASS
+Verify netctl runtime identity / focused-runtime-identity: PASS
+Verify netctl runtime identity / full-regression: PASS
+```
+
+После получения evidence временный workflow
+`.github/workflows/or1-branch-verification.yml` удалён. Последующие изменения
+затрагивают только этот временный workflow и данный verification document;
+Python test tree, support package и scenario contracts после успешного run не
+изменялись.
