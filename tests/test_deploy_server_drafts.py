@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 
 QUEUE_DIR = "/var/lib/openvpn-web/server-drafts/queue"
@@ -132,7 +133,7 @@ def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources
     for validation in (
         'backup_name="$(basename -- "$BACKUP_ROOT")"',
         "openvpn-web-server-drafts-backup-[0-9]{14}",
-        'sudo test -L -- "$BACKUP_ROOT"',
+        'sudo test -L "$BACKUP_ROOT"',
         'sudo readlink -e -- "$BACKUP_ROOT"',
         'sudo test -d "$BACKUP_ROOT"',
         'sudo test -f "$rollback_manifest"',
@@ -180,8 +181,8 @@ def test_worker_handoff_backup_and_rollback_fail_closed_for_every_mutated_asset(
 
     assert "present or absent" in backup
     assert "prior asset was absent" in rollback
-    assert 'sudo test -L -- "$BACKUP_ROOT"' in rollback
-    assert rollback.index('sudo test -L -- "$BACKUP_ROOT"') < rollback.index(
+    assert 'sudo test -L "$BACKUP_ROOT"' in rollback
+    assert rollback.index('sudo test -L "$BACKUP_ROOT"') < rollback.index(
         'sudo readlink -e -- "$BACKUP_ROOT"'
     )
     assert 'backup_name="$(basename -- "$BACKUP_ROOT")"' in rollback
@@ -198,3 +199,37 @@ def test_worker_handoff_backup_and_rollback_fail_closed_for_every_mutated_asset(
         'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
     ):
         assert rollback.index(validation) < first_mutation
+
+
+def test_worker_handoff_rollback_rejects_a_symlinked_backup_root_before_readlink(tmp_path):
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    rollback = handoff.split("### Rollback", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
+    validation = rollback.split("# Reject the supplied directory itself before readlink can hide that symlink.\n", 1)[1].split(
+        'resolved_backup_root="$(sudo readlink -e -- "$BACKUP_ROOT")"', 1
+    )[0]
+    backup_root = tmp_path / "openvpn-web-server-drafts-backup-20260720120000"
+    target = tmp_path / "real-backup"
+    target.mkdir()
+    backup_root.symlink_to(target, target_is_directory=True)
+    assert backup_root.is_symlink()
+
+    script = """set -e
+sudo() {
+  if [[ "$1" == test && "$2" == -L && "$3" == "$BACKUP_ROOT" && "$#" == 3 ]]; then
+    return 0
+  fi
+  command "$@"
+}
+BACKUP_ROOT='""" + backup_root.as_posix() + "'\n" + validation
+    result = subprocess.run(
+        ["bash", "-c", script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "refusing a symlinked draft-worker backup root" in result.stderr

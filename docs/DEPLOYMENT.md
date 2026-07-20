@@ -206,7 +206,7 @@ if ! [[ "$backup_name" =~ ^openvpn-web-server-drafts-backup-[0-9]{14}$ ]] \
   exit 2
 fi
 # Reject the supplied directory itself before readlink can hide that symlink.
-if sudo test -L -- "$BACKUP_ROOT"; then
+if sudo test -L "$BACKUP_ROOT"; then
   echo 'refusing a symlinked draft-worker backup root' >&2
   exit 2
 fi
