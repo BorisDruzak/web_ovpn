@@ -355,6 +355,7 @@ sudo() {{
     "systemctl show --property=ActiveState --value server-draft-worker.path") printf '%s\\n' active ;;
     "systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\\n' loaded ;;
     "systemctl show --property=ActiveState --value server-draft-worker.service") printf '%s\\n' inactive ;;
+    "systemctl show --property=Job --value server-draft-worker.service") printf '%s\\n' 0 ;;
     "systemctl stop server-draft-worker.path"|"systemctl start server-draft-worker.path") ;;
     *) return 99 ;;
   esac
@@ -376,9 +377,12 @@ exit 23
     assert calls == [
         "systemctl show --property=LoadState --value server-draft-worker.path",
         "systemctl show --property=ActiveState --value server-draft-worker.path",
+        "systemctl show --property=LoadState --value server-draft-worker.service",
+        "systemctl show --property=ActiveState --value server-draft-worker.service",
         "systemctl stop server-draft-worker.path",
         "systemctl show --property=LoadState --value server-draft-worker.service",
         "systemctl show --property=ActiveState --value server-draft-worker.service",
+        "systemctl show --property=Job --value server-draft-worker.service",
         "systemctl start server-draft-worker.path",
     ]
 
@@ -414,8 +418,9 @@ sudo() {{
       count="$(<"$ACTIVE_CALLS")"
       count=$((count + 1))
       printf '%s' "$count" > "$ACTIVE_CALLS"
-      if (( count == 1 )); then printf '%s\n' activating; else printf '%s\n' inactive; fi
+      if (( count == 2 )); then printf '%s\n' activating; else printf '%s\n' inactive; fi
       ;;
+    "systemctl show --property=Job --value server-draft-worker.service") printf '%s\n' 0 ;;
     "systemctl stop server-draft-worker.path"|"systemctl start server-draft-worker.path") ;;
     *) return 99 ;;
   esac
@@ -436,10 +441,110 @@ exit 23
     calls = trace.read_text(encoding="utf-8").splitlines()
     assert calls.count(
         "systemctl show --property=ActiveState --value server-draft-worker.service"
-    ) == 2
+    ) == 3
+    assert calls.count("systemctl show --property=Job --value server-draft-worker.service") == 1
     assert "sleep 1" in calls
     assert calls.index("sleep 1") < len(calls) - 2
     assert calls[-1] == "systemctl start server-draft-worker.path"
+
+
+def test_worker_handoff_backup_waits_for_a_queued_service_start_job(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup = handoff.split("### Rollback", 1)[0]
+    state_management = backup.split("# BEGIN draft-worker backup quiescence", 1)[1].split(
+        "# END draft-worker backup quiescence", 1
+    )[0]
+    trace = tmp_path / "backup-queued-job.trace"
+    job_calls = tmp_path / "service-job-calls"
+    job_calls.write_text("0", encoding="utf-8")
+    script = f'''set -euo pipefail
+TRACE="$1"
+JOB_CALLS="$2"
+sudo() {{
+  printf '%s\\n' "$*" >> "$TRACE"
+  case "$*" in
+    "systemctl show --property=LoadState --value server-draft-worker.path") printf '%s\\n' loaded ;;
+    "systemctl show --property=ActiveState --value server-draft-worker.path") printf '%s\\n' active ;;
+    "systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\\n' loaded ;;
+    "systemctl show --property=ActiveState --value server-draft-worker.service") printf '%s\\n' inactive ;;
+    "systemctl show --property=Job --value server-draft-worker.service")
+      count="$(<"$JOB_CALLS")"
+      count=$((count + 1))
+      printf '%s' "$count" > "$JOB_CALLS"
+      if (( count == 1 )); then printf '%s\\n' 812; else printf '%s\\n' 0; fi
+      ;;
+    "systemctl stop server-draft-worker.path"|"systemctl start server-draft-worker.path") ;;
+    *) return 99 ;;
+  esac
+}}
+sleep() {{ printf 'sleep %s\\n' "$*" >> "$TRACE"; }}
+{state_management}
+exit 23
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "backup-queued-job", trace.as_posix(), job_calls.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 23, result.stderr
+    calls = trace.read_text(encoding="utf-8").splitlines()
+    assert calls.count("systemctl show --property=Job --value server-draft-worker.service") == 2
+    assert "sleep 1" in calls
+    assert calls[-1] == "systemctl start server-draft-worker.path"
+
+
+@pytest.mark.parametrize("unit", ("server-draft-worker.path", "server-draft-worker.service"))
+def test_worker_handoff_backup_rejects_preexisting_failed_units_before_stop(tmp_path, unit):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup = handoff.split("### Rollback", 1)[0]
+    state_management = backup.split("# BEGIN draft-worker backup quiescence", 1)[1].split(
+        "# END draft-worker backup quiescence", 1
+    )[0]
+    trace = tmp_path / f"backup-failed-{unit.rsplit('.', 1)[1]}.trace"
+    script = f'''set -euo pipefail
+TRACE="$1"
+sudo() {{
+  printf '%s\\n' "$*" >> "$TRACE"
+  case "$*" in
+    "systemctl show --property=LoadState --value server-draft-worker.path"|"systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\\n' loaded ;;
+    "systemctl show --property=ActiveState --value {unit}") printf '%s\\n' failed ;;
+    "systemctl show --property=ActiveState --value "*) printf '%s\\n' inactive ;;
+    *) return 99 ;;
+  esac
+}}
+sleep() {{ return 99; }}
+{state_management}
+exit 23
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "backup-failed", trace.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert f"draft-worker {unit.rsplit('.', 1)[1]} is already failed" in result.stderr
+    calls = trace.read_text(encoding="utf-8").splitlines()
+    assert "systemctl stop server-draft-worker.path" not in calls
 
 
 def test_worker_handoff_backup_times_out_fail_closed_while_service_is_activating(
@@ -487,7 +592,7 @@ exit 19
 
     assert result.returncode == 2
     assert "did not quiesce within 180 seconds" in result.stderr
-    assert active_calls.read_text(encoding="utf-8") == "180"
+    assert active_calls.read_text(encoding="utf-8") == "181"
 
 
 def test_worker_handoff_backup_skips_absent_units_under_set_e(tmp_path):
@@ -529,6 +634,7 @@ exit 17
     calls = trace.read_text(encoding="utf-8").splitlines()
     assert calls == [
         "systemctl show --property=LoadState --value server-draft-worker.path",
+        "systemctl show --property=LoadState --value server-draft-worker.service",
         "systemctl show --property=LoadState --value server-draft-worker.service",
     ]
 

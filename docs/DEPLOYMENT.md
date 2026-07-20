@@ -118,12 +118,15 @@ observer public key, the draft state directory, and the metadata of its
 `/var/lib/openvpn-web` parent. The parent is archived without recursion. GNU
 `cp` and `tar` preserve ownership, mode, timestamps, ACLs, xattrs, and SELinux
 context. The manifest distinguishes an existing prior asset from an asset
-absent before a first deployment. The backup first stops the path trigger, then
-waits for any already-running oneshot worker to finish before copying any
-asset. During the copy it temporarily locks the validated draft parent. An EXIT
-trap restores both the parent's captured metadata and the path unit's prior
-active state on success and failure; path enablement is never changed by the
-backup.
+absent before a first deployment. The backup rejects a pre-existing failed
+path or service state before it stops the path trigger, so `systemctl stop`
+cannot clear a failure before it is reported. It then waits for any
+already-running or queued oneshot worker to finish before copying any asset:
+the service must be `inactive` and have no pending systemd job. A service that
+fails while quiescing is also rejected. During the copy it temporarily locks
+the validated draft parent. An EXIT trap restores both the parent's captured
+metadata and the path unit's prior active state on success and failure; path
+enablement is never changed by the backup.
 
 ```bash
 (
@@ -223,13 +226,16 @@ case "$draft_worker_path_load_state" in
     draft_worker_path_active_state="$(systemd_unit_property server-draft-worker.path ActiveState)"
     case "$draft_worker_path_active_state" in
       active) draft_worker_path_was_active=active ;;
-      inactive|failed) ;;
+      inactive) ;;
+      failed)
+        echo 'draft-worker path is already failed; no backup was taken' >&2
+        exit 2
+        ;;
       *)
         echo "draft-worker path has an unexpected active state: $draft_worker_path_active_state" >&2
         exit 2
         ;;
     esac
-    sudo systemctl stop server-draft-worker.path
     ;;
   not-found) ;;
   *)
@@ -238,8 +244,39 @@ case "$draft_worker_path_load_state" in
     ;;
 esac
 
+# Reject a pre-existing service failure before stopping the path trigger. The
+# stop operation can normalize a failed path unit, which would otherwise hide
+# the failed lifecycle state from this backup.
+draft_worker_service_load_state="$(systemd_unit_property server-draft-worker.service LoadState)"
+case "$draft_worker_service_load_state" in
+  loaded)
+    draft_worker_service_active_state="$(systemd_unit_property server-draft-worker.service ActiveState)"
+    case "$draft_worker_service_active_state" in
+      failed)
+        echo 'draft-worker service is already failed; no backup was taken' >&2
+        exit 2
+        ;;
+      inactive|active|activating|deactivating|reloading) ;;
+      *)
+        echo "draft worker has an unexpected active state: $draft_worker_service_active_state" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  not-found) ;;
+  *)
+    echo "draft worker has an unexpected load state: $draft_worker_service_load_state" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$draft_worker_path_load_state" == loaded ]]; then
+  sudo systemctl stop server-draft-worker.path
+fi
 # Stopping the path prevents a new activation. Let an invocation that already
-# started finish normally instead of terminating it during a state write.
+# started or was queued before the stop finish normally instead of terminating
+# it during a state write. A snapshot is safe only after systemd reports both
+# the terminal inactive state and no pending service job.
 draft_worker_quiesced=false
 for _ in {1..180}; do
   draft_worker_service_load_state="$(systemd_unit_property server-draft-worker.service LoadState)"
@@ -251,9 +288,16 @@ for _ in {1..180}; do
     loaded)
       draft_worker_service_active_state="$(systemd_unit_property server-draft-worker.service ActiveState)"
       case "$draft_worker_service_active_state" in
-        inactive|failed)
-          draft_worker_quiesced=true
-          break
+        inactive)
+          draft_worker_service_job="$(systemd_unit_property server-draft-worker.service Job)"
+          if [[ "$draft_worker_service_job" == 0 ]]; then
+            draft_worker_quiesced=true
+            break
+          fi
+          ;;
+        failed)
+          echo 'draft worker service failed while quiescing; no backup was taken' >&2
+          exit 2
           ;;
         active|activating|deactivating|reloading) ;;
         *)
