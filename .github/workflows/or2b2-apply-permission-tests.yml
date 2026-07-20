@@ -1,0 +1,35 @@
+name: OR-2B2 apply permission tests
+
+on:
+  push:
+    branches:
+      - docs/alt-or2b2-runtime-permissions-design-20260720
+    paths:
+      - tools/or2b2_patch_permission_tests.py
+      - .github/workflows/or2b2-apply-permission-tests.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/alt-or2b2-runtime-permissions-design-20260720
+          fetch-depth: 0
+      - name: Apply permission outcome tests
+        run: python tools/or2b2_patch_permission_tests.py
+      - name: Commit permission tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code -- tools/or2b2_patch_permission_tests.py .github/workflows/or2b2-apply-permission-tests.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/alt_linux/test_controller_permissions.py
+          git commit -m "test: prove OR-2B2 permission outcomes [or2b2-generated]"
+          git push origin HEAD:docs/alt-or2b2-runtime-permissions-design-20260720
