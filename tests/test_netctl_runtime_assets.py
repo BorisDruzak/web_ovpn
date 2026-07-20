@@ -289,7 +289,7 @@ def test_connect_enables_runtime_identity_pragmas(pr_1b_database: str) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6, 7]
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [1, 2, 3, 4, 5, 6, 7, 8]
     finally:
         conn.close()
 
@@ -1760,7 +1760,7 @@ def test_migration_3_is_applied_once_and_reopen_is_idempotent(
 
     reopened = connect(pr_1b_database)
     try:
-        assert first_state["versions"] == [1, 2, 3, 4, 5, 6, 7]
+        assert first_state["versions"] == [1, 2, 3, 4, 5, 6, 7, 8]
         assert reopened.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = 3"
         ).fetchone()[0] == 1
@@ -1862,7 +1862,7 @@ def test_migration_4_is_applied_once_and_reopen_is_idempotent(
             for row in reopened.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == [1, 2, 3, 4, 5, 6, 7]
+        ] == [1, 2, 3, 4, 5, 6, 7, 8]
         assert reopened.execute(
             "SELECT status FROM runtime_identity_findings WHERE finding_key = 'legacy-identity-conflict:1'"
         ).fetchone()[0] == "acknowledged"
@@ -2321,7 +2321,7 @@ def test_migration_3_rollback_is_atomic_and_reopen_succeeds(
             for row in reopened.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == [1, 2, 3, 4, 5, 6, 7]
+        ] == [1, 2, 3, 4, 5, 6, 7, 8]
         assert reopened.execute(
             "SELECT is_current FROM ip_observations"
         ).fetchone()[0] == 0
@@ -2478,7 +2478,7 @@ def test_migration_2_rollback_after_partial_copy_and_reopen_is_idempotent(
     finally:
         first_success.close()
 
-    assert first_success_state["versions"] == [1, 2, 3, 4, 5, 6, 7]
+    assert first_success_state["versions"] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert first_success_state["counts"] == {
         "asset_intent_bindings": 0,
         "asset_interfaces": 1,

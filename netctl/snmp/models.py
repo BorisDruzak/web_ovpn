@@ -52,6 +52,22 @@ class SwitchSystem:
 
 
 @dataclass(frozen=True)
+class SwitchDiscoveryCapability:
+    """The bounded outcome of one system scalar discovery request."""
+
+    capability: str
+    outcome: SnmpOutcome
+
+
+@dataclass(frozen=True)
+class SwitchDiscovery:
+    """The strictly system-only result of a read-only SNMP discovery probe."""
+
+    system: SwitchSystem
+    capabilities: tuple[SwitchDiscoveryCapability, ...]
+
+
+@dataclass(frozen=True)
 class SwitchPort:
     port_key: str
     if_index: int | None

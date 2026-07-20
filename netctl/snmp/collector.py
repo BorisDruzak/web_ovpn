@@ -6,7 +6,14 @@ from typing import Protocol
 from .fdb import parse_legacy_fdb, parse_qbridge_fdb
 from .interfaces import parse_bridge_port_map, parse_interfaces
 from .lldp import parse_lldp_neighbors
-from .models import CapabilityResult, SnmpVarBind, SwitchFdbEntry, SwitchSnapshot
+from .models import (
+    CapabilityResult,
+    SnmpVarBind,
+    SwitchDiscovery,
+    SwitchDiscoveryCapability,
+    SwitchFdbEntry,
+    SwitchSnapshot,
+)
 from .oids import (
     DOT1D_BASE_PORT_IFINDEX,
     DOT1D_FDB_ADDRESS,
@@ -169,15 +176,8 @@ def _optional_group_result(
 async def collect_switch_snapshot(
     source: Mapping[str, object], transport: CollectorTransport
 ) -> SwitchSnapshot:
-    capabilities: list[CapabilityResult] = []
-
-    system_results = tuple(
-        [
-            await transport.get(oid, capability=capability)
-            for oid, capability in _SYSTEM_CAPABILITIES
-        ]
-    )
-    capabilities.extend(system_results)
+    system_results = await _collect_system_results(transport)
+    capabilities: list[CapabilityResult] = list(system_results)
     system = parse_system(_rows(system_results))
 
     if_results = tuple(
@@ -453,4 +453,38 @@ async def collect_switch_snapshot(
         lldp_neighbors=lldp_neighbors,
         counter_samples=(),
         capabilities=tuple(capabilities),
+    )
+
+
+async def collect_switch_discovery(
+    options: Mapping[str, object], transport: CollectorTransport
+) -> SwitchDiscovery:
+    """Collect only SNMP system scalars for safe switch fingerprint discovery.
+
+    ``options`` is deliberately accepted for a stable driver interface but is
+    not inspected: discovery must not vary into interface, FDB, VLAN, bridge,
+    LLDP, STP, or counter collection.
+    """
+    del options
+    system_results = await _collect_system_results(transport)
+    return SwitchDiscovery(
+        system=parse_system(_rows(system_results)),
+        capabilities=tuple(
+            SwitchDiscoveryCapability(
+                capability=result.capability,
+                outcome=result.outcome,
+            )
+            for result in system_results
+        ),
+    )
+
+
+async def _collect_system_results(
+    transport: CollectorTransport,
+) -> tuple[CapabilityResult, ...]:
+    return tuple(
+        [
+            await transport.get(oid, capability=capability)
+            for oid, capability in _SYSTEM_CAPABILITIES
+        ]
     )

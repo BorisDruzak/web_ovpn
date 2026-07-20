@@ -116,8 +116,73 @@ test "$enabled_snmp_before_stage" = 0
 ```
 
 The required results are the reviewed PySNMP version, migration ledger
-`1,2,3,4,5,6,7`, integrity `ok`, and zero enabled SNMP sources. A different ledger,
+`1,2,3,4,5,6,7,8`, integrity `ok`, and zero enabled SNMP sources. A different ledger,
 integrity result, dependency version, or enabled-source count blocks the pilot.
+
+## 2a. Safe unknown-fingerprint discovery gate
+
+This gate is for a source that is already staged with `enabled: false`. It is
+observational only and does not authorize collection. Keep the collection timer
+inactive and disabled before and after both commands:
+
+```bash
+disabled_source='replace-with-approved-disabled-source-name'
+assert_disabled_snmp_source() {
+  local inspection
+  inspection="$(sudo -u netctl /usr/local/sbin/netctl --json sources inspect "$disabled_source")" || {
+    printf '%s\n' 'disabled SNMP source inspection failed' >&2
+    return 1
+  }
+  printf '%s' "$inspection" | /opt/openvpn-web/.venv/bin/python -c '
+import json
+import sys
+
+expected_name = sys.argv[1]
+try:
+    payload = json.load(sys.stdin)
+    source = payload.get("source")
+except (AttributeError, TypeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if not isinstance(source, dict):
+    raise SystemExit(1)
+if source.get("name") != expected_name:
+    raise SystemExit(1)
+if source.get("driver") != "snmp_switch":
+    raise SystemExit(1)
+if source.get("enabled") is not False:
+    raise SystemExit(1)
+' "$disabled_source" || {
+    printf '%s\n' 'named source is missing, not an SNMP switch, or enabled' >&2
+    return 1
+  }
+}
+test "$(systemctl is-active netctl-collect.timer)" = inactive
+test "$(systemctl is-enabled netctl-collect.timer)" = disabled
+assert_disabled_snmp_source
+sudo -u netctl /usr/local/sbin/netctl --json sources discover "$disabled_source"
+sudo -u netctl /usr/local/sbin/netctl --json switches unknown-fingerprints
+assert_disabled_snmp_source
+test "$(systemctl is-active netctl-collect.timer)" = inactive
+test "$(systemctl is-enabled netctl-collect.timer)" = disabled
+```
+
+`sources discover` performs only the bounded system-identity probe needed to
+classify a switch. It must not invoke FDB, VLAN, interface, bridge, port, or
+other full-collection queries. The command may record a sanitized
+`requires_profile` fingerprint for review, but neither command enables the
+source or timer and neither writes FDB/current-switch state. A known profile is
+still not permission to run `collect`; stop on any command failure and preserve
+the source as disabled.
+
+The helper consumes the sanitized `sources inspect` JSON without printing it
+and fails closed unless the named source exists, reports driver
+`snmp_switch`, and has the JSON boolean `enabled: false` before and after the
+discovery commands. It does not display the source endpoint or any secret.
+
+Record only the source name, discovery classification, profile decision,
+sanitized system identity, capability outcomes, timestamp, and final
+timer/source disabled state. Do not record a community, endpoint secret, raw
+SNMP response, or FDB inventory.
 
 ## 3. Stage a disabled source and protected secret
 

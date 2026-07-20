@@ -37,4 +37,24 @@
     </tbody>
   </table>
 </section>
+<section class="table-wrap">
+  <h2>Unknown fingerprints</h2>
+  <table>
+    <thead><tr><th>Source</th><th>System identity</th><th>Fingerprint</th><th>Capability summary</th><th>Observed</th><th>State</th></tr></thead>
+    <tbody>
+      {% for fingerprint in unknown_fingerprints %}
+      <tr>
+        <td class="mono">{{ fingerprint.source }}</td>
+        <td><span class="mono">{{ fingerprint.sys_object_id }}</span><br>{{ fingerprint.sys_descr }}</td>
+        <td class="mono">{{ fingerprint.fingerprint_sha256 }}</td>
+        <td>{% for capability in fingerprint.capabilities %}<span class="mono">{{ capability.capability }}: {{ capability.outcome }}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+        <td>{{ fingerprint.observed_at }}</td>
+        <td><span class="badge {{ fingerprint.status|status_class }}">{{ fingerprint.status }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty">No unknown fingerprints observed.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
 {% endblock %}

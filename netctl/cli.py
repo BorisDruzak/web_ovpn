@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -35,6 +36,13 @@ from .switch_queries import (
     validate_pagination,
 )
 from .switch_store import collect_and_save_switch
+from .switch_discovery_store import (
+    UnknownSwitchFingerprint,
+    list_unknown_fingerprints,
+    record_unknown_fingerprint,
+)
+from .snmp.models import SwitchDiscoveryCapability
+from .snmp.profiles import detect_profile
 from .util import utc_now, validate_source_name
 
 
@@ -144,6 +152,44 @@ def _sanitize_snmp_result(value: Any) -> dict[str, Any]:
     }
 
 
+def _discovery_capabilities(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, tuple):
+        return []
+    result: list[dict[str, str]] = []
+    for row in value:
+        if not isinstance(row, SwitchDiscoveryCapability):
+            continue
+        if not row.capability.startswith("sys_"):
+            continue
+        result.append({"capability": row.capability, "outcome": row.outcome.value})
+    return result
+
+
+def _discovery_public_result(
+    *, source: str, status: str, profile: object | None = None
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "source": source,
+        "status": status,
+    }
+    if profile is not None:
+        result["profile"] = {
+            "id": profile.profile_id,
+            "fingerprint": profile.profile_fingerprint,
+        }
+    return result
+
+
+def _discovery_profile(source: dict[str, Any], system: object):
+    options = source.get("driver_options")
+    hint = options.get("profile_hint") if isinstance(options, dict) else None
+    try:
+        profile = detect_profile(system, profile_hint=hint)
+    except ValueError:
+        return None
+    return None if profile.profile_id == "generic" else profile
+
+
 def prepare_conn(args: argparse.Namespace):
     conn = connect(args.db)
     sync_config_sources(conn, args.config)
@@ -206,6 +252,53 @@ def cmd_sources(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             if source.get("driver") == "snmp_switch":
                 result = _sanitize_snmp_result(result)
             return 0, ok(source=args.source, result=result)
+        if args.sources_command == "discover":
+            validate_source_name(args.source)
+            source = get_source(conn, args.source)
+            if not source:
+                return 1, err("source not found", source=args.source)
+            if source.get("driver") != "snmp_switch":
+                return 2, err("source is not an SNMP switch", source=args.source)
+            try:
+                discovery = driver_for(source, load_secrets()).discover()
+            except Exception:
+                return 1, err("SNMP switch discovery failed", source=args.source)
+            profile = _discovery_profile(source, discovery.system)
+            if profile is not None:
+                return 0, _discovery_public_result(
+                    source=args.source,
+                    status="known",
+                    profile=profile,
+                )
+            digest = hashlib.sha256(
+                f"{discovery.system.sys_object_id}\n{discovery.system.sys_descr}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            try:
+                record_unknown_fingerprint(
+                    conn,
+                    UnknownSwitchFingerprint(
+                        source_id=source["id"],
+                        sys_object_id=discovery.system.sys_object_id,
+                        sys_descr=discovery.system.sys_descr,
+                        fingerprint_sha256=digest,
+                        capabilities_json=json.dumps(
+                            _discovery_capabilities(discovery.capabilities),
+                            ensure_ascii=True,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        status="requires_profile",
+                        observed_at=utc_now(),
+                    ),
+                )
+            except ValueError:
+                return 1, err("SNMP switch discovery failed", source=args.source)
+            return 0, _discovery_public_result(
+                source=args.source,
+                status="requires_profile",
+            )
     finally:
         conn.close()
     return 2, err("unsupported sources command")
@@ -360,7 +453,7 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             validate_source_name(source)
         except ValueError as exc:
             return 2, err(str(exc))
-    if args.switches_command != "status":
+    if args.switches_command not in {"status", "unknown-fingerprints"}:
         try:
             maximum = (
                 OPTIONAL_STATE_MAX_PAGE_SIZE
@@ -381,6 +474,27 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     try:
         if args.switches_command == "status":
             return 0, ok(switches=query_switch_status(conn))
+        if args.switches_command == "unknown-fingerprints":
+            fingerprints = []
+            for row in list_unknown_fingerprints(conn):
+                try:
+                    capabilities = json.loads(str(row["capabilities_json"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not isinstance(capabilities, list):
+                    continue
+                fingerprints.append(
+                    {
+                        "source": row["source"],
+                        "sys_object_id": row["sys_object_id"],
+                        "sys_descr": row["sys_descr"],
+                        "fingerprint_sha256": row["fingerprint_sha256"],
+                        "capabilities": capabilities,
+                        "status": row["status"],
+                        "observed_at": row["observed_at"],
+                    }
+                )
+            return 0, ok(fingerprints=fingerprints)
         common = {
             "source": source,
             "limit": args.limit,
@@ -710,6 +824,8 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("source")
     test = sources_sub.add_parser("test")
     test.add_argument("source")
+    discover = sources_sub.add_parser("discover")
+    discover.add_argument("source")
     disable = sources_sub.add_parser("disable")
     disable.add_argument("source")
     add = sources_sub.add_parser("add-mikrotik")
@@ -796,6 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="switches_command", required=True
     )
     switches_sub.add_parser("status")
+    switches_sub.add_parser("unknown-fingerprints")
     for name in (
         "capabilities",
         "ports",

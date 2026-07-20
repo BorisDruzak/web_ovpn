@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -8,8 +9,15 @@ from pathlib import Path
 import pytest
 
 from netctl.snmp import CapabilityResult, SnmpOutcome, SnmpVarBind
-from netctl.snmp.collector import collect_switch_snapshot
+from netctl.snmp.collector import collect_switch_discovery, collect_switch_snapshot
 from netctl.snmp.models import SwitchSystem
+from netctl.snmp.oids import (
+    SYS_DESCR,
+    SYS_LOCATION,
+    SYS_NAME,
+    SYS_OBJECT_ID,
+    SYS_UPTIME,
+)
 
 
 _DGS_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "dgs.json"
@@ -62,6 +70,90 @@ class _PagedFixtureTransport:
         return self.results.get(
             oid, CapabilityResult(capability, SnmpOutcome.SUCCESS_EMPTY)
         )
+
+
+@dataclass(frozen=True)
+class _DiscoveryRequest:
+    capability: str
+    method: str
+
+
+class _SystemFixtureTransport:
+    def __init__(self) -> None:
+        self.requests: list[_DiscoveryRequest] = []
+        self._results = {
+            SYS_DESCR: CapabilityResult(
+                "sys_descr",
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                (
+                    SnmpVarBind(
+                        SYS_DESCR,
+                        "octet_string",
+                        b"Synthetic unknown switch",
+                    ),
+                ),
+            ),
+            SYS_OBJECT_ID: CapabilityResult(
+                "sys_object_id",
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                (
+                    SnmpVarBind(
+                        SYS_OBJECT_ID,
+                        "object_identifier",
+                        "1.3.6.1.4.1.99999.1",
+                    ),
+                ),
+            ),
+            SYS_UPTIME: CapabilityResult(
+                "sys_uptime",
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                (SnmpVarBind(SYS_UPTIME, "time_ticks", 123),),
+            ),
+            SYS_NAME: CapabilityResult(
+                "sys_name",
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                (SnmpVarBind(SYS_NAME, "octet_string", b"switch-unknown"),),
+            ),
+            SYS_LOCATION: CapabilityResult(
+                "sys_location",
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                (SnmpVarBind(SYS_LOCATION, "octet_string", b"lab"),),
+            ),
+        }
+
+    async def get(
+        self, oid: tuple[int, ...], *, capability: str = ""
+    ) -> CapabilityResult:
+        self.requests.append(_DiscoveryRequest(capability, "get"))
+        return self._results[oid]
+
+    async def walk(
+        self, oid: tuple[int, ...], *, capability: str = ""
+    ) -> CapabilityResult:
+        self.requests.append(_DiscoveryRequest(capability, "walk"))
+        raise AssertionError("system-only discovery must not walk SNMP tables")
+
+
+def _system_fixture_transport() -> _SystemFixtureTransport:
+    return _SystemFixtureTransport()
+
+
+def test_discovery_requests_only_system_capabilities() -> None:
+    transport = _system_fixture_transport()
+
+    result = asyncio.run(collect_switch_discovery({}, transport))
+
+    assert result.system.sys_object_id == "1.3.6.1.4.1.99999.1"
+    assert {request.capability for request in transport.requests} == {
+        "sys_descr",
+        "sys_object_id",
+        "sys_uptime",
+        "sys_name",
+        "sys_location",
+    }
+    assert all(request.capability.startswith("sys_") for request in transport.requests)
+    assert all(request.method == "get" for request in transport.requests)
+    assert all(not hasattr(capability, "rows") for capability in result.capabilities)
 
 
 def _dgs_fixture_transport() -> _PagedFixtureTransport:

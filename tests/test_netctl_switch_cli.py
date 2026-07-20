@@ -11,6 +11,8 @@ import pytest
 from netctl.config import load_config_sources
 from netctl.snmp.models import (
     CapabilityResult,
+    SwitchDiscovery,
+    SwitchDiscoveryCapability,
     SwitchFdbEntry,
     SwitchPort,
     SwitchSnapshot,
@@ -298,8 +300,35 @@ class _FakeSwitchDriver:
         return self.collect().to_test_summary()
 
 
+class _FakeSwitchDiscoveryDriver:
+    def __init__(self, system: SwitchSystem | None = None) -> None:
+        self.system = system or SwitchSystem(
+            sys_descr="Synthetic unknown switch",
+            sys_object_id="1.3.6.1.4.1.99999.1",
+            sys_name="switch-unknown",
+            sys_location="lab",
+            sys_uptime_ticks=123,
+        )
+
+    def discover(self) -> SwitchDiscovery:
+        return SwitchDiscovery(
+            system=self.system,
+            capabilities=(
+                SwitchDiscoveryCapability("sys_descr", SnmpOutcome.SUCCESS_WITH_ROWS),
+                SwitchDiscoveryCapability("sys_object_id", SnmpOutcome.SUCCESS_WITH_ROWS),
+                SwitchDiscoveryCapability("sys_uptime", SnmpOutcome.SUCCESS_WITH_ROWS),
+                SwitchDiscoveryCapability("sys_name", SnmpOutcome.SUCCESS_WITH_ROWS),
+                SwitchDiscoveryCapability("sys_location", SnmpOutcome.SUCCESS_WITH_ROWS),
+            ),
+        )
+
+
 def _write_switch_source(
-    config_path: Path, *, name: str = "switch-test", enabled: bool = True
+    config_path: Path,
+    *,
+    name: str = "switch-test",
+    enabled: bool = True,
+    profile_hint: str | None = None,
 ) -> None:
     directory = config_path.parent / "sources.d"
     directory.mkdir(parents=True, exist_ok=True)
@@ -315,10 +344,159 @@ def _write_switch_source(
                 "role: access-switch",
                 f"enabled: {'true' if enabled else 'false'}",
             ]
+            + ([] if profile_hint is None else [f"snmp_profile_hint: {profile_hint}"])
         )
         + "\n",
         encoding="utf-8",
     )
+
+
+def test_unknown_discovery_writes_no_current_switch_state(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    _write_switch_source(config_path, name="switch-unknown", enabled=False)
+    monkeypatch.setattr(
+        cli,
+        "driver_for",
+        lambda _source, _secrets: _FakeSwitchDiscoveryDriver(),
+    )
+
+    rc, payload = _run_cli(
+        _base_args(config_path, db_path)
+        + ["sources", "discover", "switch-unknown"],
+        capsys,
+    )
+
+    assert rc == 0
+    assert payload["status"] == "requires_profile"
+    assert set(payload) == {"source", "status"}
+    with __import__("sqlite3").connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM current_switch_fdb").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM switch_ports").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM switch_unknown_fingerprints"
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT enabled FROM network_sources WHERE name = ?",
+                ("switch-unknown",),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_unknown_fingerprint_cli_has_only_safe_keys(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    _write_switch_source(config_path, name="switch-unknown", enabled=False)
+    monkeypatch.setattr(
+        cli,
+        "driver_for",
+        lambda _source, _secrets: _FakeSwitchDiscoveryDriver(),
+    )
+
+    discover_rc, _ = _run_cli(
+        _base_args(config_path, db_path)
+        + ["sources", "discover", "switch-unknown"],
+        capsys,
+    )
+    rc, payload = _run_cli(
+        _base_args(config_path, db_path) + ["switches", "unknown-fingerprints"],
+        capsys,
+    )
+
+    assert discover_rc == 0
+    assert rc == 0
+    [row] = payload["fingerprints"]
+    assert set(row) == {
+        "source",
+        "sys_object_id",
+        "sys_descr",
+        "fingerprint_sha256",
+        "capabilities",
+        "status",
+        "observed_at",
+    }
+    assert row["capabilities"] == [
+        {"capability": "sys_descr", "outcome": "success_with_rows"},
+        {"capability": "sys_object_id", "outcome": "success_with_rows"},
+        {"capability": "sys_uptime", "outcome": "success_with_rows"},
+        {"capability": "sys_name", "outcome": "success_with_rows"},
+        {"capability": "sys_location", "outcome": "success_with_rows"},
+    ]
+
+
+def test_known_discovery_reports_matching_vendor_profile(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    _write_switch_source(config_path, profile_hint="dgs")
+    monkeypatch.setattr(
+        cli,
+        "driver_for",
+        lambda _source, _secrets: _FakeSwitchDiscoveryDriver(
+            SwitchSystem(
+                sys_descr="WS6-DGS-1210-52",
+                sys_object_id="1.3.6.1.4.1.171.10.153.7.1",
+                sys_name="switch-known",
+                sys_location="lab",
+                sys_uptime_ticks=123,
+            )
+        ),
+    )
+
+    rc, payload = _run_cli(
+        _base_args(config_path, db_path) + ["sources", "discover", "switch-test"],
+        capsys,
+    )
+
+    assert rc == 0
+    assert payload == {
+        "source": "switch-test",
+        "status": "known",
+        "profile": {"id": "dgs", "fingerprint": "dgs:v1"},
+    }
+    with __import__("sqlite3").connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM switch_unknown_fingerprints").fetchone()[0] == 0
+
+
+def test_mismatched_profile_hint_requires_profile(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    _write_switch_source(config_path, profile_hint="dgs")
+    monkeypatch.setattr(
+        cli,
+        "driver_for",
+        lambda _source, _secrets: _FakeSwitchDiscoveryDriver(),
+    )
+
+    rc, payload = _run_cli(
+        _base_args(config_path, db_path) + ["sources", "discover", "switch-test"],
+        capsys,
+    )
+
+    assert rc == 0
+    assert payload == {"source": "switch-test", "status": "requires_profile"}
+    with __import__("sqlite3").connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM switch_unknown_fingerprints").fetchone()[0] == 1
 
 
 def test_driver_registration_returns_thin_typed_snmp_driver() -> None:
