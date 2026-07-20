@@ -12,6 +12,7 @@ from netctl.snmp.models import SwitchSystem
 
 
 _DGS_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "dgs.json"
+_SNR_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "snr.json"
 
 
 class _PagedFixtureTransport:
@@ -23,9 +24,15 @@ class _PagedFixtureTransport:
             rows = tuple(
                 SnmpVarBind(
                     oid=tuple(row["oid"]),
-                    value_type=row["value_type"],
+                    value_type=(
+                        "octet_string"
+                        if row["value_type"] == "octet_string_hex"
+                        else row["value_type"]
+                    ),
                     value=(
-                        row["value"].encode("utf-8")
+                        bytes.fromhex(row["value"])
+                        if row["value_type"] == "octet_string_hex"
+                        else row["value"].encode("utf-8")
                         if row["value_type"] == "octet_string"
                         else row["value"]
                     ),
@@ -57,6 +64,218 @@ class _PagedFixtureTransport:
 def _dgs_fixture_transport() -> _PagedFixtureTransport:
     fixture = json.loads(_DGS_FIXTURE.read_text(encoding="utf-8"))
     return _PagedFixtureTransport(fixture["pages"])
+
+
+def _snr_fixture_transport() -> _PagedFixtureTransport:
+    """Expand only synthetic, sanitized FDB rows declared by the fixture."""
+    from netctl.snmp.oids import (
+        DOT1D_BASE_PORT_IFINDEX,
+        DOT1Q_FDB_PORT,
+        DOT1Q_FDB_STATUS,
+        DOT1Q_PVID,
+        IF_INDEX,
+        IF_NAME,
+    )
+
+    fixture = json.loads(_SNR_FIXTURE.read_text(encoding="utf-8"))
+    transport = _PagedFixtureTransport(fixture["pages"])
+    synthetic = fixture["synthetic_fdb"]
+    assert isinstance(synthetic, dict)
+    count = synthetic["count"]
+    assert isinstance(count, int)
+    fdb_id = synthetic["fdb_id"]
+    assert isinstance(fdb_id, int)
+    raw_port = synthetic["raw_port"]
+    assert isinstance(raw_port, int)
+    layout = fixture["snr_port_layout"]
+    assert isinstance(layout, dict)
+    bridge_port_count = layout["bridge_port_count"]
+    assert isinstance(bridge_port_count, int)
+    first_ifindex = layout["first_ifindex"]
+    assert isinstance(first_ifindex, int)
+    lag_ifindex = layout["lag_ifindex"]
+    assert isinstance(lag_ifindex, int)
+    lag_bridge_port = layout["lag_bridge_port"]
+    assert isinstance(lag_bridge_port, int)
+    names = layout["names"]
+    assert isinstance(names, dict)
+
+    def _result(
+        capability: str, rows: tuple[SnmpVarBind, ...]
+    ) -> CapabilityResult:
+        return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS, rows)
+
+    ifindex_rows = tuple(
+        SnmpVarBind(IF_INDEX + (if_index,), "integer", if_index)
+        for if_index in range(first_ifindex, first_ifindex + bridge_port_count)
+    ) + (SnmpVarBind(IF_INDEX + (lag_ifindex,), "integer", lag_ifindex),)
+    bridge_rows = tuple(
+        SnmpVarBind(
+            DOT1D_BASE_PORT_IFINDEX + (bridge_port,),
+            "integer",
+            first_ifindex + bridge_port - 1,
+        )
+        for bridge_port in range(1, bridge_port_count + 1)
+    ) + (
+        SnmpVarBind(
+            DOT1D_BASE_PORT_IFINDEX + (lag_bridge_port,), "integer", lag_ifindex
+        ),
+    )
+    name_rows = tuple(
+        SnmpVarBind(IF_NAME + (int(if_index),), "octet_string", str(name).encode())
+        for if_index, name in names.items()
+    )
+    pvid_rows = tuple(
+        SnmpVarBind(DOT1Q_PVID + (bridge_port,), "integer", 1)
+        for bridge_port in range(1, bridge_port_count + 1)
+    ) + (SnmpVarBind(DOT1Q_PVID + (lag_bridge_port,), "integer", 1),)
+    transport.results.update(
+        {
+            IF_INDEX: _result("if_index", ifindex_rows),
+            IF_NAME: _result("if_name", name_rows),
+            DOT1D_BASE_PORT_IFINDEX: _result("bridge_port_ifindex", bridge_rows),
+            DOT1Q_PVID: _result("pvid", pvid_rows),
+        }
+    )
+
+    port = transport.results[DOT1Q_FDB_PORT]
+    status = transport.results[DOT1Q_FDB_STATUS]
+    synthetic_port_rows = tuple(
+        SnmpVarBind(
+            oid=DOT1Q_FDB_PORT + (fdb_id, 2, 0, 0, 1, index // 256, index % 256),
+            value_type="integer",
+            value=raw_port,
+        )
+        for index in range(count)
+    )
+    synthetic_status_rows = tuple(
+        SnmpVarBind(
+            oid=DOT1Q_FDB_STATUS + (fdb_id, 2, 0, 0, 1, index // 256, index % 256),
+            value_type="integer",
+            value=3,
+        )
+        for index in range(count)
+    )
+    transport.results[DOT1Q_FDB_PORT] = CapabilityResult(
+        port.capability, port.outcome, port.rows + synthetic_port_rows
+    )
+    transport.results[DOT1Q_FDB_STATUS] = CapabilityResult(
+        status.capability, status.outcome, status.rows + synthetic_status_rows
+    )
+    return transport
+
+
+def test_snr_fixture_collects_fdb_vlan_pvid_and_stp_profile() -> None:
+    snapshot = asyncio.run(collect_switch_snapshot({}, _snr_fixture_transport()))
+
+    assert (snapshot.profile_id, snapshot.profile_fingerprint) == ("snr", "snr:v1")
+    assert len(snapshot.fdb) == 180
+    by_mac = {entry.mac: entry.to_dict() for entry in snapshot.fdb}
+    assert by_mac["D4:01:C3:9C:83:5F"] == {
+        "fdb_id": 1,
+        "vlan_key": "vid:1",
+        "vlan_id": 1,
+        "mac": "D4:01:C3:9C:83:5F",
+        "port_key": "physical:24",
+        "bridge_port": 24,
+        "if_index": 5024,
+        "physical_port": 24,
+        "port_name": "ge24",
+        "status": "learned",
+    }
+    assert {
+        mac: by_mac[mac]["port_key"]
+        for mac in (
+            "BC:22:28:0C:EF:E0",
+            "2C:C8:1B:AB:55:45",
+            "1C:3B:F3:DC:C9:EB",
+            "C0:9B:F4:61:4B:CD",
+        )
+    } == {
+        "BC:22:28:0C:EF:E0": "physical:21",
+        "2C:C8:1B:AB:55:45": "physical:22",
+        "1C:3B:F3:DC:C9:EB": "physical:23",
+        "C0:9B:F4:61:4B:CD": "physical:23",
+    }
+    assert by_mac["C0:9B:F4:61:4B:CD"]["vlan_key"] == "vid:20"
+    assert any(
+        entry.port_key == "lag:po1" and entry.if_index == 100001
+        for entry in snapshot.fdb
+    )
+    vlan20 = [row for row in snapshot.vlan_memberships if row["vlan_id"] == 20]
+    assert [(row["port_key"], row["port_name"], row["egress"]) for row in vlan20] == [
+        ("physical:23", "ge23", True),
+        ("physical:28", "xe3", True),
+    ]
+    assert len([row for row in snapshot.vlan_memberships if row["pvid"]]) == 29
+    assert all(row["vlan_id"] == 1 for row in snapshot.vlan_memberships if row["pvid"])
+    assert snapshot.stp == {
+        "protocol": "rstp",
+        "root_bridge_mac": "2C:C8:1B:9C:31:EA",
+        "root_port_raw": 927,
+        "root_port_key": "physical:23",
+        "root_path_cost": 20000,
+        "topology_changes": 7,
+    }
+    assert snapshot.lldp_neighbors == ()
+
+
+def test_snr_vlan_bitmap_rejects_bridge_ports_missing_from_the_map() -> None:
+    from netctl.snmp.models import SwitchPort
+    from netctl.snmp.oids import DOT1Q_VLAN_CURRENT_EGRESS
+    from netctl.snmp.profiles import SnrProfile
+    from netctl.snmp.vlan import parse_vlan_memberships
+
+    result = CapabilityResult(
+        "vlan_current_egress",
+        SnmpOutcome.SUCCESS_WITH_ROWS,
+        (
+            SnmpVarBind(
+                DOT1Q_VLAN_CURRENT_EGRESS + (0, 1), "octet_string", b"\x80"
+            ),
+        ),
+    )
+    port = SwitchPort("ifindex:5002", 5002, 2, None, "ge2", "", None, "up", "up", None)
+
+    with pytest.raises(ValueError, match="unknown bridge port"):
+        parse_vlan_memberships(
+            result,
+            CapabilityResult("vlan_current_untagged", SnmpOutcome.SUCCESS_EMPTY),
+            CapabilityResult("pvid", SnmpOutcome.SUCCESS_EMPTY),
+            profile=SnrProfile(),
+            ports=(port,),
+            bridge_to_ifindex={2: 5002},
+        )
+
+
+def test_snr_profile_uses_ifindex_qbridge_ports_and_proven_exceptions() -> None:
+    from netctl.snmp.models import SwitchPort, SwitchSystem
+    from netctl.snmp.profiles import SnrProfile, detect_profile
+
+    system = SwitchSystem("SNR fixture", "1.3.6.1.4.1.57206.1.1", "snr", "", None)
+    ge23 = SwitchPort("ifindex:5023", 5023, 23, None, "ge23", "", None, "up", "up", None)
+    po1 = SwitchPort("ifindex:100001", 100001, 65, None, "po1", "", None, "up", "up", None)
+    profile = detect_profile(system)
+
+    assert isinstance(profile, SnrProfile)
+    assert profile.resolve_fdb_port(
+        raw_fdb_port=5023,
+        fdb_mode="qbridge",
+        bridge_to_ifindex={23: 5023, 65: 100001},
+        ports_by_ifindex={5023: ge23, 100001: po1},
+    ).port_key == "physical:23"
+    assert profile.resolve_fdb_port(
+        raw_fdb_port=31071,
+        fdb_mode="qbridge",
+        bridge_to_ifindex={23: 5023, 65: 100001},
+        ports_by_ifindex={5023: ge23, 100001: po1},
+    ).to_dict() == {
+        "port_key": "lag:po1",
+        "if_index": 100001,
+        "bridge_port": 65,
+        "physical_port": None,
+        "port_name": "po1",
+    }
 
 
 def test_dgs_fixture_selects_profile_and_normalizes_paginated_qbridge_fdb() -> None:

@@ -12,6 +12,9 @@ _DGS_1210_52_SYSTEM_DESCRIPTION = re.compile(r"WS6-DGS-1210-52(?=$|[ /])")
 _DGS_1210_52_SYS_OBJECT_ID = "1.3.6.1.4.1.171.10.153.7.1"
 _DGS_1210_52_FRONT_PANEL_PORTS = range(1, 53)
 _DGS_FRONT_PANEL_NAME = re.compile(r"front-([1-9][0-9]*)\Z")
+_SNR_SYS_OBJECT_ID_PREFIX = "1.3.6.1.4.1.57206"
+_SNR_PORT_NAME = re.compile(r"(?:ge|xe)([1-9][0-9]*)\Z", re.IGNORECASE)
+_SNR_LAG_NAME = re.compile(r"po([1-9][0-9]*)\Z", re.IGNORECASE)
 
 
 class PortProfile:
@@ -28,6 +31,40 @@ class PortProfile:
         ports_by_ifindex: Mapping[int, SwitchPort],
     ) -> PortResolution:
         raise NotImplementedError
+
+    def resolve_bridge_port(
+        self,
+        *,
+        bridge_port: int,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        if_index = bridge_to_ifindex.get(bridge_port)
+        if if_index is None:
+            raise ValueError("unknown bridge port")
+        port = ports_by_ifindex.get(if_index)
+        if port is None:
+            raise ValueError("unknown ifIndex")
+        return PortResolution(
+            port_key=port.port_key,
+            if_index=port.if_index,
+            bridge_port=bridge_port,
+            physical_port=port.physical_port,
+            port_name=port.name,
+        )
+
+    def resolve_stp_root_port(
+        self,
+        *,
+        raw_root_port: int,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        return self.resolve_bridge_port(
+            bridge_port=raw_root_port,
+            bridge_to_ifindex=bridge_to_ifindex,
+            ports_by_ifindex=ports_by_ifindex,
+        )
 
     def resolve_fdb_vlan(
         self,
@@ -72,18 +109,10 @@ class GenericProfile(PortProfile):
             or raw_fdb_port <= 0
         ):
             raise ValueError("FDB port is invalid")
-        if_index = bridge_to_ifindex.get(raw_fdb_port)
-        if if_index is None:
-            raise ValueError("unknown bridge port")
-        port = ports_by_ifindex.get(if_index)
-        if port is None:
-            raise ValueError("unknown ifIndex")
-        return PortResolution(
-            port_key=port.port_key,
-            if_index=port.if_index,
+        return self.resolve_bridge_port(
             bridge_port=raw_fdb_port,
-            physical_port=port.physical_port,
-            port_name=port.name,
+            bridge_to_ifindex=bridge_to_ifindex,
+            ports_by_ifindex=ports_by_ifindex,
         )
 
 
@@ -161,14 +190,140 @@ class DgsProfile(GenericProfile):
         return vlan_key, vlan_id
 
 
+class SnrProfile(GenericProfile):
+    """SNR normalization proven by the sanitized SNR fixture."""
+
+    profile_id = "snr"
+    profile_fingerprint = "snr:v1"
+    qbridge_fid_mode = "proven_equals_vid"
+
+    @staticmethod
+    def matches(system: SwitchSystem) -> bool:
+        return system.sys_object_id == _SNR_SYS_OBJECT_ID_PREFIX or system.sys_object_id.startswith(
+            f"{_SNR_SYS_OBJECT_ID_PREFIX}."
+        )
+
+    @staticmethod
+    def _resolution_from_port(port: SwitchPort) -> PortResolution:
+        if port.if_index is None or port.bridge_port is None:
+            raise ValueError("SNR port mapping is invalid")
+        lag_match = _SNR_LAG_NAME.fullmatch(port.name)
+        if lag_match is not None:
+            return PortResolution(
+                port_key=f"lag:po{lag_match.group(1)}",
+                if_index=port.if_index,
+                bridge_port=port.bridge_port,
+                physical_port=None,
+                port_name=port.name,
+            )
+        if _SNR_PORT_NAME.fullmatch(port.name) is not None:
+            return PortResolution(
+                port_key=f"physical:{port.bridge_port}",
+                if_index=port.if_index,
+                bridge_port=port.bridge_port,
+                physical_port=port.bridge_port,
+                port_name=port.name,
+            )
+        return PortResolution(
+            port_key=port.port_key,
+            if_index=port.if_index,
+            bridge_port=port.bridge_port,
+            physical_port=port.physical_port,
+            port_name=port.name,
+        )
+
+    def resolve_bridge_port(
+        self,
+        *,
+        bridge_port: int,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        resolution = super().resolve_bridge_port(
+            bridge_port=bridge_port,
+            bridge_to_ifindex=bridge_to_ifindex,
+            ports_by_ifindex=ports_by_ifindex,
+        )
+        port = ports_by_ifindex[resolution.if_index]
+        return self._resolution_from_port(port)
+
+    def _resolution_for_ifindex(
+        self,
+        *,
+        if_index: int,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        port = ports_by_ifindex.get(if_index)
+        if port is None:
+            raise ValueError("unknown ifIndex")
+        bridge_ports = [
+            bridge_port
+            for bridge_port, mapped_ifindex in bridge_to_ifindex.items()
+            if mapped_ifindex == if_index
+        ]
+        if len(bridge_ports) != 1 or port.bridge_port != bridge_ports[0]:
+            raise ValueError("ambiguous bridge port mapping")
+        return self._resolution_from_port(port)
+
+    def resolve_fdb_port(
+        self,
+        *,
+        raw_fdb_port: int,
+        fdb_mode: str,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        if fdb_mode == "qbridge":
+            if raw_fdb_port == 31071:
+                return self._resolution_for_ifindex(
+                    if_index=100001,
+                    bridge_to_ifindex=bridge_to_ifindex,
+                    ports_by_ifindex=ports_by_ifindex,
+                )
+            return self._resolution_for_ifindex(
+                if_index=raw_fdb_port,
+                bridge_to_ifindex=bridge_to_ifindex,
+                ports_by_ifindex=ports_by_ifindex,
+            )
+        return super().resolve_fdb_port(
+            raw_fdb_port=raw_fdb_port,
+            fdb_mode=fdb_mode,
+            bridge_to_ifindex=bridge_to_ifindex,
+            ports_by_ifindex=ports_by_ifindex,
+        )
+
+    def resolve_stp_root_port(
+        self,
+        *,
+        raw_root_port: int,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        if raw_root_port == 927:
+            return self._resolution_for_ifindex(
+                if_index=5023,
+                bridge_to_ifindex=bridge_to_ifindex,
+                ports_by_ifindex=ports_by_ifindex,
+            )
+        return super().resolve_stp_root_port(
+            raw_root_port=raw_root_port,
+            bridge_to_ifindex=bridge_to_ifindex,
+            ports_by_ifindex=ports_by_ifindex,
+        )
+
+
 def detect_profile(
     system: SwitchSystem, *, profile_hint: str | None = None
 ) -> PortProfile:
     is_dgs = DgsProfile.matches(system)
+    is_snr = SnrProfile.matches(system)
     if profile_hint is not None and profile_hint not in SUPPORTED_SNMP_PROFILE_HINTS:
         raise ValueError("SNMP profile_hint is unsupported")
     if profile_hint == "dgs" and not is_dgs:
         raise ValueError("SNMP profile_hint does not match the switch")
     if profile_hint == "dgs" or (profile_hint is None and is_dgs):
         return DgsProfile()
+    if profile_hint is None and is_snr:
+        return SnrProfile()
     return GenericProfile()

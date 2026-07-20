@@ -13,7 +13,15 @@ from .oids import (
     DOT1D_FDB_STATUS,
     DOT1Q_FDB_PORT,
     DOT1Q_FDB_STATUS,
+    DOT1Q_PVID,
     DOT1Q_VLAN_FDB_ID,
+    DOT1Q_VLAN_CURRENT_EGRESS,
+    DOT1Q_VLAN_CURRENT_UNTAGGED,
+    DOT1D_STP_DESIGNATED_ROOT,
+    DOT1D_STP_PROTOCOL,
+    DOT1D_STP_ROOT_COST,
+    DOT1D_STP_ROOT_PORT,
+    DOT1D_STP_TOPOLOGY_CHANGES,
     IF_ADMIN_STATUS,
     IF_ALIAS,
     IF_DESCR,
@@ -31,7 +39,9 @@ from .oids import (
 )
 from .outcomes import SnmpOutcome
 from .profiles import detect_profile
+from .stp import parse_stp
 from .system import parse_system
+from .vlan import parse_vlan_memberships
 
 
 class CollectorTransport(Protocol):
@@ -237,6 +247,56 @@ async def collect_switch_snapshot(
         final_fdb = _propagate_fdb_failure(qbridge_port)
 
     capabilities.append(final_fdb)
+    vlan_memberships: tuple[dict[str, object], ...] = ()
+    stp: dict[str, object] | None = None
+    if profile.profile_id == "snr":
+        vlan_results = (
+            await transport.walk(
+                DOT1Q_VLAN_CURRENT_EGRESS, capability="vlan_current_egress"
+            ),
+            await transport.walk(
+                DOT1Q_VLAN_CURRENT_UNTAGGED, capability="vlan_current_untagged"
+            ),
+            await transport.walk(DOT1Q_PVID, capability="pvid"),
+        )
+        capabilities.extend(vlan_results)
+        if all(
+            result.outcome
+            in {SnmpOutcome.SUCCESS_WITH_ROWS, SnmpOutcome.SUCCESS_EMPTY}
+            for result in vlan_results
+        ):
+            try:
+                vlan_memberships = parse_vlan_memberships(
+                    *vlan_results,
+                    profile=profile,
+                    ports=ports,
+                    bridge_to_ifindex=bridge_to_ifindex,
+                )
+            except ValueError:
+                vlan_memberships = ()
+
+        stp_results = (
+            await transport.get(DOT1D_STP_PROTOCOL, capability="stp_protocol"),
+            await transport.get(
+                DOT1D_STP_TOPOLOGY_CHANGES, capability="stp_topology_changes"
+            ),
+            await transport.get(
+                DOT1D_STP_DESIGNATED_ROOT, capability="stp_designated_root"
+            ),
+            await transport.get(DOT1D_STP_ROOT_COST, capability="stp_root_cost"),
+            await transport.get(DOT1D_STP_ROOT_PORT, capability="stp_root_port"),
+        )
+        capabilities.extend(stp_results)
+        if all(result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS for result in stp_results):
+            try:
+                stp = parse_stp(
+                    *stp_results,
+                    profile=profile,
+                    ports=ports,
+                    bridge_to_ifindex=bridge_to_ifindex,
+                )
+            except ValueError:
+                stp = None
     return SwitchSnapshot(
         snapshot_kind="snmp_switch",
         profile_id=profile.profile_id,
@@ -244,8 +304,8 @@ async def collect_switch_snapshot(
         system=system,
         ports=ports,
         fdb=fdb,
-        vlan_memberships=(),
-        stp=None,
+        vlan_memberships=vlan_memberships,
+        stp=stp,
         lldp_neighbors=(),
         counter_samples=(),
         capabilities=tuple(capabilities),
