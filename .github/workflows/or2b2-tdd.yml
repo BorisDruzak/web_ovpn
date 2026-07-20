@@ -1,0 +1,33 @@
+name: OR-2B2 TDD
+
+on:
+  push:
+    branches:
+      - docs/alt-or2b2-runtime-permissions-design-20260720
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: OR-2B2 outcome contract RED
+        run: >-
+          python -m pytest -q
+          tests/alt_linux/test_or2b2_runtime_permissions.py::test_or2b2_outcomes_are_registered
+          tests/alt_linux/test_or2b2_runtime_permissions.py::test_catalog_contains_twenty_six_proven_outcomes
+          tests/alt_linux/test_or2b2_runtime_permissions.py::test_or2b2_outcome_contracts_are_exact
