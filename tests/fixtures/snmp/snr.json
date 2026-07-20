@@ -1,0 +1,53 @@
+{
+  "fixture_kind": "sanitized_numeric_oid_pages",
+  "snr_port_layout": {
+    "bridge_port_count": 28,
+    "first_ifindex": 5001,
+    "lag_bridge_port": 65,
+    "lag_ifindex": 100001,
+    "names": {
+      "5021": "ge21",
+      "5022": "ge22",
+      "5023": "ge23",
+      "5024": "ge24",
+      "5028": "xe3",
+      "100001": "po1"
+    }
+  },
+  "synthetic_fdb": {"count": 174, "fdb_id": 1, "raw_port": 5024},
+  "pages": [
+    {"capability":"sys_descr","request_oid":[1,3,6,1,2,1,1,1,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,1,0],"value_type":"octet_string","value":"SNR fixture"}]},
+    {"capability":"sys_object_id","request_oid":[1,3,6,1,2,1,1,2,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,2,0],"value_type":"object_identifier","value":"1.3.6.1.4.1.57206.1.1"}]},
+    {"capability":"sys_uptime","request_oid":[1,3,6,1,2,1,1,3,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,3,0],"value_type":"time_ticks","value":54321}]},
+    {"capability":"sys_name","request_oid":[1,3,6,1,2,1,1,5,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,5,0],"value_type":"octet_string","value":"snr-fixture"}]},
+    {"capability":"sys_location","request_oid":[1,3,6,1,2,1,1,6,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,6,0],"value_type":"octet_string","value":"fixture-only"}]},
+    {"capability":"qbridge_port","request_oid":[1,3,6,1,2,1,17,7,1,2,2,1,2],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,212,1,195,156,131,95],"value_type":"integer","value":5024},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,188,34,40,12,239,224],"value_type":"integer","value":5021},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,44,200,27,171,85,69],"value_type":"integer","value":5022},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,28,59,243,220,201,235],"value_type":"integer","value":5023},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,20,192,155,244,97,75,205],"value_type":"integer","value":5023},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,2,0,0,0,0,1],"value_type":"integer","value":31071}
+    ]},
+    {"capability":"qbridge_status","request_oid":[1,3,6,1,2,1,17,7,1,2,2,1,3],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,212,1,195,156,131,95],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,188,34,40,12,239,224],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,44,200,27,171,85,69],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,28,59,243,220,201,235],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,20,192,155,244,97,75,205],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,2,0,0,0,0,1],"value_type":"integer","value":3}
+    ]},
+    {"capability":"vlan_fdb_id","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,3],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,7,1,4,2,1,3,0,1],"value_type":"unsigned32","value":1},
+      {"oid":[1,3,6,1,2,1,17,7,1,4,2,1,3,0,20],"value_type":"unsigned32","value":20}
+    ]},
+    {"capability":"vlan_current_egress","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,4],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,17,7,1,4,2,1,4,0,20],"value_type":"octet_string","value":"\u0000\u0000\u0002\u0010"}]},
+    {"capability":"vlan_current_untagged","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,5],"outcome":"success_empty","rows":[]},
+    {"capability":"pvid","request_oid":[1,3,6,1,2,1,17,7,1,4,5,1,1],"outcome":"success_with_rows","rows":[]},
+    {"capability":"stp_protocol","request_oid":[1,3,6,1,2,1,17,2,1,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,17,2,1,0],"value_type":"integer","value":5}]},
+    {"capability":"stp_topology_changes","request_oid":[1,3,6,1,2,1,17,2,4,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,17,2,4,0],"value_type":"counter32","value":7}]},
+    {"capability":"stp_designated_root","request_oid":[1,3,6,1,2,1,17,2,5,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,17,2,5,0],"value_type":"octet_string_hex","value":"00002cc81b9c31ea"}]},
+    {"capability":"stp_root_cost","request_oid":[1,3,6,1,2,1,17,2,6,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,17,2,6,0],"value_type":"integer","value":20000}]},
+    {"capability":"stp_root_port","request_oid":[1,3,6,1,2,1,17,2,7,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,17,2,7,0],"value_type":"integer","value":927}]}
+  ]
+}

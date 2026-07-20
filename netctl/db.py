@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import load_config_sources
+from .config import load_config_sources, normalize_snmp_driver_options
 from .migrations import apply_migrations
 from .util import utc_now
 
@@ -21,6 +21,9 @@ CONTEXT_IMPORT_RUN_STATUSES = frozenset(
     }
 )
 CONTEXT_IMPORT_RUN_FINAL_STATUSES = CONTEXT_IMPORT_RUN_STATUSES - {"running"}
+PRIVATE_SOURCE_KEYS = frozenset(
+    {"password", "resolved_secret", "resolved_secrets", "secret_value"}
+)
 
 
 def db_path_from_url(db_url: str) -> Path:
@@ -38,6 +41,16 @@ def connect(db_url: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.row_factory = sqlite3.Row
     ensure_schema(conn)
+    return conn
+
+
+def connect_read_only(db_url: str) -> sqlite3.Connection:
+    """Open an existing SQLite database without schema or data side effects."""
+    path = db_path_from_url(db_url).resolve()
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    conn.execute("PRAGMA query_only = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.row_factory = sqlite3.Row
     return conn
 
 
@@ -380,12 +393,17 @@ def latest_context_revision(conn: sqlite3.Connection) -> dict[str, Any] | None:
 
 def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
     now = utc_now()
+    driver_options_json = _encode_driver_options(
+        str(source.get("driver") or ""), source.get("driver_options", {})
+    )
     conn.execute(
         """
         INSERT INTO network_sources
-            (name, driver, host, port, username, secret_ref, tls, verify_tls, site, role, enabled, created_at, updated_at)
+            (name, driver, host, port, username, secret_ref, tls, verify_tls, site, role,
+             enabled, driver_options_json, created_at, updated_at)
         VALUES
-            (:name, :driver, :host, :port, :username, :secret_ref, :tls, :verify_tls, :site, :role, :enabled, :created_at, :updated_at)
+            (:name, :driver, :host, :port, :username, :secret_ref, :tls, :verify_tls,
+             :site, :role, :enabled, :driver_options_json, :created_at, :updated_at)
         ON CONFLICT(name) DO UPDATE SET
             driver=excluded.driver,
             host=excluded.host,
@@ -397,6 +415,7 @@ def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
             site=excluded.site,
             role=excluded.role,
             enabled=excluded.enabled,
+            driver_options_json=excluded.driver_options_json,
             updated_at=excluded.updated_at
         """,
         {
@@ -404,6 +423,7 @@ def upsert_source(conn: sqlite3.Connection, source: dict[str, Any]) -> int:
             "tls": int(bool(source.get("tls"))),
             "verify_tls": int(bool(source.get("verify_tls"))),
             "enabled": int(bool(source.get("enabled", True))),
+            "driver_options_json": driver_options_json,
             "created_at": now,
             "updated_at": now,
         },
@@ -437,20 +457,110 @@ def sync_config_sources(conn: sqlite3.Connection, config_path: str | Path) -> No
 
 def source_public(source: dict[str, Any]) -> dict[str, Any]:
     result = dict(source)
+    if str(source.get("driver") or "") == "snmp_switch" and "driver_options" in source:
+        try:
+            result["driver_options"] = normalize_snmp_driver_options(
+                source["driver_options"]
+            )
+        except ValueError as exc:
+            raise ValueError("SNMP driver_options are invalid") from exc
+    result = _redact_source_value(result)
+    result.pop("driver_options_json", None)
     for key in ["id", "tls", "verify_tls", "enabled"]:
         if key in result and key != "id":
             result[key] = bool(result[key])
-    result.pop("password", None)
     return result
 
 
 def get_source(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM network_sources WHERE name = ?", (name,)).fetchone()
-    return row_to_dict(row)
+    return _source_from_row(row)
 
 
 def list_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return rows_to_dicts(conn.execute("SELECT * FROM network_sources ORDER BY name").fetchall())
+    return [
+        source
+        for row in conn.execute("SELECT * FROM network_sources ORDER BY name").fetchall()
+        if (source := _source_from_row(row)) is not None
+    ]
+
+
+def _is_private_source_key(key: Any) -> bool:
+    normalized = str(key).lower()
+    return (
+        normalized in PRIVATE_SOURCE_KEYS
+        or "community" in normalized
+        or normalized.startswith("resolved_")
+    )
+
+
+def _contains_private_source_key(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(
+            _is_private_source_key(key)
+            or _contains_private_source_key(nested_value)
+            for key, nested_value in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_private_source_key(item) for item in value)
+    return False
+
+
+def _encode_driver_options(driver: str, value: Any) -> str:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("driver_options must be a mapping")
+    if driver == "snmp_switch":
+        try:
+            value = normalize_snmp_driver_options(value)
+        except ValueError as exc:
+            raise ValueError("SNMP driver_options are invalid") from exc
+    elif _contains_private_source_key(value):
+        raise ValueError("driver_options must not contain resolved secret material")
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _source_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    source = row_to_dict(row)
+    if source is None:
+        return None
+    raw_options = source.pop("driver_options_json", "{}")
+    try:
+        options = json.loads(str(raw_options or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        if source.get("driver") == "snmp_switch":
+            raise ValueError("stored SNMP driver_options are invalid") from None
+        options = {}
+    if source.get("driver") == "snmp_switch":
+        try:
+            source["driver_options"] = normalize_snmp_driver_options(options)
+        except ValueError:
+            raise ValueError("stored SNMP driver_options are invalid") from None
+    elif not isinstance(options, dict) or _contains_private_source_key(options):
+        raise ValueError("stored driver_options are invalid")
+    elif options:
+        source["driver_options"] = options
+    return source
+
+
+def _redact_source_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redact_source_value(nested_value)
+            for key, nested_value in value.items()
+            if not _is_private_source_key(key)
+        }
+    if isinstance(value, list):
+        return [_redact_source_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_source_value(item) for item in value)
+    return value
 
 
 def insert_event(

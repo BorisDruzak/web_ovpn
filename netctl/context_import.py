@@ -10,6 +10,7 @@ from .context import (
     canonical_entity_hash,
     canonical_entity_json,
     context_summary,
+    normalise_relation_type,
     normalise_import_entities,
     validate_import_semantics,
 )
@@ -218,7 +219,7 @@ def _prepare_candidate_rows(
             if entity_type == "link":
                 row.update(
                     {
-                        "relation": entity["relation"],
+                        "relation": normalise_relation_type(entity["relation"]),
                         "endpoint_a_json": canonical_entity_json(entity["endpoint_a"]),
                         "endpoint_b_json": canonical_entity_json(entity["endpoint_b"]),
                     }

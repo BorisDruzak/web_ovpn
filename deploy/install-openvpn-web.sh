@@ -42,6 +42,11 @@ sudo_cmd rm -rf \
 sudo_cmd cp -a "$SRC/." "$APP/"
 sudo_cmd rm -rf "$APP/.git" "$APP/.pytest_cache"
 sudo_cmd chown -R openvpn-web:openvpn-web "$APP"
+# netctl-collect.service runs as the separate netctl user and must be able
+# to read the application root for Python module discovery, without opening
+# it to unrelated local users.
+sudo_cmd chown openvpn-web:netctl "$APP"
+sudo_cmd chmod 0750 "$APP"
 
 sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
 sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh

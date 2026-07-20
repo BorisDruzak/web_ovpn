@@ -840,9 +840,485 @@ def _legacy_evidence(hosts: list[dict[str, Any]]) -> str:
     return json.dumps(sorted(evidence), ensure_ascii=False, separators=(",", ":"))
 
 
+def _migration_3(conn: sqlite3.Connection) -> None:
+    statements = (
+        """
+        CREATE TABLE runtime_identity_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            finding_key TEXT NOT NULL UNIQUE,
+            finding_type TEXT NOT NULL,
+            severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+            status TEXT NOT NULL CHECK (status IN ('open', 'acknowledged', 'resolved')),
+            asset_id INTEGER REFERENCES assets(id) ON DELETE RESTRICT,
+            source_id INTEGER REFERENCES network_sources(id) ON DELETE RESTRICT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+        """
+        CREATE INDEX runtime_identity_findings_status_type_idx
+            ON runtime_identity_findings(status, finding_type, last_seen_at DESC)
+        """,
+        """
+        CREATE TRIGGER ip_observations_interface_asset_insert_guard
+        BEFORE INSERT ON ip_observations
+        WHEN NEW.asset_interface_id IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM asset_interfaces
+             WHERE id = NEW.asset_interface_id AND asset_id = NEW.asset_id
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'asset_interface_id does not belong to asset_id');
+        END
+        """,
+        """
+        CREATE TRIGGER ip_observations_interface_asset_update_guard
+        BEFORE UPDATE OF asset_id, asset_interface_id ON ip_observations
+        WHEN NEW.asset_interface_id IS NOT NULL
+         AND NOT EXISTS (
+             SELECT 1 FROM asset_interfaces
+             WHERE id = NEW.asset_interface_id AND asset_id = NEW.asset_id
+         )
+        BEGIN
+            SELECT RAISE(ABORT, 'asset_interface_id does not belong to asset_id');
+        END
+        """,
+        """
+        CREATE INDEX ip_observations_source_current_idx
+            ON ip_observations(source_key, observation_source, is_current, last_seen_at DESC)
+        """,
+        """
+        CREATE INDEX hostname_observations_source_current_idx
+            ON hostname_observations(source_key, source_type, is_current, last_seen_at DESC)
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    conn.execute(
+        """
+        UPDATE ip_observations
+        SET is_current = 0
+        WHERE observation_source = 'legacy_network_host'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE hostname_observations
+        SET is_current = 0
+        WHERE source_type = 'legacy_network_host'
+        """
+    )
+    _backfill_legacy_identity_conflicts(conn, utc_now())
+
+
+def _backfill_legacy_identity_conflicts(
+    conn: sqlite3.Connection,
+    observed_at: str,
+) -> int:
+    mapped_asset_ids = {
+        int(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT asset_id FROM legacy_host_asset_mappings"
+        )
+    }
+    mac_asset_ids: dict[str, set[int]] = {}
+    for asset_id, raw_mac in conn.execute(
+        "SELECT asset_id, mac FROM asset_interfaces WHERE mac IS NOT NULL"
+    ):
+        normalized_mac = normalize_mac(raw_mac)
+        if int(asset_id) in mapped_asset_ids and normalized_mac:
+            mac_asset_ids.setdefault(normalized_mac, set()).add(int(asset_id))
+
+    ip_asset_ids: dict[str, set[int]] = {}
+    for asset_id, raw_ip in conn.execute(
+        """
+        SELECT asset_id, ip
+        FROM ip_observations
+        WHERE observation_source = 'legacy_network_host'
+        """
+    ):
+        normalized_ip = _normalize_ip(raw_ip)
+        if int(asset_id) in mapped_asset_ids and normalized_ip:
+            ip_asset_ids.setdefault(normalized_ip, set()).add(int(asset_id))
+
+    valid_source_ids = {
+        int(row[0]) for row in conn.execute("SELECT id FROM network_sources")
+    }
+    observation_rows = conn.execute(
+        """
+        SELECT observations.id, observations.host_id, observations.source_id,
+               observations.ip, observations.mac, observations.hostname,
+               mappings.asset_id AS host_asset_id
+        FROM host_observations AS observations
+        JOIN legacy_host_asset_mappings AS mappings
+          ON mappings.legacy_network_host_id = observations.host_id
+        ORDER BY observations.id
+        """
+    )
+    finding_count = 0
+    for (
+        observation_id,
+        host_id,
+        original_source_id,
+        observation_ip,
+        observation_mac,
+        observation_hostname,
+        mapped_asset_id,
+    ) in observation_rows:
+        host_asset_id = int(mapped_asset_id)
+        raw_mac = str(observation_mac or "").strip()
+        normalized_mac = normalize_mac(raw_mac)
+        mac_matches = mac_asset_ids.get(normalized_mac, set()) if normalized_mac else set()
+        mac_candidate_asset_id = (
+            next(iter(mac_matches)) if len(mac_matches) == 1 else None
+        )
+
+        raw_ip = str(observation_ip or "").strip()
+        normalized_ip = _normalize_ip(raw_ip) if raw_ip else None
+        ip_matches = ip_asset_ids.get(normalized_ip, set()) if normalized_ip else set()
+        ip_candidate_asset_id = (
+            next(iter(ip_matches)) if len(ip_matches) == 1 else None
+        )
+
+        candidate_asset_ids = (
+            mac_candidate_asset_id,
+            ip_candidate_asset_id,
+        )
+        if not any(
+            candidate_asset_id is not None
+            and candidate_asset_id != host_asset_id
+            for candidate_asset_id in candidate_asset_ids
+        ):
+            continue
+
+        observation_id = int(observation_id)
+        source_id = (
+            int(original_source_id)
+            if original_source_id in valid_source_ids
+            else None
+        )
+        details = {
+            "host_asset_id": host_asset_id,
+            "ip_candidate_asset_id": ip_candidate_asset_id,
+            "mac_candidate_asset_id": mac_candidate_asset_id,
+            "observation_id": observation_id,
+            "raw_identity": {
+                "host_id": int(host_id),
+                "hostname": str(observation_hostname or ""),
+                "ip": raw_ip,
+                "mac": raw_mac,
+            },
+        }
+        conn.execute(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status, asset_id,
+                source_id, first_seen_at, last_seen_at, details_json
+            ) VALUES (?, 'historical_identity_conflict', 'warning', 'open', ?, ?, ?, ?, ?)
+            ON CONFLICT(finding_key) DO UPDATE SET
+                finding_type = excluded.finding_type,
+                severity = excluded.severity,
+                asset_id = excluded.asset_id,
+                source_id = excluded.source_id,
+                last_seen_at = excluded.last_seen_at,
+                details_json = excluded.details_json
+            """,
+            (
+                f"legacy-identity-conflict:{observation_id}",
+                host_asset_id,
+                source_id,
+                observed_at,
+                observed_at,
+                json.dumps(
+                    details,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+        finding_count += 1
+    return finding_count
+
+
+def _migration_4(conn: sqlite3.Connection) -> None:
+    """Acknowledge reviewed migration-3 provenance without deleting it."""
+    conn.execute(
+        """
+        UPDATE runtime_identity_findings
+        SET status = 'acknowledged'
+        WHERE status = 'open'
+          AND finding_type = 'historical_identity_conflict'
+          AND finding_key GLOB 'legacy-identity-conflict:*'
+        """
+    )
+
+
+def _migration_5(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        ALTER TABLE network_sources
+        ADD COLUMN driver_options_json TEXT NOT NULL DEFAULT '{}'
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_devices (
+            source_id INTEGER PRIMARY KEY REFERENCES network_sources(id) ON DELETE RESTRICT,
+            runtime_asset_id INTEGER REFERENCES assets(id) ON DELETE RESTRICT,
+            intent_context_id TEXT NOT NULL DEFAULT '',
+            intent_stable_id TEXT NOT NULL DEFAULT '',
+            profile_id TEXT NOT NULL DEFAULT 'generic',
+            profile_fingerprint TEXT NOT NULL DEFAULT '',
+            sys_object_id TEXT NOT NULL DEFAULT '',
+            sys_descr TEXT NOT NULL DEFAULT '',
+            sys_name TEXT NOT NULL DEFAULT '',
+            sys_location TEXT NOT NULL DEFAULT '',
+            sys_uptime_ticks INTEGER,
+            last_success_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_collection_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL CHECK (status IN ('running','success','partial','failed')),
+            profile_id TEXT NOT NULL DEFAULT '',
+            sys_uptime_ticks INTEGER,
+            error_class TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            outcomes_json TEXT NOT NULL DEFAULT '{}',
+            counts_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(id, source_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_collection_runs_source_started_idx
+        ON switch_collection_runs(source_id, started_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_capabilities (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            capability TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN (
+                'success_with_rows','success_empty','unsupported_no_such_object',
+                'timeout','auth_or_view_failure','parse_error'
+            )),
+            rows_seen INTEGER NOT NULL DEFAULT 0,
+            profile_fingerprint TEXT NOT NULL DEFAULT '',
+            checked_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY(source_id, capability)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_ports (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            port_key TEXT NOT NULL,
+            if_index INTEGER,
+            bridge_port INTEGER,
+            physical_port INTEGER,
+            name TEXT NOT NULL DEFAULT '',
+            alias TEXT NOT NULL DEFAULT '',
+            mac TEXT,
+            admin_status TEXT NOT NULL DEFAULT 'unknown',
+            oper_status TEXT NOT NULL DEFAULT 'unknown',
+            speed_bps INTEGER,
+            last_seen_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            PRIMARY KEY(source_id, port_key),
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX switch_ports_source_ifindex_idx ON switch_ports(source_id, if_index)"
+    )
+    conn.execute(
+        "CREATE INDEX switch_ports_source_bridge_idx ON switch_ports(source_id, bridge_port)"
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_ports_run_source_idx
+        ON switch_ports(collector_run_id, source_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE current_switch_fdb (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            fdb_id INTEGER,
+            vlan_key TEXT NOT NULL,
+            vlan_id INTEGER,
+            mac TEXT NOT NULL,
+            port_key TEXT NOT NULL,
+            bridge_port INTEGER,
+            if_index INTEGER,
+            physical_port INTEGER,
+            port_name TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'unknown',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            PRIMARY KEY(source_id, vlan_key, mac),
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_fdb_source_port_idx
+        ON current_switch_fdb(source_id, port_key, vlan_key)
+        """
+    )
+    conn.execute(
+        "CREATE INDEX current_switch_fdb_mac_idx ON current_switch_fdb(mac, source_id)"
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_fdb_run_source_idx
+        ON current_switch_fdb(collector_run_id, source_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_fdb_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            fdb_id INTEGER,
+            vlan_key TEXT NOT NULL,
+            vlan_id INTEGER,
+            mac TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('appeared','moved','disappeared')),
+            old_port_key TEXT NOT NULL DEFAULT '',
+            new_port_key TEXT NOT NULL DEFAULT '',
+            observed_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_fdb_events_source_time_idx
+        ON switch_fdb_events(source_id, observed_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_fdb_events_mac_time_idx
+        ON switch_fdb_events(mac, observed_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_fdb_events_run_source_idx
+        ON switch_fdb_events(collector_run_id, source_id)
+        """
+    )
+
+
+def _migration_6(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE current_switch_vlan_memberships (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            vlan_id INTEGER NOT NULL CHECK (vlan_id BETWEEN 1 AND 4094),
+            port_key TEXT NOT NULL,
+            if_index INTEGER,
+            bridge_port INTEGER,
+            physical_port INTEGER,
+            port_name TEXT NOT NULL DEFAULT '',
+            egress INTEGER NOT NULL CHECK (egress IN (0, 1)),
+            untagged INTEGER NOT NULL CHECK (untagged IN (0, 1)),
+            pvid INTEGER NOT NULL CHECK (pvid IN (0, 1)),
+            observed_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            PRIMARY KEY(source_id, vlan_id, port_key),
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_vlan_memberships_source_observed_idx
+        ON current_switch_vlan_memberships(source_id, observed_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE current_switch_lldp_neighbors (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            local_port_key TEXT NOT NULL,
+            chassis_id TEXT NOT NULL,
+            port_id TEXT NOT NULL,
+            system_name TEXT NOT NULL DEFAULT '',
+            observed_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            PRIMARY KEY(source_id, local_port_key, chassis_id, port_id),
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_lldp_neighbors_source_observed_idx
+        ON current_switch_lldp_neighbors(source_id, observed_at DESC)
+        """
+    )
+
+
+def _migration_7(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE current_switch_stp_state (
+            source_id INTEGER NOT NULL PRIMARY KEY
+                REFERENCES network_sources(id) ON DELETE RESTRICT,
+            protocol TEXT NOT NULL,
+            root_bridge_mac TEXT NOT NULL,
+            root_port_key TEXT NOT NULL,
+            root_path_cost INTEGER NOT NULL,
+            topology_changes INTEGER NOT NULL,
+            observed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_stp_state_observed_idx
+        ON current_switch_stp_state(observed_at DESC)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
+    (3, _migration_3),
+    (4, _migration_4),
+    (5, _migration_5),
+    (6, _migration_6),
+    (7, _migration_7),
 )
 
 

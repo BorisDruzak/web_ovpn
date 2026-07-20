@@ -126,6 +126,7 @@ def test_mikrotik_api_driver_parses_arp_and_dhcp_rows():
 
 
 def test_normalizer_merges_dhcp_and_arp_and_assigns_categories():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mock-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -145,7 +146,7 @@ def test_normalizer_merges_dhcp_and_arp_and_assigns_categories():
         "bridge_hosts": [{"mac": "AA:BB:CC:DD:EE:FF", "interface": "ether2"}],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.100.55"]["hostname"] == "pc-buh-01"
     assert hosts["192.168.100.55"]["category"] == "local_device"
@@ -157,6 +158,7 @@ def test_normalizer_merges_dhcp_and_arp_and_assigns_categories():
 
 
 def test_normalizer_creates_source_router_without_self_arp():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mikrotik-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -168,7 +170,7 @@ def test_normalizer_creates_source_router_without_self_arp():
         "bridge_hosts": [],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.100.250"]["category"] == "router"
     assert hosts["192.168.100.250"]["display_name"] == "sosn"
@@ -176,6 +178,7 @@ def test_normalizer_creates_source_router_without_self_arp():
 
 
 def test_normalizer_classifies_service_networks_and_ignores_incomplete_arp_noise():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mikrotik-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -197,7 +200,7 @@ def test_normalizer_classifies_service_networks_and_ignores_incomplete_arp_noise
         "bridge_hosts": [],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.0.12"]["category"] == "telephony"
     assert hosts["10.83.1.11"]["category"] == "mgmt"
@@ -210,6 +213,7 @@ def test_normalizer_classifies_service_networks_and_ignores_incomplete_arp_noise
 
 
 def test_normalizer_guesses_device_type_with_evidence():
+    from netctl.context_classifier import legacy_segment_rules
     from netctl.normalizer import normalize_hosts
 
     source = {"name": "mikrotik-main", "host": "192.168.100.250", "site": "main", "role": "core-router"}
@@ -228,7 +232,7 @@ def test_normalizer_guesses_device_type_with_evidence():
         ],
     }
 
-    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z")}
+    hosts = {host["ip"]: host for host in normalize_hosts(source, snapshot, "2026-07-03T12:00:00Z", segment_rules=legacy_segment_rules())}
 
     assert hosts["192.168.0.221"]["device_type"] == "phone"
     assert hosts["192.168.0.221"]["device_confidence"] >= 80
@@ -515,6 +519,20 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     assert rc == 0
     assert data["status"] == "ok"
     assert data["summary"]["arp"] >= 1
+    assert {
+        "arp",
+        "dhcp_leases",
+        "interfaces",
+        "routes",
+        "neighbors",
+        "bridge_hosts",
+        "firewall_address_lists",
+    } <= data["summary"].keys()
+    assert data["summary"]["runtime_assets_touched"] >= 1
+    assert data["summary"]["runtime_ips_current"] >= 1
+    assert data["summary"]["runtime_hostnames_current"] >= 1
+    assert data["summary"]["runtime_findings_open"] >= 0
+    assert data["summary"]["context_classifier_fallback"] is True
 
     _, local_hosts = run_cli(
         ["--json", "--config", str(config_path), "--db", db_url, "hosts", "list", "--category", "local_device"],
@@ -531,6 +549,230 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     _, dashboard = run_cli(["--json", "--config", str(config_path), "--db", db_url, "dashboard"], capsys)
     assert dashboard["summary"]["total_hosts"] >= 3
     assert dashboard["sources"][0]["name"] == "mock-main"
+
+
+def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, capsys):
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+
+    rc, _ = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "collect", "mock-main"],
+        capsys,
+    )
+    assert rc == 0
+
+    rc, data = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "status"],
+        capsys,
+    )
+
+    assert rc == 0
+    assert data["status"] == "ok"
+    summary = data["runtime_identity"]
+    assert summary["schema_migration_versions"] == [1, 2, 3, 4, 5, 6, 7]
+    assert summary["counts"]["assets"] >= 1
+    assert summary["counts"]["interfaces"] >= 1
+    assert summary["counts"]["current_ip_observations"] >= 1
+    assert summary["counts"]["current_hostname_observations"] >= 1
+    collection = summary["last_successful_collections"]
+    assert len(collection) == 1
+    assert collection[0]["source_id"] == 1
+    assert collection[0]["source"] == "mock-main"
+    assert collection[0]["started_at"]
+    assert collection[0]["finished_at"]
+    assert summary["open_findings"]["by_type"] == []
+    assert summary["open_findings"]["by_severity"] == []
+    assert summary["migration_2_report_summary"]["migration_version"] == 2
+    assert summary["migration_only_current"]["ip_observations"] == 0
+    assert summary["migration_only_current"]["hostname_observations"] == 0
+    assert summary["migration_only_current"]["total"] == 0
+
+
+def test_runtime_assets_inspect_and_findings_commands_are_read_only(tmp_path, capsys):
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    rc, _ = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "collect", "mock-main"],
+        capsys,
+    )
+    assert rc == 0
+
+    conn = connect(db_url)
+    try:
+        asset = conn.execute("SELECT id FROM assets WHERE asset_key = ?", ("mac:AA:BB:CC:DD:EE:FF",)).fetchone()
+        assert asset is not None
+        conn.execute(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status, asset_id,
+                first_seen_at, last_seen_at, details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "test-runtime-finding",
+                "duplicate_current_ip",
+                "warning",
+                "open",
+                asset["id"],
+                "2026-07-18T00:00:00Z",
+                "2026-07-18T00:00:00Z",
+                '{"ip":"192.168.100.55"}',
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, inspected = run_cli(
+        [
+            "--json", "--config", str(config_path), "--db", db_url,
+            "runtime-assets", "inspect", "--asset-key", "mac:AA:BB:CC:DD:EE:FF",
+        ],
+        capsys,
+    )
+    assert rc == 0
+    assert inspected["runtime_asset"]["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:FF"
+    assert inspected["runtime_asset"]["interfaces"]
+    assert inspected["runtime_asset"]["current_ip_observations"]
+    assert inspected["runtime_asset"]["current_hostname_observations"]
+    assert inspected["runtime_asset"]["findings"][0]["finding_key"] == "test-runtime-finding"
+
+    rc, findings = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "findings", "--status", "open"],
+        capsys,
+    )
+    assert rc == 0
+    assert findings["findings"][0]["details"] == {"ip": "192.168.100.55"}
+    assert findings["findings"][0]["asset_key"] == "mac:AA:BB:CC:DD:EE:FF"
+
+    rc, missing = run_cli(
+        [
+            "--json", "--config", str(config_path), "--db", db_url,
+            "runtime-assets", "inspect", "--asset-key", "mac:00:00:00:00:00:00",
+        ],
+        capsys,
+    )
+    assert rc == 1
+    assert missing == {
+        "status": "error",
+        "message": "runtime asset not found",
+        "asset_key": "mac:00:00:00:00:00:00",
+    }
+
+    rc, invalid = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "findings", "--status", "invalid"],
+        capsys,
+    )
+    assert rc == 2
+    assert invalid == {
+        "status": "error",
+        "message": "invalid finding status",
+        "finding_status": "invalid",
+    }
+
+
+def test_runtime_assets_findings_acknowledged_legacy_findings(tmp_path, capsys):
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    conn = connect(db_url)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO runtime_identity_findings (
+                finding_key, finding_type, severity, status,
+                first_seen_at, last_seen_at, details_json
+            ) VALUES (?, ?, 'warning', ?, '2026-07-17T00:00:00Z', '2026-07-17T01:00:00Z', ?)
+            """,
+            [
+                ("legacy-identity-conflict:1", "historical_identity_conflict", "open", '{"origin":"migration"}'),
+                ("ip-moved:1:192.0.2.10:1:2", "historical_identity_conflict", "open", '{"origin":"live"}'),
+                ("mac-site-collision:1:00:11:22:33:44:55", "mac_identity_collision", "open", "{}"),
+                ("unresolved-ip-only:1:192.0.2.11", "unresolved_ip_only_runtime", "open", "{}"),
+                ("legacy-identity-conflict:2", "historical_identity_conflict", "resolved", "{}"),
+            ],
+        )
+        conn.execute("DELETE FROM schema_migrations WHERE version = 4")
+        conn.commit()
+    finally:
+        conn.close()
+
+    migrated = connect(db_url)
+    migrated.close()
+
+    code, payload = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "runtime-assets", "findings"],
+        capsys,
+    )
+    assert code == 0
+    assert {item["finding_type"] for item in payload["findings"]} == {
+        "historical_identity_conflict", "mac_identity_collision",
+        "unresolved_ip_only_runtime",
+    }
+
+    code, payload = run_cli(
+        [
+            "--json", "--config", str(config_path), "--db", db_url,
+            "runtime-assets", "findings", "--status", "acknowledged",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert [item["finding_key"] for item in payload["findings"]] == [
+        "legacy-identity-conflict:1"
+    ]
+    assert payload["findings"][0]["details"] == {"origin": "migration"}
+
+
+def test_runtime_assets_commands_do_not_modify_database_or_sync_sources(tmp_path, capsys):
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    rc, _ = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "collect", "mock-main"],
+        capsys,
+    )
+    assert rc == 0
+
+    conn = connect(db_url)
+    try:
+        conn.execute(
+            "UPDATE network_sources SET updated_at = ? WHERE name = ?",
+            ("2000-01-01T00:00:00Z", "mock-main"),
+        )
+        conn.commit()
+        before = "\n".join(conn.iterdump())
+    finally:
+        conn.close()
+
+    for args in (
+        ["runtime-assets", "status"],
+        ["runtime-assets", "inspect", "--asset-key", "mac:AA:BB:CC:DD:EE:FF"],
+        ["runtime-assets", "findings", "--status", "open"],
+    ):
+        rc, data = run_cli(
+            ["--json", "--config", str(config_path), "--db", db_url, *args],
+            capsys,
+        )
+        assert rc == 0
+        assert data["status"] == "ok"
+
+    conn = connect(db_url)
+    try:
+        assert conn.execute(
+            "SELECT updated_at FROM network_sources WHERE name = ?",
+            ("mock-main",),
+        ).fetchone()["updated_at"] == "2000-01-01T00:00:00Z"
+        assert "\n".join(conn.iterdump()) == before
+    finally:
+        conn.close()
 
 
 def test_collect_lock_prevents_parallel_run(tmp_path, capsys):

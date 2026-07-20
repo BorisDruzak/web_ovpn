@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,10 @@ IMPORT_COLLECTIONS: dict[str, tuple[str, str]] = {
     "links": ("intent_links", "link"),
 }
 
+RELATION_ALIASES: dict[str, str] = {
+    "connected_to": "CONNECTED_TO",
+}
+
 RELATION_TYPES: frozenset[str] = frozenset(
     {
         "CONNECTED_TO",
@@ -40,6 +45,7 @@ RELATION_TYPES: frozenset[str] = frozenset(
         "CAN_ACCESS",
         "AFFECTED_BY",
         "RESOLVED_BY",
+        *RELATION_ALIASES,
     }
 )
 
@@ -156,11 +162,29 @@ def validate_import_semantics(document: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def canonical_entity_json(entity: dict[str, Any]) -> str:
-    return json.dumps(entity, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        entity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=_canonical_json_scalar,
+    )
+
+
+def _canonical_json_scalar(value: Any) -> str:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def canonical_entity_hash(entity: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_entity_json(entity).encode("utf-8")).hexdigest()
+
+
+def normalise_relation_type(relation: str) -> str:
+    """Map an accepted context relation to its queryable SQLite value."""
+    return RELATION_ALIASES.get(relation, relation)
 
 
 def normalise_import_entities(document: dict[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
