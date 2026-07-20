@@ -190,6 +190,8 @@ OR-2B2 не должен:
 - менять owner/group stage helper;
 - автоматически ремонтировать stage helper;
 - проверять содержимое или hash executable;
+- вводить отдельную symlink-integrity policy для root-owned helper;
+- менять существующую `is_file()` file-type семантику helper;
 - добавлять root-owned files в `ControllerPermissionAuditor`;
 - менять `PathPolicy` expected UID/GID model;
 - менять installer modes;
@@ -463,6 +465,10 @@ Permission check/repair не должны:
 - запускать launcher;
 - запускать Ansible.
 
+Тестовая среда должна заранее создать sentinel job и sentinel assignment,
+сохранить их JSON bytes и после каждой permission operation доказать полное
+равенство содержимого. Проверка только пустых каталогов недостаточна.
+
 ## 9. Operational outcomes
 
 ### 9.1 Stage helper outcomes
@@ -621,13 +627,14 @@ assignments_unchanged
 
 ### 10.2 Worker integration
 
-Через реальный `worker.run_job()` и sandbox repositories проверить:
+Через реальный `worker.run_job()`, реальный `AnsibleController` и sandbox
+repositories проверить:
 
 - job переходит `created -> validating -> connecting -> failed`;
 - process return code равен `1`;
 - error code сохраняется в job.error;
 - `finished_at` заполнен;
-- controller subprocess method не вызывается после validation failure;
+- `subprocess.run` не вызывается после validation failure;
 - result и assignment отсутствуют;
 - machine registration не изменяется.
 
@@ -636,14 +643,21 @@ assignments_unchanged
 На одном sandbox state:
 
 1. создать первое job с helper `0644`;
-2. выполнить worker и получить failed/connecting;
+2. выполнить worker через реальный `AnsibleController` и получить
+   failed/connecting;
 3. исправить helper на executable;
 4. создать второе job;
-5. использовать fake successful controller result;
-6. выполнить worker;
+5. снова использовать реальный `AnsibleController`;
+6. подменить только `subprocess.run` контролируемым fake, который:
+   - подтверждает, что helper уже executable;
+   - записывает synthetic `provision-result.json` по path из command args;
+   - возвращает `returncode=0`;
 7. второе job становится successful/complete;
 8. assignment ссылается на второе job;
 9. первое job остаётся failed.
+
+Тест не может использовать fake controller, который обходит
+`_validate_provision_files()`.
 
 ### 10.4 Permission audit tests
 
@@ -655,7 +669,8 @@ assignments_unchanged
 - missing path;
 - symlink/type mismatch;
 - exact safe path matrix;
-- secret fixture values отсутствуют в JSON.
+- secret fixture values отсутствуют в JSON;
+- sentinel job и assignment остаются byte-equivalent.
 
 ### 10.5 Permission repair tests
 
@@ -670,7 +685,7 @@ assignments_unchanged
 - successful repair exact changed list;
 - post-repair audit healthy;
 - second repair `changed=[]`;
-- jobs/assignments unchanged.
+- sentinel jobs/assignments byte-equivalent.
 
 ### 10.6 Outcome contract
 
@@ -747,8 +762,9 @@ tests/alt_linux/test_controller_permissions.py
 9. Unexpected repair failure раскрывает только system error class.
 10. Execution failure не обещает rollback.
 11. Successful repair идемпотентен.
-12. Permission operations не изменяют jobs/assignments.
+12. Permission operations не изменяют sentinel jobs/assignments.
 13. Runtime root-owned assets не включаются в altserver repair policies.
+14. Retry test проходит через реальную `_validate_provision_files()` boundary.
 
 ## 13. Security
 
@@ -795,12 +811,13 @@ OR-2B2 принят, когда:
 - details разделяют missing и not-executable;
 - public `provision_not_configured/7` сохраняется;
 - worker outcome `failed/connecting`, process exit `1` доказан;
-- новое job после исправления helper может завершиться успешно;
+- новое job после исправления helper может завершиться успешно через реальную
+  validation boundary;
 - пять permission outcomes доказаны executable tests;
 - blocked/root-required repair не выполняют mutation syscalls;
-- repair failure безопасно редактирует system error;
+- repair failure безопасно сообщает только класс системной ошибки;
 - successful repair идемпотентен;
-- permission operations изолированы от jobs/assignments;
+- permission operations изолированы от sentinel jobs/assignments;
 - outcome catalog содержит ровно 26 сценариев;
 - focused, ALT и full suites проходят;
 - compile и diff checks проходят;
