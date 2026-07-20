@@ -350,13 +350,14 @@ def test_worker_handoff_backup_quiesces_trigger_and_restores_prior_state_on_fail
 TRACE="$1"
 sudo() {{
   printf '%s\\n' "$*" >> "$TRACE"
-  if [[ "$*" == "systemctl is-active --quiet server-draft-worker.path" ]]; then
-    return 0
-  fi
-  if [[ "$*" == "systemctl is-active --quiet server-draft-worker.service" ]]; then
-    return 1
-  fi
-  return 0
+  case "$*" in
+    "systemctl show --property=LoadState --value server-draft-worker.path") printf '%s\\n' loaded ;;
+    "systemctl show --property=ActiveState --value server-draft-worker.path") printf '%s\\n' active ;;
+    "systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\\n' loaded ;;
+    "systemctl show --property=ActiveState --value server-draft-worker.service") printf '%s\\n' inactive ;;
+    "systemctl stop server-draft-worker.path"|"systemctl start server-draft-worker.path") ;;
+    *) return 99 ;;
+  esac
 }}
 sleep() {{ :; }}
 {state_management}
@@ -373,11 +374,259 @@ exit 23
     assert result.returncode == 23, result.stderr
     calls = trace.read_text(encoding="utf-8").splitlines()
     assert calls == [
-        "systemctl is-active --quiet server-draft-worker.path",
+        "systemctl show --property=LoadState --value server-draft-worker.path",
+        "systemctl show --property=ActiveState --value server-draft-worker.path",
         "systemctl stop server-draft-worker.path",
-        "systemctl is-active --quiet server-draft-worker.service",
+        "systemctl show --property=LoadState --value server-draft-worker.service",
+        "systemctl show --property=ActiveState --value server-draft-worker.service",
         "systemctl start server-draft-worker.path",
     ]
+
+
+def test_worker_handoff_backup_waits_through_activating_until_terminal_inactive(
+    tmp_path,
+):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup = handoff.split("### Rollback", 1)[0]
+    state_management = backup.split("# BEGIN draft-worker backup quiescence", 1)[1].split(
+        "# END draft-worker backup quiescence", 1
+    )[0]
+    trace = tmp_path / "backup-activating.trace"
+    active_calls = tmp_path / "service-active-calls"
+    active_calls.write_text("0", encoding="utf-8")
+    script = f'''set -euo pipefail
+TRACE="$1"
+ACTIVE_CALLS="$2"
+sudo() {{
+  printf '%s\n' "$*" >> "$TRACE"
+  case "$*" in
+    "systemctl show --property=LoadState --value server-draft-worker.path") printf '%s\n' loaded ;;
+    "systemctl show --property=ActiveState --value server-draft-worker.path") printf '%s\n' active ;;
+    "systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\n' loaded ;;
+    "systemctl show --property=ActiveState --value server-draft-worker.service")
+      count="$(<"$ACTIVE_CALLS")"
+      count=$((count + 1))
+      printf '%s' "$count" > "$ACTIVE_CALLS"
+      if (( count == 1 )); then printf '%s\n' activating; else printf '%s\n' inactive; fi
+      ;;
+    "systemctl stop server-draft-worker.path"|"systemctl start server-draft-worker.path") ;;
+    *) return 99 ;;
+  esac
+}}
+sleep() {{ printf 'sleep %s\n' "$*" >> "$TRACE"; }}
+{state_management}
+exit 23
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "backup-activating", trace.as_posix(), active_calls.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 23, result.stderr
+    calls = trace.read_text(encoding="utf-8").splitlines()
+    assert calls.count(
+        "systemctl show --property=ActiveState --value server-draft-worker.service"
+    ) == 2
+    assert "sleep 1" in calls
+    assert calls.index("sleep 1") < len(calls) - 2
+    assert calls[-1] == "systemctl start server-draft-worker.path"
+
+
+def test_worker_handoff_backup_times_out_fail_closed_while_service_is_activating(
+    tmp_path,
+):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup = handoff.split("### Rollback", 1)[0]
+    state_management = backup.split("# BEGIN draft-worker backup quiescence", 1)[1].split(
+        "# END draft-worker backup quiescence", 1
+    )[0]
+    active_calls = tmp_path / "activating-timeout-calls"
+    active_calls.write_text("0", encoding="utf-8")
+    script = f'''set -euo pipefail
+ACTIVE_CALLS="$1"
+sudo() {{
+  case "$*" in
+    "systemctl show --property=LoadState --value server-draft-worker.path") printf '%s\n' not-found ;;
+    "systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\n' loaded ;;
+    "systemctl show --property=ActiveState --value server-draft-worker.service")
+      count="$(<"$ACTIVE_CALLS")"
+      printf '%s' "$((count + 1))" > "$ACTIVE_CALLS"
+      printf '%s\n' activating
+      ;;
+    *) return 99 ;;
+  esac
+}}
+sleep() {{ :; }}
+{state_management}
+exit 19
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "backup-timeout", active_calls.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "did not quiesce within 180 seconds" in result.stderr
+    assert active_calls.read_text(encoding="utf-8") == "180"
+
+
+def test_worker_handoff_backup_skips_absent_units_under_set_e(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup = handoff.split("### Rollback", 1)[0]
+    state_management = backup.split("# BEGIN draft-worker backup quiescence", 1)[1].split(
+        "# END draft-worker backup quiescence", 1
+    )[0]
+    trace = tmp_path / "backup-absent-units.trace"
+    script = f'''set -euo pipefail
+TRACE="$1"
+sudo() {{
+  printf '%s\n' "$*" >> "$TRACE"
+  case "$*" in
+    "systemctl show --property=LoadState --value server-draft-worker.path"|"systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\n' not-found ;;
+    *) return 99 ;;
+  esac
+}}
+sleep() {{ return 99; }}
+{state_management}
+exit 17
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "backup-absent", trace.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 17, result.stderr
+    calls = trace.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        "systemctl show --property=LoadState --value server-draft-worker.path",
+        "systemctl show --property=LoadState --value server-draft-worker.service",
+    ]
+
+
+def test_worker_handoff_rollback_skips_stop_and_disable_for_absent_units(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    rollback = handoff.split("### Rollback", 1)[1]
+    unit_quiescence = rollback.split(
+        "# BEGIN draft-worker rollback unit quiescence", 1
+    )[1].split("# END draft-worker rollback unit quiescence", 1)[0]
+    trace = tmp_path / "rollback-absent-units.trace"
+    script = f'''set -euo pipefail
+TRACE="$1"
+sudo() {{
+  printf '%s\n' "$*" >> "$TRACE"
+  case "$*" in
+    "systemctl show --property=LoadState --value server-draft-worker.path"|"systemctl show --property=LoadState --value server-draft-worker.service") printf '%s\n' not-found ;;
+    *) return 99 ;;
+  esac
+}}
+{unit_quiescence}
+'''
+
+    result = subprocess.run(
+        [bash, "-c", script, "rollback-absent", trace.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert trace.read_text(encoding="utf-8").splitlines() == [
+        "systemctl show --property=LoadState --value server-draft-worker.path",
+        "systemctl show --property=LoadState --value server-draft-worker.service",
+    ]
+
+
+def test_worker_handoff_rejects_nested_draft_symlinks_before_backup_and_restore(
+    tmp_path,
+):
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup, rollback = handoff.split("### Rollback", 1)
+
+    backup_lock = backup.index("lock_draft_parent_for_backup\n")
+    backup_check = backup.index('reject_nested_symlinks "$DRAFT_ROOT"')
+    backup_copy = backup.index("backup_asset server-drafts -d")
+    assert backup_lock < backup_check < backup_copy
+    assert 'sudo find -P "$root" -type l -print -quit' in backup
+
+    restored_source_check = rollback.index(
+        'reject_nested_symlinks "$BACKUP_ROOT/server-drafts"'
+    )
+    rollback_lock = rollback.index("lock_draft_parent_for_restore\n")
+    live_check = rollback.index('reject_nested_symlinks "$DRAFT_PARENT/server-drafts"')
+    draft_remove = rollback.index("sudo rm -rf -- /var/lib/openvpn-web/server-drafts")
+    assert restored_source_check < rollback_lock < live_check < draft_remove
+
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+    draft_root = tmp_path / "server-drafts"
+    nested = draft_root / "queue" / "nested"
+    nested.mkdir(parents=True)
+    target = tmp_path / "outside"
+    target.mkdir()
+    symlink = nested / "escape"
+    try:
+        symlink.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable on this platform: {exc}")
+
+    function_text = backup.split("reject_nested_symlinks() {", 1)[1].split("\n}\n", 1)[0]
+    script = f'''set -euo pipefail
+sudo() {{ "$@"; }}
+reject_nested_symlinks() {{
+{function_text}
+}}
+reject_nested_symlinks "$1"
+'''
+    result = subprocess.run(
+        [bash, "-c", script, "nested-symlink", draft_root.as_posix()],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "nested symlink" in result.stderr
 
 
 def test_worker_handoff_rollback_executes_parent_lock_before_draft_restore(tmp_path):

@@ -120,8 +120,10 @@ observer public key, the draft state directory, and the metadata of its
 context. The manifest distinguishes an existing prior asset from an asset
 absent before a first deployment. The backup first stops the path trigger, then
 waits for any already-running oneshot worker to finish before copying any
-asset. An EXIT trap restores the path unit's prior active state on both success
-and failure; its enablement state is never changed by the backup.
+asset. During the copy it temporarily locks the validated draft parent. An EXIT
+trap restores both the parent's captured metadata and the path unit's prior
+active state on success and failure; path enablement is never changed by the
+backup.
 
 ```bash
 (
@@ -151,6 +153,15 @@ if ! [[ "$resolved_backup_root" == "/root/$backup_name" ]] \
 fi
 BACKUP_ROOT="$resolved_backup_root"
 DRAFT_PARENT=/var/lib/openvpn-web
+DRAFT_ROOT="$DRAFT_PARENT/server-drafts"
+for namespace_component in /var /var/lib; do
+  if sudo test -L "$namespace_component" || ! sudo test -d "$namespace_component" \
+    || ! [[ "$(sudo readlink -e -- "$namespace_component")" == "$namespace_component" ]] \
+    || ! [[ "$(sudo stat -c '%U:%G:%a' -- "$namespace_component")" == root:root:755 ]]; then
+    echo "draft-worker namespace component is unsafe: $namespace_component" >&2
+    exit 2
+  fi
+done
 if sudo test -L "$DRAFT_PARENT" || ! sudo test -d "$DRAFT_PARENT"; then
   echo 'draft-worker parent is not a real directory' >&2
   exit 2
@@ -171,6 +182,17 @@ esac
 
 # BEGIN draft-worker backup quiescence
 draft_worker_path_was_active=inactive
+draft_parent_restore_needed=false
+parent_metadata_archive=''
+systemd_unit_property() {
+  local unit="$1" property="$2" value
+  if ! value="$(sudo systemctl show --property="$property" --value "$unit")" \
+    || [[ -z "$value" ]]; then
+    echo "cannot determine $property for $unit" >&2
+    exit 2
+  fi
+  printf '%s' "$value"
+}
 restore_draft_worker_path_after_backup() {
   if [[ "$draft_worker_path_was_active" == active ]]; then
     sudo systemctl start server-draft-worker.path
@@ -179,9 +201,14 @@ restore_draft_worker_path_after_backup() {
 finish_draft_worker_backup() {
   local backup_rc=$? restore_rc=0
   trap - EXIT
+  if [[ "$draft_parent_restore_needed" == true ]]; then
+    sudo tar --extract --file="$parent_metadata_archive" \
+      --acls --xattrs --selinux --numeric-owner --same-owner --same-permissions --no-recursion \
+      --directory=/ var/lib/openvpn-web/ || restore_rc=$?
+  fi
   restore_draft_worker_path_after_backup || restore_rc=$?
   if (( restore_rc != 0 )); then
-    echo 'failed to restore the prior draft-worker path active state' >&2
+    echo 'failed to restore the pre-backup draft-worker state' >&2
     if (( backup_rc == 0 )); then
       backup_rc="$restore_rc"
     fi
@@ -190,19 +217,56 @@ finish_draft_worker_backup() {
 }
 trap finish_draft_worker_backup EXIT
 
-if sudo systemctl is-active --quiet server-draft-worker.path; then
-  draft_worker_path_was_active=active
-fi
-sudo systemctl stop server-draft-worker.path
+draft_worker_path_load_state="$(systemd_unit_property server-draft-worker.path LoadState)"
+case "$draft_worker_path_load_state" in
+  loaded)
+    draft_worker_path_active_state="$(systemd_unit_property server-draft-worker.path ActiveState)"
+    case "$draft_worker_path_active_state" in
+      active) draft_worker_path_was_active=active ;;
+      inactive|failed) ;;
+      *)
+        echo "draft-worker path has an unexpected active state: $draft_worker_path_active_state" >&2
+        exit 2
+        ;;
+    esac
+    sudo systemctl stop server-draft-worker.path
+    ;;
+  not-found) ;;
+  *)
+    echo "draft-worker path has an unexpected load state: $draft_worker_path_load_state" >&2
+    exit 2
+    ;;
+esac
 
 # Stopping the path prevents a new activation. Let an invocation that already
 # started finish normally instead of terminating it during a state write.
 draft_worker_quiesced=false
 for _ in {1..180}; do
-  if ! sudo systemctl is-active --quiet server-draft-worker.service; then
-    draft_worker_quiesced=true
-    break
-  fi
+  draft_worker_service_load_state="$(systemd_unit_property server-draft-worker.service LoadState)"
+  case "$draft_worker_service_load_state" in
+    not-found)
+      draft_worker_quiesced=true
+      break
+      ;;
+    loaded)
+      draft_worker_service_active_state="$(systemd_unit_property server-draft-worker.service ActiveState)"
+      case "$draft_worker_service_active_state" in
+        inactive|failed)
+          draft_worker_quiesced=true
+          break
+          ;;
+        active|activating|deactivating|reloading) ;;
+        *)
+          echo "draft worker has an unexpected active state: $draft_worker_service_active_state" >&2
+          exit 2
+          ;;
+      esac
+      ;;
+    *)
+      echo "draft worker has an unexpected load state: $draft_worker_service_load_state" >&2
+      exit 2
+      ;;
+  esac
   sleep 1
 done
 if [[ "$draft_worker_quiesced" != true ]]; then
@@ -213,6 +277,45 @@ fi
 
 rollback_manifest="$BACKUP_ROOT/rollback.assets"
 sudo install -m 0600 /dev/null "$rollback_manifest"
+
+parent_metadata_archive="$BACKUP_ROOT/openvpn-web-parent.tar"
+sudo tar --create --file="$parent_metadata_archive" \
+  --acls --xattrs --selinux --numeric-owner --no-recursion \
+  --directory=/ var/lib/openvpn-web/
+if ! [[ "$(sudo tar --list --file="$parent_metadata_archive")" == "var/lib/openvpn-web/" ]]; then
+  echo 'draft-worker parent metadata archive is incomplete or unsafe' >&2
+  exit 2
+fi
+
+# The parent entry cannot be replaced because /var/lib was validated as
+# root-owned. Lock it while the draft source is inspected and copied, and use
+# the EXIT trap to restore the exact pre-backup metadata before restarting the
+# path unit.
+lock_draft_parent_for_backup() {
+  draft_parent_restore_needed=true
+  sudo chown root:openvpn-web "$DRAFT_PARENT"
+  sudo chmod 1750 "$DRAFT_PARENT"
+  if sudo test -L "$DRAFT_PARENT" || ! sudo test -d "$DRAFT_PARENT" \
+    || ! [[ "$(sudo readlink -e -- "$DRAFT_PARENT")" == "$DRAFT_PARENT" ]] \
+    || ! [[ "$(sudo stat -c '%U:%G:%a' -- "$DRAFT_PARENT")" == root:openvpn-web:1750 ]]; then
+    echo 'draft-worker parent lock did not hold during backup' >&2
+    exit 2
+  fi
+}
+
+reject_nested_symlinks() {
+  local root="$1" symlink_path
+  if ! symlink_path="$(sudo find -P "$root" -type l -print -quit)"; then
+    echo "cannot inspect draft tree for nested symlinks: $root" >&2
+    exit 2
+  fi
+  if [[ -n "$symlink_path" ]]; then
+    echo "refusing nested symlink in draft tree: $symlink_path" >&2
+    exit 2
+  fi
+}
+
+lock_draft_parent_for_backup
 
 # Each manifest line records whether the prior asset was present or absent.
 # "absent" is the expected, distinct first-deployment state; symlinked or
@@ -246,10 +349,13 @@ backup_asset server-draft-worker.service -f /etc/systemd/system/server-draft-wor
 backup_asset server-draft-worker.path -f /etc/systemd/system/server-draft-worker.path
 backup_asset server-draft-worker.path.wants -L /etc/systemd/system/multi-user.target.wants/server-draft-worker.path
 backup_asset server-observer.pub -f /etc/openvpn-web/server-observer.pub
+if sudo test -d "$DRAFT_ROOT"; then
+  reject_nested_symlinks "$DRAFT_ROOT"
+fi
 backup_asset server-drafts -d /var/lib/openvpn-web/server-drafts
-sudo tar --create --file="$BACKUP_ROOT/openvpn-web-parent.tar" \
-  --acls --xattrs --selinux --numeric-owner --no-recursion \
-  --directory=/ var/lib/openvpn-web/
+if sudo test -d "$BACKUP_ROOT/server-drafts"; then
+  reject_nested_symlinks "$BACKUP_ROOT/server-drafts"
+fi
 printf 'openvpn-web-parent-metadata=present\n' | sudo tee -a "$rollback_manifest" >/dev/null
 printf 'server-draft-worker.path.active=%s\n' "$draft_worker_path_was_active" \
   | sudo tee -a "$rollback_manifest" >/dev/null
@@ -376,12 +482,27 @@ asset_state() {
   fi
 }
 
+reject_nested_symlinks() {
+  local root="$1" symlink_path
+  if ! symlink_path="$(sudo find -P "$root" -type l -print -quit)"; then
+    echo "cannot inspect draft tree for nested symlinks: $root" >&2
+    exit 2
+  fi
+  if [[ -n "$symlink_path" ]]; then
+    echo "refusing nested symlink in draft tree: $symlink_path" >&2
+    exit 2
+  fi
+}
+
 worker_wrapper_state="$(asset_state server-draft-worker -f "$BACKUP_ROOT/server-draft-worker")"
 worker_service_state="$(asset_state server-draft-worker.service -f "$BACKUP_ROOT/server-draft-worker.service")"
 worker_path_state="$(asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path")"
 worker_path_wants_state="$(asset_state server-draft-worker.path.wants -L "$BACKUP_ROOT/server-draft-worker.path.wants")"
 observer_public_key_state="$(asset_state server-observer.pub -f "$BACKUP_ROOT/server-observer.pub")"
 draft_state="$(asset_state server-drafts -d "$BACKUP_ROOT/server-drafts")"
+if [[ "$draft_state" == present ]]; then
+  reject_nested_symlinks "$BACKUP_ROOT/server-drafts"
+fi
 
 if [[ "$worker_path_wants_state" == present ]] \
   && ! [[ "$(sudo readlink -- "$BACKUP_ROOT/server-draft-worker.path.wants")" == "../server-draft-worker.path" ]]; then
@@ -492,10 +613,44 @@ validate_locked_live_draft_root() {
 lock_draft_parent_for_restore
 
 # From this point every failure stops the procedure before later mutations.
-sudo systemctl stop server-draft-worker.path
-sudo systemctl disable server-draft-worker.path
-sudo systemctl stop server-draft-worker.service
+# BEGIN draft-worker rollback unit quiescence
+systemd_unit_load_state() {
+  local unit="$1" load_state
+  if ! load_state="$(sudo systemctl show --property=LoadState --value "$unit")" \
+    || [[ -z "$load_state" ]]; then
+    echo "cannot determine LoadState for $unit during rollback" >&2
+    exit 2
+  fi
+  printf '%s' "$load_state"
+}
+
+draft_worker_path_load_state="$(systemd_unit_load_state server-draft-worker.path)"
+case "$draft_worker_path_load_state" in
+  loaded)
+    sudo systemctl stop server-draft-worker.path
+    sudo systemctl disable server-draft-worker.path
+    ;;
+  not-found) ;;
+  *)
+    echo "draft-worker path has an unexpected rollback load state: $draft_worker_path_load_state" >&2
+    exit 2
+    ;;
+esac
+
+draft_worker_service_load_state="$(systemd_unit_load_state server-draft-worker.service)"
+case "$draft_worker_service_load_state" in
+  loaded) sudo systemctl stop server-draft-worker.service ;;
+  not-found) ;;
+  *)
+    echo "draft worker has an unexpected rollback load state: $draft_worker_service_load_state" >&2
+    exit 2
+    ;;
+esac
+# END draft-worker rollback unit quiescence
 validate_locked_live_draft_root
+if sudo test -d "$DRAFT_PARENT/server-drafts"; then
+  reject_nested_symlinks "$DRAFT_PARENT/server-drafts"
+fi
 
 restore_asset() {
   local state="$1" asset_type="$2" source_path="$3" target_path="$4"
