@@ -22,6 +22,8 @@ from app.server_drafts import DraftRequest, make_draft_request, write_public_res
 
 COMMAND_TIMEOUT_SECONDS = 20
 SCAN_TIMEOUT_SECONDS = 8
+MAX_QUEUE_DRAIN_PASSES = 64
+QUEUE_RETRY_EXIT_STATUS = 75
 OBSERVER_KEY_PATH = "/etc/openvpn-web/server-observer.key"
 _FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}(?![A-Za-z0-9+/=])")
 _CANDIDATE = re.compile(r"^[^\s]+\s+ssh-ed25519\s+[A-Za-z0-9+/]+={0,3}\s*$")
@@ -42,51 +44,120 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def process_queue(queue_dir: Path, results_dir: Path, private_dir: Path, runner: Runner = subprocess.run) -> int:
-    """Claim immutable requests once, then process terminal cleanup intents."""
+    """Drain requests to quiescence, with cleanup reservations taking priority."""
+    processed, _restart_required = _drain_queue(queue_dir, results_dir, private_dir, runner)
+    return processed
+
+
+def _drain_queue(
+    queue_dir: Path,
+    results_dir: Path,
+    private_dir: Path,
+    runner: Runner = subprocess.run,
+) -> tuple[int, bool]:
+    """Return the processed count and whether the bounded pass limit was hit."""
     paths = DraftPaths(Path(queue_dir), Path(results_dir), Path(private_dir))
     processed = 0
-    for request_path in sorted(
-        path for path in paths.queue_dir.glob("*.json") if not path.name.endswith(".cleanup.json")
-    ):
-        claim_path = _claim_request(request_path)
-        if claim_path is None:
-            continue
+    for _pass in range(MAX_QUEUE_DRAIN_PASSES):
+        cleanup_paths = sorted(paths.queue_dir.glob("*.cleanup.json"))
+        request_paths = sorted(
+            path for path in paths.queue_dir.glob("*.json")
+            if not path.name.endswith(".cleanup.json")
+        )
+        if not cleanup_paths and not request_paths:
+            break
+
+        pass_processed = 0
+        for cleanup_path in cleanup_paths:
+            pass_processed += _process_cleanup_queue_path(cleanup_path, paths, runner)
+        for request_path in request_paths:
+            pass_processed += _process_normal_queue_path(request_path, paths, runner)
+        processed += pass_processed
+
+        # Nothing was claimable in this snapshot. Another worker owns it, or a
+        # durable malformed cleanup must wait for an operator retry.
+        if pass_processed == 0:
+            break
+    else:
+        return processed, any(paths.queue_dir.glob("*.json"))
+    return processed, False
+
+
+def _process_cleanup_queue_path(cleanup_path: Path, paths: DraftPaths, runner: Runner) -> int:
+    draft_id = cleanup_path.name.removesuffix(".cleanup.json")
+    request_path = paths.queue_dir / f"{draft_id}.json"
+    active_claim = _claim_path(request_path)
+    if active_claim.exists():
+        return 0
+
+    if request_path.exists():
+        pending_claim = _claim_request(request_path)
+        if pending_claim is None:
+            return 0
+        _release_claim(request_path, pending_claim, remove_request=True)
+        if request_path.exists() or active_claim.exists():
+            return 0
+
+    claim_path = _claim_request(cleanup_path)
+    if claim_path is None:
+        return 0
+    completed = False
+    try:
+        request = _read_request(claim_path)
+        process_request(request, paths, runner)
+        os.replace(cleanup_path, paths.queue_dir / f"{draft_id}.deleted")
+        completed = True
+        return 1
+    except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
+        # Keep cleanup durable for a later retry.
+        return 0
+    finally:
+        _release_claim(cleanup_path, claim_path, remove_request=completed)
+
+
+def _process_normal_queue_path(request_path: Path, paths: DraftPaths, runner: Runner) -> int:
+    draft_id = request_path.stem
+    if _cleanup_reserved(paths, draft_id):
+        _cancel_pending_request(request_path)
+        return 0
+
+    claim_path = _claim_request(request_path)
+    if claim_path is None:
+        return 0
+    try:
+        # A cleanup published before this claim became active revokes the
+        # pending action. A cleanup published later waits for this active claim.
+        if _cleanup_reserved(paths, draft_id):
+            return 0
+        request = _read_request(claim_path)
+        process_request(request, paths, runner)
+    except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
+        # Do not expose malformed requests or tool diagnostics to the web layer.
         try:
-            request = _read_request(claim_path)
-            process_request(request, paths, runner)
-        except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
-            # Do not expose malformed requests or tool diagnostics to the web layer.
-            try:
-                draft_id = request_path.stem
-                make_draft_request(draft_id, "invalid", "invalid", 22, "scan")
-                write_public_result(paths.results_dir, draft_id, {"status": "invalid_response"})
-            except ValueError:
-                pass
-        else:
-            processed += 1
-        finally:
-            _release_claim(request_path, claim_path, remove_request=True)
-    for cleanup_path in sorted(paths.queue_dir.glob("*.cleanup.json")):
-        draft_id = cleanup_path.name.removesuffix(".cleanup.json")
-        request_path = paths.queue_dir / f"{draft_id}.json"
-        if request_path.exists() or _claim_path(request_path).exists():
-            continue
-        claim_path = _claim_request(cleanup_path)
-        if claim_path is None:
-            continue
-        completed = False
-        try:
-            request = _read_request(claim_path)
-            process_request(request, paths, runner)
-            os.replace(cleanup_path, paths.queue_dir / f"{draft_id}.deleted")
-            completed = True
-            processed += 1
-        except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
-            # Keep cleanup durable for a later retry.
+            make_draft_request(draft_id, "invalid", "invalid", 22, "scan")
+            write_public_result(paths.results_dir, draft_id, {"status": "invalid_response"})
+        except ValueError:
             pass
-        finally:
-            _release_claim(cleanup_path, claim_path, remove_request=completed)
-    return processed
+    else:
+        return 1
+    finally:
+        _release_claim(request_path, claim_path, remove_request=True)
+    return 0
+
+
+def _cleanup_reserved(paths: DraftPaths, draft_id: str) -> bool:
+    return (
+        (paths.queue_dir / f"{draft_id}.cleanup.json").is_file()
+        or (paths.queue_dir / f"{draft_id}.deleted").is_file()
+    )
+
+
+def _cancel_pending_request(request_path: Path) -> bool:
+    claim_path = _claim_request(request_path)
+    if claim_path is None:
+        return False
+    _release_claim(request_path, claim_path, remove_request=True)
+    return True
 
 
 def process_request(request: DraftRequest, paths: DraftPaths, runner: Runner = subprocess.run) -> int:
@@ -333,7 +404,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--private-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-    process_queue(args.queue_dir, args.results_dir, args.private_dir)
+    _processed, restart_required = _drain_queue(
+        args.queue_dir, args.results_dir, args.private_dir
+    )
+    if restart_required:
+        return QUEUE_RETRY_EXIT_STATUS
     return 0
 
 

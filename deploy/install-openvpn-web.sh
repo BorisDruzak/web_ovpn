@@ -28,8 +28,23 @@ if ! id netctl >/dev/null 2>&1; then
   sudo_cmd useradd --system --home /var/lib/netctl --shell /usr/sbin/nologin --gid netctl netctl
 fi
 
-sudo_cmd mkdir -p "$APP" /etc/openvpn-web /var/lib/openvpn-web /etc/openvpn
-sudo_cmd chown -R openvpn-web:openvpn-web "$APP" /var/lib/openvpn-web
+sudo_cmd mkdir -p "$APP" /etc/openvpn-web /etc/openvpn
+if ! sudo_cmd test -e /var/lib/openvpn-web; then
+  sudo_cmd install -d -m 0755 -o openvpn-web -g openvpn-web /var/lib/openvpn-web
+elif sudo_cmd test -L /var/lib/openvpn-web || ! sudo_cmd test -d /var/lib/openvpn-web; then
+  echo "refusing unsafe /var/lib/openvpn-web metadata" >&2
+  exit 2
+else
+  state_dir_metadata="$(sudo_cmd stat -c '%U:%G:%a' -- /var/lib/openvpn-web)"
+  case "$state_dir_metadata" in
+    openvpn-web:openvpn-web:755|root:openvpn-web:1770) ;;
+    *)
+      echo "refusing unsafe /var/lib/openvpn-web metadata" >&2
+      exit 2
+      ;;
+  esac
+fi
+sudo_cmd chown -R openvpn-web:openvpn-web "$APP"
 sudo_cmd rm -rf \
   "$APP/app" \
   "$APP/netctl" \
@@ -48,11 +63,7 @@ sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
 sudo_cmd install -m 0755 "$SRC/deploy/server-observer" /usr/local/sbin/server-observer
-sudo_cmd install -m 0755 "$SRC/deploy/server-draft-worker" /usr/local/sbin/server-draft-worker
 sudo_cmd install -d -m 0750 -o openvpm -g openvpn-web /var/lib/openvpn-web/server-observer
-sudo_cmd install -d -m 0770 -o openvpn-web -g openvpn-web /var/lib/openvpn-web/server-drafts/queue
-sudo_cmd install -d -m 0770 -o openvpn-web -g openvpn-web /var/lib/openvpn-web/server-drafts/results
-sudo_cmd install -d -m 0700 -o openvpm -g openvpm /var/lib/openvpn-web/server-drafts/private
 if [[ ! -e /etc/openvpn-web/server-observer.json ]]; then
   sudo_cmd install -m 0640 -o root -g openvpn-web \
     "$SRC/deploy/server-observer.json.sample" /etc/openvpn-web/server-observer.json
@@ -64,14 +75,6 @@ if [[ -e /etc/openvpn-web/server-observer.key ]]; then
   fi
   sudo_cmd chown openvpm:openvpm /etc/openvpn-web/server-observer.key
   sudo_cmd chmod 0600 /etc/openvpn-web/server-observer.key
-  TMP_OBSERVER_PUBLIC_KEY="$(mktemp)"
-  if ! sudo_cmd ssh-keygen -y -f /etc/openvpn-web/server-observer.key > "$TMP_OBSERVER_PUBLIC_KEY"; then
-    rm -f "$TMP_OBSERVER_PUBLIC_KEY"
-    echo "could not derive server observer public key" >&2
-    exit 2
-  fi
-  sudo_cmd install -m 0644 -o root -g openvpn-web "$TMP_OBSERVER_PUBLIC_KEY" /etc/openvpn-web/server-observer.pub
-  rm -f "$TMP_OBSERVER_PUBLIC_KEY"
 fi
 if [[ -e /etc/openvpn-web/server-observer.known_hosts ]]; then
   if sudo_cmd test -L /etc/openvpn-web/server-observer.known_hosts || ! sudo_cmd test -f /etc/openvpn-web/server-observer.known_hosts; then
@@ -268,8 +271,6 @@ sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.service" /etc/systemd/s
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
 sudo_cmd install -m 0644 "$SRC/deploy/server-observer.service" /etc/systemd/system/server-observer.service
 sudo_cmd install -m 0644 "$SRC/deploy/server-observer.timer" /etc/systemd/system/server-observer.timer
-sudo_cmd install -m 0644 "$SRC/deploy/server-draft-worker.service" /etc/systemd/system/server-draft-worker.service
-sudo_cmd install -m 0644 "$SRC/deploy/server-draft-worker.path" /etc/systemd/system/server-draft-worker.path
 sudo_cmd systemctl daemon-reload
 sudo_cmd systemctl enable openvpn-web.service
 sudo_cmd systemctl enable vpn-policy.service
@@ -277,7 +278,6 @@ sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
 sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer
 sudo_cmd systemctl enable --now server-observer.timer
-sudo_cmd systemctl enable --now server-draft-worker.path
 sudo_cmd systemctl restart openvpn-web.service
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'
 cat /tmp/openvpn-web-admin-password.txt

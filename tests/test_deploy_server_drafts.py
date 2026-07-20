@@ -22,6 +22,10 @@ def test_worker_service_is_key_isolated_and_retains_observer_hardening():
         "Group=openvpn-web",
         "WorkingDirectory=/opt/openvpn-web",
         "TimeoutStartSec=3min",
+        "Restart=on-failure",
+        "RestartSec=1s",
+        "StartLimitIntervalSec=5min",
+        "StartLimitBurst=3",
         "NoNewPrivileges=true",
         "PrivateTmp=true",
         "ProtectHome=tmpfs",
@@ -73,22 +77,19 @@ def test_path_unit_watches_only_the_public_request_queue():
     assert PRIVATE_DIR not in path_unit
 
 
-def test_installer_derives_public_key_and_enables_path_only():
+def test_generic_installer_does_not_provision_or_enable_draft_worker():
     installer = Path("deploy/install-openvpn-web.sh").read_text(encoding="utf-8")
 
-    assert "deploy/server-draft-worker\" /usr/local/sbin/server-draft-worker" in installer
-    assert "server-draft-worker.service" in installer
-    assert "server-draft-worker.path" in installer
-    assert f"-d -m 0770 -o openvpn-web -g openvpn-web {QUEUE_DIR}" in installer
-    assert f"-d -m 0770 -o openvpn-web -g openvpn-web {RESULTS_DIR}" in installer
-    assert f"-d -m 0700 -o openvpm -g openvpm {PRIVATE_DIR}" in installer
-    assert f"ssh-keygen -y -f {OBSERVER_KEY}" in installer
-    assert OBSERVER_PUBLIC_KEY in installer
-    assert f"-m 0644 -o root -g openvpn-web" in installer
-    assert "systemctl daemon-reload" in installer
-    assert "systemctl enable --now server-draft-worker.path" in installer
-    assert "systemctl start server-draft-worker.service" not in installer
-    assert "systemctl enable --now server-draft-worker.service" not in installer
+    for forbidden in (
+        "server-draft-worker",
+        "/var/lib/openvpn-web/server-drafts",
+        OBSERVER_PUBLIC_KEY,
+        f"ssh-keygen -y -f {OBSERVER_KEY}",
+    ):
+        assert forbidden not in installer
+    assert 'chown -R openvpn-web:openvpn-web "$APP" /var/lib/openvpn-web' not in installer
+    assert "openvpn-web:openvpn-web:755|root:openvpn-web:1770" in installer
+    assert "refusing unsafe /var/lib/openvpn-web metadata" in installer
 
 
 def test_draft_worker_only_installer_has_a_strictly_limited_deployment_surface():

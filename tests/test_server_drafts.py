@@ -9,7 +9,7 @@ import pytest
 
 from app.config import get_settings, reset_settings_cache
 from app.models import ServerDraft
-from app import server_drafts
+from app import server_draft_worker, server_drafts
 from app.server_drafts import (
     create_draft_request,
     make_draft_request,
@@ -339,7 +339,7 @@ def test_concurrent_request_publication_reserves_one_action_without_replacement(
     assert queued["action"] in {"scan", "check"}
 
 
-def test_worker_claim_does_not_unlink_a_newer_replacement(tmp_path):
+def test_worker_claim_does_not_unlink_and_drains_a_newer_replacement(tmp_path):
     draft_id = str(uuid4())
     paths = draft_paths(tmp_path)
     create_draft_request(
@@ -347,20 +347,128 @@ def test_worker_claim_does_not_unlink_a_newer_replacement(tmp_path):
         make_draft_request(draft_id, "server.example", "observer", 22, "scan"),
     )
     replacement = make_draft_request(draft_id, "new.example", "observer", 22, "scan")
+    replaced = False
+    scanned_hosts = []
 
     def runner(command, **_kwargs):
+        nonlocal replaced
         if command[0] == "ssh-keyscan":
+            scanned_hosts.append(command[-1])
+            if not replaced:
+                (paths.queue_dir / f"{draft_id}.json").unlink()
+                create_draft_request(paths.queue_dir, replacement)
+                replaced = True
+            return completed_scan(f"{command[-1]} ssh-ed25519 AAA")
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
+        )
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, runner) == 2
+
+    assert scanned_hosts == ["server.example", "new.example"]
+    assert not (paths.queue_dir / f"{draft_id}.json").exists()
+
+
+def test_worker_drain_has_a_bounded_number_of_passes(tmp_path, monkeypatch):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    request = make_draft_request(draft_id, "server.example", "observer", 22, "scan")
+    create_draft_request(paths.queue_dir, request)
+    scans = 0
+
+    def runner(command, **_kwargs):
+        nonlocal scans
+        if command[0] == "ssh-keyscan":
+            scans += 1
             (paths.queue_dir / f"{draft_id}.json").unlink()
-            create_draft_request(paths.queue_dir, replacement)
+            create_draft_request(paths.queue_dir, request)
             return completed_scan("server.example ssh-ed25519 AAA")
         return subprocess.CompletedProcess(
             command, 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
         )
 
-    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, runner) == 1
+    monkeypatch.setattr(server_draft_worker, "MAX_QUEUE_DRAIN_PASSES", 2, raising=False)
 
-    queued = json.loads((paths.queue_dir / f"{draft_id}.json").read_text(encoding="utf-8"))
-    assert queued["host"] == "new.example"
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, runner) == 2
+    assert scans == 2
+    assert (paths.queue_dir / f"{draft_id}.json").is_file()
+
+
+def test_worker_main_requests_bounded_service_restart_after_drain_limit(tmp_path, monkeypatch):
+    paths = draft_paths(tmp_path)
+    monkeypatch.setattr(server_draft_worker, "_drain_queue", lambda *_args: (64, True))
+
+    assert server_draft_worker.main(
+        [
+            "--queue-dir", str(paths.queue_dir),
+            "--results-dir", str(paths.results_dir),
+            "--private-dir", str(paths.private_dir),
+        ]
+    ) == server_draft_worker.QUEUE_RETRY_EXIT_STATUS
+
+
+def test_worker_main_leaves_durable_unclaimable_cleanup_for_later_event(tmp_path):
+    paths = draft_paths(tmp_path)
+    paths.queue_dir.mkdir(parents=True)
+    (paths.queue_dir / "not-a-uuid.cleanup.json").write_text(
+        '{"id":"not-a-uuid","action":"cleanup"}', encoding="utf-8"
+    )
+
+    assert server_draft_worker.main(
+        [
+            "--queue-dir", str(paths.queue_dir),
+            "--results-dir", str(paths.results_dir),
+            "--private-dir", str(paths.private_dir),
+        ]
+    ) == 0
+
+
+def test_worker_rescans_for_request_arriving_during_processing(tmp_path):
+    first_id = str(uuid4())
+    second_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    create_draft_request(
+        paths.queue_dir,
+        make_draft_request(first_id, "first.example", "observer", 22, "scan"),
+    )
+
+    def runner(command, **_kwargs):
+        if command[0] == "ssh-keyscan":
+            if command[-1] == "first.example":
+                create_draft_request(
+                    paths.queue_dir,
+                    make_draft_request(second_id, "second.example", "observer", 22, "scan"),
+                )
+            return completed_scan(f"{command[-1]} ssh-ed25519 AAA")
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
+        )
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, runner) == 2
+
+    assert not list(paths.queue_dir.glob("*.json"))
+    assert read_public_result(paths.results_dir, first_id)["status"] == "pending"
+    assert read_public_result(paths.results_dir, second_id)["status"] == "pending"
+
+
+def test_cleanup_reservation_cancels_pending_normal_request_before_execution(tmp_path, fake_runner):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    create_draft_request(
+        paths.queue_dir,
+        make_draft_request(draft_id, "server.example", "observer", 22, "scan"),
+    )
+    create_draft_request(
+        paths.queue_dir,
+        make_draft_request(draft_id, "cleanup", "cleanup", 22, "cleanup"),
+    )
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, fake_runner) == 1
+
+    assert not (paths.queue_dir / f"{draft_id}.json").exists()
+    assert not (paths.queue_dir / f"{draft_id}.cleanup.json").exists()
+    assert (paths.queue_dir / f"{draft_id}.deleted").is_file()
+    fake_runner.assert_not_called()
 
 
 def test_cleanup_intent_survives_an_active_request_and_becomes_terminal(tmp_path):
