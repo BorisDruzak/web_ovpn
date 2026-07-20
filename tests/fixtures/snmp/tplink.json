@@ -46,9 +46,5 @@
       {"oid":[1,3,6,1,2,1,17,4,3,1,3,2,0,0,0,0,1],"value_type":"integer","value":3}
     ]},
     {"capability":"vlan_fdb_id","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,3],"outcome":"unsupported_no_such_object","rows":[]}
-    ,{"capability":"vlan_current_egress","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,4],"outcome":"unsupported_no_such_object","rows":[]}
-    ,{"capability":"vlan_current_untagged","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,5],"outcome":"unsupported_no_such_object","rows":[]}
-    ,{"capability":"pvid","request_oid":[1,3,6,1,2,1,17,7,1,4,5,1,1],"outcome":"unsupported_no_such_object","rows":[]}
-    ,{"capability":"lldp_remote_chassis_id","request_oid":[1,0,8802,1,1,2,1,4,1,1,5],"outcome":"unsupported_no_such_object","rows":[]}
   ]
 }

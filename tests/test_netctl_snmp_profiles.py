@@ -104,31 +104,13 @@ def test_tplink_fixture_normalizes_qbridge_fdb_ports() -> None:
         "2C:C8:1B:AB:53:C9": (22, 49174),
         "2C:C8:1B:AB:47:23": (18, 49170),
     }
-    assert snapshot.lldp_neighbors == ()
 
 
-def test_tplink_prefers_qbridge_and_tolerates_unsupported_optional_groups() -> None:
+def test_tplink_prefers_qbridge_when_legacy_tables_are_also_valid() -> None:
     fixture = json.loads(_TPLINK_FIXTURE.read_text(encoding="utf-8"))
     capabilities = {page["capability"]: page for page in fixture["pages"]}
 
-    assert {
-        "legacy_address",
-        "legacy_port",
-        "legacy_status",
-        "vlan_current_egress",
-        "vlan_current_untagged",
-        "pvid",
-        "lldp_remote_chassis_id",
-    } <= capabilities.keys()
-    assert all(
-        capabilities[name]["outcome"] == "unsupported_no_such_object"
-        for name in (
-            "vlan_current_egress",
-            "vlan_current_untagged",
-            "pvid",
-            "lldp_remote_chassis_id",
-        )
-    )
+    assert {"legacy_address", "legacy_port", "legacy_status"} <= capabilities.keys()
 
     snapshot = asyncio.run(collect_switch_snapshot({}, _tplink_fixture_transport()))
 
@@ -139,8 +121,6 @@ def test_tplink_prefers_qbridge_and_tolerates_unsupported_optional_groups() -> N
         "2C:C8:1B:AB:53:C9",
         "2C:C8:1B:AB:47:23",
     }
-    assert snapshot.vlan_memberships == ()
-    assert snapshot.lldp_neighbors == ()
 
 
 def test_tplink_fixture_is_sanitized_numeric_oid_data_without_secrets() -> None:

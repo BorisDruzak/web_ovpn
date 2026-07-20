@@ -1275,9 +1275,11 @@ C0:9B:F4:61:4B:CD -> vid:20 -> physical:48 -> ifIndex49200
 2C:C8:1B:AB:53:C9 -> vid:1 -> physical:22
 2C:C8:1B:AB:47:23 -> vid:1 -> physical:18
 Q-BRIDGE preferred when both modes work
-unsupported VLAN/PVID does not clear prior optional state
-remote LLDP empty/unsupported does not fail collection
 ```
+
+Optional VLAN/PVID/LLDP collection and prior-state preservation are deferred to
+Task 11. Task 10 covers TP-Link identity, FDB mode selection, VLAN-key policy,
+and physical-port normalization only.
 
 - [ ] **Step 2: Implement rule**
 
@@ -1302,6 +1304,9 @@ git commit -m "feat: add TP-Link SNMP port profile"
 ---
 
 ## Task 11: Add CSS326 legacy FDB and optional LLDP
+
+Task 11 owns optional VLAN/PVID/LLDP collection and prior-state preservation
+semantics for TP-Link and CSS326.
 
 **Files:**
 - Create: `netctl/snmp/lldp.py`
