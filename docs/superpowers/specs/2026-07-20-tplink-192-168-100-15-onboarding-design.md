@@ -21,8 +21,10 @@ source.
 
 1. Confirm the collector timer is inactive and disabled, then back up the new
    source YAML before any temporary edit.
-2. Create the source as disabled, with `snmp_version: 2c` and the TP-Link
-   profile hint; verify `root:netctl 0640` ownership and read access.
+2. Create the root-owned source YAML as disabled through `sudo netctl`, with
+   `snmp_version: 2c` and the TP-Link profile hint; verify `root:netctl 0640`
+   ownership and read access.  The `netctl` service account must not receive
+   write access to the source directory.
 3. Run `netctl sources test` as `netctl`.  This issues only SNMP GET/WALK and
    must identify the TP-Link profile with successful required groups.
 4. Keep the source disabled after the test.  A later, separately approved
