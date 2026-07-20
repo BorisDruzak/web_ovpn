@@ -178,7 +178,7 @@ pilot_yaml="/etc/netctl/sources.d/$pilot_source.yaml"
 pilot_yaml_backup="/var/backups/netctl/$pilot_source-before-manual-$stamp.yaml"
 test "$(systemctl is-active netctl-collect.timer)" = inactive
 test "$(systemctl is-enabled netctl-collect.timer)" = disabled
-sudo install -m 0640 "$pilot_yaml" "$pilot_yaml_backup"
+sudo install -m 0640 -o root -g netctl "$pilot_yaml" "$pilot_yaml_backup"
 sudoedit "$pilot_yaml"
 sudo -u netctl /usr/local/sbin/netctl --json sources list
 enabled_snmp_before_manual="$(sudo sqlite3 /var/lib/netctl/netctl.sqlite \
@@ -242,7 +242,7 @@ failed_events="$(sudo sqlite3 /var/lib/netctl/netctl.sqlite \
   "SELECT COUNT(*) FROM switch_fdb_events WHERE source_id=(SELECT id FROM network_sources WHERE name='$pilot_source');")"
 test "$preserved_digest" = "$failed_digest"
 test "$preserved_events" = "$failed_events"
-sudo install -m 0644 "$pilot_yaml_backup" "$pilot_yaml"
+sudo install -m 0640 -o root -g netctl "$pilot_yaml_backup" "$pilot_yaml"
 sudo -u netctl /usr/local/sbin/netctl --json sources list
 ```
 
