@@ -130,24 +130,71 @@ def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources
     assert "do **not** restart OpenVPN" in handoff
 
     for validation in (
-        'case "$BACKUP_ROOT" in',
-        "/root/openvpn-web-server-drafts-backup-[0-9]",
+        'backup_name="$(basename -- "$BACKUP_ROOT")"',
+        "openvpn-web-server-drafts-backup-[0-9]{14}",
+        'sudo test -L -- "$BACKUP_ROOT"',
+        'sudo readlink -e -- "$BACKUP_ROOT"',
         'sudo test -d "$BACKUP_ROOT"',
-        'sudo test -f "$BACKUP_ROOT/server-draft-worker.service"',
-        'sudo test -f "$BACKUP_ROOT/server-draft-worker.path"',
-        'sudo test -d "$BACKUP_ROOT/server-drafts"',
-        'sudo test -L "$BACKUP_ROOT/server-drafts"',
+        'sudo test -f "$rollback_manifest"',
+        'asset_state server-draft-worker.service -f "$BACKUP_ROOT/server-draft-worker.service"',
+        'asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path"',
+        'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
     ):
         assert validation in handoff
 
     first_mutation = handoff.index("sudo systemctl stop server-draft-worker.path")
     for source_check in (
-        'sudo test -f "$BACKUP_ROOT/server-draft-worker.service"',
-        'sudo test -f "$BACKUP_ROOT/server-draft-worker.path"',
-        'sudo test -d "$BACKUP_ROOT/server-drafts"',
+        'asset_state server-draft-worker.service -f "$BACKUP_ROOT/server-draft-worker.service"',
+        'asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path"',
+        'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
     ):
         assert handoff.index(source_check) < first_mutation
 
     assert "sudo systemctl disable server-draft-worker.path" in handoff
     assert "sudo systemctl stop server-draft-worker.service" in handoff
     assert "sudo rm -rf -- /var/lib/openvpn-web/server-drafts" in handoff
+
+
+def test_worker_handoff_backup_and_rollback_fail_closed_for_every_mutated_asset():
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    backup, rollback = handoff.split("### Rollback", 1)
+
+    assert "set -euo pipefail" in backup
+    assert "set -euo pipefail" in rollback
+    assert 'rollback_manifest="$BACKUP_ROOT/rollback.assets"' in backup
+    assert "printf 'Draft-worker rollback backup: %s\\n' \"$BACKUP_ROOT\"" in backup
+
+    for source_name in (
+        "server-draft-worker",
+        "server-draft-worker.service",
+        "server-draft-worker.path",
+        "server-observer.pub",
+        "server-drafts",
+    ):
+        assert source_name in backup
+        assert f'"$BACKUP_ROOT/{source_name}"' in rollback
+        assert f'"$rollback_manifest"' in rollback
+
+    assert "present or absent" in backup
+    assert "prior asset was absent" in rollback
+    assert 'sudo test -L -- "$BACKUP_ROOT"' in rollback
+    assert rollback.index('sudo test -L -- "$BACKUP_ROOT"') < rollback.index(
+        'sudo readlink -e -- "$BACKUP_ROOT"'
+    )
+    assert 'backup_name="$(basename -- "$BACKUP_ROOT")"' in rollback
+    assert '[[ "$backup_name" =~ ^openvpn-web-server-drafts-backup-[0-9]{14}$ ]]' in rollback
+    assert '[[ "$BACKUP_ROOT" == "/root/$backup_name" ]]' in rollback
+    assert '[[ "$resolved_backup_root" == "/root/$backup_name" ]]' in rollback
+
+    first_mutation = rollback.index("sudo systemctl stop server-draft-worker.path")
+    for validation in (
+        'sudo test -f "$rollback_manifest"',
+        'sudo test -L "$rollback_manifest"',
+        'asset_state server-draft-worker -f "$BACKUP_ROOT/server-draft-worker"',
+        'asset_state server-observer.pub -f "$BACKUP_ROOT/server-observer.pub"',
+        'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
+    ):
+        assert rollback.index(validation) < first_mutation

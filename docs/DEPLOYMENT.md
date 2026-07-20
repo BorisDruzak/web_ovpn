@@ -112,17 +112,47 @@ Run it only on an existing OpenVPN web deployment that already has the
 those prerequisites and refuses to create or modify them.
 
 Before running the installer, make a timestamped backup containing **only**
-the draft-worker systemd units and the draft state directory:
+the scoped installer-mutated assets: the draft-worker wrapper, both
+draft-worker systemd units, the derived observer public key, and the draft
+state directory. The manifest distinguishes an existing prior asset from an
+asset absent before a first deployment:
 
 ```bash
+(
+set -euo pipefail
+
 BACKUP_ROOT="/root/openvpn-web-server-drafts-backup-$(date -u +%Y%m%d%H%M%S)"
+rollback_manifest="$BACKUP_ROOT/rollback.assets"
 sudo install -d -m 0700 "$BACKUP_ROOT"
-sudo cp -a \
-  /etc/systemd/system/server-draft-worker.service \
-  /etc/systemd/system/server-draft-worker.path \
-  /var/lib/openvpn-web/server-drafts \
-  "$BACKUP_ROOT/"
+sudo install -m 0600 /dev/null "$rollback_manifest"
+
+# Each manifest line records whether the prior asset was present or absent.
+# "absent" is the expected, distinct first-deployment state; symlinked or
+# unexpected source types are never backed up.
+backup_asset() {
+  local asset_name="$1" asset_type="$2" source_path="$3"
+  if sudo test -L "$source_path"; then
+    echo "refusing symlinked draft-worker asset: $source_path" >&2
+    exit 2
+  elif sudo test "$asset_type" "$source_path"; then
+    sudo cp -a -- "$source_path" "$BACKUP_ROOT/$asset_name"
+    printf '%s=present\n' "$asset_name" | sudo tee -a "$rollback_manifest" >/dev/null
+  elif sudo test -e "$source_path"; then
+    echo "refusing unexpected draft-worker asset type: $source_path" >&2
+    exit 2
+  else
+    printf '%s=absent\n' "$asset_name" | sudo tee -a "$rollback_manifest" >/dev/null
+  fi
+}
+
+backup_asset server-draft-worker -f /usr/local/sbin/server-draft-worker
+backup_asset server-draft-worker.service -f /etc/systemd/system/server-draft-worker.service
+backup_asset server-draft-worker.path -f /etc/systemd/system/server-draft-worker.path
+backup_asset server-observer.pub -f /etc/openvpn-web/server-observer.pub
+backup_asset server-drafts -d /var/lib/openvpn-web/server-drafts
+sudo test -s "$rollback_manifest"
 printf 'Draft-worker rollback backup: %s\n' "$BACKUP_ROOT"
+)
 ```
 
 Copy the reviewed source bundle to the host as described in [Deploy To OpenVPN
@@ -165,35 +195,94 @@ unrelated, or symlinked backup root and verifies every restore source before
 stopping services, replacing units, or deleting draft state:
 
 ```bash
+(
+set -euo pipefail
+
 BACKUP_ROOT='/root/openvpn-web-server-drafts-backup-20260720120000'
-case "$BACKUP_ROOT" in
-  /root/openvpn-web-server-drafts-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-  *) echo 'refusing an unvalidated draft-worker backup root' >&2; exit 2 ;;
-esac
-BACKUP_ROOT="$(sudo readlink -f -- "$BACKUP_ROOT")"
-case "$BACKUP_ROOT" in
-  /root/openvpn-web-server-drafts-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-  *) echo 'refusing a resolved backup root outside the draft-worker backup namespace' >&2; exit 2 ;;
-esac
+backup_name="$(basename -- "$BACKUP_ROOT")"
+if ! [[ "$backup_name" =~ ^openvpn-web-server-drafts-backup-[0-9]{14}$ ]] \
+  || ! [[ "$BACKUP_ROOT" == "/root/$backup_name" ]]; then
+  echo 'refusing an unvalidated draft-worker backup root' >&2
+  exit 2
+fi
+# Reject the supplied directory itself before readlink can hide that symlink.
+if sudo test -L -- "$BACKUP_ROOT"; then
+  echo 'refusing a symlinked draft-worker backup root' >&2
+  exit 2
+fi
+resolved_backup_root="$(sudo readlink -e -- "$BACKUP_ROOT")"
+if ! [[ "$resolved_backup_root" == "/root/$backup_name" ]]; then
+  echo 'refusing a resolved backup root outside the draft-worker backup namespace' >&2
+  exit 2
+fi
+BACKUP_ROOT="$resolved_backup_root"
+rollback_manifest="$BACKUP_ROOT/rollback.assets"
 if ! sudo test -d "$BACKUP_ROOT" || sudo test -L "$BACKUP_ROOT" || \
-  ! sudo test -f "$BACKUP_ROOT/server-draft-worker.service" || \
-  sudo test -L "$BACKUP_ROOT/server-draft-worker.service" || \
-  ! sudo test -f "$BACKUP_ROOT/server-draft-worker.path" || \
-  sudo test -L "$BACKUP_ROOT/server-draft-worker.path" || \
-  ! sudo test -d "$BACKUP_ROOT/server-drafts" || \
-  sudo test -L "$BACKUP_ROOT/server-drafts"; then
-  echo 'draft-worker rollback backup is incomplete or unsafe' >&2
+  ! sudo test -f "$rollback_manifest" || sudo test -L "$rollback_manifest"; then
+  echo 'draft-worker rollback backup root or manifest is incomplete or unsafe' >&2
   exit 2
 fi
 
+# A present source must be a non-symlinked regular file/directory. If the
+# prior asset was absent, the manifest must not smuggle a restore source into
+# the backup. This preserves the first-deployment state during rollback.
+asset_state() {
+  local asset_name="$1" asset_type="$2" source_path="$3"
+  if sudo grep -Fxq "$asset_name=present" "$rollback_manifest"; then
+    if sudo grep -Fxq "$asset_name=absent" "$rollback_manifest" \
+      || ! sudo test "$asset_type" "$source_path" || sudo test -L "$source_path"; then
+      echo "draft-worker rollback source is unsafe: $asset_name" >&2
+      exit 2
+    fi
+    printf 'present'
+  elif sudo grep -Fxq "$asset_name=absent" "$rollback_manifest"; then
+    if sudo test -e "$source_path" || sudo test -L "$source_path"; then
+      echo "draft-worker rollback has an unexpected source for absent asset: $asset_name" >&2
+      exit 2
+    fi
+    printf 'absent'
+  else
+    echo "draft-worker rollback manifest lacks a valid state for: $asset_name" >&2
+    exit 2
+  fi
+}
+
+worker_wrapper_state="$(asset_state server-draft-worker -f "$BACKUP_ROOT/server-draft-worker")"
+worker_service_state="$(asset_state server-draft-worker.service -f "$BACKUP_ROOT/server-draft-worker.service")"
+worker_path_state="$(asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path")"
+observer_public_key_state="$(asset_state server-observer.pub -f "$BACKUP_ROOT/server-observer.pub")"
+draft_state="$(asset_state server-drafts -d "$BACKUP_ROOT/server-drafts")"
+
+# From this point every failure stops the procedure before later mutations.
 sudo systemctl stop server-draft-worker.path
 sudo systemctl disable server-draft-worker.path
 sudo systemctl stop server-draft-worker.service
-sudo install -m 0644 "$BACKUP_ROOT/server-draft-worker.service" /etc/systemd/system/server-draft-worker.service
-sudo install -m 0644 "$BACKUP_ROOT/server-draft-worker.path" /etc/systemd/system/server-draft-worker.path
-sudo rm -rf -- /var/lib/openvpn-web/server-drafts
-sudo cp -a -- "$BACKUP_ROOT/server-drafts" /var/lib/openvpn-web/server-drafts
+
+restore_file() {
+  local state="$1" source_path="$2" target_path="$3" mode="$4"
+  if [[ "$state" == present ]]; then
+    sudo install -m "$mode" "$source_path" "$target_path"
+  else
+    sudo rm -f -- "$target_path"
+  fi
+}
+
+restore_file "$worker_wrapper_state" "$BACKUP_ROOT/server-draft-worker" /usr/local/sbin/server-draft-worker 0755
+restore_file "$worker_service_state" "$BACKUP_ROOT/server-draft-worker.service" /etc/systemd/system/server-draft-worker.service 0644
+restore_file "$worker_path_state" "$BACKUP_ROOT/server-draft-worker.path" /etc/systemd/system/server-draft-worker.path 0644
+if [[ "$observer_public_key_state" == present ]]; then
+  sudo install -m 0644 -o root -g openvpn-web "$BACKUP_ROOT/server-observer.pub" /etc/openvpn-web/server-observer.pub
+else
+  sudo rm -f -- /etc/openvpn-web/server-observer.pub
+fi
+if [[ "$draft_state" == present ]]; then
+  sudo rm -rf -- /var/lib/openvpn-web/server-drafts
+  sudo cp -a -- "$BACKUP_ROOT/server-drafts" /var/lib/openvpn-web/server-drafts
+else
+  sudo rm -rf -- /var/lib/openvpn-web/server-drafts
+fi
 sudo systemctl daemon-reload
+)
 ```
 
 Do not disable or restart OpenVPN, and do not change collector configuration or
