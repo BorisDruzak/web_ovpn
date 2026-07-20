@@ -1,4 +1,4 @@
-name: OR-2A TDD
+name: OR-2A verification
 
 on:
   push:
@@ -13,9 +13,9 @@ permissions:
   contents: read
 
 jobs:
-  focused:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,9 +24,55 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: python -m pip install -r requirements.txt
-      - name: Complete OR-2A focused suite
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install ansible-core
+      - name: Focused OR-2A tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q \
+            tests/alt_linux/test_or2a_preflight_failures.py \
+            tests/alt_linux/test_operational_reliability_contract.py \
+            | tee focused.log
+      - name: ALT Linux suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q tests/alt_linux | tee alt.log
+      - name: Full repository suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q | tee full.log
+      - name: Ansible preflight syntax
         run: >-
-          python -m pytest -q
-          tests/alt_linux/test_or2a_preflight_failures.py
-          tests/alt_linux/test_operational_reliability_contract.py
+          env ANSIBLE_CONFIG=deploy/alt-linux/ansible/ansible.cfg
+          ansible-playbook --syntax-check
+          deploy/alt-linux/ansible/playbooks/01-preflight.yml
+      - name: Diff check
+        run: git diff --check origin/main...HEAD
+      - name: Build evidence summary
+        if: always()
+        shell: bash
+        run: |
+          touch focused.log alt.log full.log
+          {
+            echo "head_sha=${GITHUB_SHA}"
+            grep -E "passed|failed|error|warning" focused.log | tail -n 2 || true
+            grep -E "passed|failed|error|warning" alt.log | tail -n 2 || true
+            grep -E "passed|failed|error|warning" full.log | tail -n 2 || true
+          } > or2a-summary.txt
+      - name: Upload OR-2A evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: or2a-verification-output
+          path: |
+            focused.log
+            alt.log
+            full.log
+            or2a-summary.txt
+          if-no-files-found: error
+          retention-days: 7
