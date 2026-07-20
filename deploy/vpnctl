@@ -137,9 +137,9 @@ def timestamp() -> str:
 
 def load_env_file(path: Path) -> Dict[str, str]:
     data: Dict[str, str] = {}
-    if not path.exists():
-        return data
     try:
+        if not path.exists():
+            return data
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except PermissionError:
         return data
