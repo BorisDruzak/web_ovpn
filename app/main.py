@@ -26,6 +26,7 @@ from .models import (
     ServerDraft,
     ServerDraftCheckOutbox,
     ServerDraftCleanupOutbox,
+    ServerDraftConfirmOutbox,
     WebAuditLog,
     WebUser,
     utcnow,
@@ -222,6 +223,68 @@ def publish_check_outbox(db: Session) -> list[ServerDraftCheckOutbox]:
     return pending
 
 
+def publish_confirm_outbox(db: Session) -> list[ServerDraftConfirmOutbox]:
+    """Publish only confirmations whose audit intent is already committed."""
+    pending = list(
+        db.scalars(
+            select(ServerDraftConfirmOutbox)
+            .where(ServerDraftConfirmOutbox.status == "pending")
+            .order_by(ServerDraftConfirmOutbox.id)
+        )
+    )
+    for intent in pending:
+        intent.attempts += 1
+        draft = db.get(ServerDraft, intent.draft_id)
+        if draft is None:
+            intent.status = "cancelled"
+            intent.last_error = "draft unavailable"
+        else:
+            try:
+                queue_server_draft(
+                    draft, "confirm", intent.fingerprint, intent.pin_generation
+                )
+            except (OSError, ValueError):
+                intent.last_error = "queue unavailable"
+            else:
+                intent.status = "published"
+                intent.last_error = ""
+                intent.published_at = utcnow()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+    return pending
+
+
+def add_server_draft_confirm_intent(
+    db: Session,
+    request: Request,
+    user: WebUser,
+    draft_id: str,
+    fingerprint: str,
+    pin_generation: str,
+) -> None:
+    """Stage confirmation outbox and audit intent in one transaction."""
+    db.add(
+        ServerDraftConfirmOutbox(
+            draft_id=draft_id,
+            fingerprint=fingerprint,
+            pin_generation=pin_generation,
+        )
+    )
+    db.add(
+        WebAuditLog(
+            actor=user.username,
+            action="server-draft-confirm",
+            target_client=draft_id,
+            result="queued",
+            message=f"pin-generation:{pin_generation}",
+            request_id=str(getattr(request.state, "request_id", "")),
+            ip_address=request.client.host if request.client else "",
+        )
+    )
+
+
 def add_server_draft_check_intent(
     db: Session,
     request: Request,
@@ -256,6 +319,37 @@ def has_server_draft_audit(
     return db.scalar(statement) is not None
 
 
+def has_server_draft_confirmation(
+    db: Session, draft_id: str, pin_generation: str
+) -> bool:
+    legacy_ok = db.scalar(
+        select(WebAuditLog.id).where(
+            WebAuditLog.action == "server-draft-confirm",
+            WebAuditLog.result == "ok",
+            WebAuditLog.target_client == draft_id,
+            WebAuditLog.message == f"pin-generation:{pin_generation}",
+        )
+    )
+    if legacy_ok is not None:
+        return True
+    published_intent = db.scalar(
+        select(ServerDraftConfirmOutbox.id).where(
+            ServerDraftConfirmOutbox.draft_id == draft_id,
+            ServerDraftConfirmOutbox.pin_generation == pin_generation,
+            ServerDraftConfirmOutbox.status == "published",
+        )
+    )
+    queued_audit = db.scalar(
+        select(WebAuditLog.id).where(
+            WebAuditLog.action == "server-draft-confirm",
+            WebAuditLog.result == "queued",
+            WebAuditLog.target_client == draft_id,
+            WebAuditLog.message == f"pin-generation:{pin_generation}",
+        )
+    )
+    return published_intent is not None and queued_audit is not None
+
+
 def has_server_draft_check_intent(
     db: Session, draft_id: str, pin_generation: str
 ) -> bool:
@@ -288,7 +382,7 @@ def is_confirmed_server_draft(
         pin_generation
         and result.get("fingerprint")
         and result.get("checked_at")
-        and has_server_draft_audit(db, draft_id, "server-draft-confirm", pin_generation)
+        and has_server_draft_confirmation(db, draft_id, pin_generation)
     )
     return confirmed, pin_generation
 
@@ -343,10 +437,22 @@ def server_drafts_page(request: Request, db: Session = Depends(get_db)):
             .order_by(ServerDraftCheckOutbox.created_at)
         )
     )
+    confirm_outbox = list(
+        db.scalars(
+            select(ServerDraftConfirmOutbox)
+            .where(ServerDraftConfirmOutbox.status == "pending")
+            .order_by(ServerDraftConfirmOutbox.created_at)
+        )
+    )
     return render(
         request,
         "server_drafts.html",
-        {"drafts": rows, "cleanup_outbox": cleanup_outbox, "check_outbox": check_outbox},
+        {
+            "drafts": rows,
+            "cleanup_outbox": cleanup_outbox,
+            "check_outbox": check_outbox,
+            "confirm_outbox": confirm_outbox,
+        },
         db,
     )
 
@@ -429,28 +535,58 @@ async def server_draft_scan(draft_id: str, request: Request, db: Session = Depen
 
 
 @app.post("/network/server-drafts/{draft_id}/confirm")
-async def server_draft_confirm(draft_id: str, request: Request, db: Session = Depends(get_db)):
+async def server_draft_confirm_transactional(
+    draft_id: str, request: Request, db: Session = Depends(get_db)
+):
     user = require_user(request, db)
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
     result = read_public_result(get_settings().server_draft_results_dir, draft.id)
     fingerprint = result.get("fingerprint") if result.get("status") == "pending" else None
     if not fingerprint:
-        write_audit(db, request, user, "server-draft-confirm", "error", "not confirmable", target_client=draft.id)
+        write_audit(
+            db, request, user, "server-draft-confirm", "error", "not confirmable",
+            target_client=draft.id,
+        )
         add_flash(request, "bad", "Нет подтверждаемого отпечатка")
         return redirect("/network/server-drafts")
+    pin_generation = str(uuid.uuid4())
     try:
-        pin_generation = str(uuid.uuid4())
-        queue_server_draft(draft, "confirm", fingerprint, pin_generation)
-    except (OSError, ValueError):
-        write_audit(db, request, user, "server-draft-confirm", "error", "not confirmable", target_client=draft.id)
-        add_flash(request, "bad", "Нет подтверждаемого отпечатка")
-    else:
-        write_audit(
-            db, request, user, "server-draft-confirm", "ok",
-            f"pin-generation:{pin_generation}", target_client=draft.id,
+        add_server_draft_confirm_intent(
+            db, request, user, draft.id, fingerprint, pin_generation
         )
-        add_flash(request, "ok", "Отпечаток подтвержден и поставлен в очередь")
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        add_flash(request, "bad", "Не удалось надежно зафиксировать подтверждение")
+        return redirect("/network/server-drafts")
+    published = publish_confirm_outbox(db)
+    intent = next(
+        (
+            item
+            for item in published
+            if item.draft_id == draft.id and item.pin_generation == pin_generation
+        ),
+        None,
+    )
+    if intent is not None and intent.status == "published":
+        add_flash(request, "ok", "Подтверждение отпечатка поставлено в очередь")
+    else:
+        add_flash(request, "bad", "Подтверждение зафиксировано, публикацию нужно повторить")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/confirm-retry")
+async def server_draft_confirm_retry(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    pending = publish_confirm_outbox(db)
+    if any(intent.status == "pending" for intent in pending):
+        write_audit(db, request, user, "server-draft-confirm-retry", "error", "confirm pending")
+        add_flash(request, "bad", "Не удалось повторно опубликовать подтверждение")
+    else:
+        write_audit(db, request, user, "server-draft-confirm-retry", "ok", "confirm published")
+        add_flash(request, "ok", "Подтверждение повторно опубликовано")
     return redirect("/network/server-drafts")
 
 

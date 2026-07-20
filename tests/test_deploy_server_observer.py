@@ -39,6 +39,8 @@ def test_server_observer_service_runs_as_gateway_account_with_only_snapshot_writ
     assert "InaccessiblePaths=-/mnt/antares_soft/vpn_config" in service
     assert "InaccessiblePaths=-/var/lib/openvpn-web/openvpn-web.sqlite" in service
     assert "InaccessiblePaths=/opt/openvpn-web" in service
+    assert "InaccessiblePaths=-/var/lib/openvpn-web/server-drafts" in service
+    assert "InaccessiblePaths=/usr/local/lib/openvpn-web-server-draft-worker" in service
     assert f"ReadOnlyPaths={OBSERVER_RUNTIME}" in service
     assert "CapabilityBoundingSet=" in service
     assert "ExecStart=/usr/local/sbin/server-observer" in service
@@ -151,6 +153,7 @@ def test_scoped_installer_validates_but_never_rewrites_observer_secrets():
 
     for path in (RUNTIME_CONFIG, OBSERVER_KEY, OBSERVER_KNOWN_HOSTS):
         assert f'validate_private_file {path}' in installer
+    assert "openvpm:openvpm:600" in installer
     for forbidden in (
         f"chown openvpm:openvpm {OBSERVER_KEY}",
         f"chmod 0600 {OBSERVER_KEY}",

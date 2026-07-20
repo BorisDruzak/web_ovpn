@@ -181,15 +181,24 @@ def load_runtime_config(path: Path) -> dict[str, Any]:
     """Load local-only topology after rejecting unsafe target definitions."""
     try:
         config = _require_mapping(json.loads(path.read_text(encoding="utf-8")), "config")
-    except json.JSONDecodeError as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("runtime config must be valid JSON") from exc
+    _validate_runtime_config(config)
+    return config
 
+
+def _validate_runtime_config(config: dict[str, Any]) -> None:
+    if set(config) != {"ssh_key", "tunnel_source", "targets"}:
+        raise ValueError("config fields must be ssh_key, tunnel_source, and targets only")
+    if config["ssh_key"] != OBSERVER_KEY_PATH:
+        raise ValueError("config.ssh_key must use the canonical observer key")
+    if not isinstance(config["tunnel_source"], str) or not config["tunnel_source"]:
+        raise ValueError("config.tunnel_source must be a non-empty string")
     targets = config.get("targets")
     if not isinstance(targets, list):
         raise ValueError("config.targets must be a list")
     for target in targets:
         _validate_runtime_target(target)
-    return config
 
 
 def _validate_runtime_target(value: Any) -> None:
@@ -206,6 +215,12 @@ def _validate_runtime_target(value: Any) -> None:
         raise ValueError("target checks must be a list")
     for check in target["checks"]:
         check_mapping = _require_mapping(check, "check")
+        if set(check_mapping) != {"name", "source"}:
+            raise ValueError("check fields must be name and source only")
+        if not isinstance(check_mapping["name"], str) or not _SAFE_CHECK_NAMES.fullmatch(
+            check_mapping["name"]
+        ):
+            raise ValueError("check name must be a safe identifier")
         if check_mapping.get("source") not in ALLOWED_SOURCES:
             raise ValueError("check source is not allowed")
 
@@ -235,6 +250,7 @@ def collect(
     if now.tzinfo is None or now.utcoffset() != timedelta(0):
         raise ValueError("now must be timezone-aware UTC")
     config = _require_mapping(config, "config")
+    _validate_runtime_config(config)
     ssh_key = config.get("ssh_key")
     if ssh_key != OBSERVER_KEY_PATH:
         raise ValueError("config.ssh_key must use the canonical observer key")
@@ -296,7 +312,7 @@ def _probe_source(target: dict[str, Any]) -> str:
 def _ssh_command(
     target: dict[str, Any], ssh_key: str, tunnel_source: str, source: str
 ) -> list[str]:
-    command = ["ssh"]
+    command = ["ssh", "-F", "/dev/null"]
     if source == "vpn_path":
         command.extend(["-b", tunnel_source])
     command.extend(
@@ -307,7 +323,13 @@ def _ssh_command(
             "-o",
             "BatchMode=yes",
             "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "IdentityAgent=none",
+            "-o",
             "ConnectTimeout=8",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
             "-o",
             f"UserKnownHostsFile={OBSERVER_KNOWN_HOSTS_PATH}",
             "-o",
@@ -517,6 +539,11 @@ def _combined_status(statuses: list[str]) -> str:
 
 def public_check(check: dict[str, Any]) -> dict[str, Any]:
     """Return only a check's API-safe fields, discarding raw probe material."""
+    allowed_fields = {
+        "name", "source", "status", "observed", "expected", "latency_ms", "error"
+    }
+    if not set(check) <= allowed_fields:
+        raise ValueError("check fields are not allowed")
     name = check.get("name")
     if not isinstance(name, str) or not _SAFE_CHECK_NAMES.fullmatch(name):
         raise ValueError("check name must be a safe identifier")
@@ -560,6 +587,8 @@ def _is_safe_nonnegative_number(value: Any) -> bool:
 
 def public_target(target: dict[str, Any]) -> dict[str, Any]:
     """Return a target row without runtime topology or command output."""
+    if not set(target) <= {"role", "checks", "status"}:
+        raise ValueError("target fields are not allowed")
     role = target.get("role")
     if role not in ALLOWED_ROLES:
         raise ValueError("target role is not allowed")
@@ -577,6 +606,8 @@ def public_target(target: dict[str, Any]) -> dict[str, Any]:
 
 def public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Return the complete persisted/API snapshot with no topology or raw output."""
+    if not set(snapshot) <= {"collected_at", "targets", "overall"}:
+        raise ValueError("snapshot fields are not allowed")
     collected_at = snapshot.get("collected_at")
     parse_utc(collected_at)
     raw_targets = snapshot.get("targets")
@@ -644,7 +675,7 @@ def load_snapshot(path: Path, now: datetime) -> dict[str, Any]:
         snapshot = public_snapshot(json.loads(path.read_text(encoding="utf-8")))
     except FileNotFoundError:
         return {"overall": "stale", "targets": []}
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         return {"overall": "error", "targets": []}
     snapshot["overall"] = snapshot_status(snapshot, now)
     return snapshot

@@ -116,3 +116,19 @@ class ServerDraftCheckOutbox(Base):
     last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ServerDraftConfirmOutbox(Base):
+    """Durable, audited intent to publish one host-key confirmation."""
+
+    __tablename__ = "server_draft_confirm_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    pin_generation: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

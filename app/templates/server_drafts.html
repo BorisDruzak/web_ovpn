@@ -23,6 +23,13 @@
   </table></div>
   {% else %}<p class="muted">No test servers have been added.</p>{% endif %}
 </section>
+{% if confirm_outbox %}
+<section class="card">
+  <h2>Fingerprint confirmation publication pending</h2>
+  <p class="muted">{{ confirm_outbox|length }} durable, audited confirmation(s) are waiting for queue publication.</p>
+  <form method="post" action="/network/server-drafts/confirm-retry"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Retry confirmation publication</button></form>
+</section>
+{% endif %}
 {% if check_outbox %}
 <section class="card">
   <h2>SSH check publication pending</h2>

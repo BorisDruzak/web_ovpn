@@ -133,7 +133,10 @@ def test_collect_binds_vpn_path_probe_and_continues_after_target_error():
         runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z")
     )
 
-    assert any(command[:3] == ["ssh", "-b", "198.51.100.50"] for command in calls)
+    assert any(
+        command[:5] == ["ssh", "-F", "/dev/null", "-b", "198.51.100.50"]
+        for command in calls
+    )
     assert target(snapshot, "nextcloud")["status"] == "error"
     assert target(snapshot, "directum")["status"] in {"ok", "warn", "critical"}
 
@@ -255,6 +258,10 @@ def test_collect_uses_ssh_end_of_options_before_destination():
     collect(runtime_config(), runner=runner, now=parse_utc("2026-07-18T20:00:00Z"))
 
     assert all(command[-3] == "--" for command in calls)
+    assert all(command[command.index("ssh") + 1 : command.index("ssh") + 3] == ["-F", "/dev/null"] for command in calls)
+    assert all("IdentitiesOnly=yes" in command for command in calls)
+    assert all("IdentityAgent=none" in command for command in calls)
+    assert all("GlobalKnownHostsFile=/dev/null" in command for command in calls)
     assert all(f"UserKnownHostsFile={OBSERVER_KNOWN_HOSTS_PATH}" in command for command in calls)
     assert all("StrictHostKeyChecking=yes" in command for command in calls)
     assert all(command[-2].startswith("observer@") for command in calls)
@@ -552,7 +559,7 @@ def test_snapshot_write_is_atomic_and_loaded_snapshot_is_redacted(tmp_path):
         path,
         {
             "collected_at": "2026-07-18T20:00:00Z",
-            "targets": [{"role": "directum", "host": "hidden", "checks": []}],
+            "targets": [{"role": "directum", "checks": []}],
         },
     )
 
@@ -661,6 +668,8 @@ def test_runtime_config_rejects_unknown_target_fields_and_invalid_sources(tmp_pa
 def test_runtime_config_accepts_only_allowed_roles_and_sources(tmp_path):
     path = tmp_path / "runtime.json"
     config = {
+        "ssh_key": OBSERVER_KEY_PATH,
+        "tunnel_source": "198.51.100.50",
         "targets": [
             {
                 "role": "directum",
@@ -675,7 +684,24 @@ def test_runtime_config_accepts_only_allowed_roles_and_sources(tmp_path):
     assert load_runtime_config(path) == config
 
 
-def test_public_snapshot_drops_free_form_check_values(tmp_path):
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda config: config.update({"unexpected": "value"}),
+        lambda config: config["targets"][0]["checks"][0].update({"unexpected": "value"}),
+    ],
+)
+def test_runtime_config_rejects_unknown_fields_at_every_schema_level(tmp_path, mutate):
+    config = runtime_config()
+    mutate(config)
+    path = tmp_path / "runtime.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fields"):
+        load_runtime_config(path)
+
+
+def test_public_snapshot_rejects_unknown_check_fields(tmp_path):
     path = tmp_path / "latest.json"
     forbidden_values = [
         "192.168.100.30",
@@ -684,9 +710,7 @@ def test_public_snapshot_drops_free_form_check_values(tmp_path):
         "password=not-a-secret",
         "raw command output",
     ]
-    write_snapshot(
-        path,
-        {
+    snapshot = {
             "collected_at": "2026-07-18T20:00:00Z",
             "targets": [
                 {
@@ -705,17 +729,12 @@ def test_public_snapshot_drops_free_form_check_values(tmp_path):
                     ],
                 }
             ],
-        },
-    )
+        }
 
-    encoded = path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="fields"):
+        write_snapshot(path, snapshot)
 
-    assert all(value not in encoded for value in forbidden_values)
-    assert json.loads(encoded)["targets"][0]["checks"][0] == {
-        "name": "service_state",
-        "source": "target",
-        "status": "error",
-    }
+    assert not path.exists()
 
 
 @pytest.mark.parametrize(
@@ -748,3 +767,35 @@ def test_snapshot_write_rejects_unsafe_overall_and_keeps_valid_status(tmp_path):
     write_snapshot(path, {**base_snapshot, "overall": "warn"})
 
     assert json.loads(path.read_text(encoding="utf-8"))["overall"] == "warn"
+
+
+@pytest.mark.parametrize("failure", [OSError("unavailable"), UnicodeDecodeError("utf-8", b"x", 0, 1, "bad")])
+def test_snapshot_read_failures_return_only_generic_error(tmp_path, monkeypatch, failure):
+    path = tmp_path / "latest.json"
+    path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(failure))
+
+    assert load_snapshot(path, now=parse_utc("2026-07-18T20:01:00Z")) == {
+        "overall": "error",
+        "targets": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"collected_at": "2026-07-18T20:00:00Z", "targets": [], "extra": True},
+        {
+            "collected_at": "2026-07-18T20:00:00Z",
+            "targets": [{"role": "directum", "checks": [], "extra": True}],
+        },
+    ],
+)
+def test_snapshot_rejects_unknown_fields_at_every_schema_level(tmp_path, snapshot):
+    path = tmp_path / "latest.json"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    assert load_snapshot(path, now=parse_utc("2026-07-18T20:01:00Z")) == {
+        "overall": "error",
+        "targets": [],
+    }

@@ -15,6 +15,7 @@ from app.server_draft_worker import process_queue
 
 
 ServerDraftCheckOutbox = getattr(models, "ServerDraftCheckOutbox", None)
+ServerDraftConfirmOutbox = getattr(models, "ServerDraftConfirmOutbox", None)
 
 
 VALID_FINGERPRINT = "SHA256:" + "Q" * 43
@@ -186,6 +187,79 @@ def test_confirm_uses_stored_fingerprint_and_audits_uuid(tmp_path, monkeypatch):
         audit = db.query(WebAuditLog).filter_by(action="server-draft-confirm").one()
         assert audit.target_client == draft_id
         assert "server.example" not in audit.message
+
+
+def test_confirm_audit_and_intent_commit_before_queue_publication(tmp_path, monkeypatch):
+    assert ServerDraftConfirmOutbox is not None
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    (tmp_path / "results").mkdir(exist_ok=True)
+    (tmp_path / "results" / f"{draft_id}.json").write_text(
+        json.dumps(scanned_result()), encoding="utf-8"
+    )
+    original_commit = Session.commit
+
+    def fail_confirm_intent_commit(session):
+        if any(isinstance(item, ServerDraftConfirmOutbox) for item in session.new):
+            raise SQLAlchemyError("forced confirm intent failure")
+        return original_commit(session)
+
+    monkeypatch.setattr(Session, "commit", fail_confirm_intent_commit)
+
+    response = post_with_csrf(client, f"/network/server-drafts/{draft_id}/confirm", {})
+
+    assert response.status_code == 303
+    assert not list((tmp_path / "queue").glob("*.json"))
+    with db_session() as db:
+        assert db.query(ServerDraftConfirmOutbox).count() == 0
+        assert db.query(WebAuditLog).filter_by(action="server-draft-confirm").count() == 0
+
+
+def test_confirm_queue_failure_leaves_durable_audited_retryable_intent(tmp_path, monkeypatch):
+    assert ServerDraftConfirmOutbox is not None
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    (tmp_path / "results").mkdir(exist_ok=True)
+    (tmp_path / "results" / f"{draft_id}.json").write_text(
+        json.dumps(scanned_result()), encoding="utf-8"
+    )
+
+    import app.main
+
+    original_publish = app.main.create_draft_request
+
+    def fail_confirm_publish(queue_dir, request):
+        if request.action == "confirm":
+            raise OSError("forced queue failure")
+        return original_publish(queue_dir, request)
+
+    monkeypatch.setattr(app.main, "create_draft_request", fail_confirm_publish)
+    assert post_with_csrf(
+        client, f"/network/server-drafts/{draft_id}/confirm", {}
+    ).status_code == 303
+    assert not list((tmp_path / "queue").glob("*.json"))
+
+    with db_session() as db:
+        intent = db.query(ServerDraftConfirmOutbox).one()
+        assert intent.status == "pending"
+        assert intent.attempts == 1
+        assert intent.last_error == "queue unavailable"
+        assert db.query(WebAuditLog).filter_by(
+            action="server-draft-confirm",
+            result="queued",
+            target_client=draft_id,
+            message=f"pin-generation:{intent.pin_generation}",
+        ).count() == 1
+
+    monkeypatch.setattr(app.main, "create_draft_request", original_publish)
+    assert post_with_csrf(
+        client, "/network/server-drafts/confirm-retry", {}
+    ).status_code == 303
+    assert queued_action(tmp_path)["action"] == "confirm"
+    with db_session() as db:
+        assert db.query(ServerDraftConfirmOutbox).one().status == "published"
 
 
 def test_check_cannot_overwrite_queued_confirm_before_pin_completion(tmp_path, monkeypatch):

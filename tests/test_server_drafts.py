@@ -800,6 +800,158 @@ def test_recovery_after_ssh_return_marks_check_transport_without_a_second_ssh_at
     assert not request_path.exists()
 
 
+def test_check_runner_oserror_keeps_recoverable_claim_until_transport_is_published(tmp_path):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    request_path = create_draft_request(paths.queue_dir, request)
+    ssh_calls = 0
+
+    def unavailable_ssh(command, **_kwargs):
+        nonlocal ssh_calls
+        assert command[0] == "ssh"
+        ssh_calls += 1
+        raise OSError("ssh executable unavailable")
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir, unavailable_ssh
+    ) == (0, True)
+
+    claim_path = paths.queue_dir / f".{request.id}.json.claim"
+    assert request_path.is_file()
+    assert claim_path.is_file()
+    assert (paths.private_dir / f"{request.id}.check-attempt-generation").is_file()
+
+    def must_not_retry_ssh(*_args, **_kwargs):
+        raise AssertionError("durably attempted SSH must not be repeated")
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir, must_not_retry_ssh
+    ) == (1, False)
+    assert ssh_calls == 1
+    assert read_public_result(paths.results_dir, request.id) == {"status": "transport"}
+    assert not request_path.exists()
+    assert not claim_path.exists()
+
+
+def test_check_result_oserror_keeps_recoverable_claim_until_transport_is_published(
+    tmp_path, monkeypatch
+):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    request_path = create_draft_request(paths.queue_dir, request)
+    original_write_result = server_draft_worker.write_public_result
+    writes = 0
+
+    def fail_first_result(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            raise OSError("result directory unavailable")
+        return original_write_result(*args, **kwargs)
+
+    monkeypatch.setattr(server_draft_worker, "write_public_result", fail_first_result)
+    ssh_calls = 0
+
+    def successful_ssh(command, **_kwargs):
+        nonlocal ssh_calls
+        ssh_calls += 1
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir, successful_ssh
+    ) == (0, True)
+    assert request_path.is_file()
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir,
+        paths.results_dir,
+        paths.private_dir,
+        lambda *_args, **_kwargs: pytest.fail("SSH must not run during recovery"),
+    ) == (1, False)
+    assert ssh_calls == 1
+    assert read_public_result(paths.results_dir, request.id) == {"status": "transport"}
+
+
+def test_attempt_marker_parent_fsync_failure_leaves_recoverable_state_without_running_ssh(
+    tmp_path, monkeypatch
+):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    request_path = create_draft_request(paths.queue_dir, request)
+    original_fsync_parent = server_draft_worker._fsync_parent_directory
+    failed = False
+
+    def fail_marker_fsync(path):
+        nonlocal failed
+        if path.name == f"{request.id}.check-attempt-generation" and not failed:
+            failed = True
+            raise OSError("directory fsync unavailable")
+        return original_fsync_parent(path)
+
+    monkeypatch.setattr(server_draft_worker, "_fsync_parent_directory", fail_marker_fsync)
+    runner_calls = 0
+
+    def runner(*_args, **_kwargs):
+        nonlocal runner_calls
+        runner_calls += 1
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir, runner
+    ) == (0, True)
+    assert runner_calls == 0
+    assert request_path.is_file()
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir,
+        paths.results_dir,
+        paths.private_dir,
+        lambda *_args, **_kwargs: pytest.fail("SSH must not run after marker creation"),
+    ) == (1, False)
+    assert read_public_result(paths.results_dir, request.id) == {"status": "transport"}
+
+
+def test_final_attempt_marker_unlink_fsync_failure_preserves_terminal_result(
+    tmp_path, monkeypatch
+):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    create_draft_request(paths.queue_dir, request)
+    original_fsync_parent = server_draft_worker._fsync_parent_directory
+    failed = False
+
+    def fail_after_marker_unlink(path):
+        nonlocal failed
+        if (
+            path.name == f"{request.id}.check-attempt-generation"
+            and not path.exists()
+            and not failed
+        ):
+            failed = True
+            raise OSError("directory fsync unavailable")
+        return original_fsync_parent(path)
+
+    monkeypatch.setattr(server_draft_worker, "_fsync_parent_directory", fail_after_marker_unlink)
+
+    assert process_queue(
+        paths.queue_dir,
+        paths.results_dir,
+        paths.private_dir,
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="", stderr=""
+        ),
+    ) == 0
+
+    assert read_public_result(paths.results_dir, request.id) == {"status": "ok"}
+    assert (paths.private_dir / f"{request.id}.check-generation").read_text(
+        encoding="utf-8"
+    ).strip() == request.pin_generation
+
+
 def test_cleanup_intent_survives_an_active_request_and_becomes_terminal(tmp_path):
     draft_id = str(uuid4())
     paths = draft_paths(tmp_path)

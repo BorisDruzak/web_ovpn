@@ -235,7 +235,9 @@ def _process_claimed_normal_path(
 ) -> int:
     draft_id = request_path.stem
     dispatch_path: Path | None = None
+    request: DraftRequest | None = None
     consume_request = False
+    release_claim = True
     try:
         if _cleanup_reserved(paths, draft_id):
             consume_request = True
@@ -255,19 +257,37 @@ def _process_claimed_normal_path(
         process_request(request, paths, runner)
         consume_request = True
     except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
-        consume_request = True
-        # Do not expose malformed requests or tool diagnostics to the web layer.
-        try:
-            make_draft_request(draft_id, "invalid", "invalid", 22, "scan")
-            write_public_result(paths.results_dir, draft_id, {"status": "invalid_response"})
-        except ValueError:
-            pass
+        if request is not None and request.action == "check" and _check_attempt_may_exist(paths, draft_id):
+            # The claim is the recovery transport once an attempt marker may
+            # exist. A later activation can safely publish without SSH retry.
+            consume_request = False
+            release_claim = False
+        elif request is not None and request.action == "check" and (
+            check_state := _check_terminal_state(paths, draft_id, request.pin_generation)
+        ) != "absent":
+            if check_state == "terminal":
+                # Result and generation committed before later cleanup failed.
+                consume_request = True
+            else:
+                # Private state cannot be inspected. Keep the durable claim
+                # until storage recovers instead of guessing it is terminal.
+                consume_request = False
+                release_claim = False
+        else:
+            consume_request = True
+            # Do not expose malformed requests or tool diagnostics to the web layer.
+            try:
+                make_draft_request(draft_id, "invalid", "invalid", 22, "scan")
+                write_public_result(paths.results_dir, draft_id, {"status": "invalid_response"})
+            except (OSError, ValueError):
+                pass
     else:
         return 1
     finally:
         if dispatch_path is not None:
             _release_dispatch(dispatch_path)
-        _release_claim(request_path, claim_path, remove_request=consume_request)
+        if release_claim:
+            _release_claim(request_path, claim_path, remove_request=consume_request)
     return 0
 
 
@@ -488,6 +508,27 @@ def _check_generation_path(paths: DraftPaths, draft_id: str) -> Path:
 
 def _check_attempt_generation_path(paths: DraftPaths, draft_id: str) -> Path:
     return paths.private_dir / f"{draft_id}.check-attempt-generation"
+
+
+def _check_attempt_may_exist(paths: DraftPaths, draft_id: str) -> bool:
+    try:
+        return _check_attempt_generation_path(paths, draft_id).is_file()
+    except OSError:
+        return True
+
+
+def _check_terminal_state(
+    paths: DraftPaths, draft_id: str, generation: str | None
+) -> str:
+    if generation is None:
+        return "absent"
+    try:
+        stored = _check_generation_path(paths, draft_id).read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return "absent"
+    except (OSError, UnicodeDecodeError):
+        return "uncertain"
+    return "terminal" if stored == generation else "absent"
 
 
 def _clear_check_attempt(paths: DraftPaths, draft_id: str, generation: str) -> None:

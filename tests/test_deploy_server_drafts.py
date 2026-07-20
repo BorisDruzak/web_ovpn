@@ -49,6 +49,10 @@ def test_worker_service_is_key_isolated_and_retains_observer_hardening():
         "InaccessiblePaths=/etc/openvpn/client-generator",
         "InaccessiblePaths=-/mnt/antares_soft/vpn_config",
         "InaccessiblePaths=-/var/lib/openvpn-web/openvpn-web.sqlite",
+        "InaccessiblePaths=/etc/openvpn-web/server-observer.json",
+        "InaccessiblePaths=/etc/openvpn-web/server-observer.known_hosts",
+        "InaccessiblePaths=-/var/lib/openvpn-web/server-observer",
+        "InaccessiblePaths=/usr/local/lib/openvpn-web-server-observer",
         "ReadWritePaths=/var/lib/openvpn-web/server-drafts",
         f"ReadOnlyPaths={WORKER_RUNTIME}",
         "ExecStart=/usr/local/sbin/server-draft-worker",
@@ -110,10 +114,10 @@ def test_draft_worker_only_installer_has_a_strictly_limited_deployment_surface()
         f"ssh-keygen -y -f {OBSERVER_KEY}",
         OBSERVER_PUBLIC_KEY,
         'WORKER_RUNTIME="/usr/local/lib/openvpn-web-server-draft-worker"',
-        '-d -m 0755 -o root -g root "$WORKER_RUNTIME/app"',
-        '"$SRC/app/server_draft_worker.py" "$WORKER_RUNTIME/app/server_draft_worker.py"',
-        '"$SRC/app/server_drafts.py" "$WORKER_RUNTIME/app/server_drafts.py"',
-        '"$SRC/deploy/server-draft-worker-main.py" "$WORKER_RUNTIME/worker_main.py"',
+        '-d -m 0755 -o root -g root "$STAGED_RUNTIME/app"',
+        '"$SRC/app/server_draft_worker.py" "$STAGED_RUNTIME/app/server_draft_worker.py"',
+        '"$SRC/app/server_drafts.py" "$STAGED_RUNTIME/app/server_drafts.py"',
+        '"$SRC/deploy/server-draft-worker-main.py" "$STAGED_RUNTIME/worker_main.py"',
         "systemctl daemon-reload",
         "systemctl enable --now server-draft-worker.path",
     ):
@@ -134,17 +138,51 @@ def test_draft_worker_only_installer_has_a_strictly_limited_deployment_surface()
         assert forbidden not in installer
 
     runtime_install = installer.index(
-        '"$SRC/deploy/server-draft-worker-main.py" "$WORKER_RUNTIME/worker_main.py"'
+        '"$SRC/deploy/server-draft-worker-main.py" "$STAGED_RUNTIME/worker_main.py"'
     )
     runtime_validation = installer.index('validate_worker_runtime "$WORKER_RUNTIME"')
     assert installer.index("validate_root_component /usr root root 755") < runtime_install
     assert installer.index("validate_root_component /usr/local root root 755") < runtime_install
     assert installer.index("validate_root_component /usr/local/lib root root 755") < runtime_install
     assert installer.index("validate_python_runtime") < runtime_install
-    assert runtime_validation < runtime_install
+    assert runtime_validation < installer.index('systemctl stop server-draft-worker.path')
     assert 'find "$path" \\( -type l -o ! -user root -o ! -group root -o -perm /022 \\)' in installer
     assert "install -d -m 0755 -o root -g root /usr/local/lib" not in installer
-    assert installer.count('validate_worker_runtime "$WORKER_RUNTIME"') == 2
+    assert installer.count('validate_worker_runtime "$WORKER_RUNTIME"') >= 2
+
+
+def test_worker_installer_quiesces_and_atomically_swaps_runtime_with_rollback():
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+
+    for required in (
+        'STAGED_RUNTIME="/usr/local/lib/.openvpn-web-server-draft-worker.new.$$"',
+        'PREVIOUS_RUNTIME="/usr/local/lib/.openvpn-web-server-draft-worker.previous.$$"',
+        "wait_for_worker",
+        "systemctl stop server-draft-worker.path",
+        'validate_worker_runtime "$STAGED_RUNTIME"',
+        'mv -- "$WORKER_RUNTIME" "$PREVIOUS_RUNTIME"',
+        'mv -- "$STAGED_RUNTIME" "$WORKER_RUNTIME"',
+        'mv -- "$PREVIOUS_RUNTIME" "$WORKER_RUNTIME"',
+    ):
+        assert required in installer
+
+    stop = installer.index("systemctl stop server-draft-worker.path")
+    wait = installer.index("wait_for_worker", stop)
+    stage = installer.index('-d -m 0755 -o root -g root "$STAGED_RUNTIME/app"')
+    swap = installer.index('mv -- "$STAGED_RUNTIME" "$WORKER_RUNTIME"')
+    enable = installer.index("systemctl enable --now server-draft-worker.path")
+    assert stop < wait < stage < swap < enable
+    cleanup = installer.split("cleanup() {", 1)[1].split("validate_root_component()", 1)[0]
+    assert '"$path_was_active" == 1 && "$runtime_swapped" == 0' in cleanup
+
+
+def test_worker_installer_validates_exact_shared_observer_key_metadata():
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+
+    assert "validate_observer_key" in installer
+    assert "openvpm:openvpm:600" in installer
+    assert 'readlink -e -- "$path"' in installer
+    assert 'validate_observer_key /etc/openvpn-web/server-observer.key' in installer
 
 
 def test_scoped_installer_locks_and_validates_the_draft_namespace_before_mutation():
