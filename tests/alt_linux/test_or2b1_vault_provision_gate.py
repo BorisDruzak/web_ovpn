@@ -27,6 +27,12 @@ PREVIEW_CASES = (
     ("provision-vault-owner-invalid", "vault_owner_invalid"),
 )
 
+START_CASES = (
+    "decrypt_nonzero",
+    "vault_mode_invalid",
+    "vault_owner_invalid",
+)
+
 
 def _apply_failure_case(
     monkeypatch: pytest.MonkeyPatch,
@@ -159,3 +165,116 @@ def test_preview_uses_same_vault_health_matrix_and_does_not_mutate(
         "not-yescrypt",
     ):
         assert forbidden not in serialized
+
+
+@pytest.mark.parametrize("case", START_CASES)
+def test_start_vault_failure_occurs_before_job_and_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    assets = sandbox.configure_vault_boundary()
+    request_path = sandbox.write_provision_request()
+    registration_path = sandbox.register_machine(preflight_ok=True)
+    registration_before = read_json(registration_path)
+
+    monkeypatch.setenv(
+        "ALT_DEPLOY_ANSIBLE_VAULT",
+        str(assets["ansible_vault"]),
+    )
+    monkeypatch.setattr("alt_deploy.provision.os.geteuid", lambda: 0)
+
+    def forbidden_launch(self, job_id: str) -> str:
+        raise AssertionError("launcher must not be called")
+
+    monkeypatch.setattr(
+        "alt_deploy.provision.SystemdLauncher.launch",
+        forbidden_launch,
+    )
+    _apply_failure_case(
+        monkeypatch,
+        case=case,
+        sandbox=sandbox,
+        assets=assets,
+    )
+
+    result = run_json_cli(
+        [
+            "provision",
+            "start",
+            TEST_MACHINE_UUID,
+            "--vars-file",
+            str(request_path),
+        ],
+        settings=sandbox.settings,
+    )
+
+    assert result.exit_code == 4
+    assert result.payload["error"]["code"] == "vault_not_configured"
+    assert read_json(registration_path) == registration_before
+    assert JobRepository(sandbox.settings).list() == []
+    assert AssignmentRepository(sandbox.settings).get(
+        TEST_MACHINE_UUID
+    ) is None
+
+
+def test_preview_is_retryable_after_yescrypt_is_corrected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    assets = sandbox.configure_vault_boundary()
+    request_path = sandbox.write_provision_request()
+    sandbox.register_machine(preflight_ok=True)
+
+    monkeypatch.setenv(
+        "ALT_DEPLOY_ANSIBLE_VAULT",
+        str(assets["ansible_vault"]),
+    )
+    _apply_failure_case(
+        monkeypatch,
+        case="yescrypt_invalid",
+        sandbox=sandbox,
+        assets=assets,
+    )
+
+    failed = run_json_cli(
+        [
+            "provision",
+            "preview",
+            TEST_MACHINE_UUID,
+            "--vars-file",
+            str(request_path),
+        ],
+        settings=sandbox.settings,
+    )
+
+    assets["ansible_vault"].write_text(
+        (
+            "#!/bin/sh\n"
+            "printf '%s\\n' "
+            "\"vault_employee_password_hash: '\\$y\\$corrected'\"\n"
+        ),
+        encoding="utf-8",
+    )
+
+    succeeded = run_json_cli(
+        [
+            "provision",
+            "preview",
+            TEST_MACHINE_UUID,
+            "--vars-file",
+            str(request_path),
+        ],
+        settings=sandbox.settings,
+    )
+
+    assert failed.exit_code == 4
+    assert failed.payload["error"]["code"] == "vault_not_configured"
+    assert succeeded.exit_code == 0
+    assert succeeded.payload["status"] == "ok"
+    assert JobRepository(sandbox.settings).list() == []
+    assert AssignmentRepository(sandbox.settings).get(
+        TEST_MACHINE_UUID
+    ) is None
