@@ -1,6 +1,9 @@
 name: OR-1 branch verification
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - docs/alt-or1-test-harness-design-20260720
@@ -16,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
