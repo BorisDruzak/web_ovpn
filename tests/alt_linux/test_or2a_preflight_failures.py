@@ -102,3 +102,21 @@ def test_host_key_mismatch_precedes_authentication_text() -> None:
     )
 
     assert result == "ssh_host_key_mismatch"
+
+
+def test_preflight_role_contains_controlled_sudo_marker() -> None:
+    role_path = (
+        Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "alt-linux"
+        / "ansible"
+        / "roles"
+        / "preflight"
+        / "tasks"
+        / "main.yml"
+    )
+    content = role_path.read_text(encoding="utf-8")
+
+    assert content.count(
+        "ALT_PREFLIGHT_FAILURE:sudo_unavailable"
+    ) == 1
