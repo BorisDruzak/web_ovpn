@@ -102,7 +102,9 @@
   ansible.builtin.assert:
     that:
       - preflight_ansible_sudo.rc == 0
-    fail_msg: The ansible account has no passwordless sudo
+    fail_msg: >-
+      ALT_PREFLIGHT_FAILURE:sudo_unavailable
+      The ansible account has no passwordless sudo
 
 - name: Check LightDM package
   ansible.builtin.command:

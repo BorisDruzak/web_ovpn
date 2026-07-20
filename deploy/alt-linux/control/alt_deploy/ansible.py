@@ -20,10 +20,86 @@ Runner = Callable[
 ]
 
 
-
-
 def _bounded(value: str | None) -> str:
     return (value or "")[-10000:]
+
+
+_PREFLIGHT_FAILURE_KINDS = frozenset(
+    {
+        "ssh_timeout",
+        "ssh_unreachable",
+        "ssh_host_key_mismatch",
+        "ssh_authentication_failed",
+        "sudo_unavailable",
+        "ansible_failed",
+    }
+)
+
+_CONTROLLED_PREFLIGHT_MARKERS = {
+    "ALT_PREFLIGHT_FAILURE:sudo_unavailable": "sudo_unavailable",
+}
+
+
+def _classify_preflight_failure(
+    *,
+    stdout: str | None,
+    stderr: str | None,
+) -> str:
+    combined = "\n".join(
+        value
+        for value in (stdout, stderr)
+        if isinstance(value, str) and value
+    )
+
+    for marker, failure_kind in _CONTROLLED_PREFLIGHT_MARKERS.items():
+        if marker in combined:
+            return failure_kind
+
+    normalized = combined.casefold()
+
+    if (
+        "remote host identification has changed" in normalized
+        or "host key verification failed" in normalized
+        or (
+            "offending " in normalized
+            and " key in " in normalized
+        )
+    ):
+        return "ssh_host_key_mismatch"
+
+    if any(
+        marker in normalized
+        for marker in (
+            "permission denied (publickey",
+            "authentication failed",
+            "no more authentication methods to try",
+        )
+    ):
+        return "ssh_authentication_failed"
+
+    if any(
+        marker in normalized
+        for marker in (
+            "connection timed out",
+            "operation timed out",
+            "timeout waiting for",
+        )
+    ):
+        return "ssh_timeout"
+
+    if any(
+        marker in normalized
+        for marker in (
+            "connection refused",
+            "no route to host",
+            "network is unreachable",
+            "connection reset by peer",
+            "connection closed by remote host",
+        )
+    ):
+        return "ssh_unreachable"
+
+    return "ansible_failed"
 
 
 class AnsibleController:
@@ -199,6 +275,7 @@ class AnsibleController:
                     ),
                     exit_code=5,
                     details={
+                        "failure_kind": "ssh_timeout",
                         "timeout": exc.timeout,
                     },
                 ) from exc
@@ -211,6 +288,10 @@ class AnsibleController:
                     ),
                     exit_code=5,
                     details={
+                        "failure_kind": _classify_preflight_failure(
+                            stdout=completed.stdout,
+                            stderr=completed.stderr,
+                        ),
                         "returncode": (
                             completed.returncode
                         ),
@@ -232,6 +313,7 @@ class AnsibleController:
                     ),
                     exit_code=5,
                     details={
+                        "failure_kind": "ansible_failed",
                         "stdout": _bounded(
                             completed.stdout
                         ),
@@ -251,6 +333,9 @@ class AnsibleController:
                         "an invalid result"
                     ),
                     exit_code=5,
+                    details={
+                        "failure_kind": "ansible_failed",
+                    },
                 ) from exc
 
             return result
