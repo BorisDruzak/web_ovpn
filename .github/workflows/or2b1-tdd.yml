@@ -25,8 +25,8 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: OR-2B1 outcome contract RED
+      - name: OR-2B1 Vault sandbox RED
         run: >-
           python -m pytest -q
-          tests/alt_linux/test_operational_reliability_contract.py::test_proven_outcome_catalog_has_exact_scenarios
-          tests/alt_linux/test_operational_reliability_contract.py::test_catalog_contains_nineteen_proven_outcomes
+          tests/alt_linux/test_or2b1_vault_gate.py
+          -k "sandbox"
