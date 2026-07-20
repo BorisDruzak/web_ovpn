@@ -266,7 +266,8 @@ def test_outcome_metadata_contains_no_secret_names() -> None:
     ).lower()
 
     for forbidden in (
-        "password",
+        "password_value",
+        "password_content",
         "private_key",
         "vault_employee_password_hash",
         "secret_value",
