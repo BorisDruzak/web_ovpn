@@ -18,7 +18,12 @@ import tempfile
 import time
 from typing import Callable
 
-from app.server_drafts import DraftRequest, make_draft_request, write_public_result
+from app.server_drafts import (
+    DraftRequest,
+    fsync_parent_directory,
+    make_draft_request,
+    write_public_result,
+)
 
 
 COMMAND_TIMEOUT_SECONDS = 20
@@ -137,6 +142,7 @@ def _clear_stale_private_locks(paths: DraftPaths) -> None:
         for path in paths.private_dir.glob(pattern):
             try:
                 path.unlink()
+                _fsync_parent_directory(path)
             except FileNotFoundError:
                 pass
 
@@ -388,6 +394,10 @@ def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> bool:
         "-o", f"UserKnownHostsFile={known_hosts}", "-p", str(request.port), "--",
         f"{request.ssh_user}@{request.host}", "true",
     ]
+    # A successfully written and directory-synced marker is the at-most-once
+    # attempt boundary. Recovery never starts SSH again once it exists: a crash
+    # after that durability point, including before process launch, has an
+    # unknown remote outcome and is published as safe ``transport`` instead.
     _write_private(_check_attempt_generation_path(paths, request.id), request.pin_generation + "\n")
     try:
         completed = _run(runner, command)
@@ -486,6 +496,7 @@ def _clear_check_attempt(paths: DraftPaths, draft_id: str, generation: str) -> N
         return
     try:
         path.unlink()
+        _fsync_parent_directory(path)
     except FileNotFoundError:
         pass
 
@@ -501,13 +512,18 @@ def _claim_dispatch(paths: DraftPaths, draft_id: str) -> Path | None:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         return None
-    os.close(descriptor)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_parent_directory(path)
     return path
 
 
 def _release_dispatch(path: Path) -> None:
     try:
         path.unlink()
+        _fsync_parent_directory(path)
     except FileNotFoundError:
         pass
 
@@ -515,16 +531,23 @@ def _release_dispatch(path: Path) -> None:
 def _claim_check(paths: DraftPaths, draft_id: str) -> bool:
     paths.private_dir.mkdir(parents=True, exist_ok=True)
     try:
-        descriptor = os.open(_check_lock_path(paths, draft_id), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        path = _check_lock_path(paths, draft_id)
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
         return False
-    os.close(descriptor)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_parent_directory(path)
     return True
 
 
 def _release_check(paths: DraftPaths, draft_id: str) -> None:
+    path = _check_lock_path(paths, draft_id)
     try:
-        _check_lock_path(paths, draft_id).unlink()
+        path.unlink()
+        _fsync_parent_directory(path)
     except FileNotFoundError:
         pass
 
@@ -542,6 +565,7 @@ def _cleanup(draft_id: str, paths: DraftPaths) -> None:
     ):
         try:
             path.unlink()
+            _fsync_parent_directory(path)
         except FileNotFoundError:
             pass
 
@@ -556,6 +580,7 @@ def _claim_request(request_path: Path) -> Path | None:
         os.link(request_path, claim_path)
     except (FileExistsError, FileNotFoundError):
         return None
+    _fsync_parent_directory(claim_path)
     return claim_path
 
 
@@ -565,7 +590,11 @@ def _mark_deleted(paths: DraftPaths, draft_id: str) -> None:
         descriptor = os.open(terminal_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
     except FileExistsError:
         return
-    os.close(descriptor)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_parent_directory(terminal_path)
 
 
 def _release_claim(request_path: Path, claim_path: Path, *, remove_request: bool) -> None:
@@ -573,10 +602,12 @@ def _release_claim(request_path: Path, claim_path: Path, *, remove_request: bool
         try:
             if os.path.samefile(request_path, claim_path):
                 request_path.unlink()
+                _fsync_parent_directory(request_path)
         except FileNotFoundError:
             pass
     try:
         claim_path.unlink()
+        _fsync_parent_directory(claim_path)
     except FileNotFoundError:
         pass
 
@@ -596,12 +627,17 @@ def _atomic_write(path: Path, text: str, mode: int) -> None:
             os.fsync(temporary.fileno())
         os.chmod(temporary_path, mode)
         os.replace(temporary_path, path)
+        _fsync_parent_directory(path)
     except Exception:
         try:
             temporary_path.unlink()
         except FileNotFoundError:
             pass
         raise
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    fsync_parent_directory(path)
 
 
 def main(argv: list[str] | None = None) -> int:

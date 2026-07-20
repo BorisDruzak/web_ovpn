@@ -348,6 +348,37 @@ def test_queue_is_atomic_and_has_no_private_material(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".*.tmp"))
 
 
+def test_parent_directory_sync_uses_a_mocked_posix_directory_descriptor(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(server_drafts.os, "name", "posix")
+    monkeypatch.setattr(
+        server_drafts.os,
+        "open",
+        lambda path, flags: calls.append(("open", path, flags)) or 41,
+    )
+    monkeypatch.setattr(server_drafts.os, "fsync", lambda descriptor: calls.append(("fsync", descriptor)))
+    monkeypatch.setattr(server_drafts.os, "close", lambda descriptor: calls.append(("close", descriptor)))
+
+    server_drafts.fsync_parent_directory(tmp_path / "state.json")
+
+    assert calls == [
+        ("open", str(tmp_path), server_drafts.os.O_RDONLY | getattr(server_drafts.os, "O_DIRECTORY", 0)),
+        ("fsync", 41),
+        ("close", 41),
+    ]
+
+
+def test_parent_directory_sync_is_a_windows_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr(server_drafts.os, "name", "nt")
+    monkeypatch.setattr(
+        server_drafts.os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("Windows must not open a directory for fsync"),
+    )
+
+    server_drafts.fsync_parent_directory(tmp_path / "state.json")
+
+
 def test_concurrent_request_publication_reserves_one_action_without_replacement(tmp_path):
     draft_id = str(uuid4())
     scan = make_draft_request(draft_id, "server.example", "observer", 22, "scan")
@@ -621,7 +652,30 @@ def test_replayed_check_generation_never_dispatches_ssh_twice(tmp_path, fake_run
     ).strip() == request.pin_generation
 
 
-def test_interrupted_check_retries_when_crash_prevents_attempt_start(tmp_path, monkeypatch):
+def test_check_syncs_durable_attempt_marker_parent_before_running_ssh(tmp_path, monkeypatch):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    events = []
+
+    monkeypatch.setattr(
+        server_draft_worker,
+        "_fsync_parent_directory",
+        lambda path: events.append(("fsync", path)),
+        raising=False,
+    )
+
+    def runner(command, **_kwargs):
+        events.append(("runner", command[0]))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert process_request(request, paths, runner) == 1
+
+    attempt_marker = paths.private_dir / f"{request.id}.check-attempt-generation"
+    assert events.index(("fsync", attempt_marker)) < events.index(("runner", "ssh"))
+
+
+def test_interrupted_check_retries_only_without_a_durable_attempt_marker(tmp_path, monkeypatch):
     class WorkerCrash(BaseException):
         pass
 

@@ -210,6 +210,7 @@ def _exclusive_json_publish(path: Path, payload: dict[str, Any], mode: int) -> N
             os.fsync(temporary_file.fileno())
         os.chmod(temporary_path, mode)
         os.link(temporary_path, path)
+        fsync_parent_directory(path)
     finally:
         try:
             temporary_path.unlink()
@@ -228,9 +229,28 @@ def _atomic_json_write(path: Path, payload: dict[str, Any], mode: int) -> None:
             os.fsync(temporary_file.fileno())
         os.chmod(temporary_path, mode)
         os.replace(temporary_path, path)
+        fsync_parent_directory(path)
     except Exception:
         try:
             temporary_path.unlink()
         except FileNotFoundError:
             pass
         raise
+
+
+def fsync_parent_directory(path: Path) -> None:
+    """Persist a directory entry after a durable filesystem state transition.
+
+    Windows does not expose the POSIX directory-fsync primitive used by the
+    deployed Linux worker, so it is deliberately a no-op there.  On POSIX,
+    failure is propagated: continuing would weaken the queue's durability
+    contract.
+    """
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(os.fspath(path.parent), flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

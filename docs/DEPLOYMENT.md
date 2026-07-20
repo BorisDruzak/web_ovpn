@@ -98,6 +98,16 @@ Drafts only request these scan, confirmation, and pinned-check actions. They do
 not add collector targets, change the target's host key, or expose host keys or
 private storage beyond the fixed check result.
 
+The durable per-generation attempt marker is the pinned SSH check's at-most-once
+attempt boundary. Once the worker has written and synced that marker, recovery
+never invokes SSH again for that generation. A crash after this point, including
+before process launch, has an unknown remote outcome and is reported only as the
+safe `transport` category; this intentionally avoids duplicate SSH without a
+remote acknowledgement. Only the absence of a durable marker leaves a request
+retryable. The worker does not infer retryability from a crash being “before
+SSH”, because an abrupt failure cannot reliably establish that process-launch
+boundary.
+
 ## SSH Server Draft Worker Handoff and Rollback
 
 This is a deliberately narrow handoff for the SSH server-draft worker. It must

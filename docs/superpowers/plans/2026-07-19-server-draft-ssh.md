@@ -18,6 +18,7 @@
 - Every access test uses the observer key, a draft-specific known-hosts file, BatchMode, StrictHostKeyChecking, and a 20-second timeout.
 - Results and audit entries use only pending, ok, timeout, host_key_mismatch, authentication, transport, or invalid_response.
 - Use atomic file creation/replacement for queue and result files; redact all subprocess output.
+- A directory-synced per-generation attempt marker is the SSH check's at-most-once attempt boundary. Recovery after that marker exists publishes `transport` for the unknown remote outcome and never retries SSH, even if the crash preceded process launch; only a missing durable marker is retryable.
 - Do not deploy or alter production during implementation.
 
 ---
