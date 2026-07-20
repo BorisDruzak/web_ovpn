@@ -28,3 +28,12 @@ def test_installer_creates_netctl_user_and_locks_permissions():
     assert "chown root:netctl /etc/netctl/secrets.env" in installer
     assert "chmod 0640 /etc/netctl/secrets.env" in installer
     assert "NETCTL_SUDO_USER=netctl" in installer
+
+
+def test_installer_runs_venv_commands_by_absolute_path_after_app_permissions_change():
+    installer = (ROOT / "deploy" / "install-openvpn-web.sh").read_text(encoding="utf-8")
+
+    assert 'cd "$APP"' not in installer
+    assert 'python3 -m venv "$APP/.venv"' in installer
+    assert '"$APP/.venv/bin/python" -m pip install --upgrade pip' in installer
+    assert '"$APP/.venv/bin/pip" install -r "$APP/requirements.txt"' in installer

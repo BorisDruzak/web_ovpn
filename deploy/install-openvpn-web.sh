@@ -222,12 +222,11 @@ fi
 sudo_cmd install -m 0440 "$SRC/deploy/sudoers-openvpn-web" /etc/sudoers.d/openvpn-web
 sudo_cmd visudo -cf /etc/sudoers.d/openvpn-web
 
-cd "$APP"
-if [[ ! -x .venv/bin/python ]]; then
-  sudo_cmd -u openvpn-web python3 -m venv .venv
+if [[ ! -x "$APP/.venv/bin/python" ]]; then
+  sudo_cmd -u openvpn-web python3 -m venv "$APP/.venv"
 fi
-sudo_cmd -u openvpn-web .venv/bin/python -m pip install --upgrade pip
-sudo_cmd -u openvpn-web .venv/bin/pip install -r requirements.txt
+sudo_cmd -u openvpn-web "$APP/.venv/bin/python" -m pip install --upgrade pip
+sudo_cmd -u openvpn-web "$APP/.venv/bin/pip" install -r "$APP/requirements.txt"
 
 sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web.service" /etc/systemd/system/openvpn-web.service
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.service" /etc/systemd/system/netctl-collect.service
