@@ -54,6 +54,40 @@ class ControllerSandbox:
             "#!/bin/sh\nexit 0\n",
         )
 
+    def configure_preflight_boundary(self) -> dict[str, Path]:
+        ansible_playbook = self.install_fake_ansible_playbook()
+
+        self.settings.private_key_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        self.settings.private_key_file.write_text(
+            "test-only-private-key-placeholder\n",
+            encoding="utf-8",
+        )
+        self.settings.private_key_file.chmod(0o600)
+
+        self.settings.known_hosts_file.write_text(
+            "test-only-known-host-placeholder\n",
+            encoding="utf-8",
+        )
+        self.settings.known_hosts_file.chmod(0o600)
+
+        preflight_playbook = (
+            self.settings.ansible_project_dir
+            / "playbooks"
+            / "01-preflight.yml"
+        )
+        preflight_playbook.parent.mkdir(parents=True, exist_ok=True)
+        preflight_playbook.write_text("---\n", encoding="utf-8")
+
+        return {
+            "ansible_playbook": ansible_playbook,
+            "private_key": self.settings.private_key_file,
+            "known_hosts": self.settings.known_hosts_file,
+            "preflight_playbook": preflight_playbook,
+        }
+
     def configure_fake_vault(self) -> tuple[Path, Path]:
         vault_file = (
             self.settings.ansible_project_dir
