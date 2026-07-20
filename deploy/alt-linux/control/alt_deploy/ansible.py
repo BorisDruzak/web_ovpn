@@ -275,6 +275,7 @@ class AnsibleController:
                     ),
                     exit_code=5,
                     details={
+                        "failure_kind": "ssh_timeout",
                         "timeout": exc.timeout,
                     },
                 ) from exc
@@ -287,6 +288,10 @@ class AnsibleController:
                     ),
                     exit_code=5,
                     details={
+                        "failure_kind": _classify_preflight_failure(
+                            stdout=completed.stdout,
+                            stderr=completed.stderr,
+                        ),
                         "returncode": (
                             completed.returncode
                         ),
@@ -308,6 +313,7 @@ class AnsibleController:
                     ),
                     exit_code=5,
                     details={
+                        "failure_kind": "ansible_failed",
                         "stdout": _bounded(
                             completed.stdout
                         ),
@@ -327,6 +333,9 @@ class AnsibleController:
                         "an invalid result"
                     ),
                     exit_code=5,
+                    details={
+                        "failure_kind": "ansible_failed",
+                    },
                 ) from exc
 
             return result
