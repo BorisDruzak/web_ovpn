@@ -1,0 +1,54 @@
+{
+  "fixture_kind": "sanitized_numeric_oid_pages",
+  "pages": [
+    {"capability":"sys_descr","request_oid":[1,3,6,1,2,1,1,1,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,1,0],"value_type":"octet_string","value":"TP-Link T1600G-52TS fixture"}]},
+    {"capability":"sys_object_id","request_oid":[1,3,6,1,2,1,1,2,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,2,0],"value_type":"object_identifier","value":"1.3.6.1.4.1.11863.1.1"}]},
+    {"capability":"sys_uptime","request_oid":[1,3,6,1,2,1,1,3,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,3,0],"value_type":"time_ticks","value":12345}]},
+    {"capability":"sys_name","request_oid":[1,3,6,1,2,1,1,5,0],"outcome":"success_with_rows","rows":[{"oid":[1,3,6,1,2,1,1,5,0],"value_type":"octet_string","value":"tplink-fixture"}]},
+    {"capability":"sys_location","request_oid":[1,3,6,1,2,1,1,6,0],"outcome":"success_empty","rows":[]},
+    {"capability":"if_index","request_oid":[1,3,6,1,2,1,2,2,1,1],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,2,2,1,1,49170],"value_type":"integer","value":49170},
+      {"oid":[1,3,6,1,2,1,2,2,1,1,49174],"value_type":"integer","value":49174},
+      {"oid":[1,3,6,1,2,1,2,2,1,1,49183],"value_type":"integer","value":49183},
+      {"oid":[1,3,6,1,2,1,2,2,1,1,49200],"value_type":"integer","value":49200}
+    ]},
+    {"capability":"if_name","request_oid":[1,3,6,1,2,1,31,1,1,1,1],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,31,1,1,1,1,49170],"value_type":"octet_string","value":"port18"},
+      {"oid":[1,3,6,1,2,1,31,1,1,1,1,49174],"value_type":"octet_string","value":"port22"},
+      {"oid":[1,3,6,1,2,1,31,1,1,1,1,49183],"value_type":"octet_string","value":"port31"},
+      {"oid":[1,3,6,1,2,1,31,1,1,1,1,49200],"value_type":"octet_string","value":"port48"}
+    ]},
+    {"capability":"bridge_port_ifindex","request_oid":[1,3,6,1,2,1,17,1,4,1,2],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,1,4,1,2,18],"value_type":"integer","value":49170},
+      {"oid":[1,3,6,1,2,1,17,1,4,1,2,22],"value_type":"integer","value":49174},
+      {"oid":[1,3,6,1,2,1,17,1,4,1,2,31],"value_type":"integer","value":49183},
+      {"oid":[1,3,6,1,2,1,17,1,4,1,2,48],"value_type":"integer","value":49200}
+    ]},
+    {"capability":"qbridge_port","request_oid":[1,3,6,1,2,1,17,7,1,2,2,1,2],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,20,192,155,244,97,75,205],"value_type":"integer","value":48},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,80,212,247,133,181,90],"value_type":"integer","value":31},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,44,200,27,171,83,201],"value_type":"integer","value":22},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,2,1,44,200,27,171,71,35],"value_type":"integer","value":18}
+    ]},
+    {"capability":"qbridge_status","request_oid":[1,3,6,1,2,1,17,7,1,2,2,1,3],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,20,192,155,244,97,75,205],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,80,212,247,133,181,90],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,44,200,27,171,83,201],"value_type":"integer","value":3},
+      {"oid":[1,3,6,1,2,1,17,7,1,2,2,1,3,1,44,200,27,171,71,35],"value_type":"integer","value":3}
+    ]},
+    {"capability":"legacy_address","request_oid":[1,3,6,1,2,1,17,4,3,1,1],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,4,3,1,1,2,0,0,0,0,1],"value_type":"octet_string_hex","value":"020000000001"}
+    ]},
+    {"capability":"legacy_port","request_oid":[1,3,6,1,2,1,17,4,3,1,2],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,4,3,1,2,2,0,0,0,0,1],"value_type":"integer","value":18}
+    ]},
+    {"capability":"legacy_status","request_oid":[1,3,6,1,2,1,17,4,3,1,3],"outcome":"success_with_rows","rows":[
+      {"oid":[1,3,6,1,2,1,17,4,3,1,3,2,0,0,0,0,1],"value_type":"integer","value":3}
+    ]},
+    {"capability":"vlan_fdb_id","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,3],"outcome":"unsupported_no_such_object","rows":[]}
+    ,{"capability":"vlan_current_egress","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,4],"outcome":"unsupported_no_such_object","rows":[]}
+    ,{"capability":"vlan_current_untagged","request_oid":[1,3,6,1,2,1,17,7,1,4,2,1,5],"outcome":"unsupported_no_such_object","rows":[]}
+    ,{"capability":"pvid","request_oid":[1,3,6,1,2,1,17,7,1,4,5,1,1],"outcome":"unsupported_no_such_object","rows":[]}
+    ,{"capability":"lldp_remote_chassis_id","request_oid":[1,0,8802,1,1,2,1,4,1,1,5],"outcome":"unsupported_no_such_object","rows":[]}
+  ]
+}

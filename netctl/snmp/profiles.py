@@ -15,6 +15,11 @@ _DGS_FRONT_PANEL_NAME = re.compile(r"front-([1-9][0-9]*)\Z")
 _SNR_SYS_OBJECT_ID_PREFIX = "1.3.6.1.4.1.57206"
 _SNR_PORT_NAME = re.compile(r"(?:ge|xe)([1-9][0-9]*)\Z", re.IGNORECASE)
 _SNR_LAG_NAME = re.compile(r"po([1-9][0-9]*)\Z", re.IGNORECASE)
+_TPLINK_T1600G_SYSTEM_DESCRIPTION = re.compile(r"\bT1600G-[0-9]+[A-Z0-9-]*\b")
+
+
+class SnmpParseError(ValueError):
+    """A sanitized SNMP payload cannot be normalized safely."""
 
 
 class PortProfile:
@@ -83,7 +88,11 @@ class PortProfile:
         if len(vids) == 1:
             vid = next(iter(vids))
             return f"vid:{vid}", vid
-        if not vids and self.qbridge_fid_mode == "proven_equals_vid":
+        if (
+            not vids
+            and self.qbridge_fid_mode == "proven_equals_vid"
+            and fdb_id <= 4094
+        ):
             return f"vid:{fdb_id}", fdb_id
         return f"fid:{fdb_id}", None
 
@@ -326,11 +335,62 @@ class SnrProfile(GenericProfile):
         )
 
 
+class TplinkProfile(GenericProfile):
+    """TP-Link T1600G normalization proven by the sanitized fixture."""
+
+    profile_id = "tplink"
+    profile_fingerprint = "tplink:v1"
+    qbridge_fid_mode = "proven_equals_vid"
+
+    @staticmethod
+    def matches(system: SwitchSystem) -> bool:
+        return _TPLINK_T1600G_SYSTEM_DESCRIPTION.search(system.sys_descr) is not None
+
+    @staticmethod
+    def _resolution_from_port(
+        port: SwitchPort, *, physical_port: int
+    ) -> PortResolution:
+        if port.if_index is None or port.bridge_port is None:
+            raise ValueError("TP-Link port mapping is invalid")
+        return PortResolution(
+            port_key=f"physical:{physical_port}",
+            if_index=port.if_index,
+            bridge_port=port.bridge_port,
+            physical_port=physical_port,
+            port_name=port.name,
+        )
+
+    def resolve_fdb_port(
+        self,
+        *,
+        raw_fdb_port: int,
+        fdb_mode: str,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        if fdb_mode not in {"qbridge", "legacy"}:
+            raise ValueError("FDB mode is unsupported")
+        if (
+            isinstance(raw_fdb_port, bool)
+            or not isinstance(raw_fdb_port, int)
+            or raw_fdb_port <= 0
+        ):
+            raise ValueError("FDB port is invalid")
+        if_index = 49152 + raw_fdb_port
+        port = ports_by_ifindex.get(if_index)
+        if port is None:
+            raise SnmpParseError(
+                f"TP-Link physical port {raw_fdb_port} has no ifIndex {if_index}"
+            )
+        return self._resolution_from_port(port, physical_port=raw_fdb_port)
+
+
 def detect_profile(
     system: SwitchSystem, *, profile_hint: str | None = None
 ) -> PortProfile:
     is_dgs = DgsProfile.matches(system)
     is_snr = SnrProfile.matches(system)
+    is_tplink = TplinkProfile.matches(system)
     if profile_hint is not None and profile_hint not in SUPPORTED_SNMP_PROFILE_HINTS:
         raise ValueError("SNMP profile_hint is unsupported")
     if profile_hint == "dgs" and not is_dgs:
@@ -339,4 +399,6 @@ def detect_profile(
         return DgsProfile()
     if profile_hint is None and is_snr:
         return SnrProfile()
+    if profile_hint is None and is_tplink:
+        return TplinkProfile()
     return GenericProfile()

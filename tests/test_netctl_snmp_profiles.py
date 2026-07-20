@@ -13,6 +13,7 @@ from netctl.snmp.models import SwitchSystem
 
 _DGS_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "dgs.json"
 _SNR_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "snr.json"
+_TPLINK_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "tplink.json"
 
 
 class _PagedFixtureTransport:
@@ -64,6 +65,130 @@ class _PagedFixtureTransport:
 def _dgs_fixture_transport() -> _PagedFixtureTransport:
     fixture = json.loads(_DGS_FIXTURE.read_text(encoding="utf-8"))
     return _PagedFixtureTransport(fixture["pages"])
+
+
+def _tplink_fixture_transport() -> _PagedFixtureTransport:
+    fixture = json.loads(_TPLINK_FIXTURE.read_text(encoding="utf-8"))
+    return _PagedFixtureTransport(fixture["pages"])
+
+
+def test_tplink_fixture_normalizes_qbridge_fdb_ports() -> None:
+    snapshot = asyncio.run(collect_switch_snapshot({}, _tplink_fixture_transport()))
+
+    assert (snapshot.profile_id, snapshot.profile_fingerprint) == (
+        "tplink",
+        "tplink:v1",
+    )
+    by_mac = {entry.mac: entry.to_dict() for entry in snapshot.fdb}
+    assert by_mac["C0:9B:F4:61:4B:CD"] == {
+        "fdb_id": 20,
+        "vlan_key": "vid:20",
+        "vlan_id": 20,
+        "mac": "C0:9B:F4:61:4B:CD",
+        "port_key": "physical:48",
+        "bridge_port": 48,
+        "if_index": 49200,
+        "physical_port": 48,
+        "port_name": "port48",
+        "status": "learned",
+    }
+    assert {
+        mac: (by_mac[mac]["physical_port"], by_mac[mac]["if_index"])
+        for mac in (
+            "50:D4:F7:85:B5:5A",
+            "2C:C8:1B:AB:53:C9",
+            "2C:C8:1B:AB:47:23",
+        )
+    } == {
+        "50:D4:F7:85:B5:5A": (31, 49183),
+        "2C:C8:1B:AB:53:C9": (22, 49174),
+        "2C:C8:1B:AB:47:23": (18, 49170),
+    }
+    assert snapshot.lldp_neighbors == ()
+
+
+def test_tplink_prefers_qbridge_and_tolerates_unsupported_optional_groups() -> None:
+    fixture = json.loads(_TPLINK_FIXTURE.read_text(encoding="utf-8"))
+    capabilities = {page["capability"]: page for page in fixture["pages"]}
+
+    assert {
+        "legacy_address",
+        "legacy_port",
+        "legacy_status",
+        "vlan_current_egress",
+        "vlan_current_untagged",
+        "pvid",
+        "lldp_remote_chassis_id",
+    } <= capabilities.keys()
+    assert all(
+        capabilities[name]["outcome"] == "unsupported_no_such_object"
+        for name in (
+            "vlan_current_egress",
+            "vlan_current_untagged",
+            "pvid",
+            "lldp_remote_chassis_id",
+        )
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, _tplink_fixture_transport()))
+
+    assert len(snapshot.fdb) == 4
+    assert {entry.mac for entry in snapshot.fdb} == {
+        "C0:9B:F4:61:4B:CD",
+        "50:D4:F7:85:B5:5A",
+        "2C:C8:1B:AB:53:C9",
+        "2C:C8:1B:AB:47:23",
+    }
+    assert snapshot.vlan_memberships == ()
+    assert snapshot.lldp_neighbors == ()
+
+
+def test_tplink_fixture_is_sanitized_numeric_oid_data_without_secrets() -> None:
+    fixture = json.loads(_TPLINK_FIXTURE.read_text(encoding="utf-8"))
+    serialized = _TPLINK_FIXTURE.read_text(encoding="utf-8").lower()
+
+    assert fixture["fixture_kind"] == "sanitized_numeric_oid_pages"
+    assert all(
+        all(isinstance(part, int) for part in page["request_oid"])
+        for page in fixture["pages"]
+    )
+    assert all(
+        all(isinstance(part, int) for part in row["oid"])
+        for page in fixture["pages"]
+        for row in page["rows"]
+    )
+    for forbidden in ("community", "secret", "host", "production"):
+        assert forbidden not in serialized
+
+
+def test_tplink_fid_equals_vid_rule_is_bounded_to_valid_vlan_ids() -> None:
+    from netctl.snmp.profiles import TplinkProfile
+
+    profile = TplinkProfile()
+
+    assert profile.resolve_fdb_vlan(fdb_id=4094, vids_by_fid={}) == (
+        "vid:4094",
+        4094,
+    )
+    assert profile.resolve_fdb_vlan(fdb_id=4095, vids_by_fid={}) == (
+        "fid:4095",
+        None,
+    )
+
+
+def test_tplink_missing_offset_ifindex_is_a_parse_error() -> None:
+    from netctl.snmp.profiles import SnmpParseError, TplinkProfile
+
+    with pytest.raises(
+        SnmpParseError,
+        match=r"TP-Link physical port 48 has no ifIndex 49200",
+    ):
+        TplinkProfile().resolve_fdb_port(
+            raw_fdb_port=48,
+            fdb_mode="qbridge",
+            bridge_to_ifindex={},
+            ports_by_ifindex={},
+        )
 
 
 def _snr_fixture_transport() -> _PagedFixtureTransport:
