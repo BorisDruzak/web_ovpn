@@ -30,8 +30,13 @@ jobs:
         shell: bash
         run: |
           set +e
+          printf '%s\n' 'test-only-vault-password' > /tmp/or2a-vault-pass
+          chmod 600 /tmp/or2a-vault-pass
+
           echo "root_pwd=$(pwd)" > syntax-status.txt
-          env ANSIBLE_CONFIG=deploy/alt-linux/ansible/ansible.cfg \
+          env \
+            ANSIBLE_CONFIG=deploy/alt-linux/ansible/ansible.cfg \
+            ANSIBLE_VAULT_PASSWORD_FILE=/tmp/or2a-vault-pass \
             ansible-playbook --syntax-check \
             deploy/alt-linux/ansible/playbooks/01-preflight.yml \
             > syntax-root.log 2>&1
@@ -41,7 +46,9 @@ jobs:
           (
             cd deploy/alt-linux/ansible
             echo "ansible_pwd=$(pwd)" >> "$GITHUB_WORKSPACE/syntax-status.txt"
-            env ANSIBLE_CONFIG=ansible.cfg \
+            env \
+              ANSIBLE_CONFIG=ansible.cfg \
+              ANSIBLE_VAULT_PASSWORD_FILE=/tmp/or2a-vault-pass \
               ansible-playbook --syntax-check playbooks/01-preflight.yml \
               > "$GITHUB_WORKSPACE/syntax-cwd.log" 2>&1
           )
