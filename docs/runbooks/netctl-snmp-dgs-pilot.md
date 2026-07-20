@@ -116,7 +116,7 @@ test "$enabled_snmp_before_stage" = 0
 ```
 
 The required results are the reviewed PySNMP version, migration ledger
-`1,2,3,4,5,6`, integrity `ok`, and zero enabled SNMP sources. A different ledger,
+`1,2,3,4,5,6,7`, integrity `ok`, and zero enabled SNMP sources. A different ledger,
 integrity result, dependency version, or enabled-source count blocks the pilot.
 
 ## 3. Stage a disabled source and protected secret
