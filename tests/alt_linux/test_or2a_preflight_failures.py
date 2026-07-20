@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from alt_deploy.ansible import _classify_preflight_failure
+from support.controller_sandbox import make_controller_sandbox
 
 PREFLIGHT_FAILURE_KINDS = {
     "ssh_timeout",
@@ -120,3 +121,23 @@ def test_preflight_role_contains_controlled_sudo_marker() -> None:
     assert content.count(
         "ALT_PREFLIGHT_FAILURE:sudo_unavailable"
     ) == 1
+
+
+def test_sandbox_configures_preflight_boundary(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    assets = sandbox.configure_preflight_boundary()
+
+    assert set(assets) == {
+        "ansible_playbook",
+        "private_key",
+        "known_hosts",
+        "preflight_playbook",
+    }
+    for path in assets.values():
+        path.relative_to(sandbox.root)
+        assert path.is_file()
+
+    assert assets["ansible_playbook"].stat().st_mode & 0o111
+    assert assets["private_key"].read_text(encoding="utf-8") == (
+        "test-only-private-key-placeholder\n"
+    )
