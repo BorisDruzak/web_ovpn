@@ -30,6 +30,19 @@ _VLAN_CAPABILITIES = (
     "pvid",
 )
 _LLDP_CAPABILITIES = ("lldp_remote",)
+_VLAN_MEMBERSHIP_FIELDS = frozenset(
+    {
+        "vlan_id",
+        "port_key",
+        "if_index",
+        "bridge_port",
+        "physical_port",
+        "port_name",
+        "egress",
+        "untagged",
+        "pvid",
+    }
+)
 _EMPTY_COUNTS = {
     "ports": 0,
     "fdb_current": 0,
@@ -423,7 +436,7 @@ def _valid_optional_int(
 def _valid_vlan_memberships(rows: tuple[dict[str, Any], ...]) -> bool:
     keys: list[tuple[int, str]] = []
     for row in rows:
-        if type(row) is not dict:
+        if type(row) is not dict or not _VLAN_MEMBERSHIP_FIELDS <= row.keys():
             return False
         vlan_id = row.get("vlan_id")
         port_key = row.get("port_key")

@@ -901,7 +901,7 @@ def test_switch_optional_query_is_read_only_source_filtered_paginated_and_raw_fr
     result_key: str,
 ) -> None:
     import netctl.cli as cli
-    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.db import connect, connect_read_only, get_source, sync_config_sources
     from netctl.switch_store import collect_and_save_switch
 
     config_path = tmp_path / "netctl.yaml"
@@ -922,7 +922,20 @@ def test_switch_optional_query_is_read_only_source_filtered_paginated_and_raw_fr
                 "2026-07-19T10:00:00Z",
             )
             assert result["status"] == "success"
-        before_changes = conn.total_changes
+        tables = (
+            "current_switch_vlan_memberships",
+            "current_switch_lldp_neighbors",
+            "current_switch_fdb",
+            "switch_ports",
+            "switch_collection_runs",
+        )
+        before = {
+            table: [
+                tuple(row)
+                for row in conn.execute(f"SELECT * FROM {table} ORDER BY 1, 2")
+            ]
+            for table in tables
+        }
     finally:
         conn.close()
 
@@ -962,12 +975,18 @@ def test_switch_optional_query_is_read_only_source_filtered_paginated_and_raw_fr
     assert "community" not in rendered
     assert "details" not in rendered
 
-    read_only = connect(db_url)
+    read_only = connect_read_only(db_url)
     try:
-        assert read_only.total_changes == 0
-        assert before_changes > 0
+        after = {
+            table: [
+                tuple(row)
+                for row in read_only.execute(f"SELECT * FROM {table} ORDER BY 1, 2")
+            ]
+            for table in tables
+        }
     finally:
         read_only.close()
+    assert after == before
 
 
 @pytest.mark.parametrize("command", ["vlans", "lldp"])
