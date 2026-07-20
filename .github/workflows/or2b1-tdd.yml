@@ -1,0 +1,32 @@
+name: OR-2B1 TDD
+
+on:
+  push:
+    branches:
+      - docs/alt-or2b1-vault-health-gate-design-20260720
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: OR-2B1 outcome contract RED
+        run: >-
+          python -m pytest -q
+          tests/alt_linux/test_operational_reliability_contract.py::test_proven_outcome_catalog_has_exact_scenarios
+          tests/alt_linux/test_operational_reliability_contract.py::test_catalog_contains_nineteen_proven_outcomes
