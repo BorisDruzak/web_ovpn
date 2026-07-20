@@ -6,6 +6,7 @@ RESULTS_DIR = "/var/lib/openvpn-web/server-drafts/results"
 PRIVATE_DIR = "/var/lib/openvpn-web/server-drafts/private"
 OBSERVER_KEY = "/etc/openvpn-web/server-observer.key"
 OBSERVER_PUBLIC_KEY = "/etc/openvpn-web/server-observer.pub"
+DRAFT_WORKER_INSTALLER = "deploy/install-server-draft-worker.sh"
 
 
 def test_worker_service_is_key_isolated_and_retains_observer_hardening():
@@ -84,3 +85,69 @@ def test_installer_derives_public_key_and_enables_path_only():
     assert "systemctl start server-draft-worker.service" not in installer
     assert "systemctl enable --now server-draft-worker.service" not in installer
 
+
+def test_draft_worker_only_installer_has_a_strictly_limited_deployment_surface():
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+
+    for required in (
+        '"$SRC/deploy/server-draft-worker" /usr/local/sbin/server-draft-worker',
+        "server-draft-worker.service",
+        "server-draft-worker.path",
+        f"-d -m 0770 -o openvpn-web -g openvpn-web {QUEUE_DIR}",
+        f"-d -m 0770 -o openvpn-web -g openvpn-web {RESULTS_DIR}",
+        f"-d -m 0700 -o openvpm -g openvpm {PRIVATE_DIR}",
+        f"ssh-keygen -y -f {OBSERVER_KEY}",
+        OBSERVER_PUBLIC_KEY,
+        "systemctl daemon-reload",
+        "systemctl enable --now server-draft-worker.path",
+    ):
+        assert required in installer
+
+    for forbidden in (
+        "netctl-collect",
+        "/etc/netctl",
+        "openvpn-web.service",
+        "openvpn-server",
+        "vpn-policy",
+        "vpn-runtime-health",
+        "systemctl restart",
+        "systemctl enable --now server-draft-worker.service",
+        '"$APP',
+    ):
+        assert forbidden not in installer
+
+
+def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources():
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+
+    assert "bash deploy/install-server-draft-worker.sh" in handoff
+    assert "bash deploy/install-openvpn-web.sh" not in handoff
+    assert "server-draft-worker.path" in handoff
+    assert "netctl-collect" in handoff
+    assert "do **not** restart OpenVPN" in handoff
+
+    for validation in (
+        'case "$BACKUP_ROOT" in',
+        "/root/openvpn-web-server-drafts-backup-[0-9]",
+        'sudo test -d "$BACKUP_ROOT"',
+        'sudo test -f "$BACKUP_ROOT/server-draft-worker.service"',
+        'sudo test -f "$BACKUP_ROOT/server-draft-worker.path"',
+        'sudo test -d "$BACKUP_ROOT/server-drafts"',
+        'sudo test -L "$BACKUP_ROOT/server-drafts"',
+    ):
+        assert validation in handoff
+
+    first_mutation = handoff.index("sudo systemctl stop server-draft-worker.path")
+    for source_check in (
+        'sudo test -f "$BACKUP_ROOT/server-draft-worker.service"',
+        'sudo test -f "$BACKUP_ROOT/server-draft-worker.path"',
+        'sudo test -d "$BACKUP_ROOT/server-drafts"',
+    ):
+        assert handoff.index(source_check) < first_mutation
+
+    assert "sudo systemctl disable server-draft-worker.path" in handoff
+    assert "sudo systemctl stop server-draft-worker.service" in handoff
+    assert "sudo rm -rf -- /var/lib/openvpn-web/server-drafts" in handoff

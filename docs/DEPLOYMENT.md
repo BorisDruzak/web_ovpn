@@ -106,32 +106,42 @@ do **not** restart OpenVPN, and do **not** create, edit, remove, test, or
 otherwise modify any collector configuration, `/etc/netctl`, or
 `netctl-collect` unit.
 
+Run it only on an existing OpenVPN web deployment that already has the
+`openvpn-web` and `openvpm` accounts plus the regular
+`/etc/openvpn-web/server-observer.key` file. The scoped installer verifies
+those prerequisites and refuses to create or modify them.
+
 Before running the installer, make a timestamped backup containing **only**
 the draft-worker systemd units and the draft state directory:
 
 ```bash
-sudo install -d -m 0700 /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS
+BACKUP_ROOT="/root/openvpn-web-server-drafts-backup-$(date -u +%Y%m%d%H%M%S)"
+sudo install -d -m 0700 "$BACKUP_ROOT"
 sudo cp -a \
   /etc/systemd/system/server-draft-worker.service \
   /etc/systemd/system/server-draft-worker.path \
   /var/lib/openvpn-web/server-drafts \
-  /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/
+  "$BACKUP_ROOT/"
+printf 'Draft-worker rollback backup: %s\n' "$BACKUP_ROOT"
 ```
 
 Copy the reviewed source bundle to the host as described in [Deploy To OpenVPN
-Host](#deploy-to-openvpn-host), then invoke the installer from the extracted
-source directory:
+Host](#deploy-to-openvpn-host), then invoke only the dedicated draft-worker
+installer from the extracted source directory:
 
 ```bash
 cd /tmp/openvpn-web-src
-SUDO_PASSWORD='<sudo-password>' bash deploy/install-openvpn-web.sh
+SUDO_PASSWORD='<sudo-password>' bash deploy/install-server-draft-worker.sh
 ```
 
-The only new background trigger to enable for this handoff is
-`server-draft-worker.path`; do not enable or start
-`server-draft-worker.service` directly. The installer enables the path unit,
-which starts the worker only when a public queue entry changes. Verify that
-boundary and the public-key access required by the web application:
+That installer installs only `/usr/local/sbin/server-draft-worker`, the two
+`server-draft-worker` unit files, the three `server-drafts` directories, and
+the derived observer public key. It reloads systemd and enables only
+`server-draft-worker.path`; it does not alter the application bundle, collector
+configuration or timers, OpenVPN, or any unrelated service. Do not enable or
+start `server-draft-worker.service` directly. The path unit starts the worker
+only when a public queue entry changes. Verify that boundary and the public-key
+access required by the web application:
 
 ```bash
 sudo systemctl is-enabled server-draft-worker.path
@@ -149,16 +159,40 @@ completed the documented fingerprint-confirmation workflow.
 
 ### Rollback
 
-If this handoff must be rolled back, disable only the draft-worker path unit,
-restore only the draft-worker units and `server-drafts` directory from the
-timestamped backup, then reload systemd:
+If this handoff must be rolled back, first set `BACKUP_ROOT` to the exact path
+printed by the backup command above. The validation below rejects a guessed,
+unrelated, or symlinked backup root and verifies every restore source before
+stopping services, replacing units, or deleting draft state:
 
 ```bash
-sudo systemctl disable --now server-draft-worker.path
-sudo cp -a /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/server-draft-worker.service /etc/systemd/system/
-sudo cp -a /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/server-draft-worker.path /etc/systemd/system/
-sudo rm -rf /var/lib/openvpn-web/server-drafts
-sudo cp -a /root/openvpn-web-server-drafts-backup-YYYYMMDDHHMMSS/server-drafts /var/lib/openvpn-web/
+BACKUP_ROOT='/root/openvpn-web-server-drafts-backup-20260720120000'
+case "$BACKUP_ROOT" in
+  /root/openvpn-web-server-drafts-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+  *) echo 'refusing an unvalidated draft-worker backup root' >&2; exit 2 ;;
+esac
+BACKUP_ROOT="$(sudo readlink -f -- "$BACKUP_ROOT")"
+case "$BACKUP_ROOT" in
+  /root/openvpn-web-server-drafts-backup-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+  *) echo 'refusing a resolved backup root outside the draft-worker backup namespace' >&2; exit 2 ;;
+esac
+if ! sudo test -d "$BACKUP_ROOT" || sudo test -L "$BACKUP_ROOT" || \
+  ! sudo test -f "$BACKUP_ROOT/server-draft-worker.service" || \
+  sudo test -L "$BACKUP_ROOT/server-draft-worker.service" || \
+  ! sudo test -f "$BACKUP_ROOT/server-draft-worker.path" || \
+  sudo test -L "$BACKUP_ROOT/server-draft-worker.path" || \
+  ! sudo test -d "$BACKUP_ROOT/server-drafts" || \
+  sudo test -L "$BACKUP_ROOT/server-drafts"; then
+  echo 'draft-worker rollback backup is incomplete or unsafe' >&2
+  exit 2
+fi
+
+sudo systemctl stop server-draft-worker.path
+sudo systemctl disable server-draft-worker.path
+sudo systemctl stop server-draft-worker.service
+sudo install -m 0644 "$BACKUP_ROOT/server-draft-worker.service" /etc/systemd/system/server-draft-worker.service
+sudo install -m 0644 "$BACKUP_ROOT/server-draft-worker.path" /etc/systemd/system/server-draft-worker.path
+sudo rm -rf -- /var/lib/openvpn-web/server-drafts
+sudo cp -a -- "$BACKUP_ROOT/server-drafts" /var/lib/openvpn-web/server-drafts
 sudo systemctl daemon-reload
 ```
 
