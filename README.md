@@ -91,6 +91,15 @@ When a client network/template changes, the web UI runs sync and then `reconnect
 
 Network Observer adds a second read-only backend:
 
+Before deploying the context-import migration, follow the
+[netctl context-import backup and rollback runbook](docs/runbooks/netctl-context-import-backup-rollback.md).
+Before deploying the runtime asset identity migration, follow the
+[runtime asset identity backup and rollback runbook](docs/runbooks/netctl-runtime-asset-identity-backup-rollback.md).
+The sanitized production closure record for migration 2 is available in
+[runtime asset identity production verification](docs/verification/netctl-runtime-asset-identity-production.md).
+The deployment readiness record for the live runtime writer and active-context
+classifier is [netctl live-context readiness](docs/verification/netctl-live-context-readiness.md).
+
 ```bash
 sudo /usr/local/sbin/netctl --json sources list
 sudo /usr/local/sbin/netctl --json sources test mikrotik-main
@@ -98,6 +107,7 @@ sudo /usr/local/sbin/netctl --json sources test mikrotik-hex
 sudo /usr/local/sbin/netctl --json collect mikrotik-main
 sudo /usr/local/sbin/netctl --json hosts list
 sudo /usr/local/sbin/netctl --json dashboard
+sudo /usr/local/sbin/netctl --json runtime-assets status
 sudo /usr/local/sbin/netctl --json ipsec status
 ```
 

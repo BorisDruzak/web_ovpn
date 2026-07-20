@@ -4,14 +4,9 @@ import ipaddress
 import re
 from typing import Any
 
-CENTRAL_LAN = ipaddress.ip_network("192.168.100.0/23")
-VPN_POOL = ipaddress.ip_network("192.168.50.0/24")
-REMOTE_SITE_LANS = [ipaddress.ip_network("192.168.51.0/24"), ipaddress.ip_network("192.168.52.0/24")]
-TELEPHONY_NETWORKS = [ipaddress.ip_network("192.168.0.0/24")]
-MGMT_NETWORKS = [ipaddress.ip_network("10.83.1.0/24"), ipaddress.ip_network("90.99.99.0/30")]
-VIPNET_TRANSIT_NETWORKS = [ipaddress.ip_network("10.254.254.0/30")]
-WAN_NETWORKS = [ipaddress.ip_network("192.168.1.0/24"), ipaddress.ip_network("78.29.0.0/18")]
-NOISE_NETWORKS = [ipaddress.ip_network("169.254.0.0/16")]
+from .context_classifier import SegmentRule, classify_address, match_segment_rule
+
+
 MAC_RE = re.compile(r"^[0-9A-F]{12}$")
 
 
@@ -32,39 +27,13 @@ def normalize_mac(value: Any) -> str | None:
     return ":".join(raw[index : index + 2] for index in range(0, 12, 2))
 
 
-def ip_in_any_network(ip: str, networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]) -> bool:
+def is_stale_noise_ip(ip: str, *, segment_rules: list[SegmentRule]) -> bool:
     address = ipaddress.ip_address(ip)
-    return any(address in network for network in networks)
-
-
-def is_stale_noise_ip(ip: str) -> bool:
-    return ip_in_any_network(ip, [*TELEPHONY_NETWORKS, *WAN_NETWORKS, *NOISE_NETWORKS])
-
-
-def _category(host: dict[str, Any], source: dict[str, Any], has_name: bool) -> str:
-    ip = str(host["ip"])
-    address = ipaddress.ip_address(ip)
-    if ip == str(source.get("host") or ""):
-        return "router"
-    if host.get("network_infra"):
-        return "network_infra"
-    if address in VPN_POOL:
-        return "vpn_client"
-    if ip_in_any_network(ip, VIPNET_TRANSIT_NETWORKS):
-        return "vipnet_transit"
-    if ip_in_any_network(ip, MGMT_NETWORKS):
-        return "mgmt"
-    if ip_in_any_network(ip, TELEPHONY_NETWORKS):
-        return "telephony"
-    if ip_in_any_network(ip, WAN_NETWORKS):
-        return "wan"
-    if ip_in_any_network(ip, NOISE_NETWORKS):
-        return "noise"
-    if address in CENTRAL_LAN:
-        return "local_device" if has_name else "unknown"
-    if any(address in network for network in REMOTE_SITE_LANS):
-        return "site_device"
-    return "unknown"
+    matches = [rule for rule in segment_rules if rule.network.version == address.version and address in rule.network]
+    if not matches:
+        return False
+    rule = min(matches, key=lambda item: (-item.network.prefixlen, item.segment_id))
+    return rule.observer_category in {"telephony", "wan", "noise"}
 
 
 def _ensure_host(hosts: dict[str, dict[str, Any]], ip: str, now: str, source: dict[str, Any]) -> dict[str, Any]:
@@ -146,7 +115,13 @@ def _device_guess(host: dict[str, Any]) -> tuple[str, int, list[str]]:
     return "unknown", 0, []
 
 
-def normalize_hosts(source: dict[str, Any], snapshot: dict[str, Any], observed_at: str) -> list[dict[str, Any]]:
+def normalize_hosts(
+    source: dict[str, Any],
+    snapshot: dict[str, Any],
+    observed_at: str,
+    *,
+    segment_rules: list[SegmentRule] | None = None,
+) -> list[dict[str, Any]]:
     hosts: dict[str, dict[str, Any]] = {}
     source_ip = _ip(source.get("host"))
     if source_ip:
@@ -203,7 +178,16 @@ def normalize_hosts(source: dict[str, Any], snapshot: dict[str, Any], observed_a
 
     for host in hosts.values():
         has_name = bool(host.get("hostname") or host.get("display_name"))
-        host["category"] = _category(host, source, has_name)
+        segment_rule = match_segment_rule(str(host["ip"]), rules=segment_rules or [])
+        if segment_rule is not None and segment_rule.site:
+            host["site"] = segment_rule.site
+        host["category"] = classify_address(
+            str(host["ip"]),
+            rules=segment_rules or [],
+            source=source,
+            has_name=has_name,
+            network_infra=bool(host.get("network_infra")),
+        )
         if host["category"] == "router":
             host["display_name"] = host["display_name"] or source.get("name")
             host["hostname"] = host["hostname"] or source.get("name")

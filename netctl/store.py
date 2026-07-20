@@ -5,8 +5,13 @@ import ipaddress
 import sqlite3
 from typing import Any
 
-from .db import get_source, insert_event
+from .db import get_source
+from .context_classifier import SegmentRule, legacy_segment_rules, load_active_segment_rules
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
+from .runtime_writer import (
+    recompute_runtime_identity_findings,
+    sync_runtime_hosts,
+)
 from .util import utc_now
 
 
@@ -212,7 +217,14 @@ def _upsert_host(conn: sqlite3.Connection, host: dict[str, Any]) -> int:
     return int(row["id"])
 
 
-def _demote_absent_noise_hosts(conn: sqlite3.Connection, source: dict[str, Any], current_ips: set[str], observed_at: str) -> None:
+def _demote_absent_noise_hosts(
+    conn: sqlite3.Connection,
+    source: dict[str, Any],
+    current_ips: set[str],
+    observed_at: str,
+    *,
+    segment_rules: list[SegmentRule],
+) -> None:
     rows = conn.execute(
         """
         SELECT id, ip FROM network_hosts
@@ -222,7 +234,7 @@ def _demote_absent_noise_hosts(conn: sqlite3.Connection, source: dict[str, Any],
     ).fetchall()
     for row in rows:
         ip = str(row["ip"])
-        if ip in current_ips or not is_stale_noise_ip(ip):
+        if ip in current_ips or not is_stale_noise_ip(ip, segment_rules=segment_rules):
             continue
         conn.execute(
             """
@@ -252,6 +264,34 @@ def save_collection(
     status: str = "ok",
     message: str = "",
 ) -> dict[str, Any]:
+    conn.execute("SAVEPOINT save_collection")
+    try:
+        counts = _save_collection(
+            conn,
+            source,
+            snapshot,
+            started_at,
+            status=status,
+            message=message,
+        )
+        conn.execute("RELEASE SAVEPOINT save_collection")
+        conn.commit()
+        return counts
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT save_collection")
+        conn.execute("RELEASE SAVEPOINT save_collection")
+        conn.rollback()
+        raise
+
+
+def _save_collection(
+    conn: sqlite3.Connection,
+    source: dict[str, Any],
+    snapshot: dict[str, Any],
+    started_at: str,
+    status: str = "ok",
+    message: str = "",
+) -> dict[str, Any]:
     source_id = int(source["id"])
     observed_at = utc_now()
     counts = {
@@ -263,6 +303,11 @@ def save_collection(
         "bridge_hosts": len(snapshot.get("bridge_hosts", [])),
         "firewall_address_lists": len(snapshot.get("firewall_address_lists", [])),
     }
+    segment_rules = load_active_segment_rules(conn)
+    classifier_fallback = not segment_rules
+    if classifier_fallback:
+        segment_rules = legacy_segment_rules()
+    counts["context_classifier_fallback"] = classifier_fallback
     _clear_current(conn, source_id)
 
     for item in snapshot.get("interfaces", []):
@@ -387,7 +432,7 @@ def save_collection(
         _insert_observation(conn, source_id, observed_at, "neighbor", item)
 
     source_for_normalizer = dict(source)
-    hosts = normalize_hosts(source_for_normalizer, snapshot, observed_at)
+    hosts = normalize_hosts(source_for_normalizer, snapshot, observed_at, segment_rules=segment_rules)
     current_ips = {host["ip"] for host in hosts}
     for host in hosts:
         host_id = _upsert_host(conn, host)
@@ -395,7 +440,50 @@ def save_collection(
             for item in snapshot.get(item_type, []):
                 if item.get("ip") == host["ip"] or item.get("address") == host["ip"]:
                     _insert_observation(conn, source_id, observed_at, item_type.rstrip("s"), item, host_id=host_id)
-    _demote_absent_noise_hosts(conn, source, current_ips, observed_at)
+    _demote_absent_noise_hosts(
+        conn,
+        source,
+        current_ips,
+        observed_at,
+        segment_rules=segment_rules,
+    )
+
+    runtime_counts: dict[str, int] = {}
+    finding_counts: dict[str, int] = {}
+    if status == "ok":
+        runtime_counts = sync_runtime_hosts(
+            conn,
+            source=source,
+            hosts=hosts,
+            observed_at=observed_at,
+        )
+        finding_counts = recompute_runtime_identity_findings(
+            conn,
+            observed_at=observed_at,
+        )
+    counts.update(
+        {
+            "runtime_assets_touched": runtime_counts.get("assets_touched", 0),
+            "runtime_ips_current": runtime_counts.get("ips_current", 0),
+            "runtime_hostnames_current": runtime_counts.get("hostnames_current", 0),
+            "runtime_findings_open": finding_counts.get("open", 0),
+        }
+    )
+
+    if classifier_fallback:
+        conn.execute(
+            """
+            INSERT INTO network_events
+                (ts, source_id, host_id, severity, event_type, message, data_json)
+            VALUES (?, ?, NULL, 'warning', 'context_classifier_fallback', ?, ?)
+            """,
+            (
+                utc_now(),
+                source_id,
+                "no active context segment rules; using explicit legacy compatibility rules",
+                _json({"context_classifier_fallback": True}),
+            ),
+        )
 
     conn.execute(
         """
@@ -408,8 +496,20 @@ def save_collection(
         "UPDATE network_sources SET last_collect_at = ?, last_status = ?, last_error = ? WHERE id = ?",
         (observed_at, status, message if status != "ok" else "", source_id),
     )
-    insert_event(conn, "info" if status == "ok" else "error", "collect", message or f"collect {source['name']}", source_id=source_id, data=counts)
-    conn.commit()
+    conn.execute(
+        """
+        INSERT INTO network_events
+            (ts, source_id, host_id, severity, event_type, message, data_json)
+        VALUES (?, ?, NULL, ?, 'collect', ?, ?)
+        """,
+        (
+            utc_now(),
+            source_id,
+            "info" if status == "ok" else "error",
+            message or f"collect {source['name']}",
+            _json(counts),
+        ),
+    )
     return counts
 
 

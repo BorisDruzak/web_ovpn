@@ -1,0 +1,78 @@
+name: Verify netctl context stage
+
+on:
+  pull_request:
+    paths:
+      - "netctl/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "docs/verification/netctl-context-validate-status.md"
+      - ".github/workflows/verify-netctl-context.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  context-stage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt
+
+      - name: Run context-stage tests
+        run: python -m pytest -q tests/test_netctl_context.py
+
+  full-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt
+
+      - name: Run full regression suite
+        id: full_pytest
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q --maxfail=20 > pytest-full.log 2>&1
+          rc=$?
+          echo "$rc" > pytest-full.exit-code
+          cat pytest-full.log
+          exit "$rc"
+
+      - name: Upload full regression output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-full-regression
+          path: |
+            pytest-full.log
+            pytest-full.exit-code
+          if-no-files-found: error
+          retention-days: 7

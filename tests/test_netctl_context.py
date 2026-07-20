@@ -170,8 +170,8 @@ def test_context_revision_is_idempotent_and_status_returns_latest(tmp_path: Path
         conn.close()
 
 
-def test_revalidating_a_revision_refreshes_latest_status_without_duplicate_rows(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+def test_revalidating_a_revision_preserves_its_original_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import netctl.db as db
 
@@ -184,51 +184,25 @@ def test_revalidating_a_revision_refreshes_latest_status_without_duplicate_rows(
     try:
         first_a = db.record_context_revision(conn, context_a, tmp_path / "a.yaml", "a")
         db.record_context_revision(conn, context_b, tmp_path / "b.yaml", "b")
-        refreshed_a = db.record_context_revision(conn, {**context_a, "counts": {"sites": 3}}, tmp_path / "a.yaml", "a")
+        revalidated_a = db.record_context_revision(
+            conn,
+            {**context_a, "schema_version": "2.3.0", "counts": {"sites": 3}},
+            tmp_path / "relocated-a.yaml",
+            "new-a-git-sha",
+        )
 
         latest = db.latest_context_revision(conn)
-        assert refreshed_a["id"] == first_a["id"]
+        assert revalidated_a == first_a
         assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 2
-        assert latest["sha256"] == context_a["sha256"]
-        assert latest["counts"] == {"sites": 3}
+        assert latest["sha256"] == context_b["sha256"]
+        assert first_a["source_path"] == str(tmp_path / "a.yaml")
+        assert first_a["git_sha"] == "a"
+        assert first_a["schema_version"] == "2.2.0"
+        assert first_a["counts"] == {"sites": 1}
         assert latest["validated_at"] == "2026-07-13T00:00:00Z"
+        conn.commit()
     finally:
         conn.close()
-
-    status_rc, status = run_cli(["--json", "--db", db_url, "context", "status"], capsys)
-    assert status_rc == 0
-    assert status["context"]["sha256"] == context_a["sha256"]
-    assert status["context"]["counts"] == {"sites": 3}
-
-
-def test_revalidating_revision_refreshes_latest_provenance(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    from netctl.db import connect, latest_context_revision, record_context_revision
-
-    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
-    conn = connect(db_url)
-    original = {"context_id": "test-network", "schema_version": "2.2.0", "sha256": "a" * 64, "counts": {"sites": 1}}
-    refreshed = {**original, "schema_version": "2.3.0", "counts": {"sites": 2}}
-    original_path = tmp_path / "original-context.yaml"
-    refreshed_path = tmp_path / "relocated-context.yaml"
-    try:
-        first = record_context_revision(conn, original, original_path, "old-git-sha")
-        second = record_context_revision(conn, refreshed, refreshed_path, "new-git-sha")
-        latest = latest_context_revision(conn)
-
-        assert first["id"] == second["id"]
-        assert conn.execute("SELECT COUNT(*) FROM context_revisions").fetchone()[0] == 1
-        assert latest["source_path"] == str(refreshed_path)
-        assert latest["git_sha"] == "new-git-sha"
-        assert latest["schema_version"] == "2.3.0"
-        assert latest["counts"] == {"sites": 2}
-    finally:
-        conn.close()
-
-    status_rc, status = run_cli(["--json", "--db", db_url, "context", "status"], capsys)
-    assert status_rc == 0
-    assert status["context"]["source_path"] == str(refreshed_path)
-    assert status["context"]["git_sha"] == "new-git-sha"
-    assert status["context"]["schema_version"] == "2.3.0"
 
 
 def test_context_validate_then_status_returns_recorded_revision(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
