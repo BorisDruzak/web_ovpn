@@ -25,8 +25,10 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: OR-2B1 start and retryability
+      - name: Complete OR-2B1 focused suite
         run: >-
           python -m pytest -q
+          tests/alt_linux/test_or2b1_vault_gate.py
           tests/alt_linux/test_or2b1_vault_provision_gate.py
-          -k "start_vault_failure or retryable"
+          tests/alt_linux/test_vault_health.py
+          tests/alt_linux/test_operational_reliability_contract.py
