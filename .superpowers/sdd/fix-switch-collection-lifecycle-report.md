@@ -115,3 +115,41 @@ The warnings are the repository's existing FastAPI, Starlette,
 - `tests/test_netctl_switch_cli.py`
 - `tests/test_netctl_snmp_profiles.py`
 - `.superpowers/sdd/fix-switch-collection-lifecycle-report.md`
+
+## P1 follow-up: optional unsupported capabilities are healthy
+
+Review identified that the initial partial-status predicate treated every
+non-success optional outcome as a failure. That incorrectly marked a switch
+`partial` when an optional MIB object was explicitly unsupported, even though
+the collector had successfully established that the optional capability was not
+available.
+
+`unsupported_no_such_object` is now a healthy optional outcome alongside
+`success_with_rows` and `success_empty`. Only actual optional collection
+failures (`timeout`, `auth_or_view_failure`, and `parse_error`; protocol
+failures are normalized to the same failed outcomes) cause a `partial` run.
+Optional current-state preservation remains unchanged for unsupported probes.
+
+### P1 TDD and verification
+
+RED after changing the store/profile expectations before production code:
+
+```text
+4 failed, 4 passed, 90 deselected in 1.77s
+```
+
+The failures were the unsupported VLAN/LLDP store cases and the TP-Link/CSS326
+fixture persistence paths, all incorrectly reported as `partial`.
+
+GREEN:
+
+```text
+python -m pytest tests/test_netctl_switch_store.py tests/test_netctl_snmp_profiles.py tests/test_netctl_switch_cli.py -k "optional_error_preserves or unsupported_optional_groups or empty_lldp_clears or partial_collect" -q
+9 passed, 133 deselected in 0.93s
+
+python -m pytest -q
+487 passed, 1 skipped, 5360 warnings in 37.26s
+```
+
+No network device, remote host, deployment target, or production database was
+contacted for this follow-up.

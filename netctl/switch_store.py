@@ -24,6 +24,10 @@ _REPLACING_FDB_OUTCOMES = {
     SnmpOutcome.SUCCESS_WITH_ROWS,
     SnmpOutcome.SUCCESS_EMPTY,
 }
+_OPTIONAL_HEALTHY_OUTCOMES = {
+    *_REPLACING_FDB_OUTCOMES,
+    SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+}
 _VLAN_CAPABILITIES = (
     "vlan_current_egress",
     "vlan_current_untagged",
@@ -714,7 +718,7 @@ def _has_newer_or_equal_completed(
 def _has_failed_optional_capability(snapshot: SwitchSnapshot) -> bool:
     return any(
         capability.capability in _OPTIONAL_CAPABILITIES
-        and capability.outcome not in _REPLACING_FDB_OUTCOMES
+        and capability.outcome not in _OPTIONAL_HEALTHY_OUTCOMES
         for capability in snapshot.capabilities
     )
 

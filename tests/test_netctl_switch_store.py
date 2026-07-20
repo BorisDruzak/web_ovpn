@@ -436,18 +436,19 @@ def test_confirmed_empty_optional_group_clears_only_that_group(
 
 
 @pytest.mark.parametrize(
-    "failed_outcome",
+    ("optional_outcome", "expected_status"),
     [
-        SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
-        SnmpOutcome.TIMEOUT,
-        SnmpOutcome.PARSE_ERROR,
+        (SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT, "success"),
+        (SnmpOutcome.TIMEOUT, "partial"),
+        (SnmpOutcome.PARSE_ERROR, "partial"),
     ],
 )
 @pytest.mark.parametrize("group", ["vlan", "lldp"])
 def test_optional_error_preserves_current_group_while_required_state_advances(
     switch_conn: sqlite3.Connection,
     group: str,
-    failed_outcome: SnmpOutcome,
+    optional_outcome: SnmpOutcome,
+    expected_status: str,
 ) -> None:
     from netctl.switch_store import collect_and_save_switch
 
@@ -472,7 +473,7 @@ def test_optional_error_preserves_current_group_while_required_state_advances(
         second_required,
         vlan_memberships=() if group == "vlan" else (_vlan_row(30, 2),),
         vlan_outcomes=(
-            (failed_outcome, SnmpOutcome.SUCCESS_EMPTY, SnmpOutcome.SUCCESS_EMPTY)
+            (optional_outcome, SnmpOutcome.SUCCESS_EMPTY, SnmpOutcome.SUCCESS_EMPTY)
             if group == "vlan"
             else (
                 SnmpOutcome.SUCCESS_WITH_ROWS,
@@ -482,7 +483,7 @@ def test_optional_error_preserves_current_group_while_required_state_advances(
         ),
         lldp_neighbors=() if group == "lldp" else (_lldp_row(2),),
         lldp_outcome=(
-            failed_outcome
+            optional_outcome
             if group == "lldp"
             else SnmpOutcome.SUCCESS_WITH_ROWS
         ),
@@ -492,7 +493,7 @@ def test_optional_error_preserves_current_group_while_required_state_advances(
         switch_conn, source, _FakeDriver(replacement), "2026-07-19T11:00:00Z"
     )
 
-    assert result["status"] == "partial"
+    assert result["status"] == expected_status
     assert _rows(
         switch_conn,
         "SELECT mac, port_key FROM current_switch_fdb",
