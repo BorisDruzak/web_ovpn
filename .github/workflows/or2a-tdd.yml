@@ -25,7 +25,8 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: OR-2A preflight boundary RED
+      - name: OR-2A classified preflight RED
         run: >-
           python -m pytest -q
-          tests/alt_linux/test_or2a_preflight_failures.py::test_sandbox_configures_preflight_boundary
+          tests/alt_linux/test_or2a_preflight_failures.py
+          -k "cli_persists or timeout_exception or result_failures or retryable"
