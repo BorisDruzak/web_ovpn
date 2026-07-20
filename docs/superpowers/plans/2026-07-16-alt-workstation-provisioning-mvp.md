@@ -6,7 +6,28 @@
 
 **Architecture:** A stdlib-only Python package named `alt_deploy` runs on `192.168.100.17` and exposes `workstationctl`. It reads registration JSON, invokes Ansible with strict SSH host-key checking, persists machine/job/assignment state atomically, and launches provisioning workers as transient systemd services. Ansible remains the only component that changes target workstations; the future web service on `192.168.100.30` will call this control plane through a constrained API.
 
-**Tech Stack:** Python 3.12, pytest 8, Ansible Core 2.18, YAML, systemd, OpenSSH, ALT Workstation K 11.2, SDDM.
+**Tech Stack:** Python 3.12, pytest 8, Ansible Core 2.18, YAML, systemd, OpenSSH, ALT Workstation K 11.2, LightDM, AccountsService.
+
+## Verified implementation update (2026-07-17)
+
+The implementation and first physical-machine run are complete. The current
+contract is authoritative in
+[`docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md`](../../ALT_WORKSTATION_PROVISIONING_CONTEXT.md).
+
+Verified differences from the original plan:
+
+- LightDM plus AccountsService is the verified display and account stack;
+- employee login validation excludes dots;
+- automated direct-IP SSH uses `ProxyCommand=none`;
+- the provision playbook explicitly loads Vault through `vars_files`;
+- `provision start` requires root;
+- successful assignment is displayed as `assigned`;
+- sudo denial verification uses `LC_ALL=C` and the actual ALT denial text;
+- machine `53b03180-5d78-11f0-bd95-f027db877a00` completed
+  `job-20260717T112903Z-71b5afe0`, survived reboot, and passed a real Plasma
+  login as the employee;
+- the verified implementation baseline was `80 passed` before documentation
+  regression tests were added.
 
 ## Global Constraints
 
@@ -14,17 +35,17 @@
 - Controller and all Ansible secrets remain on `192.168.100.17`.
 - The future web server on `192.168.100.30` receives no SSH private key, Vault file, or direct workstation SSH access.
 - The employee is a local account entered manually by the operator.
-- `employee_login` is lowercase ASCII and may contain only letters, digits, `.`, `_`, and `-`.
+- `employee_login` is lowercase ASCII and may contain only letters, digits, `_`, and `-`.
 - `final_hostname` is lowercase ASCII and may contain only letters, digits, and `-`; it starts and ends with a letter or digit and is at most 63 characters.
 - The only accepted profile is `standard`.
 - The shared employee password is represented only by an encrypted yescrypt hash in Ansible Vault.
 - No password, password hash, Vault password, private key, or license may appear in Git, request JSON, result JSON, command-line literals, or logs.
 - The employee is not a member of `wheel` and has no sudo authorization.
-- SDDM hides only `ansible`; `osn-admin` and the employee stay visible; autologin stays disabled.
+- AccountsService marks only `ansible` as a system account, keeps `osn-admin` and the employee visible, and LightDM autologin stays disabled.
 - A successful assignment blocks another normal provision request for the same UUID.
 - One active provision job is allowed per machine UUID.
 - All subprocess calls use argument lists and `shell=False`.
-- SSH uses `/home/altserver/.ssh/known_hosts_autoinstall` with `StrictHostKeyChecking=yes`.
+- SSH uses `/home/altserver/.ssh/known_hosts_autoinstall` with `StrictHostKeyChecking=yes` and `ProxyCommand=none`.
 - The MVP does not install applications, import personal certificates, enroll a domain, reassign a workstation, or implement destructive rollback.
 
 ---
@@ -63,7 +84,7 @@ deploy/alt-linux/
 │       ├── preflight/
 │       ├── workstation_identity/
 │       ├── local_employee/
-│       ├── sddm_accounts/
+│       ├── lightdm_accounts/
 │       └── provision_verify/
 ├── api/process_pending.py            # invoke automatic preflight
 ├── install-control-plane.sh          # install/update controller files
@@ -804,7 +825,7 @@ Expected: import failure for `alt_deploy.ansible`.
     "-i", "192.168.101.56,",
     "-u", "ansible",
     "--private-key=/home/altserver/.ssh/id_ed25519",
-    "--ssh-common-args=-o UserKnownHostsFile=/home/altserver/.ssh/known_hosts_autoinstall -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o ConnectTimeout=10",
+    "--ssh-common-args=-o UserKnownHostsFile=/home/altserver/.ssh/known_hosts_autoinstall -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o ConnectTimeout=10 -o ProxyCommand=none",
     "-e", "ansible_python_interpreter=/usr/bin/python3",
     "-e", "machine_uuid=53b03180-5d78-11f0-bd95-f027db877a00",
     "-e", "preflight_employee_login=",
@@ -901,7 +922,7 @@ Create `roles/preflight/tasks/main.yml` with only read/assert operations on the 
 - read `/sys/class/dmi/id/product_uuid` and compare lowercase UUIDs;
 - verify `ansible` and `osn-admin` with `getent passwd`;
 - run `sudo -n true` with `become: false` to prove the SSH account retains passwordless sudo;
-- run `rpm -q sddm` without changing the machine;
+- verify the LightDM and AccountsService packages, active `accounts-daemon`, and the active LightDM display-manager service;
 - choose `/home` from `ansible_mounts`, falling back to `/`, and assert at least `2147483648` available bytes;
 - conditionally run `getent passwd <preflight_employee_login>` only when a login was supplied;
 - build `preflight_payload` containing `status`, release, UUID, static hostname, available bytes, and boolean check values;
@@ -1177,8 +1198,9 @@ Add success assertions that normalization produces lowercase login/hostname and 
   "set_final_hostname",
   "create_or_reconcile_local_employee",
   "remove_employee_admin_rights",
-  "hide_ansible_from_sddm",
-  "disable_sddm_autologin",
+  "hide_ansible_from_lightdm",
+  "keep_employee_visible_in_lightdm",
+  "disable_lightdm_autologin",
   "verify_provisioning",
   "write_assignment_records"
 ]
@@ -1211,7 +1233,7 @@ Expected: import failure for `ProvisionPlanner`.
 Use these regular expressions:
 
 ```python
-LOGIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])?$")
+LOGIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,30}[a-z0-9])?$")
 HOSTNAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 ```
 
@@ -1225,7 +1247,7 @@ Reject `root`, `ansible`, and `osn-admin` as protected logins. Reject control ch
   "machine_uuid": "...",
   "request": {
     "machine_uuid": "...",
-    "employee_login": "i.ivanov",
+    "employee_login": "i-ivanov",
     "employee_full_name": "Иванов Иван Иванович",
     "final_hostname": "buh-023",
     "profile": "standard"
@@ -1491,14 +1513,14 @@ git commit -m "feat: execute provision jobs asynchronously"
 
 ---
 
-### Task 9: Ansible Hostname, Employee, SDDM, and Verification Roles
+### Task 9: Ansible Hostname, Employee, LightDM, AccountsService, and Verification Roles
 
 **Files:**
 - Create: `deploy/alt-linux/ansible/group_vars/vault.yml.example`
 - Create: `deploy/alt-linux/ansible/playbooks/02-provision-account.yml`
 - Create: `deploy/alt-linux/ansible/roles/workstation_identity/tasks/main.yml`
 - Create: `deploy/alt-linux/ansible/roles/local_employee/tasks/main.yml`
-- Create: `deploy/alt-linux/ansible/roles/sddm_accounts/tasks/main.yml`
+- Create: `deploy/alt-linux/ansible/roles/lightdm_accounts/tasks/main.yml`
 - Create: `deploy/alt-linux/ansible/roles/provision_verify/tasks/main.yml`
 - Create: `deploy/alt-linux/ansible/roles/provision_verify/templates/assignment.json.j2`
 - Create: `tests/alt_linux/test_ansible_assets.py`
@@ -1514,10 +1536,10 @@ git commit -m "feat: execute provision jobs asynchronously"
 `tests/alt_linux/test_ansible_assets.py` must load every YAML file with `yaml.safe_load_all` and assert:
 
 - both playbooks parse;
-- `02-provision-account.yml` includes roles in this exact order: `workstation_identity`, `local_employee`, `sddm_accounts`, `provision_verify`;
+- `02-provision-account.yml` includes roles in this exact order: `workstation_identity`, `local_employee`, `lightdm_accounts`, `provision_verify`;
 - the employee task uses `ansible.builtin.user` with `password: "{{ vault_employee_password_hash }}"`, `update_password: always`, `groups: ""`, and `no_log: true`;
 - no tracked Ansible file contains the previously discussed cleartext shared password;
-- SDDM managed content contains `HideUsers=ansible`, empty `User=`, empty `Session=`, and `Relogin=false`;
+- AccountsService records contain `SystemAccount=true` for `ansible` and `SystemAccount=false` for the employee; the LightDM drop-in contains empty `autologin-user` and `autologin-user-timeout=0`;
 - the target assignment template contains no password-like field;
 - no role uses `ansible.builtin.shell`, `ignore_errors`, or `StrictHostKeyChecking=no`.
 
@@ -1538,6 +1560,10 @@ Expected: missing playbook/roles failure.
   hosts: all
   gather_facts: true
   become: true
+
+  vars_files:
+    - ../group_vars/vault.yml
+
   pre_tasks:
     - name: Validate required provision variables
       ansible.builtin.assert:
@@ -1553,7 +1579,7 @@ Expected: missing playbook/roles failure.
   roles:
     - role: workstation_identity
     - role: local_employee
-    - role: sddm_accounts
+    - role: lightdm_accounts
     - role: provision_verify
 ```
 
@@ -1638,36 +1664,71 @@ The role must reject an incompatible existing account before mutation, create a 
     fail_msg: Employee unexpectedly belongs to wheel
 ```
 
-- [ ] **Step 5: Create the SDDM role**
+- [ ] **Step 5: Create the LightDM and AccountsService role**
 
 ```yaml
-# deploy/alt-linux/ansible/roles/sddm_accounts/tasks/main.yml
+# deploy/alt-linux/ansible/roles/lightdm_accounts/tasks/main.yml
 ---
-- name: Ensure SDDM drop-in directory exists
+- name: Ensure AccountsService user directory exists
   ansible.builtin.file:
-    path: /etc/sddm.conf.d
+    path: /var/lib/AccountsService/users
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Hide ansible account from LightDM
+  ansible.builtin.copy:
+    dest: /var/lib/AccountsService/users/ansible
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [User]
+      SystemAccount=true
+  register: lightdm_accounts_ansible_record
+
+- name: Keep employee account visible in LightDM
+  ansible.builtin.copy:
+    dest: "/var/lib/AccountsService/users/{{ employee_login }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [User]
+      SystemAccount=false
+  register: lightdm_accounts_employee_record
+
+- name: Restart AccountsService after visibility changes
+  ansible.builtin.systemd_service:
+    name: accounts-daemon
+    state: restarted
+  when:
+    - >-
+      lightdm_accounts_ansible_record.changed
+      or lightdm_accounts_employee_record.changed
+
+- name: Ensure LightDM configuration directory exists
+  ansible.builtin.file:
+    path: /etc/lightdm/lightdm.conf.d
     state: directory
     owner: root
     group: root
     mode: "0755"
 
-- name: Manage technical account visibility and autologin
+- name: Disable LightDM autologin
   ansible.builtin.copy:
-    dest: /etc/sddm.conf.d/90-alt-workstation-users.conf
+    dest: /etc/lightdm/lightdm.conf.d/90-alt-workstation.conf
     owner: root
     group: root
     mode: "0644"
     content: |
-      [Users]
-      HideUsers=ansible
-
-      [Autologin]
-      User=
-      Session=
-      Relogin=false
+      [Seat:*]
+      autologin-user=
+      autologin-user-timeout=0
 ```
 
-Do not restart SDDM during provisioning; the managed configuration applies on the next login/reboot without terminating an active session.
+Do not restart LightDM during provisioning. Restart AccountsService only when its managed visibility records change.
 
 - [ ] **Step 6: Create final verification and assignment artifacts**
 
@@ -1676,9 +1737,9 @@ Do not restart SDDM during provisioning; the managed configuration applies on th
 - verify static hostname;
 - `getent passwd` employee and validate home and shell;
 - verify no `wheel` group;
-- run `sudo -n -l -U <employee>` with `failed_when: false` and assert a nonzero return code;
+- run `sudo -n -l -U <employee>` with `LC_ALL=C` and `failed_when: false`; assert the command completed and the combined output contains `is not allowed to run sudo`;
 - run `sudo -n true` with `become: false` to prove `ansible` still has passwordless sudo;
-- slurp the SDDM drop-in and assert required lines;
+- read the `ansible` and employee AccountsService records and the managed LightDM drop-in, then assert their required values;
 - create `/var/lib/alt-workstation` mode `0700`;
 - write target assignment only after all assertions;
 - write the public controller result through a delegated localhost copy.
@@ -1704,8 +1765,9 @@ verification:
   employee_not_wheel: true
   employee_no_sudo: true
   ansible_sudo: true
-  sddm_hides_ansible: true
-  sddm_autologin_disabled: true
+  lightdm_hides_ansible: true
+  lightdm_shows_employee: true
+  lightdm_autologin_disabled: true
 ```
 
 The delegated result copy must be the last task.
@@ -1899,13 +1961,13 @@ Document:
 - recovery from failed jobs by correcting the cause and rerunning the same request;
 - explicit prohibition on deleting old employee data.
 
-- [ ] **Step 6: Run the full repository test suite**
+- [ ] **Step 6: Run the ALT provisioning test suite**
 
 ```bash
-pytest -q
+.venv/bin/python -m pytest -q tests/alt_linux
 ```
 
-Expected: all existing web/OpenVPN tests and all `tests/alt_linux` tests pass.
+The unrelated OpenVPN tests require `/etc/openvpn/vpnctl.env` and are outside this workstream.
 
 - [ ] **Step 7: Deploy the controller files on `192.168.100.17`**
 
@@ -1942,7 +2004,7 @@ Create a request with no secret:
 cat >/tmp/alt-provision-request.json <<EOF
 {
   "machine_uuid": "${UUID}",
-  "employee_login": "test.user",
+  "employee_login": "test-user",
   "employee_full_name": "Тестовый Пользователь",
   "final_hostname": "alt-test-01",
   "profile": "standard"
@@ -1986,11 +2048,13 @@ IP=$(sudo -u altserver workstationctl --json machines show "${UUID}" | python3 -
 ssh-alt "${IP}" '
 set -e
 hostnamectl --static
-getent passwd test.user
-id -nG test.user
+getent passwd test-user
+id -nG test-user
 sudo test -f /var/lib/alt-workstation/assignment.json
 sudo cat /var/lib/alt-workstation/assignment.json
-sudo cat /etc/sddm.conf.d/90-alt-workstation-users.conf
+sudo cat /var/lib/AccountsService/users/ansible
+sudo cat /var/lib/AccountsService/users/test-user
+sudo cat /etc/lightdm/lightdm.conf.d/90-alt-workstation.conf
 '
 ```
 
@@ -2017,7 +2081,7 @@ git commit -m "docs: add ALT provisioning deployment runbook"
 Run before opening the implementation PR:
 
 ```bash
-pytest -q
+.venv/bin/python -m pytest -q tests/alt_linux
 python3 -m py_compile deploy/alt-linux/control/alt_deploy/*.py deploy/alt-linux/api/process_pending.py
 bash -n deploy/alt-linux/control/workstationctl
 bash -n deploy/alt-linux/control/alt-provision-worker
@@ -2038,7 +2102,7 @@ Spec coverage check:
 - machine list/show: Task 2 plus Task 5 enrichment;
 - strict validation and preview: Task 6;
 - asynchronous systemd jobs and logs: Tasks 7-8;
-- local employee, hostname, SDDM, no sudo: Task 9;
+- local employee, hostname, LightDM, AccountsService, and no sudo: Task 9;
 - assignment-only-after-verification and retry safety: Tasks 5, 8, and 9;
 - secure installation and Vault handling: Task 10;
 - web UI and application roles remain explicitly deferred.

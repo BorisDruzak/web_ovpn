@@ -1,0 +1,253 @@
+---
+- name: Read ALT release
+  ansible.builtin.slurp:
+    src: /etc/altlinux-release
+  register: preflight_release_raw
+
+- name: Normalize ALT release
+  ansible.builtin.set_fact:
+    preflight_release: >-
+      {{
+        preflight_release_raw.content
+        | b64decode
+        | trim
+      }}
+
+- name: Validate ALT Workstation release
+  ansible.builtin.assert:
+    that:
+      - preflight_release is match('^ALT Workstation K 11\.')
+    fail_msg: >-
+      Unsupported operating system:
+      {{ preflight_release }}
+
+- name: Read machine UUID
+  ansible.builtin.slurp:
+    src: /sys/class/dmi/id/product_uuid
+  register: preflight_uuid_raw
+
+- name: Normalize machine UUID
+  ansible.builtin.set_fact:
+    preflight_actual_uuid: >-
+      {{
+        preflight_uuid_raw.content
+        | b64decode
+        | trim
+        | lower
+      }}
+
+- name: Validate registered machine UUID
+  ansible.builtin.assert:
+    that:
+      - preflight_actual_uuid == (machine_uuid | lower)
+    fail_msg: >-
+      Machine UUID mismatch:
+      expected={{ machine_uuid | lower }}
+      actual={{ preflight_actual_uuid }}
+
+- name: Read static hostname
+  ansible.builtin.command:
+    argv:
+      - hostnamectl
+      - --static
+  register: preflight_hostname
+  changed_when: false
+
+- name: Validate static hostname
+  ansible.builtin.assert:
+    that:
+      - preflight_hostname.rc == 0
+      - preflight_hostname.stdout | trim | length > 0
+    fail_msg: Static hostname is unavailable
+
+- name: Check ansible account
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - ansible
+  register: preflight_ansible_account
+  changed_when: false
+  failed_when: false
+
+- name: Check osn-admin account
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - osn-admin
+  register: preflight_osn_admin_account
+  changed_when: false
+  failed_when: false
+
+- name: Validate technical accounts
+  ansible.builtin.assert:
+    that:
+      - preflight_ansible_account.rc == 0
+      - preflight_osn_admin_account.rc == 0
+    fail_msg: Required technical accounts are missing
+
+- name: Verify passwordless sudo for ansible account
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - -n
+      - "true"
+  become: false
+  register: preflight_ansible_sudo
+  changed_when: false
+  failed_when: false
+
+- name: Validate passwordless sudo
+  ansible.builtin.assert:
+    that:
+      - preflight_ansible_sudo.rc == 0
+    fail_msg: The ansible account has no passwordless sudo
+
+- name: Check LightDM package
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - lightdm
+  register: preflight_lightdm
+  changed_when: false
+  failed_when: false
+
+- name: Check AccountsService package
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -q
+      - accountsservice
+  register: preflight_accountsservice
+  changed_when: false
+  failed_when: false
+
+- name: Check AccountsService daemon
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - accounts-daemon
+  register: preflight_accounts_daemon
+  changed_when: false
+  failed_when: false
+
+- name: Read active display manager
+  ansible.builtin.command:
+    argv:
+      - readlink
+      - -f
+      - /etc/systemd/system/display-manager.service
+  register: preflight_display_manager
+  changed_when: false
+  failed_when: false
+
+- name: Validate LightDM and AccountsService
+  ansible.builtin.assert:
+    that:
+      - preflight_lightdm.rc == 0
+      - preflight_accountsservice.rc == 0
+      - preflight_accounts_daemon.stdout | trim == 'active'
+      - "'lightdm.service' in preflight_display_manager.stdout"
+    fail_msg: LightDM or AccountsService is not correctly configured
+
+- name: Find home and root mounts
+  ansible.builtin.set_fact:
+    preflight_home_mounts: >-
+      {{
+        ansible_mounts
+        | selectattr('mount', 'equalto', '/home')
+        | list
+      }}
+    preflight_root_mounts: >-
+      {{
+        ansible_mounts
+        | selectattr('mount', 'equalto', '/')
+        | list
+      }}
+
+- name: Validate root filesystem information
+  ansible.builtin.assert:
+    that:
+      - >-
+        (preflight_home_mounts | length > 0)
+        or
+        (preflight_root_mounts | length > 0)
+    fail_msg: Filesystem free-space information is unavailable
+
+- name: Select filesystem for employee home
+  ansible.builtin.set_fact:
+    preflight_selected_mount: >-
+      {{
+        (preflight_home_mounts | first)
+        if (preflight_home_mounts | length > 0)
+        else (preflight_root_mounts | first)
+      }}
+
+- name: Validate available filesystem space
+  ansible.builtin.assert:
+    that:
+      - >-
+        (preflight_selected_mount.size_available | int)
+        >=
+        (preflight_min_home_bytes | int)
+    fail_msg: >-
+      Insufficient free space:
+      {{ preflight_selected_mount.size_available }}
+      bytes available
+
+- name: Check requested employee login
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - "{{ preflight_employee_login }}"
+  register: preflight_employee_account
+  changed_when: false
+  failed_when: false
+  when: preflight_employee_login | length > 0
+
+- name: Build preflight result
+  ansible.builtin.set_fact:
+    preflight_payload:
+      status: ok
+      release: "{{ preflight_release }}"
+      machine_uuid: "{{ preflight_actual_uuid }}"
+      static_hostname: "{{ preflight_hostname.stdout | trim }}"
+      filesystem_mount: "{{ preflight_selected_mount.mount }}"
+      available_bytes: "{{ preflight_selected_mount.size_available | int }}"
+      checked_at: "{{ ansible_date_time.iso8601 }}"
+      checks:
+        alt_release: true
+        uuid: true
+        static_hostname: true
+        ansible_account: true
+        osn_admin_account: true
+        ansible_passwordless_sudo: true
+        lightdm_installed: true
+        accountsservice_installed: true
+        accounts_daemon_active: true
+        lightdm_active: true
+        filesystem_space: true
+        employee_login_available: >-
+          {{
+            (preflight_employee_login | length == 0)
+            or
+            (preflight_employee_account.rc != 0)
+          }}
+
+- name: Write preflight result on controller
+  ansible.builtin.copy:
+    content: >-
+      {{
+        preflight_payload
+        | to_nice_json
+      }}
+    dest: "{{ preflight_result_file }}"
+    mode: "0600"
+  when: preflight_result_file | length > 0
+  delegate_to: localhost
+  become: false
+  run_once: true

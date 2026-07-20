@@ -1,0 +1,58 @@
+---
+- name: Ensure AccountsService user directory exists
+  ansible.builtin.file:
+    path: /var/lib/AccountsService/users
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Hide ansible account from LightDM
+  ansible.builtin.copy:
+    dest: /var/lib/AccountsService/users/ansible
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [User]
+      SystemAccount=true
+  register: lightdm_accounts_ansible_record
+
+- name: Keep employee account visible in LightDM
+  ansible.builtin.copy:
+    dest: "/var/lib/AccountsService/users/{{ employee_login }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [User]
+      SystemAccount=false
+  register: lightdm_accounts_employee_record
+
+- name: Restart AccountsService after visibility changes
+  ansible.builtin.systemd_service:
+    name: accounts-daemon
+    state: restarted
+  when:
+    - >-
+      lightdm_accounts_ansible_record.changed
+      or lightdm_accounts_employee_record.changed
+
+- name: Ensure LightDM configuration directory exists
+  ansible.builtin.file:
+    path: /etc/lightdm/lightdm.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Disable LightDM autologin
+  ansible.builtin.copy:
+    dest: /etc/lightdm/lightdm.conf.d/90-alt-workstation.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Seat:*]
+      autologin-user=
+      autologin-user-timeout=0
