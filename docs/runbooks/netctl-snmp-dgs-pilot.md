@@ -127,10 +127,41 @@ inactive and disabled before and after both commands:
 
 ```bash
 disabled_source='replace-with-approved-disabled-source-name'
+assert_disabled_snmp_source() {
+  local inspection
+  inspection="$(sudo -u netctl /usr/local/sbin/netctl --json sources inspect "$disabled_source")" || {
+    printf '%s\n' 'disabled SNMP source inspection failed' >&2
+    return 1
+  }
+  printf '%s' "$inspection" | /opt/openvpn-web/.venv/bin/python -c '
+import json
+import sys
+
+expected_name = sys.argv[1]
+try:
+    payload = json.load(sys.stdin)
+    source = payload.get("source")
+except (AttributeError, TypeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if not isinstance(source, dict):
+    raise SystemExit(1)
+if source.get("name") != expected_name:
+    raise SystemExit(1)
+if source.get("driver") != "snmp_switch":
+    raise SystemExit(1)
+if source.get("enabled") is not False:
+    raise SystemExit(1)
+' "$disabled_source" || {
+    printf '%s\n' 'named source is missing, not an SNMP switch, or enabled' >&2
+    return 1
+  }
+}
 test "$(systemctl is-active netctl-collect.timer)" = inactive
 test "$(systemctl is-enabled netctl-collect.timer)" = disabled
+assert_disabled_snmp_source
 sudo -u netctl /usr/local/sbin/netctl --json sources discover "$disabled_source"
 sudo -u netctl /usr/local/sbin/netctl --json switches unknown-fingerprints
+assert_disabled_snmp_source
 test "$(systemctl is-active netctl-collect.timer)" = inactive
 test "$(systemctl is-enabled netctl-collect.timer)" = disabled
 ```
@@ -142,6 +173,11 @@ other full-collection queries. The command may record a sanitized
 source or timer and neither writes FDB/current-switch state. A known profile is
 still not permission to run `collect`; stop on any command failure and preserve
 the source as disabled.
+
+The helper consumes the sanitized `sources inspect` JSON without printing it
+and fails closed unless the named source exists, reports driver
+`snmp_switch`, and has the JSON boolean `enabled: false` before and after the
+discovery commands. It does not display the source endpoint or any secret.
 
 Record only the source name, discovery classification, profile decision,
 sanitized system identity, capability outcomes, timestamp, and final
