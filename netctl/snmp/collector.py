@@ -78,6 +78,10 @@ _IFX_TABLE_CAPABILITIES = (
     (IF_HIGH_SPEED, "if_high_speed"),
     (IF_ALIAS, "if_alias"),
 )
+_USABLE_REQUIRED_OUTCOMES = {
+    SnmpOutcome.SUCCESS_WITH_ROWS,
+    SnmpOutcome.SUCCESS_EMPTY,
+}
 
 
 def _rows(results: tuple[CapabilityResult, ...]) -> tuple[SnmpVarBind, ...]:
@@ -105,6 +109,26 @@ def _propagate_fdb_failure(result: CapabilityResult) -> CapabilityResult:
         result.outcome,
         error_code=result.error_code,
         error_message=result.error_message,
+    )
+
+
+def _required_group_failure(
+    results: tuple[CapabilityResult, ...],
+) -> CapabilityResult | None:
+    failure = next(
+        (
+            result
+            for result in results
+            if result.outcome not in _USABLE_REQUIRED_OUTCOMES
+        ),
+        None,
+    )
+    if failure is None:
+        return None
+    return _final_fdb_result(
+        failure.outcome,
+        error_code="required_capability_failed",
+        error_message="Required SNMP collection was not successful",
     )
 
 
@@ -172,10 +196,19 @@ async def collect_switch_snapshot(
         DOT1D_BASE_PORT_IFINDEX, capability="bridge_port_ifindex"
     )
     capabilities.extend((*if_results, *ifx_results, bridge_result))
-    bridge_to_ifindex = parse_bridge_port_map(bridge_result.rows)
-    ports = parse_interfaces(
-        _rows(if_results), _rows(ifx_results), bridge_to_ifindex
+    required_failure = _required_group_failure(
+        (*system_results, *if_results, *ifx_results, bridge_result)
     )
+    try:
+        bridge_to_ifindex = parse_bridge_port_map(bridge_result.rows)
+        ports = parse_interfaces(
+            _rows(if_results), _rows(ifx_results), bridge_to_ifindex
+        )
+    except ValueError:
+        if required_failure is None:
+            raise
+        bridge_to_ifindex = {}
+        ports = ()
 
     options = source.get("driver_options")
     profile_hint: str | None = None
@@ -285,6 +318,9 @@ async def collect_switch_snapshot(
     else:
         final_fdb = _propagate_fdb_failure(qbridge_port)
 
+    if required_failure is not None:
+        fdb = ()
+        final_fdb = required_failure
     capabilities.append(final_fdb)
     vlan_memberships: tuple[dict[str, object], ...] = ()
     stp: dict[str, object] | None = None
