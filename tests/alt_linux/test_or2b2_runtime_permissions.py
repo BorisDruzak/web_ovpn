@@ -1,15 +1,30 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
+from typing import TextIO
 
 import pytest
 
 from alt_deploy.ansible import AnsibleController
+from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.errors import ControlError
+from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
-from support.controller_sandbox import make_controller_sandbox
+from alt_deploy.jsonio import atomic_write_json
+from alt_deploy.models import JobRecord
+from alt_deploy.worker import run_job
+from support.controller_sandbox import (
+    ControllerSandbox,
+    make_controller_sandbox,
+)
 from support.outcomes import PROVEN_OPERATIONAL_OUTCOMES, get_outcome
-from support.payloads import provision_request
+from support.payloads import (
+    TEST_MACHINE_UUID,
+    provision_request,
+    successful_provision_result,
+)
 
 
 OR2B2_SCENARIO_IDS = {
@@ -27,8 +42,16 @@ def _prepare_validation_boundary(
     tmp_path: Path,
     *,
     helper_mode: int | None,
-) -> tuple[AnsibleController, object, Path, Path]:
+) -> tuple[
+    ControllerSandbox,
+    AnsibleController,
+    JobRecord,
+    Path,
+    Path,
+    Path,
+]:
     sandbox = make_controller_sandbox(tmp_path)
+    registration_path = sandbox.register_machine(preflight_ok=True)
     sandbox.install_fake_ansible_playbook()
 
     sandbox.settings.private_key_file.parent.mkdir(
@@ -60,10 +83,22 @@ def _prepare_validation_boundary(
 
     job = JobRepository(sandbox.settings).create(provision_request())
     return (
+        sandbox,
         AnsibleController(sandbox.settings),
         job,
         helper,
         sandbox.settings.private_key_file,
+        registration_path,
+    )
+
+
+def _launch_job(sandbox: ControllerSandbox, job: JobRecord) -> None:
+    JobStageManager(sandbox.settings).advance(
+        job.job_id,
+        "launching",
+        updates={
+            "systemd_unit": f"alt-provision-{job.job_id}.service",
+        },
     )
 
 
@@ -162,7 +197,7 @@ def test_or2b2_outcome_contracts_are_exact() -> None:
 def test_stage_helper_validation_reports_missing_only(
     tmp_path: Path,
 ) -> None:
-    controller, job, helper, _ = _prepare_validation_boundary(
+    _, controller, job, helper, _, _ = _prepare_validation_boundary(
         tmp_path,
         helper_mode=None,
     )
@@ -185,7 +220,7 @@ def test_stage_helper_validation_reports_missing_only(
 def test_stage_helper_validation_reports_not_executable(
     tmp_path: Path,
 ) -> None:
-    controller, job, helper, _ = _prepare_validation_boundary(
+    _, controller, job, helper, _, _ = _prepare_validation_boundary(
         tmp_path,
         helper_mode=0o644,
     )
@@ -208,7 +243,7 @@ def test_stage_helper_validation_reports_not_executable(
 def test_stage_helper_validation_accepts_executable(
     tmp_path: Path,
 ) -> None:
-    controller, job, _, _ = _prepare_validation_boundary(
+    _, controller, job, _, _, _ = _prepare_validation_boundary(
         tmp_path,
         helper_mode=0o755,
     )
@@ -219,9 +254,11 @@ def test_stage_helper_validation_accepts_executable(
 def test_stage_helper_validation_reports_mixed_nonempty_keys(
     tmp_path: Path,
 ) -> None:
-    controller, job, helper, private_key = _prepare_validation_boundary(
-        tmp_path,
-        helper_mode=0o644,
+    _, controller, job, helper, private_key, _ = (
+        _prepare_validation_boundary(
+            tmp_path,
+            helper_mode=0o644,
+        )
     )
     private_key.unlink()
 
@@ -242,3 +279,143 @@ def test_stage_helper_validation_reports_mixed_nonempty_keys(
             }
         ],
     }
+
+
+@pytest.mark.parametrize(
+    ("scenario_id", "helper_mode"),
+    [
+        ("provision-stage-helper-missing", None),
+        ("provision-stage-helper-not-executable", 0o644),
+    ],
+)
+def test_worker_stage_helper_failure_preserves_connecting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scenario_id: str,
+    helper_mode: int | None,
+) -> None:
+    outcome = get_outcome(scenario_id)
+    sandbox, controller, job, _, _, registration_path = (
+        _prepare_validation_boundary(
+            tmp_path,
+            helper_mode=helper_mode,
+        )
+    )
+    jobs = JobRepository(sandbox.settings)
+    assignments = AssignmentRepository(sandbox.settings)
+    _launch_job(sandbox, job)
+    registration_before = registration_path.read_bytes()
+
+    def unexpected_subprocess(*args: object, **kwargs: object) -> object:
+        pytest.fail("Ansible subprocess must not run")
+
+    monkeypatch.setattr(
+        "alt_deploy.ansible.subprocess.run",
+        unexpected_subprocess,
+    )
+
+    result_code = run_job(
+        job.job_id,
+        sandbox.settings,
+        controller,
+    )
+    stored = jobs.get(job.job_id)
+
+    assert result_code == outcome.command_exit_code
+    assert stored.state == outcome.job_state
+    assert stored.stage == outcome.job_stage
+    assert stored.status["finished_at"]
+    assert stored.status["error"].startswith(
+        "provision_not_configured:"
+    )
+    assert assignments.get(TEST_MACHINE_UUID) is None
+    assert not (stored.job_dir / "result.json").exists()
+    assert registration_path.read_bytes() == registration_before
+
+
+def test_retry_after_helper_fix_uses_real_controller_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox, first_controller, first, helper, _, _ = (
+        _prepare_validation_boundary(
+            tmp_path,
+            helper_mode=0o644,
+        )
+    )
+    jobs = JobRepository(sandbox.settings)
+    assignments = AssignmentRepository(sandbox.settings)
+    _launch_job(sandbox, first)
+
+    monkeypatch.setattr(
+        "alt_deploy.ansible.subprocess.run",
+        lambda *args, **kwargs: pytest.fail(
+            "Ansible subprocess must not run before helper repair"
+        ),
+    )
+    assert run_job(
+        first.job_id,
+        sandbox.settings,
+        first_controller,
+    ) == 1
+
+    helper.chmod(0o755)
+    second = jobs.create(provision_request())
+    _launch_job(sandbox, second)
+
+    def fake_run(
+        command: list[str],
+        *,
+        shell: bool,
+        text: bool,
+        stdout: TextIO,
+        stderr: int,
+        timeout: int,
+        check: bool,
+        cwd: Path,
+        env: dict[str, str],
+    ) -> subprocess.CompletedProcess[str]:
+        assert os.access(helper, os.X_OK)
+        result_argument = next(
+            item
+            for item in command
+            if item.startswith("provision_result_file=")
+        )
+        result_path = Path(result_argument.split("=", 1)[1])
+        atomic_write_json(
+            result_path,
+            successful_provision_result(job_id=second.job_id),
+        )
+        manager = JobStageManager(sandbox.settings)
+        for stage in (
+            "identity",
+            "employee",
+            "login_screen",
+            "verifying",
+        ):
+            manager.advance(second.job_id, stage)
+        stdout.write("PLAY RECAP\n")
+        stdout.flush()
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "alt_deploy.ansible.subprocess.run",
+        fake_run,
+    )
+
+    assert run_job(
+        second.job_id,
+        sandbox.settings,
+        AnsibleController(sandbox.settings),
+    ) == 0
+
+    stored_first = jobs.get(first.job_id)
+    stored_second = jobs.get(second.job_id)
+    assignment = assignments.get(TEST_MACHINE_UUID)
+
+    assert stored_first.state == "failed"
+    assert stored_first.stage == "connecting"
+    assert stored_second.state == "successful"
+    assert stored_second.stage == "complete"
+    assert assignment is not None
+    assert assignment["job_id"] == second.job_id
