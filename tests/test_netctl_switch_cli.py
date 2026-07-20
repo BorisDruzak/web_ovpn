@@ -392,6 +392,51 @@ def test_unknown_discovery_writes_no_current_switch_state(
         )
 
 
+def test_unknown_fingerprint_cli_has_only_safe_keys(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    _write_switch_source(config_path, name="switch-unknown", enabled=False)
+    monkeypatch.setattr(
+        cli,
+        "driver_for",
+        lambda _source, _secrets: _FakeSwitchDiscoveryDriver(),
+    )
+
+    discover_rc, _ = _run_cli(
+        _base_args(config_path, db_path)
+        + ["sources", "discover", "switch-unknown"],
+        capsys,
+    )
+    rc, payload = _run_cli(
+        _base_args(config_path, db_path) + ["switches", "unknown-fingerprints"],
+        capsys,
+    )
+
+    assert discover_rc == 0
+    assert rc == 0
+    [row] = payload["fingerprints"]
+    assert set(row) == {
+        "source",
+        "sys_object_id",
+        "sys_descr",
+        "fingerprint_sha256",
+        "capabilities",
+        "status",
+        "observed_at",
+    }
+    assert row["capabilities"] == [
+        {"capability": "sys_descr", "outcome": "success_with_rows"},
+        {"capability": "sys_object_id", "outcome": "success_with_rows"},
+        {"capability": "sys_uptime", "outcome": "success_with_rows"},
+        {"capability": "sys_name", "outcome": "success_with_rows"},
+        {"capability": "sys_location", "outcome": "success_with_rows"},
+    ]
+
+
 def test_known_discovery_reports_matching_vendor_profile(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:

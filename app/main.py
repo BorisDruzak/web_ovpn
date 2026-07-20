@@ -1005,7 +1005,19 @@ def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)
 def network_sources(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
     data, error = net_cli_call(request, ["sources", "list"])
-    return render(request, "network_sources.html", {"sources": data.get("sources", []), "error": error}, db)
+    fingerprints, fingerprint_error = net_cli_call(
+        request, ["switches", "unknown-fingerprints"]
+    )
+    return render(
+        request,
+        "network_sources.html",
+        {
+            "sources": data.get("sources", []),
+            "unknown_fingerprints": fingerprints.get("fingerprints", []),
+            "error": error or fingerprint_error,
+        },
+        db,
+    )
 
 
 @app.get("/network/sources/new", response_class=HTMLResponse)

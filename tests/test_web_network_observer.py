@@ -72,6 +72,8 @@ elif cmd[:1] == ["dashboard"]:
     print(json.dumps({"status": "ok", "summary": {"total_hosts": 3, "local_device": 1, "telephony": 1, "mgmt": 1, "vpn_client": 0, "router": 0, "site_device": 0, "unknown": 0, "online": 2, "seen": 1, "offline": 0}, "sources": [{"name": "mikrotik-main", "last_collect_at": "2026-07-03T12:00:00Z", "last_status": "ok"}]}))
 elif cmd[:2] == ["sources", "list"]:
     print(json.dumps({"status": "ok", "sources": [{"name": "mikrotik-main", "driver": "mikrotik_api", "host": "192.168.100.250", "site": "main", "role": "core-router", "enabled": True, "last_status": "ok"}]}))
+elif cmd[:2] == ["switches", "unknown-fingerprints"]:
+    print(json.dumps({"status": "ok", "fingerprints": [{"source": "switch-unknown", "sys_object_id": "1.3.6.1.4.1.99999.1", "sys_descr": "Synthetic unknown switch", "fingerprint_sha256": "a" * 64, "capabilities": [{"capability": "sys_descr", "outcome": "success_with_rows"}], "status": "requires_profile", "observed_at": "2026-07-20T12:00:00Z"}]}))
 elif cmd[:2] == ["interfaces", "list"]:
     print(json.dumps({"status": "ok", "interfaces": [{"source": "mikrotik-main", "name": "bridge-lan", "type": "bridge", "running": True, "disabled": False, "rx_bytes": 10, "tx_bytes": 20}]}))
 elif cmd[:2] == ["routes", "list"]:
@@ -291,6 +293,32 @@ def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, mo
     collect = client.get("/network/collect")
     assert collect.status_code == 200
     assert "Сбор данных" in collect.text
+
+
+def test_sources_page_renders_unknown_without_collect_control(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    page = client.get("/network/sources")
+    api = client.get("/api/v1/network/switch-fingerprints", headers=headers)
+
+    assert page.status_code == 200
+    assert "Unknown fingerprints" in page.text
+    assert "requires_profile" in page.text
+    unknown_section = page.text.split("Unknown fingerprints", 1)[1]
+    assert "<form" not in unknown_section
+    assert "Collect" not in unknown_section
+    assert api.status_code == 200
+    [row] = api.json()["data"]["fingerprints"]
+    assert set(row) == {
+        "source",
+        "sys_object_id",
+        "sys_descr",
+        "fingerprint_sha256",
+        "capabilities",
+        "status",
+        "observed_at",
+    }
 
 
 def test_network_ipsec_and_backup_pages_render_status(tmp_path, monkeypatch):

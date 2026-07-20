@@ -710,6 +710,11 @@ def api_network_sources(actor: str = Depends(require_api_actor)):
     return api_response(call_netctl(["sources", "list"]))
 
 
+@router.get("/network/switch-fingerprints")
+def api_network_switch_fingerprints(actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["switches", "unknown-fingerprints"]))
+
+
 @router.post("/network/sources/{source}/test")
 def api_network_source_test(source: str, actor: str = Depends(require_api_actor)):
     return api_response(call_netctl(["sources", "test", source], timeout=60))

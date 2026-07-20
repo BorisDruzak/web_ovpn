@@ -36,7 +36,11 @@ from .switch_queries import (
     validate_pagination,
 )
 from .switch_store import collect_and_save_switch
-from .switch_discovery_store import UnknownSwitchFingerprint, record_unknown_fingerprint
+from .switch_discovery_store import (
+    UnknownSwitchFingerprint,
+    list_unknown_fingerprints,
+    record_unknown_fingerprint,
+)
 from .snmp.models import SwitchDiscoveryCapability
 from .snmp.profiles import detect_profile
 from .util import utc_now, validate_source_name
@@ -449,7 +453,7 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             validate_source_name(source)
         except ValueError as exc:
             return 2, err(str(exc))
-    if args.switches_command != "status":
+    if args.switches_command not in {"status", "unknown-fingerprints"}:
         try:
             maximum = (
                 OPTIONAL_STATE_MAX_PAGE_SIZE
@@ -470,6 +474,27 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     try:
         if args.switches_command == "status":
             return 0, ok(switches=query_switch_status(conn))
+        if args.switches_command == "unknown-fingerprints":
+            fingerprints = []
+            for row in list_unknown_fingerprints(conn):
+                try:
+                    capabilities = json.loads(str(row["capabilities_json"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not isinstance(capabilities, list):
+                    continue
+                fingerprints.append(
+                    {
+                        "source": row["source"],
+                        "sys_object_id": row["sys_object_id"],
+                        "sys_descr": row["sys_descr"],
+                        "fingerprint_sha256": row["fingerprint_sha256"],
+                        "capabilities": capabilities,
+                        "status": row["status"],
+                        "observed_at": row["observed_at"],
+                    }
+                )
+            return 0, ok(fingerprints=fingerprints)
         common = {
             "source": source,
             "limit": args.limit,
@@ -887,6 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="switches_command", required=True
     )
     switches_sub.add_parser("status")
+    switches_sub.add_parser("unknown-fingerprints")
     for name in (
         "capabilities",
         "ports",
