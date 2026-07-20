@@ -40,6 +40,13 @@ EXPECTED_SCENARIO_IDS = {
     "provision-vault-yescrypt-invalid",
     "provision-vault-mode-invalid",
     "provision-vault-owner-invalid",
+    "provision-stage-helper-missing",
+    "provision-stage-helper-not-executable",
+    "controller-permissions-unhealthy",
+    "controller-permissions-repair-root-required",
+    "controller-permissions-repair-blocked",
+    "controller-permissions-repair-failed",
+    "controller-permissions-repaired",
 }
 
 PREFLIGHT_FAILURE_KINDS = {
@@ -180,8 +187,8 @@ def test_proven_outcome_catalog_has_exact_scenarios() -> None:
     } == EXPECTED_SCENARIO_IDS
 
 
-def test_catalog_contains_nineteen_proven_outcomes() -> None:
-    assert len(PROVEN_OPERATIONAL_OUTCOMES) == 19
+def test_catalog_contains_twenty_six_proven_outcomes() -> None:
+    assert len(PROVEN_OPERATIONAL_OUTCOMES) == 26
 
 
 def test_proven_outcome_catalog_is_consistent() -> None:
@@ -202,6 +209,12 @@ def test_proven_outcome_catalog_is_consistent() -> None:
             "result_recovery",
             "preflight",
             "vault_gate",
+            "worker_configuration",
+            "permission_audit",
+            "permission_repair_authorization",
+            "permission_repair_safety",
+            "permission_repair_execution",
+            "permission_repair",
         }
         assert item.job_state in {
             None,
@@ -237,6 +250,52 @@ def test_proven_outcome_catalog_is_consistent() -> None:
             assert item.job_stage is None
             assert item.assignment_created is False
             assert item.retryable is True
+            assert item.failure_kind is None
+        elif item.boundary == "worker_configuration":
+            assert item.error_code == "provision_not_configured"
+            assert item.command_exit_code == 1
+            assert item.job_state == "failed"
+            assert item.job_stage == "connecting"
+            assert item.assignment_created is False
+            assert item.retryable is True
+            assert item.failure_kind is None
+        elif item.boundary in {
+            "permission_audit",
+            "permission_repair_authorization",
+            "permission_repair_safety",
+            "permission_repair_execution",
+            "permission_repair",
+        }:
+            expected = {
+                "permission_audit": (
+                    "controller_permissions_unhealthy",
+                    8,
+                    True,
+                ),
+                "permission_repair_authorization": (
+                    "root_required",
+                    3,
+                    True,
+                ),
+                "permission_repair_safety": (
+                    "controller_permissions_repair_blocked",
+                    9,
+                    True,
+                ),
+                "permission_repair_execution": (
+                    "controller_permissions_repair_failed",
+                    10,
+                    True,
+                ),
+                "permission_repair": (None, 0, None),
+            }
+            error_code, exit_code, retryable = expected[item.boundary]
+            assert item.error_code == error_code
+            assert item.command_exit_code == exit_code
+            assert item.job_state is None
+            assert item.job_stage is None
+            assert item.assignment_created is False
+            assert item.retryable is retryable
             assert item.failure_kind is None
         else:
             assert item.failure_kind is None
