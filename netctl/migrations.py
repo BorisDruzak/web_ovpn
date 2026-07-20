@@ -1311,6 +1311,32 @@ def _migration_7(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_8(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE switch_unknown_fingerprints (
+            source_id INTEGER NOT NULL PRIMARY KEY
+                REFERENCES network_sources(id) ON DELETE RESTRICT,
+            sys_object_id TEXT NOT NULL CHECK (length(sys_object_id) <= 255),
+            sys_descr TEXT NOT NULL CHECK (length(sys_descr) <= 1024),
+            fingerprint_sha256 TEXT NOT NULL CHECK (
+                length(fingerprint_sha256) = 64
+                AND fingerprint_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+            capabilities_json TEXT NOT NULL CHECK (length(capabilities_json) <= 4096),
+            status TEXT NOT NULL CHECK (status = 'requires_profile'),
+            observed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_unknown_fingerprints_observed_idx
+        ON switch_unknown_fingerprints(observed_at DESC, source_id)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1319,6 +1345,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (5, _migration_5),
     (6, _migration_6),
     (7, _migration_7),
+    (8, _migration_8),
 )
 
 
