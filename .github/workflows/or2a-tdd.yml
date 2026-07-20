@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: OR-2A sudo marker RED
+      - name: OR-2A preflight boundary RED
         run: >-
           python -m pytest -q
-          tests/alt_linux/test_or2a_preflight_failures.py::test_preflight_role_contains_controlled_sudo_marker
+          tests/alt_linux/test_or2a_preflight_failures.py::test_sandbox_configures_preflight_boundary
