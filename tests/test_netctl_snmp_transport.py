@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import Any
 
 import pytest
+from pyasn1.type import univ
 from pysnmp.proto import errind, rfc1902, rfc1905
 
 
@@ -134,6 +135,28 @@ def test_successful_rows_preserve_numeric_types_and_raw_octets() -> None:
         ("object_identifier", "1.3.6.1.4.1.171"),
     ]
     assert all(isinstance(row.oid, tuple) for row in result.rows)
+
+
+def test_live_pyasn1_object_identifier_is_normalized() -> None:
+    from netctl.snmp import SnmpOutcome
+
+    backend = FakeBackend(
+        [
+            _response(
+                (
+                    rfc1902.ObjectName(BASE_OID + (2, 0)),
+                    univ.ObjectIdentifier((1, 3, 6, 1, 4, 1, 171, 10, 153, 7, 1)),
+                ),
+            )
+        ]
+    )
+
+    result = asyncio.run(_transport(backend).get(BASE_OID + (2, 0)))
+
+    assert result.outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+    assert [(row.value_type, row.value) for row in result.rows] == [
+        ("object_identifier", "1.3.6.1.4.1.171.10.153.7.1")
+    ]
 
 
 @pytest.mark.parametrize(

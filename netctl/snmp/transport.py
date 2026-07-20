@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol, TypeVar
 
+from pyasn1.type import univ
 from pysnmp.hlapi.v3arch.asyncio import (
     CommunityData,
     ContextData,
@@ -220,6 +221,10 @@ _OCTET_TYPES: tuple[type[Any], ...] = (
     rfc1902.Opaque,
     rfc1902.Bits,
 )
+_OBJECT_IDENTIFIER_TYPES: tuple[type[Any], ...] = (
+    rfc1902.ObjectIdentifier,
+    univ.ObjectIdentifier,
+)
 _INTEGER_VALUE_TYPES = {
     "Counter32": "counter32",
     "Counter64": "counter64",
@@ -230,7 +235,7 @@ _INTEGER_VALUE_TYPES = {
 
 
 def _convert_value(value: object) -> tuple[str, int | str | bytes]:
-    if isinstance(value, rfc1902.ObjectIdentifier):
+    if isinstance(value, _OBJECT_IDENTIFIER_TYPES):
         return "object_identifier", ".".join(str(part) for part in tuple(value))
     if isinstance(value, rfc1902.IpAddress):
         return "ip_address", str(value)
