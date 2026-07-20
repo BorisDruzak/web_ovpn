@@ -1,0 +1,15 @@
+#!/usr/bin/python3
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(
+    0,
+    str(Path("/opt/alt-deploy-control")),
+)
+
+from alt_deploy.job_stage_helper import main
+
+raise SystemExit(main())

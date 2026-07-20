@@ -2,6 +2,31 @@
 
 Status: approved in design discussion on 2026-07-16.
 
+## Verified implementation update (2026-07-17)
+
+This design remains the historical architecture document, but the verified
+runtime contract below supersedes assumptions made before the physical-machine
+acceptance run:
+
+- the verified display and account stack is LightDM with AccountsService;
+- employee logins exclude dots and use lowercase letters, digits, `_` and `-`;
+- automated direct-IP SSH preserves strict host-key checking and sets
+  `ProxyCommand=none`;
+- `02-provision-account.yml` explicitly loads
+  `../group_vars/vault.yml` through `vars_files`;
+- `provision start` is root-only, while reads, preflight and preview remain
+  available to `altserver`;
+- the final displayed machine state after a successful assignment is
+  `assigned`;
+- sudo denial verification runs with `LC_ALL=C` and accepts the real ALT text
+  `is not allowed to run sudo`;
+- reference machine `53b03180-5d78-11f0-bd95-f027db877a00` completed job
+  `job-20260717T112903Z-71b5afe0`, survived reboot, and opened Plasma through a
+  real employee login.
+
+The operational source of truth is
+[`docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md`](../../ALT_WORKSTATION_PROVISIONING_CONTEXT.md).
+
 ## 1. Purpose
 
 Define the first implementation stage after the verified ALT Linux autoinstall and bootstrap chain. The result must automatically validate a newly registered ALT Workstation K 11.2 computer, then let an operator assign it to a local employee account through a stable CLI. A web interface will be added later as a thin client over the same control plane.
@@ -52,7 +77,7 @@ The initial implementation is CLI-first. The future web interface will use the e
 
 Immediately after the registration processor obtains a successful Ansible ping, it invokes a non-mutating preflight through `workstationctl`.
 
-Preflight checks the operating system, machine identity, Ansible privilege path, required local technical accounts, SDDM availability, and account-creation prerequisites. Its result and log are persisted.
+Preflight checks the operating system, machine identity, Ansible privilege path, required local technical accounts, LightDM and AccountsService availability, and account-creation prerequisites. Its result and log are persisted.
 
 A successful preflight produces the derived machine status `awaiting_assignment`. A failed preflight produces `failed` with diagnostics. The operator can rerun preflight manually.
 
@@ -65,7 +90,7 @@ The first provision operation performs only these actions:
 3. Create one local employee account.
 4. Apply the shared employee password from Ansible Vault.
 5. Ensure the employee is not a member of `wheel` and has no sudo rights.
-6. Hide only the technical `ansible` account from SDDM.
+6. Hide only the technical `ansible` account through AccountsService.
 7. Keep `osn-admin` visible for emergency local access.
 8. Keep automatic login disabled.
 9. Record the successful assignment locally and on the deployment server.
@@ -81,7 +106,7 @@ The initial implementation deliberately excludes browsers, CryptoPro, ONLYOFFICE
 - The operator enters the login manually.
 - The operator enters the employee full name manually.
 - The login is normalized to lowercase.
-- Allowed login characters are ASCII lowercase letters, digits, `.`, `_`, and `-`.
+- Allowed login characters are ASCII lowercase letters, digits, `_`, and `-`.
 - The employee is a normal user without `sudo`.
 - The employee password is a shared value stored only in Ansible Vault.
 - The employee is not forced to change the password at first login.
@@ -100,7 +125,7 @@ The initial implementation deliberately excludes browsers, CryptoPro, ONLYOFFICE
 
 ### Login screen
 
-- `ansible` is hidden from SDDM.
+- `ansible` is marked as a system account in AccountsService.
 - `osn-admin` remains visible.
 - The employee account remains visible.
 - Automatic login is disabled.
@@ -129,10 +154,10 @@ registered
   -> preflight_running
   -> awaiting_assignment
   -> provisioning
-  -> provisioned
+  -> assigned
 
 Failure paths:
-preflight_running -> failed
+preflight_running -> preflight_failed
 provisioning      -> failed
 ```
 
@@ -229,7 +254,7 @@ The CLI accepts an operator-created JSON file:
 ```json
 {
   "machine_uuid": "53b03180-5d78-11f0-bd95-f027db877a00",
-  "employee_login": "i.ivanov",
+  "employee_login": "i-ivanov",
   "employee_full_name": "Иванов Иван Иванович",
   "final_hostname": "buh-023",
   "profile": "standard"
@@ -294,7 +319,7 @@ Initial project layout:
 │   ├── preflight/
 │   ├── workstation_identity/
 │   ├── local_employee/
-│   ├── sddm_accounts/
+│   ├── lightdm_accounts/
 │   └── provision_verify/
 ├── group_vars/
 │   ├── all.yml
@@ -313,7 +338,7 @@ Checks without changing the target:
 - target is ALT Workstation K 11.x;
 - target UUID matches the requested registration record;
 - target has a usable hostname service;
-- SDDM configuration location can be determined;
+- LightDM and AccountsService packages and active services are available;
 - `osn-admin` and `ansible` exist;
 - a requested employee login, when supplied during preview/start, does not conflict with an incompatible local account;
 - sufficient filesystem space exists for account creation and later roles.
@@ -333,7 +358,7 @@ Checks without changing the target:
 - explicitly removes the account from `wheel` if present;
 - verifies that no sudoers policy grants the employee administrative commands.
 
-### `sddm_accounts` role
+### `lightdm_accounts` role
 
 - hides only the `ansible` account;
 - leaves `osn-admin` and the employee visible;
@@ -349,7 +374,7 @@ Verifies:
 - employee is not in `wheel`;
 - no sudoers rule grants the employee administrative access;
 - `ansible` remains usable over SSH with passwordless sudo;
-- SDDM hides `ansible` and has autologin disabled;
+- AccountsService hides `ansible`, keeps the employee visible, and LightDM has autologin disabled;
 - target assignment file is written only after all preceding checks pass.
 
 ## 10. Idempotency and retries
@@ -359,7 +384,7 @@ The playbooks must be safe to rerun after partial failure.
 - If the hostname was already changed, the role reports no change and continues.
 - If the employee account exists with compatible attributes, it is reconciled.
 - If the employee account exists but represents a conflicting account, the job fails without deleting or replacing it.
-- SDDM configuration is managed declaratively.
+- AccountsService visibility files and the LightDM autologin drop-in are managed declaratively.
 - Assignment markers are written only after verification.
 - A machine with no successful assignment may be retried after a failed job.
 - A machine with a successful assignment is blocked from normal reprovisioning.
@@ -431,7 +456,7 @@ The MVP is accepted when all of the following work on the verified ALT test mach
 11. A successful job sets the final hostname and creates the employee account.
 12. The employee is not in `wheel` and has no sudo authorization.
 13. `ansible` remains reachable and retains passwordless sudo.
-14. SDDM hides `ansible`, shows `osn-admin` and the employee, and does not autologin.
+14. AccountsService hides `ansible`, keeps normal accounts visible, and LightDM does not autologin.
 15. Server-side and target assignment records are created only after successful verification.
 16. A second normal provision request for the assigned UUID is rejected.
 17. Re-running after a failed partial attempt reconciles existing changes instead of corrupting the machine.
