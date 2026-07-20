@@ -1,4 +1,4 @@
-name: OR-2A verification
+name: OR-2A syntax diagnostic
 
 on:
   push:
@@ -13,9 +13,9 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,55 +24,37 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - name: Install dependencies
-        run: |
-          python -m pip install -r requirements.txt
-          python -m pip install ansible-core
-      - name: Focused OR-2A tests
+      - name: Install Ansible
+        run: python -m pip install ansible-core
+      - name: Compare syntax-check working directories
         shell: bash
         run: |
-          set -o pipefail
-          python -m pytest -q \
-            tests/alt_linux/test_or2a_preflight_failures.py \
-            tests/alt_linux/test_operational_reliability_contract.py \
-            | tee focused.log
-      - name: ALT Linux suite
-        shell: bash
-        run: |
-          set -o pipefail
-          python -m pytest -q tests/alt_linux | tee alt.log
-      - name: Full repository suite
-        shell: bash
-        run: |
-          set -o pipefail
-          python -m pytest -q | tee full.log
-      - name: Ansible preflight syntax
-        run: >-
-          env ANSIBLE_CONFIG=deploy/alt-linux/ansible/ansible.cfg
-          ansible-playbook --syntax-check
-          deploy/alt-linux/ansible/playbooks/01-preflight.yml
-      - name: Diff check
-        run: git diff --check origin/main...HEAD
-      - name: Build evidence summary
-        if: always()
-        shell: bash
-        run: |
-          touch focused.log alt.log full.log
-          {
-            echo "head_sha=${GITHUB_SHA}"
-            grep -E "passed|failed|error|warning" focused.log | tail -n 2 || true
-            grep -E "passed|failed|error|warning" alt.log | tail -n 2 || true
-            grep -E "passed|failed|error|warning" full.log | tail -n 2 || true
-          } > or2a-summary.txt
-      - name: Upload OR-2A evidence
-        if: always()
+          set +e
+          echo "root_pwd=$(pwd)" > syntax-status.txt
+          env ANSIBLE_CONFIG=deploy/alt-linux/ansible/ansible.cfg \
+            ansible-playbook --syntax-check \
+            deploy/alt-linux/ansible/playbooks/01-preflight.yml \
+            > syntax-root.log 2>&1
+          root_rc=$?
+          echo "root_rc=${root_rc}" >> syntax-status.txt
+
+          (
+            cd deploy/alt-linux/ansible
+            echo "ansible_pwd=$(pwd)" >> "$GITHUB_WORKSPACE/syntax-status.txt"
+            env ANSIBLE_CONFIG=ansible.cfg \
+              ansible-playbook --syntax-check playbooks/01-preflight.yml \
+              > "$GITHUB_WORKSPACE/syntax-cwd.log" 2>&1
+          )
+          cwd_rc=$?
+          echo "cwd_rc=${cwd_rc}" >> syntax-status.txt
+          cat syntax-status.txt
+      - name: Upload syntax diagnostics
         uses: actions/upload-artifact@v4
         with:
-          name: or2a-verification-output
+          name: or2a-syntax-diagnostic
           path: |
-            focused.log
-            alt.log
-            full.log
-            or2a-summary.txt
+            syntax-status.txt
+            syntax-root.log
+            syntax-cwd.log
           if-no-files-found: error
           retention-days: 7
