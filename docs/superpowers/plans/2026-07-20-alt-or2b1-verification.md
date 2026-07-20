@@ -83,23 +83,24 @@ PASS
 
 ## Финальная проверка с актуальным `main`
 
-После удаления всех временных workflows и patch helpers финальное состояние PR:
+После удаления всех временных workflows и patch helpers финальный проверенный
+head:
 
 ```text
-final_branch_head: c9d5579ac17ee878090c8464662ee4796d3a07fa
-final_pull_request_merge_ref: 0c3f81bb59fb5d0a462fe81273b6e72aab3b3953
+final_branch_head: ecd662b8965d50620c535933ed9da4e9cd3e89c2
+final_pull_request_merge_ref: 769b33e80189d68b2122874d76ed4e75206dcff2
 ```
 
 На нём успешно завершились штатные workflows:
 
 ```text
 Verify netctl context stage
-  run_id: 29764147928
+  run_id: 29764342134
   context-stage: success
   full-regression: success
 
 Verify netctl runtime identity
-  run_id: 29764147993
+  run_id: 29764342435
   focused-runtime-identity: success
   full-regression: success
 ```
@@ -161,5 +162,5 @@ tests не изменялись. Выполнялись только:
 - исправление имени legacy test module в документации;
 - удаление временной CI-инфраструктуры.
 
-Финальные штатные workflows на `c9d5579ac17ee878090c8464662ee4796d3a07fa`
+Финальные штатные workflows на `ecd662b8965d50620c535933ed9da4e9cd3e89c2`
 подтвердили отсутствие регрессии после этих изменений.
