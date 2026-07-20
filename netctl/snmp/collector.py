@@ -5,6 +5,7 @@ from typing import Protocol
 
 from .fdb import parse_legacy_fdb, parse_qbridge_fdb
 from .interfaces import parse_bridge_port_map, parse_interfaces
+from .lldp import parse_lldp_neighbors
 from .models import CapabilityResult, SnmpVarBind, SwitchFdbEntry, SwitchSnapshot
 from .oids import (
     DOT1D_BASE_PORT_IFINDEX,
@@ -31,6 +32,9 @@ from .oids import (
     IF_OPER_STATUS,
     IF_PHYS_ADDRESS,
     IF_SPEED,
+    LLDP_REM_CHASSIS_ID,
+    LLDP_REM_PORT_ID,
+    LLDP_REM_SYS_NAME,
     SYS_DESCR,
     SYS_LOCATION,
     SYS_NAME,
@@ -121,6 +125,23 @@ def _optional_parse_errors(
     )
 
 
+def _optional_group_result(
+    capability: str,
+    outcome: SnmpOutcome,
+    *,
+    rows: tuple[dict[str, object], ...] = (),
+    error_code: str = "",
+    error_message: str = "",
+) -> CapabilityResult:
+    return CapabilityResult(
+        capability=capability,
+        outcome=outcome,
+        error_code=error_code,
+        error_message=error_message,
+        details={"normalized_row_count": len(rows)} if rows else {},
+    )
+
+
 async def collect_switch_snapshot(
     source: Mapping[str, object], transport: CollectorTransport
 ) -> SwitchSnapshot:
@@ -164,6 +185,7 @@ async def collect_switch_snapshot(
             raise ValueError("SNMP profile_hint is invalid")
         profile_hint = hint
     profile = detect_profile(system, profile_hint=profile_hint)
+    ports = profile.normalize_ports(ports)
 
     qbridge_port = await transport.walk(DOT1Q_FDB_PORT, capability="qbridge_port")
     capabilities.append(qbridge_port)
@@ -266,7 +288,7 @@ async def collect_switch_snapshot(
     capabilities.append(final_fdb)
     vlan_memberships: tuple[dict[str, object], ...] = ()
     stp: dict[str, object] | None = None
-    if profile.profile_id == "snr":
+    if profile.profile_id in {"snr", "tplink", "css326"}:
         vlan_results = (
             await transport.walk(
                 DOT1Q_VLAN_CURRENT_EGRESS, capability="vlan_current_egress"
@@ -298,6 +320,7 @@ async def collect_switch_snapshot(
                 )
                 capabilities[-len(vlan_results) :] = vlan_results
 
+    if profile.profile_id == "snr":
         stp_results = (
             await transport.get(DOT1D_STP_PROTOCOL, capability="stp_protocol"),
             await transport.get(
@@ -326,6 +349,62 @@ async def collect_switch_snapshot(
                     error_message="SNMP STP rows are malformed",
                 )
                 capabilities[-len(stp_results) :] = stp_results
+
+    lldp_results = (
+        await transport.walk(
+            LLDP_REM_CHASSIS_ID, capability="lldp_remote_chassis_id"
+        ),
+        await transport.walk(LLDP_REM_PORT_ID, capability="lldp_remote_port_id"),
+        await transport.walk(
+            LLDP_REM_SYS_NAME, capability="lldp_remote_system_name"
+        ),
+    )
+    capabilities.extend(lldp_results)
+    lldp_neighbors: tuple[dict[str, object], ...] = ()
+    lldp_failure = next(
+        (
+            result
+            for result in lldp_results
+            if result.outcome
+            not in {SnmpOutcome.SUCCESS_WITH_ROWS, SnmpOutcome.SUCCESS_EMPTY}
+        ),
+        None,
+    )
+    if lldp_failure is not None:
+        lldp_group = _optional_group_result(
+            "lldp_remote",
+            lldp_failure.outcome,
+            error_code=lldp_failure.error_code,
+            error_message=lldp_failure.error_message,
+        )
+    else:
+        try:
+            lldp_neighbors = parse_lldp_neighbors(*lldp_results, ports=ports)
+        except ValueError:
+            lldp_neighbors = ()
+            lldp_results = _optional_parse_errors(
+                lldp_results,
+                error_code="malformed_lldp",
+                error_message="SNMP LLDP rows are malformed",
+            )
+            capabilities[-len(lldp_results) :] = lldp_results
+            lldp_group = _optional_group_result(
+                "lldp_remote",
+                SnmpOutcome.PARSE_ERROR,
+                error_code="malformed_lldp",
+                error_message="SNMP LLDP rows are malformed",
+            )
+        else:
+            lldp_group = _optional_group_result(
+                "lldp_remote",
+                (
+                    SnmpOutcome.SUCCESS_WITH_ROWS
+                    if lldp_neighbors
+                    else SnmpOutcome.SUCCESS_EMPTY
+                ),
+                rows=lldp_neighbors,
+            )
+    capabilities.append(lldp_group)
     return SwitchSnapshot(
         snapshot_kind="snmp_switch",
         profile_id=profile.profile_id,
@@ -335,7 +414,7 @@ async def collect_switch_snapshot(
         fdb=fdb,
         vlan_memberships=vlan_memberships,
         stp=stp,
-        lldp_neighbors=(),
+        lldp_neighbors=lldp_neighbors,
         counter_samples=(),
         capabilities=tuple(capabilities),
     )

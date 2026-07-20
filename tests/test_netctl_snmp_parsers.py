@@ -27,6 +27,9 @@ from netctl.snmp.oids import (
     SYS_NAME,
     SYS_OBJECT_ID,
     SYS_UPTIME,
+    LLDP_REM_CHASSIS_ID,
+    LLDP_REM_PORT_ID,
+    LLDP_REM_SYS_NAME,
 )
 
 
@@ -352,6 +355,181 @@ def test_legacy_fdb_joins_address_port_status_by_mac() -> None:
     assert entries[0].fdb_id is None
     assert entries[0].vlan_id is None
     assert entries[0].mac == "00:11:22:AA:BB:CC"
+
+
+def test_lldp_joins_remote_columns_and_resolves_local_bridge_port() -> None:
+    from netctl.snmp.lldp import parse_lldp_neighbors
+    from netctl.snmp.models import SwitchPort
+
+    suffix = (1234, 5, 9)
+    port = SwitchPort(
+        "physical:5", 5, 5, 5, "ether5", "", None, "up", "up", None
+    )
+
+    neighbors = parse_lldp_neighbors(
+        _result(
+            "lldp_remote_chassis_id",
+            _vb(
+                LLDP_REM_CHASSIS_ID + suffix,
+                b"\x00\x11\x22\x33\x44\x55",
+                "octet_string",
+            ),
+        ),
+        _result(
+            "lldp_remote_port_id",
+            _vb(LLDP_REM_PORT_ID + suffix, b"uplink-5", "octet_string"),
+        ),
+        _result(
+            "lldp_remote_system_name",
+            _vb(LLDP_REM_SYS_NAME + suffix, b"edge-fixture", "octet_string"),
+        ),
+        ports=(port,),
+    )
+
+    assert neighbors == (
+        {
+            "local_port_key": "physical:5",
+            "chassis_id": "00:11:22:33:44:55",
+            "port_id": "uplink-5",
+            "system_name": "edge-fixture",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("chassis_oid", "chassis_type", "chassis_value"),
+    [
+        (LLDP_REM_CHASSIS_ID[:-1] + (99, 1, 5, 9), "octet_string", b"chassis"),
+        (LLDP_REM_CHASSIS_ID + (1, 5), "octet_string", b"chassis"),
+        (LLDP_REM_CHASSIS_ID + (1, 5, 9), "integer", 7),
+    ],
+)
+def test_lldp_rejects_unexpected_oid_suffix_or_value_type(
+    chassis_oid: tuple[int, ...], chassis_type: str, chassis_value: int | bytes
+) -> None:
+    from netctl.snmp.lldp import parse_lldp_neighbors
+    from netctl.snmp.models import SwitchPort
+
+    suffix = (1, 5, 9)
+    port = SwitchPort("ifindex:5", 5, 5, None, "p5", "", None, "up", "up", None)
+
+    with pytest.raises(ValueError, match="LLDP"):
+        parse_lldp_neighbors(
+            _result(
+                "lldp_remote_chassis_id",
+                _vb(chassis_oid, chassis_value, chassis_type),
+            ),
+            _result(
+                "lldp_remote_port_id",
+                _vb(LLDP_REM_PORT_ID + suffix, b"p5", "octet_string"),
+            ),
+            _result(
+                "lldp_remote_system_name",
+                _vb(LLDP_REM_SYS_NAME + suffix, b"neighbor", "octet_string"),
+            ),
+            ports=(port,),
+        )
+
+
+def test_malformed_lldp_is_sanitized_and_never_fails_fdb() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    suffix = (1, 5, 9)
+    transport = _FixtureTransport(
+        {
+            IF_INDEX: _result("if_index", _vb(IF_INDEX + (5,), 5)),
+            DOT1D_BASE_PORT_IFINDEX: _result(
+                "bridge_port_ifindex", _vb(DOT1D_BASE_PORT_IFINDEX + (5,), 5)
+            ),
+            DOT1Q_FDB_PORT: _result("qbridge_port"),
+            LLDP_REM_CHASSIS_ID: _result(
+                "lldp_remote_chassis_id",
+                _vb(LLDP_REM_CHASSIS_ID + suffix, 31071, "integer"),
+            ),
+            LLDP_REM_PORT_ID: _result(
+                "lldp_remote_port_id",
+                _vb(LLDP_REM_PORT_ID + suffix, b"p5", "octet_string"),
+            ),
+            LLDP_REM_SYS_NAME: _result(
+                "lldp_remote_system_name",
+                _vb(LLDP_REM_SYS_NAME + suffix, b"neighbor", "octet_string"),
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+    lldp_leaves = [
+        row
+        for row in snapshot.capabilities
+        if row.capability.startswith("lldp_remote_")
+    ]
+
+    assert next(row for row in snapshot.capabilities if row.capability == "fdb").outcome is SnmpOutcome.SUCCESS_EMPTY
+    assert snapshot.lldp_neighbors == ()
+    assert len(lldp_leaves) == 3
+    assert {
+        (row.outcome, row.error_code, row.error_message) for row in lldp_leaves
+    } == {
+        (
+            SnmpOutcome.PARSE_ERROR,
+            "malformed_lldp",
+            "SNMP LLDP rows are malformed",
+        )
+    }
+    assert "31071" not in repr(snapshot.to_dict()["capabilities"])
+
+
+@pytest.mark.parametrize(
+    ("local_component", "port_number"),
+    [("5", 5), (True, 1)],
+)
+def test_non_integer_lldp_suffix_is_sanitized_and_never_fails_fdb(
+    local_component: object, port_number: int
+) -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    suffix = (1, local_component, 9)
+    transport = _FixtureTransport(
+        {
+            IF_INDEX: _result(
+                "if_index", _vb(IF_INDEX + (port_number,), port_number)
+            ),
+            DOT1D_BASE_PORT_IFINDEX: _result(
+                "bridge_port_ifindex",
+                _vb(
+                    DOT1D_BASE_PORT_IFINDEX + (port_number,),
+                    port_number,
+                ),
+            ),
+            DOT1Q_FDB_PORT: _result("qbridge_port"),
+            LLDP_REM_CHASSIS_ID: _result(
+                "lldp_remote_chassis_id",
+                _vb(
+                    LLDP_REM_CHASSIS_ID + suffix,
+                    b"chassis",
+                    "octet_string",
+                ),
+            ),
+            LLDP_REM_PORT_ID: _result(
+                "lldp_remote_port_id",
+                _vb(LLDP_REM_PORT_ID + suffix, b"port", "octet_string"),
+            ),
+            LLDP_REM_SYS_NAME: _result(
+                "lldp_remote_system_name",
+                _vb(LLDP_REM_SYS_NAME + suffix, b"neighbor", "octet_string"),
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "fdb"
+    ).outcome is SnmpOutcome.SUCCESS_EMPTY
+    assert snapshot.lldp_neighbors == ()
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "lldp_remote"
+    ).error_code == "malformed_lldp"
 
 
 class _FixtureTransport:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 import re
 
 from netctl.switch_profile_hints import SUPPORTED_SNMP_PROFILE_HINTS
@@ -16,6 +17,8 @@ _SNR_SYS_OBJECT_ID_PREFIX = "1.3.6.1.4.1.57206"
 _SNR_PORT_NAME = re.compile(r"(?:ge|xe)([1-9][0-9]*)\Z", re.IGNORECASE)
 _SNR_LAG_NAME = re.compile(r"po([1-9][0-9]*)\Z", re.IGNORECASE)
 _TPLINK_T1600G_SYSTEM_DESCRIPTION = re.compile(r"\bT1600G-[0-9]+[A-Z0-9-]*\b")
+_CSS326_SYSTEM_DESCRIPTION = re.compile(r"\bCSS326-24G-2S\+?(?=$|[ /])")
+_CSS326_PHYSICAL_PORTS = range(1, 27)
 
 
 class SnmpParseError(ValueError):
@@ -26,6 +29,11 @@ class PortProfile:
     profile_id = "base"
     profile_fingerprint = "base:v1"
     qbridge_fid_mode = "mapped_only"
+
+    def normalize_ports(
+        self, ports: tuple[SwitchPort, ...]
+    ) -> tuple[SwitchPort, ...]:
+        return ports
 
     def resolve_fdb_port(
         self,
@@ -385,12 +393,68 @@ class TplinkProfile(GenericProfile):
         return self._resolution_from_port(port, physical_port=raw_fdb_port)
 
 
+class Css326Profile(GenericProfile):
+    """CSS326 legacy bridge ports map one-to-one to physical ports."""
+
+    profile_id = "css326"
+    profile_fingerprint = "css326:v1"
+
+    @staticmethod
+    def matches(system: SwitchSystem) -> bool:
+        return _CSS326_SYSTEM_DESCRIPTION.search(system.sys_descr) is not None
+
+    def normalize_ports(
+        self, ports: tuple[SwitchPort, ...]
+    ) -> tuple[SwitchPort, ...]:
+        normalized: list[SwitchPort] = []
+        for port in ports:
+            if (
+                port.bridge_port in _CSS326_PHYSICAL_PORTS
+                and port.if_index == port.bridge_port
+            ):
+                physical_port = port.bridge_port
+                normalized.append(
+                    replace(
+                        port,
+                        port_key=f"physical:{physical_port}",
+                        physical_port=physical_port,
+                    )
+                )
+            else:
+                normalized.append(port)
+        return tuple(normalized)
+
+    def resolve_fdb_port(
+        self,
+        *,
+        raw_fdb_port: int,
+        fdb_mode: str,
+        bridge_to_ifindex: Mapping[int, int],
+        ports_by_ifindex: Mapping[int, SwitchPort],
+    ) -> PortResolution:
+        if fdb_mode != "legacy" or raw_fdb_port not in _CSS326_PHYSICAL_PORTS:
+            raise ValueError("CSS326 FDB port is invalid")
+        if bridge_to_ifindex.get(raw_fdb_port) != raw_fdb_port:
+            raise ValueError("CSS326 bridge mapping is not one-to-one")
+        port = ports_by_ifindex.get(raw_fdb_port)
+        if port is None or port.bridge_port != raw_fdb_port:
+            raise ValueError("CSS326 port mapping is invalid")
+        return PortResolution(
+            port_key=f"physical:{raw_fdb_port}",
+            if_index=raw_fdb_port,
+            bridge_port=raw_fdb_port,
+            physical_port=raw_fdb_port,
+            port_name=port.name,
+        )
+
+
 def detect_profile(
     system: SwitchSystem, *, profile_hint: str | None = None
 ) -> PortProfile:
     is_dgs = DgsProfile.matches(system)
     is_snr = SnrProfile.matches(system)
     is_tplink = TplinkProfile.matches(system)
+    is_css326 = Css326Profile.matches(system)
     if profile_hint is not None and profile_hint not in SUPPORTED_SNMP_PROFILE_HINTS:
         raise ValueError("SNMP profile_hint is unsupported")
     if profile_hint == "dgs" and not is_dgs:
@@ -401,4 +465,6 @@ def detect_profile(
         return SnrProfile()
     if profile_hint is None and is_tplink:
         return TplinkProfile()
+    if profile_hint is None and is_css326:
+        return Css326Profile()
     return GenericProfile()

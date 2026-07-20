@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from netctl.snmp.models import SwitchSystem
 _DGS_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "dgs.json"
 _SNR_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "snr.json"
 _TPLINK_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "tplink.json"
+_CSS326_FIXTURE = Path(__file__).parent / "fixtures" / "snmp" / "css326.json"
 
 
 class _PagedFixtureTransport:
@@ -72,6 +74,95 @@ def _tplink_fixture_transport() -> _PagedFixtureTransport:
     return _PagedFixtureTransport(fixture["pages"])
 
 
+def _css326_fixture_transport() -> _PagedFixtureTransport:
+    fixture = json.loads(_CSS326_FIXTURE.read_text(encoding="utf-8"))
+    return _PagedFixtureTransport(fixture["pages"])
+
+
+class _SnapshotDriver:
+    def __init__(self, snapshot: object) -> None:
+        self.snapshot = snapshot
+
+    def collect(self) -> object:
+        return self.snapshot
+
+
+def _optional_seed(snapshot: object) -> object:
+    vlan_row = {
+        "vlan_id": 20,
+        "port_key": "physical:5",
+        "if_index": 5,
+        "bridge_port": 5,
+        "physical_port": 5,
+        "port_name": "ether5",
+        "egress": True,
+        "untagged": False,
+        "pvid": False,
+    }
+    lldp_row = {
+        "local_port_key": "physical:5",
+        "chassis_id": "00:11:22:33:44:55",
+        "port_id": "uplink-5",
+        "system_name": "seeded-neighbor",
+    }
+    return replace(
+        snapshot,
+        vlan_memberships=(vlan_row,),
+        lldp_neighbors=(lldp_row,),
+        capabilities=(
+            *(
+                row
+                for row in snapshot.capabilities
+                if row.capability
+                not in {
+                    "vlan_current_egress",
+                    "vlan_current_untagged",
+                    "pvid",
+                    "lldp_remote",
+                }
+            ),
+            CapabilityResult("vlan_current_egress", SnmpOutcome.SUCCESS_WITH_ROWS),
+            CapabilityResult("vlan_current_untagged", SnmpOutcome.SUCCESS_EMPTY),
+            CapabilityResult("pvid", SnmpOutcome.SUCCESS_EMPTY),
+            CapabilityResult("lldp_remote", SnmpOutcome.SUCCESS_WITH_ROWS),
+        ),
+    )
+
+
+def _persist_twice(tmp_path: Path, name: str, seeded: object, replacement: object):
+    from netctl.db import connect, get_source, upsert_source
+    from netctl.switch_store import collect_and_save_switch
+
+    conn = connect(f"sqlite:///{tmp_path / f'{name}.db'}")
+    upsert_source(
+        conn,
+        {
+            "name": name,
+            "driver": "snmp_switch",
+            "host": "192.0.2.100",
+            "port": 161,
+            "username": "",
+            "secret_ref": "fixture_ref",
+            "tls": False,
+            "verify_tls": False,
+            "site": "test",
+            "role": "switch",
+            "enabled": False,
+            "driver_options": {},
+        },
+    )
+    source = get_source(conn, name)
+    assert source is not None
+    first = collect_and_save_switch(
+        conn, source, _SnapshotDriver(seeded), "2026-07-20T01:00:00Z"
+    )
+    second = collect_and_save_switch(
+        conn, source, _SnapshotDriver(replacement), "2026-07-20T02:00:00Z"
+    )
+    assert first["status"] == second["status"] == "success"
+    return conn
+
+
 def test_tplink_fixture_normalizes_qbridge_fdb_ports() -> None:
     snapshot = asyncio.run(collect_switch_snapshot({}, _tplink_fixture_transport()))
 
@@ -104,6 +195,108 @@ def test_tplink_fixture_normalizes_qbridge_fdb_ports() -> None:
         "2C:C8:1B:AB:53:C9": (22, 49174),
         "2C:C8:1B:AB:47:23": (18, 49170),
     }
+
+
+def test_tplink_unsupported_optional_groups_preserve_seeded_state(
+    tmp_path: Path,
+) -> None:
+    snapshot = asyncio.run(collect_switch_snapshot({}, _tplink_fixture_transport()))
+    outcomes = {
+        row.capability: row.outcome
+        for row in snapshot.capabilities
+        if row.capability in {
+            "vlan_current_egress",
+            "vlan_current_untagged",
+            "pvid",
+            "lldp_remote",
+        }
+    }
+    assert outcomes == {
+        "vlan_current_egress": SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+        "vlan_current_untagged": SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+        "pvid": SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+        "lldp_remote": SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+    }
+    assert len(snapshot.fdb) == 4
+
+    conn = _persist_twice(
+        tmp_path, "tplink-optional", _optional_seed(snapshot), snapshot
+    )
+    try:
+        assert [tuple(row) for row in conn.execute(
+            "SELECT vlan_id, port_key FROM current_switch_vlan_memberships"
+        ).fetchall()] == [(20, "physical:5")]
+        assert [tuple(row) for row in conn.execute(
+            "SELECT local_port_key, system_name FROM current_switch_lldp_neighbors"
+        ).fetchall()] == [("physical:5", "seeded-neighbor")]
+    finally:
+        conn.close()
+
+
+def test_css326_fixture_uses_legacy_fdb_and_one_to_one_physical_ports() -> None:
+    snapshot = asyncio.run(collect_switch_snapshot({}, _css326_fixture_transport()))
+
+    assert (snapshot.profile_id, snapshot.profile_fingerprint) == (
+        "css326",
+        "css326:v1",
+    )
+    assert [
+        (port.port_key, port.bridge_port, port.if_index, port.physical_port)
+        for port in snapshot.ports
+    ] == [(f"physical:{port}", port, port, port) for port in range(1, 27)]
+    by_mac = {entry.mac: entry for entry in snapshot.fdb}
+    assert {
+        mac: (entry.port_key, entry.physical_port, entry.vlan_key)
+        for mac, entry in by_mac.items()
+    } == {
+        "02:00:00:00:00:24": ("physical:24", 24, "legacy:unknown"),
+        "02:00:00:00:00:13": ("physical:13", 13, "legacy:unknown"),
+        "02:00:00:00:00:05": ("physical:5", 5, "legacy:unknown"),
+    }
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "qbridge_port"
+    ).outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
+
+
+def test_css326_empty_lldp_clears_only_lldp_current_state(tmp_path: Path) -> None:
+    snapshot = asyncio.run(collect_switch_snapshot({}, _css326_fixture_transport()))
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "lldp_remote"
+    ).outcome is SnmpOutcome.SUCCESS_EMPTY
+
+    conn = _persist_twice(
+        tmp_path, "css326-empty-lldp", _optional_seed(snapshot), snapshot
+    )
+    try:
+        assert [tuple(row) for row in conn.execute(
+            "SELECT vlan_id, port_key FROM current_switch_vlan_memberships"
+        ).fetchall()] == [(20, "physical:5")]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM current_switch_lldp_neighbors"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM current_switch_fdb"
+        ).fetchone()[0] == 3
+    finally:
+        conn.close()
+
+
+def test_css326_fixture_is_sanitized_numeric_oid_data_without_secrets() -> None:
+    fixture = json.loads(_CSS326_FIXTURE.read_text(encoding="utf-8"))
+    serialized = _CSS326_FIXTURE.read_text(encoding="utf-8").lower()
+
+    assert fixture["fixture_kind"] == "sanitized_numeric_oid_pages"
+    assert all(
+        all(type(part) is int for part in page["request_oid"])
+        for page in fixture["pages"]
+    )
+    assert all(
+        all(type(part) is int for part in row["oid"])
+        for page in fixture["pages"]
+        for row in page["rows"]
+    )
+    for forbidden in ("community", "secret", "host", "production", "192.168"):
+        assert forbidden not in serialized
 
 
 def test_tplink_prefers_qbridge_when_legacy_tables_are_also_valid() -> None:

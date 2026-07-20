@@ -83,3 +83,7 @@ DOT1D_STP_TOPOLOGY_CHANGES = numeric_oid("1.3.6.1.2.1.17.2.4.0")
 DOT1D_STP_DESIGNATED_ROOT = numeric_oid("1.3.6.1.2.1.17.2.5.0")
 DOT1D_STP_ROOT_COST = numeric_oid("1.3.6.1.2.1.17.2.6.0")
 DOT1D_STP_ROOT_PORT = numeric_oid("1.3.6.1.2.1.17.2.7.0")
+
+LLDP_REM_CHASSIS_ID = numeric_oid("1.0.8802.1.1.2.1.4.1.1.5")
+LLDP_REM_PORT_ID = numeric_oid("1.0.8802.1.1.2.1.4.1.1.7")
+LLDP_REM_SYS_NAME = numeric_oid("1.0.8802.1.1.2.1.4.1.1.9")
