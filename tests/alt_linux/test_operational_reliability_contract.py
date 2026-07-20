@@ -26,6 +26,21 @@ EXPECTED_SCENARIO_IDS = {
     "reconcile-worker-not-started-created",
     "reconcile-worker-lost-employee",
     "reconcile-result-recovered",
+    "preflight-ssh-timeout",
+    "preflight-ssh-unreachable",
+    "preflight-ssh-host-key-mismatch",
+    "preflight-ssh-authentication-failed",
+    "preflight-sudo-unavailable",
+    "preflight-ansible-failed",
+}
+
+PREFLIGHT_FAILURE_KINDS = {
+    "ssh_timeout",
+    "ssh_unreachable",
+    "ssh_host_key_mismatch",
+    "ssh_authentication_failed",
+    "sudo_unavailable",
+    "ansible_failed",
 }
 
 
@@ -173,6 +188,7 @@ def test_proven_outcome_catalog_is_consistent() -> None:
             "launcher",
             "reconciliation",
             "result_recovery",
+            "preflight",
         }
         assert item.job_state in {
             None,
@@ -192,6 +208,35 @@ def test_proven_outcome_catalog_is_consistent() -> None:
         if item.job_state == "failed":
             assert item.job_stage != "complete"
             assert item.assignment_created is False
+
+        if item.boundary == "preflight":
+            assert item.error_code == "preflight_failed"
+            assert item.command_exit_code == 5
+            assert item.job_state is None
+            assert item.job_stage is None
+            assert item.assignment_created is False
+            assert item.retryable is True
+            assert item.failure_kind in PREFLIGHT_FAILURE_KINDS
+        else:
+            assert item.failure_kind is None
+
+
+def test_preflight_outcomes_have_expected_failure_kinds() -> None:
+    expected = {
+        "preflight-ssh-timeout": "ssh_timeout",
+        "preflight-ssh-unreachable": "ssh_unreachable",
+        "preflight-ssh-host-key-mismatch": "ssh_host_key_mismatch",
+        "preflight-ssh-authentication-failed": (
+            "ssh_authentication_failed"
+        ),
+        "preflight-sudo-unavailable": "sudo_unavailable",
+        "preflight-ansible-failed": "ansible_failed",
+    }
+
+    assert {
+        scenario_id: get_outcome(scenario_id).failure_kind
+        for scenario_id in expected
+    } == expected
 
 
 def test_outcome_metadata_contains_no_secret_names() -> None:
