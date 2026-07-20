@@ -83,27 +83,28 @@ PASS
 
 ## Финальная проверка с актуальным `main`
 
-После удаления всех временных workflows и patch helpers GitHub создал новый
-pull-request merge ref:
+После удаления всех временных workflows и patch helpers финальное состояние PR:
 
 ```text
-final_branch_head: 7b15bccbd29688210401306980dbf3e5eb24d764
-final_pull_request_merge_ref: 2fe46d0179ff0e402fe4c048e39832dbd2fecfc8
+final_branch_head: c9d5579ac17ee878090c8464662ee4796d3a07fa
+final_pull_request_merge_ref: 0c3f81bb59fb5d0a462fe81273b6e72aab3b3953
 ```
 
 На нём успешно завершились штатные workflows:
 
 ```text
 Verify netctl context stage
+  run_id: 29764147928
   context-stage: success
   full-regression: success
 
 Verify netctl runtime identity
+  run_id: 29764147993
   focused-runtime-identity: success
   full-regression: success
 ```
 
-Финальный full-regression artifact:
+Предыдущий финальный full-regression artifact на том же production/test tree:
 
 ```text
 run_id: 29763898225
@@ -160,5 +161,5 @@ tests не изменялись. Выполнялись только:
 - исправление имени legacy test module в документации;
 - удаление временной CI-инфраструктуры.
 
-Финальный штатный full-regression на `7b15bccbd29688210401306980dbf3e5eb24d764`
-подтвердил отсутствие регрессии после этих изменений.
+Финальные штатные workflows на `c9d5579ac17ee878090c8464662ee4796d3a07fa`
+подтвердили отсутствие регрессии после этих изменений.
