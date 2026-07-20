@@ -206,7 +206,9 @@ def _canonical_capabilities(value: object) -> str:
         if type(row) is not dict or set(row) != _CAPABILITY_KEYS:
             raise ValueError("unknown fingerprint capabilities are invalid")
         if (
-            row["capability"] not in _DISCOVERY_CAPABILITIES
+            type(row["capability"]) is not str
+            or type(row["outcome"]) is not str
+            or row["capability"] not in _DISCOVERY_CAPABILITIES
             or row["outcome"] not in _SNMP_OUTCOMES
         ):
             raise ValueError("unknown fingerprint capabilities are invalid")

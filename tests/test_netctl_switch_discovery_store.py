@@ -145,6 +145,44 @@ def test_unknown_fingerprint_list_skips_unsafe_persisted_values(tmp_path: Path) 
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "capabilities_json",
+    [
+        '[{"capability":[],"outcome":"success_empty"}]',
+        '[{"capability":"sys_descr","outcome":{}}]',
+        '[{"capability":null,"outcome":null}]',
+    ],
+)
+def test_unknown_fingerprint_list_skips_unhashable_or_nonstring_capabilities(
+    tmp_path: Path, capabilities_json: str
+) -> None:
+    conn = connect(_db_url(tmp_path / "discovery.sqlite"))
+    try:
+        source_id = _source(conn)
+        conn.execute(
+            """
+            INSERT INTO switch_unknown_fingerprints (
+                source_id, sys_object_id, sys_descr, fingerprint_sha256,
+                capabilities_json, status, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id,
+                "1.3.6.1.4.1.9999.1",
+                "Unknown test switch",
+                "a" * 64,
+                capabilities_json,
+                "requires_profile",
+                "2026-07-20T10:00:00Z",
+            ),
+        )
+        conn.commit()
+
+        assert list_unknown_fingerprints(conn) == []
+    finally:
+        conn.close()
+
+
 def test_unknown_fingerprint_rejects_private_capability_keys(tmp_path: Path) -> None:
     conn = connect(_db_url(tmp_path / "discovery.sqlite"))
     try:
