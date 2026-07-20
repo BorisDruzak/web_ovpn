@@ -1,5 +1,9 @@
 from pathlib import Path
+import re
+import shutil
 import subprocess
+
+import pytest
 
 
 QUEUE_DIR = "/var/lib/openvpn-web/server-drafts/queue"
@@ -118,6 +122,55 @@ def test_draft_worker_only_installer_has_a_strictly_limited_deployment_surface()
         assert forbidden not in installer
 
 
+def test_scoped_installer_locks_and_validates_the_draft_namespace_before_mutation():
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+
+    for required in (
+        'DRAFT_PARENT="/var/lib/openvpn-web"',
+        'DRAFT_ROOT="$DRAFT_PARENT/server-drafts"',
+        'validate_root_component /var root root 755',
+        'validate_root_component /var/lib root root 755',
+        'validate_draft_parent "$DRAFT_PARENT"',
+        'validate_existing_draft_component "$DRAFT_ROOT"',
+        'validate_existing_draft_component "$DRAFT_ROOT/queue"',
+        'validate_existing_draft_component "$DRAFT_ROOT/results"',
+        'validate_existing_draft_component "$DRAFT_ROOT/private"',
+        'sudo_cmd chown root:openvpn-web "$DRAFT_PARENT"',
+        'sudo_cmd chmod 1750 "$DRAFT_PARENT"',
+        'sudo_cmd chmod 1770 "$DRAFT_PARENT"',
+        'sudo_cmd chown root:openvpn-web "$DRAFT_ROOT"',
+        'sudo_cmd chmod 0750 "$DRAFT_ROOT"',
+        'sudo_cmd mkdir --mode=0750 -- "$DRAFT_ROOT"',
+        'readlink -e -- "$path"',
+        'test -L "$path"',
+        '"$metadata" == openvpn-web:openvpn-web:770',
+        '"$metadata" == root:openvpn-web:750',
+        'openvpn-web:openvpn-web:770',
+        'openvpm:openvpm:700',
+        'draft_root_action=create_exclusive',
+        'draft_root_action=existing_hardened',
+        'draft_root_action=legacy_locked',
+        '[[ "$draft_root_metadata" == "root:openvpn-web:750" ]]',
+        'case "$draft_root_action" in',
+    ):
+        assert required in installer
+
+    cleanup = installer.split("cleanup() {", 1)[1].split("validate_root_component()", 1)[0]
+    assert 'chown openvpn-web:openvpn-web "$DRAFT_PARENT"' not in cleanup
+    assert 'install -d -m 0770 -o openvpn-web -g openvpn-web "$DRAFT_ROOT"' not in installer
+    first_root_mutation = min(
+        installer.index('sudo_cmd chown root:openvpn-web "$DRAFT_PARENT"'),
+        installer.index('sudo_cmd chmod 1750 "$DRAFT_PARENT"'),
+    )
+    for validation in (
+        'validate_root_component /var root root 755',
+        'validate_root_component /var/lib root root 755',
+        'validate_draft_parent "$DRAFT_PARENT"',
+        'validate_existing_draft_component "$DRAFT_ROOT/private"',
+    ):
+        assert installer.index(validation) < first_root_mutation
+
+
 def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources():
     deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
@@ -201,35 +254,150 @@ def test_worker_handoff_backup_and_rollback_fail_closed_for_every_mutated_asset(
         assert rollback.index(validation) < first_mutation
 
 
-def test_worker_handoff_rollback_rejects_a_symlinked_backup_root_before_readlink(tmp_path):
+def test_worker_handoff_backup_root_is_exclusive_and_validated_before_use():
     deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
         "## Network Observer Setup", 1
     )[0]
-    rollback = handoff.split("### Rollback", 1)[1].split("```bash", 1)[1].split("```", 1)[0]
-    validation = rollback.split("# Reject the supplied directory itself before readlink can hide that symlink.\n", 1)[1].split(
-        'resolved_backup_root="$(sudo readlink -e -- "$BACKUP_ROOT")"', 1
+    backup = handoff.split("### Rollback", 1)[0]
+
+    assert 'sudo mkdir --mode=0700 -- "$BACKUP_ROOT"' in backup
+    assert 'sudo install -d -m 0700 "$BACKUP_ROOT"' not in backup
+    assert 'sudo test -L "$BACKUP_ROOT"' in backup
+    assert 'sudo readlink -e -- "$BACKUP_ROOT"' in backup
+    assert 'sudo stat -c \'%u:%g:%a\' -- "$BACKUP_ROOT"' in backup
+    assert '[[ "$backup_root_metadata" == "0:0:700" ]]' in backup
+    assert 'DRAFT_PARENT=/var/lib/openvpn-web' in backup
+    assert 'sudo test -L "$DRAFT_PARENT"' in backup
+    assert 'resolved_draft_parent="$(sudo readlink -e -- "$DRAFT_PARENT")"' in backup
+    assert 'draft_parent_metadata="$(sudo stat -c \'%U:%G:%a\' -- "$DRAFT_PARENT")"' in backup
+    assert 'openvpn-web:openvpn-web:755|root:openvpn-web:1770' in backup
+
+    manifest_creation = backup.index('sudo install -m 0600 /dev/null "$rollback_manifest"')
+    first_copy = backup.index('backup_asset server-draft-worker -f')
+    for validation in (
+        'sudo test -L "$BACKUP_ROOT"',
+        'sudo readlink -e -- "$BACKUP_ROOT"',
+        '[[ "$backup_root_metadata" == "0:0:700" ]]',
+        'resolved_draft_parent="$(sudo readlink -e -- "$DRAFT_PARENT")"',
+        'openvpn-web:openvpn-web:755|root:openvpn-web:1770',
+    ):
+        assert backup.index(validation) < manifest_creation
+        assert backup.index(validation) < first_copy
+
+
+def test_worker_handoff_rollback_restores_enablement_and_preserved_metadata():
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
     )[0]
+    backup, rollback = handoff.split("### Rollback", 1)
+
+    assert (
+        "backup_asset server-draft-worker.path.wants -L "
+        "/etc/systemd/system/multi-user.target.wants/server-draft-worker.path"
+    ) in backup
+    assert 'server-draft-worker.path.active=active' in backup
+    assert 'server-draft-worker.path.active=inactive' in backup
+    assert 'sudo cp --archive --preserve=all --' in backup
+    assert 'sudo cp --archive --preserve=all --' in rollback
+    assert 'asset_state server-draft-worker.path.wants -L ' in rollback
+    assert 'restore_asset "$worker_path_wants_state"' in rollback
+    assert 'sudo systemctl start server-draft-worker.path' in rollback
+    assert 'sudo install -m "$mode" "$source_path" "$target_path"' not in rollback
+
+    for metadata_option in ("--acls", "--xattrs", "--selinux", "--numeric-owner", "--no-recursion"):
+        assert metadata_option in backup
+        assert metadata_option in rollback
+    assert "var/lib/openvpn-web/" in rollback
+
+
+def test_worker_handoff_constrains_the_prior_wants_symlink_target():
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+
+    assert 'readlink -- "$DRAFT_PATH_WANTS"' in handoff
+    assert '"../server-draft-worker.path"' in handoff
+    assert "refusing an unexpected draft-worker path enablement symlink" in handoff
+
+
+def test_bash_test_l_detects_a_real_directory_symlink(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
     backup_root = tmp_path / "openvpn-web-server-drafts-backup-20260720120000"
     target = tmp_path / "real-backup"
     target.mkdir()
-    backup_root.symlink_to(target, target_is_directory=True)
+    try:
+        backup_root.symlink_to(target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable on this platform: {exc}")
     assert backup_root.is_symlink()
 
-    script = """set -e
-sudo() {
-  if [[ "$1" == test && "$2" == -L && "$3" == "$BACKUP_ROOT" && "$#" == 3 ]]; then
-    return 0
-  fi
-  command "$@"
-}
-BACKUP_ROOT='""" + backup_root.as_posix() + "'\n" + validation
     result = subprocess.run(
-        ["bash", "-c", script],
+        [bash, "-c", 'test -L "$1"', "test-L", backup_root.as_posix()],
         text=True,
         capture_output=True,
         check=False,
     )
 
-    assert result.returncode == 2
-    assert "refusing a symlinked draft-worker backup root" in result.stderr
+    assert result.returncode == 0
+
+
+def test_bash_mkdir_without_p_rejects_reusing_an_existing_backup_root(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    backup_root = tmp_path / "openvpn-web-server-drafts-backup-20260720120000"
+    result = subprocess.run(
+        [
+            bash,
+            "-c",
+            (
+                'path="$1"; '
+                'if command -v cygpath >/dev/null 2>&1 && [[ "$path" == ?:/* ]]; '
+                'then path="$(cygpath -u "$path")"; fi; '
+                'mkdir --mode=0700 -- "$path" || exit 77; '
+                '! mkdir --mode=0700 -- "$path"'
+            ),
+            "exclusive-mkdir",
+            backup_root.as_posix(),
+        ],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    if result.returncode == 77:
+        pytest.skip("this platform cannot apply mode 0700 through bash mkdir")
+    assert result.returncode == 0, result.stderr
+    assert backup_root.is_dir()
+
+
+def test_documented_draft_worker_shell_blocks_parse():
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable on this platform")
+
+    deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
+    handoff = deployment.split("## SSH Server Draft Worker Handoff and Rollback", 1)[1].split(
+        "## Network Observer Setup", 1
+    )[0]
+    blocks = re.findall(r"```bash\n(.*?)\n```", handoff, flags=re.DOTALL)
+    assert len(blocks) == 4
+
+    for block in blocks:
+        result = subprocess.run(
+            [bash, "-n"],
+            input=block,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
