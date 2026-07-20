@@ -25,7 +25,8 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: OR-2A catalog RED
+      - name: OR-2A classifier RED
         run: >-
           python -m pytest -q
-          tests/alt_linux/test_operational_reliability_contract.py::test_proven_outcome_catalog_has_exact_scenarios
+          tests/alt_linux/test_or2a_preflight_failures.py
+          -k "classify_preflight_failure or host_key_mismatch"
