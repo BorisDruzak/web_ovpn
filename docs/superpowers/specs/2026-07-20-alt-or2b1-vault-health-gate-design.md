@@ -298,7 +298,7 @@ details.checks = та же матрица
 
 Другие неожиданные `ControlError` не поглощаются.
 
-### 6.6 Совместимость details
+### 6.6 Точный контракт compatibility details
 
 Для preview/start поле:
 
@@ -308,23 +308,24 @@ details.checks
 
 обязательно для всех Vault health failures.
 
-Для отсутствующих файлов дополнительно сохраняется совместимое поле:
+Если отсутствует Vault или password file, `details` дополнительно содержит:
 
 ```text
-details.missing
+details.missing = [<отсутствующие пути в стабильном порядке>]
 ```
 
-со списком путей отсутствующих Vault assets.
-
-При `vault_header=false` допускается сохранить существующее:
+Если оба файла существуют, но `vault_header=false`, `details` дополнительно
+содержит:
 
 ```text
 details.path = <vault file path>
 ```
 
-Но `checks` остаётся авторитетным структурированным contract.
+Для owner, mode, decrypt, variable и yescrypt failures дополнительных полей
+нет: `details` содержит только `checks`.
 
-Ни `missing`, ни `path` не содержат secret value.
+`checks` является авторитетным структурированным contract. Ни `missing`, ни
+`path` не содержат secret value.
 
 ## 7. Data flow
 
@@ -522,6 +523,10 @@ portable non-root uid
 
 `checks` должны быть byte-equivalent, потому что owner policy зависит только от
 `settings.service_user`.
+
+Owner-conflict tests не выполняют реальный `chown`: они подменяют
+`pwd.getpwnam(settings.service_user)` ожидаемым несовпадающим UID. Это сохраняет
+тесты переносимыми и не требует root на CI runner.
 
 ### 10.6 Retryability
 
