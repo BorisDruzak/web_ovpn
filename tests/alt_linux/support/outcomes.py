@@ -14,6 +14,7 @@ class OperationalOutcome:
     assignment_created: bool
     retryable: bool | None
     required_evidence: tuple[str, ...]
+    failure_kind: str | None = None
 
 
 PROVEN_OPERATIONAL_OUTCOMES: tuple[OperationalOutcome, ...] = (
@@ -91,6 +92,110 @@ PROVEN_OPERATIONAL_OUTCOMES: tuple[OperationalOutcome, ...] = (
             "result_file_recorded",
             "server_assignment_matches_result",
         ),
+    ),
+    OperationalOutcome(
+        "preflight-ssh-timeout",
+        "preflight",
+        "preflight_failed",
+        5,
+        None,
+        None,
+        False,
+        True,
+        (
+            "cli_failure_kind_ssh_timeout",
+            "registration_error_persisted",
+            "no_job_created",
+            "no_assignment_created",
+        ),
+        "ssh_timeout",
+    ),
+    OperationalOutcome(
+        "preflight-ssh-unreachable",
+        "preflight",
+        "preflight_failed",
+        5,
+        None,
+        None,
+        False,
+        True,
+        (
+            "cli_failure_kind_ssh_unreachable",
+            "registration_error_persisted",
+            "strict_ssh_options_preserved",
+            "no_job_created",
+            "no_assignment_created",
+        ),
+        "ssh_unreachable",
+    ),
+    OperationalOutcome(
+        "preflight-ssh-host-key-mismatch",
+        "preflight",
+        "preflight_failed",
+        5,
+        None,
+        None,
+        False,
+        True,
+        (
+            "cli_failure_kind_ssh_host_key_mismatch",
+            "registration_error_persisted",
+            "no_job_created",
+            "no_assignment_created",
+        ),
+        "ssh_host_key_mismatch",
+    ),
+    OperationalOutcome(
+        "preflight-ssh-authentication-failed",
+        "preflight",
+        "preflight_failed",
+        5,
+        None,
+        None,
+        False,
+        True,
+        (
+            "cli_failure_kind_ssh_authentication_failed",
+            "registration_error_persisted",
+            "no_job_created",
+            "no_assignment_created",
+        ),
+        "ssh_authentication_failed",
+    ),
+    OperationalOutcome(
+        "preflight-sudo-unavailable",
+        "preflight",
+        "preflight_failed",
+        5,
+        None,
+        None,
+        False,
+        True,
+        (
+            "controlled_sudo_marker",
+            "cli_failure_kind_sudo_unavailable",
+            "registration_error_persisted",
+            "no_job_created",
+            "no_assignment_created",
+        ),
+        "sudo_unavailable",
+    ),
+    OperationalOutcome(
+        "preflight-ansible-failed",
+        "preflight",
+        "preflight_failed",
+        5,
+        None,
+        None,
+        False,
+        True,
+        (
+            "conservative_fallback",
+            "registration_error_persisted",
+            "no_job_created",
+            "no_assignment_created",
+        ),
+        "ansible_failed",
     ),
 )
 
