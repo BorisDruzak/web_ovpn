@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - docs/alt-or2a-ssh-preflight-classification-design-20260720
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
