@@ -221,7 +221,7 @@ def collect_one(conn, args: argparse.Namespace, source_name: str) -> tuple[int, 
         if source.get("driver") == "snmp_switch":
             driver = snmp_driver_for(source, load_secrets())
             result = collect_and_save_switch(conn, source, driver, started)
-            succeeded = result["status"] == "success"
+            completed = result["status"] in {"success", "partial"}
             conn.execute(
                 """
                 UPDATE network_sources
@@ -229,14 +229,14 @@ def collect_one(conn, args: argparse.Namespace, source_name: str) -> tuple[int, 
                 WHERE id = ?
                 """,
                 (
-                    started if succeeded else source.get("last_collect_at"),
+                    started if completed else source.get("last_collect_at"),
                     result["status"],
                     result["error_message"],
                     source["id"],
                 ),
             )
             conn.commit()
-            if not succeeded:
+            if not completed:
                 return 1, err(
                     result["error_message"],
                     source=source_name,
@@ -250,6 +250,7 @@ def collect_one(conn, args: argparse.Namespace, source_name: str) -> tuple[int, 
                 summary=result["counts"],
                 run_id=result["run_id"],
                 fdb_outcome=result["fdb_outcome"],
+                collection_status=result["status"],
             )
         driver = legacy_driver_for(source, load_secrets())
         snapshot = driver.collect(

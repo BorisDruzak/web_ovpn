@@ -834,6 +834,48 @@ def test_snmp_collect_dispatches_typed_snapshot_to_switch_store_only(
     assert stored == 3
 
 
+def test_snmp_partial_collect_is_completed_and_exposes_collection_status(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import netctl.cli as cli
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    _write_switch_source(config_path)
+    snapshot = _snapshot()
+    snapshot = replace(
+        snapshot,
+        capabilities=(
+            *snapshot.capabilities,
+            CapabilityResult("lldp_remote", SnmpOutcome.TIMEOUT),
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "snmp_driver_for",
+        lambda _source, _secrets: _FakeSwitchDriver(snapshot),
+    )
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path) + ["collect", "switch-test"], capsys
+    )
+
+    assert rc == 0
+    assert data["status"] == "ok"
+    assert data["collection_status"] == "partial"
+    conn = connect(f"sqlite:///{db_path.as_posix()}")
+    try:
+        source = conn.execute(
+            "SELECT last_collect_at, last_status, last_error FROM network_sources "
+            "WHERE name = 'switch-test'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert source["last_collect_at"]
+    assert (source["last_status"], source["last_error"]) == ("partial", "")
+
+
 def test_switch_fdb_query_is_read_only_bounded_and_raw_free(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:

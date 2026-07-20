@@ -159,7 +159,8 @@ def _persist_twice(tmp_path: Path, name: str, seeded: object, replacement: objec
     second = collect_and_save_switch(
         conn, source, _SnapshotDriver(replacement), "2026-07-20T02:00:00Z"
     )
-    assert first["status"] == second["status"] == "success"
+    assert first["status"] == "success"
+    assert second["status"] == "partial"
     return conn
 
 

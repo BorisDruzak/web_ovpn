@@ -28,6 +28,27 @@ class _FakeDriver:
         return self.result
 
 
+class _InspectingDriver:
+    def __init__(self, db_path: Path, result: SwitchSnapshot) -> None:
+        self.db_path = db_path
+        self.result = result
+        self.observed_runs: list[dict[str, Any]] = []
+
+    def collect(self) -> SwitchSnapshot:
+        observer = sqlite3.connect(self.db_path)
+        observer.row_factory = sqlite3.Row
+        try:
+            self.observed_runs = [
+                dict(row)
+                for row in observer.execute(
+                    "SELECT id, status, finished_at FROM switch_collection_runs"
+                ).fetchall()
+            ]
+        finally:
+            observer.close()
+        return self.result
+
+
 class _FailCommitConnection(sqlite3.Connection):
     fail_commit = False
 
@@ -471,7 +492,7 @@ def test_optional_error_preserves_current_group_while_required_state_advances(
         switch_conn, source, _FakeDriver(replacement), "2026-07-19T11:00:00Z"
     )
 
-    assert result["status"] == "success"
+    assert result["status"] == "partial"
     assert _rows(
         switch_conn,
         "SELECT mac, port_key FROM current_switch_fdb",
@@ -651,7 +672,7 @@ def test_auth_or_view_failure_preserves_vlan_and_lldp_current_state(
         "2026-07-19T11:00:00Z",
     )
 
-    assert result["status"] == "success"
+    assert result["status"] == "partial"
     assert _rows(switch_conn, "SELECT mac FROM current_switch_fdb") == [
         {"mac": "02:00:00:00:00:02"}
     ]
@@ -950,7 +971,7 @@ def test_optional_capability_failure_does_not_block_confirmed_fdb_replacement(
     snapshot = replace(
         snapshot,
         capabilities=(
-            CapabilityResult("optional_lldp", SnmpOutcome.TIMEOUT),
+            CapabilityResult("lldp_remote", SnmpOutcome.TIMEOUT),
             *snapshot.capabilities,
         ),
     )
@@ -960,7 +981,7 @@ def test_optional_capability_failure_does_not_block_confirmed_fdb_replacement(
     )
 
     assert (result["status"], result["fdb_outcome"]) == (
-        "success",
+        "partial",
         "success_with_rows",
     )
     assert result["counts"]["appeared"] == 1
@@ -972,8 +993,73 @@ def test_optional_capability_failure_does_not_block_confirmed_fdb_replacement(
     )
     assert capabilities == [
         {"capability": "fdb", "outcome": "success_with_rows"},
-        {"capability": "optional_lldp", "outcome": "timeout"},
+        {"capability": "lldp_remote", "outcome": "timeout"},
     ]
+
+    run = _rows(
+        switch_conn,
+        "SELECT status, finished_at FROM switch_collection_runs WHERE id = ?",
+        (result["run_id"],),
+    )[0]
+    assert run == {"status": "partial", "finished_at": "2026-07-19T10:00:00Z"}
+
+
+def test_running_run_is_committed_before_driver_network_io(tmp_path: Path) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    db_path = tmp_path / "running-before-io.db"
+    conn = connect(f"sqlite:///{db_path.as_posix()}")
+    try:
+        source = _source(conn, "switch_a")
+        driver = _InspectingDriver(
+            db_path,
+            _snapshot((_entry("02:00:00:00:00:01", 1),)),
+        )
+
+        result = collect_and_save_switch(
+            conn, source, driver, "2026-07-19T10:00:00Z"
+        )
+
+        assert driver.observed_runs == [
+            {"id": result["run_id"], "status": "running", "finished_at": None}
+        ]
+    finally:
+        conn.close()
+
+
+def test_partial_run_blocks_an_older_snapshot_from_reversing_required_fdb(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_a")
+    newer = replace(
+        _snapshot((_entry("02:00:00:00:00:01", 9),)),
+        capabilities=(
+            CapabilityResult("fdb", SnmpOutcome.SUCCESS_WITH_ROWS),
+            CapabilityResult("lldp_remote", SnmpOutcome.TIMEOUT),
+        ),
+    )
+    first = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(newer), "2026-07-19T11:00:00Z"
+    )
+
+    second = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
+        "2026-07-19T10:00:00Z",
+    )
+
+    assert first["status"] == "partial"
+    assert (second["status"], second["error_class"]) == (
+        "failed",
+        "stale_snapshot",
+    )
+    assert _rows(
+        switch_conn,
+        "SELECT port_key, collector_run_id FROM current_switch_fdb",
+    ) == [{"port_key": "ifindex:9", "collector_run_id": first["run_id"]}]
 
 
 @pytest.mark.parametrize(
@@ -1013,7 +1099,6 @@ def test_malformed_snapshot_fails_closed_without_changing_current(
         "2026-07-19T10:00:00Z",
     )
     protected_tables = (
-        "switch_collection_runs",
         "switch_devices",
         "switch_ports",
         "switch_capabilities",
@@ -1030,12 +1115,24 @@ def test_malformed_snapshot_fails_closed_without_changing_current(
     )
 
     assert (result["status"], result["fdb_outcome"]) == ("failed", "parse_error")
-    assert result["run_id"] is None
+    assert result["run_id"] is not None
     assert result["error_message"] == "Switch snapshot is invalid"
     assert {
         table: _rows(switch_conn, f"SELECT * FROM {table}")
         for table in protected_tables
     } == before
+    assert _rows(
+        switch_conn,
+        "SELECT status, error_class, error_message FROM switch_collection_runs "
+        "WHERE id = ?",
+        (result["run_id"],),
+    ) == [
+        {
+            "status": "failed",
+            "error_class": "invalid_snapshot",
+            "error_message": "Switch snapshot is invalid",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1142,7 +1239,6 @@ def test_typed_but_malformed_snapshot_fails_before_any_state_replacement(
         "2026-07-19T10:00:00Z",
     )
     protected_tables = (
-        "switch_collection_runs",
         "switch_devices",
         "switch_ports",
         "switch_capabilities",
@@ -1165,11 +1261,23 @@ def test_typed_but_malformed_snapshot_fails_before_any_state_replacement(
         "failed",
         "invalid_snapshot",
     )
-    assert result["run_id"] is None
+    assert result["run_id"] is not None
     assert {
         table: _rows(switch_conn, f"SELECT * FROM {table}")
         for table in protected_tables
     } == before
+    assert _rows(
+        switch_conn,
+        "SELECT status, error_class, error_message FROM switch_collection_runs "
+        "WHERE id = ?",
+        (result["run_id"],),
+    ) == [
+        {
+            "status": "failed",
+            "error_class": "invalid_snapshot",
+            "error_message": "Switch snapshot is invalid",
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1295,7 +1403,7 @@ def test_sources_have_isolated_current_rows_and_events(
     ) == [{"source_id": source_a["id"], "event_type": "disappeared"}]
 
 
-def test_sql_failure_rolls_back_run_device_ports_capabilities_current_and_events(
+def test_transaction_b_failure_preserves_state_and_finalizes_sanitized_failed_run(
     switch_conn: sqlite3.Connection,
 ) -> None:
     from netctl.switch_store import SwitchPersistenceError, collect_and_save_switch
@@ -1307,15 +1415,17 @@ def test_sql_failure_rolls_back_run_device_ports_capabilities_current_and_events
         _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
         "2026-07-19T10:00:00Z",
     )
-    tables = (
-        "switch_collection_runs",
+    protected_tables = (
         "switch_devices",
         "switch_ports",
         "switch_capabilities",
         "current_switch_fdb",
         "switch_fdb_events",
     )
-    before = {table: _rows(switch_conn, f"SELECT * FROM {table}") for table in tables}
+    before = {
+        table: _rows(switch_conn, f"SELECT * FROM {table}")
+        for table in protected_tables
+    }
     switch_conn.execute(
         """
         CREATE TRIGGER reject_moved_event
@@ -1340,8 +1450,22 @@ def test_sql_failure_rolls_back_run_device_ports_capabilities_current_and_events
 
     assert "secret-bearing" not in repr(exc_info.value)
     assert {
-        table: _rows(switch_conn, f"SELECT * FROM {table}") for table in tables
+        table: _rows(switch_conn, f"SELECT * FROM {table}")
+        for table in protected_tables
     } == before
+    failed_run = _rows(
+        switch_conn,
+        "SELECT status, finished_at, error_class, error_message, outcomes_json "
+        "FROM switch_collection_runs ORDER BY id DESC LIMIT 1",
+    )[0]
+    assert failed_run == {
+        "status": "failed",
+        "finished_at": "2026-07-19T11:00:00Z",
+        "error_class": "persistence_error",
+        "error_message": "Switch collection persistence failed",
+        "outcomes_json": '{"fdb":"success_with_rows"}',
+    }
+    assert "secret-bearing" not in repr(failed_run)
 
 
 def test_commit_failure_rolls_back_live_transaction_and_all_mutations(

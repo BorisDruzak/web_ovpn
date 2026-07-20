@@ -30,6 +30,17 @@ _VLAN_CAPABILITIES = (
     "pvid",
 )
 _LLDP_CAPABILITIES = ("lldp_remote",)
+_OPTIONAL_CAPABILITIES = frozenset(
+    {
+        *_VLAN_CAPABILITIES,
+        "stp_protocol",
+        "stp_topology_changes",
+        "stp_designated_root",
+        "stp_root_cost",
+        "stp_root_port",
+        "lldp_remote",
+    }
+)
 _VLAN_MEMBERSHIP_FIELDS = frozenset(
     {
         "vlan_id",
@@ -87,15 +98,30 @@ def collect_and_save_switch(
         capability_ttl_hours = _capability_ttl_hours(source)
     except Exception:
         raise SwitchPersistenceError("Switch collection persistence failed") from None
+    if conn.in_transaction:
+        raise SwitchPersistenceError("Switch collection persistence failed")
+    try:
+        with _atomic(conn):
+            run_id = _create_run(
+                conn,
+                source_id=source_id,
+                started_at=started_at,
+                profile_id="",
+                sys_uptime_ticks=None,
+            )
+    except Exception:
+        raise SwitchPersistenceError("Switch collection persistence failed") from None
     try:
         snapshot = driver.collect()
     except Exception:
         return _record_failed_run(
             conn,
+            run_id=run_id,
             source_id=source_id,
             started_at=started_at,
             error_class="collection_error",
             error_message="Switch collection failed",
+            outcomes={"fdb": SnmpOutcome.PARSE_ERROR.value},
         )
 
     try:
@@ -113,31 +139,26 @@ def collect_and_save_switch(
     if validation_error:
         return _invalid_snapshot_result(
             conn,
+            run_id=run_id,
             source_id=source_id,
+            started_at=started_at,
         )
 
     assert isinstance(snapshot, SwitchSnapshot)
+    outcomes = {
+        capability.capability: capability.outcome.value
+        for capability in snapshot.capabilities
+    }
     try:
         with _atomic(conn):
-            run_id = _create_run(
-                conn,
-                source_id=source_id,
-                started_at=started_at,
-                profile_id=snapshot.profile_id,
-                sys_uptime_ticks=snapshot.system.sys_uptime_ticks,
-            )
             outcome = fdb_capability.outcome
-            outcomes = {
-                capability.capability: capability.outcome.value
-                for capability in snapshot.capabilities
-            }
             if outcome not in _REPLACING_FDB_OUTCOMES:
                 counts = dict(_EMPTY_COUNTS)
                 counts["fdb_current"] = _current_fdb_count(conn, source_id)
                 status = "failed"
                 error_class = "fdb_unavailable"
                 error_message = "Switch FDB collection was not successful"
-            elif _has_newer_or_equal_success(
+            elif _has_newer_or_equal_completed(
                 conn,
                 source_id=source_id,
                 started_time=started_time,
@@ -172,7 +193,9 @@ def collect_and_save_switch(
                     snapshot=snapshot,
                     observed_at=started_at,
                 )
-                status = "success"
+                status = (
+                    "partial" if _has_failed_optional_capability(snapshot) else "success"
+                )
                 error_class = ""
                 error_message = ""
                 counts["ports"] = len(snapshot.ports)
@@ -186,8 +209,22 @@ def collect_and_save_switch(
                 error_message=error_message,
                 outcomes=outcomes,
                 counts=counts,
+                profile_id=snapshot.profile_id,
+                sys_uptime_ticks=snapshot.system.sys_uptime_ticks,
             )
     except Exception:
+        try:
+            _record_failed_run(
+                conn,
+                run_id=run_id,
+                source_id=source_id,
+                started_at=started_at,
+                error_class="persistence_error",
+                error_message="Switch collection persistence failed",
+                outcomes={"fdb": fdb_outcome},
+            )
+        except Exception:
+            pass
         raise SwitchPersistenceError("Switch collection persistence failed") from None
 
     return _result(
@@ -571,12 +608,14 @@ def _finish_run(
     error_message: str,
     outcomes: dict[str, str],
     counts: dict[str, int],
+    profile_id: str,
+    sys_uptime_ticks: int | None,
 ) -> None:
     cursor = conn.execute(
         """
         UPDATE switch_collection_runs
         SET finished_at = ?, status = ?, error_class = ?, error_message = ?,
-            outcomes_json = ?, counts_json = ?
+            outcomes_json = ?, counts_json = ?, profile_id = ?, sys_uptime_ticks = ?
         WHERE id = ? AND source_id = ? AND status = 'running'
         """,
         (
@@ -586,6 +625,8 @@ def _finish_run(
             error_message,
             _json(outcomes),
             _json(counts),
+            profile_id,
+            sys_uptime_ticks,
             run_id,
             source_id,
         ),
@@ -597,22 +638,17 @@ def _finish_run(
 def _record_failed_run(
     conn: sqlite3.Connection,
     *,
+    run_id: int,
     source_id: int,
     started_at: str,
     error_class: str,
     error_message: str,
+    outcomes: dict[str, str],
 ) -> dict[str, Any]:
     counts = dict(_EMPTY_COUNTS)
     try:
         with _atomic(conn):
             counts["fdb_current"] = _current_fdb_count(conn, source_id)
-            run_id = _create_run(
-                conn,
-                source_id=source_id,
-                started_at=started_at,
-                profile_id="",
-                sys_uptime_ticks=None,
-            )
             _finish_run(
                 conn,
                 run_id=run_id,
@@ -621,8 +657,10 @@ def _record_failed_run(
                 status="failed",
                 error_class=error_class,
                 error_message=error_message,
-                outcomes={"fdb": SnmpOutcome.PARSE_ERROR.value},
+                outcomes=outcomes,
                 counts=counts,
+                profile_id="",
+                sys_uptime_ticks=None,
             )
     except Exception:
         raise SwitchPersistenceError("Switch collection persistence failed") from None
@@ -640,25 +678,22 @@ def _record_failed_run(
 def _invalid_snapshot_result(
     conn: sqlite3.Connection,
     *,
+    run_id: int,
     source_id: int,
+    started_at: str,
 ) -> dict[str, Any]:
-    try:
-        counts = dict(_EMPTY_COUNTS)
-        counts["fdb_current"] = _current_fdb_count(conn, source_id)
-    except Exception:
-        raise SwitchPersistenceError("Switch collection persistence failed") from None
-    return _result(
-        run_id=None,
+    return _record_failed_run(
+        conn,
+        run_id=run_id,
         source_id=source_id,
-        status="failed",
-        fdb_outcome=SnmpOutcome.PARSE_ERROR.value,
-        counts=counts,
+        started_at=started_at,
         error_class="invalid_snapshot",
         error_message="Switch snapshot is invalid",
+        outcomes={"fdb": SnmpOutcome.PARSE_ERROR.value},
     )
 
 
-def _has_newer_or_equal_success(
+def _has_newer_or_equal_completed(
     conn: sqlite3.Connection,
     *,
     source_id: int,
@@ -669,11 +704,19 @@ def _has_newer_or_equal_success(
         """
         SELECT started_at
         FROM switch_collection_runs
-        WHERE source_id = ? AND status = 'success' AND id != ?
+        WHERE source_id = ? AND status IN ('success', 'partial') AND id != ?
         """,
         (source_id, exclude_run_id),
     ).fetchall()
     return any(_parse_started_at(row[0]) >= started_time for row in rows)
+
+
+def _has_failed_optional_capability(snapshot: SwitchSnapshot) -> bool:
+    return any(
+        capability.capability in _OPTIONAL_CAPABILITIES
+        and capability.outcome not in _REPLACING_FDB_OUTCOMES
+        for capability in snapshot.capabilities
+    )
 
 
 def _upsert_device(

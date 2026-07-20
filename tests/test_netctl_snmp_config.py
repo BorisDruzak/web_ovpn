@@ -113,6 +113,47 @@ def test_migration_5_creates_switch_schema_once(tmp_path: Path) -> None:
         reopened.close()
 
 
+def test_switch_run_status_constraint_accepts_partial_and_rejects_unknown(
+    tmp_path: Path,
+) -> None:
+    from netctl.db import connect
+    from netctl.util import utc_now
+
+    conn = connect(_db_url(tmp_path / "run-status.sqlite"))
+    try:
+        now = utc_now()
+        conn.execute(
+            """
+            INSERT INTO network_sources
+                (name, driver, host, port, username, secret_ref, created_at, updated_at)
+            VALUES ('switch-status', 'snmp_switch', '192.0.2.31', 161, '',
+                    'switch_status_snmp', ?, ?)
+            """,
+            (now, now),
+        )
+        source_id = conn.execute(
+            "SELECT id FROM network_sources WHERE name = 'switch-status'"
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO switch_collection_runs (source_id, started_at, status)
+            VALUES (?, ?, 'partial')
+            """,
+            (source_id, now),
+        )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                INSERT INTO switch_collection_runs (source_id, started_at, status)
+                VALUES (?, ?, 'completed-with-warnings')
+                """,
+                (source_id, now),
+            )
+    finally:
+        conn.close()
+
+
 def test_migration_5_failure_rolls_back_schema_and_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
