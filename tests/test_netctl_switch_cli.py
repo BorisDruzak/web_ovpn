@@ -257,6 +257,34 @@ def _snapshot_with_optional_state(entry_count: int = 3) -> SwitchSnapshot:
     )
 
 
+def _snapshot_with_stp(entry_count: int = 3) -> SwitchSnapshot:
+    snapshot = _snapshot(entry_count)
+    return replace(
+        snapshot,
+        stp={
+            "protocol": "rstp",
+            "root_bridge_mac": "2C:C8:1B:9C:31:EA",
+            "root_port_raw": 927,
+            "root_port_key": "physical:23",
+            "root_path_cost": 20_000,
+            "topology_changes": 7,
+        },
+        capabilities=(
+            *snapshot.capabilities,
+            *(
+                CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS)
+                for capability in (
+                    "stp_protocol",
+                    "stp_topology_changes",
+                    "stp_designated_root",
+                    "stp_root_cost",
+                    "stp_root_port",
+                )
+            ),
+        ),
+    )
+
+
 class _FakeSwitchDriver:
     def __init__(self, snapshot: SwitchSnapshot | BaseException) -> None:
         self.snapshot = snapshot
@@ -1061,7 +1089,101 @@ def test_switch_optional_query_is_read_only_source_filtered_paginated_and_raw_fr
     assert after == before
 
 
-@pytest.mark.parametrize("command", ["vlans", "lldp"])
+def test_switch_stp_query_is_read_only_source_filtered_paginated_and_raw_free(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import netctl.cli as cli
+    from netctl.db import connect, connect_read_only, get_source, sync_config_sources
+    from netctl.switch_store import collect_and_save_switch
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    db_url = f"sqlite:///{db_path.as_posix()}"
+    _write_switch_source(config_path)
+    _write_switch_source(config_path, name="switch-other")
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        for name in ("switch-test", "switch-other"):
+            source = get_source(conn, name)
+            assert source is not None
+            result = collect_and_save_switch(
+                conn,
+                source,
+                _FakeSwitchDriver(_snapshot_with_stp()),
+                "2026-07-19T10:00:00Z",
+            )
+            assert result["status"] == "success"
+        tables = (
+            "current_switch_stp_state",
+            "current_switch_fdb",
+            "switch_ports",
+            "switch_collection_runs",
+            "assets",
+            "asset_intent_bindings",
+        )
+        before = {
+            table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table}")]
+            for table in tables
+        }
+    finally:
+        conn.close()
+
+    def fail_factory(*_args):
+        raise AssertionError("driver called by query")
+
+    monkeypatch.setattr(cli, "driver_for", fail_factory)
+    monkeypatch.setattr(cli, "snmp_driver_for", fail_factory)
+    monkeypatch.setattr(cli, "legacy_driver_for", fail_factory)
+    rc, page = _run_cli(
+        _base_args(config_path, db_path)
+        + ["switches", "stp", "--limit", "1", "--offset", "0"],
+        capsys,
+    )
+    assert rc == 0
+    assert len(page["stp"]) == 1
+    assert page["pagination"] == {
+        "limit": 1,
+        "offset": 0,
+        "returned": 1,
+        "has_more": True,
+        "next_offset": 1,
+    }
+
+    rc, filtered = _run_cli(
+        _base_args(config_path, db_path)
+        + ["switches", "stp", "--source", "switch-test"],
+        capsys,
+    )
+    assert rc == 0
+    assert filtered["stp"] == [
+        {
+            "source": "switch-test",
+            "protocol": "rstp",
+            "root_bridge_mac": "2C:C8:1B:9C:31:EA",
+            "root_port_key": "physical:23",
+            "root_path_cost": 20_000,
+            "topology_changes": 7,
+            "observed_at": "2026-07-19T10:00:00Z",
+        }
+    ]
+    rendered = json.dumps(filtered).lower()
+    assert "varbind" not in rendered
+    assert "community" not in rendered
+    assert "details" not in rendered
+
+    read_only = connect_read_only(db_url)
+    try:
+        after = {
+            table: [tuple(row) for row in read_only.execute(f"SELECT * FROM {table}")]
+            for table in tables
+        }
+    finally:
+        read_only.close()
+    assert after == before
+
+
+@pytest.mark.parametrize("command", ["vlans", "lldp", "stp"])
 def test_switch_optional_query_defaults_to_500_and_allows_at_most_5000(
     tmp_path: Path, capsys, command: str
 ) -> None:

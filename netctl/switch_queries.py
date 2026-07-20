@@ -207,6 +207,32 @@ def query_switch_lldp_neighbors(
     )
 
 
+def query_switch_stp(
+    conn: sqlite3.Connection,
+    *,
+    source: str = "",
+    limit: int = OPTIONAL_STATE_DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> dict[str, object]:
+    where, params = _source_filter(source)
+    return _page(
+        conn,
+        """
+        SELECT s.name AS source, stp.protocol, stp.root_bridge_mac,
+               stp.root_port_key, stp.root_path_cost, stp.topology_changes,
+               stp.observed_at
+        FROM current_switch_stp_state AS stp
+        JOIN network_sources AS s ON s.id = stp.source_id
+        """
+        + where
+        + " ORDER BY s.name LIMIT ? OFFSET ?",
+        params,
+        limit=limit,
+        offset=offset,
+        maximum=OPTIONAL_STATE_MAX_PAGE_SIZE,
+    )
+
+
 def query_switch_status(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [
         dict(row)

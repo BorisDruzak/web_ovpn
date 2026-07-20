@@ -1288,6 +1288,29 @@ def _migration_6(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_7(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE current_switch_stp_state (
+            source_id INTEGER NOT NULL PRIMARY KEY
+                REFERENCES network_sources(id) ON DELETE RESTRICT,
+            protocol TEXT NOT NULL,
+            root_bridge_mac TEXT NOT NULL,
+            root_port_key TEXT NOT NULL,
+            root_path_cost INTEGER NOT NULL,
+            topology_changes INTEGER NOT NULL,
+            observed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_stp_state_observed_idx
+        ON current_switch_stp_state(observed_at DESC)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1295,6 +1318,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (4, _migration_4),
     (5, _migration_5),
     (6, _migration_6),
+    (7, _migration_7),
 )
 
 

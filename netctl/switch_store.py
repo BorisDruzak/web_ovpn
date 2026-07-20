@@ -34,6 +34,13 @@ _VLAN_CAPABILITIES = (
     "pvid",
 )
 _LLDP_CAPABILITIES = ("lldp_remote",)
+_STP_CAPABILITIES = (
+    "stp_protocol",
+    "stp_topology_changes",
+    "stp_designated_root",
+    "stp_root_cost",
+    "stp_root_port",
+)
 _OPTIONAL_CAPABILITIES = frozenset(
     {
         *_VLAN_CAPABILITIES,
@@ -56,6 +63,15 @@ _VLAN_MEMBERSHIP_FIELDS = frozenset(
         "egress",
         "untagged",
         "pvid",
+    }
+)
+_STP_FIELDS = frozenset(
+    {
+        "protocol",
+        "root_bridge_mac",
+        "root_port_key",
+        "root_path_cost",
+        "topology_changes",
     }
 )
 _EMPTY_COUNTS = {
@@ -174,7 +190,7 @@ def collect_and_save_switch(
                 error_class = "stale_snapshot"
                 error_message = "Switch snapshot is not newer than current state"
             else:
-                _upsert_device(conn, source_id, snapshot, started_at)
+                _upsert_device(conn, source, source_id, snapshot, started_at)
                 _upsert_ports(conn, source_id, run_id, snapshot.ports, started_at)
                 _upsert_capabilities(
                     conn,
@@ -523,6 +539,24 @@ def _valid_lldp_neighbors(rows: tuple[dict[str, Any], ...]) -> bool:
     return len(keys) == len(set(keys))
 
 
+def _valid_stp_state(row: object) -> bool:
+    if type(row) is not dict or not _STP_FIELDS <= row.keys():
+        return False
+    return (
+        _valid_text(row.get("protocol"))
+        and _valid_mac(row.get("root_bridge_mac"))
+        and _valid_text(row.get("root_port_key"))
+        and _valid_optional_int(
+            row.get("root_path_cost"), minimum=0, maximum=4_294_967_295
+        )
+        and row.get("root_path_cost") is not None
+        and _valid_optional_int(
+            row.get("topology_changes"), minimum=0, maximum=4_294_967_295
+        )
+        and row.get("topology_changes") is not None
+    )
+
+
 def _capabilities_confirm_success(
     snapshot: SwitchSnapshot, names: tuple[str, ...]
 ) -> bool:
@@ -725,18 +759,26 @@ def _has_failed_optional_capability(snapshot: SwitchSnapshot) -> bool:
 
 def _upsert_device(
     conn: sqlite3.Connection,
+    source: dict[str, Any],
     source_id: int,
     snapshot: SwitchSnapshot,
     observed_at: str,
 ) -> None:
     system = snapshot.system
+    runtime_asset_id, intent_context_id, intent_stable_id = _source_identity(
+        conn, source
+    )
     conn.execute(
         """
         INSERT INTO switch_devices (
-            source_id, profile_id, profile_fingerprint, sys_object_id, sys_descr,
-            sys_name, sys_location, sys_uptime_ticks, last_success_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_id, runtime_asset_id, intent_context_id, intent_stable_id,
+            profile_id, profile_fingerprint, sys_object_id, sys_descr, sys_name,
+            sys_location, sys_uptime_ticks, last_success_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
+            runtime_asset_id = excluded.runtime_asset_id,
+            intent_context_id = excluded.intent_context_id,
+            intent_stable_id = excluded.intent_stable_id,
             profile_id = excluded.profile_id,
             profile_fingerprint = excluded.profile_fingerprint,
             sys_object_id = excluded.sys_object_id,
@@ -749,6 +791,9 @@ def _upsert_device(
         """,
         (
             source_id,
+            runtime_asset_id,
+            intent_context_id,
+            intent_stable_id,
             snapshot.profile_id,
             snapshot.profile_fingerprint,
             system.sys_object_id,
@@ -760,6 +805,35 @@ def _upsert_device(
             observed_at,
         ),
     )
+
+
+def _source_identity(
+    conn: sqlite3.Connection, source: dict[str, Any]
+) -> tuple[int | None, str, str]:
+    options = source.get("driver_options", {})
+    if type(options) is not dict:
+        raise ValueError("source driver options are invalid")
+    runtime_asset_key = options.get("runtime_asset_key", "")
+    intent_context_id = options.get("intent_context_id", "")
+    intent_stable_id = options.get("intent_stable_id", "")
+    if not all(
+        type(value) is str
+        for value in (runtime_asset_key, intent_context_id, intent_stable_id)
+    ):
+        raise ValueError("source identity is invalid")
+
+    runtime_asset_id: int | None = None
+    if runtime_asset_key:
+        row = conn.execute(
+            "SELECT id FROM assets WHERE asset_key = ?", (runtime_asset_key,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("configured runtime asset does not exist")
+        value = row[0]
+        if type(value) is not int or not 1 <= value <= _SQLITE_INTEGER_MAX:
+            raise ValueError("configured runtime asset is invalid")
+        runtime_asset_id = value
+    return runtime_asset_id, intent_context_id, intent_stable_id
 
 
 def _upsert_ports(
@@ -1021,6 +1095,46 @@ def _replace_optional_current_state(
                     row["system_name"],
                     observed_at,
                     run_id,
+                ),
+            )
+
+    if _capabilities_confirm_success(snapshot, _STP_CAPABILITIES):
+        outcomes = {
+            capability.capability: capability.outcome
+            for capability in snapshot.capabilities
+        }
+        if snapshot.stp is None and all(
+            outcomes[name] is SnmpOutcome.SUCCESS_EMPTY
+            for name in _STP_CAPABILITIES
+        ):
+            conn.execute(
+                "DELETE FROM current_switch_stp_state WHERE source_id = ?",
+                (source_id,),
+            )
+        elif _valid_stp_state(snapshot.stp):
+            assert snapshot.stp is not None
+            conn.execute(
+                """
+                INSERT INTO current_switch_stp_state (
+                    source_id, protocol, root_bridge_mac, root_port_key,
+                    root_path_cost, topology_changes, observed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    protocol = excluded.protocol,
+                    root_bridge_mac = excluded.root_bridge_mac,
+                    root_port_key = excluded.root_port_key,
+                    root_path_cost = excluded.root_path_cost,
+                    topology_changes = excluded.topology_changes,
+                    observed_at = excluded.observed_at
+                """,
+                (
+                    source_id,
+                    snapshot.stp["protocol"],
+                    snapshot.stp["root_bridge_mac"],
+                    snapshot.stp["root_port_key"],
+                    snapshot.stp["root_path_cost"],
+                    snapshot.stp["topology_changes"],
+                    observed_at,
                 ),
             )
 

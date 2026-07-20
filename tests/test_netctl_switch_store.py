@@ -246,6 +246,70 @@ def _with_optional_state(
     )
 
 
+_STP_CAPABILITIES = (
+    "stp_protocol",
+    "stp_topology_changes",
+    "stp_designated_root",
+    "stp_root_cost",
+    "stp_root_port",
+)
+
+
+def _with_stp(
+    snapshot: SwitchSnapshot,
+    *,
+    stp: dict[str, Any] | None,
+    outcomes: tuple[SnmpOutcome, ...] | None = None,
+) -> SwitchSnapshot:
+    if outcomes is None:
+        outcome = (
+            SnmpOutcome.SUCCESS_WITH_ROWS
+            if stp is not None
+            else SnmpOutcome.SUCCESS_EMPTY
+        )
+        outcomes = (outcome,) * len(_STP_CAPABILITIES)
+    return replace(
+        snapshot,
+        stp=stp,
+        capabilities=(
+            *snapshot.capabilities,
+            *(
+                CapabilityResult(capability, outcome)
+                for capability, outcome in zip(
+                    _STP_CAPABILITIES, outcomes, strict=True
+                )
+            ),
+        ),
+    )
+
+
+def _stp_state(*, root_port_key: str = "physical:23") -> dict[str, Any]:
+    return {
+        "protocol": "rstp",
+        "root_bridge_mac": "2C:C8:1B:9C:31:EA",
+        "root_port_raw": 927,
+        "root_port_key": root_port_key,
+        "root_path_cost": 20_000,
+        "topology_changes": 7,
+    }
+
+
+def _insert_asset(conn: sqlite3.Connection, asset_key: str) -> int:
+    conn.execute(
+        """
+        INSERT INTO assets (
+            asset_key, identity_method, kind, status, site, location,
+            display_name, identity_confidence, provisional, legacy_comment,
+            legacy_evidence_json, first_seen_at, last_seen_at, created_at,
+            updated_at
+        ) VALUES (?, 'manual', 'switch', 'active', '', '', '', 100, 0, '',
+                  '[]', ?, ?, ?, ?)
+        """,
+        (asset_key, *("2026-07-19T09:00:00Z",) * 4),
+    )
+    return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
 def _rows(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
@@ -304,6 +368,334 @@ def test_migration_6_creates_typed_vlan_and_lldp_current_tables(
         "current_switch_vlan_memberships_source_observed_idx",
         "current_switch_lldp_neighbors_source_observed_idx",
     } <= indexes
+
+
+def test_migration_7_creates_typed_current_switch_stp_state(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 7"
+    ).fetchone()[0] == 1
+    columns = {
+        row["name"]: (row["type"], row["notnull"], row["pk"])
+        for row in switch_conn.execute("PRAGMA table_info(current_switch_stp_state)")
+    }
+    assert columns == {
+        "source_id": ("INTEGER", 1, 1),
+        "protocol": ("TEXT", 1, 0),
+        "root_bridge_mac": ("TEXT", 1, 0),
+        "root_port_key": ("TEXT", 1, 0),
+        "root_path_cost": ("INTEGER", 1, 0),
+        "topology_changes": ("INTEGER", 1, 0),
+        "observed_at": ("TEXT", 1, 0),
+    }
+    index = list(
+        switch_conn.execute(
+            "PRAGMA index_xinfo(current_switch_stp_state_observed_idx)"
+        )
+    )
+    assert [(row["name"], row["desc"]) for row in index if row["key"]] == [
+        ("observed_at", 1)
+    ]
+
+
+def test_successful_stp_replaces_current_normalized_state(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_stp")
+    first = _with_stp(
+        _snapshot((_entry("02:00:00:00:00:01", 1),)), stp=_stp_state()
+    )
+    second = _with_stp(
+        _snapshot((_entry("02:00:00:00:00:02", 2),)),
+        stp={
+            **_stp_state(root_port_key="physical:24"),
+            "root_bridge_mac": "00:11:22:33:44:55",
+            "root_path_cost": 40_000,
+            "topology_changes": 8,
+        },
+    )
+
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(first), "2026-07-19T10:00:00Z"
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(second), "2026-07-19T11:00:00Z"
+    )
+
+    assert _rows(switch_conn, "SELECT * FROM current_switch_stp_state") == [
+        {
+            "source_id": source["id"],
+            "protocol": "rstp",
+            "root_bridge_mac": "00:11:22:33:44:55",
+            "root_port_key": "physical:24",
+            "root_path_cost": 40_000,
+            "topology_changes": 8,
+            "observed_at": "2026-07-19T11:00:00Z",
+        }
+    ]
+
+
+def test_confirmed_empty_stp_clears_current_state(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_stp")
+    collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(
+            _with_stp(
+                _snapshot((_entry("02:00:00:00:00:01", 1),)),
+                stp=_stp_state(),
+            )
+        ),
+        "2026-07-19T10:00:00Z",
+    )
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(
+            _with_stp(
+                _snapshot((_entry("02:00:00:00:00:02", 2),)), stp=None
+            )
+        ),
+        "2026-07-19T11:00:00Z",
+    )
+
+    assert result["status"] == "success"
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM current_switch_stp_state"
+    ).fetchone()[0] == 0
+
+
+def test_malformed_stp_mapping_is_preserved_out_of_current_state(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_stp")
+    collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(
+            _with_stp(
+                _snapshot((_entry("02:00:00:00:00:01", 1),)),
+                stp=_stp_state(),
+            )
+        ),
+        "2026-07-19T10:00:00Z",
+    )
+    malformed = _with_stp(
+        _snapshot((_entry("02:00:00:00:00:02", 2),)),
+        stp={**_stp_state(), "root_path_cost": -1},
+    )
+
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(malformed),
+        "2026-07-19T11:00:00Z",
+    )
+
+    assert result["status"] == "success"
+    assert _rows(switch_conn, "SELECT mac FROM current_switch_fdb") == [
+        {"mac": "02:00:00:00:00:02"}
+    ]
+    assert _rows(
+        switch_conn,
+        "SELECT root_path_cost, observed_at FROM current_switch_stp_state",
+    ) == [
+        {
+            "root_path_cost": 20_000,
+            "observed_at": "2026-07-19T10:00:00Z",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failed_outcome", "expected_status"),
+    [
+        (SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT, "success"),
+        (SnmpOutcome.TIMEOUT, "partial"),
+        (SnmpOutcome.AUTH_OR_VIEW_FAILURE, "partial"),
+        (SnmpOutcome.PARSE_ERROR, "partial"),
+    ],
+)
+def test_failed_stp_preserves_current_state_while_fdb_replaces(
+    switch_conn: sqlite3.Connection,
+    failed_outcome: SnmpOutcome,
+    expected_status: str,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_stp")
+    seeded = _with_stp(
+        _snapshot((_entry("02:00:00:00:00:01", 1),)), stp=_stp_state()
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(seeded), "2026-07-19T10:00:00Z"
+    )
+    outcomes = (failed_outcome,) + (
+        (SnmpOutcome.SUCCESS_WITH_ROWS,) * (len(_STP_CAPABILITIES) - 1)
+    )
+    failed_stp = _with_stp(
+        _snapshot((_entry("02:00:00:00:00:02", 2),)),
+        stp=None,
+        outcomes=outcomes,
+    )
+
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(failed_stp),
+        "2026-07-19T11:00:00Z",
+    )
+
+    assert result["status"] == expected_status
+    assert _rows(
+        switch_conn,
+        "SELECT mac, port_key FROM current_switch_fdb",
+    ) == [{"mac": "02:00:00:00:00:02", "port_key": "ifindex:2"}]
+    assert _rows(
+        switch_conn,
+        "SELECT root_bridge_mac, root_port_key, observed_at "
+        "FROM current_switch_stp_state",
+    ) == [
+        {
+            "root_bridge_mac": "2C:C8:1B:9C:31:EA",
+            "root_port_key": "physical:23",
+            "observed_at": "2026-07-19T10:00:00Z",
+        }
+    ]
+
+
+def test_explicit_switch_identity_sets_and_clears_without_creating_bindings(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    asset_key = "mac:02:00:00:00:00:10"
+    asset_id = _insert_asset(switch_conn, asset_key)
+    switch_conn.commit()
+    source = _source(switch_conn, "switch_identity")
+    source["driver_options"].update(
+        {
+            "runtime_asset_key": asset_key,
+            "intent_context_id": "test-context",
+            "intent_stable_id": "test-switch",
+        }
+    )
+    snapshot = _snapshot((_entry("02:00:00:00:00:01", 1),))
+
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(snapshot), "2026-07-19T10:00:00Z"
+    )
+
+    assert _rows(
+        switch_conn,
+        "SELECT runtime_asset_id, intent_context_id, intent_stable_id "
+        "FROM switch_devices",
+    ) == [
+        {
+            "runtime_asset_id": asset_id,
+            "intent_context_id": "test-context",
+            "intent_stable_id": "test-switch",
+        }
+    ]
+    assert switch_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM asset_intent_bindings"
+    ).fetchone()[0] == 0
+
+    source["driver_options"].update(
+        {
+            "runtime_asset_key": "",
+            "intent_context_id": "",
+            "intent_stable_id": "",
+        }
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(snapshot), "2026-07-19T11:00:00Z"
+    )
+    assert _rows(
+        switch_conn,
+        "SELECT runtime_asset_id, intent_context_id, intent_stable_id "
+        "FROM switch_devices",
+    ) == [
+        {
+            "runtime_asset_id": None,
+            "intent_context_id": "",
+            "intent_stable_id": "",
+        }
+    ]
+    assert switch_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 1
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM asset_intent_bindings"
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("runtime_asset_key", ["missing:asset", 123])
+def test_invalid_or_missing_explicit_runtime_asset_identity_is_rejected(
+    switch_conn: sqlite3.Connection,
+    runtime_asset_key: object,
+) -> None:
+    from netctl.switch_store import SwitchPersistenceError, collect_and_save_switch
+
+    source = _source(switch_conn, "switch_identity")
+    source["driver_options"]["runtime_asset_key"] = runtime_asset_key
+
+    with pytest.raises(
+        SwitchPersistenceError, match="Switch collection persistence failed"
+    ):
+        collect_and_save_switch(
+            switch_conn,
+            source,
+            _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
+            "2026-07-19T10:00:00Z",
+        )
+
+    assert switch_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 0
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM switch_devices"
+    ).fetchone()[0] == 0
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM asset_intent_bindings"
+    ).fetchone()[0] == 0
+
+
+def test_switch_observations_do_not_create_implicit_identity(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_identity")
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
+        "2026-07-19T10:00:00Z",
+    )
+
+    assert result["status"] == "success"
+    assert _rows(
+        switch_conn,
+        "SELECT runtime_asset_id, intent_context_id, intent_stable_id "
+        "FROM switch_devices",
+    ) == [
+        {
+            "runtime_asset_id": None,
+            "intent_context_id": "",
+            "intent_stable_id": "",
+        }
+    ]
+    assert switch_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 0
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM asset_intent_bindings"
+    ).fetchone()[0] == 0
 
 
 def test_successful_vlan_and_lldp_groups_replace_current_rows(

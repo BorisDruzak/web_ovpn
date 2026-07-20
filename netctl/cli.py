@@ -30,6 +30,7 @@ from .switch_queries import (
     query_switch_lldp_neighbors,
     query_switch_ports,
     query_switch_status,
+    query_switch_stp,
     query_switch_vlans,
     validate_pagination,
 )
@@ -363,7 +364,7 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         try:
             maximum = (
                 OPTIONAL_STATE_MAX_PAGE_SIZE
-                if args.switches_command in {"vlans", "lldp"}
+                if args.switches_command in {"vlans", "lldp", "stp"}
                 else None
             )
             if maximum is None:
@@ -409,6 +410,9 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             return 0, ok(
                 lldp_neighbors=page["items"], pagination=page["pagination"]
             )
+        if args.switches_command == "stp":
+            page = query_switch_stp(conn, **common)
+            return 0, ok(stp=page["items"], pagination=page["pagination"])
         return 2, err("unsupported switches command")
     finally:
         conn.close()
@@ -792,7 +796,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="switches_command", required=True
     )
     switches_sub.add_parser("status")
-    for name in ("capabilities", "ports", "fdb", "events", "vlans", "lldp"):
+    for name in (
+        "capabilities",
+        "ports",
+        "fdb",
+        "events",
+        "vlans",
+        "lldp",
+        "stp",
+    ):
         switch_query = switches_sub.add_parser(name)
         switch_query.add_argument("--source", default="")
         switch_query.add_argument(
@@ -800,7 +812,7 @@ def build_parser() -> argparse.ArgumentParser:
             type=int,
             default=(
                 OPTIONAL_STATE_DEFAULT_PAGE_SIZE
-                if name in {"vlans", "lldp"}
+                if name in {"vlans", "lldp", "stp"}
                 else DEFAULT_PAGE_SIZE
             ),
         )
