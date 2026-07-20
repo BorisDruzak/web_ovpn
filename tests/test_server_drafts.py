@@ -621,7 +621,7 @@ def test_replayed_check_generation_never_dispatches_ssh_twice(tmp_path, fake_run
     ).strip() == request.pin_generation
 
 
-def test_interrupted_check_keeps_request_and_retries_before_consuming_generation(tmp_path):
+def test_interrupted_check_retries_when_crash_prevents_attempt_start(tmp_path, monkeypatch):
     class WorkerCrash(BaseException):
         pass
 
@@ -640,12 +640,17 @@ def test_interrupted_check_keeps_request_and_retries_before_consuming_generation
     )
     request_path = create_draft_request(paths.queue_dir, request)
 
-    def crash_before_ssh(_command, **_kwargs):
-        raise WorkerCrash()
+    original_write_private = server_draft_worker._write_private
 
+    def crash_before_attempt_marker(path, text):
+        if path.name == f"{request.id}.check-attempt-generation":
+            raise WorkerCrash()
+        return original_write_private(path, text)
+
+    monkeypatch.setattr(server_draft_worker, "_write_private", crash_before_attempt_marker)
     with pytest.raises(WorkerCrash):
         server_draft_worker.process_service_cycle(
-            paths.queue_dir, paths.results_dir, paths.private_dir, crash_before_ssh
+            paths.queue_dir, paths.results_dir, paths.private_dir
         )
 
     claim_path = paths.queue_dir / f".{request.id}.json.claim"
@@ -653,6 +658,8 @@ def test_interrupted_check_keeps_request_and_retries_before_consuming_generation
     assert not claim_path.exists()
     assert not (paths.private_dir / f"{request.id}.check-generation").exists()
     assert read_public_result(paths.results_dir, request.id)["fingerprint"] == VALID_FINGERPRINT
+
+    monkeypatch.setattr(server_draft_worker, "_write_private", original_write_private)
 
     ssh_calls = 0
 
@@ -673,6 +680,70 @@ def test_interrupted_check_keeps_request_and_retries_before_consuming_generation
     ).strip() == request.pin_generation
     assert not request_path.exists()
     assert not claim_path.exists()
+
+
+def test_recovery_after_ssh_return_marks_check_transport_without_a_second_ssh_attempt(
+    tmp_path, monkeypatch
+):
+    class WorkerCrash(BaseException):
+        pass
+
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    write_public_result(
+        paths.results_dir,
+        request.id,
+        {
+            "status": "ok",
+            "fingerprint": VALID_FINGERPRINT,
+            "checked_at": "2026-07-20T10:00:00.000000Z",
+            "pin_generation": request.pin_generation,
+        },
+    )
+    request_path = create_draft_request(paths.queue_dir, request)
+    ssh_calls = 0
+
+    def ssh_returns(command, **_kwargs):
+        nonlocal ssh_calls
+        assert command[0] == "ssh"
+        ssh_calls += 1
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    original_write_result = server_draft_worker.write_public_result
+
+    def crash_before_final_result(*_args, **_kwargs):
+        raise WorkerCrash()
+
+    monkeypatch.setattr(server_draft_worker, "write_public_result", crash_before_final_result)
+    with pytest.raises(WorkerCrash):
+        server_draft_worker.process_service_cycle(
+            paths.queue_dir, paths.results_dir, paths.private_dir, ssh_returns
+        )
+
+    assert ssh_calls == 1
+    assert request_path.is_file()
+    assert (paths.private_dir / f"{request.id}.check-attempt-generation").read_text(
+        encoding="utf-8"
+    ).strip() == request.pin_generation
+    assert not (paths.private_dir / f"{request.id}.check-generation").exists()
+
+    monkeypatch.setattr(server_draft_worker, "write_public_result", original_write_result)
+
+    def must_not_run_ssh(*_args, **_kwargs):
+        raise AssertionError("recovery must not rerun SSH after an attempted check")
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir, must_not_run_ssh
+    ) == (1, False)
+
+    assert ssh_calls == 1
+    assert read_public_result(paths.results_dir, request.id) == {"status": "transport"}
+    assert (paths.private_dir / f"{request.id}.check-generation").read_text(
+        encoding="utf-8"
+    ).strip() == request.pin_generation
+    assert not (paths.private_dir / f"{request.id}.check-attempt-generation").exists()
+    assert not request_path.exists()
 
 
 def test_cleanup_intent_survives_an_active_request_and_becomes_terminal(tmp_path):

@@ -281,7 +281,7 @@ def _cancel_pending_request(request_path: Path) -> bool:
 
 
 def process_request(request: DraftRequest, paths: DraftPaths, runner: Runner = subprocess.run) -> int:
-    """Process exactly one validated request; return zero for a duplicate check."""
+    """Advance one validated request; zero only when its check is already terminal."""
     if request.action == "cleanup":
         cleanup_request = make_draft_request(request.id, "cleanup", "cleanup", 22, "cleanup")
         _cleanup(cleanup_request.id, paths)
@@ -368,14 +368,19 @@ def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> bool:
     if request.pin_generation != pinned_generation:
         raise DraftWorkerError("pin generation is stale")
     check_generation = _check_generation_path(paths, request.id)
-    try:
-        consumed_generation = check_generation.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        consumed_generation = ""
-    except (OSError, UnicodeDecodeError) as exc:
-        raise DraftWorkerError("check generation is unavailable") from exc
+    consumed_generation = _read_generation(check_generation, "check generation")
     if consumed_generation == request.pin_generation:
+        _clear_check_attempt(paths, request.id, request.pin_generation)
         return False
+    attempt_generation = _read_generation(
+        _check_attempt_generation_path(paths, request.id), "check attempt generation"
+    )
+    if attempt_generation == request.pin_generation:
+        # The SSH invocation may have completed before the worker crashed, so
+        # never repeat it.  The remote outcome is unknowable; publish only a
+        # safe category and durably consume this pin generation.
+        _finish_check_attempt(request, paths, "transport")
+        return True
     command = [
         "ssh", "-F", "/dev/null", "-i", OBSERVER_KEY_PATH,
         "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
@@ -383,18 +388,33 @@ def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> bool:
         "-o", f"UserKnownHostsFile={known_hosts}", "-p", str(request.port), "--",
         f"{request.ssh_user}@{request.host}", "true",
     ]
+    _write_private(_check_attempt_generation_path(paths, request.id), request.pin_generation + "\n")
     try:
         completed = _run(runner, command)
     except subprocess.TimeoutExpired:
-        write_public_result(paths.results_dir, request.id, {"status": "timeout"})
-        _write_private(check_generation, request.pin_generation + "\n")
+        _finish_check_attempt(request, paths, "timeout")
         return True
     if completed.returncode == 0:
-        write_public_result(paths.results_dir, request.id, {"status": "ok"})
+        status = "ok"
     else:
-        write_public_result(paths.results_dir, request.id, {"status": _ssh_failure_status(completed.stderr)})
-    _write_private(check_generation, request.pin_generation + "\n")
+        status = _ssh_failure_status(completed.stderr)
+    _finish_check_attempt(request, paths, status)
     return True
+
+
+def _finish_check_attempt(request: DraftRequest, paths: DraftPaths, status: str) -> None:
+    write_public_result(paths.results_dir, request.id, {"status": status})
+    _write_private(_check_generation_path(paths, request.id), request.pin_generation + "\n")
+    _clear_check_attempt(paths, request.id, request.pin_generation)
+
+
+def _read_generation(path: Path, description: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return ""
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DraftWorkerError(f"{description} is unavailable") from exc
 
 
 def _run(runner: Runner, command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -456,6 +476,20 @@ def _check_generation_path(paths: DraftPaths, draft_id: str) -> Path:
     return paths.private_dir / f"{draft_id}.check-generation"
 
 
+def _check_attempt_generation_path(paths: DraftPaths, draft_id: str) -> Path:
+    return paths.private_dir / f"{draft_id}.check-attempt-generation"
+
+
+def _clear_check_attempt(paths: DraftPaths, draft_id: str, generation: str) -> None:
+    path = _check_attempt_generation_path(paths, draft_id)
+    if _read_generation(path, "check attempt generation") != generation:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _dispatch_path(paths: DraftPaths, draft_id: str) -> Path:
     return paths.private_dir / f"{draft_id}.dispatch.lock"
 
@@ -502,6 +536,7 @@ def _cleanup(draft_id: str, paths: DraftPaths) -> None:
         _pin_generation_path(paths, draft_id),
         _check_lock_path(paths, draft_id),
         _check_generation_path(paths, draft_id),
+        _check_attempt_generation_path(paths, draft_id),
         _dispatch_path(paths, draft_id),
         paths.results_dir / f"{draft_id}.json",
     ):
