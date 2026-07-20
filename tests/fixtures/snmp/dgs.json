@@ -1,5 +1,11 @@
 {
   "fixture_kind": "sanitized_numeric_oid_pages",
+  "dgs_port_layout": {
+    "port_count": 52,
+    "first_ifindex": 101,
+    "name_prefix": "front-"
+  },
+  "synthetic_fdb": {"count": 168, "fdb_id": 200},
   "pages": [
     {
       "capability": "sys_descr",

@@ -156,6 +156,36 @@ class DgsProfile(GenericProfile):
             return None
         return physical_port
 
+    def normalize_ports(
+        self, ports: tuple[SwitchPort, ...]
+    ) -> tuple[SwitchPort, ...]:
+        front_panel_counts: dict[int, int] = {}
+        for port in ports:
+            physical_port = self._front_panel_port(port)
+            if physical_port is not None:
+                front_panel_counts[physical_port] = (
+                    front_panel_counts.get(physical_port, 0) + 1
+                )
+
+        normalized: list[SwitchPort] = []
+        for port in ports:
+            physical_port = self._front_panel_port(port)
+            if (
+                physical_port is not None
+                and port.bridge_port == physical_port
+                and front_panel_counts[physical_port] == 1
+            ):
+                normalized.append(
+                    replace(
+                        port,
+                        port_key=f"physical:{physical_port}",
+                        physical_port=physical_port,
+                    )
+                )
+            else:
+                normalized.append(port)
+        return tuple(normalized)
+
     def resolve_fdb_port(
         self,
         *,
@@ -186,7 +216,7 @@ class DgsProfile(GenericProfile):
         if matching_ports != [port]:
             return resolution
         return PortResolution(
-            port_key=resolution.port_key,
+            port_key=f"physical:{physical_port}",
             if_index=resolution.if_index,
             bridge_port=resolution.bridge_port,
             physical_port=physical_port,

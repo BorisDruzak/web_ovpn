@@ -65,8 +65,88 @@ class _PagedFixtureTransport:
 
 
 def _dgs_fixture_transport() -> _PagedFixtureTransport:
+    """Expand only the synthetic DGS port/FDB layout declared by the fixture."""
+    from netctl.snmp.oids import (
+        DOT1D_BASE_PORT_IFINDEX,
+        DOT1Q_FDB_PORT,
+        DOT1Q_FDB_STATUS,
+        IF_INDEX,
+        IF_NAME,
+    )
+
     fixture = json.loads(_DGS_FIXTURE.read_text(encoding="utf-8"))
-    return _PagedFixtureTransport(fixture["pages"])
+    transport = _PagedFixtureTransport(fixture["pages"])
+    layout = fixture["dgs_port_layout"]
+    assert isinstance(layout, dict)
+    port_count = layout["port_count"]
+    assert isinstance(port_count, int)
+    first_ifindex = layout["first_ifindex"]
+    assert isinstance(first_ifindex, int)
+    name_prefix = layout["name_prefix"]
+    assert isinstance(name_prefix, str)
+    synthetic = fixture["synthetic_fdb"]
+    assert isinstance(synthetic, dict)
+    fdb_count = synthetic["count"]
+    assert isinstance(fdb_count, int)
+    fdb_id = synthetic["fdb_id"]
+    assert isinstance(fdb_id, int)
+
+    def _result(
+        capability: str, rows: tuple[SnmpVarBind, ...]
+    ) -> CapabilityResult:
+        return CapabilityResult(capability, SnmpOutcome.SUCCESS_WITH_ROWS, rows)
+
+    ifindex_rows = tuple(
+        SnmpVarBind(IF_INDEX + (if_index,), "integer", if_index)
+        for if_index in range(first_ifindex, first_ifindex + port_count)
+    )
+    name_rows = tuple(
+        SnmpVarBind(
+            IF_NAME + (first_ifindex + physical_port - 1,),
+            "octet_string",
+            f"{name_prefix}{physical_port}".encode(),
+        )
+        for physical_port in range(1, port_count + 1)
+    )
+    bridge_rows = tuple(
+        SnmpVarBind(
+            DOT1D_BASE_PORT_IFINDEX + (physical_port,),
+            "integer",
+            first_ifindex + physical_port - 1,
+        )
+        for physical_port in range(1, port_count + 1)
+    )
+
+    def _fdb_mac(index: int) -> tuple[int, ...]:
+        serial = index + 1
+        return (2, 0, 0, serial >> 16, (serial >> 8) & 0xFF, serial & 0xFF)
+
+    fdb_port_rows = tuple(
+        SnmpVarBind(
+            DOT1Q_FDB_PORT + (fdb_id, *_fdb_mac(index)),
+            "integer",
+            index % port_count + 1,
+        )
+        for index in range(fdb_count)
+    )
+    fdb_status_rows = tuple(
+        SnmpVarBind(
+            DOT1Q_FDB_STATUS + (fdb_id, *_fdb_mac(index)), "integer", 3
+        )
+        for index in range(fdb_count)
+    )
+    transport.results.update(
+        {
+            IF_INDEX: _result("if_index", ifindex_rows),
+            IF_NAME: _result("if_name", name_rows),
+            DOT1D_BASE_PORT_IFINDEX: _result(
+                "bridge_port_ifindex", bridge_rows
+            ),
+            DOT1Q_FDB_PORT: _result("qbridge_port", fdb_port_rows),
+            DOT1Q_FDB_STATUS: _result("qbridge_status", fdb_status_rows),
+        }
+    )
+    return transport
 
 
 def _tplink_fixture_transport() -> _PagedFixtureTransport:
@@ -642,32 +722,45 @@ def test_dgs_fixture_selects_profile_and_normalizes_paginated_qbridge_fdb() -> N
         "dgs",
         "dgs:v1",
     )
-    assert len(snapshot.fdb) == 3
+    assert len(snapshot.ports) == 52
+    assert len(snapshot.fdb) == 168
     assert snapshot.ports[0].to_dict() == {
-        "port_key": "ifindex:101",
+        "port_key": "physical:1",
         "if_index": 101,
-        "bridge_port": 11,
-        "physical_port": None,
-        "name": "front-11",
+        "bridge_port": 1,
+        "physical_port": 1,
+        "name": "front-1",
         "alias": "",
         "mac": None,
         "admin_status": "unknown",
         "oper_status": "unknown",
         "speed_bps": None,
     }
-    assert snapshot.fdb[0].to_dict() == {
+    assert snapshot.ports[-1].to_dict() == {
+        "port_key": "physical:52",
+        "if_index": 152,
+        "bridge_port": 52,
+        "physical_port": 52,
+        "name": "front-52",
+        "alias": "",
+        "mac": None,
+        "admin_status": "unknown",
+        "oper_status": "unknown",
+        "speed_bps": None,
+    }
+    by_mac = {entry.mac: entry.to_dict() for entry in snapshot.fdb}
+    assert by_mac["02:00:00:00:00:34"] == {
         "fdb_id": 200,
         "vlan_key": "vid:200",
         "vlan_id": 200,
-        "mac": "02:00:00:00:00:01",
-        "port_key": "ifindex:101",
-        "bridge_port": 11,
-        "if_index": 101,
-        "physical_port": 11,
-        "port_name": "front-11",
+        "mac": "02:00:00:00:00:34",
+        "port_key": "physical:52",
+        "bridge_port": 52,
+        "if_index": 152,
+        "physical_port": 52,
+        "port_name": "front-52",
         "status": "learned",
     }
-    assert snapshot.fdb[-1].to_dict()["vlan_key"] == "vid:30"
 
 
 def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> None:
@@ -707,12 +800,16 @@ def test_dgs_fid_equals_vid_and_port_normalization_cannot_leak_to_generic() -> N
         bridge_to_ifindex={11: 101},
         ports_by_ifindex={101: port},
     ).physical_port is None
-    assert detect_profile(dgs_system).resolve_fdb_port(
+    dgs_resolution = detect_profile(dgs_system).resolve_fdb_port(
         raw_fdb_port=11,
         fdb_mode="qbridge",
         bridge_to_ifindex={11: 101},
         ports_by_ifindex={101: port},
-    ).physical_port == 11
+    )
+    assert (dgs_resolution.port_key, dgs_resolution.physical_port) == (
+        "physical:11",
+        11,
+    )
 
 
 @pytest.mark.parametrize(
@@ -841,7 +938,7 @@ def test_dgs_physical_port_requires_bounded_unique_front_panel_mapping() -> None
         ports_by_ifindex=ports,
     )
 
-    assert (known.port_key, known.physical_port) == ("ifindex:101", 11)
+    assert (known.port_key, known.physical_port) == ("physical:11", 11)
     assert (cpu_resolution.port_key, cpu_resolution.physical_port) == (
         "ifindex:102",
         None,
@@ -869,6 +966,12 @@ def test_dgs_fixture_is_synthetic_numeric_oid_data_without_source_or_secrets() -
     serialized = _DGS_FIXTURE.read_text(encoding="utf-8").lower()
 
     assert fixture["fixture_kind"] == "sanitized_numeric_oid_pages"
+    assert fixture["dgs_port_layout"] == {
+        "port_count": 52,
+        "first_ifindex": 101,
+        "name_prefix": "front-",
+    }
+    assert fixture["synthetic_fdb"] == {"count": 168, "fdb_id": 200}
     assert sum(page.get("capability") == "qbridge_port" for page in fixture["pages"]) == 2
     assert all(
         all(isinstance(part, int) for part in page["request_oid"])
