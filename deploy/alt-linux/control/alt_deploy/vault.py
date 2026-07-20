@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pwd
 import stat
 import subprocess
 from pathlib import Path
@@ -40,10 +41,23 @@ class VaultHealthChecker:
             )
         )
 
-    @staticmethod
-    def _owned_by_current_user(path: Path) -> bool:
+    def _service_uid(self) -> int | None:
         try:
-            return path.stat().st_uid == os.geteuid()
+            return pwd.getpwnam(
+                self.settings.service_user
+            ).pw_uid
+        except KeyError:
+            return None
+
+    @staticmethod
+    def _owned_by(
+        path: Path,
+        expected_uid: int | None,
+    ) -> bool:
+        if expected_uid is None:
+            return False
+        try:
+            return path.stat().st_uid == expected_uid
         except OSError:
             return False
 
@@ -119,44 +133,53 @@ class VaultHealthChecker:
 
         return None
 
-    def check(self) -> dict[str, object]:
+    def _build_checks(self) -> dict[str, bool]:
+        expected_uid = self._service_uid()
         vault_exists = self.vault_file.is_file()
         password_exists = self.password_file.is_file()
-
-        decrypted_text = None
-
-        if vault_exists and password_exists:
-            decrypted_text = self._decrypt()
-
-        variable_value = self._extract_variable_value(
-            decrypted_text
-        )
 
         checks = {
             "vault_file_exists": vault_exists,
             "password_file_exists": password_exists,
-            "vault_file_owner": (
-                self._owned_by_current_user(self.vault_file)
+            "vault_file_owner": self._owned_by(
+                self.vault_file,
+                expected_uid,
             ),
-            "password_file_owner": (
-                self._owned_by_current_user(self.password_file)
+            "password_file_owner": self._owned_by(
+                self.password_file,
+                expected_uid,
             ),
-            "vault_file_mode": (
-                self._has_private_mode(self.vault_file)
+            "vault_file_mode": self._has_private_mode(
+                self.vault_file
             ),
-            "password_file_mode": (
-                self._has_private_mode(self.password_file)
+            "password_file_mode": self._has_private_mode(
+                self.password_file
             ),
             "vault_header": self._has_vault_header(
                 self.vault_file
             ),
-            "decryptable": decrypted_text is not None,
-            "variable_present": variable_value is not None,
-            "yescrypt_format": bool(
-                variable_value
-                and variable_value.startswith("$y$")
-            ),
         }
+
+        structural_ok = all(checks.values())
+        decrypted_text = self._decrypt() if structural_ok else None
+        variable_value = self._extract_variable_value(
+            decrypted_text
+        )
+
+        checks.update(
+            {
+                "decryptable": decrypted_text is not None,
+                "variable_present": variable_value is not None,
+                "yescrypt_format": bool(
+                    variable_value
+                    and variable_value.startswith("$y$")
+                ),
+            }
+        )
+        return checks
+
+    def check(self) -> dict[str, object]:
+        checks = self._build_checks()
 
         if not all(checks.values()):
             raise ControlError(

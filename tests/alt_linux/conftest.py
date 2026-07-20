@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import pwd
 import sys
 import types
 from pathlib import Path
@@ -20,11 +21,10 @@ sys.path.insert(0, str(CONTROL_ROOT))
 @pytest.fixture(autouse=True)
 def provide_portable_altserver_account(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """Provide the controller service account on non-ALT test runners."""
-    import alt_deploy.provision as provision_module
-
-    real_getpwnam = provision_module.pwd.getpwnam
+    """Provide controller service dependencies on non-ALT test runners."""
+    real_getpwnam = pwd.getpwnam
 
     def getpwnam(username: str) -> object:
         if username == "altserver":
@@ -34,8 +34,19 @@ def provide_portable_altserver_account(
             )
         return real_getpwnam(username)
 
-    monkeypatch.setattr(
-        provision_module.pwd,
-        "getpwnam",
-        getpwnam,
+    monkeypatch.setattr(pwd, "getpwnam", getpwnam)
+
+    ansible_vault = tmp_path / "portable-ansible-vault"
+    ansible_vault.write_text(
+        (
+            "#!/bin/sh\n"
+            "printf '%s\\n' "
+            "\"vault_employee_password_hash: '\\$y\\$portable-test-hash'\"\n"
+        ),
+        encoding="utf-8",
+    )
+    ansible_vault.chmod(0o755)
+    monkeypatch.setenv(
+        "ALT_DEPLOY_ANSIBLE_VAULT",
+        str(ansible_vault),
     )
