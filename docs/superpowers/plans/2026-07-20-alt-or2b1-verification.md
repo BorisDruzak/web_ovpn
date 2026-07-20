@@ -83,12 +83,11 @@ PASS
 
 ## Финальная проверка с актуальным `main`
 
-После удаления всех временных workflows и patch helpers финальный проверенный
-head:
+После удаления всех временных workflows и patch helpers проверенный head:
 
 ```text
-final_branch_head: ecd662b8965d50620c535933ed9da4e9cd3e89c2
-final_pull_request_merge_ref: 769b33e80189d68b2122874d76ed4e75206dcff2
+verified_branch_head: ecd662b8965d50620c535933ed9da4e9cd3e89c2
+verified_pull_request_merge_ref: 769b33e80189d68b2122874d76ed4e75206dcff2
 ```
 
 На нём успешно завершились штатные workflows:
@@ -111,6 +110,22 @@ Verify netctl runtime identity
 run_id: 29763898225
 exit_code: 0
 780 passed, 102 warnings in 33.56s
+```
+
+После фиксации этого документа был создан только документационный commit. На
+его head `0435de97e1217ccdbb6b9969813c15f93b78f381` штатные workflows также
+завершились полностью успешно:
+
+```text
+Verify netctl context stage
+  run_id: 29764442347
+  context-stage: success
+  full-regression: success
+
+Verify netctl runtime identity
+  run_id: 29764442277
+  focused-runtime-identity: success
+  full-regression: success
 ```
 
 Таким образом изменения проверены не только на исходной базе branch, но и в
@@ -162,5 +177,5 @@ tests не изменялись. Выполнялись только:
 - исправление имени legacy test module в документации;
 - удаление временной CI-инфраструктуры.
 
-Финальные штатные workflows на `ecd662b8965d50620c535933ed9da4e9cd3e89c2`
+Штатные workflows на `0435de97e1217ccdbb6b9969813c15f93b78f381`
 подтвердили отсутствие регрессии после этих изменений.
