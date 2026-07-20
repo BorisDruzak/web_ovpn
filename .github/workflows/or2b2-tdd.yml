@@ -25,8 +25,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - name: OR-2B2 worker helper outcomes
+      - name: OR-2B2 permission outcomes
         run: >-
           python -m pytest -q
-          tests/alt_linux/test_or2b2_runtime_permissions.py
-          -k "worker_stage_helper_failure or retry_after_helper_fix"
+          tests/alt_linux/test_controller_permissions.py
