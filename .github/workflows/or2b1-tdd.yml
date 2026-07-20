@@ -32,7 +32,7 @@ jobs:
           python -m pytest -q \
             tests/alt_linux/test_or2b1_vault_gate.py \
             tests/alt_linux/test_or2b1_vault_provision_gate.py \
-            tests/alt_linux/test_vault_health.py \
+            tests/alt_linux/test_vault_check.py \
             tests/alt_linux/test_operational_reliability_contract.py \
             2>&1 | tee or2b1-focused.log
       - name: Upload focused diagnostics
