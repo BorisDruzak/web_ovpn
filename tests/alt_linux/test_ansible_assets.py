@@ -292,3 +292,37 @@ def test_employee_sudo_checks_use_c_locale_and_accept_denial() -> None:
         "provision_verify_employee_sudo.rc != 0"
         not in provision_verify
     )
+
+
+def test_provision_completion_timestamp_is_collected_immediately_before_assignment() -> None:
+    tasks_path = (
+        ANSIBLE_ROOT
+        / "roles"
+        / "provision_verify"
+        / "tasks"
+        / "main.yml"
+    )
+    tasks = load_yaml(tasks_path)[0]
+    by_name = {
+        str(task.get("name") or ""): task
+        for task in tasks
+    }
+
+    assert "Read provision completion time" in by_name
+
+    read_time = by_name["Read provision completion time"]
+    assert read_time["ansible.builtin.command"]["argv"] == [
+        "date",
+        "-u",
+        "+%Y-%m-%dT%H:%M:%SZ",
+    ]
+    assert read_time["register"] == "provision_completed_at_command"
+    assert read_time["changed_when"] is False
+
+    set_time = by_name["Set provision completion time"]
+    assert set_time["ansible.builtin.set_fact"][
+        "provision_completed_at"
+    ] == "{{ provision_completed_at_command.stdout | trim }}"
+
+    content = tasks_path.read_text(encoding="utf-8")
+    assert "ansible_date_time.iso8601" not in content

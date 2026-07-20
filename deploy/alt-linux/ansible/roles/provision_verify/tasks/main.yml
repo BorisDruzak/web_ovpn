@@ -138,9 +138,18 @@
       - "'autologin-user-timeout=0' in provision_verify_lightdm"
     fail_msg: Workstation verification failed
 
+- name: Read provision completion time
+  ansible.builtin.command:
+    argv:
+      - date
+      - -u
+      - +%Y-%m-%dT%H:%M:%SZ
+  register: provision_completed_at_command
+  changed_when: false
+
 - name: Set provision completion time
   ansible.builtin.set_fact:
-    provision_completed_at: "{{ ansible_date_time.iso8601 }}"
+    provision_completed_at: "{{ provision_completed_at_command.stdout | trim }}"
 
 - name: Create assignment directory
   ansible.builtin.file:
