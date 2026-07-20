@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP=/opt/openvpn-web
-cd "$APP"
-exec "$APP/.venv/bin/python" -m app.server_draft_worker \
+exec /usr/bin/python3 -I /usr/local/lib/openvpn-web-server-draft-worker/worker_main.py \
   --queue-dir /var/lib/openvpn-web/server-drafts/queue \
   --results-dir /var/lib/openvpn-web/server-drafts/results \
   --private-dir /var/lib/openvpn-web/server-drafts/private \

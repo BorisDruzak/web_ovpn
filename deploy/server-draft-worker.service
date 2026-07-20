@@ -1,17 +1,14 @@
 [Unit]
 Description=Process isolated OpenVPN server draft SSH checks
-StartLimitIntervalSec=5min
-StartLimitBurst=3
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 User=openvpm
 Group=openvpn-web
-WorkingDirectory=/opt/openvpn-web
+WorkingDirectory=/
 UMask=0027
 TimeoutStartSec=3min
-Restart=on-failure
-RestartSec=1s
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -37,4 +34,5 @@ InaccessiblePaths=/etc/openvpn/client-generator
 InaccessiblePaths=-/mnt/antares_soft/vpn_config
 InaccessiblePaths=-/var/lib/openvpn-web/openvpn-web.sqlite
 ReadWritePaths=/var/lib/openvpn-web/server-drafts
+ReadOnlyPaths=/usr/local/lib/openvpn-web-server-draft-worker
 ExecStart=/usr/local/sbin/server-draft-worker

@@ -22,7 +22,14 @@ from .auto_sync import force_client_sync, maybe_client_sync
 from .config import get_settings
 from .db import get_db, init_db
 from .download_tokens import assert_allowed_file, consume_download_token
-from .models import ServerDraft, ServerDraftCleanupOutbox, WebAuditLog, WebUser, utcnow
+from .models import (
+    ServerDraft,
+    ServerDraftCheckOutbox,
+    ServerDraftCleanupOutbox,
+    WebAuditLog,
+    WebUser,
+    utcnow,
+)
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
 from .routeros_backups import list_routeros_backups
@@ -182,6 +189,61 @@ def publish_cleanup_outbox(db: Session) -> list[ServerDraftCleanupOutbox]:
     return pending
 
 
+def publish_check_outbox(db: Session) -> list[ServerDraftCheckOutbox]:
+    """Publish committed check consumptions and keep failed attempts retryable."""
+    pending = list(
+        db.scalars(
+            select(ServerDraftCheckOutbox)
+            .where(ServerDraftCheckOutbox.status == "pending")
+            .order_by(ServerDraftCheckOutbox.id)
+        )
+    )
+    for intent in pending:
+        intent.attempts += 1
+        draft = db.get(ServerDraft, intent.draft_id)
+        if draft is None:
+            intent.status = "cancelled"
+            intent.last_error = "draft unavailable"
+        else:
+            try:
+                queue_server_draft(draft, "check", pin_generation=intent.pin_generation)
+            except (OSError, ValueError):
+                intent.last_error = "queue unavailable"
+            else:
+                intent.status = "published"
+                intent.last_error = ""
+                intent.published_at = utcnow()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            # The durable audit/consumption stays pending. Re-publication is
+            # safe because the worker consumes each pin generation at most once.
+            db.rollback()
+    return pending
+
+
+def add_server_draft_check_consumption(
+    db: Session,
+    request: Request,
+    user: WebUser,
+    draft_id: str,
+    pin_generation: str,
+) -> None:
+    """Stage the durable outbox row and its audit in one DB transaction."""
+    db.add(ServerDraftCheckOutbox(draft_id=draft_id, pin_generation=pin_generation))
+    db.add(
+        WebAuditLog(
+            actor=user.username,
+            action="server-draft-check",
+            target_client=draft_id,
+            result="ok",
+            message=f"pin-generation:{pin_generation}",
+            request_id=str(getattr(request.state, "request_id", "")),
+            ip_address=request.client.host if request.client else "",
+        )
+    )
+
+
 def has_server_draft_audit(
     db: Session, draft_id: str, action: str, pin_generation: str
 ) -> bool:
@@ -264,7 +326,19 @@ def server_drafts_page(request: Request, db: Session = Depends(get_db)):
             .order_by(ServerDraftCleanupOutbox.created_at)
         )
     )
-    return render(request, "server_drafts.html", {"drafts": rows, "cleanup_outbox": cleanup_outbox}, db)
+    check_outbox = list(
+        db.scalars(
+            select(ServerDraftCheckOutbox)
+            .where(ServerDraftCheckOutbox.status == "pending")
+            .order_by(ServerDraftCheckOutbox.created_at)
+        )
+    )
+    return render(
+        request,
+        "server_drafts.html",
+        {"drafts": rows, "cleanup_outbox": cleanup_outbox, "check_outbox": check_outbox},
+        db,
+    )
 
 
 @app.get("/network/server-drafts/new", response_class=HTMLResponse)
@@ -386,16 +460,25 @@ async def server_draft_check(draft_id: str, request: Request, db: Session = Depe
         add_flash(request, "bad", "Сначала подтвердите найденный отпечаток")
         return redirect("/network/server-drafts")
     try:
-        queue_server_draft(draft, "check", pin_generation=pin_generation)
-    except (OSError, ValueError):
-        write_audit(db, request, user, "server-draft-check", "error", "invalid request", target_client=draft.id)
-        add_flash(request, "bad", "Не удалось поставить проверку в очередь")
-    else:
-        write_audit(
-            db, request, user, "server-draft-check", "ok",
-            f"pin-generation:{pin_generation}", target_client=draft.id,
-        )
+        add_server_draft_check_consumption(db, request, user, draft.id, pin_generation)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        add_flash(request, "bad", "Не удалось надежно зафиксировать SSH-проверку")
+        return redirect("/network/server-drafts")
+    published = publish_check_outbox(db)
+    intent = next(
+        (
+            item
+            for item in published
+            if item.draft_id == draft.id and item.pin_generation == pin_generation
+        ),
+        None,
+    )
+    if intent is not None and intent.status == "published":
         add_flash(request, "ok", "SSH-проверка поставлена в очередь")
+    else:
+        add_flash(request, "bad", "SSH-проверка зафиксирована, но публикация ожидает повтора")
     return redirect("/network/server-drafts")
 
 
@@ -405,6 +488,14 @@ async def server_draft_delete(draft_id: str, request: Request, db: Session = Dep
     await verify_csrf(request)
     draft = server_draft_or_404(db, draft_id)
     draft_id = draft.id
+    for check_intent in db.scalars(
+        select(ServerDraftCheckOutbox).where(
+            ServerDraftCheckOutbox.draft_id == draft_id,
+            ServerDraftCheckOutbox.status == "pending",
+        )
+    ):
+        check_intent.status = "cancelled"
+        check_intent.last_error = "draft deleted"
     db.delete(draft)
     db.add(ServerDraftCleanupOutbox(draft_id=draft_id))
     try:
@@ -421,6 +512,20 @@ async def server_draft_delete(draft_id: str, request: Request, db: Session = Dep
     else:
         write_audit(db, request, user, "server-draft-delete", "error", "cleanup pending", target_client=draft_id)
         add_flash(request, "bad", "Тестовый сервер удален, очистка ожидает повторной отправки")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/check-retry")
+async def server_draft_check_retry(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    pending = publish_check_outbox(db)
+    if any(intent.status == "pending" for intent in pending):
+        write_audit(db, request, user, "server-draft-check-retry", "error", "check pending")
+        add_flash(request, "bad", "Не удалось повторно опубликовать SSH-проверку")
+    else:
+        write_audit(db, request, user, "server-draft-check-retry", "ok", "check published")
+        add_flash(request, "ok", "SSH-проверка повторно опубликована")
     return redirect("/network/server-drafts")
 
 

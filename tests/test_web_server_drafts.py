@@ -9,8 +9,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app import models
 from app.models import ServerDraft, ServerDraftCleanupOutbox, WebAuditLog
 from app.server_draft_worker import process_queue
+
+
+ServerDraftCheckOutbox = getattr(models, "ServerDraftCheckOutbox", None)
 
 
 VALID_FINGERPRINT = "SHA256:" + "Q" * 43
@@ -237,6 +241,7 @@ def test_completed_pin_allows_one_check_that_confirm_cannot_overwrite(tmp_path, 
 
 
 def test_check_is_authorized_and_consumed_by_current_pin_generation(tmp_path, monkeypatch):
+    assert ServerDraftCheckOutbox is not None
     client = make_logged_in_client(tmp_path, monkeypatch)
     draft_id = create_draft(client, tmp_path)
     (tmp_path / "queue" / f"{draft_id}.json").unlink()
@@ -288,6 +293,110 @@ def test_check_is_authorized_and_consumed_by_current_pin_generation(tmp_path, mo
             message=f"pin-generation:{generation}",
         ).count()
         assert consumed == 1
+        outbox = db.query(ServerDraftCheckOutbox).one()
+        assert outbox.draft_id == draft_id
+        assert outbox.pin_generation == generation
+        assert outbox.status == "published"
+
+
+def test_check_audit_and_consumption_commit_before_queue_publication(tmp_path, monkeypatch):
+    assert ServerDraftCheckOutbox is not None
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    generation = str(uuid4())
+    results = tmp_path / "results"
+    results.mkdir(exist_ok=True)
+    (results / f"{draft_id}.json").write_text(
+        json.dumps(pinned_result(generation)), encoding="utf-8"
+    )
+    with db_session() as db:
+        db.add(
+            WebAuditLog(
+                actor="admin",
+                action="server-draft-confirm",
+                target_client=draft_id,
+                result="ok",
+                message=f"pin-generation:{generation}",
+            )
+        )
+        db.commit()
+    original_commit = Session.commit
+
+    def fail_consumption_commit(session):
+        if any(isinstance(item, ServerDraftCheckOutbox) for item in session.new):
+            raise SQLAlchemyError("forced check consumption failure")
+        return original_commit(session)
+
+    monkeypatch.setattr(Session, "commit", fail_consumption_commit)
+
+    response = post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {})
+
+    assert response.status_code == 303
+    assert not list((tmp_path / "queue").glob("*.json"))
+    with db_session() as db:
+        assert db.query(ServerDraftCheckOutbox).count() == 0
+        assert db.query(WebAuditLog).filter_by(action="server-draft-check").count() == 0
+
+
+def test_check_queue_failure_leaves_durable_retryable_consumption(tmp_path, monkeypatch):
+    assert ServerDraftCheckOutbox is not None
+    client = make_logged_in_client(tmp_path, monkeypatch)
+    draft_id = create_draft(client, tmp_path)
+    (tmp_path / "queue" / f"{draft_id}.json").unlink()
+    generation = str(uuid4())
+    results = tmp_path / "results"
+    results.mkdir(exist_ok=True)
+    (results / f"{draft_id}.json").write_text(
+        json.dumps(pinned_result(generation)), encoding="utf-8"
+    )
+    with db_session() as db:
+        db.add(
+            WebAuditLog(
+                actor="admin",
+                action="server-draft-confirm",
+                target_client=draft_id,
+                result="ok",
+                message=f"pin-generation:{generation}",
+            )
+        )
+        db.commit()
+
+    import app.main
+
+    original_publish = app.main.create_draft_request
+
+    def fail_check_publish(queue_dir, request):
+        if request.action == "check":
+            raise OSError("forced queue failure")
+        return original_publish(queue_dir, request)
+
+    monkeypatch.setattr(app.main, "create_draft_request", fail_check_publish)
+
+    response = post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {})
+
+    assert response.status_code == 303
+    assert not list((tmp_path / "queue").glob("*.json"))
+    page = client.get("/network/server-drafts")
+    assert "SSH check publication pending" in page.text
+    with db_session() as db:
+        outbox = db.query(ServerDraftCheckOutbox).one()
+        assert outbox.status == "pending"
+        assert outbox.attempts == 1
+        assert outbox.last_error == "queue unavailable"
+        assert db.query(WebAuditLog).filter_by(
+            action="server-draft-check", result="ok", target_client=draft_id
+        ).count() == 1
+
+    monkeypatch.setattr(app.main, "create_draft_request", original_publish)
+    response = post_with_csrf(client, "/network/server-drafts/check-retry", {})
+
+    assert response.status_code == 303
+    assert queued_action(tmp_path)["action"] == "check"
+    with db_session() as db:
+        outbox = db.query(ServerDraftCheckOutbox).one()
+        assert outbox.status == "published"
+        assert outbox.attempts == 2
 
 
 def test_direct_scan_post_cannot_replace_a_confirmable_fingerprint(tmp_path, monkeypatch):

@@ -3,6 +3,8 @@ Description=Watch the public OpenVPN server draft request queue
 
 [Path]
 PathChanged=/var/lib/openvpn-web/server-drafts/queue
+PathExistsGlob=/var/lib/openvpn-web/server-drafts/queue/*.json
+PathExistsGlob=/var/lib/openvpn-web/server-drafts/queue/.*.json.claim
 Unit=server-draft-worker.service
 
 [Install]

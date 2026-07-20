@@ -12,6 +12,7 @@ PRIVATE_DIR = "/var/lib/openvpn-web/server-drafts/private"
 OBSERVER_KEY = "/etc/openvpn-web/server-observer.key"
 OBSERVER_PUBLIC_KEY = "/etc/openvpn-web/server-observer.pub"
 DRAFT_WORKER_INSTALLER = "deploy/install-server-draft-worker.sh"
+WORKER_RUNTIME = "/usr/local/lib/openvpn-web-server-draft-worker"
 
 
 def test_worker_service_is_key_isolated_and_retains_observer_hardening():
@@ -20,12 +21,9 @@ def test_worker_service_is_key_isolated_and_retains_observer_hardening():
     for setting in (
         "User=openvpm",
         "Group=openvpn-web",
-        "WorkingDirectory=/opt/openvpn-web",
+        "WorkingDirectory=/",
         "TimeoutStartSec=3min",
-        "Restart=on-failure",
-        "RestartSec=1s",
-        "StartLimitIntervalSec=5min",
-        "StartLimitBurst=3",
+        "StartLimitIntervalSec=0",
         "NoNewPrivileges=true",
         "PrivateTmp=true",
         "ProtectHome=tmpfs",
@@ -50,20 +48,22 @@ def test_worker_service_is_key_isolated_and_retains_observer_hardening():
         "InaccessiblePaths=-/mnt/antares_soft/vpn_config",
         "InaccessiblePaths=-/var/lib/openvpn-web/openvpn-web.sqlite",
         "ReadWritePaths=/var/lib/openvpn-web/server-drafts",
+        f"ReadOnlyPaths={WORKER_RUNTIME}",
         "ExecStart=/usr/local/sbin/server-draft-worker",
     ):
         assert setting in service
 
 
-def test_worker_wrapper_runs_the_venv_module_once_with_only_draft_paths():
+def test_worker_wrapper_runs_only_the_root_owned_isolated_runtime():
     wrapper = Path("deploy/server-draft-worker").read_text(encoding="utf-8")
 
     assert wrapper.startswith("#!/usr/bin/env bash\nset -euo pipefail\n")
-    assert 'cd "$APP"' in wrapper
-    assert "-m app.server_draft_worker" in wrapper
+    assert f'exec /usr/bin/python3 -I {WORKER_RUNTIME}/worker_main.py' in wrapper
     assert f"--queue-dir {QUEUE_DIR}" in wrapper
     assert f"--results-dir {RESULTS_DIR}" in wrapper
     assert f"--private-dir {PRIVATE_DIR}" in wrapper
+    assert "/opt/openvpn-web" not in wrapper
+    assert ".venv" not in wrapper
     assert "server-observer.key" not in wrapper
 
 
@@ -71,6 +71,8 @@ def test_path_unit_watches_only_the_public_request_queue():
     path_unit = Path("deploy/server-draft-worker.path").read_text(encoding="utf-8")
 
     assert f"PathChanged={QUEUE_DIR}" in path_unit
+    assert f"PathExistsGlob={QUEUE_DIR}/*.json" in path_unit
+    assert f"PathExistsGlob={QUEUE_DIR}/.*.json.claim" in path_unit
     assert "Unit=server-draft-worker.service" in path_unit
     assert "WantedBy=multi-user.target" in path_unit
     assert RESULTS_DIR not in path_unit
@@ -85,6 +87,7 @@ def test_generic_installer_does_not_provision_or_enable_draft_worker():
         "/var/lib/openvpn-web/server-drafts",
         OBSERVER_PUBLIC_KEY,
         f"ssh-keygen -y -f {OBSERVER_KEY}",
+        WORKER_RUNTIME,
     ):
         assert forbidden not in installer
     assert 'chown -R openvpn-web:openvpn-web "$APP" /var/lib/openvpn-web' not in installer
@@ -104,6 +107,11 @@ def test_draft_worker_only_installer_has_a_strictly_limited_deployment_surface()
         f"-d -m 0700 -o openvpm -g openvpm {PRIVATE_DIR}",
         f"ssh-keygen -y -f {OBSERVER_KEY}",
         OBSERVER_PUBLIC_KEY,
+        'WORKER_RUNTIME="/usr/local/lib/openvpn-web-server-draft-worker"',
+        '-d -m 0755 -o root -g root "$WORKER_RUNTIME/app"',
+        '"$SRC/app/server_draft_worker.py" "$WORKER_RUNTIME/app/server_draft_worker.py"',
+        '"$SRC/app/server_drafts.py" "$WORKER_RUNTIME/app/server_drafts.py"',
+        '"$SRC/deploy/server-draft-worker-main.py" "$WORKER_RUNTIME/worker_main.py"',
         "systemctl daemon-reload",
         "systemctl enable --now server-draft-worker.path",
     ):
@@ -119,8 +127,22 @@ def test_draft_worker_only_installer_has_a_strictly_limited_deployment_surface()
         "systemctl restart",
         "systemctl enable --now server-draft-worker.service",
         '"$APP',
+        "/opt/openvpn-web/.venv",
     ):
         assert forbidden not in installer
+
+    runtime_install = installer.index(
+        '"$SRC/deploy/server-draft-worker-main.py" "$WORKER_RUNTIME/worker_main.py"'
+    )
+    runtime_validation = installer.index('validate_worker_runtime "$WORKER_RUNTIME"')
+    assert installer.index("validate_root_component /usr root root 755") < runtime_install
+    assert installer.index("validate_root_component /usr/local root root 755") < runtime_install
+    assert installer.index("validate_root_component /usr/local/lib root root 755") < runtime_install
+    assert installer.index("validate_python_runtime") < runtime_install
+    assert runtime_validation < runtime_install
+    assert 'find "$path" \\( -type l -o ! -user root -o ! -group root -o -perm /022 \\)' in installer
+    assert "install -d -m 0755 -o root -g root /usr/local/lib" not in installer
+    assert installer.count('validate_worker_runtime "$WORKER_RUNTIME"') == 2
 
 
 def test_scoped_installer_locks_and_validates_the_draft_namespace_before_mutation():
@@ -230,6 +252,7 @@ def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources
         'sudo test -f "$rollback_manifest"',
         'asset_state server-draft-worker.service -f "$BACKUP_ROOT/server-draft-worker.service"',
         'asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path"',
+        'asset_state server-draft-worker-runtime -d "$BACKUP_ROOT/server-draft-worker-runtime"',
         'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
     ):
         assert validation in handoff
@@ -239,6 +262,7 @@ def test_worker_handoff_uses_the_scoped_installer_and_validates_rollback_sources
     for source_check in (
         'asset_state server-draft-worker.service -f "$BACKUP_ROOT/server-draft-worker.service"',
         'asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path"',
+        'asset_state server-draft-worker-runtime -d "$BACKUP_ROOT/server-draft-worker-runtime"',
         'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
     ):
         assert rollback.index(source_check) < first_mutation
@@ -264,6 +288,7 @@ def test_worker_handoff_backup_and_rollback_fail_closed_for_every_mutated_asset(
         "server-draft-worker",
         "server-draft-worker.service",
         "server-draft-worker.path",
+        "server-draft-worker-runtime",
         "server-observer.pub",
         "server-drafts",
     ):
@@ -288,9 +313,22 @@ def test_worker_handoff_backup_and_rollback_fail_closed_for_every_mutated_asset(
         'sudo test -L "$rollback_manifest"',
         'asset_state server-draft-worker -f "$BACKUP_ROOT/server-draft-worker"',
         'asset_state server-observer.pub -f "$BACKUP_ROOT/server-observer.pub"',
+        'asset_state server-draft-worker-runtime -d "$BACKUP_ROOT/server-draft-worker-runtime"',
         'asset_state server-drafts -d "$BACKUP_ROOT/server-drafts"',
     ):
         assert rollback.index(validation) < first_mutation
+
+    runtime_remove = rollback.index(
+        "sudo rm -rf -- /usr/local/lib/openvpn-web-server-draft-worker"
+    )
+    for validation in (
+        "for runtime_namespace_component in /usr /usr/local /usr/local/lib",
+        'sudo test -L "$runtime_namespace_component"',
+        'sudo readlink -e -- "$runtime_namespace_component"',
+        'sudo stat -c \'%U:%G:%a\' -- "$runtime_namespace_component"',
+        'reject_nested_symlinks "$BACKUP_ROOT/server-draft-worker-runtime"',
+    ):
+        assert rollback.index(validation) < runtime_remove
 
 
 def test_worker_handoff_backup_root_is_exclusive_and_validated_before_use():

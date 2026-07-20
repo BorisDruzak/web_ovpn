@@ -132,6 +132,12 @@ def test_check_uses_fixed_true_and_strict_known_host(tmp_path, fake_runner):
     assert command[-1] == "true"
     assert "BatchMode=yes" in command
     assert "StrictHostKeyChecking=yes" in command
+    assert "IdentitiesOnly=yes" in command
+    assert "IdentityAgent=none" in command
+    assert "GlobalKnownHostsFile=/dev/null" in command
+    assert "-F" in command
+    assert command[command.index("-F") + 1] == "/dev/null"
+    assert sum(value.startswith("UserKnownHostsFile=") for value in command) == 1
 
 
 def test_cleanup_removes_only_the_uuid_private_files(tmp_path, fake_runner):
@@ -191,6 +197,30 @@ def test_cleanup_queue_request_ignores_malformed_unrelated_fields(tmp_path, fake
     assert not request_path.exists()
     assert (paths.queue_dir / f"{draft_id}.deleted").is_file()
     assert not (paths.results_dir / f"{draft_id}.json").exists()
+    fake_runner.assert_not_called()
+
+
+def test_cleanup_queue_filename_is_authoritative_over_a_mismatched_payload_id(
+    tmp_path, fake_runner
+):
+    queued_id = str(uuid4())
+    injected_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    paths.private_dir.mkdir(parents=True)
+    queued_private = paths.private_dir / f"{queued_id}.candidate"
+    injected_private = paths.private_dir / f"{injected_id}.candidate"
+    queued_private.write_text("queued", encoding="utf-8")
+    injected_private.write_text("injected", encoding="utf-8")
+    paths.queue_dir.mkdir(parents=True)
+    (paths.queue_dir / f"{queued_id}.cleanup.json").write_text(
+        json.dumps({"id": injected_id, "action": "cleanup"}), encoding="utf-8"
+    )
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, fake_runner) == 1
+
+    assert not queued_private.exists()
+    assert injected_private.exists()
+    assert (paths.queue_dir / f"{queued_id}.deleted").is_file()
     fake_runner.assert_not_called()
 
 
@@ -369,50 +399,56 @@ def test_worker_claim_does_not_unlink_and_drains_a_newer_replacement(tmp_path):
     assert not (paths.queue_dir / f"{draft_id}.json").exists()
 
 
-def test_worker_drain_has_a_bounded_number_of_passes(tmp_path, monkeypatch):
+def test_service_cycle_yields_before_systemd_timeout_and_leaves_visible_backlog(tmp_path):
     draft_id = str(uuid4())
     paths = draft_paths(tmp_path)
     request = make_draft_request(draft_id, "server.example", "observer", 22, "scan")
     create_draft_request(paths.queue_dir, request)
     scans = 0
+    clock = [0.0]
 
     def runner(command, **_kwargs):
         nonlocal scans
         if command[0] == "ssh-keyscan":
             scans += 1
-            (paths.queue_dir / f"{draft_id}.json").unlink()
-            create_draft_request(paths.queue_dir, request)
+            if scans == 1:
+                (paths.queue_dir / f"{draft_id}.json").unlink()
+                create_draft_request(paths.queue_dir, request)
+            clock[0] += 46.0
             return completed_scan("server.example ssh-ed25519 AAA")
         return subprocess.CompletedProcess(
             command, 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
         )
 
-    monkeypatch.setattr(server_draft_worker, "MAX_QUEUE_DRAIN_PASSES", 2, raising=False)
+    processed, backlog = server_draft_worker.process_service_cycle(
+        paths.queue_dir,
+        paths.results_dir,
+        paths.private_dir,
+        runner,
+        monotonic=lambda: clock[0],
+        runtime_budget_seconds=50,
+    )
 
-    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, runner) == 2
-    assert scans == 2
+    assert (processed, backlog) == (1, True)
+    assert scans == 1
     assert (paths.queue_dir / f"{draft_id}.json").is_file()
 
-
-def test_worker_main_requests_bounded_service_restart_after_drain_limit(tmp_path, monkeypatch):
-    paths = draft_paths(tmp_path)
-    monkeypatch.setattr(server_draft_worker, "_drain_queue", lambda *_args: (64, True))
-
-    assert server_draft_worker.main(
-        [
-            "--queue-dir", str(paths.queue_dir),
-            "--results-dir", str(paths.results_dir),
-            "--private-dir", str(paths.private_dir),
-        ]
-    ) == server_draft_worker.QUEUE_RETRY_EXIT_STATUS
-
-
-def test_worker_main_leaves_durable_unclaimable_cleanup_for_later_event(tmp_path):
-    paths = draft_paths(tmp_path)
-    paths.queue_dir.mkdir(parents=True)
-    (paths.queue_dir / "not-a-uuid.cleanup.json").write_text(
-        '{"id":"not-a-uuid","action":"cleanup"}', encoding="utf-8"
+    clock[0] = 0.0
+    processed, backlog = server_draft_worker.process_service_cycle(
+        paths.queue_dir,
+        paths.results_dir,
+        paths.private_dir,
+        runner,
+        monotonic=lambda: clock[0],
+        runtime_budget_seconds=50,
     )
+    assert (processed, backlog) == (1, False)
+    assert not (paths.queue_dir / f"{draft_id}.json").exists()
+
+
+def test_worker_main_exits_successfully_when_path_unit_must_reconcile_backlog(tmp_path, monkeypatch):
+    paths = draft_paths(tmp_path)
+    monkeypatch.setattr(server_draft_worker, "process_service_cycle", lambda *_args: (64, True))
 
     assert server_draft_worker.main(
         [
@@ -421,6 +457,20 @@ def test_worker_main_leaves_durable_unclaimable_cleanup_for_later_event(tmp_path
             "--private-dir", str(paths.private_dir),
         ]
     ) == 0
+
+
+def test_worker_service_cycle_consumes_invalid_cleanup_without_a_path_activation_loop(tmp_path):
+    paths = draft_paths(tmp_path)
+    paths.queue_dir.mkdir(parents=True)
+    (paths.queue_dir / "not-a-uuid.cleanup.json").write_text(
+        '{"id":"not-a-uuid","action":"cleanup"}', encoding="utf-8"
+    )
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir
+    ) == (0, False)
+    assert not list(paths.queue_dir.glob("*.json"))
+    assert not list(paths.queue_dir.glob(".*.claim"))
 
 
 def test_worker_rescans_for_request_arriving_during_processing(tmp_path):
@@ -469,6 +519,94 @@ def test_cleanup_reservation_cancels_pending_normal_request_before_execution(tmp
     assert not (paths.queue_dir / f"{draft_id}.cleanup.json").exists()
     assert (paths.queue_dir / f"{draft_id}.deleted").is_file()
     fake_runner.assert_not_called()
+
+
+def test_cleanup_arriving_after_claim_but_before_dispatch_cancels_subprocess(
+    tmp_path, fake_runner, monkeypatch
+):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    create_draft_request(
+        paths.queue_dir,
+        make_draft_request(draft_id, "server.example", "observer", 22, "scan"),
+    )
+    original_claim_dispatch = server_draft_worker._claim_dispatch
+
+    def reserve_then_delete(worker_paths, claimed_id):
+        reservation = original_claim_dispatch(worker_paths, claimed_id)
+        create_draft_request(
+            worker_paths.queue_dir,
+            make_draft_request(claimed_id, "cleanup", "cleanup", 22, "cleanup"),
+        )
+        return reservation
+
+    monkeypatch.setattr(server_draft_worker, "_claim_dispatch", reserve_then_delete)
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, fake_runner) == 1
+
+    assert (paths.queue_dir / f"{draft_id}.deleted").is_file()
+    assert not list(paths.private_dir.glob(f"{draft_id}.*"))
+    fake_runner.assert_not_called()
+
+
+def test_service_cycle_recovers_a_stale_claim_without_a_new_queue_event(tmp_path):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    request_path = create_draft_request(
+        paths.queue_dir,
+        make_draft_request(draft_id, "server.example", "observer", 22, "scan"),
+    )
+    claim_path = server_draft_worker._claim_request(request_path)
+    request_path.unlink()
+    calls = []
+
+    def runner(command, **_kwargs):
+        calls.append(command[0])
+        if command[0] == "ssh-keyscan":
+            return completed_scan("server.example ssh-ed25519 AAA")
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"256 {VALID_FINGERPRINT} server\n", stderr=""
+        )
+
+    assert claim_path is not None and claim_path.is_file()
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir, runner
+    ) == (1, False)
+
+    assert calls == ["ssh-keyscan", "ssh-keygen"]
+    assert not claim_path.exists()
+    assert not request_path.exists()
+
+
+def test_stale_dispatch_reservation_never_discards_the_durable_request(tmp_path, fake_runner):
+    draft_id = str(uuid4())
+    paths = draft_paths(tmp_path)
+    request_path = create_draft_request(
+        paths.queue_dir,
+        make_draft_request(draft_id, "server.example", "observer", 22, "scan"),
+    )
+    paths.private_dir.mkdir(parents=True)
+    (paths.private_dir / f"{draft_id}.dispatch.lock").write_text("", encoding="utf-8")
+
+    assert process_queue(paths.queue_dir, paths.results_dir, paths.private_dir, fake_runner) == 0
+
+    assert request_path.is_file()
+    fake_runner.assert_not_called()
+
+
+def test_replayed_check_generation_never_dispatches_ssh_twice(tmp_path, fake_runner):
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    fake_runner.return_value = subprocess.CompletedProcess(["ssh"], 0, stdout="", stderr="")
+
+    assert process_request(request, paths, fake_runner) == 1
+    assert process_request(request, paths, fake_runner) == 0
+
+    assert fake_runner.call_count == 1
+    assert (paths.private_dir / f"{request.id}.check-generation").read_text(
+        encoding="utf-8"
+    ).strip() == request.pin_generation
 
 
 def test_cleanup_intent_survives_an_active_request_and_becomes_terminal(tmp_path):

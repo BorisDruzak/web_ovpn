@@ -112,9 +112,9 @@ Run it only on an existing OpenVPN web deployment that already has the
 those prerequisites and refuses to create or modify them.
 
 Before running the installer, make a timestamped backup containing **only**
-the scoped installer-mutated assets: the draft-worker wrapper, both
-draft-worker systemd units, the path-unit enablement symlink, the derived
-observer public key, the draft state directory, and the metadata of its
+the scoped installer-mutated assets: the draft-worker wrapper, root-owned
+isolated worker runtime, both draft-worker systemd units, the path-unit
+enablement symlink, the derived observer public key, the draft state directory, and the metadata of its
 `/var/lib/openvpn-web` parent. The parent is archived without recursion. GNU
 `cp` and `tar` preserve ownership, mode, timestamps, ACLs, xattrs, and SELinux
 context. The manifest distinguishes an existing prior asset from an asset
@@ -393,6 +393,10 @@ backup_asset server-draft-worker.service -f /etc/systemd/system/server-draft-wor
 backup_asset server-draft-worker.path -f /etc/systemd/system/server-draft-worker.path
 backup_asset server-draft-worker.path.wants -L /etc/systemd/system/multi-user.target.wants/server-draft-worker.path
 backup_asset server-observer.pub -f /etc/openvpn-web/server-observer.pub
+if sudo test -d /usr/local/lib/openvpn-web-server-draft-worker; then
+  reject_nested_symlinks /usr/local/lib/openvpn-web-server-draft-worker
+fi
+backup_asset server-draft-worker-runtime -d /usr/local/lib/openvpn-web-server-draft-worker
 if sudo test -d "$DRAFT_ROOT"; then
   reject_nested_symlinks "$DRAFT_ROOT"
 fi
@@ -417,9 +421,12 @@ cd /tmp/openvpn-web-src
 SUDO_PASSWORD='<sudo-password>' bash deploy/install-server-draft-worker.sh
 ```
 
-That installer installs only `/usr/local/sbin/server-draft-worker`, the two
-`server-draft-worker` unit files, the three `server-drafts` directories, and
-the derived observer public key. It also changes `/var/lib/openvpn-web` from
+That installer installs only `/usr/local/sbin/server-draft-worker`, the
+root-owned `/usr/local/lib/openvpn-web-server-draft-worker` bootstrap/module
+runtime, the two `server-draft-worker` unit files, the three `server-drafts`
+directories, and the derived observer public key. The runtime executes through
+root-owned `/usr/bin/python3 -I`; it never imports code, an interpreter, or
+dependencies from the generic web-writable `/opt/openvpn-web` bundle. It also changes `/var/lib/openvpn-web` from
 the legacy `openvpn-web:openvpn-web 0755` state to `root:openvpn-web 1770`, and
 establishes `server-drafts` as `root:openvpn-web 0750`. Group write keeps the
 web application's SQLite directory usable; the sticky parent prevents the web
@@ -543,7 +550,11 @@ worker_service_state="$(asset_state server-draft-worker.service -f "$BACKUP_ROOT
 worker_path_state="$(asset_state server-draft-worker.path -f "$BACKUP_ROOT/server-draft-worker.path")"
 worker_path_wants_state="$(asset_state server-draft-worker.path.wants -L "$BACKUP_ROOT/server-draft-worker.path.wants")"
 observer_public_key_state="$(asset_state server-observer.pub -f "$BACKUP_ROOT/server-observer.pub")"
+worker_runtime_state="$(asset_state server-draft-worker-runtime -d "$BACKUP_ROOT/server-draft-worker-runtime")"
 draft_state="$(asset_state server-drafts -d "$BACKUP_ROOT/server-drafts")"
+if [[ "$worker_runtime_state" == present ]]; then
+  reject_nested_symlinks "$BACKUP_ROOT/server-draft-worker-runtime"
+fi
 if [[ "$draft_state" == present ]]; then
   reject_nested_symlinks "$BACKUP_ROOT/server-drafts"
 fi
@@ -709,6 +720,27 @@ restore_asset "$worker_wrapper_state" -f "$BACKUP_ROOT/server-draft-worker" /usr
 restore_asset "$worker_service_state" -f "$BACKUP_ROOT/server-draft-worker.service" /etc/systemd/system/server-draft-worker.service
 restore_asset "$worker_path_state" -f "$BACKUP_ROOT/server-draft-worker.path" /etc/systemd/system/server-draft-worker.path
 restore_asset "$observer_public_key_state" -f "$BACKUP_ROOT/server-observer.pub" /etc/openvpn-web/server-observer.pub
+for runtime_namespace_component in /usr /usr/local /usr/local/lib; do
+  if sudo test -L "$runtime_namespace_component" \
+    || ! sudo test -d "$runtime_namespace_component" \
+    || [[ "$(sudo readlink -e -- "$runtime_namespace_component")" != "$runtime_namespace_component" ]] \
+    || [[ "$(sudo stat -c '%U:%G:%a' -- "$runtime_namespace_component")" != root:root:755 ]]; then
+    echo "unsafe draft-worker runtime namespace: $runtime_namespace_component" >&2
+    exit 2
+  fi
+done
+if sudo test -L /usr/local/lib/openvpn-web-server-draft-worker; then
+  echo 'refusing a symlinked live draft-worker runtime during rollback' >&2
+  exit 2
+elif sudo test -e /usr/local/lib/openvpn-web-server-draft-worker \
+  && ! sudo test -d /usr/local/lib/openvpn-web-server-draft-worker; then
+  echo 'live draft-worker runtime has an unexpected type during rollback' >&2
+  exit 2
+fi
+sudo rm -rf -- /usr/local/lib/openvpn-web-server-draft-worker
+if [[ "$worker_runtime_state" == present ]]; then
+  sudo cp --archive --preserve=all -- "$BACKUP_ROOT/server-draft-worker-runtime" /usr/local/lib/openvpn-web-server-draft-worker
+fi
 sudo rm -rf -- /var/lib/openvpn-web/server-drafts
 if [[ "$draft_state" == present ]]; then
   sudo cp --archive --preserve=all -- "$BACKUP_ROOT/server-drafts" /var/lib/openvpn-web/server-drafts

@@ -13,6 +13,7 @@ sudo_cmd() {
 SRC="${SRC:-/tmp/openvpn-web-src}"
 DRAFT_PARENT="/var/lib/openvpn-web"
 DRAFT_ROOT="$DRAFT_PARENT/server-drafts"
+WORKER_RUNTIME="/usr/local/lib/openvpn-web-server-draft-worker"
 TMP_OBSERVER_PUBLIC_KEY=""
 
 cleanup() {
@@ -36,6 +37,50 @@ validate_root_component() {
   if [[ "$resolved" != "$path" ]] || \
     [[ "$metadata" != "$expected_owner:$expected_group:$expected_mode" ]]; then
     echo "unexpected draft namespace component metadata: $path" >&2
+    exit 2
+  fi
+}
+
+validate_python_runtime() {
+  local interpreter=/usr/bin/python3 resolved metadata mode
+  if [[ ! -e "$interpreter" ]]; then
+    echo "required system Python interpreter is missing: $interpreter" >&2
+    exit 2
+  fi
+  resolved="$(sudo_cmd readlink -e -- "$interpreter")"
+  metadata="$(sudo_cmd stat -Lc '%U:%G:%a' -- "$interpreter")"
+  case "$resolved" in
+    /usr/bin/python3|/usr/bin/python3.*) ;;
+    *)
+      echo "system Python resolves outside the root-owned runtime" >&2
+      exit 2
+      ;;
+  esac
+  IFS=: read -r runtime_owner runtime_group mode <<< "$metadata"
+  if [[ "$runtime_owner:$runtime_group" != root:root ]] || \
+    (( (8#$mode & 0022) != 0 )); then
+    echo "system Python is writable outside root" >&2
+    exit 2
+  fi
+}
+
+validate_worker_runtime() {
+  local path="$1" resolved unsafe_entry
+  if ! sudo_cmd test -e "$path" && ! sudo_cmd test -L "$path"; then
+    return
+  fi
+  if sudo_cmd test -L "$path" || ! sudo_cmd test -d "$path"; then
+    echo "refusing unsafe draft-worker runtime path" >&2
+    exit 2
+  fi
+  resolved="$(sudo_cmd readlink -e -- "$path")"
+  if [[ "$resolved" != "$path" ]]; then
+    echo "draft-worker runtime resolves outside its canonical path" >&2
+    exit 2
+  fi
+  unsafe_entry="$(sudo_cmd find "$path" \( -type l -o ! -user root -o ! -group root -o -perm /022 \) -print -quit)"
+  if [[ -n "$unsafe_entry" ]]; then
+    echo "draft-worker runtime is not root-owned and immutable" >&2
     exit 2
   fi
 }
@@ -98,9 +143,13 @@ validate_existing_draft_component() {
 
 for source_file in \
   "$SRC/deploy/server-draft-worker" \
+  "$SRC/deploy/server-draft-worker-main.py" \
   "$SRC/deploy/server-draft-worker.service" \
-  "$SRC/deploy/server-draft-worker.path"; do
-  if [[ ! -f "$source_file" ]]; then
+  "$SRC/deploy/server-draft-worker.path" \
+  "$SRC/app/__init__.py" \
+  "$SRC/app/server_draft_worker.py" \
+  "$SRC/app/server_drafts.py"; do
+  if [[ ! -f "$source_file" ]] || [[ -L "$source_file" ]]; then
     echo "missing draft-worker source: $source_file" >&2
     exit 2
   fi
@@ -121,6 +170,12 @@ fi
 
 validate_root_component /var root root 755
 validate_root_component /var/lib root root 755
+validate_root_component /usr root root 755
+validate_root_component /usr/bin root root 755
+validate_root_component /usr/local root root 755
+validate_root_component /usr/local/lib root root 755
+validate_python_runtime
+validate_worker_runtime "$WORKER_RUNTIME"
 validate_draft_parent "$DRAFT_PARENT"
 validate_existing_draft_component "$DRAFT_ROOT"
 validate_existing_draft_component "$DRAFT_ROOT/queue"
@@ -190,6 +245,20 @@ sudo_cmd chmod 1770 "$DRAFT_PARENT"
 sudo_cmd install -d -m 0770 -o openvpn-web -g openvpn-web /var/lib/openvpn-web/server-drafts/queue
 sudo_cmd install -d -m 0770 -o openvpn-web -g openvpn-web /var/lib/openvpn-web/server-drafts/results
 sudo_cmd install -d -m 0700 -o openvpm -g openvpm /var/lib/openvpn-web/server-drafts/private
+
+# This exact runtime is outside the generic web bundle. Its bootstrap, worker
+# modules, interpreter, and standard-library dependencies are all root-owned;
+# the web account can modify only the scoped queue and result directories.
+sudo_cmd install -d -m 0755 -o root -g root "$WORKER_RUNTIME/app"
+sudo_cmd install -m 0644 -o root -g root \
+  "$SRC/app/__init__.py" "$WORKER_RUNTIME/app/__init__.py"
+sudo_cmd install -m 0644 -o root -g root \
+  "$SRC/app/server_draft_worker.py" "$WORKER_RUNTIME/app/server_draft_worker.py"
+sudo_cmd install -m 0644 -o root -g root \
+  "$SRC/app/server_drafts.py" "$WORKER_RUNTIME/app/server_drafts.py"
+sudo_cmd install -m 0644 -o root -g root \
+  "$SRC/deploy/server-draft-worker-main.py" "$WORKER_RUNTIME/worker_main.py"
+validate_worker_runtime "$WORKER_RUNTIME"
 
 sudo_cmd install -m 0755 "$SRC/deploy/server-draft-worker" /usr/local/sbin/server-draft-worker
 TMP_OBSERVER_PUBLIC_KEY="$(mktemp)"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -93,6 +93,24 @@ class ServerDraftCleanupOutbox(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     draft_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ServerDraftCheckOutbox(Base):
+    """Durable, audited consumption of one confirmed pin generation."""
+
+    __tablename__ = "server_draft_check_outbox"
+    __table_args__ = (
+        UniqueConstraint("draft_id", "pin_generation", name="uq_server_draft_check_generation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    pin_generation: Mapped[str] = mapped_column(String(36), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)

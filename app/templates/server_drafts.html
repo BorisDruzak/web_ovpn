@@ -23,6 +23,13 @@
   </table></div>
   {% else %}<p class="muted">No test servers have been added.</p>{% endif %}
 </section>
+{% if check_outbox %}
+<section class="card">
+  <h2>SSH check publication pending</h2>
+  <p class="muted">{{ check_outbox|length }} durable check request(s) are waiting for queue publication.</p>
+  <form method="post" action="/network/server-drafts/check-retry"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Retry SSH check publication</button></form>
+</section>
+{% endif %}
 {% if cleanup_outbox %}
 <section class="card">
   <h2>Pending cleanup</h2>
