@@ -32,6 +32,14 @@ EXPECTED_SCENARIO_IDS = {
     "preflight-ssh-authentication-failed",
     "preflight-sudo-unavailable",
     "preflight-ansible-failed",
+    "provision-vault-file-missing",
+    "provision-vault-password-file-missing",
+    "provision-vault-header-invalid",
+    "provision-vault-decrypt-failed",
+    "provision-vault-variable-missing",
+    "provision-vault-yescrypt-invalid",
+    "provision-vault-mode-invalid",
+    "provision-vault-owner-invalid",
 }
 
 PREFLIGHT_FAILURE_KINDS = {
@@ -172,6 +180,10 @@ def test_proven_outcome_catalog_has_exact_scenarios() -> None:
     } == EXPECTED_SCENARIO_IDS
 
 
+def test_catalog_contains_nineteen_proven_outcomes() -> None:
+    assert len(PROVEN_OPERATIONAL_OUTCOMES) == 19
+
+
 def test_proven_outcome_catalog_is_consistent() -> None:
     scenario_ids = [
         item.scenario_id for item in PROVEN_OPERATIONAL_OUTCOMES
@@ -189,6 +201,7 @@ def test_proven_outcome_catalog_is_consistent() -> None:
             "reconciliation",
             "result_recovery",
             "preflight",
+            "vault_gate",
         }
         assert item.job_state in {
             None,
@@ -217,6 +230,14 @@ def test_proven_outcome_catalog_is_consistent() -> None:
             assert item.assignment_created is False
             assert item.retryable is True
             assert item.failure_kind in PREFLIGHT_FAILURE_KINDS
+        elif item.boundary == "vault_gate":
+            assert item.error_code == "vault_not_configured"
+            assert item.command_exit_code == 4
+            assert item.job_state is None
+            assert item.job_stage is None
+            assert item.assignment_created is False
+            assert item.retryable is True
+            assert item.failure_kind is None
         else:
             assert item.failure_kind is None
 
