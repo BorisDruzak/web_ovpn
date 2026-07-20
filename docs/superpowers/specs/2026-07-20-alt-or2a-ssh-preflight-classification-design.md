@@ -108,12 +108,13 @@ OR-2A должен доказать, что:
 4. отказ public-key authentication получает `ssh_authentication_failed`;
 5. отсутствие passwordless sudo получает `sudo_unavailable`;
 6. неизвестная Ansible/preflight ошибка получает `ansible_failed`;
-7. публичный `error.code` остаётся `preflight_failed`;
-8. exit code остаётся `5`;
-9. машина получает `status=preflight_failed`;
-10. assignment и provision job не создаются;
-11. после исправления причины повторный preflight может завершиться успешно;
-12. `ProxyCommand=none` и остальные строгие SSH-аргументы сохраняются.
+7. отсутствие или повреждение result-файла получает `ansible_failed`;
+8. публичный `error.code` остаётся `preflight_failed`;
+9. exit code остаётся `5`;
+10. машина получает `status=preflight_failed`;
+11. assignment и provision job не создаются;
+12. после исправления причины повторный preflight может завершиться успешно;
+13. `ProxyCommand=none` и остальные строгие SSH-аргументы сохраняются.
 
 ## 5. Не входит в OR-2A
 
@@ -135,13 +136,13 @@ Stage helper, Vault и controller permission failures остаются в OR-2B.
 
 ## 6. Архитектура
 
-### 6.1 Pure classifier
+### 6.1 Internal pure classifier
 
-В `deploy/alt-linux/control/alt_deploy/ansible.py` добавляется изолированная
-pure-функция классификации завершившегося preflight:
+В `deploy/alt-linux/control/alt_deploy/ansible.py` добавляется изолированный
+внутренний pure-helper:
 
 ```python
-def classify_preflight_failure(
+def _classify_preflight_failure(
     *,
     stdout: str | None,
     stderr: str | None,
@@ -149,8 +150,9 @@ def classify_preflight_failure(
     ...
 ```
 
-Функция:
+Helper:
 
+- не является публичным API;
 - не читает файловую систему;
 - не запускает процессы;
 - не меняет registration state;
@@ -321,7 +323,11 @@ failure_kind = ssh_unreachable
 failure_kind = ansible_failed
 ```
 
-Это включает unsupported ALT и другие target assertions без OR-2A marker.
+Это включает:
+
+- unsupported ALT и другие target assertions без OR-2A marker;
+- успешный return code без preflight result-файла;
+- нечитаемый или malformed preflight result JSON.
 
 ## 8. Совместимость публичного контракта
 
@@ -344,7 +350,14 @@ details.failure_kind
 ```
 
 Поле обязательно для всех `preflight_failed`, сформированных
-`AnsibleController.run_preflight()`.
+`AnsibleController.run_preflight()`, включая ветви:
+
+```text
+timeout exception
+non-zero return code
+missing result file
+invalid result file
+```
 
 Ошибки конфигурации до запуска preflight сохраняют собственные коды:
 
@@ -356,7 +369,19 @@ machine_missing_ip
 Они не получают `failure_kind`, потому что не являются завершившимся SSH или
 Ansible preflight.
 
-## 9. Operational outcomes
+## 9. Operational outcome model
+
+`OperationalOutcome` расширяется test-only полем в конце dataclass:
+
+```python
+failure_kind: str | None = None
+```
+
+Поле добавляется с default, поэтому существующие OR-1 constructors сохраняют
+совместимость и получают `failure_kind=None`.
+
+Для outcomes с `boundary=preflight` поле обязательно и входит в фиксированный
+allowlist. Для остальных boundaries оно остаётся `None`.
 
 `tests/alt_linux/support/outcomes.py` расширяется шестью доказанными сценариями:
 
@@ -379,9 +404,8 @@ job_state: null
 job_stage: null
 assignment_created: false
 retryable: true
+failure_kind: точное ожидаемое значение
 ```
-
-Различается обязательный evidence, включая точный `failure_kind`.
 
 Каталог после OR-2A содержит одиннадцать scenarios: пять OR-1 и шесть OR-2A.
 
@@ -397,6 +421,7 @@ retryable: true
 - приоритет controlled marker;
 - fallback для неизвестного текста;
 - отсутствие классификации только по общему `UNREACHABLE!`;
+- неизвестный controlled marker даёт fallback;
 - возвращаемое значение всегда входит в allowlist.
 
 ### 10.2 CLI and persistence tests
@@ -404,7 +429,7 @@ retryable: true
 Новый self-contained test module использует OR-1 sandbox и monkeypatch
 `alt_deploy.ansible.subprocess.run`.
 
-Для каждого сценария выполняется реальный CLI entrypoint:
+Для шести catalog scenarios выполняется реальный CLI entrypoint:
 
 ```text
 workstationctl --json preflight <uuid>
@@ -414,11 +439,19 @@ workstationctl --json preflight <uuid>
 
 - exit code `5`;
 - `error.code=preflight_failed`;
-- точный `error.details.failure_kind`;
+- `error.details.failure_kind == outcome.failure_kind`;
 - registration record `status=preflight_failed`;
 - сохранённый error details совпадает с CLI;
 - `JobRepository.list()` пуст;
 - assignment отсутствует.
+
+Отдельные branch-coverage tests проверяют:
+
+- missing result file возвращает `ansible_failed`;
+- malformed result JSON возвращает `ansible_failed`.
+
+Эти две ветви не создают дополнительные catalog scenarios: они подтверждают
+обязательный fallback contract `preflight-ansible-failed`.
 
 ### 10.3 Retryability test
 
@@ -503,12 +536,13 @@ tests/alt_linux/test_operational_reliability_contract.py
 1. Specific classification не влияет на решение success/failure.
 2. Неизвестная ошибка не считается SSH-unreachable автоматически.
 3. Classification failure не должна скрывать исходный `preflight_failed`.
-4. Classifier не должен поднимать исключение на `None`, invalid Unicode или
-   неожиданном output.
+4. Classifier не должен поднимать исключение на `None` или неожиданном text.
 5. Timeout exception всегда имеет приоритет над текстовой классификацией.
 6. Registration record не переходит в `awaiting_assignment` после ошибки.
 7. Assignment и job не создаются ни в одном OR-2A failure scenario.
 8. Повторный preflight после исправления причины разрешён.
+9. Каждый `preflight_failed` из `run_preflight()` содержит allowlisted
+   `failure_kind`.
 
 ## 14. Verification gate
 
@@ -540,8 +574,10 @@ OR-2A принят, когда:
 - шесть `failure_kind` реализованы;
 - classifier conservative и deterministic;
 - sudo marker контролируемый и точный;
+- outcome model содержит `failure_kind`;
 - шесть outcomes добавлены в каталог;
 - CLI и registration persistence проверены;
+- missing/malformed result получают fallback;
 - retryability доказана повторным успешным preflight;
 - assignment и jobs отсутствуют после всех failures;
 - strict SSH options не изменены;
