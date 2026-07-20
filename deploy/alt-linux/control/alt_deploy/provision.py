@@ -17,6 +17,7 @@ from .launcher import SystemdLauncher
 from .jsonio import read_json
 from .locks import exclusive_lock
 from .registry import MachineRepository
+from .vault import VaultHealthChecker
 
 
 REQUEST_FIELDS = frozenset(
@@ -247,16 +248,26 @@ class ProvisionPlanner:
         )
 
     def _validate_vault(self) -> None:
-        missing = [
-            str(path)
-            for path in (
-                self.vault_file,
-                self.vault_password_file,
-            )
-            if not path.is_file()
-        ]
+        try:
+            VaultHealthChecker(self.settings).check()
+        except ControlError as exc:
+            if exc.code != "vault_unhealthy":
+                raise
 
-        if missing:
+            checks = dict(exc.details.get("checks") or {})
+            details: dict[str, object] = {"checks": checks}
+
+            missing: list[str] = []
+            if not checks.get("vault_file_exists", False):
+                missing.append(str(self.vault_file))
+            if not checks.get("password_file_exists", False):
+                missing.append(str(self.vault_password_file))
+
+            if missing:
+                details["missing"] = missing
+            elif not checks.get("vault_header", False):
+                details["path"] = str(self.vault_file)
+
             raise ControlError(
                 code="vault_not_configured",
                 message=(
@@ -264,40 +275,8 @@ class ProvisionPlanner:
                     "for workstation provisioning"
                 ),
                 exit_code=4,
-                details={"missing": missing},
-            )
-
-        try:
-            with self.vault_file.open(
-                "r",
-                encoding="utf-8",
-            ) as handle:
-                vault_header = handle.readline(256).strip()
-        except (OSError, UnicodeError) as exc:
-            raise ControlError(
-                code="vault_not_configured",
-                message=(
-                    "Ansible Vault file cannot be read"
-                ),
-                exit_code=4,
-                details={
-                    "path": str(self.vault_file),
-                },
+                details=details,
             ) from exc
-
-        if not vault_header.startswith(
-            "$ANSIBLE_VAULT;"
-        ):
-            raise ControlError(
-                code="vault_not_configured",
-                message=(
-                    "Ansible Vault file is not encrypted"
-                ),
-                exit_code=4,
-                details={
-                    "path": str(self.vault_file),
-                },
-            )
 
     def _validate_assignment_uniqueness(
         self,
