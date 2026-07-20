@@ -91,6 +91,7 @@ def prepare_preview_environment(tmp_path: Path):
         "$ANSIBLE_VAULT;1.1;AES256\nfixture\n",
         encoding="utf-8",
     )
+    vault_file.chmod(0o600)
 
     vault_password_file = (
         settings.ansible_project_dir.parent
@@ -100,6 +101,7 @@ def prepare_preview_environment(tmp_path: Path):
         "test-vault-password\n",
         encoding="utf-8",
     )
+    vault_password_file.chmod(0o600)
 
     return settings
 
