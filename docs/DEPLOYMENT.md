@@ -79,6 +79,70 @@ ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/net
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S /usr/local/sbin/netctl --json dashboard"
 ```
 
+## Server Observer Isolated Runtime Handoff
+
+The server observer holds read access to the dedicated SSH private key, so it
+must never execute the generic, web-owned `/opt/openvpn-web` code or virtual
+environment. Its wrapper, systemd units, and standard-library-only Python
+modules are installed in a separate root-owned runtime by scoped scripts. The
+generic `install-openvpn-web.sh` installer deliberately does not create,
+replace, enable, stop, or restart any server-observer asset.
+
+Before the first scoped installation, provision these runtime-only files with
+their exact metadata:
+
+- `/etc/openvpn-web/server-observer.json`: `root:openvpn-web`, mode `0640`;
+- `/etc/openvpn-web/server-observer.key`: `openvpm:openvpm`, mode `0600`;
+- `/etc/openvpn-web/server-observer.known_hosts`: `openvpm:openvpm`, mode `0600`.
+
+The scoped scripts validate those files but do not back up or modify the observer private key,
+known-hosts data, runtime topology, OpenVPN, Network
+Observer, `netctl`, or the generic web service.
+
+Create a fail-closed backup of exactly the observer wrapper, isolated runtime,
+systemd units, timer state, and redacted snapshot directory:
+
+```bash
+cd /tmp/openvpn-web-src
+SUDO_PASSWORD='<sudo-password>' bash deploy/backup-server-observer.sh
+```
+
+Record the printed `/root/openvpn-web-server-observer-backup-<timestamp>` path,
+then install only the observer scope:
+
+```bash
+cd /tmp/openvpn-web-src
+SUDO_PASSWORD='<sudo-password>' bash deploy/install-server-observer.sh
+sudo systemctl start server-observer.service
+sudo journalctl -u server-observer.service -n 50 --no-pager
+```
+
+When the backup detects the legacy web-owned execution boundary, it deliberately
+leaves that timer stopped during the handoff. A backup of an already isolated
+runtime restores its prior active state after the consistent copy completes.
+
+The installer stops the timer and waits for an in-flight oneshot collector to
+finish before atomically replacing the isolated runtime. It validates the
+system interpreter and every runtime entry as root-owned and non-writable by
+group or other, then re-enables the timer only after the complete handoff.
+
+To roll back, use only the exact backup path printed by the backup command:
+
+```bash
+cd /tmp/openvpn-web-src
+BACKUP_ROOT=/root/openvpn-web-server-observer-backup-YYYYmmddHHMMSS \
+  SUDO_PASSWORD='<sudo-password>' bash deploy/rollback-server-observer.sh
+```
+
+Rollback validates the complete manifest and every source before stopping the
+timer or replacing any live path. It restores the previous assets plus the
+timer's enabled and active states only when the backup already used the isolated
+boundary. A backup of the legacy web-owned execution boundary remains available
+for inspection, but rollback removes its executable units and leaves collection
+disabled instead of reactivating code that can be changed by the web account. A
+failed install or rollback leaves remote collection stopped rather than starting
+an incomplete runtime.
+
 ## SSH Server Draft Checks
 
 The Test servers page verifies an existing SSH target from the gateway; it does

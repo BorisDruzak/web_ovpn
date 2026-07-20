@@ -1,9 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-APP=/opt/openvpn-web
-cd "$APP"
-exec "$APP/.venv/bin/python" -m app.server_observer_cli \
+exec /usr/bin/python3 -I /usr/local/lib/openvpn-web-server-observer/observer_main.py \
   --config /etc/openvpn-web/server-observer.json \
   --snapshot /var/lib/openvpn-web/server-observer/latest.json \
   "$@"
