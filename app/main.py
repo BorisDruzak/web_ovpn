@@ -190,7 +190,7 @@ def publish_cleanup_outbox(db: Session) -> list[ServerDraftCleanupOutbox]:
 
 
 def publish_check_outbox(db: Session) -> list[ServerDraftCheckOutbox]:
-    """Publish committed check consumptions and keep failed attempts retryable."""
+    """Publish committed check intents and keep failed attempts retryable."""
     pending = list(
         db.scalars(
             select(ServerDraftCheckOutbox)
@@ -216,27 +216,27 @@ def publish_check_outbox(db: Session) -> list[ServerDraftCheckOutbox]:
         try:
             db.commit()
         except SQLAlchemyError:
-            # The durable audit/consumption stays pending. Re-publication is
+            # The durable queued audit/intent stays pending. Re-publication is
             # safe because the worker consumes each pin generation at most once.
             db.rollback()
     return pending
 
 
-def add_server_draft_check_consumption(
+def add_server_draft_check_intent(
     db: Session,
     request: Request,
     user: WebUser,
     draft_id: str,
     pin_generation: str,
 ) -> None:
-    """Stage the durable outbox row and its audit in one DB transaction."""
+    """Stage the durable outbox row and queued audit in one DB transaction."""
     db.add(ServerDraftCheckOutbox(draft_id=draft_id, pin_generation=pin_generation))
     db.add(
         WebAuditLog(
             actor=user.username,
             action="server-draft-check",
             target_client=draft_id,
-            result="ok",
+            result="queued",
             message=f"pin-generation:{pin_generation}",
             request_id=str(getattr(request.state, "request_id", "")),
             ip_address=request.client.host if request.client else "",
@@ -252,6 +252,16 @@ def has_server_draft_audit(
         WebAuditLog.result == "ok",
         WebAuditLog.target_client == draft_id,
         WebAuditLog.message == f"pin-generation:{pin_generation}",
+    )
+    return db.scalar(statement) is not None
+
+
+def has_server_draft_check_intent(
+    db: Session, draft_id: str, pin_generation: str
+) -> bool:
+    statement = select(ServerDraftCheckOutbox.id).where(
+        ServerDraftCheckOutbox.draft_id == draft_id,
+        ServerDraftCheckOutbox.pin_generation == pin_generation,
     )
     return db.scalar(statement) is not None
 
@@ -305,7 +315,7 @@ def server_drafts_page(request: Request, db: Session = Depends(get_db)):
         queued = is_server_draft_queued(draft.id)
         check_queued = bool(
             pin_generation
-            and has_server_draft_audit(db, draft.id, "server-draft-check", pin_generation)
+            and has_server_draft_check_intent(db, draft.id, pin_generation)
         )
         rows.append(
             {
@@ -453,14 +463,14 @@ async def server_draft_check(draft_id: str, request: Request, db: Session = Depe
     confirmed, pin_generation = is_confirmed_server_draft(db, draft.id, result)
     already_checked = bool(
         pin_generation
-        and has_server_draft_audit(db, draft.id, "server-draft-check", pin_generation)
+        and has_server_draft_check_intent(db, draft.id, pin_generation)
     )
     if not confirmed or not pin_generation or already_checked:
         write_audit(db, request, user, "server-draft-check", "error", "not confirmed", target_client=draft.id)
         add_flash(request, "bad", "Сначала подтвердите найденный отпечаток")
         return redirect("/network/server-drafts")
     try:
-        add_server_draft_check_consumption(db, request, user, draft.id, pin_generation)
+        add_server_draft_check_intent(db, request, user, draft.id, pin_generation)
         db.commit()
     except SQLAlchemyError:
         db.rollback()

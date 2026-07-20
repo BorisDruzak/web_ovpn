@@ -25,6 +25,7 @@ COMMAND_TIMEOUT_SECONDS = 20
 SCAN_TIMEOUT_SECONDS = 8
 SERVICE_RUNTIME_BUDGET_SECONDS = 120
 DISPATCH_RESERVE_SECONDS = 45
+BACKLOG_RESTART_EXIT_CODE = 75
 OBSERVER_KEY_PATH = "/etc/openvpn-web/server-observer.key"
 _FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}(?![A-Za-z0-9+/=])")
 _CANDIDATE = re.compile(r"^[^\s]+\s+ssh-ed25519\s+[A-Za-z0-9+/]+={0,3}\s*$")
@@ -61,9 +62,9 @@ def process_service_cycle(
 ) -> tuple[int, bool]:
     """Reconcile crash state and drain until the safe systemd runtime budget.
 
-    The path unit uses persistent glob conditions for both public requests and
-    hidden claims, so ``True`` backlog is intentionally left visible for the
-    next successful oneshot activation instead of using bounded restarts.
+    ``True`` tells the CLI to request a systemd-managed continuation.  This is
+    required because path conditions do not reactivate an already-active
+    oneshot merely because a persistent queue entry remains visible.
     """
     if runtime_budget_seconds < DISPATCH_RESERVE_SECONDS:
         raise ValueError("runtime budget cannot fit one bounded request")
@@ -228,9 +229,10 @@ def _process_claimed_normal_path(
 ) -> int:
     draft_id = request_path.stem
     dispatch_path: Path | None = None
-    consume_request = True
+    consume_request = False
     try:
         if _cleanup_reserved(paths, draft_id):
+            consume_request = True
             return 0
         request = _read_request(claim_path)
         if request.id != draft_id:
@@ -242,9 +244,12 @@ def _process_claimed_normal_path(
         # This second check closes the claim-to-dispatch race: cleanup that
         # became visible before dispatch reservation always cancels the action.
         if _cleanup_reserved(paths, draft_id):
+            consume_request = True
             return 0
         process_request(request, paths, runner)
+        consume_request = True
     except (DraftWorkerError, OSError, ValueError, json.JSONDecodeError):
+        consume_request = True
         # Do not expose malformed requests or tool diagnostics to the web layer.
         try:
             make_draft_request(draft_id, "invalid", "invalid", 22, "scan")
@@ -371,7 +376,6 @@ def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> bool:
         raise DraftWorkerError("check generation is unavailable") from exc
     if consumed_generation == request.pin_generation:
         return False
-    _write_private(check_generation, request.pin_generation + "\n")
     command = [
         "ssh", "-F", "/dev/null", "-i", OBSERVER_KEY_PATH,
         "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none",
@@ -383,11 +387,13 @@ def _check(request: DraftRequest, paths: DraftPaths, runner: Runner) -> bool:
         completed = _run(runner, command)
     except subprocess.TimeoutExpired:
         write_public_result(paths.results_dir, request.id, {"status": "timeout"})
+        _write_private(check_generation, request.pin_generation + "\n")
         return True
     if completed.returncode == 0:
         write_public_result(paths.results_dir, request.id, {"status": "ok"})
     else:
         write_public_result(paths.results_dir, request.id, {"status": _ssh_failure_status(completed.stderr)})
+    _write_private(check_generation, request.pin_generation + "\n")
     return True
 
 
@@ -570,8 +576,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--private-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-    process_service_cycle(args.queue_dir, args.results_dir, args.private_dir)
-    return 0
+    _processed, backlog = process_service_cycle(
+        args.queue_dir, args.results_dir, args.private_dir
+    )
+    return BACKLOG_RESTART_EXIT_CODE if backlog else 0
 
 
 if __name__ == "__main__":

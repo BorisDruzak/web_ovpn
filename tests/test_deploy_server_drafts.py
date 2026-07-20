@@ -24,6 +24,8 @@ def test_worker_service_is_key_isolated_and_retains_observer_hardening():
         "WorkingDirectory=/",
         "TimeoutStartSec=3min",
         "StartLimitIntervalSec=0",
+        "Restart=on-failure",
+        "RestartSec=1s",
         "NoNewPrivileges=true",
         "PrivateTmp=true",
         "ProtectHome=tmpfs",

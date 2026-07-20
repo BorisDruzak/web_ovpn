@@ -240,7 +240,7 @@ def test_completed_pin_allows_one_check_that_confirm_cannot_overwrite(tmp_path, 
     assert f'/network/server-drafts/{draft_id}/check' not in client.get("/network/server-drafts").text
 
 
-def test_check_is_authorized_and_consumed_by_current_pin_generation(tmp_path, monkeypatch):
+def test_check_is_authorized_and_queued_by_current_pin_generation(tmp_path, monkeypatch):
     assert ServerDraftCheckOutbox is not None
     client = make_logged_in_client(tmp_path, monkeypatch)
     draft_id = create_draft(client, tmp_path)
@@ -288,18 +288,18 @@ def test_check_is_authorized_and_consumed_by_current_pin_generation(tmp_path, mo
     assert post_with_csrf(client, f"/network/server-drafts/{draft_id}/check", {}).status_code == 303
     assert queued_action(tmp_path) == first_check
     with db_session() as db:
-        consumed = db.query(WebAuditLog).filter_by(
-            action="server-draft-check", result="ok", target_client=draft_id,
+        queued = db.query(WebAuditLog).filter_by(
+            action="server-draft-check", result="queued", target_client=draft_id,
             message=f"pin-generation:{generation}",
         ).count()
-        assert consumed == 1
+        assert queued == 1
         outbox = db.query(ServerDraftCheckOutbox).one()
         assert outbox.draft_id == draft_id
         assert outbox.pin_generation == generation
         assert outbox.status == "published"
 
 
-def test_check_audit_and_consumption_commit_before_queue_publication(tmp_path, monkeypatch):
+def test_check_audit_and_intent_commit_before_queue_publication(tmp_path, monkeypatch):
     assert ServerDraftCheckOutbox is not None
     client = make_logged_in_client(tmp_path, monkeypatch)
     draft_id = create_draft(client, tmp_path)
@@ -325,7 +325,7 @@ def test_check_audit_and_consumption_commit_before_queue_publication(tmp_path, m
 
     def fail_consumption_commit(session):
         if any(isinstance(item, ServerDraftCheckOutbox) for item in session.new):
-            raise SQLAlchemyError("forced check consumption failure")
+            raise SQLAlchemyError("forced check intent failure")
         return original_commit(session)
 
     monkeypatch.setattr(Session, "commit", fail_consumption_commit)
@@ -339,7 +339,7 @@ def test_check_audit_and_consumption_commit_before_queue_publication(tmp_path, m
         assert db.query(WebAuditLog).filter_by(action="server-draft-check").count() == 0
 
 
-def test_check_queue_failure_leaves_durable_retryable_consumption(tmp_path, monkeypatch):
+def test_check_queue_failure_leaves_durable_retryable_intent(tmp_path, monkeypatch):
     assert ServerDraftCheckOutbox is not None
     client = make_logged_in_client(tmp_path, monkeypatch)
     draft_id = create_draft(client, tmp_path)
@@ -385,7 +385,7 @@ def test_check_queue_failure_leaves_durable_retryable_consumption(tmp_path, monk
         assert outbox.attempts == 1
         assert outbox.last_error == "queue unavailable"
         assert db.query(WebAuditLog).filter_by(
-            action="server-draft-check", result="ok", target_client=draft_id
+            action="server-draft-check", result="queued", target_client=draft_id
         ).count() == 1
 
     monkeypatch.setattr(app.main, "create_draft_request", original_publish)

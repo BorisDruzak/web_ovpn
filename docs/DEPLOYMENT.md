@@ -441,8 +441,11 @@ systemd and enables only
 `server-draft-worker.path`; it does not alter the application bundle, collector
 configuration or timers, OpenVPN, or any unrelated service. Do not enable or
 start `server-draft-worker.service` directly. The path unit starts the worker
-only when a public queue entry changes. Verify that boundary and the public-key
-access required by the web application:
+when public queue work becomes visible. Each invocation uses a bounded drain
+cycle; if durable requests or crash-recovery claims remain, exit status 75 and
+`Restart=on-failure` rearm the same singleton service without relying on a new
+filesystem event. The worker exits successfully once the queue is drained.
+Verify that boundary and the public-key access required by the web application:
 
 If the installer exits after locking the namespace, it deliberately leaves the
 parent non-web-writable instead of reopening a partially hardened path. Use the

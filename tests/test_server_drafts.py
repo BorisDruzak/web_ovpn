@@ -446,10 +446,22 @@ def test_service_cycle_yields_before_systemd_timeout_and_leaves_visible_backlog(
     assert not (paths.queue_dir / f"{draft_id}.json").exists()
 
 
-def test_worker_main_exits_successfully_when_path_unit_must_reconcile_backlog(tmp_path, monkeypatch):
+def test_worker_main_requests_restart_until_backlog_drains_without_a_new_path_event(
+    tmp_path, monkeypatch
+):
     paths = draft_paths(tmp_path)
-    monkeypatch.setattr(server_draft_worker, "process_service_cycle", lambda *_args: (64, True))
+    cycles = iter(((64, True), (1, False)))
+    monkeypatch.setattr(
+        server_draft_worker, "process_service_cycle", lambda *_args: next(cycles)
+    )
 
+    assert server_draft_worker.main(
+        [
+            "--queue-dir", str(paths.queue_dir),
+            "--results-dir", str(paths.results_dir),
+            "--private-dir", str(paths.private_dir),
+        ]
+    ) == server_draft_worker.BACKLOG_RESTART_EXIT_CODE
     assert server_draft_worker.main(
         [
             "--queue-dir", str(paths.queue_dir),
@@ -607,6 +619,60 @@ def test_replayed_check_generation_never_dispatches_ssh_twice(tmp_path, fake_run
     assert (paths.private_dir / f"{request.id}.check-generation").read_text(
         encoding="utf-8"
     ).strip() == request.pin_generation
+
+
+def test_interrupted_check_keeps_request_and_retries_before_consuming_generation(tmp_path):
+    class WorkerCrash(BaseException):
+        pass
+
+    request = draft_request("check")
+    paths = draft_paths(tmp_path)
+    seed_pinned_private(paths, request)
+    write_public_result(
+        paths.results_dir,
+        request.id,
+        {
+            "status": "ok",
+            "fingerprint": VALID_FINGERPRINT,
+            "checked_at": "2026-07-20T10:00:00.000000Z",
+            "pin_generation": request.pin_generation,
+        },
+    )
+    request_path = create_draft_request(paths.queue_dir, request)
+
+    def crash_before_ssh(_command, **_kwargs):
+        raise WorkerCrash()
+
+    with pytest.raises(WorkerCrash):
+        server_draft_worker.process_service_cycle(
+            paths.queue_dir, paths.results_dir, paths.private_dir, crash_before_ssh
+        )
+
+    claim_path = paths.queue_dir / f".{request.id}.json.claim"
+    assert request_path.is_file()
+    assert not claim_path.exists()
+    assert not (paths.private_dir / f"{request.id}.check-generation").exists()
+    assert read_public_result(paths.results_dir, request.id)["fingerprint"] == VALID_FINGERPRINT
+
+    ssh_calls = 0
+
+    def successful_retry(command, **_kwargs):
+        nonlocal ssh_calls
+        assert command[0] == "ssh"
+        ssh_calls += 1
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    assert server_draft_worker.process_service_cycle(
+        paths.queue_dir, paths.results_dir, paths.private_dir, successful_retry
+    ) == (1, False)
+
+    assert ssh_calls == 1
+    assert read_public_result(paths.results_dir, request.id) == {"status": "ok"}
+    assert (paths.private_dir / f"{request.id}.check-generation").read_text(
+        encoding="utf-8"
+    ).strip() == request.pin_generation
+    assert not request_path.exists()
+    assert not claim_path.exists()
 
 
 def test_cleanup_intent_survives_an_active_request_and_becomes_terminal(tmp_path):
