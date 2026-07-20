@@ -161,8 +161,408 @@ def _snapshot(
     )
 
 
+def _vlan_row(
+    vlan_id: int = 20,
+    port: int = 1,
+    *,
+    egress: bool = True,
+    untagged: bool = False,
+    pvid: bool = False,
+) -> dict[str, Any]:
+    return {
+        "vlan_id": vlan_id,
+        "port_key": f"ifindex:{port}",
+        "if_index": port,
+        "bridge_port": port,
+        "physical_port": port,
+        "port_name": f"front-{port}",
+        "egress": egress,
+        "untagged": untagged,
+        "pvid": pvid,
+    }
+
+
+def _lldp_row(
+    port: int = 1,
+    *,
+    chassis_id: str = "00:11:22:33:44:55",
+    port_id: str = "uplink-1",
+    system_name: str = "neighbor-1",
+) -> dict[str, Any]:
+    return {
+        "local_port_key": f"ifindex:{port}",
+        "chassis_id": chassis_id,
+        "port_id": port_id,
+        "system_name": system_name,
+    }
+
+
+def _with_optional_state(
+    snapshot: SwitchSnapshot,
+    *,
+    vlan_memberships: tuple[dict[str, Any], ...] = (),
+    vlan_outcomes: tuple[SnmpOutcome, SnmpOutcome, SnmpOutcome] = (
+        SnmpOutcome.SUCCESS_EMPTY,
+        SnmpOutcome.SUCCESS_EMPTY,
+        SnmpOutcome.SUCCESS_EMPTY,
+    ),
+    lldp_neighbors: tuple[dict[str, Any], ...] = (),
+    lldp_outcome: SnmpOutcome = SnmpOutcome.SUCCESS_EMPTY,
+) -> SwitchSnapshot:
+    optional_capabilities = tuple(
+        CapabilityResult(capability, outcome)
+        for capability, outcome in zip(
+            ("vlan_current_egress", "vlan_current_untagged", "pvid"),
+            vlan_outcomes,
+            strict=True,
+        )
+    ) + (CapabilityResult("lldp_remote", lldp_outcome),)
+    return replace(
+        snapshot,
+        vlan_memberships=vlan_memberships,
+        lldp_neighbors=lldp_neighbors,
+        capabilities=(*snapshot.capabilities, *optional_capabilities),
+    )
+
+
 def _rows(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def test_migration_6_creates_typed_vlan_and_lldp_current_tables(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
+    ).fetchone()[0] == 1
+
+    vlan_columns = {
+        row["name"]: (row["type"], row["notnull"], row["pk"])
+        for row in switch_conn.execute(
+            "PRAGMA table_info(current_switch_vlan_memberships)"
+        )
+    }
+    assert vlan_columns == {
+        "source_id": ("INTEGER", 1, 1),
+        "vlan_id": ("INTEGER", 1, 2),
+        "port_key": ("TEXT", 1, 3),
+        "if_index": ("INTEGER", 0, 0),
+        "bridge_port": ("INTEGER", 0, 0),
+        "physical_port": ("INTEGER", 0, 0),
+        "port_name": ("TEXT", 1, 0),
+        "egress": ("INTEGER", 1, 0),
+        "untagged": ("INTEGER", 1, 0),
+        "pvid": ("INTEGER", 1, 0),
+        "observed_at": ("TEXT", 1, 0),
+        "collector_run_id": ("INTEGER", 1, 0),
+    }
+    lldp_columns = {
+        row["name"]: (row["type"], row["notnull"], row["pk"])
+        for row in switch_conn.execute(
+            "PRAGMA table_info(current_switch_lldp_neighbors)"
+        )
+    }
+    assert lldp_columns == {
+        "source_id": ("INTEGER", 1, 1),
+        "local_port_key": ("TEXT", 1, 2),
+        "chassis_id": ("TEXT", 1, 3),
+        "port_id": ("TEXT", 1, 4),
+        "system_name": ("TEXT", 1, 0),
+        "observed_at": ("TEXT", 1, 0),
+        "collector_run_id": ("INTEGER", 1, 0),
+    }
+    indexes = {
+        row["name"]
+        for table in (
+            "current_switch_vlan_memberships",
+            "current_switch_lldp_neighbors",
+        )
+        for row in switch_conn.execute(f"PRAGMA index_list({table})")
+    }
+    assert {
+        "current_switch_vlan_memberships_source_observed_idx",
+        "current_switch_lldp_neighbors_source_observed_idx",
+    } <= indexes
+
+
+def test_successful_vlan_and_lldp_groups_replace_current_rows(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_a")
+    required = _snapshot((_entry("02:00:00:00:00:01", 1),))
+    first = _with_optional_state(
+        required,
+        vlan_memberships=(_vlan_row(),),
+        vlan_outcomes=(
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.SUCCESS_EMPTY,
+        ),
+        lldp_neighbors=(_lldp_row(),),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+    second = _with_optional_state(
+        required,
+        vlan_memberships=(_vlan_row(30, pvid=True),),
+        vlan_outcomes=(
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+        ),
+        lldp_neighbors=(
+            _lldp_row(
+                chassis_id="66:77:88:99:AA:BB",
+                port_id="uplink-2",
+                system_name="neighbor-2",
+            ),
+        ),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(first), "2026-07-19T10:00:00Z"
+    )
+    result = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(second), "2026-07-19T11:00:00Z"
+    )
+
+    assert result["status"] == "success"
+    assert _rows(
+        switch_conn,
+        "SELECT vlan_id, port_key, egress, untagged, pvid, observed_at, "
+        "collector_run_id FROM current_switch_vlan_memberships",
+    ) == [
+        {
+            "vlan_id": 30,
+            "port_key": "ifindex:1",
+            "egress": 1,
+            "untagged": 0,
+            "pvid": 1,
+            "observed_at": "2026-07-19T11:00:00Z",
+            "collector_run_id": result["run_id"],
+        }
+    ]
+    assert _rows(
+        switch_conn,
+        "SELECT local_port_key, chassis_id, port_id, system_name, observed_at, "
+        "collector_run_id FROM current_switch_lldp_neighbors",
+    ) == [
+        {
+            "local_port_key": "ifindex:1",
+            "chassis_id": "66:77:88:99:AA:BB",
+            "port_id": "uplink-2",
+            "system_name": "neighbor-2",
+            "observed_at": "2026-07-19T11:00:00Z",
+            "collector_run_id": result["run_id"],
+        }
+    ]
+
+
+@pytest.mark.parametrize("group", ["vlan", "lldp"])
+def test_confirmed_empty_optional_group_clears_only_that_group(
+    switch_conn: sqlite3.Connection, group: str
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_a")
+    required = _snapshot((_entry("02:00:00:00:00:01", 1),))
+    seeded = _with_optional_state(
+        required,
+        vlan_memberships=(_vlan_row(),),
+        vlan_outcomes=(
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.SUCCESS_EMPTY,
+        ),
+        lldp_neighbors=(_lldp_row(),),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(seeded), "2026-07-19T10:00:00Z"
+    )
+    replacement = _with_optional_state(
+        required,
+        vlan_memberships=() if group == "vlan" else (_vlan_row(),),
+        vlan_outcomes=(
+            (SnmpOutcome.SUCCESS_EMPTY,) * 3
+            if group == "vlan"
+            else (
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                SnmpOutcome.SUCCESS_EMPTY,
+                SnmpOutcome.SUCCESS_EMPTY,
+            )
+        ),
+        lldp_neighbors=() if group == "lldp" else (_lldp_row(),),
+        lldp_outcome=(
+            SnmpOutcome.SUCCESS_EMPTY
+            if group == "lldp"
+            else SnmpOutcome.SUCCESS_WITH_ROWS
+        ),
+    )
+
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(replacement), "2026-07-19T11:00:00Z"
+    )
+
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM current_switch_vlan_memberships"
+    ).fetchone()[0] == (0 if group == "vlan" else 1)
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM current_switch_lldp_neighbors"
+    ).fetchone()[0] == (0 if group == "lldp" else 1)
+
+
+@pytest.mark.parametrize(
+    "failed_outcome",
+    [
+        SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+        SnmpOutcome.TIMEOUT,
+        SnmpOutcome.PARSE_ERROR,
+    ],
+)
+@pytest.mark.parametrize("group", ["vlan", "lldp"])
+def test_optional_error_preserves_current_group_while_required_state_advances(
+    switch_conn: sqlite3.Connection,
+    group: str,
+    failed_outcome: SnmpOutcome,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_a")
+    first_required = _snapshot((_entry("02:00:00:00:00:01", 1),))
+    seeded = _with_optional_state(
+        first_required,
+        vlan_memberships=(_vlan_row(),),
+        vlan_outcomes=(
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.SUCCESS_EMPTY,
+        ),
+        lldp_neighbors=(_lldp_row(),),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(seeded), "2026-07-19T10:00:00Z"
+    )
+    second_required = _snapshot((_entry("02:00:00:00:00:02", 2),))
+    replacement = _with_optional_state(
+        second_required,
+        vlan_memberships=() if group == "vlan" else (_vlan_row(30, 2),),
+        vlan_outcomes=(
+            (failed_outcome, SnmpOutcome.SUCCESS_EMPTY, SnmpOutcome.SUCCESS_EMPTY)
+            if group == "vlan"
+            else (
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                SnmpOutcome.SUCCESS_EMPTY,
+                SnmpOutcome.SUCCESS_EMPTY,
+            )
+        ),
+        lldp_neighbors=() if group == "lldp" else (_lldp_row(2),),
+        lldp_outcome=(
+            failed_outcome
+            if group == "lldp"
+            else SnmpOutcome.SUCCESS_WITH_ROWS
+        ),
+    )
+
+    result = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(replacement), "2026-07-19T11:00:00Z"
+    )
+
+    assert result["status"] == "success"
+    assert _rows(
+        switch_conn,
+        "SELECT mac, port_key FROM current_switch_fdb",
+    ) == [{"mac": "02:00:00:00:00:02", "port_key": "ifindex:2"}]
+    assert _rows(
+        switch_conn,
+        "SELECT port_key, collector_run_id FROM switch_ports ORDER BY port_key",
+    )[-1] == {"port_key": "ifindex:2", "collector_run_id": result["run_id"]}
+    optional_rows = _rows(
+        switch_conn,
+        (
+            "SELECT vlan_id, port_key FROM current_switch_vlan_memberships"
+            if group == "vlan"
+            else "SELECT local_port_key, chassis_id FROM current_switch_lldp_neighbors"
+        ),
+    )
+    assert optional_rows == (
+        [{"vlan_id": 20, "port_key": "ifindex:1"}]
+        if group == "vlan"
+        else [
+            {
+                "local_port_key": "ifindex:1",
+                "chassis_id": "00:11:22:33:44:55",
+            }
+        ]
+    )
+
+
+@pytest.mark.parametrize("group", ["vlan", "lldp"])
+def test_malformed_optional_mapping_is_not_persisted_or_allowed_to_block_fdb(
+    switch_conn: sqlite3.Connection, group: str
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_a")
+    required = _snapshot((_entry("02:00:00:00:00:01", 1),))
+    seeded = _with_optional_state(
+        required,
+        vlan_memberships=(_vlan_row(),),
+        vlan_outcomes=(
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.SUCCESS_EMPTY,
+        ),
+        lldp_neighbors=(_lldp_row(),),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(seeded), "2026-07-19T10:00:00Z"
+    )
+    malformed = _with_optional_state(
+        _snapshot((_entry("02:00:00:00:00:02", 2),)),
+        vlan_memberships=(
+            {**_vlan_row(30, 2), "pvid": "yes"},
+        )
+        if group == "vlan"
+        else (_vlan_row(30, 2),),
+        vlan_outcomes=(
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.SUCCESS_EMPTY,
+        ),
+        lldp_neighbors=(
+            {**_lldp_row(2), "chassis_id": ""},
+        )
+        if group == "lldp"
+        else (_lldp_row(2),),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+
+    result = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(malformed), "2026-07-19T11:00:00Z"
+    )
+
+    assert result["status"] == "success"
+    assert _rows(switch_conn, "SELECT mac FROM current_switch_fdb") == [
+        {"mac": "02:00:00:00:00:02"}
+    ]
+    optional_rows = _rows(
+        switch_conn,
+        (
+            "SELECT vlan_id FROM current_switch_vlan_memberships"
+            if group == "vlan"
+            else "SELECT chassis_id FROM current_switch_lldp_neighbors"
+        ),
+    )
+    assert optional_rows == (
+        [{"vlan_id": 20}]
+        if group == "vlan"
+        else [{"chassis_id": "00:11:22:33:44:55"}]
+    )
 
 
 def test_initial_success_persists_current_rows_and_appeared_events(

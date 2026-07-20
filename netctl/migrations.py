@@ -1236,12 +1236,65 @@ def _migration_5(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_6(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE current_switch_vlan_memberships (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            vlan_id INTEGER NOT NULL CHECK (vlan_id BETWEEN 1 AND 4094),
+            port_key TEXT NOT NULL,
+            if_index INTEGER,
+            bridge_port INTEGER,
+            physical_port INTEGER,
+            port_name TEXT NOT NULL DEFAULT '',
+            egress INTEGER NOT NULL CHECK (egress IN (0, 1)),
+            untagged INTEGER NOT NULL CHECK (untagged IN (0, 1)),
+            pvid INTEGER NOT NULL CHECK (pvid IN (0, 1)),
+            observed_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            PRIMARY KEY(source_id, vlan_id, port_key),
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_vlan_memberships_source_observed_idx
+        ON current_switch_vlan_memberships(source_id, observed_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE current_switch_lldp_neighbors (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            local_port_key TEXT NOT NULL,
+            chassis_id TEXT NOT NULL,
+            port_id TEXT NOT NULL,
+            system_name TEXT NOT NULL DEFAULT '',
+            observed_at TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            PRIMARY KEY(source_id, local_port_key, chassis_id, port_id),
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_lldp_neighbors_source_observed_idx
+        ON current_switch_lldp_neighbors(source_id, observed_at DESC)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
     (4, _migration_4),
     (5, _migration_5),
+    (6, _migration_6),
 )
 
 

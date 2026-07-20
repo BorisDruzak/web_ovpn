@@ -24,6 +24,12 @@ _REPLACING_FDB_OUTCOMES = {
     SnmpOutcome.SUCCESS_WITH_ROWS,
     SnmpOutcome.SUCCESS_EMPTY,
 }
+_VLAN_CAPABILITIES = (
+    "vlan_current_egress",
+    "vlan_current_untagged",
+    "pvid",
+)
+_LLDP_CAPABILITIES = ("lldp_remote",)
 _EMPTY_COUNTS = {
     "ports": 0,
     "fdb_current": 0,
@@ -146,6 +152,13 @@ def collect_and_save_switch(
                     entries=snapshot.fdb,
                     observed_at=started_at,
                 )
+                _replace_optional_current_state(
+                    conn,
+                    source_id=source_id,
+                    run_id=run_id,
+                    snapshot=snapshot,
+                    observed_at=started_at,
+                )
                 status = "success"
                 error_class = ""
                 error_message = ""
@@ -222,15 +235,11 @@ def _validate_snapshot(snapshot: object) -> str:
         for capability in snapshot.capabilities
     ):
         return "invalid_capabilities"
-    if type(snapshot.vlan_memberships) is not tuple or not all(
-        type(row) is dict for row in snapshot.vlan_memberships
-    ):
+    if type(snapshot.vlan_memberships) is not tuple:
         return "invalid_vlan_memberships"
     if snapshot.stp is not None and type(snapshot.stp) is not dict:
         return "invalid_stp"
-    if type(snapshot.lldp_neighbors) is not tuple or not all(
-        type(row) is dict for row in snapshot.lldp_neighbors
-    ):
+    if type(snapshot.lldp_neighbors) is not tuple:
         return "invalid_lldp"
     if type(snapshot.counter_samples) is not tuple or not all(
         type(sample) is SwitchCounterSample and _valid_counter_sample(sample)
@@ -409,6 +418,65 @@ def _valid_optional_int(
         return False
     effective_maximum = _SQLITE_INTEGER_MAX if maximum is None else maximum
     return value <= effective_maximum
+
+
+def _valid_vlan_memberships(rows: tuple[dict[str, Any], ...]) -> bool:
+    keys: list[tuple[int, str]] = []
+    for row in rows:
+        if type(row) is not dict:
+            return False
+        vlan_id = row.get("vlan_id")
+        port_key = row.get("port_key")
+        if not (
+            _valid_optional_int(vlan_id, minimum=1, maximum=4094)
+            and vlan_id is not None
+            and _valid_text(port_key)
+            and _valid_optional_int(
+                row.get("if_index"), minimum=1, maximum=2_147_483_647
+            )
+            and _valid_optional_int(
+                row.get("bridge_port"), minimum=1, maximum=65_535
+            )
+            and _valid_optional_int(
+                row.get("physical_port"), minimum=1, maximum=65_535
+            )
+            and type(row.get("port_name")) is str
+            and type(row.get("egress")) is bool
+            and type(row.get("untagged")) is bool
+            and type(row.get("pvid")) is bool
+        ):
+            return False
+        keys.append((vlan_id, port_key))
+    return len(keys) == len(set(keys))
+
+
+def _valid_lldp_neighbors(rows: tuple[dict[str, Any], ...]) -> bool:
+    keys: list[tuple[str, str, str]] = []
+    for row in rows:
+        if type(row) is not dict:
+            return False
+        local_port_key = row.get("local_port_key")
+        chassis_id = row.get("chassis_id")
+        port_id = row.get("port_id")
+        if not (
+            _valid_text(local_port_key)
+            and _valid_text(chassis_id)
+            and _valid_text(port_id)
+            and type(row.get("system_name")) is str
+        ):
+            return False
+        keys.append((local_port_key, chassis_id, port_id))
+    return len(keys) == len(set(keys))
+
+
+def _capabilities_confirm_success(
+    snapshot: SwitchSnapshot, names: tuple[str, ...]
+) -> bool:
+    by_name = {
+        capability.capability: capability.outcome
+        for capability in snapshot.capabilities
+    }
+    return all(by_name.get(name) in _REPLACING_FDB_OUTCOMES for name in names)
 
 
 def _parse_started_at(value: object) -> datetime:
@@ -828,6 +896,73 @@ def _replace_fdb(
         "moved": len(moved),
         "disappeared": len(disappeared),
     }
+
+
+def _replace_optional_current_state(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+    run_id: int,
+    snapshot: SwitchSnapshot,
+    observed_at: str,
+) -> None:
+    if _capabilities_confirm_success(
+        snapshot, _VLAN_CAPABILITIES
+    ) and _valid_vlan_memberships(snapshot.vlan_memberships):
+        conn.execute(
+            "DELETE FROM current_switch_vlan_memberships WHERE source_id = ?",
+            (source_id,),
+        )
+        for row in snapshot.vlan_memberships:
+            conn.execute(
+                """
+                INSERT INTO current_switch_vlan_memberships (
+                    source_id, vlan_id, port_key, if_index, bridge_port,
+                    physical_port, port_name, egress, untagged, pvid,
+                    observed_at, collector_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    row["vlan_id"],
+                    row["port_key"],
+                    row["if_index"],
+                    row["bridge_port"],
+                    row["physical_port"],
+                    row["port_name"],
+                    int(row["egress"]),
+                    int(row["untagged"]),
+                    int(row["pvid"]),
+                    observed_at,
+                    run_id,
+                ),
+            )
+
+    if _capabilities_confirm_success(
+        snapshot, _LLDP_CAPABILITIES
+    ) and _valid_lldp_neighbors(snapshot.lldp_neighbors):
+        conn.execute(
+            "DELETE FROM current_switch_lldp_neighbors WHERE source_id = ?",
+            (source_id,),
+        )
+        for row in snapshot.lldp_neighbors:
+            conn.execute(
+                """
+                INSERT INTO current_switch_lldp_neighbors (
+                    source_id, local_port_key, chassis_id, port_id, system_name,
+                    observed_at, collector_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    row["local_port_key"],
+                    row["chassis_id"],
+                    row["port_id"],
+                    row["system_name"],
+                    observed_at,
+                    run_id,
+                ),
+            )
 
 
 def _insert_fdb_event(

@@ -22,11 +22,15 @@ from .runtime_assets import (
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .switch_queries import (
     DEFAULT_PAGE_SIZE,
+    OPTIONAL_STATE_DEFAULT_PAGE_SIZE,
+    OPTIONAL_STATE_MAX_PAGE_SIZE,
     query_switch_capabilities,
     query_switch_events,
     query_switch_fdb,
+    query_switch_lldp_neighbors,
     query_switch_ports,
     query_switch_status,
+    query_switch_vlans,
     validate_pagination,
 )
 from .switch_store import collect_and_save_switch
@@ -356,7 +360,15 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             return 2, err(str(exc))
     if args.switches_command != "status":
         try:
-            validate_pagination(args.limit, args.offset)
+            maximum = (
+                OPTIONAL_STATE_MAX_PAGE_SIZE
+                if args.switches_command in {"vlans", "lldp"}
+                else None
+            )
+            if maximum is None:
+                validate_pagination(args.limit, args.offset)
+            else:
+                validate_pagination(args.limit, args.offset, maximum=maximum)
         except ValueError as exc:
             return 2, err(str(exc))
     if args.switches_command == "fdb" and args.vlan is not None:
@@ -387,6 +399,14 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             page = query_switch_capabilities(conn, **common)
             return 0, ok(
                 capabilities=page["items"], pagination=page["pagination"]
+            )
+        if args.switches_command == "vlans":
+            page = query_switch_vlans(conn, **common)
+            return 0, ok(vlans=page["items"], pagination=page["pagination"])
+        if args.switches_command == "lldp":
+            page = query_switch_lldp_neighbors(conn, **common)
+            return 0, ok(
+                lldp_neighbors=page["items"], pagination=page["pagination"]
             )
         return 2, err("unsupported switches command")
     finally:
@@ -771,10 +791,18 @@ def build_parser() -> argparse.ArgumentParser:
         dest="switches_command", required=True
     )
     switches_sub.add_parser("status")
-    for name in ("capabilities", "ports", "fdb", "events"):
+    for name in ("capabilities", "ports", "fdb", "events", "vlans", "lldp"):
         switch_query = switches_sub.add_parser(name)
         switch_query.add_argument("--source", default="")
-        switch_query.add_argument("--limit", type=int, default=DEFAULT_PAGE_SIZE)
+        switch_query.add_argument(
+            "--limit",
+            type=int,
+            default=(
+                OPTIONAL_STATE_DEFAULT_PAGE_SIZE
+                if name in {"vlans", "lldp"}
+                else DEFAULT_PAGE_SIZE
+            ),
+        )
         switch_query.add_argument("--offset", type=int, default=0)
         if name == "fdb":
             switch_query.add_argument("--vlan", type=int)

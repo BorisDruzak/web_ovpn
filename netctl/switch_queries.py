@@ -6,11 +6,15 @@ from typing import Any
 
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGE_SIZE = 500
+OPTIONAL_STATE_DEFAULT_PAGE_SIZE = 500
+OPTIONAL_STATE_MAX_PAGE_SIZE = 5000
 
 
-def validate_pagination(limit: int, offset: int) -> None:
-    if type(limit) is not int or not 1 <= limit <= MAX_PAGE_SIZE:
-        raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
+def validate_pagination(
+    limit: int, offset: int, *, maximum: int = MAX_PAGE_SIZE
+) -> None:
+    if type(limit) is not int or not 1 <= limit <= maximum:
+        raise ValueError(f"limit must be between 1 and {maximum}")
     if type(offset) is not int or offset < 0:
         raise ValueError("offset must be zero or greater")
 
@@ -22,8 +26,9 @@ def _page(
     *,
     limit: int,
     offset: int,
+    maximum: int = MAX_PAGE_SIZE,
 ) -> dict[str, Any]:
-    validate_pagination(limit, offset)
+    validate_pagination(limit, offset, maximum=maximum)
     rows = [
         dict(row)
         for row in conn.execute(sql, [*params, limit + 1, offset]).fetchall()
@@ -147,6 +152,58 @@ def query_switch_capabilities(
         params,
         limit=limit,
         offset=offset,
+    )
+
+
+def query_switch_vlans(
+    conn: sqlite3.Connection,
+    *,
+    source: str = "",
+    limit: int = OPTIONAL_STATE_DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> dict[str, object]:
+    where, params = _source_filter(source)
+    return _page(
+        conn,
+        """
+        SELECT s.name AS source, v.vlan_id, v.port_key, v.if_index,
+               v.bridge_port, v.physical_port, v.port_name, v.egress,
+               v.untagged, v.pvid, v.observed_at, v.collector_run_id
+        FROM current_switch_vlan_memberships AS v
+        JOIN network_sources AS s ON s.id = v.source_id
+        """
+        + where
+        + " ORDER BY s.name, v.vlan_id, v.port_key LIMIT ? OFFSET ?",
+        params,
+        limit=limit,
+        offset=offset,
+        maximum=OPTIONAL_STATE_MAX_PAGE_SIZE,
+    )
+
+
+def query_switch_lldp_neighbors(
+    conn: sqlite3.Connection,
+    *,
+    source: str = "",
+    limit: int = OPTIONAL_STATE_DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> dict[str, object]:
+    where, params = _source_filter(source)
+    return _page(
+        conn,
+        """
+        SELECT s.name AS source, n.local_port_key, n.chassis_id, n.port_id,
+               n.system_name, n.observed_at, n.collector_run_id
+        FROM current_switch_lldp_neighbors AS n
+        JOIN network_sources AS s ON s.id = n.source_id
+        """
+        + where
+        + " ORDER BY s.name, n.local_port_key, n.chassis_id, n.port_id "
+        "LIMIT ? OFFSET ?",
+        params,
+        limit=limit,
+        offset=offset,
+        maximum=OPTIONAL_STATE_MAX_PAGE_SIZE,
     )
 
 

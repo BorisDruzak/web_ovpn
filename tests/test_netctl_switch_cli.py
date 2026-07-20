@@ -216,6 +216,47 @@ def _snapshot(entry_count: int = 3) -> SwitchSnapshot:
     )
 
 
+def _snapshot_with_optional_state(entry_count: int = 3) -> SwitchSnapshot:
+    snapshot = _snapshot(entry_count)
+    return replace(
+        snapshot,
+        vlan_memberships=tuple(
+            {
+                "vlan_id": 20 + index,
+                "port_key": f"ifindex:{index}",
+                "if_index": index,
+                "bridge_port": index,
+                "physical_port": index,
+                "port_name": f"port-{index}",
+                "egress": True,
+                "untagged": index % 2 == 0,
+                "pvid": index == 1,
+            }
+            for index in range(1, entry_count + 1)
+        ),
+        lldp_neighbors=tuple(
+            {
+                "local_port_key": f"ifindex:{index}",
+                "chassis_id": f"00:11:22:33:44:{index:02X}",
+                "port_id": f"uplink-{index}",
+                "system_name": f"neighbor-{index}",
+            }
+            for index in range(1, entry_count + 1)
+        ),
+        capabilities=(
+            *snapshot.capabilities,
+            CapabilityResult(
+                "vlan_current_egress", SnmpOutcome.SUCCESS_WITH_ROWS
+            ),
+            CapabilityResult(
+                "vlan_current_untagged", SnmpOutcome.SUCCESS_WITH_ROWS
+            ),
+            CapabilityResult("pvid", SnmpOutcome.SUCCESS_WITH_ROWS),
+            CapabilityResult("lldp_remote", SnmpOutcome.SUCCESS_WITH_ROWS),
+        ),
+    )
+
+
 class _FakeSwitchDriver:
     def __init__(self, snapshot: SwitchSnapshot | BaseException) -> None:
         self.snapshot = snapshot
@@ -846,6 +887,135 @@ def test_switch_fdb_query_is_read_only_bounded_and_raw_free(
     finally:
         conn.close()
     assert after == before
+
+
+@pytest.mark.parametrize(
+    ("command", "result_key"),
+    [("vlans", "vlans"), ("lldp", "lldp_neighbors")],
+)
+def test_switch_optional_query_is_read_only_source_filtered_paginated_and_raw_free(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+    command: str,
+    result_key: str,
+) -> None:
+    import netctl.cli as cli
+    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.switch_store import collect_and_save_switch
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    db_url = f"sqlite:///{db_path.as_posix()}"
+    _write_switch_source(config_path)
+    _write_switch_source(config_path, name="switch-other")
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        for name in ("switch-test", "switch-other"):
+            source = get_source(conn, name)
+            assert source is not None
+            result = collect_and_save_switch(
+                conn,
+                source,
+                _FakeSwitchDriver(_snapshot_with_optional_state(3)),
+                "2026-07-19T10:00:00Z",
+            )
+            assert result["status"] == "success"
+        before_changes = conn.total_changes
+    finally:
+        conn.close()
+
+    def fail_factory(*_args):
+        raise AssertionError("driver called by query")
+
+    monkeypatch.setattr(cli, "driver_for", fail_factory)
+    monkeypatch.setattr(cli, "snmp_driver_for", fail_factory)
+    monkeypatch.setattr(cli, "legacy_driver_for", fail_factory)
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + [
+            "switches",
+            command,
+            "--source",
+            "switch-test",
+            "--limit",
+            "2",
+            "--offset",
+            "1",
+        ],
+        capsys,
+    )
+
+    assert rc == 0
+    assert len(data[result_key]) == 2
+    assert {row["source"] for row in data[result_key]} == {"switch-test"}
+    assert data["pagination"] == {
+        "limit": 2,
+        "offset": 1,
+        "returned": 2,
+        "has_more": False,
+        "next_offset": None,
+    }
+    rendered = json.dumps(data).lower()
+    assert "varbind" not in rendered
+    assert "community" not in rendered
+    assert "details" not in rendered
+
+    read_only = connect(db_url)
+    try:
+        assert read_only.total_changes == 0
+        assert before_changes > 0
+    finally:
+        read_only.close()
+
+
+@pytest.mark.parametrize("command", ["vlans", "lldp"])
+def test_switch_optional_query_defaults_to_500_and_allows_at_most_5000(
+    tmp_path: Path, capsys, command: str
+) -> None:
+    from netctl.db import connect
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    conn = connect(f"sqlite:///{db_path.as_posix()}")
+    conn.close()
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path) + ["switches", command], capsys
+    )
+    assert rc == 0
+    assert data["pagination"]["limit"] == 500
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + ["switches", command, "--limit", "5000", "--offset", "0"],
+        capsys,
+    )
+    assert rc == 0
+    assert data["pagination"]["limit"] == 5000
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + ["switches", command, "--limit", "5001"],
+        capsys,
+    )
+    assert rc == 2
+    assert data == {
+        "status": "error",
+        "message": "limit must be between 1 and 5000",
+    }
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + ["switches", command, "--offset", "-1"],
+        capsys,
+    )
+    assert rc == 2
+    assert data == {
+        "status": "error",
+        "message": "offset must be zero or greater",
+    }
 
 
 def test_switch_query_rejects_unbounded_pagination_before_opening_database(
