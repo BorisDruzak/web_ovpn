@@ -44,7 +44,7 @@
 **Modify tests:**
 
 - `tests/alt_linux/test_operational_reliability_contract.py` — 19-scenario catalog and `vault_gate` invariants.
-- `tests/alt_linux/test_vault_health.py` — preserve legacy healthy/unhealthy contracts and add configured-owner regression coverage if needed.
+- `tests/alt_linux/test_vault_check.py` — preserve legacy healthy/unhealthy contracts and add configured-owner regression coverage if needed.
 
 ---
 
@@ -248,7 +248,7 @@ git commit -m "test: add isolated Vault boundary"
 **Files:**
 - Modify: `deploy/alt-linux/control/alt_deploy/vault.py`
 - Modify: `tests/alt_linux/test_or2b1_vault_gate.py`
-- Modify if required: `tests/alt_linux/test_vault_health.py`
+- Modify if required: `tests/alt_linux/test_vault_check.py`
 
 **Interfaces:**
 - Produces: `VaultHealthChecker._build_checks() -> dict[str, bool]`.
@@ -360,7 +360,7 @@ return {"status": "ok", "checks": checks}
 ```bash
 python -m pytest -q \
   tests/alt_linux/test_or2b1_vault_gate.py \
-  tests/alt_linux/test_vault_health.py \
+  tests/alt_linux/test_vault_check.py \
   -k "vault or service_user or caller_euid or decrypt"
 ```
 
@@ -372,7 +372,7 @@ Expected: all selected tests pass and existing `vault_unhealthy/7` behavior rema
 git add \
   deploy/alt-linux/control/alt_deploy/vault.py \
   tests/alt_linux/test_or2b1_vault_gate.py \
-  tests/alt_linux/test_vault_health.py
+  tests/alt_linux/test_vault_check.py
 git commit -m "fix: make Vault health deterministic"
 ```
 
@@ -653,7 +653,7 @@ git commit -m "test: prove Vault gate fails before jobs"
 ```bash
 python -m pytest -q \
   tests/alt_linux/test_or2b1_vault_gate.py \
-  tests/alt_linux/test_vault_health.py \
+  tests/alt_linux/test_vault_check.py \
   tests/alt_linux/test_operational_reliability_contract.py
 ```
 

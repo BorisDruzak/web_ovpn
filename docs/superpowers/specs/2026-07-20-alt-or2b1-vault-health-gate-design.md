@@ -578,7 +578,7 @@ Modify:
 
 ```text
 tests/alt_linux/test_operational_reliability_contract.py
-tests/alt_linux/test_vault_health.py
+tests/alt_linux/test_vault_check.py
 ```
 
 Не выполнять unrelated refactoring существующих test modules.
@@ -618,7 +618,7 @@ tests/alt_linux/test_vault_health.py
 ```bash
 .venv/bin/python -m pytest -q \
   tests/alt_linux/test_or2b1_vault_gate.py \
-  tests/alt_linux/test_vault_health.py \
+  tests/alt_linux/test_vault_check.py \
   tests/alt_linux/test_operational_reliability_contract.py
 
 .venv/bin/python -m pytest -q tests/alt_linux
