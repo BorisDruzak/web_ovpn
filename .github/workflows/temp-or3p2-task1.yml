@@ -19,13 +19,12 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
-      - name: Registration and archive persistence
+      - name: Persistence and lifecycle foundation
         run: >-
           python -m pytest -q
           tests/alt_linux/test_registration_records.py
           tests/alt_linux/test_machine_archive_repository.py
-      - name: Lifecycle and registry generation contracts
-        run: >-
-          python -m pytest -q
           tests/alt_linux/test_machine_lifecycle.py
           tests/alt_linux/test_machine_registry_generations.py
+      - name: Archive service contracts
+        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py
