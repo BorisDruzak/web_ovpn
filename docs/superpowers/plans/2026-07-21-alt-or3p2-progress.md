@@ -7,9 +7,9 @@
 
 ## Tasks
 
-- Task 1: complete (`b3e863d..94f82fb`); RED workflow failed on missing production boundary, GREEN focused and neighboring regression passed; task review clean.
-- Task 2: pending.
-- Task 3: pending.
+- Task 1: complete (`b3e863d..94f82fb`); RED failed on missing boundary, GREEN focused and neighboring regression passed; review clean.
+- Task 2: complete (`a43f2c5..8b768fb`); archive repository RED/ GREEN verified; exact bytes, commit index, cleanup matching and fail-closed scans passed.
+- Task 3: complete (`ad6c2b1..e58c44f`); lifecycle and generation-filter suites passed; review clean.
 - Task 4: pending.
 - Task 5: pending.
 - Task 6: pending.
@@ -17,3 +17,7 @@
 - Task 8: pending.
 - Task 9: pending.
 - Task 10: pending.
+
+## Open Review Items
+
+- Important: `MachineArchiveRepository._ensure_private_directory()` must not chmod/chown an existing ancestor above configured `state_root` when the state root is absent. Add a regression test and correct directory-chain creation before final branch review.
