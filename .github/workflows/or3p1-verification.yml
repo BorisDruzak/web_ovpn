@@ -11,8 +11,6 @@ permissions:
 jobs:
   final-verification:
     runs-on: ubuntu-latest
-    env:
-      EVIDENCE_DIR: ${{ runner.temp }}/or3p1-verification
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,29 +23,33 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Record tested revisions
         run: |
-          mkdir -p "$EVIDENCE_DIR"
-          printf 'tested_head=%s\n' "$(git rev-parse HEAD)" | tee "$EVIDENCE_DIR/verification-revisions.txt"
-          printf 'main=%s\n' "$(git rev-parse origin/main)" | tee -a "$EVIDENCE_DIR/verification-revisions.txt"
+          evidence_dir="$RUNNER_TEMP/or3p1-verification"
+          mkdir -p "$evidence_dir"
+          printf 'tested_head=%s\n' "$(git rev-parse HEAD)" | tee "$evidence_dir/verification-revisions.txt"
+          printf 'main=%s\n' "$(git rev-parse origin/main)" | tee -a "$evidence_dir/verification-revisions.txt"
       - name: Run focused OR-3P1 suite
         run: |
           set -o pipefail
+          evidence_dir="$RUNNER_TEMP/or3p1-verification"
           python -m pytest -q \
             tests/alt_linux/test_or3p1_cli_readiness.py \
             tests/alt_linux/test_or3p1_controller_readiness.py \
             tests/alt_linux/test_or3p1_controller_readiness_failures.py \
             tests/alt_linux/test_or3p1_installer.py \
             tests/alt_linux/test_or3p1_installer_failure_phase.py \
-            | tee "$EVIDENCE_DIR/verification-focused.txt"
+            | tee "$evidence_dir/verification-focused.txt"
       - name: Run complete ALT suite
         run: |
           set -o pipefail
+          evidence_dir="$RUNNER_TEMP/or3p1-verification"
           python -m pytest -q tests/alt_linux \
-            | tee "$EVIDENCE_DIR/verification-alt.txt"
+            | tee "$evidence_dir/verification-alt.txt"
       - name: Run complete repository suite
         run: |
           set -o pipefail
+          evidence_dir="$RUNNER_TEMP/or3p1-verification"
           python -m pytest -q \
-            | tee "$EVIDENCE_DIR/verification-full.txt"
+            | tee "$evidence_dir/verification-full.txt"
       - name: Compile production Python boundaries
         run: |
           python3 -m py_compile \
