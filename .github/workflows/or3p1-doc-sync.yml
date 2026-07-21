@@ -1,17 +1,15 @@
 name: OR-3P1 documentation sync
-# one-shot trigger for approved OR-3P1 documentation synchronization
 
 on:
-  push:
+  pull_request:
     branches:
-      - feat/alt-or3p1-pilot-installer-readiness-20260721
+      - main
 
 permissions:
   contents: write
 
 jobs:
   sync:
-    if: github.event.head_commit.message == 'ci: sync OR-3P1 docs'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,13 +20,16 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
+          readme = Path("deploy/alt-linux/README.md")
+          if "OR-3P1 pilot rollout" in readme.read_text(encoding="utf-8"):
+              raise SystemExit(0)
+
           def replace_exact(path: Path, old: str, new: str) -> None:
               text = path.read_text(encoding="utf-8")
               if old not in text:
                   raise SystemExit(f"required documentation fragment missing: {path}: {old[:80]!r}")
               path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-          readme = Path("deploy/alt-linux/README.md")
           replace_exact(
               readme,
               "- [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)\n",
@@ -180,6 +181,9 @@ jobs:
         run: |
           git config user.name "OpenAI OR-3P1 automation"
           git config user.email "actions@users.noreply.github.com"
+          if git diff --quiet; then
+            exit 0
+          fi
           git add deploy/alt-linux/README.md \
             docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md \
             docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md
