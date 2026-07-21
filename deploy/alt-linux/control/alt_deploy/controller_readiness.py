@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 from .config import Settings
@@ -39,6 +40,24 @@ EXPECTED_UNIT_STATE = {
 }
 
 
+def run_command(
+    command: list[str],
+    *,
+    timeout: int = 30,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+        env=env,
+        cwd=cwd,
+    )
+
+
 def regular_nonempty(path: Path, *, executable: bool = False) -> bool:
     try:
         metadata = path.lstat()
@@ -73,3 +92,101 @@ class ControllerReadinessChecker:
         except (ControlError, OSError, ValueError):
             return False
         return True
+
+    @staticmethod
+    def _run_ok(
+        command: list[str],
+        *,
+        timeout: int = 30,
+        env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> bool:
+        try:
+            completed = run_command(
+                command,
+                timeout=timeout,
+                env=env,
+                cwd=cwd,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
+
+    def static_assets_ok(self) -> bool:
+        if not all(regular_nonempty(path) for path in STATIC_FILES.values()):
+            return False
+        return self._run_ok(
+            ["bash", "-n", str(STATIC_FILES["bootstrap"])],
+            timeout=15,
+        )
+
+    @staticmethod
+    def _parse_systemd_properties(text: str) -> dict[str, str]:
+        properties: dict[str, str] = {}
+        allowed = {"LoadState", "ActiveState", "UnitFileState"}
+        for raw_line in text.splitlines():
+            key, separator, value = raw_line.partition("=")
+            if separator and key in allowed:
+                properties[key] = value.strip()
+        return properties
+
+    def systemd_checks(self) -> dict[str, bool]:
+        loaded_ok = True
+        enabled_ok = True
+        active_ok = True
+
+        for unit, expected in EXPECTED_UNIT_STATE.items():
+            try:
+                completed = run_command(
+                    [
+                        "systemctl",
+                        "show",
+                        unit,
+                        "--property=LoadState",
+                        "--property=ActiveState",
+                        "--property=UnitFileState",
+                    ],
+                    timeout=15,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                loaded_ok = False
+                enabled_ok = False
+                active_ok = False
+                continue
+
+            properties = self._parse_systemd_properties(
+                completed.stdout if completed.returncode == 0 else ""
+            )
+            expected_load, expected_active, expected_file = expected
+            loaded_ok = loaded_ok and (
+                properties.get("LoadState") == expected_load
+            )
+            active_ok = active_ok and (
+                properties.get("ActiveState") == expected_active
+            )
+            enabled_ok = enabled_ok and (
+                properties.get("UnitFileState") == expected_file
+            )
+
+        return {
+            "systemd_units_loaded": loaded_ok,
+            "systemd_units_enabled": enabled_ok,
+            "systemd_units_active": active_ok,
+        }
+
+    def ansible_syntax_ok(self, playbook_name: str) -> bool:
+        playbook = self.settings.ansible_project_dir / "playbooks" / playbook_name
+        environment = os.environ.copy()
+        environment["ANSIBLE_CONFIG"] = str(
+            self.settings.ansible_project_dir / "ansible.cfg"
+        )
+        return self._run_ok(
+            [
+                str(self.settings.ansible_playbook_path),
+                "--syntax-check",
+                str(playbook),
+            ],
+            timeout=120,
+            env=environment,
+            cwd=self.settings.ansible_project_dir,
+        )
