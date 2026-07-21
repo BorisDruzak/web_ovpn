@@ -16,10 +16,23 @@
 - Task 7: complete (`413cf8a..9a4eb6e`); existing processor and race suites pass, long target work remains outside lock, committed/stale generations cannot finalize.
 - Task 8: complete (`6c76fca..e6031c1`); helper executable tests and bootstrap ordering passed; helper performs registration only.
 - Task 9: complete (`b217fed..8e3d05e`); installer/helper publication, archive preservation, private roots/lock, systemd sandbox and readiness passed.
-- Task 10: in progress; operator runbook added, final focused/ALT/full/static verification pending.
+- Task 10: complete; runbook and context documents updated, focused/ALT/full/static verification passed, temporary workflows removed, whole-branch review clean, and standard workflows passed on clean head `9fab8b7078369a724e156090358708b1b179f9f3`.
+
+## Verification
+
+- Focused OR-3P2: `140 passed in 12.99s`.
+- Complete ALT Linux suite: `396 passed in 15.15s`.
+- Complete repository suite: `939 passed, 102 warnings in 46.58s`.
+- Python compilation, Bash syntax, both Ansible syntax checks, `git diff --check`, and clean-tree checks: PASS.
+- Standard workflows on clean head `9fab8b7078369a724e156090358708b1b179f9f3`:
+  - `Verify netctl context stage`, run `29851680946`: success.
+  - `Verify netctl runtime identity`, run `29851681355`: success.
 
 ## Review status
 
 - The archive-root ancestor safety item is resolved and covered by `test_archive_root_creation_does_not_mutate_existing_ancestor`.
-- No open per-task Critical or Important finding remains.
-- Whole-branch specification and code-quality review remains required after final clean-head verification.
+- No open per-task or whole-branch Critical/Important finding remains.
+- PR #22 may be marked Ready for review.
+- Do not merge without explicit user confirmation.
+- Do not install on `192.168.100.17` until OR-3P3 backup/restore is approved, executed and restore-tested.
+- Do not use reference workstation `192.168.101.111` for further acceptance.
