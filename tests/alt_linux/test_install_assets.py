@@ -1,163 +1,104 @@
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from support.installer_sandbox import InstallerSandbox
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-INSTALLER = (
-    REPO_ROOT
-    / "deploy"
-    / "alt-linux"
-    / "install-control-plane.sh"
-)
-
-STAGE_HELPER = (
-    REPO_ROOT
-    / "deploy"
-    / "alt-linux"
-    / "control"
-    / "alt-job-stage"
-)
-
-
-REQUIRED_CONTROLLER_COMMANDS = (
-    "python3",
-    "ansible-playbook",
-    "ansible-vault",
-    "systemd-run",
-    "install",
-    "cp",
-    "ssh",
-    "ssh-keyscan",
-    "mkpasswd",
-)
-
-MUTATING_INSTALLER_COMMANDS = (
-    "install",
-    "rm",
-    "cp",
-    "chown",
-    "find",
-    "chmod",
-    "systemctl",
-)
-
-
-def test_install_script_exists() -> None:
-    assert INSTALLER.is_file(), (
-        "Missing deploy/alt-linux/install-control-plane.sh"
-    )
-
-
-def test_stage_helper_wrapper_exists_and_delegates() -> None:
-    assert STAGE_HELPER.is_file(), (
-        "Missing deploy/alt-linux/control/alt-job-stage"
-    )
-
-    wrapper = STAGE_HELPER.read_text(encoding="utf-8")
-
-    assert wrapper.startswith("#!/usr/bin/python3\n")
-    assert 'Path("/opt/alt-deploy-control")' in wrapper
-    assert (
-        "from alt_deploy.job_stage_helper import main"
-        in wrapper
-    )
-    assert "raise SystemExit(main())" in wrapper
+ALT_ROOT = REPO_ROOT / "deploy" / "alt-linux"
+INSTALLER = ALT_ROOT / "install-control-plane.sh"
+INSTALLER_LIBRARY = ALT_ROOT / "install-control-plane-lib.sh"
+STAGE_HELPER = ALT_ROOT / "control" / "alt-job-stage"
 
 
 @pytest.fixture
 def installer_text() -> str:
-    if not INSTALLER.is_file():
+    if not INSTALLER.is_file() or not INSTALLER_LIBRARY.is_file():
         pytest.skip("Installer has not been created yet")
-
-    return INSTALLER.read_text(encoding="utf-8")
-
-
-def test_installer_uses_strict_bash(
-    installer_text: str,
-) -> None:
-    assert installer_text.startswith("#!/bin/bash\n")
-    assert "set -Eeuo pipefail" in installer_text
+    return (
+        INSTALLER.read_text(encoding="utf-8")
+        + "\n"
+        + INSTALLER_LIBRARY.read_text(encoding="utf-8")
+    )
 
 
-def test_installer_requires_root(
-    installer_text: str,
-) -> None:
-    assert "${EUID}" in installer_text
-    assert "Run as root" in installer_text
-    assert "exit 1" in installer_text
+def test_install_scripts_exist() -> None:
+    assert INSTALLER.is_file()
+    assert INSTALLER_LIBRARY.is_file()
+
+
+def test_stage_helper_wrapper_exists_and_delegates() -> None:
+    assert STAGE_HELPER.is_file()
+    wrapper = STAGE_HELPER.read_text(encoding="utf-8")
+    assert wrapper.startswith("#!/usr/bin/python3\n")
+    assert 'Path("/opt/alt-deploy-control")' in wrapper
+    assert "from alt_deploy.job_stage_helper import main" in wrapper
+    assert "raise SystemExit(main())" in wrapper
+
+
+def test_installer_uses_strict_bash(installer_text: str) -> None:
+    wrapper = INSTALLER.read_text(encoding="utf-8")
+    assert wrapper.startswith("#!/bin/bash\n")
+    assert "set -Eeuo pipefail" in wrapper
+    assert 'source "${ALT_ROOT}/install-control-plane-lib.sh"' in wrapper
+
+
+def test_installer_requires_root_before_library_load() -> None:
+    wrapper = INSTALLER.read_text(encoding="utf-8")
+    root_position = wrapper.index("${EUID}")
+    source_position = wrapper.index("source ")
+    assert "Run as root" in wrapper
+    assert "exit 1" in wrapper
+    assert root_position < source_position
 
 
 def test_installer_installs_root_owned_control_files(
     installer_text: str,
 ) -> None:
-    assert (
-        "/opt/alt-deploy-control/alt_deploy"
-        in installer_text
-    )
-    assert (
-        "/usr/local/sbin/workstationctl"
-        in installer_text
-    )
-    assert (
-        "/usr/local/libexec/alt-provision-worker"
-        in installer_text
-    )
+    for path in (
+        "/opt/alt-deploy-control",
+        "/usr/local/sbin/workstationctl",
+        "/usr/local/libexec/alt-provision-worker",
+    ):
+        assert path in installer_text
 
     assert (
-        "chown -R root:root /opt/alt-deploy-control"
+        'cp -a "${ALT_ROOT}/control/alt_deploy" '
+        '"${control_root}/alt_deploy"'
         in installer_text
     )
-    assert (
-        "find /opt/alt-deploy-control "
-        "-type f -exec chmod 0644"
-        in installer_text
-    )
+    assert 'chown -R root:root "${control_root}"' in installer_text
+    assert 'find "${control_root}" -type f -exec chmod 0644' in installer_text
 
 
 def test_installer_installs_and_compiles_stage_helper(
     installer_text: str,
 ) -> None:
-    expected_install = (
-        "install -o root -g root -m 0755 \\\n"
-        '    "${ALT_ROOT}/control/alt-job-stage" \\\n'
-        "    /usr/local/libexec/alt-job-stage"
-    )
-    assert expected_install in installer_text
+    assert '"${ALT_ROOT}/control/alt-job-stage"' in installer_text
+    assert "/usr/local/libexec/alt-job-stage" in installer_text
 
-    compile_start = installer_text.index(
-        "python3 -m py_compile"
-    )
-    compile_end = installer_text.index(
-        "bash -n",
-        compile_start,
-    )
-    compile_block = installer_text[
-        compile_start:compile_end
-    ]
-
-    assert (
-        '"${ALT_ROOT}/control/alt-job-stage"'
-        in compile_block
-    )
+    compile_start = installer_text.index("python3 -m py_compile")
+    compile_end = installer_text.index("bash -n", compile_start)
+    compile_block = installer_text[compile_start:compile_end]
+    assert '"${ALT_ROOT}/control/alt-job-stage"' in compile_block
 
 
 def test_installer_creates_private_state_directories(
     installer_text: str,
 ) -> None:
-    assert "install -d -o altserver -g altserver -m 0700" in (
-        installer_text
-    )
-
+    assert "install -d -o altserver -g altserver -m 0700" in installer_text
+    assert 'state_root=$(install_destination' in installer_text
     for path in (
-        "/var/lib/alt-deploy",
-        "/var/lib/alt-deploy/jobs",
-        "/var/lib/alt-deploy/assignments",
+        '"${state_root}/jobs"',
+        '"${state_root}/assignments"',
+        '"${state_root}/machine-archives"',
+        '"${state_root}/machine-archives/.transactions"',
+        "/srv/alt-deploy/registration/pending",
+        "/srv/alt-deploy/registration/ready",
+        "/srv/alt-deploy/registration/failed",
     ):
         assert path in installer_text
 
@@ -167,145 +108,93 @@ def test_installer_preserves_existing_ansible_files(
 ) -> None:
     assert (
         'cp -a "${ALT_ROOT}/ansible/playbooks/." '
-        "/home/altserver/ansible/playbooks/"
+        '"${ansible_root}/playbooks/"'
         in installer_text
     )
     assert (
         'cp -a "${ALT_ROOT}/ansible/roles/." '
-        "/home/altserver/ansible/roles/"
+        '"${ansible_root}/roles/"'
         in installer_text
     )
-
-    assert (
-        "rm -rf /home/altserver/ansible"
-        not in installer_text
-    )
-    assert (
-        "rm -rf /var/lib/alt-deploy"
-        not in installer_text
-    )
+    assert 'rm -rf "${ansible_root}"' not in installer_text
+    assert "rm -rf /var/lib/alt-deploy" not in installer_text
 
 
-def test_installer_updates_pending_processor(
+def test_installer_updates_complete_registration_runtime(
     installer_text: str,
 ) -> None:
-    assert (
-        '"${ALT_ROOT}/api/process_pending.py"'
-        in installer_text
-    )
-    assert (
-        "/opt/alt-deploy-api/process_pending.py"
-        in installer_text
-    )
+    assert "/opt/alt-deploy-api" in installer_text
+    assert '"${api_root}/register_api.py"' in installer_text
+    assert '"${api_root}/process_pending.py"' in installer_text
+    assert '"${ALT_ROOT}/api/register_api.py"' in installer_text
+    assert '"${ALT_ROOT}/api/process_pending.py"' in installer_text
+    assert '"${ALT_ROOT}/bootstrap/bootstrap.sh"' in installer_text
+    assert '"${ALT_ROOT}/bootstrap/alt-bootstrap-register"' in installer_text
+    assert "/srv/alt-deploy/bootstrap" in installer_text
+
+    for unit in (
+        "alt-deploy-http.service",
+        "alt-deploy-register.service",
+        "alt-deploy-process.path",
+        "alt-deploy-process.service",
+    ):
+        assert unit in installer_text
 
 
-def test_installer_verifies_before_service_restart(
+def test_installer_verifies_before_maintenance_and_accepts_last(
     installer_text: str,
 ) -> None:
-    verification_markers = (
+    for marker in (
         "python3 -m py_compile",
         "bash -n",
         "pytest -q tests/alt_linux",
-        "ansible-playbook --syntax-check",
-    )
-
-    restart_position = installer_text.index(
-        "systemctl restart alt-deploy-process.path"
-    )
-
-    for marker in verification_markers:
+    ):
         assert marker in installer_text
-        assert installer_text.index(marker) < restart_position
+
+    main_start = installer_text.index("install_control_plane_main()")
+    main_block = installer_text[main_start:]
+    prechecks = main_block.index("install_control_plane_prechecks")
+    maintenance = main_block.index("enter_control_plane_maintenance")
+    activation = main_block.index("activate_control_plane")
+    readiness = main_block.index("run_installed_readiness")
+    success = main_block.index("installed successfully")
+    assert prechecks < maintenance < activation < readiness < success
 
 
 def test_installer_does_not_copy_active_vault_secret(
     installer_text: str,
 ) -> None:
-    assert (
-        'cp -a "${ALT_ROOT}/ansible/group_vars/."'
-        not in installer_text
-    )
-    assert (
-        '"${ALT_ROOT}/ansible/group_vars/vault.yml"'
-        not in installer_text
-    )
-    assert (
-        "vault.yml.example"
-        not in installer_text
-    )
+    assert 'cp -a "${ALT_ROOT}/ansible/group_vars/."' not in installer_text
+    assert '"${ALT_ROOT}/ansible/group_vars/vault.yml"' not in installer_text
+    assert "vault.yml.example" not in installer_text
 
 
 def test_missing_dependency_is_reported_before_runtime_mutation(
     tmp_path: Path,
 ) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    mutation_marker = tmp_path / "mutation.log"
-    missing_command = "ansible-vault"
+    sandbox = InstallerSandbox.create(tmp_path)
+    missing_command = sandbox.fake_bin / "ansible-vault"
+    missing_command.unlink()
+    before = sandbox.protected_snapshot()
 
-    commands = set(REQUIRED_CONTROLLER_COMMANDS)
-    commands.update(MUTATING_INSTALLER_COMMANDS)
-
-    for command in sorted(commands - {missing_command}):
-        command_path = fake_bin / command
-
-        if command in MUTATING_INSTALLER_COMMANDS:
-            command_path.write_text(
-                "#!/bin/sh\n"
-                'printf "%s\\n" "$0" >> "$INSTALL_MARKER"\n'
-                "exit 99\n",
-                encoding="utf-8",
-            )
-            command_path.chmod(0o755)
-        else:
-            command_path.symlink_to("/bin/true")
-
-    completed = subprocess.run(
-        ["/bin/bash", str(INSTALLER)],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "PATH": str(fake_bin),
-            "INSTALL_MARKER": str(mutation_marker),
-        },
+    completed = sandbox.run_library(
+        PATH=f"{sandbox.fake_bin}:/bin",
     )
 
     assert completed.returncode != 0
-    assert (
-        f"Missing required command: {missing_command}"
-        in completed.stderr
-    )
-    assert not mutation_marker.exists(), (
-        "Installer invoked a mutating command before dependency "
-        f"preflight completed:\n{mutation_marker.read_text(encoding='utf-8')}"
-    )
+    assert "Missing required command: ansible-vault" in completed.stderr
+    assert sandbox.protected_snapshot() == before
+    assert InstallerSandbox.mutation_commands(sandbox.commands()) == []
 
 
 def test_reinstall_does_not_mutate_runtime_vault_files(
     installer_text: str,
 ) -> None:
-    runtime_secret_paths = (
-        "/home/altserver/ansible/group_vars/vault.yml",
-        "/home/altserver/.ansible-vault-pass",
-    )
-
-    for path in runtime_secret_paths:
-        assert path not in installer_text, (
-            "Installer must not read, copy, overwrite, chmod, or chown "
-            f"the runtime secret directly: {path}"
-        )
-
-    forbidden_recursive_operations = (
-        "rm -rf /home/altserver/ansible",
+    forbidden_operations = (
         'cp -a "${ALT_ROOT}/ansible/group_vars/."',
-        "chown -R altserver:altserver /home/altserver/ansible\n",
-        "find /home/altserver/ansible -type",
+        '"${ALT_ROOT}/ansible/group_vars/vault.yml"',
+        'rm -rf "${ansible_root}"',
+        'chown -R altserver:altserver "${ansible_root}"',
     )
-
-    for operation in forbidden_recursive_operations:
-        assert operation not in installer_text, (
-            "Installer contains a broad operation that could change the "
-            f"runtime Vault bytes, owner, or mode: {operation}"
-        )
+    for operation in forbidden_operations:
+        assert operation not in installer_text

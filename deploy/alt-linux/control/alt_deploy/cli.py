@@ -11,11 +11,13 @@ from typing import TextIO
 from .ansible import AnsibleController
 from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
+from .controller_readiness import ControllerReadinessChecker
 from .errors import ControlError
 from .job_reconcile import JobReconciler
 from .job_retention import JobRetentionManager
-from .jobs import JobRepository
+from .jobs import ACTIVE_STATES, JobRepository
 from .jsonio import read_json
+from .machine_archive import MachineArchiveService
 from .provision import (
     ProvisionPlanner,
     ProvisionRequest,
@@ -51,6 +53,22 @@ def build_parser() -> argparse.ArgumentParser:
     show = machine_commands.add_parser("show")
     show.add_argument("machine_uuid")
 
+    remove = machine_commands.add_parser("remove")
+    remove_commands = remove.add_subparsers(
+        dest="machine_remove_command",
+        required=True,
+    )
+
+    remove_preview = remove_commands.add_parser("preview")
+    remove_preview.add_argument("machine_identifier")
+
+    remove_apply = remove_commands.add_parser("apply")
+    remove_apply.add_argument("machine_identifier")
+    remove_apply.add_argument(
+        "--reason",
+        required=True,
+    )
+
     preflight = commands.add_parser("preflight")
     preflight.add_argument("machine_uuid")
 
@@ -80,6 +98,8 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    job_commands.add_parser("active")
+
     job_status = job_commands.add_parser("status")
     job_status.add_argument("job_id")
 
@@ -106,6 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="controller_command",
         required=True,
     )
+    controller_commands.add_parser("readiness")
     permissions = controller_commands.add_parser(
         "permissions"
     )
@@ -193,6 +214,45 @@ def main(
                 ).to_public_dict(),
             }
 
+        elif (
+            parsed.command == "machines"
+            and parsed.machine_command == "remove"
+            and parsed.machine_remove_command == "preview"
+        ):
+            payload = {
+                "status": "ok",
+                "preview": MachineArchiveService(
+                    active_settings
+                ).preview(
+                    parsed.machine_identifier
+                ).to_public_dict(),
+            }
+
+        elif (
+            parsed.command == "machines"
+            and parsed.machine_command == "remove"
+            and parsed.machine_remove_command == "apply"
+        ):
+            if os.geteuid() != 0:
+                raise ControlError(
+                    code="root_required",
+                    message=(
+                        "Machine archive apply must be executed "
+                        "as root"
+                    ),
+                    exit_code=6,
+                )
+
+            payload = {
+                "status": "ok",
+                "archive": MachineArchiveService(
+                    active_settings
+                ).apply(
+                    parsed.machine_identifier,
+                    parsed.reason,
+                ).to_public_dict(),
+            }
+
         elif parsed.command == "preflight":
             machine = repository.get(
                 parsed.machine_uuid
@@ -267,6 +327,33 @@ def main(
 
         elif (
             parsed.command == "jobs"
+            and parsed.job_command == "active"
+        ):
+            active_jobs = [
+                job
+                for job in JobRepository(
+                    active_settings
+                ).list()
+                if job.state in ACTIVE_STATES
+            ]
+
+            payload = {
+                "status": "ok",
+                "active_jobs": [
+                    {
+                        "job_id": job.job_id,
+                        "machine_uuid": job.machine_uuid,
+                        "state": job.state,
+                        "stage": job.stage,
+                        "created_at": job.created_at,
+                    }
+                    for job in active_jobs
+                ],
+                "count": len(active_jobs),
+            }
+
+        elif (
+            parsed.command == "jobs"
             and parsed.job_command == "status"
         ):
             job = JobRepository(
@@ -330,6 +417,17 @@ def main(
             payload = {
                 "status": "ok",
                 "vault": VaultHealthChecker(
+                    active_settings
+                ).check(),
+            }
+
+        elif (
+            parsed.command == "controller"
+            and parsed.controller_command == "readiness"
+        ):
+            payload = {
+                "status": "ok",
+                "controller_readiness": ControllerReadinessChecker(
                     active_settings
                 ).check(),
             }

@@ -6,7 +6,11 @@ from pathlib import Path
 from alt_deploy.config import Settings
 from alt_deploy.jsonio import atomic_write_json
 
-from .payloads import TEST_MACHINE_UUID, machine_registration_payload
+from .payloads import (
+    TEST_MACHINE_UUID,
+    machine_registration_payload,
+    provision_request,
+)
 
 
 @dataclass(frozen=True)
@@ -26,20 +30,21 @@ class ControllerSandbox:
         state: str = "ready",
         machine_uuid: str = TEST_MACHINE_UUID,
         preflight_ok: bool = False,
+        registration_id: str | None = None,
     ) -> Path:
         path = (
             self.settings.registration_root
             / state
             / f"{machine_uuid}.json"
         )
-        atomic_write_json(
-            path,
-            machine_registration_payload(
-                machine_uuid=machine_uuid,
-                status=state,
-                preflight_ok=preflight_ok,
-            ),
+        payload = machine_registration_payload(
+            machine_uuid=machine_uuid,
+            status=state,
+            preflight_ok=preflight_ok,
         )
+        if registration_id is not None:
+            payload["registration_id"] = registration_id
+        atomic_write_json(path, payload)
         return path
 
     def install_fake_stage_helper(self) -> Path:
@@ -111,6 +116,27 @@ class ControllerSandbox:
         )
         password_file.chmod(0o600)
         return vault_file, password_file
+
+    def configure_vault_boundary(self) -> dict[str, Path]:
+        vault_file, password_file = self.configure_fake_vault()
+        ansible_vault = self._write_executable(
+            self.root / "bin" / "ansible-vault",
+            (
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"vault_employee_password_hash: "
+                "'\\$y\\$test-only-hash'\"\n"
+            ),
+        )
+        return {
+            "vault_file": vault_file,
+            "password_file": password_file,
+            "ansible_vault": ansible_vault,
+        }
+
+    def write_provision_request(self) -> Path:
+        path = self.root / "request.json"
+        atomic_write_json(path, provision_request())
+        return path
 
 
 def make_controller_sandbox(tmp_path: Path) -> ControllerSandbox:

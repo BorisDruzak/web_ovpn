@@ -1,0 +1,96 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+REGISTER_URL=${ALT_DEPLOY_REGISTER_URL:-http://192.168.100.17:8088/register}
+
+if [[ $(id -u) -ne 0 ]]; then
+    echo "Run as root" >&2
+    exit 6
+fi
+
+iface=$(ip -o route show default | awk '{print $5; exit}')
+if [[ -z "${iface}" ]]; then
+    echo "Default network interface was not found" >&2
+    exit 1
+fi
+
+mac=$(cat "/sys/class/net/${iface}/address" 2>/dev/null || true)
+if [[ -z "${mac}" ]]; then
+    echo "Network interface MAC address is unavailable" >&2
+    exit 1
+fi
+
+hostname_value=$(hostname -s | tr '[:upper:]' '[:lower:]')
+uuid_value=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || true)
+
+payload=$(python3 - \
+    "${hostname_value}" \
+    "${mac}" \
+    "${uuid_value}" <<'PY'
+import json
+import sys
+
+print(
+    json.dumps(
+        {
+            "hostname": sys.argv[1].strip().lower(),
+            "mac": sys.argv[2].strip().lower(),
+            "uuid": sys.argv[3].strip().lower(),
+        },
+        ensure_ascii=False,
+    )
+)
+PY
+)
+
+response_file=$(mktemp)
+cleanup() {
+    rm -f "${response_file}"
+}
+trap cleanup EXIT
+chmod 0600 "${response_file}"
+
+if ! http_status=$(curl \
+    --silent \
+    --show-error \
+    --connect-timeout 5 \
+    --max-time 15 \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    --data "${payload}" \
+    --output "${response_file}" \
+    --write-out '%{http_code}' \
+    "${REGISTER_URL}"); then
+    echo "Machine registration request failed" >&2
+    exit 1
+fi
+
+/bin/cat "${response_file}"
+printf '\n'
+
+python3 - \
+    "${http_status}" \
+    "${response_file}" <<'PY'
+import json
+import pathlib
+import sys
+
+http_status = int(sys.argv[1])
+response_path = pathlib.Path(sys.argv[2])
+
+try:
+    payload = json.loads(response_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+
+if not isinstance(payload, dict):
+    raise SystemExit(1)
+
+status = payload.get("status")
+if http_status == 201 and status == "registered":
+    raise SystemExit(0)
+if http_status == 200 and status == "already_registered":
+    raise SystemExit(0)
+raise SystemExit(1)
+PY

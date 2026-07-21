@@ -23,6 +23,14 @@ class Settings:
     service_user: str = "altserver"
     service_group: str = "altserver"
 
+    @property
+    def machine_archives_dir(self) -> Path:
+        return self.state_root / "machine-archives"
+
+    @property
+    def archive_transactions_dir(self) -> Path:
+        return self.machine_archives_dir / ".transactions"
+
     @classmethod
     def from_env(cls) -> "Settings":
         registration_root = Path(

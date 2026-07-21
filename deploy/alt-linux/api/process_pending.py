@@ -6,17 +6,29 @@ import ipaddress
 import json
 import os
 import socket
+import stat
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-PENDING_DIR = Path("/srv/alt-deploy/registration/pending")
-READY_DIR = Path("/srv/alt-deploy/registration/ready")
-FAILED_DIR = Path("/srv/alt-deploy/registration/failed")
+from alt_deploy.config import Settings
+from alt_deploy.errors import ControlError
+from alt_deploy.locks import exclusive_lock
+from alt_deploy.machine_archive_repository import (
+    MachineArchiveRepository,
+)
+from alt_deploy.registration_records import (
+    load_registration_candidate,
+)
 
-KNOWN_HOSTS = Path("/home/altserver/.ssh/known_hosts_autoinstall")
-PRIVATE_KEY = Path("/home/altserver/.ssh/id_ed25519")
+SETTINGS = Settings.from_env()
+PENDING_DIR = SETTINGS.registration_root / "pending"
+READY_DIR = SETTINGS.registration_root / "ready"
+FAILED_DIR = SETTINGS.registration_root / "failed"
+
+KNOWN_HOSTS = SETTINGS.known_hosts_file
+PRIVATE_KEY = SETTINGS.private_key_file
 
 ANSIBLE = "/usr/bin/ansible"
 SSH_KEYGEN = "/usr/bin/ssh-keygen"
@@ -52,7 +64,10 @@ def run_command(
 def wait_for_ssh(ip: str) -> bool:
     for _ in range(30):
         try:
-            with socket.create_connection((ip, 22), timeout=2):
+            with socket.create_connection(
+                (ip, 22),
+                timeout=2,
+            ):
                 return True
         except OSError:
             time.sleep(2)
@@ -60,12 +75,21 @@ def wait_for_ssh(ip: str) -> bool:
     return False
 
 
-def save_record(path: Path, record: dict, destination_dir: Path) -> None:
-    machine_key = record["machine_key"]
+def save_record(
+    path: Path,
+    record: dict[str, object],
+    destination_dir: Path,
+) -> None:
+    machine_key = str(record["machine_key"])
     destination = destination_dir / f"{machine_key}.json"
 
     path.write_text(
-        json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(
+            record,
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     os.chmod(path, 0o600)
@@ -78,21 +102,90 @@ def save_record(path: Path, record: dict, destination_dir: Path) -> None:
     path.replace(destination)
 
 
-def mark_failed(path: Path, record: dict, message: str) -> None:
-    record["status"] = "failed"
-    record["failed_at"] = utc_now()
-    record["error"] = message[-10000:]
+def finalize_record(
+    source_path: Path,
+    record: dict[str, object],
+    destination_dir: Path,
+    captured_generation: str,
+) -> bool:
+    with exclusive_lock(SETTINGS.lock_file):
+        if (
+            not source_path.exists()
+            and not source_path.is_symlink()
+        ):
+            return False
 
-    save_record(path, record, FAILED_DIR)
+        try:
+            current = load_registration_candidate(
+                source_path,
+                "pending",
+            )
+        except ControlError:
+            return False
+
+        if current.generation.value != captured_generation:
+            return False
+
+        committed = MachineArchiveRepository(
+            SETTINGS
+        ).committed_generation_index()
+        if captured_generation in committed:
+            return False
+
+        save_record(
+            source_path,
+            record,
+            destination_dir,
+        )
+        return True
+
+
+def mark_failed(
+    path: Path,
+    record: dict[str, object],
+    message: str,
+    captured_generation: str,
+) -> bool:
+    failed_record = dict(record)
+    failed_record["status"] = "failed"
+    failed_record["failed_at"] = utc_now()
+    failed_record["error"] = message[-10000:]
+
+    return finalize_record(
+        path,
+        failed_record,
+        FAILED_DIR,
+        captured_generation,
+    )
+
+
+def _remove_invalid_pending(path: Path) -> None:
+    with exclusive_lock(SETTINGS.lock_file):
+        try:
+            metadata = path.lstat()
+        except OSError:
+            return
+        if not stat.S_ISREG(metadata.st_mode):
+            return
+        try:
+            path.unlink()
+        except OSError:
+            return
 
 
 def process_record(path: Path) -> None:
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        path.unlink(missing_ok=True)
-        print(f"{path.name}: invalid JSON: {exc}")
+        candidate = load_registration_candidate(
+            path,
+            "pending",
+        )
+    except ControlError as exc:
+        _remove_invalid_pending(path)
+        print(f"{path.name}: invalid registration: {exc.code}")
         return
+
+    record: dict[str, object] = dict(candidate.payload)
+    captured_generation = candidate.generation.value
 
     try:
         machine_key = str(record["machine_key"])
@@ -100,18 +193,28 @@ def process_record(path: Path) -> None:
         ip = str(record["ip"])
 
         address = ipaddress.ip_address(ip)
-        if not any(address in network for network in ALLOWED_NETWORKS):
-            raise ValueError(f"IP outside deployment networks: {ip}")
+        if not any(
+            address in network
+            for network in ALLOWED_NETWORKS
+        ):
+            raise ValueError(
+                f"IP outside deployment networks: {ip}"
+            )
 
         if not PRIVATE_KEY.is_file():
-            raise RuntimeError(f"Private key not found: {PRIVATE_KEY}")
+            raise RuntimeError(
+                f"Private key not found: {PRIVATE_KEY}"
+            )
 
         print(f"{machine_key}: waiting for SSH on {ip}")
 
         if not wait_for_ssh(ip):
-            raise RuntimeError(f"SSH port did not become available: {ip}:22")
+            raise RuntimeError(
+                f"SSH port did not become available: {ip}:22"
+            )
 
-        # Remove stale keys only from the isolated deployment known_hosts file.
+        # Remove stale keys only from the isolated deployment
+        # known_hosts file.
         for target in (ip, hostname):
             run_command(
                 [
@@ -137,9 +240,15 @@ def process_record(path: Path) -> None:
         )
 
         if scan.returncode != 0 or not scan.stdout.strip():
-            raise RuntimeError("ssh-keyscan failed: " + scan.stderr.strip())
+            raise RuntimeError(
+                "ssh-keyscan failed: "
+                + scan.stderr.strip()
+            )
 
-        with KNOWN_HOSTS.open("a", encoding="utf-8") as known_hosts:
+        with KNOWN_HOSTS.open(
+            "a",
+            encoding="utf-8",
+        ) as known_hosts:
             known_hosts.write(scan.stdout)
 
         os.chmod(KNOWN_HOSTS, 0o600)
@@ -234,20 +343,43 @@ def process_record(path: Path) -> None:
         record["preflight"] = dict(preflight_result)
         record["preflight_verified_at"] = utc_now()
 
-        save_record(path, record, READY_DIR)
-
-        print(
-            f"{machine_key}: "
-            f"AWAITING_ASSIGNMENT at {ip}"
+        finalized = finalize_record(
+            path,
+            record,
+            READY_DIR,
+            captured_generation,
         )
+
+        if finalized:
+            print(
+                f"{machine_key}: "
+                f"AWAITING_ASSIGNMENT at {ip}"
+            )
+        else:
+            print(
+                f"{machine_key}: stale generation result discarded"
+            )
 
     except Exception as exc:
         print(f"{path.name}: FAILED: {exc}")
-        mark_failed(path, record, str(exc))
+        finalized = mark_failed(
+            path,
+            record,
+            str(exc),
+            captured_generation,
+        )
+        if not finalized:
+            print(
+                f"{path.name}: stale failure result discarded"
+            )
 
 
 def main() -> None:
-    for directory in (PENDING_DIR, READY_DIR, FAILED_DIR):
+    for directory in (
+        PENDING_DIR,
+        READY_DIR,
+        FAILED_DIR,
+    ):
         directory.mkdir(parents=True, exist_ok=True)
 
     for path in sorted(PENDING_DIR.glob("*.json")):

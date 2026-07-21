@@ -23,6 +23,24 @@ The current MVP is operational. Do not redesign or replace the verified CLI,
 job, assignment, Vault, structured-stage or Ansible boundaries without a
 specific failing requirement and regression coverage.
 
+## Pilot-first execution order
+
+Approved order:
+
+```text
+OR-3P1 installer completeness and local readiness — implemented in PR #21
+OR-3P2 machine archive/removal preview and register-only re-registration
+OR-3P3 coordinated backup/restore runbook
+OR-3P4 controlled rollout on 192.168.100.17
+OR-3P5 second disposable VM acceptance
+OR-3P6 limited one-machine-at-a-time pilot
+OR-3A transactional installer and automatic rollback
+OR-3B complete failure/idempotency/conflict matrix
+```
+
+Do not apply OR-3P1 to the live controller until OR-3P3 is approved. The accepted
+reference machine remains immutable.
+
 ## Working rules for the next session
 
 1. Work only from the feature branch or an isolated worktree created from it.
@@ -41,7 +59,7 @@ specific failing requirement and regression coverage.
 8. Keep the future UI on `192.168.100.30` separated from SSH keys and Vault on `192.168.100.17`.
 9. Preserve direct-IP SSH options including `StrictHostKeyChecking=yes`, isolated known-hosts and `ProxyCommand=none`.
 10. Preserve the current LightDM and AccountsService implementation. Do not reintroduce SDDM assumptions.
-11. Do not install Phase 2.3 into the controller runtime or delete old job state without separate approval.
+11. Do not apply OR-3P1 to the live controller or delete old job state until the OR-3P3 backup/restore gate is approved.
 12. Do not synthesize `stage_history` for pre-Phase-2.3 jobs.
 
 ## Phase 0 — repository and documentation hygiene
@@ -264,7 +282,8 @@ test -z "$(git status --short)"
 
 ### 2.3.1 Controlled runtime rollout
 
-Status: not started; requires explicit approval.
+Status: OR-3P1 repository implementation is complete in PR #21; live rollout is
+blocked by OR-3P3 backup/restore and remains an explicitly approved operation.
 
 Required sequence:
 
@@ -614,3 +633,18 @@ The system is ready for a controlled multi-machine rollout only when:
 - operational alerts exist for failed jobs and controller services;
 - documentation does not present SDDM, dotted logins or coarse stages as current;
 - rollback and recovery procedures are repeatable and documented.
+
+## Updated pilot sequence after OR-3P2
+
+```text
+OR-3P1 merged: installer completeness and local readiness
+OR-3P2 repository-verified: archive/removal and register-only re-registration
+OR-3P3 next mandatory step: controller backup/restore and restore test
+OR-3P4 blocked: controlled rollout on 192.168.100.17
+OR-3P5 blocked: second disposable VM acceptance
+OR-3P6 blocked: limited pilot
+```
+
+Do not install OR-3P2 before OR-3P3. Do not use `192.168.101.111` for
+destructive or repeat acceptance. The next target must be new, disposable
+and unassigned.
