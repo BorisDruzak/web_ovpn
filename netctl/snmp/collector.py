@@ -344,6 +344,7 @@ async def collect_switch_snapshot(
     qbridge_port = await transport.walk(DOT1Q_FDB_PORT, capability="qbridge_port")
     capabilities.append(qbridge_port)
     fdb: tuple[SwitchFdbEntry, ...] = ()
+    rejected_row_count = 0
 
     if qbridge_port.outcome is SnmpOutcome.SUCCESS_EMPTY:
         empty_qbridge = _final_fdb_result(SnmpOutcome.SUCCESS_EMPTY)
@@ -394,18 +395,6 @@ async def collect_switch_snapshot(
                         error_message="SNMP FDB rows are malformed",
                     )
                 else:
-                    if rejected_row_count and fdb:
-                        capabilities.append(
-                            CapabilityResult(
-                                capability="qbridge_fdb_rejected_rows",
-                                outcome=SnmpOutcome.PARSE_ERROR,
-                                error_code="invalid_fdb_rows_rejected",
-                                error_message="Invalid SNMP FDB rows were rejected",
-                                details={
-                                    "rejected_row_count": rejected_row_count
-                                },
-                            )
-                        )
                     final_fdb = (
                         _final_fdb_result(SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb)
                         if fdb
@@ -429,6 +418,20 @@ async def collect_switch_snapshot(
     if required_failure is not None:
         fdb = ()
         final_fdb = required_failure
+    elif (
+        rejected_row_count
+        and fdb
+        and final_fdb.outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+    ):
+        capabilities.append(
+            CapabilityResult(
+                capability="qbridge_fdb_rejected_rows",
+                outcome=SnmpOutcome.PARSE_ERROR,
+                error_code="invalid_fdb_rows_rejected",
+                error_message="Invalid SNMP FDB rows were rejected",
+                details={"rejected_row_count": rejected_row_count},
+            )
+        )
     capabilities.append(final_fdb)
     vlan_memberships: tuple[dict[str, object], ...] = ()
     stp: dict[str, object] | None = None

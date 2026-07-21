@@ -20,6 +20,7 @@ from netctl.snmp.models import (
 from netctl.snmp.oids import (
     DOT1D_BASE_PORT_IFINDEX,
     DOT1Q_FDB_PORT,
+    DOT1Q_FDB_STATUS,
     IF_ADMIN_STATUS,
     IF_ALIAS,
     IF_DESCR,
@@ -273,5 +274,92 @@ def test_required_group_failure_makes_qbridge_empty_non_replacing(
             ).fetchone()[0]
             == 0
         )
+    finally:
+        conn.close()
+
+
+def test_required_failure_suppresses_mixed_qbridge_rejection_warning(
+    tmp_path: Path,
+) -> None:
+    conn = connect(f"sqlite:///{tmp_path / 'required-mixed-fdb.db'}")
+    try:
+        source = _source(conn)
+        seeded = collect_and_save_switch(
+            conn,
+            source,
+            _SnapshotDriver(_seed_snapshot()),
+            "2026-07-20T10:00:00Z",
+        )
+        assert seeded["status"] == "success"
+
+        valid_index = (44, 0, 1, 2, 3, 4, 5)
+        invalid_index = (44, 0, 1, 2, 3, 4, 6)
+        results = _usable_required_results()
+        results[SYS_DESCR] = CapabilityResult(
+            "sys_descr",
+            SnmpOutcome.TIMEOUT,
+            error_code="private_backend_code",
+            error_message="private backend detail must not escape",
+        )
+        results[DOT1Q_FDB_PORT] = CapabilityResult(
+            "qbridge_port",
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            rows=(
+                _row(DOT1Q_FDB_PORT + valid_index, 1, "integer"),
+                _row(DOT1Q_FDB_PORT + invalid_index, -1, "integer"),
+            ),
+        )
+        results[DOT1Q_FDB_STATUS] = CapabilityResult(
+            "qbridge_status",
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            rows=(
+                _row(DOT1Q_FDB_STATUS + valid_index, 3, "integer"),
+                _row(DOT1Q_FDB_STATUS + invalid_index, 3, "integer"),
+            ),
+        )
+
+        snapshot = asyncio.run(
+            collect_switch_snapshot(source, _FixtureTransport(results))
+        )
+
+        assert snapshot.fdb == ()
+        assert not any(
+            capability.capability == "qbridge_fdb_rejected_rows"
+            for capability in snapshot.capabilities
+        )
+        final_fdb = next(
+            capability
+            for capability in snapshot.capabilities
+            if capability.capability == "fdb"
+        )
+        assert (final_fdb.outcome, final_fdb.error_code) == (
+            SnmpOutcome.TIMEOUT,
+            "required_capability_failed",
+        )
+
+        failed = collect_and_save_switch(
+            conn,
+            source,
+            _SnapshotDriver(snapshot),
+            "2026-07-20T11:00:00Z",
+        )
+
+        assert (failed["status"], failed["fdb_outcome"], failed["error_class"]) == (
+            "failed",
+            "timeout",
+            "fdb_unavailable",
+        )
+        assert [
+            dict(row)
+            for row in conn.execute(
+                "SELECT vlan_key, mac, port_key FROM current_switch_fdb"
+            )
+        ] == [
+            {
+                "vlan_key": "vid:20",
+                "mac": "02:00:00:00:00:01",
+                "port_key": "ifindex:1",
+            }
+        ]
     finally:
         conn.close()
