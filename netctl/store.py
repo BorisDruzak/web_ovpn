@@ -408,7 +408,11 @@ def save_collection(
                 observed_at,
             ),
         )
-    for key in ("firewall_filter_rules", "firewall_nat_rules", "firewall_mangle_rules"):
+    for key, table_name in {
+        "firewall_filter_rules": "filter",
+        "firewall_nat_rules": "nat",
+        "firewall_mangle_rules": "mangle",
+    }.items():
         for item in snapshot.get(key, []):
             conn.execute(
                 """
@@ -419,7 +423,7 @@ def save_collection(
                 (
                     source_id,
                     item.get("id"),
-                    item.get("table"),
+                    table_name,
                     item.get("chain"),
                     item.get("action"),
                     int(bool(item.get("disabled"))),

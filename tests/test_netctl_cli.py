@@ -125,13 +125,20 @@ def test_mikrotik_api_driver_parses_arp_and_dhcp_rows():
     assert dhcp[0]["status"] == "bound"
 
 
-def test_mikrotik_snapshot_persists_address_lists_rules_and_update_posture(tmp_path, capsys):
+def test_mikrotik_snapshot_persists_address_lists_rules_and_update_posture(tmp_path, capsys, monkeypatch):
     from netctl.db import connect, get_source, sync_config_sources
     from netctl.store import save_collection
+    import netctl.cli as cli
 
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
     write_mock_source(config_path)
+    monkeypatch.setattr(
+        cli,
+        "collector_status",
+        lambda: (0, {"status": "ok", "enabled": True, "active": True, "next_run": ""}),
+        raising=False,
+    )
     snapshot = {
         "firewall_address_lists": [{"list": "vpn", "address": "198.51.100.9", "disabled": False}],
         "firewall_filter_rules": [
@@ -196,6 +203,8 @@ def test_mikrotik_snapshot_persists_address_lists_rules_and_update_posture(tmp_p
         "source": "mock-main",
     }
     _, posture = run_cli(["--json", "--config", str(config_path), "--db", db_url, "update-posture", "list"], capsys)
+    assert posture["update_posture"][0]["last_seen_at"]
+    posture["update_posture"][0].pop("last_seen_at")
     assert posture["update_posture"] == [
         {
             "source": "mock-main",
@@ -208,6 +217,114 @@ def test_mikrotik_snapshot_persists_address_lists_rules_and_update_posture(tmp_p
         }
     ]
     assert "on_event" not in json.dumps(posture)
+
+
+def test_router_evidence_lists_report_error_when_collector_is_inactive(tmp_path, capsys, monkeypatch):
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    monkeypatch.setattr(
+        cli,
+        "collector_status",
+        lambda: (1, {"status": "error", "enabled": True, "active": False, "next_run": ""}),
+        raising=False,
+    )
+
+    commands = [
+        ["address-lists", "list"],
+        ["firewall-rules", "list", "--table", "filter"],
+        ["update-posture", "list"],
+    ]
+    for command in commands:
+        rc, data = run_cli(["--json", "--config", str(config_path), "--db", db_url, *command], capsys)
+        assert rc == 1
+        assert data["status"] == "error"
+        assert data["collector"]["active"] is False
+
+
+def test_router_evidence_lists_report_stale_and_preserve_update_timestamp(tmp_path, capsys, monkeypatch):
+    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.store import save_collection
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    monkeypatch.setattr(
+        cli,
+        "collector_status",
+        lambda: (0, {"status": "ok", "enabled": True, "active": True, "next_run": ""}),
+        raising=False,
+    )
+    monkeypatch.setattr(cli, "utc_now", lambda: "2026-07-21T18:16:00Z")
+
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "mock-main")
+        assert source is not None
+        save_collection(
+            conn,
+            source,
+            {
+                "firewall_address_lists": [{"list": "vpn", "address": "198.51.100.9"}],
+                "firewall_filter_rules": [{"id": "*1", "table": "filter", "chain": "forward", "action": "accept"}],
+                "update_posture": {"channel": "stable", "installed_version": "7.19.4", "latest_version": ""},
+            },
+            "2026-07-21T18:00:00Z",
+        )
+        conn.execute("UPDATE network_sources SET last_collect_at = ? WHERE id = ?", ("2026-07-21T18:00:00Z", source["id"]))
+        conn.execute("UPDATE update_posture SET last_seen_at = ? WHERE source_id = ?", ("2026-07-21T18:00:00Z", source["id"]))
+        conn.commit()
+    finally:
+        conn.close()
+
+    commands = [
+        ["address-lists", "list"],
+        ["firewall-rules", "list", "--table", "filter"],
+        ["update-posture", "list"],
+    ]
+    for command in commands:
+        rc, data = run_cli(["--json", "--config", str(config_path), "--db", db_url, *command], capsys)
+        assert rc == 1
+        assert data["status"] == "stale"
+    assert data["update_posture"][0]["last_seen_at"] == "2026-07-21T18:00:00Z"
+
+
+def test_firewall_rules_use_snapshot_table_not_item_value(tmp_path, capsys, monkeypatch):
+    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.store import save_collection
+    import netctl.cli as cli
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    monkeypatch.setattr(
+        cli,
+        "collector_status",
+        lambda: (0, {"status": "ok", "enabled": True, "active": True, "next_run": ""}),
+        raising=False,
+    )
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "mock-main")
+        assert source is not None
+        save_collection(
+            conn,
+            source,
+            {"firewall_nat_rules": [{"id": "*2", "table": "filter", "chain": "srcnat", "action": "masquerade"}]},
+            "2026-07-21T18:00:00Z",
+        )
+    finally:
+        conn.close()
+
+    _, data = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "firewall-rules", "list", "--table", "nat"], capsys
+    )
+    assert data["firewall_rules"][0]["table"] == "nat"
 
 
 def test_collector_status_uses_fixed_timer_show_command(tmp_path, capsys, monkeypatch):

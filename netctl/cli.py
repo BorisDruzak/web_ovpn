@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -202,11 +202,77 @@ def cmd_table(args: argparse.Namespace, table: str, key: str) -> tuple[int, dict
         conn.close()
 
 
+def _parse_utc(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except (AttributeError, ValueError):
+        return None
+
+
+def collector_status() -> tuple[int, dict[str, Any]]:
+    try:
+        completed = subprocess.run(
+            ["systemctl", "show", "netctl-collect.timer"],
+            shell=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError:
+        return 1, {"status": "error", "enabled": False, "active": False, "next_run": ""}
+    if completed.returncode != 0:
+        return 1, {"status": "error", "enabled": False, "active": False, "next_run": ""}
+    fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+    enabled = fields.get("UnitFileState") == "enabled"
+    active = fields.get("ActiveState") == "active"
+    status = "ok" if enabled and active else "error"
+    return (0 if status == "ok" else 1), {
+        "status": status,
+        "enabled": enabled,
+        "active": active,
+        "next_run": _normalise_systemctl_time(fields.get("NextElapseUSecRealtime", "")),
+    }
+
+
+def router_evidence_health(conn, source_name: str = "") -> tuple[int, dict[str, Any]]:
+    collector_rc, collector = collector_status()
+    if collector_rc:
+        return 1, {"status": "error", "collector": collector, "sources": []}
+    sources = [source for source in list_sources(conn) if source.get("enabled")]
+    if source_name:
+        sources = [source for source in sources if source["name"] == source_name]
+    now = _parse_utc(utc_now())
+    source_states = []
+    stale = not sources
+    errored = False
+    for source in sources:
+        collected_at = str(source.get("last_collect_at") or "")
+        source_status = str(source.get("last_status") or "")
+        collected = _parse_utc(collected_at)
+        is_stale = collected is None or now is None or now - collected > timedelta(minutes=15)
+        if source_status == "error":
+            errored = True
+        stale = stale or is_stale
+        source_states.append({"source": source["name"], "status": "error" if source_status == "error" else "stale" if is_stale else "ok", "collected_at": collected_at})
+    status = "error" if errored else "stale" if stale else "ok"
+    return (0 if status == "ok" else 1), {"status": status, "collector": collector, "sources": source_states}
+
+
+def router_evidence_result(conn, source_name: str, **payload: Any) -> tuple[int, dict[str, Any]]:
+    rc, health = router_evidence_health(conn, source_name)
+    return rc, {**health, **payload}
+
+
 def cmd_firewall_rules(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = prepare_conn(args)
     try:
         rows = _rows(conn, "firewall_rules", args.source or "")
-        return 0, ok(firewall_rules=[{**row, "table": row.pop("table_name")} for row in rows if row["table_name"] == args.table])
+        return router_evidence_result(
+            conn,
+            args.source or "",
+            firewall_rules=[{**row, "table": row.pop("table_name")} for row in rows if row["table_name"] == args.table],
+        )
     finally:
         conn.close()
 
@@ -230,7 +296,6 @@ def cmd_update_posture(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         for row in rows:
             value = dict(row)
             source_id = value.pop("source_id")
-            value.pop("last_seen_at", None)
             value["schedulers"] = [
                 {
                     "name": scheduler["name"] or "",
@@ -242,7 +307,7 @@ def cmd_update_posture(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 ).fetchall()
             ]
             posture.append(value)
-        return 0, ok(update_posture=posture)
+        return router_evidence_result(conn, args.source or "", update_posture=posture)
     finally:
         conn.close()
 
@@ -259,21 +324,7 @@ def _normalise_systemctl_time(value: str) -> str:
 
 
 def cmd_collector_status(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    completed = subprocess.run(
-        ["systemctl", "show", "netctl-collect.timer"],
-        shell=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if completed.returncode != 0:
-        return 1, err("collector status unavailable")
-    fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
-    enabled = fields.get("UnitFileState") == "enabled"
-    active = fields.get("ActiveState") == "active"
-    status = "ok" if enabled and active else "error"
-    return (0 if status == "ok" else 1), {"status": status, "enabled": enabled, "active": active, "next_run": _normalise_systemctl_time(fields.get("NextElapseUSecRealtime", ""))}
+    return collector_status()
 
 
 def _ipsec_source_status(source: dict[str, Any]) -> dict[str, Any]:
@@ -597,7 +648,7 @@ def build_parser() -> argparse.ArgumentParser:
     address_lists_sub = address_lists.add_subparsers(dest="address_lists_command", required=True)
     address_lists_list = address_lists_sub.add_parser("list")
     address_lists_list.add_argument("--source", default="")
-    address_lists_list.set_defaults(table="firewall_address_lists", table_key="address_lists")
+    address_lists_list.set_defaults(table="firewall_address_lists", table_key="address_lists", router_evidence=True)
 
     firewall_rules = sub.add_parser("firewall-rules")
     firewall_rules_sub = firewall_rules.add_subparsers(dest="firewall_rules_command", required=True)
@@ -672,6 +723,12 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.command == "collector-status":
         return cmd_collector_status(args)
     if hasattr(args, "table"):
+        if getattr(args, "router_evidence", False):
+            conn = prepare_conn(args)
+            try:
+                return router_evidence_result(conn, getattr(args, "source", "") or "", **{args.table_key: _rows(conn, args.table, getattr(args, "source", "") or "")})
+            finally:
+                conn.close()
         return cmd_table(args, args.table, args.table_key)
     if args.command == "observations":
         return cmd_table(args, "host_observations", "observations")
