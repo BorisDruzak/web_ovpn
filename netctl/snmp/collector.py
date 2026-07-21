@@ -174,6 +174,40 @@ def _optional_group_result(
     )
 
 
+def _parse_optional_ifx(
+    if_results: tuple[CapabilityResult, ...],
+    ifx_results: tuple[CapabilityResult, ...],
+    bridge_to_ifindex: dict[int, int],
+    core_ports: tuple[SwitchPort, ...],
+) -> tuple[tuple[SwitchPort, ...], tuple[CapabilityResult, ...]]:
+    accepted: list[CapabilityResult] = []
+    reported: list[CapabilityResult] = []
+    ports = core_ports
+    for result in ifx_results:
+        if result.outcome not in _USABLE_REQUIRED_OUTCOMES:
+            reported.append(result)
+            continue
+        try:
+            enriched = parse_interfaces(
+                _rows(if_results),
+                _rows((*accepted, result)),
+                bridge_to_ifindex,
+            )
+        except ValueError:
+            reported.extend(
+                _optional_parse_errors(
+                    (result,),
+                    error_code="malformed_ifx",
+                    error_message="SNMP IFX rows are malformed",
+                )
+            )
+        else:
+            accepted.append(result)
+            reported.append(result)
+            ports = enriched
+    return ports, tuple(reported)
+
+
 async def _collect_legacy_fdb(
     transport: CollectorTransport,
     *,
@@ -184,7 +218,7 @@ async def _collect_legacy_fdb(
 ) -> tuple[
     tuple[SwitchFdbEntry, ...],
     CapabilityResult,
-    tuple[CapabilityResult, CapabilityResult, CapabilityResult],
+    tuple[CapabilityResult, ...],
 ]:
     legacy_address = await transport.walk(
         DOT1D_FDB_ADDRESS, capability="legacy_address"
@@ -226,6 +260,12 @@ async def _collect_legacy_fdb(
             bridge_to_ifindex=bridge_to_ifindex,
         )
     except ValueError:
+        legacy_parse = _optional_group_result(
+            "legacy_fdb",
+            SnmpOutcome.PARSE_ERROR,
+            error_code="malformed_fdb",
+            error_message="Legacy SNMP FDB rows are malformed",
+        )
         return (
             (),
             empty_fallback
@@ -235,7 +275,7 @@ async def _collect_legacy_fdb(
                 error_code="malformed_fdb",
                 error_message="SNMP FDB rows are malformed",
             ),
-            legacy_results,
+            (*legacy_results, legacy_parse),
         )
     return (
         fdb,
@@ -270,20 +310,26 @@ async def collect_switch_snapshot(
     bridge_result = await transport.walk(
         DOT1D_BASE_PORT_IFINDEX, capability="bridge_port_ifindex"
     )
-    capabilities.extend((*if_results, *ifx_results, bridge_result))
     required_failure = _required_group_failure(
         (*system_results, *if_results, bridge_result)
     )
+    reported_ifx_results = ifx_results
     try:
         bridge_to_ifindex = parse_bridge_port_map(bridge_result.rows)
-        ports = parse_interfaces(
-            _rows(if_results), _rows(ifx_results), bridge_to_ifindex
-        )
+        ports = parse_interfaces(_rows(if_results), (), bridge_to_ifindex)
     except ValueError:
         if required_failure is None:
             raise
         bridge_to_ifindex = {}
         ports = ()
+    else:
+        ports, reported_ifx_results = _parse_optional_ifx(
+            if_results,
+            ifx_results,
+            bridge_to_ifindex,
+            ports,
+        )
+    capabilities.extend((*if_results, *reported_ifx_results, bridge_result))
 
     options = source.get("driver_options")
     profile_hint: str | None = None

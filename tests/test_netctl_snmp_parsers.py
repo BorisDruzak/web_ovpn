@@ -259,7 +259,8 @@ def test_qbridge_maps_exactly_one_vid_to_fid_but_not_multiple_vids() -> None:
     assert (multiple[0].vlan_key, multiple[0].vlan_id) == ("fid:55", None)
 
 
-def test_qbridge_accepts_gauge32_vlan_fdb_id() -> None:
+@pytest.mark.parametrize("value_type", ["integer", "unsigned32", "gauge32"])
+def test_qbridge_accepts_compatible_vlan_fdb_id_types(value_type: str) -> None:
     from netctl.snmp.fdb import parse_qbridge_fdb
     from netctl.snmp.profiles import GenericProfile
 
@@ -271,7 +272,7 @@ def test_qbridge_accepts_gauge32_vlan_fdb_id() -> None:
         _result("qbridge_status", _vb(DOT1Q_FDB_STATUS + index, 3)),
         _result(
             "vlan_fdb_id",
-            _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55, "gauge32"),
+            _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55, value_type),
         ),
         profile=GenericProfile(),
         ports=ports,
@@ -279,6 +280,28 @@ def test_qbridge_accepts_gauge32_vlan_fdb_id() -> None:
     )
 
     assert (entries[0].vlan_key, entries[0].vlan_id) == ("vid:20", 20)
+
+
+@pytest.mark.parametrize("value_type", ["counter32", "octet_string"])
+def test_qbridge_rejects_disallowed_vlan_fdb_id_types(value_type: str) -> None:
+    from netctl.snmp.fdb import parse_qbridge_fdb
+    from netctl.snmp.profiles import GenericProfile
+
+    ports, bridge_map = _one_port()
+    index = (55, 2, 0, 0, 0, 0, 1)
+
+    with pytest.raises(ValueError, match="dot1qVlanFdbId"):
+        parse_qbridge_fdb(
+            _result("qbridge_port", _vb(DOT1Q_FDB_PORT + index, 7)),
+            _result("qbridge_status", _vb(DOT1Q_FDB_STATUS + index, 3)),
+            _result(
+                "vlan_fdb_id",
+                _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55, value_type),
+            ),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
 
 
 @pytest.mark.parametrize("value", [0, 4_294_967_296])
@@ -303,7 +326,8 @@ def test_qbridge_rejects_out_of_range_gauge32_vlan_fdb_id(value: int) -> None:
         )
 
 
-def test_vlan_memberships_accepts_gauge32_pvid() -> None:
+@pytest.mark.parametrize("value_type", ["integer", "unsigned32", "gauge32"])
+def test_vlan_memberships_accepts_compatible_pvid_types(value_type: str) -> None:
     from netctl.snmp.profiles import GenericProfile
     from netctl.snmp.vlan import parse_vlan_memberships
 
@@ -312,7 +336,7 @@ def test_vlan_memberships_accepts_gauge32_pvid() -> None:
     memberships = parse_vlan_memberships(
         _result("vlan_current_egress"),
         _result("vlan_current_untagged"),
-        _result("pvid", _vb(DOT1Q_PVID + (7,), 20, "gauge32")),
+        _result("pvid", _vb(DOT1Q_PVID + (7,), 20, value_type)),
         profile=GenericProfile(),
         ports=ports,
         bridge_to_ifindex=bridge_map,
@@ -320,6 +344,24 @@ def test_vlan_memberships_accepts_gauge32_pvid() -> None:
 
     assert memberships[0]["vlan_id"] == 20
     assert memberships[0]["pvid"] is True
+
+
+@pytest.mark.parametrize("value_type", ["counter32", "octet_string"])
+def test_vlan_memberships_rejects_disallowed_pvid_types(value_type: str) -> None:
+    from netctl.snmp.profiles import GenericProfile
+    from netctl.snmp.vlan import parse_vlan_memberships
+
+    ports, bridge_map = _one_port()
+
+    with pytest.raises(ValueError, match="PVID"):
+        parse_vlan_memberships(
+            _result("vlan_current_egress"),
+            _result("vlan_current_untagged"),
+            _result("pvid", _vb(DOT1Q_PVID + (7,), 20, value_type)),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
 
 
 @pytest.mark.parametrize("value", [0, 4095])
