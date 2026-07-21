@@ -19,24 +19,12 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
-      - name: Foundation
+      - name: Persistence and lifecycle foundation
         run: >-
           python -m pytest -q
           tests/alt_linux/test_registration_records.py
           tests/alt_linux/test_machine_archive_repository.py
           tests/alt_linux/test_machine_lifecycle.py
           tests/alt_linux/test_machine_registry_generations.py
-      - name: Preview read only
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py::test_preview_is_read_only
-      - name: Apply exact bytes
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py::test_apply_archives_exact_bytes
-      - name: Invalid reason
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py -k invalid_reason
-      - name: Operator identity fallback
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py::test_untrusted_sudo_identity_falls_back_safely
-      - name: Assigned blocker
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py::test_assigned_machine_changes_nothing
-      - name: Busy blocker
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py::test_busy_machine_changes_nothing_and_redacts
-      - name: Copy failure
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py::test_copy_failure_leaves_source_active
+      - name: Complete archive service contracts
+        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py
