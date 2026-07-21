@@ -394,7 +394,7 @@ async def collect_switch_snapshot(
                         error_message="SNMP FDB rows are malformed",
                     )
                 else:
-                    if rejected_row_count:
+                    if rejected_row_count and fdb:
                         capabilities.append(
                             CapabilityResult(
                                 capability="qbridge_fdb_rejected_rows",

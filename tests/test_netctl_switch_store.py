@@ -1474,6 +1474,52 @@ def test_rejected_qbridge_warning_requires_a_bounded_integer_count(
     )
 
 
+def test_rejected_qbridge_warning_cannot_replace_fdb_with_success_empty(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_invalid_qbridge_empty")
+    prior = _entry("02:00:00:00:00:01", 1)
+    collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_snapshot((prior,))),
+        "2026-07-19T10:00:00Z",
+    )
+    malformed = _snapshot(())
+    malformed = replace(
+        malformed,
+        capabilities=(
+            CapabilityResult(
+                "qbridge_fdb_rejected_rows",
+                SnmpOutcome.PARSE_ERROR,
+                error_code="invalid_fdb_rows_rejected",
+                error_message="Invalid SNMP FDB rows were rejected",
+                details={"rejected_row_count": 1},
+            ),
+            *malformed.capabilities,
+        ),
+    )
+
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(malformed),
+        "2026-07-19T11:00:00Z",
+    )
+
+    assert (result["status"], result["error_class"]) == (
+        "failed",
+        "invalid_snapshot",
+    )
+    assert _rows(
+        switch_conn,
+        "SELECT mac, port_key FROM current_switch_fdb WHERE source_id = ?",
+        (source["id"],),
+    ) == [{"mac": prior.mac, "port_key": prior.port_key}]
+
+
 def test_running_run_is_committed_before_driver_network_io(tmp_path: Path) -> None:
     from netctl.switch_store import collect_and_save_switch
 

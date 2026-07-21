@@ -363,6 +363,11 @@ def _validate_snapshot(snapshot: object) -> str:
         return "unexpected_fdb_rows"
     if fdb_outcome not in _REPLACING_FDB_OUTCOMES and snapshot.fdb:
         return "failed_fdb_has_rows"
+    if (
+        _QBRIDGE_REJECTED_ROWS_CAPABILITY in capability_names
+        and fdb_outcome is not SnmpOutcome.SUCCESS_WITH_ROWS
+    ):
+        return "invalid_fdb_warning"
     return ""
 
 

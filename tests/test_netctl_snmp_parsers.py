@@ -810,12 +810,10 @@ def test_collector_keeps_parse_error_when_all_qbridge_rows_are_rejected() -> Non
         SnmpOutcome.PARSE_ERROR,
         "malformed_fdb",
     )
-    rejected = next(
-        cap
+    assert not any(
+        cap.capability == "qbridge_fdb_rejected_rows"
         for cap in snapshot.capabilities
-        if cap.capability == "qbridge_fdb_rejected_rows"
     )
-    assert rejected.details == {"rejected_row_count": 2}
 
 
 def test_collector_rejects_qbridge_table_mismatch_atomically() -> None:
