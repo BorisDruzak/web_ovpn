@@ -1,59 +1,108 @@
 # ALT OR-3P3 Coordinated Backup and Restore Design
 
 **Date:** 2026-07-22  
-**Status:** approved design, implementation not started  
-**Target repository:** `BorisDruzak/web_ovpn`  
-**Target controller:** `192.168.100.17`
+**Status:** approved design, self-reviewed, implementation not started  
+**Repository:** `BorisDruzak/web_ovpn`  
+**Controller:** `192.168.100.17`
 
-## 1. Purpose
+## 1. Purpose and recovery level
 
-OR-3P3 provides a verified rollback boundary before OR-3P4 changes the live ALT workstation provisioning controller.
+OR-3P3 establishes the mandatory rollback gate before OR-3P4 changes the live ALT workstation provisioning controller.
 
-The selected recovery level is a coordinated rollback on the same controller after an unsuccessful OR-3P4 rollout. The design assumes that the controller disk, the active Ansible Vault material, the Vault password file, and the controller SSH private identity still exist and are readable.
+The selected recovery level is a coordinated rollback on the same controller after an unsuccessful OR-3P4 rollout. It assumes that the controller disk, active Ansible Vault file, Vault password file, SSH private identity, and backup-tool fingerprint key remain present and readable.
 
-OR-3P3 does not provide bare-metal disaster recovery after total controller loss. It does not export secret contents to another host. It does not perform a real restore before OR-3P4; it requires an isolated restore rehearsal.
+OR-3P3 does not provide bare-metal recovery after total controller loss. Secret contents are not exported. A real restore is not performed before OR-3P4; an isolated restore rehearsal is mandatory.
 
-The accepted reference workstation `192.168.101.111` remains immutable and must not be contacted or used during OR-3P3 development, verification, backup creation, or rehearsal.
+The accepted workstation `192.168.101.111` remains immutable and must not be contacted during development, CI, backup creation, verification, rehearsal, or restore.
 
-## 2. Safety goals
+## 2. Approved decisions
 
-The implementation must guarantee the following boundaries:
+The design uses:
 
-1. A backup is created only while provisioning jobs, pending registration processing, and registration writes are quiescent.
-2. Runtime code and controller state are captured as one coordinated generation.
-3. A restore always restores the complete bundle. Partial component restore is not supported.
-4. Secret contents are never copied into the rollback bundle or printed in logs or command output.
-5. A published bundle is checksummed, structurally validated, and restore-rehearsed before it can be selected for OR-3P4.
-6. Rehearsal never writes to production runtime or state paths.
-7. A restore failure either returns the complete pre-restore state or leaves maintenance services stopped with an explicit manual-recovery error.
-8. Filesystem traversal, unsafe archive members, symlink escapes, hardlink escapes, devices, sockets, and FIFOs fail closed.
-9. Existing bundles are never removed automatically.
-10. The live controller is not modified by repository tests or CI.
+- a local backup root at `/var/backups/alt-deploy`;
+- a short maintenance window;
+- full coordinated restore only, with no component selection;
+- isolated rehearsal under `/var/tmp/alt-deploy-restore-test`;
+- a separate root-only utility independent of `workstationctl`;
+- component `tar.zst` archives plus one strict JSON manifest;
+- full backup of bootstrap and deployment metadata;
+- secret identity verification without archiving secret contents;
+- no automatic retention or deletion;
+- explicit operator selection of the rollback backup for OR-3P4.
 
-## 3. Non-goals
+## 3. Safety invariants
+
+1. Backup creation requires no queued or running provision job, no active transient provision unit, no pending registration, and no running pending processor.
+2. Runtime code and controller state are one compatibility generation.
+3. Restore always applies the complete bundle.
+4. Secret contents never enter archives, logs, JSON output, fixtures, or CI artifacts.
+5. A bundle must be published, verified, and rehearsed before OR-3P4 can select it.
+6. Rehearsal never writes to a production runtime or state path.
+7. All controller state mutation remains blocked throughout the quiescent capture and restore transaction.
+8. Traversal, symlink escape, hardlink escape, special files, unsafe ownership, or malformed evidence fail closed.
+9. A failed restore either proves complete reversal to the pre-restore generation or leaves maintenance services stopped with `restore_manual_recovery_required`.
+10. Existing bundles are never removed automatically.
+
+## 4. Non-goals
 
 OR-3P3 does not implement:
 
-- remote or off-site backup replication;
-- total-loss recovery of Vault, the Vault password, or the SSH private key;
-- selective restore of one component;
-- automatic retention or age-based deletion;
-- automatic restore during installer failure;
-- workstation-side backup or restore;
-- assignment release, machine reassignment, or job deletion;
-- a broad transactional release framework for future controller versions.
+- remote replication or off-site storage;
+- backup of Vault plaintext, the Vault password, or SSH private-key bytes;
+- total-loss recovery of the controller;
+- selective or partial restore;
+- automatic retention;
+- automatic restore from the control-plane installer;
+- workstation backup or restore;
+- assignment release, reassignment, or job deletion;
+- a general release framework for unrelated services.
 
-## 4. Operator interface
+## 5. Bootstrap-safe installation model
 
-A separate root-only utility is installed at:
+OR-3P3 must be installable before a rollback bundle exists. Therefore the backup tool has a dedicated minimal installer:
+
+```text
+deploy/alt-linux/install-backup-tool.sh
+```
+
+It installs only:
 
 ```text
 /usr/local/sbin/alt-deploy-backup
+/opt/alt-deploy-backup/alt_deploy_backup/
+/var/lib/alt-deploy-backup/
+/var/backups/alt-deploy/
+/var/log/alt-deploy-backup.log
 ```
 
-It is independent of `workstationctl`, so an operator can use it when the provisioning control package is unhealthy.
+Required ownership and modes:
 
-Supported commands:
+```text
+/usr/local/sbin/alt-deploy-backup        root:root 0750
+/opt/alt-deploy-backup                   root:root 0750
+Python package files                     root:root 0640
+/var/lib/alt-deploy-backup               root:root 0700
+/var/backups/alt-deploy                  root:root 0700
+/var/log/alt-deploy-backup.log           root:root 0600
+```
+
+The dedicated installer:
+
+- requires root;
+- performs syntax and source validation before mutation;
+- never stops control-plane services;
+- never contacts a workstation;
+- never modifies provisioning runtime, jobs, assignments, registrations, Vault, or SSH identity;
+- preserves existing bundles, operation logs, and the existing fingerprint key;
+- verifies the installed utility after publication.
+
+The later control-plane installer must not overwrite the installed backup utility or its private state. OR-3P4 requires a compatible installed backup-tool version and an explicit rehearsed backup ID.
+
+This separation avoids a bootstrap cycle in which `install-control-plane.sh` would require a backup before the tool capable of creating that backup existed.
+
+## 6. Operator interface
+
+The root-only CLI is:
 
 ```bash
 sudo alt-deploy-backup create
@@ -64,50 +113,53 @@ sudo alt-deploy-backup restore <backup-id>
 sudo alt-deploy-backup delete <backup-id>
 ```
 
-All commands require effective UID `0`. Each command emits exactly one public JSON object. Diagnostics that are not part of that object go to the protected operation log, not to stdout. Error responses expose a stable error code and safe details only.
+Every command requires effective UID `0` and emits exactly one public JSON object. It exposes stable error codes and bounded safe details only.
 
-The utility is installed as `root:root` mode `0750`. It must not import runtime modules from `/opt/alt-deploy-control`; its backup, verification, rehearsal, and restore logic must remain usable independently.
+The utility must not import provisioning runtime modules from `/opt/alt-deploy-control`. It may reuse formats by implementing strict independent readers, but backup and restore remain usable when the provisioning package is broken.
 
-## 5. Storage layout
+## 7. Storage layout and identifiers
 
-Published bundles are stored locally under:
+Published bundles:
 
 ```text
 /var/backups/alt-deploy/<backup-id>/
 ```
 
-The backup root and every bundle directory are `root:root` mode `0700`. Bundle files are `root:root` mode `0600`.
-
-Backup identifiers use the exact form:
-
-```text
-backup-YYYYMMDDTHHMMSSZ-<8 lowercase hex>
-```
-
-Creation uses a private temporary directory:
+Creation staging:
 
 ```text
 /var/backups/alt-deploy/.creating-<backup-id>/
 ```
 
-A temporary directory is published only by an atomic rename after all component archives, the manifest, and the initial integrity verification succeed.
+Restore transaction state:
 
-Restore rehearsal uses:
+```text
+/var/backups/alt-deploy/.restore-transactions/<restore-id>/
+```
+
+Emergency pre-restore snapshot:
+
+```text
+/var/backups/alt-deploy/pre-restore-<timestamp>/
+```
+
+Rehearsal root:
 
 ```text
 /var/tmp/alt-deploy-restore-test/<backup-id>/
 ```
 
-Restore transaction state and emergency rollback material remain under the backup root and outside all restored production paths:
+Backup IDs have the exact form:
 
 ```text
-/var/backups/alt-deploy/.restore-transactions/<restore-id>/
-/var/backups/alt-deploy/pre-restore-<timestamp>/
+backup-YYYYMMDDTHHMMSSZ-<8 lowercase hex>
 ```
 
-## 6. Bundle components
+Bundle directories are `root:root 0700`; files are `root:root 0600`. Publication is an atomic rename followed by backup-root `fsync`.
 
-A published bundle contains:
+## 8. Bundle format
+
+A normal published bundle contains exactly:
 
 ```text
 manifest.json
@@ -119,7 +171,7 @@ registration-state.tar.zst
 deployment-assets.tar.zst
 ```
 
-After successful validation it may also contain:
+After successful checks it may additionally contain:
 
 ```text
 verification.json
@@ -128,9 +180,9 @@ rehearsal.json
 
 No other top-level object is allowed.
 
-### 6.1 Runtime component
+### 8.1 `runtime.tar.zst`
 
-`runtime.tar.zst` captures the presence or absence and, when present, the exact content and metadata of:
+Captures presence or absence and, when present, exact content and metadata for:
 
 ```text
 /opt/alt-deploy-control
@@ -140,111 +192,96 @@ No other top-level object is allowed.
 /usr/local/libexec/alt-job-stage
 ```
 
-An absent path is a valid source state when it was absent before OR-3P4. The manifest records it as absent. Full restore removes a post-backup path when the corresponding source path was recorded as absent.
+A path absent before OR-3P4 is recorded as absent. Full restore removes a post-backup object at that path instead of retaining a new-generation file.
 
-The backup utility itself is not restored as part of this component during the current OR-3P3/OR-3P4 cycle. OR-3P4 must use the same verified OR-3P3 utility version and must not replace `/usr/local/sbin/alt-deploy-backup` before its rollback gate is complete.
+The backup utility and `/opt/alt-deploy-backup` are intentionally outside the restored runtime generation. OR-3P4 must preserve them until its rollback gate is retired.
 
-### 6.2 Systemd component
+### 8.2 `systemd.tar.zst`
 
-`systemd.tar.zst` captures the existing regular unit files matching the approved `alt-deploy-*` unit set under:
-
-```text
-/etc/systemd/system/
-```
-
-Enablement links are not archived. The manifest records `is-enabled`, `is-active`, and failed-state information for each managed unit, and restore reconstructs the service state through `systemctl` after `daemon-reload`.
-
-The managed maintenance units are:
+Captures presence or absence of these exact unit files under `/etc/systemd/system`:
 
 ```text
-alt-deploy-process.path
-alt-deploy-register.service
 alt-deploy-http.service
-```
-
-The oneshot processor is inspected but is not started as part of service-state restoration:
-
-```text
+alt-deploy-register.service
+alt-deploy-process.path
 alt-deploy-process.service
 ```
 
-Transient `alt-provision-*.service` units are never stopped or archived. Their presence blocks backup and restore through the active-job gate.
+Enablement symlinks are not archived. The manifest stores `is-enabled`, `is-active`, and failed-state observations. Restore reconstructs enablement through `systemctl` after `daemon-reload`.
 
-### 6.3 Ansible component
+Transient `alt-provision-*.service` units are never archived or stopped; any active transient unit blocks backup and restore.
 
-`ansible.tar.zst` captures:
+### 8.3 `ansible.tar.zst`
+
+Captures:
 
 ```text
 /home/altserver/ansible
 ```
 
-with this mandatory exclusion:
+and excludes:
 
 ```text
 /home/altserver/ansible/group_vars/vault.yml
 ```
 
-The archive preserves regular files, directories, safe internal symlinks where explicitly permitted by the source policy, numeric ownership, modes, timestamps, ACLs, and supported extended attributes. A source symlink that resolves outside the allowed Ansible root fails closed.
+The archive preserves numeric ownership, modes, timestamps, supported ACLs, and supported xattrs. Only symlinks whose resolved target remains within the approved Ansible root are permitted.
 
-Restore replaces the non-secret Ansible tree while preserving the active `vault.yml` in place. The staged restored tree receives the existing Vault file only after fingerprint verification and immediately before final installation.
+Restore builds a staged non-secret Ansible tree, revalidates the live Vault identity, and inserts the existing Vault file into the staged tree without archiving it.
 
-### 6.4 Controller-state component
+### 8.4 `controller-state.tar.zst`
 
-`controller-state.tar.zst` captures the complete existing tree:
+Captures the complete tree:
 
 ```text
 /var/lib/alt-deploy
 ```
 
-This includes jobs, assignments, machine archives, archive transactions, controller locks stored under the tree, and other provisioning state owned by that root.
+including jobs, assignments, machine archives, transaction evidence, and other provisioning state under that root. It is restored only together with the matching runtime generation.
 
-Runtime code and this state component form one compatibility generation. They cannot be restored independently.
+### 8.5 `registration-state.tar.zst`
 
-### 6.5 Registration-state component
-
-`registration-state.tar.zst` captures:
+Captures:
 
 ```text
 /srv/alt-deploy/registration
 ```
 
-including pending, ready, failed, and any approved archive-related registration state present under that root. Backup creation requires the pending queue to be empty, but ready and failed records remain part of the bundle.
+including ready, failed, archive-related state, and the empty pending directory. Creation is blocked when `pending` contains a registration JSON record.
 
-### 6.6 Deployment-assets component
+### 8.6 `deployment-assets.tar.zst`
 
-`deployment-assets.tar.zst` captures both:
+Captures:
 
 ```text
 /srv/alt-deploy/bootstrap
 /srv/alt-deploy/metadata
 ```
 
-This includes `ansible_authorized_keys`, autoinstall metadata, VM profile metadata, package-group archives, installation-script archives, bootstrap scripts, and the register-only helper when present.
+including `ansible_authorized_keys`, autoinstall metadata, VM profile metadata, package-group archives, installation-script archives, bootstrap scripts, and the register-only helper when present. The authorized key is public material and is included; the SSH private key is excluded.
 
-The authorized key is public key material and is intentionally included. No SSH private key is included.
+## 9. Manifest contract
 
-## 7. Manifest contract
+`manifest.json` is strict UTF-8 JSON with a trailing newline. Unknown keys and unsupported schema versions fail closed unless explicitly versioned as extensible fields.
 
-`manifest.json` is UTF-8 JSON with a trailing newline and a strict schema. Unknown schema versions fail closed.
+It contains:
 
-The manifest contains:
-
-- schema version and utility version;
-- backup ID, creation time in UTC, controller hostname, and machine ID when available;
-- source controller operating-system metadata;
-- installed repository or package commit identity when it can be determined safely;
-- one record per component with filename, byte size, SHA-256, archive format, allowed roots, and source path presence;
-- numeric UID/GID, owner/group names, modes, ACL/xattr capability flags, and required path metadata;
-- the exact managed systemd unit state observed before maintenance;
-- preflight results;
+- schema and backup-tool versions;
+- backup ID and UTC creation time;
+- controller hostname, machine ID when available, and OS metadata;
+- installed repository/package identity when safely determinable;
+- ordered component records with filename, size, SHA-256, allowed roots, and source presence;
+- required path metadata with numeric UID/GID, names, modes, and supported ACL/xattr flags;
+- exact managed systemd state observed before maintenance;
+- preflight check results;
 - safe secret identity records;
-- the ordered component set required for full restore.
+- the mandatory all-component restore order.
 
-The manifest does not contain file contents, registration payloads, job logs, Ansible variable values, passwords, password hashes, private keys, or decrypted Vault material.
+It never contains registration bodies, job logs, Ansible values, decrypted Vault material, passwords, password hashes, private-key bytes, or the HMAC key.
 
-## 8. Secret identity verification
+## 10. Secret identity model
 
-These secret paths are never archived:
+Secret contents are never archived:
 
 ```text
 /home/altserver/ansible/group_vars/vault.yml
@@ -252,63 +289,68 @@ These secret paths are never archived:
 /home/altserver/.ssh/id_ed25519
 ```
 
-The manifest records path, numeric owner/group, names, mode, size, and a safe identity value.
+The controller-local fingerprint key is:
 
-Identity mechanisms are:
+```text
+/var/lib/alt-deploy-backup/fingerprint.key
+```
 
-- `vault.yml`: SHA-256 of the encrypted Vault file plus Vault-header validation;
-- SSH private key: public-key fingerprint derived with `ssh-keygen`, never a hash of private-key bytes;
-- `.ansible-vault-pass`: HMAC-SHA-256 using a controller-local root-only fingerprint key that is not stored in the bundle.
+It is `root:root 0600`, created once from cryptographically secure random bytes, never replaced by reinstall, never included in a bundle, and outside all restored roots.
 
-The fingerprint key is created once under a dedicated root-only state path outside all restored roots. The same-controller recovery model requires that key to remain available. The raw Vault password and a plain unsalted hash of it are never stored.
+Identity records use:
 
-Before backup publication, verify, rehearsal, and restore, all secret files must:
+- encrypted `vault.yml`: file SHA-256 plus Vault-header validation;
+- `.ansible-vault-pass`: HMAC-SHA-256 with the fingerprint key, never a plain content hash;
+- SSH private key: public-key fingerprint derived with `ssh-keygen`, never a private-byte hash.
 
-- be regular files opened with no-follow semantics;
-- have the approved owner/group and mode;
-- remain stable across safe open and read;
-- match the expected Vault, password-file, or SSH-key format;
-- match the bundle identity during verify, rehearsal, and restore.
+The manifest also records path, numeric owner/group, names, mode, and size. Every secret is opened with no-follow semantics and checked for stable device, inode, size, and metadata during reading.
 
-A mismatch blocks restore until the operator resolves it manually.
+Backup publication, verify, rehearsal, and restore fail when secret type, ownership, mode, format, or identity does not match.
 
-## 9. Global operation lock
+## 11. Locking and snapshot consistency
 
-Every command takes an exclusive root-owned lock:
+Every operation takes the root-owned global lock:
 
 ```text
 /run/lock/alt-deploy-backup.lock
 ```
 
-The lock file and its parent must pass no-follow, owner, type, and mode checks. Concurrent create, verify, rehearse, restore, or delete operations fail with `backup_lock_busy`.
+The controller's existing lifecycle lock remains the serialization boundary for provisioning, registration admission, machine archive mutation, and job-state mutation.
 
-The common controller lifecycle lock remains authoritative for provisioning and registration state checks. The backup utility must not hold that lifecycle lock during long archive compression. It uses a maintenance service stop plus before-and-after generation checks to establish quiescence.
+For `create` and `restore`, after maintenance services stop, the backup utility acquires the controller lifecycle lock and holds it continuously through:
 
-## 10. Backup creation lifecycle
+- the second quiescence check;
+- source inventory;
+- component capture or restore staging validation;
+- manifest creation and publication, or restore transaction completion/rollback;
+- final state checks.
 
-`create` follows this sequence.
+This maintenance-window lock may be held for the complete archive operation. That is intentional: without it, a root CLI invocation could mutate jobs, assignments, machine archives, or registration state while services were stopped.
 
-### 10.1 Preflight before service mutation
+Before and after component capture, the utility compares a bounded source inventory containing path, type, device, inode, size, `mtime_ns`, and `ctime_ns`. Any unexplained change aborts publication.
 
-The utility verifies:
+## 12. Backup creation
 
-- effective UID is `0`;
-- required commands are available: `python3`, GNU `tar`, `zstd`, `sha256sum`, `systemctl`, `systemd-analyze`, `ansible-playbook`, `ssh-keygen`;
-- the `altserver` account exists with the expected UID/GID relationship;
-- source roots are safely inspectable;
-- there are no queued or running provision jobs;
-- `registration/pending` contains no registration JSON record;
-- `alt-deploy-process.service` is inactive;
-- no transient `alt-provision-*.service` is active;
-- secret files pass identity, ownership, mode, and format checks;
-- sufficient free space exists for the estimated bundle and temporary data;
-- the backup root and lock paths are safe.
+### 12.1 Preflight without service mutation
 
-No service is stopped if preflight fails.
+`create` verifies:
 
-### 10.2 Maintenance window
+- root execution;
+- GNU `tar`, `zstd`, `python3`, `sha256sum`, `systemctl`, `systemd-analyze`, `ansible-playbook`, and `ssh-keygen`;
+- `altserver` account identity;
+- safe source roots and sufficient disk space;
+- no queued/running job;
+- no active `alt-provision-*` unit;
+- empty registration pending queue;
+- inactive `alt-deploy-process.service`;
+- valid secret identities and fingerprint key;
+- safe backup, log, state, and lock roots.
 
-The utility records the exact enabled, active, inactive, and failed state of each managed unit. It then stops, in dependency-safe order:
+No service is stopped on preflight failure.
+
+### 12.2 Maintenance window
+
+The utility records exact managed-unit states and stops, in order:
 
 ```text
 alt-deploy-process.path
@@ -316,133 +358,137 @@ alt-deploy-register.service
 alt-deploy-http.service
 ```
 
-Failure to stop a required unit aborts creation before archive work starts.
+It then acquires the controller lifecycle lock and repeats all quiescence and secret checks. Any mismatch aborts capture.
 
-After stop completion, the utility repeats the active-job, transient-unit, pending-registration, source-generation, and secret checks. Any change aborts the snapshot.
+### 12.3 Component capture
 
-### 10.3 Component creation
+Each archive is written to a temporary regular file in `.creating-<backup-id>`, fsynced, and renamed within that directory.
 
-Each component is written into `.creating-<backup-id>` using a temporary filename, then fsynced and renamed within the temporary bundle directory.
+Capture must:
 
-Archive creation must:
+- use explicit relative namespaces;
+- reject absolute, untrusted, or shell-expanded source names;
+- reject devices, sockets, FIFOs, and unsafe links;
+- exclude all secret paths;
+- preserve required metadata;
+- compare source inventories before and after capture;
+- compute size and SHA-256 from final archive bytes;
+- fsync files and containing directories.
 
-- use relative member names rooted in an explicit component namespace;
-- avoid shell-expanded untrusted paths;
-- never dereference a symlink outside an allowed source root;
-- reject devices, sockets, and FIFOs;
-- preserve supported metadata needed for same-controller restore;
-- exclude all defined secret paths;
-- fail if a file changes while it is being captured;
-- fsync each archive and the containing directory.
+### 12.4 Publication and service recovery
 
-The manifest is generated only after all component archives are complete. SHA-256 and byte size are computed from the final archive bytes.
+The temporary bundle receives `manifest.json` and passes the complete structural/integrity validator. It is then atomically published.
 
-### 10.4 Publication and service recovery
+On success, original enablement and active states are restored only after publication. On any create failure, the incomplete directory remains unpublished and service recovery is attempted as failure cleanup.
 
-The utility performs the same structural and integrity checks used by `verify` against the temporary bundle. It then atomically renames the directory to `<backup-id>` and fsyncs the backup root.
+If service recovery cannot reproduce the recorded state, the command returns `service_state_restore_failed`, even when bundle publication succeeded.
 
-On the normal success path, services are returned to their exact recorded enabled and active states only after the bundle passes verification and is published.
+## 13. Verification
 
-On a creation failure, the bundle remains unpublished and service-state recovery is still attempted as failure cleanup. An incomplete directory is never reported as a usable backup. If service-state recovery fails, the command returns `service_state_restore_failed` even when a valid bundle was published.
+`verify <backup-id>` does not modify production runtime or controller state. After success it may atomically create or replace `verification.json`.
 
-## 11. Verification lifecycle
+It checks:
 
-`verify <backup-id>` is read-only with respect to production runtime and controller state. It may atomically write or replace `verification.json` inside the bundle after all checks succeed.
-
-Verification checks:
-
-1. strict backup-ID syntax and root containment;
-2. bundle directory owner and mode;
-3. exact allowed top-level filenames;
-4. regular-file type and no-follow safe reads;
-5. manifest schema and internal consistency;
-6. expected component set and filename uniqueness;
-7. component byte size and SHA-256;
-8. readable zstd streams;
-9. safe tar members:
+1. backup-ID syntax and direct-child containment;
+2. directory/file owner, mode, type, and no-follow reads;
+3. exact allowed top-level set;
+4. strict manifest schema and identity;
+5. complete ordered component set;
+6. component size and SHA-256;
+7. readable zstd streams;
+8. tar member safety:
    - no absolute paths;
-   - no empty or dot-only members;
+   - no empty or dot-only paths;
    - no `..` traversal;
-   - no member outside its component namespace;
+   - no member outside its namespace;
    - no external symlink or hardlink target;
-   - no devices, sockets, or FIFOs;
-10. mandatory structural entries and recorded absent-path rules;
-11. exclusion of Vault, Vault-password, and private-key paths;
-12. safe secret identities against the current controller;
-13. compatibility of the manifest schema with the current utility.
+   - no device, socket, or FIFO;
+9. required structure and absent-path semantics;
+10. secret exclusion;
+11. current secret identity match;
+12. backup-tool/schema compatibility.
 
-`verification.json` records the backup ID, UTC verification time, utility version, manifest SHA-256, component SHA-256 values, passed check identifiers, safe secret identities, and `status=ok`.
+`verification.json` records the manifest hash, component hashes, utility version, UTC time, safe identities, passed check IDs, and `status=ok`. Bundle mutation invalidates verification through hash mismatch.
 
-Any change to the manifest or a component invalidates verification automatically because the recorded hashes no longer match.
+## 14. Isolated rehearsal
 
-## 12. Isolated restore rehearsal
-
-`rehearse <backup-id>` first performs complete verification. It then safely expands every component beneath:
+`rehearse <backup-id>` first performs full verification, then extracts beneath:
 
 ```text
 /var/tmp/alt-deploy-restore-test/<backup-id>/
 ```
 
-The rehearsal extractor must not preserve setuid or setgid bits, create devices, follow extracted symlinks, or write outside the rehearsal root.
+Extraction forbids setuid/setgid preservation, devices, path escape, and following extracted links.
 
-The rehearsal validates:
+Rehearsal validates:
 
-- complete component structure;
-- manifest path-presence and absent-path semantics;
-- recorded UID/GID and mode metadata;
-- runtime Python compilation;
-- shell syntax for restored shell entrypoints;
-- systemd unit syntax through `systemd-analyze verify` with an isolated unit search path where supported;
-- both Ansible playbook syntax checks using the current Vault files without printing or copying their contents into the rehearsal tree;
-- strict JSON parsing for jobs, assignments, registrations, machine archives, transaction journals, manifests, and commit evidence;
-- committed-generation archive consistency;
-- absence of prohibited secret files anywhere in the rehearsal tree.
+- complete component structure and absent-path semantics;
+- recorded ownership/modes;
+- Python compilation;
+- shell syntax;
+- `systemd-analyze verify` against the restored absolute unit-file paths;
+- both Ansible syntax checks against the staged playbooks;
+- Vault loading by referencing the live encrypted Vault and live password file as external read-only command inputs, without copying them into the rehearsal tree or logging values;
+- strict parsing of jobs, assignments, registrations, machine archives, transaction journals, manifests, and commit evidence;
+- committed-generation consistency;
+- absence of prohibited secrets in the rehearsal tree.
 
-A successful rehearsal writes `rehearsal.json` atomically. It records the manifest SHA-256, utility version, UTC time, passed checks, safe secret identities, and `status=ok`.
+Success atomically writes `rehearsal.json` containing the manifest hash, utility version, UTC time, safe identities, passed checks, and `status=ok`.
 
-The successful rehearsal tree is deleted. A failed rehearsal tree may remain for diagnosis, but it must stay `root:root` mode `0700` and must never be treated as production state.
+A successful rehearsal tree is removed. A failed tree may remain `root:root 0700` for diagnosis.
 
-## 13. Restore eligibility
+## 15. OR-3P4 rollback gate
 
-`restore <backup-id>` is allowed only when:
-
-- the bundle currently passes full verification;
-- `verification.json` exists and matches the current manifest and component hashes;
-- `rehearsal.json` exists and matches the same manifest hash;
-- the rehearsal schema and utility version are compatible;
-- current secret identities match;
-- there are no active jobs, transient provision units, pending registrations, or running pending processor;
-- the selected bundle is a normal published backup, not `.creating-*`, `pre-restore-*`, or a restore transaction directory.
-
-OR-3P4 must name the exact rollback bundle explicitly. The controlled installer interface becomes:
+OR-3P4 must name the exact rollback bundle:
 
 ```bash
 sudo bash deploy/alt-linux/install-control-plane.sh \
   --rollback-backup-id <backup-id>
 ```
 
-Before any OR-3P4 runtime mutation, the installer invokes the installed backup utility to confirm that the named bundle remains verified and rehearsed. It must not silently select the newest bundle.
+Before any runtime mutation, the installer calls the already installed backup utility to prove that:
 
-## 14. Full restore lifecycle
+- the named bundle currently verifies;
+- `verification.json` matches current bytes;
+- `rehearsal.json` matches the same manifest hash;
+- the rehearsal and schema are compatible;
+- secret identities still match.
 
-Restore is a complete coordinated operation. No component-selection flags exist.
+The installer never chooses the newest backup implicitly and never overwrites `/usr/local/sbin/alt-deploy-backup`, `/opt/alt-deploy-backup`, `/var/lib/alt-deploy-backup`, or `/var/backups/alt-deploy`.
 
-### 14.1 Pre-mutation checks
+## 16. Restore transaction
+
+Restore is root-only and all-component. No component-selection flag exists.
+
+### 16.1 Eligibility
+
+Restore requires:
+
+- current full verification;
+- matching verification and rehearsal records;
+- compatible utility/schema versions;
+- matching secret identities;
+- no active job or transient provision unit;
+- no pending registration or running processor;
+- a normal published backup ID.
+
+### 16.2 Preparation
 
 The utility:
 
 1. takes the global backup lock;
-2. performs complete bundle verification and restore-eligibility checks;
-3. records current managed unit states;
-4. stops the maintenance units;
-5. repeats job, pending-registration, transient-unit, secret, and source checks;
-6. creates a protected pre-restore snapshot of the current complete component set.
+2. records the pre-restore managed-unit state;
+3. stops maintenance units;
+4. acquires the controller lifecycle lock;
+5. repeats eligibility checks;
+6. creates a complete protected pre-restore snapshot;
+7. creates and fsyncs a restore transaction journal.
 
-The pre-restore snapshot is not exposed as a normal backup and cannot satisfy the OR-3P4 rollback gate. It is used only to reverse a failed restore transaction.
+The pre-restore snapshot is emergency rollback material only and cannot satisfy the OR-3P4 gate.
 
-### 14.2 Restore transaction journal
+### 16.3 Durable phases
 
-A durable transaction journal records ordered phases such as:
+The journal uses ordered phases:
 
 ```text
 prepared
@@ -457,130 +503,68 @@ committed
 manual_recovery_required
 ```
 
-The journal is fsynced after every phase change. Recovery logic must derive action from durable evidence rather than from temporary filenames alone.
+Every phase transition is fsynced.
 
-### 14.3 Staging
+### 16.4 Staging and installation
 
-Every component is extracted into a staging location on the same filesystem as its final destination. Staging is checked for:
+Each component is extracted and validated on the same filesystem as its final destination. Staging checks structure, hashes, allowed types/links, ownership, modes, secret exclusion, absent-path semantics, and free space.
 
-- structure and exact allowed roots;
-- component SHA-256 provenance;
-- source presence/absence semantics;
-- safe file types and link targets;
-- numeric ownership and modes;
-- secret exclusion;
-- sufficient space for installation and rollback copies.
+The current Vault file is inserted into the staged Ansible tree only after identity verification. The Vault password and SSH private key remain at their existing paths.
 
-The current active Vault file is inserted into the staged Ansible tree only after its identity has been revalidated. The Vault password file and SSH private key remain at their existing paths and are never moved by restore.
+For each managed path, the current object is renamed to protected rollback storage on the same filesystem and the staged object is renamed into place. A path recorded as absent receives no replacement.
 
-### 14.4 Installation
+Global cross-filesystem atomicity is not claimed; durable journaling and the pre-restore generation provide coordinated recovery.
 
-For each managed path, the current object is renamed to a protected rollback name on the same filesystem, then the staged object is renamed into place. Cross-filesystem global atomicity is not claimed; the transaction journal and pre-restore snapshot provide coordinated recovery.
+### 16.5 Service activation and health
 
-Paths recorded as absent in the backup are removed from the active generation by renaming any current object into rollback storage and installing no replacement.
+After installation:
 
-After all components are installed, restore runs:
+1. run `systemctl daemon-reload`;
+2. reconstruct enabled/disabled states from the backup manifest;
+3. validate runtime syntax, permissions, Vault health, secrets, unit loadability, Ansible syntax, and state readers;
+4. start only HTTP and registration services recorded active in the backup;
+5. perform their loopback health checks when recorded active;
+6. start `alt-deploy-process.path` last when recorded active;
+7. leave units recorded inactive stopped;
+8. verify final unit states exactly match the backup manifest.
 
-```text
-systemctl daemon-reload
-```
+No endpoint health check is required for a service that was recorded inactive.
 
-and reconstructs the enabled state from the bundle manifest.
+### 16.6 Failure handling
 
-### 14.5 Post-restore health checks
+A failure before any active path is moved leaves production unchanged.
 
-Before maintenance services are returned to their recorded active states, restore validates locally:
+A failure after replacement triggers automatic reversal to the pre-restore generation. Successful reversal restores the pre-restore service state and records `rolled_back`.
 
-- runtime entrypoint presence and syntax;
-- strict controller permissions;
-- Vault health without exposing values;
-- secret identities;
-- systemd unit loadability;
-- expected enablement;
-- Ansible syntax;
-- job, assignment, registration, and machine-archive readers;
-- loopback registration and static HTTP health when the restored service generation defines them;
-- absence of active-job and pending-registration inconsistencies.
-
-The utility then restores the service state stored in the selected backup manifest, not the state observed immediately before restore.
-
-### 14.6 Failed restore
-
-A failure before any active path is moved leaves runtime unchanged.
-
-A failure after active path replacement triggers automatic reversal from the pre-restore snapshot and rollback names. A successful reversal records `rolled_back`, restores the pre-restore service state, and returns the original restore error with safe rollback status.
-
-If automatic reversal cannot prove a complete return to the pre-restore generation, the transaction is marked `manual_recovery_required`, all maintenance services remain stopped, and the command returns:
+If complete reversal cannot be proven, the journal records `manual_recovery_required`, all maintenance units remain stopped, and the command returns:
 
 ```text
 restore_manual_recovery_required
 ```
 
-No success result is returned until the complete selected backup generation is installed, health-checked, and its service state restored.
+Restore succeeds only after the complete selected generation passes health checks and its recorded service state is restored.
 
-## 15. List and delete behavior
+## 17. List, delete, and retention
 
-### 15.1 List
+`list` reports normal published bundles with creation time, total bytes, manifest hash, compatibility, and current verification/rehearsal state. It does not present `.creating-*`, restore transactions, or pre-restore snapshots as normal backups. Corrupted directories may be reported as invalid without exposing contents.
 
-`list` returns only safe published bundle directories that contain a parseable manifest. It reports:
+`delete <backup-id>` requires an exact valid backup ID and a safe direct child of the backup root. It validates containment, type, owner, mode, and no-symlink traversal. It does not require component integrity, so a corrupted bundle remains deletable. Deletion is blocked while an active restore transaction references the bundle.
 
-- backup ID;
-- creation time;
-- total component bytes;
-- current verification state;
-- current rehearsal state;
-- manifest hash;
-- utility/schema compatibility.
+There is no bulk delete and no automatic retention.
 
-It never reports `.creating-*`, restore transaction directories, or pre-restore snapshots as normal backups. A corrupted published directory may be reported separately as invalid, without reading or exposing component contents.
+## 18. Logging and public errors
 
-### 15.2 Delete
-
-`delete <backup-id>` requires an exact normal backup ID. It validates root containment, directory type, owner, mode, and no-symlink traversal before deletion.
-
-It does not require the bundle contents to pass integrity verification; otherwise an operator could not remove a corrupted bundle. It does require the target to be a safe direct child of `/var/backups/alt-deploy` with a valid backup ID.
-
-Deletion is rejected when the bundle is referenced by an active restore transaction. The result exposes only backup ID and deleted byte count.
-
-There is no automatic retention or bulk deletion command.
-
-## 16. Logging and audit
-
-The protected operation log is:
+The bounded operation log is:
 
 ```text
 /var/log/alt-deploy-backup.log
 ```
 
-It is `root:root` mode `0600` and uses bounded, structured records.
+It records commands, IDs, timestamps, maintenance transitions, component phases, check IDs, restore phases, error codes, and automatic rollback outcome.
 
-The log records:
+It never records archive contents, registration bodies, job logs, Ansible values, Vault plaintext, Vault password, password hashes, private-key bytes, or HMAC keys.
 
-- command and backup ID;
-- operation ID and UTC timestamps;
-- maintenance-window start and end;
-- safe unit-state transitions;
-- component phase completion;
-- verification and rehearsal check identifiers;
-- restore transaction phases;
-- error codes;
-- whether automatic restore rollback succeeded.
-
-The log never records:
-
-- archive contents;
-- registration JSON bodies;
-- job log contents;
-- Ansible variable values;
-- decrypted Vault content;
-- the Vault password;
-- password hashes;
-- private SSH key bytes;
-- raw HMAC keys.
-
-## 17. Public error codes
-
-The initial stable error set is:
+Initial stable errors:
 
 ```text
 backup_not_root
@@ -608,69 +592,67 @@ restore_manual_recovery_required
 backup_delete_unsafe
 ```
 
-Errors before backup publication do not create a usable bundle. Errors before restore path replacement do not change runtime. Errors after replacement either complete automatic rollback or leave maintenance services stopped with `restore_manual_recovery_required`.
+Errors before publication do not produce a usable backup. Errors before restore replacement do not change production. Errors after replacement either prove automatic rollback or leave services stopped with manual recovery required.
 
-## 18. Implementation boundaries
+## 19. Implementation boundaries
 
-The implementation should separate responsibilities into focused modules:
+Separate modules cover:
 
-1. CLI parsing and public JSON/error rendering.
-2. Settings and approved path inventory.
-3. Safe filesystem primitives and no-follow reads.
-4. Component archive creation and validation.
-5. Manifest schema and strict parsing.
-6. Secret identity provider.
-7. Systemd state capture and restoration.
-8. Backup repository and publication.
-9. Rehearsal extraction and validation.
-10. Restore transaction journal and rollback engine.
-11. Installer rollback-gate integration.
-12. Operation audit logging.
+1. CLI and public JSON rendering;
+2. settings and path inventory;
+3. safe filesystem primitives;
+4. strict source/state readers;
+5. component creation and validation;
+6. manifest schema;
+7. secret identities;
+8. systemd state;
+9. bundle repository/publication;
+10. rehearsal extraction/checks;
+11. restore journal and rollback engine;
+12. dedicated backup-tool installer;
+13. control-plane installer gate;
+14. audit logging.
 
-No module should import provisioning worker behavior or contact a workstation.
+No backup module contacts a workstation or imports provisioning worker behavior.
 
-## 19. Test strategy
+## 20. TDD and verification matrix
 
-Development follows TDD: failing test, minimal implementation, focused green, neighboring regression, and full verification before review.
-
-The minimum automated matrix covers:
+Minimum automated coverage:
 
 1. root-only enforcement;
-2. global lock exclusion;
-3. active-job refusal;
-4. transient-unit refusal;
-5. pending-registration refusal;
-6. processor-active refusal;
-7. exact service-state capture and restoration;
-8. service recovery after failed create;
-9. secret exclusion from every component;
-10. secure Vault-password HMAC and SSH public fingerprint behavior;
-11. unsafe source symlink and file-type refusal;
-12. tar absolute-path, traversal, external link, FIFO, device, and socket refusal;
+2. global backup lock;
+3. lifecycle lock held through create/restore critical sections;
+4. active-job, transient-unit, pending-registration, and processor refusal;
+5. exact service-state capture/recovery;
+6. service recovery after failed create;
+7. secret exclusion from every component;
+8. Vault-password HMAC and SSH public fingerprint behavior;
+9. fingerprint-key preservation across reinstall;
+10. source symlink and special-file refusal;
+11. tar traversal, external link, FIFO, device, and socket refusal;
+12. source inventory change detection;
 13. SHA-256 corruption detection;
 14. incomplete bundle non-publication;
-15. strict manifest parsing and unknown-version refusal;
-16. verification-record invalidation after bundle mutation;
-17. rehearsal confinement to temporary roots;
-18. Python, shell, systemd, Ansible, and JSON rehearsal checks;
-19. restore refusal without current verification and rehearsal;
+15. strict manifest/version rejection;
+16. verification invalidation after mutation;
+17. rehearsal confinement;
+18. Python, shell, systemd, Ansible, and JSON rehearsal gates;
+19. restore refusal without current verify/rehearse evidence;
 20. restore refusal on secret mismatch;
-21. all-component restore with no partial flags;
-22. absent-source removal semantics;
-23. staging failure with unchanged production paths;
-24. health-check failure with successful rollback;
-25. rollback failure with services stopped and manual-recovery state;
-26. safe deletion confinement;
-27. control-plane installer publication of `alt-deploy-backup` as `root:root 0750`;
-28. installer preservation of existing bundles and backup-tool fingerprint state;
-29. explicit `--rollback-backup-id` pre-mutation gate;
-30. existing OR-3P1 and OR-3P2 regression suites.
+21. all-component restore and absent-path semantics;
+22. staging failure with unchanged production;
+23. health failure with successful rollback;
+24. rollback failure with services stopped;
+25. safe corrupted-bundle deletion;
+26. dedicated installer publishes only backup-tool assets;
+27. dedicated installer preserves bundles, logs, and fingerprint key;
+28. control-plane installer requires explicit backup ID before mutation;
+29. control-plane installer preserves backup-tool paths;
+30. existing OR-3P1 and OR-3P2 regressions.
 
-Filesystem tests use temporary roots, synthetic owners where supported, fake systemctl/tar/zstd command adapters, and synthetic secret material. CI must not access `192.168.100.17`, `192.168.101.111`, production Vault files, or production SSH keys.
+Filesystem tests use temporary roots and fake command adapters. CI never accesses the live controller, the accepted workstation, production Vault, or production SSH material.
 
-## 20. Repository acceptance criteria
-
-The repository phase is complete only with fresh evidence for:
+Repository completion requires fresh evidence:
 
 ```text
 Focused OR-3P3 tests: PASS
@@ -686,17 +668,18 @@ Whole-branch review: no Critical or Important findings
 
 The PR remains unmerged until explicit user confirmation.
 
-## 21. Operational acceptance criteria
+## 21. Operational acceptance
 
-The live operational gate is complete only after the reviewed OR-3P3 utility is installed on `192.168.100.17` and the operator executes:
+After repository review, the operational sequence on `192.168.100.17` is:
 
 ```bash
+sudo bash deploy/alt-linux/install-backup-tool.sh
 sudo alt-deploy-backup create
 sudo alt-deploy-backup verify <backup-id>
 sudo alt-deploy-backup rehearse <backup-id>
 ```
 
-The resulting report must prove:
+The report must prove:
 
 ```text
 backup published
@@ -706,6 +689,4 @@ restore rehearsal passed
 maintenance services returned to their original state
 ```
 
-A real restore is not performed before OR-3P4. It remains a manual emergency operation.
-
-OR-3P4 remains blocked until its installer is invoked with the exact successfully verified and rehearsed backup ID. The accepted reference workstation remains out of scope.
+A real restore is not performed before OR-3P4. OR-3P4 remains blocked until `install-control-plane.sh` is invoked with that exact verified and rehearsed backup ID. The accepted reference workstation remains out of scope.
