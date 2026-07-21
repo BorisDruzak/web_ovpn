@@ -15,9 +15,11 @@
 - Task 6: complete (`432cdd0..7c69981`); admission and API RED/GREEN verified, concurrent requests serialize to one generation, lifecycle errors map safely.
 - Task 7: complete (`413cf8a..9a4eb6e`); existing processor and race suites pass, long target work remains outside lock, committed/stale generations cannot finalize.
 - Task 8: complete (`6c76fca..e6031c1`); helper executable tests and bootstrap ordering passed; helper performs registration only.
-- Task 9: pending.
-- Task 10: pending.
+- Task 9: complete (`b217fed..8e3d05e`); installer/helper publication, archive preservation, private roots/lock, systemd sandbox and readiness passed.
+- Task 10: in progress; operator runbook added, final focused/ALT/full/static verification pending.
 
-## Open Review Items
+## Review status
 
-- Important: `MachineArchiveRepository._ensure_private_directory()` must not chmod/chown an existing ancestor above configured `state_root` when the state root is absent. Add a regression test and correct directory-chain creation before final branch review.
+- The archive-root ancestor safety item is resolved and covered by `test_archive_root_creation_does_not_mutate_existing_ancestor`.
+- No open per-task Critical or Important finding remains.
+- Whole-branch specification and code-quality review remains required after final clean-head verification.
