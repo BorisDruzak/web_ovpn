@@ -22,45 +22,42 @@ The work is repository-only. Installation on controller `192.168.100.17` remains
 
 ## Approved decisions
 
-The accepted product and safety decisions are:
-
-1. Re-registration is initiated locally on the workstation with `sudo alt-bootstrap-register`.
-2. A removal operation archives every active registration record for the selected machine from `pending`, `ready`, and `failed`.
-3. Registration API rejects assigned machines with HTTP `409` and `machine_assigned`.
+1. Re-registration is initiated locally with `sudo alt-bootstrap-register`.
+2. Removal archives every active registration record for the selected machine from `pending`, `ready`, and `failed`.
+3. Registration API rejects assigned machines with HTTP `409 machine_assigned`.
 4. Active provision jobs block preview, archive apply, and re-registration with `machine_busy`.
 5. Archive apply requires a non-empty `--reason` and records operator audit fields.
 6. Repeating removal after completion returns `already_archived` with the original archive ID.
 7. Preview is read-only and does not issue a mandatory token.
-8. OR-3P2 has no restore command; re-entry into the active registry occurs only through a new registration.
-9. Malformed, conflicting, symlinked, or otherwise unsafe records fail closed before active state is changed.
-10. The implementation uses a dedicated `MachineArchiveService` and shared lifecycle guards rather than embedding filesystem mutation in the CLI.
-11. Assigned machines cannot be archived. Assignment release/reassignment is a separate future operation.
+8. OR-3P2 has no restore command; re-entry occurs only through a new registration.
+9. Malformed, conflicting, symlinked, or otherwise unsafe records fail closed before active state changes.
+10. A dedicated `MachineArchiveService` and shared lifecycle guards own the policy; CLI code does not move files directly.
+11. Assigned machines cannot be archived. Assignment release/reassignment is separate future work.
 
 ## Scope
 
 OR-3P2 must:
 
-- add `machines remove preview` and `machines remove apply` CLI contracts;
+- add `machines remove preview` and `machines remove apply`;
 - require root only for `apply`;
 - archive active registration records under protected controller state;
 - preserve archived record bytes exactly;
 - create immutable archive evidence with hashes and operator audit fields;
-- distinguish registration generations using `registration_id`;
-- handle existing records without `registration_id` through a deterministic fingerprint;
+- distinguish registration generations with `registration_id`;
+- handle existing records without `registration_id` through deterministic fingerprints;
 - hide only committed archived generations from the active registry;
-- allow a new generation of the same machine after successful archive cleanup;
-- prevent pending processing from recreating `ready` or `failed` state for an archived generation;
+- allow a new generation of the same machine after successful cleanup;
+- prevent pending processing from recreating `ready` or `failed` for an archived generation;
 - reject registration of assigned or busy machines;
-- return `already_registered` without replacing an active healthy record;
-- install and serve the register-only workstation helper;
-- keep existing jobs, logs, assignments, SSH identity, and Vault data unchanged;
-- provide complete synthetic crash, race, permission, and preservation tests.
+- return `already_registered` without replacing an active consistent record;
+- publish and install the register-only workstation helper;
+- leave jobs, logs, assignments, SSH identity, and Vault data unchanged;
+- provide synthetic crash, race, permission, and preservation tests.
 
 Non-goals:
 
 - assignment release or reassignment;
-- deletion or archival of assignment records;
-- deletion or archival of job history and logs;
+- deletion or archival of assignments, jobs, or logs;
 - restoring an archived registration record;
 - renaming an assigned machine or employee;
 - contacting a workstation from the archive command;
@@ -71,7 +68,7 @@ Non-goals:
 
 ## Current state and constraints
 
-The active registration registry is split across:
+Active registration state is split across:
 
 ```text
 /srv/alt-deploy/registration/pending
@@ -81,9 +78,9 @@ The active registration registry is split across:
 
 `MachineRepository` selects the newest record for each machine key and overlays assignment and active-job information during reads. Assignments and jobs are separate protected state under `/var/lib/alt-deploy`.
 
-The current registration API writes directly to `pending/<machine_key>.json`. The current bootstrap contains an internal registration function and uses `/var/lib/alt-bootstrap-registered` to avoid repeating registration during a full bootstrap rerun.
+The registration API currently writes directly to `pending/<machine_key>.json`. The bootstrap contains an internal registration function and uses `/var/lib/alt-bootstrap-registered` only to avoid repeating registration during a full bootstrap rerun.
 
-The active registry and protected state can be on different filesystems. OR-3P2 therefore must not claim that a cross-root `rename()` is physically atomic. It implements a journaled logical transaction with a durable commit marker and generation-aware active view.
+The active registry and protected state can be on different filesystems. OR-3P2 therefore implements a journaled logical transaction with a durable commit marker. It does not claim that a cross-root `rename()` is physically atomic.
 
 ## Public CLI contracts
 
@@ -94,7 +91,7 @@ sudo -u altserver workstationctl --json \
   machines remove preview <machine-identifier>
 ```
 
-`<machine-identifier>` accepts the normalized machine UUID or machine key, matching the existing repository lookup behavior.
+`<machine-identifier>` accepts normalized UUID or machine key, consistent with existing repository lookup.
 
 Success:
 
@@ -116,11 +113,11 @@ Success:
 Preview:
 
 - performs no filesystem mutation;
-- validates every candidate record and archive state;
-- fails when the machine is assigned or has an active job;
-- fails closed on malformed jobs, assignments, registration records, archive records, or unsafe paths;
-- does not create an archive ID or reservation token;
-- may become stale immediately after it returns, so apply repeats every check under the exclusive lock.
+- validates every candidate record and relevant archive state;
+- fails for assigned or busy machines;
+- fails closed on malformed jobs, assignments, candidate records, archive records, or unsafe paths;
+- creates no archive ID or reservation token;
+- may become stale immediately, so apply repeats all checks under lock.
 
 ### Removal apply
 
@@ -135,10 +132,10 @@ Apply requires effective UID `0`.
 The reason:
 
 - is required after trimming surrounding whitespace;
-- must contain at least one non-whitespace character;
-- must not contain Unicode control characters;
+- contains at least one non-whitespace character;
+- contains no Unicode control characters;
 - is limited to 500 Unicode code points;
-- is stored as audit data and never interpreted as a command or path.
+- is stored as audit text and never interpreted as a command or path.
 
 Success:
 
@@ -155,7 +152,7 @@ Success:
 }
 ```
 
-Idempotent repeat after a completed archive:
+Idempotent repeat:
 
 ```json
 {
@@ -170,20 +167,18 @@ Idempotent repeat after a completed archive:
 }
 ```
 
-A repeat against a committed but incompletely cleaned transaction resumes cleanup and returns the original archive ID.
+A repeat against a committed but incompletely cleaned transaction resumes that transaction and retains its archive ID.
 
 ## Identity and registration generations
 
-### Machine identity
-
-The canonical physical identity remains:
+### Physical identity
 
 ```text
 machine_key = normalized DMI UUID when present
 machine_key = normalized MAC without colons when DMI UUID is absent
 ```
 
-A registration record contains both `machine_key` and `uuid`. `uuid` may be empty for legacy or non-DMI hardware. All values are normalized before comparison.
+A record contains `machine_key` and `uuid`; `uuid` may be empty for legacy or non-DMI hardware. The resolved physical identifier is the normalized UUID when non-empty, otherwise the machine key.
 
 ### Registration generation
 
@@ -193,21 +188,21 @@ Every newly accepted registration receives:
 registration_id = reg-<32 lowercase hexadecimal characters>
 ```
 
-The value is generated by the controller using a cryptographically secure random source. The client does not choose it.
+The controller generates it with a cryptographically secure random source. The client cannot choose it.
 
-A generation identity is:
+Generation identity is:
 
 ```text
 registration_id, when present and valid
 legacy-sha256:<SHA-256 of exact record bytes>, otherwise
 ```
 
-The archive commit records generation identities, not only machine UUIDs. This ensures:
+Archive commits identify exact generations, not only a machine UUID. Therefore:
 
 - stale files from an archived generation remain hidden;
-- a newly registered generation of the same physical machine is visible;
-- a pending processor result can be rejected if its exact generation was archived;
-- legacy records remain supportable without rewriting their bytes.
+- a new generation of the same physical machine remains visible;
+- a pending processor result can be rejected for its exact archived generation;
+- legacy records remain supportable without byte changes.
 
 Invalid or duplicate `registration_id` values fail closed.
 
@@ -215,64 +210,64 @@ Invalid or duplicate `registration_id` values fail closed.
 
 ### `MachineArchiveService`
 
-Responsibilities:
+The service:
 
-- discover all active registration records for one machine;
-- perform preview validation;
-- enforce assignment and active-job blockers;
-- create and advance archive transactions;
-- copy and verify exact record bytes;
-- commit the archive logically;
-- remove active source files after commit;
-- resume cleanup for a committed transaction;
-- return an existing completed archive idempotently.
+- discovers all active records for one machine;
+- performs preview validation;
+- enforces assignment and job blockers;
+- creates and advances archive transactions;
+- copies and verifies exact bytes;
+- commits the archive logically;
+- removes matching active sources after commit;
+- resumes committed cleanup;
+- returns completed archives idempotently.
 
 It is the only component allowed to archive registration records.
 
 ### `MachineLifecycleGuard`
 
-Responsibilities:
+The guard:
 
-- normalize machine identifiers;
-- inspect assignments through `AssignmentRepository`;
-- inspect active jobs through `JobRepository` and canonical `ACTIVE_STATES`;
-- discover active registration generations;
-- inspect completed and in-progress archive state;
-- answer whether a generation is active, committed, or blocked;
-- produce safe structured lifecycle errors.
+- normalizes machine identifiers;
+- inspects assignments through `AssignmentRepository`;
+- inspects active jobs through `JobRepository` and canonical `ACTIVE_STATES`;
+- discovers active registration generations;
+- inspects completed and in-progress archive state;
+- answers whether a generation is active, committed, or blocked;
+- emits safe structured lifecycle errors.
 
-It is used by archive preview/apply, registration admission, active registry reads, and pending-record finalization.
+It is reused by archive preview/apply, registration admission, active registry reads, and pending finalization.
 
 ### `RegistrationAdmissionService`
 
-Responsibilities:
+The admission service:
 
-- validate lifecycle eligibility for `/register`;
-- reject assigned, busy, cleanup-required, malformed, or conflicting state;
-- return `already_registered` for an existing consistent active machine;
-- allocate a new `registration_id` only when creating a new generation;
-- write the pending record atomically under the shared lock.
+- validates lifecycle eligibility for `/register`;
+- rejects assigned, busy, cleanup-required, malformed, or conflicting state;
+- returns `already_registered` for a consistent active machine;
+- allocates `registration_id` only for a new generation;
+- writes the pending record atomically under the shared lock.
 
 ### `MachineArchiveRepository`
 
-A focused persistence component may be introduced under the service boundary to:
+This persistence component is required. It:
 
-- enumerate transaction and completed archive directories;
-- validate archive object types and permissions;
-- read/write transaction state and immutable manifests;
-- find a committed archive by machine and generation;
-- generate archive IDs;
-- enforce no-follow regular-file access.
+- enumerates transaction and completed archive directories;
+- validates archive object types and permissions;
+- reads/writes journals, manifests, and commit markers;
+- finds committed archives by machine and generation;
+- generates archive IDs;
+- enforces no-follow regular-file access.
 
-This component contains filesystem mechanics but no product policy.
+It contains filesystem mechanics but no product policy.
 
 ### Existing components
 
-`MachineRepository` remains the active read model. It gains generation-aware filtering but does not perform archival.
+`MachineRepository` remains the active read model. It gains generation-aware filtering but performs no archival.
 
 `register_api.py` becomes an HTTP adapter over `RegistrationAdmissionService`.
 
-`process_pending.py` keeps long-running network and Ansible work outside the global lock, then uses `MachineLifecycleGuard` before each final state mutation.
+`process_pending.py` keeps long-running network and Ansible work outside the global lock, then uses the lifecycle guard before each final mutation.
 
 ## Protected archive layout
 
@@ -298,23 +293,22 @@ Default layout:
 │           └── failed.json
 └── archive-20260721T120000Z-1a2b3c4d/
     ├── transaction.json         # final phase: cleaned
-    ├── manifest.json            # immutable after creation
-    ├── commit.json              # immutable commit marker
+    ├── manifest.json            # immutable
+    ├── commit.json              # immutable
     └── records/
         └── ...
 ```
 
 Rules:
 
-- archive root and transaction root: `altserver:altserver`, mode `0700`;
-- archive directories: `0700`;
-- JSON and record files: `0600`;
+- archive root, transaction root, and archive directories: `altserver:altserver`, mode `0700`;
+- JSON and copied record files: mode `0600`;
 - no archive state is stored under `/srv/alt-deploy`;
-- no symlink, FIFO, socket, block device, character device, or unexpected directory is accepted where a regular file is expected;
-- source record bytes are copied without JSON reserialization;
-- temporary files are created in the destination directory and atomically renamed there;
-- durable writes use file flush/fsync and directory fsync where supported;
-- an unsupported fsync operation may be handled explicitly, but silent durability downgrade is not allowed in apply.
+- symlink, FIFO, socket, device, and unexpected directory types are rejected;
+- source bytes are copied without JSON reserialization;
+- temporary files are created and renamed within their destination directory;
+- durable writes use flush/fsync plus directory fsync where supported;
+- apply must not silently downgrade durability if the platform cannot provide the required guarantees.
 
 ## Candidate discovery and validation
 
@@ -323,48 +317,41 @@ Candidate discovery combines:
 1. exact filenames matching the normalized identifier in `pending`, `ready`, and `failed`;
 2. valid regular JSON records whose normalized `machine_key` or `uuid` matches the identifier.
 
-This allows lookup by UUID or machine key and catches duplicated state files with matching identity.
+Before mutation, each candidate must:
 
-Before mutation, every candidate must:
-
-- be a non-symlink regular file;
-- be readable through no-follow semantics;
+- be a non-symlink regular file opened with no-follow semantics;
 - contain a JSON object;
-- have non-empty `machine_key` and resolved machine UUID/machine key identity;
+- have non-empty `machine_key` and a resolvable physical identity;
 - match the selected physical machine;
-- have a valid state consistent with its parent directory;
-- have either a valid unique `registration_id` or a calculable legacy fingerprint;
-- not conflict with another candidate on UUID, machine key, MAC, or physical identity.
+- reside directly in one canonical state directory;
+- have either a valid unique `registration_id` or a deterministic legacy fingerprint;
+- not conflict with another candidate on UUID, machine key, MAC, or generation.
 
-If an exact candidate filename exists but is malformed or unsafe, apply fails closed even if its contents cannot be parsed.
+The directory defines `registration_state`. Payload `status` is a workflow status and is not required to equal the directory name; for example, a record in `ready` may legitimately have `status=awaiting_assignment`.
 
-An arbitrary malformed file with an unrelated filename cannot be attributed to the selected machine and is outside that operation. General registry integrity auditing remains a separate concern.
+An exact candidate filename that is malformed or unsafe fails closed even when its contents cannot be parsed.
+
+An arbitrary malformed file with an unrelated filename cannot be attributed to the selected machine. General registry-wide integrity auditing remains separate work.
 
 ## Blocking conditions
 
-Preview and apply both fail when:
+Preview and apply fail when:
 
-- `AssignmentRepository.get()` returns an assignment for the resolved identity;
-- a canonical active job exists for the machine;
-- job enumeration itself is malformed;
-- an archive transaction is committed but cleanup is incomplete and cannot be safely resumed;
+- an assignment exists for the resolved identity;
+- a canonical active job exists;
+- job enumeration is malformed;
+- committed cleanup is incomplete and cannot be resumed safely;
 - registration identity is conflicting or unsafe;
 - archive persistence state is malformed or unsafe.
 
-### Assigned machine
-
-Error:
+Assigned error:
 
 ```text
 code: machine_assigned
 exit code: 4
 ```
 
-No registration or assignment file changes.
-
-### Active provision job
-
-Error:
+Busy error exposes only safe fields:
 
 ```json
 {
@@ -381,36 +368,36 @@ Error:
 }
 ```
 
-Only `job_id`, `state`, and `stage` are exposed. Request data, employee data, logs, results, and Ansible output are never included.
+No request data, employee data, logs, results, or Ansible output is returned.
 
 ## Shared exclusive lock
 
-Mutating lifecycle operations use the existing lock:
+Mutating lifecycle operations use:
 
 ```text
 /var/lib/alt-deploy/workstationctl.lock
 ```
 
-The following actions must participate in this lock:
+The following participate in this lock:
 
 - archive apply and cleanup resume;
 - registration admission and pending-file creation;
 - final pending transition to `ready` or `failed`;
 - provision preview/start, as already implemented.
 
-Archive preview is read-only and does not hold the lock for its entire execution, but it must use safe no-follow reads. Apply repeats all preview checks after acquiring the lock.
+Archive preview is read-only and does not reserve state. Apply acquires the lock before its authoritative recheck and holds it continuously through `prepared`, copying, commit, source cleanup, and final archive rename. This prevents registration admission or processor finalization from replacing a source while its bytes are being archived.
 
-No operation holds the global lock during SSH waits, `ssh-keyscan`, Ansible ping, preflight playbooks, or other long-running target work.
+No operation holds the lock during SSH waits, `ssh-keyscan`, Ansible ping, preflight, or other long-running target work.
 
 ## Archive transaction state machine
 
-Transaction IDs use:
+Archive IDs use:
 
 ```text
 archive-<UTC YYYYMMDDTHHMMSSZ>-<8 lowercase hexadecimal characters>
 ```
 
-`transaction.json` is the mutable journal and records one of:
+`transaction.json` records:
 
 ```text
 prepared
@@ -420,39 +407,43 @@ cleaned
 aborted
 ```
 
-`manifest.json` is finalized before commit and remains immutable. It contains a static `commit_phase: "committed"` field describing the archive contract, while the current cleanup phase remains only in `transaction.json`.
+`manifest.json` is written once after all source records have been copied and verified. It remains immutable. It contains static `commit_phase: "committed"`; the current mutable phase exists only in `transaction.json`.
 
-### Phase: `prepared`
+### `prepared`
 
 Under the exclusive lock:
 
-1. repeat all discovery and blocker checks;
+1. repeat discovery and blockers;
 2. allocate one archive ID;
 3. create the transaction directory safely;
-4. write transaction identity and planned source paths;
-5. write no commit marker;
+4. record transaction identity and planned sources;
+5. create no commit marker;
 6. leave active registration files unchanged.
 
-Failure before leaving `prepared` leaves the active registry unchanged. The transaction is removed if safe or marked `aborted` with a safe error class.
+Failure leaves the registry unchanged. A safely removable precommit transaction is removed; otherwise it is marked `aborted` with a safe error class. An aborted transaction hides no generation and does not count as an archive. A later apply may remove a valid abandoned precommit transaction and allocate a new ID, but it must fail on malformed or ambiguous transaction state.
 
-### Phase: `copied`
+### `copied`
 
-For every candidate:
+Still under the same lock, for every candidate:
 
-1. open source with no-follow regular-file checks;
-2. copy exact bytes into `records/<state>.json`;
-3. record byte length and SHA-256;
-4. fsync the destination file;
-5. reopen and verify length and SHA-256;
-6. write and fsync the immutable manifest.
+1. open the source with no-follow regular-file checks;
+2. copy exact bytes to `records/<state>.json`;
+3. fsync the copied file;
+4. reopen and verify byte length and SHA-256.
 
-Multiple candidates from the same state are not expected under canonical filenames. If they are discovered through conflicting filenames, the operation fails with `machine_identity_conflict` instead of inventing alternate archive names.
+After every record verifies:
+
+5. write the complete immutable manifest once;
+6. fsync the manifest and transaction directory;
+7. set journal phase `copied`.
+
+Multiple candidates from one state are not assigned alternate archive names. Such state is an identity conflict and fails before commit.
 
 Until commit, source records remain active and untouched.
 
-### Phase: `committed`
+### `committed`
 
-Commit is the durable creation of `commit.json` within the transaction directory after every archived record and manifest has been verified.
+Commit is durable creation of `commit.json` after every archived record and the manifest have verified.
 
 `commit.json` contains only:
 
@@ -465,61 +456,61 @@ committed_at
 manifest_sha256
 ```
 
-After `commit.json` is durable:
+After it is durable:
 
-- the listed generations are logically archived;
+- listed generations are logically archived;
 - `MachineRepository` excludes only those generations;
-- registration admission recognizes cleanup as incomplete;
-- pending finalization cannot write a new active state for those generations;
-- failure is recoverable by resuming cleanup with the same archive ID.
+- registration admission reports cleanup incomplete;
+- pending finalization cannot write active state for those generations;
+- recovery resumes with the same archive ID.
 
-### Phase: `cleaned`
+### `cleaned`
 
-Under the lock:
+Under the same lock:
 
 1. revalidate each source path and generation;
-2. unlink only files whose exact generation and byte hash match the committed manifest;
-3. never unlink a newer registration generation;
+2. unlink only sources whose generation and byte hash match the committed manifest;
+3. never unlink a newer generation;
 4. fsync active registration directories where supported;
-5. update `transaction.json` to `cleaned`;
+5. set transaction phase `cleaned`;
 6. atomically rename the transaction directory to the final archive directory within the archive filesystem.
 
-If a source path now contains a different generation or hash, cleanup does not delete it. The command fails safely and retains the committed transaction for operator investigation.
+If a source path contains a different generation or hash, cleanup does not delete it. The committed transaction remains available for investigation and the command returns cleanup required.
 
 ## Logical atomicity and recovery
 
-### Failure before commit
+### Before commit
 
-If failure occurs in `prepared` or `copied`:
+Failure in `prepared` or `copied` means:
 
-- no active source record is removed;
+- no active source is removed;
 - no generation is hidden;
 - no completed archive is reported;
-- the error is `machine_archive_failed`;
-- an incomplete transaction is removed when safe or retained as `aborted` for diagnosis.
+- error code is `machine_archive_failed`;
+- transaction is removed safely or retained as non-committed `aborted` evidence.
 
-### Failure after commit
+### After commit
 
-If failure occurs after durable `commit.json` but before full cleanup:
+Failure after durable commit but before cleanup means:
 
-- committed generations remain hidden from the active registry;
-- registration API returns `machine_archive_cleanup_required`;
-- apply returns `machine_archive_cleanup_required` when automatic resume cannot complete;
-- a repeat apply resumes the same transaction and never allocates another archive ID;
-- the transaction contains enough hashes and paths to complete or safely refuse cleanup.
+- committed generations stay hidden;
+- registration returns `machine_archive_cleanup_required`;
+- apply resumes automatically when safe;
+- if automatic resume cannot complete, apply returns `machine_archive_cleanup_required`;
+- repeat apply never allocates a second archive ID.
 
 ### Completed archive
 
-When no active generation remains and a completed archive matches the machine:
+When no active generation remains and a completed archive matches the identifier:
 
 - repeat apply returns `already_archived`;
 - no empty audit record is created;
 - no new archive ID is allocated;
-- preview may report the latest archive as already archived instead of `machine_not_found`.
+- preview reports the latest archive as already archived rather than `machine_not_found`.
 
-If the machine later obtains a new registration generation, that new active generation takes precedence over old completed archives. A later archive of the new generation creates a new archive ID.
+A later new registration generation takes precedence over older completed archives. Archiving that new generation creates a new archive ID.
 
-## Archive manifest and audit
+## Manifest and operator audit
 
 `manifest.json` contains:
 
@@ -538,44 +529,42 @@ record entries: source state, archive filename, byte size, SHA-256
 commit_phase = committed
 ```
 
-The operator is resolved as follows:
+Operator resolution:
 
-1. apply still requires effective UID `0`;
-2. when valid `SUDO_UID` and `SUDO_USER` identify an existing local account and agree with the account database, record that invoking account;
-3. otherwise record real UID/account when available;
+1. apply requires effective UID `0`;
+2. valid `SUDO_UID` and `SUDO_USER` are used only when both identify the same existing local account;
+3. otherwise use real UID/account when available;
 4. fall back to effective UID/account only when no trustworthy invoking identity exists.
 
-The archive never copies into its manifest:
+The manifest does not copy:
 
-- Ansible output;
-- preflight output beyond what already exists in the exact archived registration record;
+- Ansible or preflight output;
 - provision requests;
 - employee assignment contents;
-- job status contents beyond the safe blocker response;
-- job logs;
+- job contents or logs;
 - Vault data;
-- private or public SSH key material.
+- SSH key material.
 
-Archived source records are retained byte-for-byte and may already contain historical fields such as `ansible_output`; this is why archive permissions are private and the records are never returned by normal CLI output.
+Archived source records remain exact and may already contain historical fields such as `ansible_output`. They are private and never returned by normal CLI output.
 
 ## Active registry behavior
 
-`MachineRepository` continues to read only `pending`, `ready`, and `failed`, but it filters records whose exact generation appears in a durable committed archive or committed transaction.
+`MachineRepository` continues reading `pending`, `ready`, and `failed`, but filters exact generations present in a durable commit marker in either `.transactions` or a final archive directory.
 
-Filtering rules:
+Rules:
 
 - no commit marker: record remains active;
-- committed matching generation: record is hidden;
-- committed older generation plus new `registration_id`: new record remains active;
-- malformed archive state: fail closed with a registry/archive error instead of silently showing or hiding records;
+- matching committed generation: record is hidden;
+- committed old generation plus new `registration_id`: new record remains active;
+- malformed archive state: fail closed instead of guessing visibility;
 - legacy record: match by exact legacy fingerprint;
 - archive identity keyed only by machine UUID without generation is forbidden.
 
-`machines list` and `machines show` do not expose archive manifests or audit reasons in OR-3P2.
+`machines list` and `machines show` expose no archive manifests or reasons in OR-3P2.
 
 ## Registration API admission
 
-The API retains current network, payload-size, hostname, MAC, UUID, and JSON validation. Lifecycle admission occurs only after these checks.
+Existing network, payload-size, hostname, MAC, UUID, and JSON validation remains. Lifecycle admission runs afterwards under the shared lock.
 
 ### New or previously archived machine
 
@@ -590,7 +579,7 @@ HTTP `201`:
 }
 ```
 
-The pending record is created atomically under the shared lock.
+A new pending record is written atomically.
 
 ### Consistent active unassigned machine
 
@@ -605,21 +594,19 @@ HTTP `200`:
 }
 ```
 
-The existing record is not overwritten, its timestamp does not change, and pending processing is not retriggered by replacing the file.
-
-For a legacy active record, `registration_id` may be omitted and a safe `legacy: true` flag may be returned.
+The existing record is not overwritten, timestamps do not change, and pending processing is not retriggered by replacement. `registration_state` may be `pending`, `ready`, or `failed`. For a legacy active record, `registration_id` is omitted and `legacy: true` is returned.
 
 ### Assigned machine
 
-HTTP `409` with `machine_assigned`. No pending file is created or replaced.
+HTTP `409 machine_assigned`; no pending file is created or replaced.
 
 ### Active provision job
 
-HTTP `409` with `machine_busy` and only safe job fields.
+HTTP `409 machine_busy` with only `job_id`, `state`, and `stage`.
 
 ### Committed cleanup incomplete
 
-HTTP `409` with:
+HTTP `409`:
 
 ```json
 {
@@ -636,7 +623,7 @@ HTTP `409` with:
 
 ### Invalid or conflicting controller state
 
-Unsafe or malformed registration/archive state returns HTTP `409` with a stable lifecycle code where the request conflicts with controller state. Unexpected I/O failures return HTTP `500` with a safe generic storage error and no path contents, traceback, or raw exception.
+Malformed or unsafe lifecycle state returns HTTP `409` with a stable lifecycle code. Unexpected I/O returns HTTP `500 registration_storage_failed` without raw exception text, traceback, or unsafe path disclosure.
 
 ## Register-only workstation command
 
@@ -646,21 +633,21 @@ Repository source:
 deploy/alt-linux/bootstrap/alt-bootstrap-register
 ```
 
-Controller deployment target served by static bootstrap content:
+Controller-served target:
 
 ```text
 /srv/alt-deploy/bootstrap/alt-bootstrap-register
 ```
 
-Workstation installation target:
+Workstation target:
 
 ```text
 /usr/local/sbin/alt-bootstrap-register
 ```
 
-The controller installer does not treat the helper as a controller-side operational command. It publishes the source under the bootstrap tree. The workstation bootstrap downloads it, verifies that the response is a non-empty regular script, installs it as root mode `0755`, and invokes it for initial registration.
+The control-plane installer publishes the helper under the bootstrap tree; it is not a controller-side operator command. Workstation bootstrap downloads it, validates a non-empty regular script, installs it as root mode `0755`, and invokes it for initial registration.
 
-Usage on a workstation:
+Usage:
 
 ```bash
 sudo alt-bootstrap-register
@@ -670,96 +657,92 @@ The helper:
 
 1. requires root;
 2. determines the default-route interface;
-3. reads hostname, interface MAC, and DMI product UUID when available;
-4. constructs JSON safely without shell-string injection;
-5. POSTs to the configured registration endpoint with bounded timeouts;
+3. reads hostname, MAC, and DMI UUID when available;
+4. constructs JSON safely;
+5. POSTs to the configured registration API with bounded timeouts;
 6. prints the safe API response;
 7. exits `0` for `registered` and `already_registered`;
-8. exits non-zero for lifecycle conflict, invalid response, or network failure.
+8. exits non-zero for conflicts, invalid responses, or network failure.
 
-The helper does not:
+It does not:
 
-- run `apt-get`;
-- create or modify the `ansible` user;
-- change SSH keys, `authorized_keys`, or `sshd`;
+- run package management;
+- create or modify `ansible`;
+- change SSH, authorized keys, or sshd;
 - change sudoers;
 - remove or rewrite bootstrap markers;
 - run preflight or provisioning;
-- contact any endpoint other than the configured registration API.
+- contact any endpoint except the configured registration API.
 
 ### Bootstrap integration
 
-`bootstrap.sh` installs the helper before first registration and replaces its internal `register_machine()` implementation with a call to the installed helper.
+`bootstrap.sh` installs the helper before registration and replaces its embedded registration implementation with the installed helper.
 
-The full bootstrap keeps its existing completion behavior:
+Order:
 
-1. install base dependencies and configure the Ansible account;
+1. install base dependencies and configure Ansible account;
 2. write `/var/lib/alt-bootstrap-completed`;
 3. call `alt-bootstrap-register`;
-4. write `/var/lib/alt-bootstrap-registered` only after a successful `registered` or `already_registered` response.
+4. write `/var/lib/alt-bootstrap-registered` only after `registered` or `already_registered`.
 
-A manual call to `alt-bootstrap-register` ignores the registration marker and always asks the controller for current admission state.
+A manual helper call ignores the registration marker and always requests current admission state.
 
-Workstations installed after OR-3P2 receive the helper automatically. Existing workstations are not contacted or modified by repository implementation. Any later helper distribution to existing machines must be an explicit rollout action after OR-3P3.
+Newly installed workstations receive the helper automatically. Existing workstations are not contacted or modified by repository work. Later distribution to existing machines is an explicit post-OR-3P3 rollout action.
 
 ## Pending processor race protection
 
-`process_pending.py` must not hold the global lock during SSH wait, key scan, Ansible ping, or preflight.
+`process_pending.py` does not hold the global lock during SSH wait, key scan, Ansible ping, or preflight.
 
-Required flow:
+Flow:
 
-1. load the pending record and capture its generation identity;
-2. perform target work without the global lock;
-3. immediately before writing `ready`, acquire the shared lock;
-4. verify the same generation is still active and not committed;
-5. write/move the result only if that check passes;
-6. immediately before writing `failed`, perform the same locked generation check;
-7. if the generation is committed, discard the result and remove only a still-matching stale pending source when the archive cleanup contract permits it;
+1. load pending record and capture generation identity;
+2. perform target work without the lock;
+3. before writing `ready`, acquire the lock;
+4. verify the same generation remains active and uncommitted;
+5. write/move only if the check passes;
+6. before writing `failed`, repeat the same locked check;
+7. if committed, discard the result and remove only a still-matching stale pending source when archive cleanup permits;
 8. never recreate `ready` or `failed` for a committed generation.
 
-Ordering is safe in both directions:
+Safe orderings:
 
-- processor finalizes first, then archive discovers and archives the resulting state;
-- archive commits first, then processor observes the committed generation and suppresses finalization.
+- processor finalizes first, then archive discovers the resulting state;
+- archive commits first, then processor suppresses stale finalization.
 
-A newly registered generation is never suppressed merely because an older generation of the same machine was archived.
+A new generation is not suppressed because an older generation was archived.
 
 ## Installer changes
 
-The OR-3P1 control-plane installer is extended to:
+The OR-3P1 installer is extended to:
 
-- install the new Python lifecycle/archive modules;
-- install updated `register_api.py` and `process_pending.py`;
+- install lifecycle/archive modules;
+- install updated registration API and processor;
 - publish `/srv/alt-deploy/bootstrap/alt-bootstrap-register`;
-- publish the updated `bootstrap.sh`;
-- create archive and transaction roots with correct private ownership/mode;
-- preserve all existing archive directories and files byte-for-byte;
-- never recursively chmod/chown archive contents merely to ensure parents;
-- include the served helper in controller readiness/static asset checks;
+- publish updated `bootstrap.sh`;
+- create archive roots with private ownership/mode;
+- preserve all existing archives byte-for-byte;
+- avoid recursive chmod/chown of existing archive content;
+- include the helper in readiness/static asset checks;
 - run `bash -n` on both bootstrap scripts;
-- keep the OR-3P3 live-rollout gate.
+- retain the OR-3P3 live-rollout gate.
 
-Installer success does not imply that any existing workstation has received the helper.
+Installer success does not mean an existing workstation received the helper.
 
 ## Permissions and safety
 
-Expected private controller state:
-
 ```text
-/var/lib/alt-deploy                              0700 altserver:altserver
-/var/lib/alt-deploy/machine-archives             0700 altserver:altserver
+/var/lib/alt-deploy                                0700 altserver:altserver
+/var/lib/alt-deploy/machine-archives               0700 altserver:altserver
 /var/lib/alt-deploy/machine-archives/.transactions 0700 altserver:altserver
 ```
 
-Apply runs as root but creates finalized state owned by `altserver:altserver` so normal read-only lifecycle commands and services can inspect it.
+Apply runs as root but finalized state is owned by `altserver:altserver` for service-side inspection.
 
-No archive operation follows symlinks. Source validation and cleanup use `lstat`, regular-file checks, `O_NOFOLLOW` when available, and post-open identity checks. A platform without an equivalent safe no-follow strategy must fail apply rather than silently weaken the contract.
+No archive operation follows symlinks. Validation and cleanup use `lstat`, regular-file checks, `O_NOFOLLOW` when available, and post-open identity checks. A platform without an equivalent safe strategy must fail apply.
 
-Normal CLI and API responses never include archived record contents, hashes of secrets, filesystem exception text, raw subprocess output, or absolute paths beyond fixed public contract paths.
+Responses never include archived contents, unsafe hashes, raw filesystem errors, subprocess output, or non-contract absolute paths.
 
-## Stable error contracts
-
-Core CLI/service codes:
+## Stable errors
 
 ```text
 machine_not_found
@@ -776,7 +759,7 @@ invalid_archive_reason
 registration_storage_failed
 ```
 
-Recommended exit codes:
+Exit codes:
 
 ```text
 3  not found
@@ -787,14 +770,14 @@ Recommended exit codes:
 HTTP mapping:
 
 ```text
-400 invalid registration request syntax or fields
-403 source network forbidden
-409 lifecycle conflict or controller-state conflict
+400 invalid registration request
+403 forbidden source network
+409 lifecycle/controller-state conflict
 413 invalid payload size
 500 unexpected storage/runtime failure
 ```
 
-Every error uses the existing structured `ControlError` shape where applicable. `machine_busy` exposes only `job_id`, `state`, and `stage`. `machine_archive_cleanup_required` exposes only `archive_id`.
+Errors use existing structured `ControlError` where applicable. `machine_busy` exposes only `job_id`, `state`, `stage`; cleanup-required exposes only `archive_id`.
 
 ## Test strategy
 
@@ -802,76 +785,76 @@ Implementation follows TDD.
 
 ### Archive service and CLI
 
-Tests must prove:
+Tests prove:
 
 1. preview performs zero mutations;
-2. preview and apply reject assigned machines;
-3. preview and apply reject active jobs with safe fields only;
+2. preview/apply reject assigned machines;
+3. preview/apply reject active jobs with safe fields;
 4. malformed job state fails closed;
-5. one `ready` record archives successfully;
-6. matching records across `pending`, `ready`, and `failed` are archived in one operation;
-7. source record bytes are preserved exactly;
-8. manifest sizes and SHA-256 values match archived bytes;
-9. reason and operator audit fields follow the contract;
+5. one `ready` record archives;
+6. matching records across all three states archive in one operation;
+7. source bytes remain exact;
+8. manifest sizes and hashes match;
+9. reason/operator audit follows contract;
 10. non-root apply fails before mutation;
 11. invalid reason fails before mutation;
 12. malformed JSON fails the whole operation;
-13. symlink, FIFO, directory, or other unexpected type fails the whole operation;
-14. identity conflicts across records fail the whole operation;
-15. legacy records use deterministic fingerprints without source rewrite;
-16. failure in `prepared` leaves the active registry unchanged;
-17. failure in `copied` leaves the active registry unchanged;
-18. failure after commit hides the exact old generation and reports cleanup required;
-19. repeat apply resumes cleanup with the same archive ID;
-20. completed repeat returns `already_archived` without creating new state;
-21. cleanup never deletes a newer generation at a reused source path;
-22. archive manifests and records use private modes and expected ownership in the sandbox model.
+13. unsafe object types fail the whole operation;
+14. identity conflicts fail the whole operation;
+15. legacy records use fingerprints without rewrite;
+16. `prepared` failure leaves active state unchanged;
+17. `copied` failure leaves active state unchanged;
+18. post-commit failure hides only the old generation;
+19. repeat apply resumes the same archive ID;
+20. completed repeat returns `already_archived` without new state;
+21. cleanup never deletes a newer generation at a reused path;
+22. private modes/ownership are enforced in the sandbox model;
+23. apply holds the lifecycle lock through copy, commit, and cleanup;
+24. aborted precommit transactions do not hide or block valid state.
 
 ### Registration admission and API
 
-Tests must prove:
+Tests prove:
 
-1. accepted new registration gets a controller-generated `registration_id`;
-2. active consistent machine returns `already_registered` without byte changes;
-3. assigned machine returns HTTP `409 machine_assigned`;
-4. busy machine returns HTTP `409 machine_busy` with safe fields only;
-5. committed incomplete cleanup returns HTTP `409 machine_archive_cleanup_required`;
-6. a new generation after completed archive is accepted and visible;
-7. an old committed generation remains hidden;
-8. malformed or unsafe active/archive state fails closed;
-9. concurrent registration requests cannot create conflicting generations;
-10. invalid payload/network validation remains compatible with existing behavior.
+1. a new registration gets controller-generated `registration_id`;
+2. an active consistent machine returns `already_registered` without byte changes;
+3. assigned returns HTTP `409 machine_assigned`;
+4. busy returns HTTP `409 machine_busy` safely;
+5. incomplete cleanup returns HTTP `409 machine_archive_cleanup_required`;
+6. a new generation after archive is accepted and visible;
+7. old committed generation remains hidden;
+8. malformed/unsafe lifecycle state fails closed;
+9. concurrent requests cannot create conflicting generations;
+10. existing payload/network validation remains compatible.
 
 ### Pending processor
 
-Tests must prove:
+Tests prove:
 
-1. processor finalization checks the captured generation under lock;
+1. finalization checks captured generation under lock;
 2. committed generation cannot produce `ready`;
 3. committed generation cannot produce `failed`;
 4. processor-first ordering remains archivable;
 5. archive-first ordering suppresses stale finalization;
-6. a new generation is not confused with an archived old generation;
-7. long-running target work occurs outside the global lock.
+6. new generation is not confused with old archive;
+7. long-running target work occurs outside the lock.
 
 ### Helper, bootstrap, and installer
 
-Tests must prove:
+Tests prove:
 
-1. helper collects identity and sends the expected bounded request;
+1. helper collects identity and sends bounded request;
 2. helper treats `registered` and `already_registered` as success;
-3. helper returns non-zero for lifecycle conflicts and malformed responses;
-4. helper never runs package, SSH, sudoers, or user-management commands;
-5. bootstrap installs and invokes the helper in the approved order;
-6. registration marker is written only after helper success;
-7. controller installer publishes the helper and updated bootstrap;
-8. installer preserves existing archives byte-for-byte;
-9. installer readiness checks both served scripts;
+3. conflicts and malformed responses return non-zero;
+4. helper performs no package/SSH/sudoers/user management;
+5. bootstrap installs and invokes helper in order;
+6. registration marker is written only after success;
+7. installer publishes helper and bootstrap;
+8. installer preserves archives byte-for-byte;
+9. readiness checks both served scripts;
 10. no test contacts a real workstation, controller, or production secret.
 
 ### Final verification
-
-At minimum:
 
 ```bash
 python -m pytest -q tests/alt_linux
@@ -886,7 +869,7 @@ bash -n deploy/alt-linux/bootstrap/alt-bootstrap-register
 git diff --check
 ```
 
-Ansible syntax checks from OR-3P1 remain required because the installer and full ALT suite are touched.
+OR-3P1 Ansible syntax checks remain required because installer and ALT suite are touched.
 
 ## Documentation
 
@@ -896,21 +879,21 @@ Update:
 deploy/alt-linux/README.md
 docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md
 docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md
-docs/ALT_OR3P1_PILOT_ROLLOUT.md or a dedicated OR-3P2 operator runbook
+dedicated OR-3P2 operator runbook
 ```
 
-Documentation must include:
+Document:
 
-- preview and apply examples;
-- exact blockers and error codes;
+- preview/apply examples;
+- blockers and error codes;
 - reason/audit behavior;
-- no restore and no assignment release in OR-3P2;
-- register-only helper behavior;
-- distinction between old and new registration generations;
-- cleanup-required recovery procedure;
+- no restore and no assignment release;
+- helper behavior;
+- registration generations;
+- cleanup-required recovery;
 - archive locations and permissions;
-- explicit prohibition on using `192.168.101.111`;
-- explicit OR-3P3 gate before controller installation.
+- prohibition on `192.168.101.111`;
+- OR-3P3 gate before controller installation.
 
 ## Operational boundary
 
@@ -918,25 +901,25 @@ During design, implementation, and CI:
 
 - do not access controller `192.168.100.17`;
 - do not access reference workstation `192.168.101.111`;
-- do not use a production Vault password, private key, or active registration record;
-- use temporary filesystems, fake commands, and synthetic identities only;
+- do not use production Vault passwords, private keys, or active records;
+- use temporary filesystems, fake commands, and synthetic identities;
 - do not merge without explicit user confirmation.
 
-After merge, OR-3P2 still must not be installed on the live controller until OR-3P3 backup/restore has been completed. The next acceptance target remains a new disposable and unassigned VM or physical workstation.
+After merge, OR-3P2 still must not be installed on the live controller until OR-3P3 is complete. The next acceptance target remains a new disposable and unassigned VM or physical workstation.
 
 ## Acceptance
 
 OR-3P2 is complete when:
 
 - preview is read-only and apply is root-only;
-- assigned and busy machines are blocked consistently across CLI and API;
-- every active registration record for a machine is archived without source-byte mutation;
-- committed archives survive interruption and incomplete cleanup is safely resumable;
+- assigned/busy blockers are consistent across CLI and API;
+- every active record for a machine archives without byte mutation;
+- committed archives survive interruption and cleanup resumes safely;
 - only exact archived generations are hidden;
-- a new registration generation for the same machine is accepted after cleanup;
+- a new generation of the same machine is accepted after cleanup;
 - pending processing cannot resurrect an archived generation;
 - `alt-bootstrap-register` performs registration only;
-- installer and bootstrap publish/install the helper correctly;
+- installer/bootstrap publish and install the helper correctly;
 - archive state remains private and preserved;
-- all focused, ALT, and full-repository tests pass;
-- documentation preserves the OR-3P3 and reference-machine safety boundaries.
+- focused, ALT, and full repository tests pass;
+- documentation preserves OR-3P3 and reference-machine boundaries.
