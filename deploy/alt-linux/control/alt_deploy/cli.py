@@ -80,6 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    job_commands.add_parser("active")
+
     job_status = job_commands.add_parser("status")
     job_status.add_argument("job_id")
 
@@ -264,6 +266,33 @@ def main(
                     "status": "ok",
                     "job": job.to_public_dict(),
                 }
+
+        elif (
+            parsed.command == "jobs"
+            and parsed.job_command == "active"
+        ):
+            active_jobs = [
+                job
+                for job in JobRepository(
+                    active_settings
+                ).list()
+                if job.state in {"queued", "running"}
+            ]
+
+            payload = {
+                "status": "ok",
+                "active_jobs": [
+                    {
+                        "job_id": job.job_id,
+                        "machine_uuid": job.machine_uuid,
+                        "state": job.state,
+                        "stage": job.stage,
+                        "created_at": job.created_at,
+                    }
+                    for job in active_jobs
+                ],
+                "count": len(active_jobs),
+            }
 
         elif (
             parsed.command == "jobs"
