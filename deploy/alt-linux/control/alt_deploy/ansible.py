@@ -382,7 +382,23 @@ class AnsibleController:
             if not path.is_file()
         ]
 
+        helper = self.settings.job_stage_helper_path
+        not_executable = []
+        if helper.is_file() and not os.access(helper, os.X_OK):
+            not_executable.append(
+                {
+                    "name": "job_stage_helper",
+                    "path": str(helper),
+                }
+            )
+
+        details: dict[str, object] = {}
         if missing:
+            details["missing"] = missing
+        if not_executable:
+            details["not_executable"] = not_executable
+
+        if details:
             raise ControlError(
                 code="provision_not_configured",
                 message=(
@@ -390,7 +406,7 @@ class AnsibleController:
                     "is not fully configured"
                 ),
                 exit_code=7,
-                details={"missing": missing},
+                details=details,
             )
 
     def run_provision(
