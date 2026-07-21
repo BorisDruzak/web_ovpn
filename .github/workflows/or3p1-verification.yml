@@ -6,103 +6,90 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  phase-patch:
+  final-verification:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: feat/alt-or3p1-pilot-installer-readiness-20260721
-      - name: Apply exact post-maintenance phase patch
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("deploy/alt-linux/install-control-plane-lib.sh")
-          text = path.read_text(encoding="utf-8")
-          if "run_post_maintenance_step()" in text:
-              raise SystemExit(0)
-
-          old = '''install_control_plane_main() {
-              local root_prefix=$1
-
-              install_control_plane_prechecks "${root_prefix}"
-              enter_control_plane_maintenance
-              install_controller_package "${root_prefix}"
-              ensure_private_state_directories "${root_prefix}"
-              install_ansible_project "${root_prefix}"
-              install_registration_runtime "${root_prefix}"
-              install_systemd_units "${root_prefix}"
-              activate_control_plane
-              run_installed_readiness "${root_prefix}"
-
-              echo "ALT deployment control plane installed successfully"
-          }
-          '''
-          new = '''run_post_maintenance_step() {
-              local phase=$1
-              shift
-
-              if (
-                  set -Eeuo pipefail
-                  "$@"
-              ); then
-                  return 0
-              fi
-
-              echo "ALT control-plane installation failed during ${phase}; restore the OR-3P3 backup before retrying" >&2
-              return 1
-          }
-
-          install_control_plane_main() {
-              local root_prefix=$1
-
-              install_control_plane_prechecks "${root_prefix}"
-              run_post_maintenance_step maintenance enter_control_plane_maintenance
-              run_post_maintenance_step controller_package install_controller_package "${root_prefix}"
-              run_post_maintenance_step private_state ensure_private_state_directories "${root_prefix}"
-              run_post_maintenance_step ansible_project install_ansible_project "${root_prefix}"
-              run_post_maintenance_step registration_runtime install_registration_runtime "${root_prefix}"
-              run_post_maintenance_step systemd_units install_systemd_units "${root_prefix}"
-              run_post_maintenance_step activation activate_control_plane
-              run_post_maintenance_step readiness run_installed_readiness "${root_prefix}"
-
-              echo "ALT deployment control plane installed successfully"
-          }
-          '''
-          if old not in text:
-              raise SystemExit("expected install_control_plane_main block not found")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          PY
-      - name: Commit phase patch
-        run: |
-          git config user.name "OpenAI OR-3P1 automation"
-          git config user.email "actions@users.noreply.github.com"
-          if git diff --quiet; then
-            exit 0
-          fi
-          git add deploy/alt-linux/install-control-plane-lib.sh
-          git diff --cached --check
-          git commit -m "fix: report OR-3P1 post-maintenance failure phase"
-          git push origin HEAD:feat/alt-or3p1-pilot-installer-readiness-20260721
-
-  focused:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
       - name: Install test dependencies
         run: python -m pip install -r requirements.txt
-      - name: Run OR-3P1 focused tests
+      - name: Record tested revisions
         run: |
+          printf 'tested_head=%s\n' "$(git rev-parse HEAD)" | tee verification-revisions.txt
+          printf 'main=%s\n' "$(git rev-parse origin/main)" | tee -a verification-revisions.txt
+      - name: Run focused OR-3P1 suite
+        run: |
+          set -o pipefail
           python -m pytest -q \
             tests/alt_linux/test_or3p1_cli_readiness.py \
             tests/alt_linux/test_or3p1_controller_readiness.py \
             tests/alt_linux/test_or3p1_controller_readiness_failures.py \
             tests/alt_linux/test_or3p1_installer.py \
-            tests/alt_linux/test_or3p1_installer_failure_phase.py
+            tests/alt_linux/test_or3p1_installer_failure_phase.py \
+            | tee verification-focused.txt
+      - name: Run complete ALT suite
+        run: |
+          set -o pipefail
+          python -m pytest -q tests/alt_linux \
+            | tee verification-alt.txt
+      - name: Run complete repository suite
+        run: |
+          set -o pipefail
+          python -m pytest -q \
+            | tee verification-full.txt
+      - name: Compile production Python boundaries
+        run: |
+          python3 -m py_compile \
+            deploy/alt-linux/control/alt_deploy/*.py \
+            deploy/alt-linux/api/register_api.py \
+            deploy/alt-linux/api/process_pending.py \
+            deploy/alt-linux/control/alt-job-stage
+      - name: Check shell syntax
+        run: |
+          bash -n deploy/alt-linux/install-control-plane.sh
+          bash -n deploy/alt-linux/install-control-plane-lib.sh
+          bash -n deploy/alt-linux/bootstrap/bootstrap.sh
+      - name: Check Ansible syntax with CI-safe fixture
+        run: |
+          vault_file=deploy/alt-linux/ansible/group_vars/vault.yml
+          vault_pass=/tmp/or3p1-vault-pass
+          trap 'rm -f "$vault_file" "$vault_pass"' EXIT
+          printf 'or3p1-ci-only\n' > "$vault_pass"
+          cat > "$vault_file" <<'EOF'
+          ---
+          vault_employee_password_hash: '$y$j9T$or3p1-ci$or3p1-ci'
+          EOF
+          ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
+          ANSIBLE_VAULT_PASSWORD_FILE="$vault_pass" \
+            ansible-playbook --syntax-check \
+            deploy/alt-linux/ansible/playbooks/01-preflight.yml
+          ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
+          ANSIBLE_VAULT_PASSWORD_FILE="$vault_pass" \
+            ansible-playbook --syntax-check \
+            deploy/alt-linux/ansible/playbooks/02-provision-account.yml
+          rm -f "$vault_file" "$vault_pass"
+          trap - EXIT
+      - name: Check diff integrity and temporary state
+        run: |
+          git diff --check origin/main...HEAD
+          test -z "$(git status --short)"
+          test ! -e deploy/alt-linux/ansible/group_vars/vault.yml
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: or3p1-verification
+          path: |
+            verification-revisions.txt
+            verification-focused.txt
+            verification-alt.txt
+            verification-full.txt
+          if-no-files-found: warn
