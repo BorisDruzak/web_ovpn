@@ -121,13 +121,13 @@ def test_installer_preserves_existing_ansible_files(
 def test_installer_updates_complete_registration_runtime(
     installer_text: str,
 ) -> None:
-    for source, destination in (
-        ("register_api.py", "/opt/alt-deploy-api/register_api.py"),
-        ("process_pending.py", "/opt/alt-deploy-api/process_pending.py"),
-        ("bootstrap/bootstrap.sh", "/srv/alt-deploy/bootstrap"),
-    ):
-        assert source in installer_text
-        assert destination in installer_text
+    assert "/opt/alt-deploy-api" in installer_text
+    assert '"${api_root}/register_api.py"' in installer_text
+    assert '"${api_root}/process_pending.py"' in installer_text
+    assert '"${ALT_ROOT}/api/register_api.py"' in installer_text
+    assert '"${ALT_ROOT}/api/process_pending.py"' in installer_text
+    assert '"${ALT_ROOT}/bootstrap/bootstrap.sh"' in installer_text
+    assert "/srv/alt-deploy/bootstrap" in installer_text
 
     for unit in (
         "alt-deploy-http.service",
