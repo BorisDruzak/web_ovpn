@@ -47,6 +47,24 @@ def _integer(
     return row.value
 
 
+def _compatible_integral(
+    row: SnmpVarBind,
+    field: str,
+    *,
+    minimum: int = 0,
+    maximum: int = 4_294_967_295,
+) -> int:
+    if (
+        row.value_type not in {"integer", "unsigned32", "gauge32"}
+        or isinstance(row.value, bool)
+        or not isinstance(row.value, int)
+        or row.value < minimum
+        or row.value > maximum
+    ):
+        raise ValueError(f"{field} has invalid type")
+    return row.value
+
+
 def _indexed_rows(
     result: CapabilityResult,
     base: tuple[int, ...],
@@ -85,9 +103,7 @@ def _vids_by_fid(result: CapabilityResult) -> dict[int, set[int]]:
             raise ValueError("VLAN time mark is invalid")
         if not 1 <= vid <= 4094:
             raise ValueError("VLAN ID is invalid")
-        fdb_id = _integer(
-            row, "dot1qVlanFdbId", value_type="unsigned32", minimum=1
-        )
+        fdb_id = _compatible_integral(row, "dot1qVlanFdbId", minimum=1)
         if vid in seen_vids and seen_vids[vid] != fdb_id:
             raise ValueError("conflicting VLAN FDB mapping")
         seen_vids[vid] = fdb_id

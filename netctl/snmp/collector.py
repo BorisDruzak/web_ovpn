@@ -12,6 +12,7 @@ from .models import (
     SwitchDiscovery,
     SwitchDiscoveryCapability,
     SwitchFdbEntry,
+    SwitchPort,
     SwitchSnapshot,
 )
 from .oids import (
@@ -49,7 +50,7 @@ from .oids import (
     SYS_UPTIME,
 )
 from .outcomes import SnmpOutcome
-from .profiles import detect_profile
+from .profiles import PortProfile, detect_profile
 from .stp import parse_stp
 from .system import parse_system
 from .vlan import parse_vlan_memberships
@@ -173,6 +174,120 @@ def _optional_group_result(
     )
 
 
+def _parse_optional_ifx(
+    if_results: tuple[CapabilityResult, ...],
+    ifx_results: tuple[CapabilityResult, ...],
+    bridge_to_ifindex: dict[int, int],
+    core_ports: tuple[SwitchPort, ...],
+) -> tuple[tuple[SwitchPort, ...], tuple[CapabilityResult, ...]]:
+    accepted: list[CapabilityResult] = []
+    reported: list[CapabilityResult] = []
+    ports = core_ports
+    for result in ifx_results:
+        if result.outcome not in _USABLE_REQUIRED_OUTCOMES:
+            reported.append(result)
+            continue
+        try:
+            enriched = parse_interfaces(
+                _rows(if_results),
+                _rows((*accepted, result)),
+                bridge_to_ifindex,
+            )
+        except ValueError:
+            reported.extend(
+                _optional_parse_errors(
+                    (result,),
+                    error_code="malformed_ifx",
+                    error_message="SNMP IFX rows are malformed",
+                )
+            )
+        else:
+            accepted.append(result)
+            reported.append(result)
+            ports = enriched
+    return ports, tuple(reported)
+
+
+async def _collect_legacy_fdb(
+    transport: CollectorTransport,
+    *,
+    profile: PortProfile,
+    ports: tuple[SwitchPort, ...],
+    bridge_to_ifindex: dict[int, int],
+    empty_fallback: CapabilityResult | None = None,
+) -> tuple[
+    tuple[SwitchFdbEntry, ...],
+    CapabilityResult,
+    tuple[CapabilityResult, ...],
+]:
+    legacy_address = await transport.walk(
+        DOT1D_FDB_ADDRESS, capability="legacy_address"
+    )
+    legacy_port = await transport.walk(DOT1D_FDB_PORT, capability="legacy_port")
+    legacy_status = await transport.walk(
+        DOT1D_FDB_STATUS, capability="legacy_status"
+    )
+    legacy_results = (legacy_address, legacy_port, legacy_status)
+    failure = next(
+        (
+            result
+            for result in legacy_results
+            if result.outcome not in _USABLE_REQUIRED_OUTCOMES
+        ),
+        None,
+    )
+    if failure is not None:
+        return (
+            (),
+            empty_fallback if empty_fallback is not None else _propagate_fdb_failure(failure),
+            legacy_results,
+        )
+    if all(result.outcome is SnmpOutcome.SUCCESS_EMPTY for result in legacy_results):
+        return (
+            (),
+            empty_fallback
+            if empty_fallback is not None
+            else _final_fdb_result(SnmpOutcome.SUCCESS_EMPTY),
+            legacy_results,
+        )
+    try:
+        fdb = parse_legacy_fdb(
+            legacy_address,
+            legacy_port,
+            legacy_status,
+            profile=profile,
+            ports=ports,
+            bridge_to_ifindex=bridge_to_ifindex,
+        )
+    except ValueError:
+        legacy_parse = _optional_group_result(
+            "legacy_fdb",
+            SnmpOutcome.PARSE_ERROR,
+            error_code="malformed_fdb",
+            error_message="Legacy SNMP FDB rows are malformed",
+        )
+        return (
+            (),
+            empty_fallback
+            if empty_fallback is not None
+            else _final_fdb_result(
+                SnmpOutcome.PARSE_ERROR,
+                error_code="malformed_fdb",
+                error_message="SNMP FDB rows are malformed",
+            ),
+            (*legacy_results, legacy_parse),
+        )
+    return (
+        fdb,
+        _final_fdb_result(SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb)
+        if fdb
+        else empty_fallback
+        if empty_fallback is not None
+        else _final_fdb_result(SnmpOutcome.SUCCESS_EMPTY),
+        legacy_results,
+    )
+
+
 async def collect_switch_snapshot(
     source: Mapping[str, object], transport: CollectorTransport
 ) -> SwitchSnapshot:
@@ -195,20 +310,26 @@ async def collect_switch_snapshot(
     bridge_result = await transport.walk(
         DOT1D_BASE_PORT_IFINDEX, capability="bridge_port_ifindex"
     )
-    capabilities.extend((*if_results, *ifx_results, bridge_result))
     required_failure = _required_group_failure(
-        (*system_results, *if_results, *ifx_results, bridge_result)
+        (*system_results, *if_results, bridge_result)
     )
+    reported_ifx_results = ifx_results
     try:
         bridge_to_ifindex = parse_bridge_port_map(bridge_result.rows)
-        ports = parse_interfaces(
-            _rows(if_results), _rows(ifx_results), bridge_to_ifindex
-        )
+        ports = parse_interfaces(_rows(if_results), (), bridge_to_ifindex)
     except ValueError:
         if required_failure is None:
             raise
         bridge_to_ifindex = {}
         ports = ()
+    else:
+        ports, reported_ifx_results = _parse_optional_ifx(
+            if_results,
+            ifx_results,
+            bridge_to_ifindex,
+            ports,
+        )
+    capabilities.extend((*if_results, *reported_ifx_results, bridge_result))
 
     options = source.get("driver_options")
     profile_hint: str | None = None
@@ -225,7 +346,15 @@ async def collect_switch_snapshot(
     fdb: tuple[SwitchFdbEntry, ...] = ()
 
     if qbridge_port.outcome is SnmpOutcome.SUCCESS_EMPTY:
-        final_fdb = _final_fdb_result(SnmpOutcome.SUCCESS_EMPTY)
+        empty_qbridge = _final_fdb_result(SnmpOutcome.SUCCESS_EMPTY)
+        fdb, final_fdb, legacy_results = await _collect_legacy_fdb(
+            transport,
+            profile=profile,
+            ports=ports,
+            bridge_to_ifindex=bridge_to_ifindex,
+            empty_fallback=empty_qbridge,
+        )
+        capabilities.extend(legacy_results)
     elif qbridge_port.outcome is SnmpOutcome.SUCCESS_WITH_ROWS:
         qbridge_status = await transport.walk(
             DOT1Q_FDB_STATUS, capability="qbridge_status"
@@ -269,52 +398,13 @@ async def collect_switch_snapshot(
                         SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb
                     )
     elif qbridge_port.outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT:
-        legacy_address = await transport.walk(
-            DOT1D_FDB_ADDRESS, capability="legacy_address"
+        fdb, final_fdb, legacy_results = await _collect_legacy_fdb(
+            transport,
+            profile=profile,
+            ports=ports,
+            bridge_to_ifindex=bridge_to_ifindex,
         )
-        legacy_port = await transport.walk(DOT1D_FDB_PORT, capability="legacy_port")
-        legacy_status = await transport.walk(
-            DOT1D_FDB_STATUS, capability="legacy_status"
-        )
-        capabilities.extend((legacy_address, legacy_port, legacy_status))
-        legacy_results = (legacy_address, legacy_port, legacy_status)
-        failure = next(
-            (
-                result
-                for result in legacy_results
-                if result.outcome
-                not in {SnmpOutcome.SUCCESS_WITH_ROWS, SnmpOutcome.SUCCESS_EMPTY}
-            ),
-            None,
-        )
-        if failure is not None:
-            final_fdb = _propagate_fdb_failure(failure)
-        elif all(
-            result.outcome is SnmpOutcome.SUCCESS_EMPTY for result in legacy_results
-        ):
-            final_fdb = _final_fdb_result(SnmpOutcome.SUCCESS_EMPTY)
-        else:
-            try:
-                fdb = parse_legacy_fdb(
-                    legacy_address,
-                    legacy_port,
-                    legacy_status,
-                    profile=profile,
-                    ports=ports,
-                    bridge_to_ifindex=bridge_to_ifindex,
-                )
-            except ValueError:
-                fdb = ()
-                final_fdb = _final_fdb_result(
-                    SnmpOutcome.PARSE_ERROR,
-                    error_code="malformed_fdb",
-                    error_message="SNMP FDB rows are malformed",
-                )
-            else:
-                final_fdb = _final_fdb_result(
-                    SnmpOutcome.SUCCESS_WITH_ROWS if fdb else SnmpOutcome.SUCCESS_EMPTY,
-                    rows=fdb,
-                )
+        capabilities.extend(legacy_results)
     else:
         final_fdb = _propagate_fdb_failure(qbridge_port)
 
