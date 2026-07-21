@@ -431,6 +431,108 @@ def test_css326_fixture_uses_legacy_fdb_and_one_to_one_physical_ports() -> None:
     ).outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
 
 
+def test_empty_qbridge_uses_complete_nonempty_legacy_fdb() -> None:
+    from netctl.snmp.oids import DOT1Q_FDB_PORT
+
+    transport = _css326_fixture_transport()
+    transport.results[DOT1Q_FDB_PORT] = CapabilityResult(
+        "qbridge_port", SnmpOutcome.SUCCESS_EMPTY
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert len(snapshot.fdb) == 3
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "fdb"
+    ).outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+    assert {
+        row.capability: row.outcome
+        for row in snapshot.capabilities
+        if row.capability.startswith("legacy_")
+    } == {
+        "legacy_address": SnmpOutcome.SUCCESS_WITH_ROWS,
+        "legacy_port": SnmpOutcome.SUCCESS_WITH_ROWS,
+        "legacy_status": SnmpOutcome.SUCCESS_WITH_ROWS,
+    }
+
+
+def test_empty_qbridge_retains_empty_result_when_legacy_fdb_is_empty() -> None:
+    from netctl.snmp.oids import DOT1D_FDB_ADDRESS, DOT1D_FDB_PORT, DOT1D_FDB_STATUS
+    from netctl.snmp.oids import DOT1Q_FDB_PORT
+
+    transport = _css326_fixture_transport()
+    transport.results[DOT1Q_FDB_PORT] = CapabilityResult(
+        "qbridge_port", SnmpOutcome.SUCCESS_EMPTY
+    )
+    transport.results.update(
+        {
+            DOT1D_FDB_ADDRESS: CapabilityResult(
+                "legacy_address", SnmpOutcome.SUCCESS_EMPTY
+            ),
+            DOT1D_FDB_PORT: CapabilityResult("legacy_port", SnmpOutcome.SUCCESS_EMPTY),
+            DOT1D_FDB_STATUS: CapabilityResult(
+                "legacy_status", SnmpOutcome.SUCCESS_EMPTY
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert snapshot.fdb == ()
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "fdb"
+    ).outcome is SnmpOutcome.SUCCESS_EMPTY
+    assert {
+        row.capability: row.outcome
+        for row in snapshot.capabilities
+        if row.capability.startswith("legacy_")
+    } == {
+        "legacy_address": SnmpOutcome.SUCCESS_EMPTY,
+        "legacy_port": SnmpOutcome.SUCCESS_EMPTY,
+        "legacy_status": SnmpOutcome.SUCCESS_EMPTY,
+    }
+
+
+@pytest.mark.parametrize("invalid_legacy", ["malformed", "partial"])
+def test_empty_qbridge_retains_empty_result_when_legacy_fdb_is_invalid(
+    invalid_legacy: str,
+) -> None:
+    from netctl.snmp.oids import DOT1D_FDB_STATUS, DOT1Q_FDB_PORT
+
+    transport = _css326_fixture_transport()
+    transport.results[DOT1Q_FDB_PORT] = CapabilityResult(
+        "qbridge_port", SnmpOutcome.SUCCESS_EMPTY
+    )
+    status = transport.results[DOT1D_FDB_STATUS]
+    if invalid_legacy == "malformed":
+        malformed = status.rows[0]
+        rows = (
+            SnmpVarBind(malformed.oid, "octet_string", b"invalid"),
+            *status.rows[1:],
+        )
+    else:
+        rows = status.rows[:-1]
+    transport.results[DOT1D_FDB_STATUS] = CapabilityResult(
+        status.capability, status.outcome, rows
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert snapshot.fdb == ()
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "fdb"
+    ).outcome is SnmpOutcome.SUCCESS_EMPTY
+    assert {
+        row.capability: row.outcome
+        for row in snapshot.capabilities
+        if row.capability.startswith("legacy_")
+    } == {
+        "legacy_address": SnmpOutcome.SUCCESS_WITH_ROWS,
+        "legacy_port": SnmpOutcome.SUCCESS_WITH_ROWS,
+        "legacy_status": SnmpOutcome.SUCCESS_WITH_ROWS,
+    }
+
+
 def test_css326_empty_lldp_clears_only_lldp_current_state(tmp_path: Path) -> None:
     snapshot = asyncio.run(collect_switch_snapshot({}, _css326_fixture_transport()))
     assert next(
