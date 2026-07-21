@@ -79,7 +79,7 @@ def test_installer_source_validates_and_publishes_helper() -> None:
     assert 'bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"' in source
     assert '"${bootstrap_root}/alt-bootstrap-register"' in source
     assert "/var/lib/alt-deploy/machine-archives/.transactions" in source
-    assert "/var/lib/alt-deploy/workstationctl.lock" in source
+    assert 'lock_file="${state_root}/workstationctl.lock"' in source
 
 
 def test_installed_units_allow_only_required_lifecycle_roots(
