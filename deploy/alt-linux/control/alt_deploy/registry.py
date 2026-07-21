@@ -7,8 +7,10 @@ from .assignments import AssignmentRepository
 from .config import Settings
 from .errors import ControlError
 from .jobs import JobRepository
-from .jsonio import atomic_write_json, read_json
+from .jsonio import atomic_write_json
+from .machine_archive_repository import MachineArchiveRepository
 from .models import MachineRecord
+from .registration_records import load_registration_candidate
 
 
 class MachineRepository:
@@ -50,6 +52,9 @@ class MachineRepository:
         return timestamp, precedence
 
     def list(self) -> list[MachineRecord]:
+        committed_generations = MachineArchiveRepository(
+            self.settings
+        ).committed_generation_index()
         selected: dict[str, MachineRecord] = {}
 
         for state in ("pending", "ready", "failed"):
@@ -64,12 +69,29 @@ class MachineRepository:
                 directory.glob("*.json")
             ):
                 try:
+                    candidate = load_registration_candidate(
+                        path,
+                        state,
+                    )
+                except ControlError:
+                    # Preserve the existing registry behavior for malformed
+                    # unrelated active records. Archive-state failures occur
+                    # before this loop and remain fail-closed.
+                    continue
+
+                if (
+                    candidate.generation.value
+                    in committed_generations
+                ):
+                    continue
+
+                try:
                     record = MachineRecord.from_mapping(
-                        read_json(path),
+                        candidate.payload,
                         registration_state=state,
                         record_path=path,
                     )
-                except (OSError, ValueError):
+                except ValueError:
                     continue
 
                 current = selected.get(

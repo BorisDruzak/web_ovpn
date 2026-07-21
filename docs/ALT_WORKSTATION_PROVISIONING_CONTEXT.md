@@ -710,3 +710,16 @@ Remaining work and acceptance checks are maintained in:
 ```text
 docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md
 ```
+
+## OR-3P2 verified repository state
+
+OR-3P2 machine registry lifecycle is implemented and verified in PR #22.
+It adds read-only removal preview, root-only audited archive apply,
+generation-aware re-registration, shared API lifecycle admission,
+pending-processor race protection and the register-only workstation helper.
+
+The implementation has not been installed on controller `192.168.100.17`.
+OR-3P3 backup/restore remains the mandatory next operational stage.
+Reference workstation `192.168.101.111` remains immutable.
+
+Operational details: `docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md`.

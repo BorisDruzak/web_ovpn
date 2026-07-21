@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=altserver
 Group=altserver
+Environment=PYTHONPATH=/opt/alt-deploy-control
 ExecStart=/usr/bin/python3 /opt/alt-deploy-api/register_api.py
 Restart=on-failure
 RestartSec=3
@@ -15,6 +16,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/srv/alt-deploy/registration
+ReadWritePaths=/var/lib/alt-deploy
 
 [Install]
 WantedBy=multi-user.target

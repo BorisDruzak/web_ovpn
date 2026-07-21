@@ -6,64 +6,61 @@ exec > >(tee -a /var/log/alt-bootstrap.log) 2>&1
 
 DEPLOY_HOST="192.168.100.17"
 DEPLOY_URL="http://${DEPLOY_HOST}:8087"
-REGISTER_URL="http://${DEPLOY_HOST}:8088/register"
+REGISTER_HELPER_URL="${DEPLOY_URL}/bootstrap/alt-bootstrap-register"
+REGISTER_HELPER_TARGET="/usr/local/sbin/alt-bootstrap-register"
 
 ANSIBLE_USER="ansible"
 
 MARKER="/var/lib/alt-bootstrap-completed"
 REGISTER_MARKER="/var/lib/alt-bootstrap-registered"
 
-register_machine() {
-    local hostname
-    local iface
-    local mac
-    local uuid
-    local payload
-    local response
+install_registration_helper() {
+    local temporary
+    temporary=$(mktemp)
 
+    if ! curl \
+        --fail \
+        --silent \
+        --show-error \
+        --connect-timeout 5 \
+        --max-time 15 \
+        "${REGISTER_HELPER_URL}" \
+        -o "${temporary}"; then
+        rm -f "${temporary}"
+        return 1
+    fi
+
+    if [[ ! -s "${temporary}" ]] \
+        || ! bash -n "${temporary}"; then
+        rm -f "${temporary}"
+        return 1
+    fi
+
+    if ! install \
+        -o root \
+        -g root \
+        -m 0755 \
+        "${temporary}" \
+        "${REGISTER_HELPER_TARGET}"; then
+        rm -f "${temporary}"
+        return 1
+    fi
+
+    rm -f "${temporary}"
+}
+
+register_machine() {
     echo "Registering machine on deployment server..."
 
     for attempt in $(seq 1 20); do
-        hostname=$(hostname -s | tr '[:upper:]' '[:lower:]')
-        iface=$(ip -o route show default | awk '{print $5; exit}')
-
-        if [[ -z "$iface" ]]; then
-            echo "Registration attempt ${attempt}: default interface not found"
+        if ! install_registration_helper; then
+            echo "Registration attempt ${attempt}: helper installation failed"
             sleep 3
             continue
         fi
 
-        if [[ ! -r "/sys/class/net/${iface}/address" ]]; then
-            echo "Registration attempt ${attempt}: MAC address not available"
-            sleep 3
-            continue
-        fi
-
-        mac=$(cat "/sys/class/net/${iface}/address")
-        uuid=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || true)
-
-        payload=$(printf \
-            '{"hostname":"%s","mac":"%s","uuid":"%s"}' \
-            "$hostname" \
-            "$mac" \
-            "$uuid")
-
-        if response=$(curl \
-            --fail \
-            --silent \
-            --show-error \
-            --connect-timeout 5 \
-            --max-time 15 \
-            -X POST \
-            "$REGISTER_URL" \
-            -H 'Content-Type: application/json' \
-            --data "$payload"); then
-
-            echo "Registration response:"
-            echo "$response"
-
-            touch "$REGISTER_MARKER"
-
+        if "${REGISTER_HELPER_TARGET}"; then
+            touch "${REGISTER_MARKER}"
             echo "Machine registration completed"
             return 0
         fi
@@ -78,10 +75,10 @@ register_machine() {
 
 echo "=== Bootstrap started: $(date) ==="
 
-if [[ -f "$MARKER" ]]; then
+if [[ -f "${MARKER}" ]]; then
     echo "Bootstrap already completed"
 
-    if [[ ! -f "$REGISTER_MARKER" ]]; then
+    if [[ ! -f "${REGISTER_MARKER}" ]]; then
         register_machine
     else
         echo "Machine already registered"
@@ -106,7 +103,7 @@ for attempt in $(seq 1 60); do
     sleep 2
 done
 
-if [[ "$NETWORK_READY" -ne 1 ]]; then
+if [[ "${NETWORK_READY}" -ne 1 ]]; then
     echo "ERROR: deployment server is unavailable"
     exit 1
 fi
@@ -123,19 +120,19 @@ apt-get install -y \
 
 echo "Creating Ansible user..."
 
-if ! id "$ANSIBLE_USER" >/dev/null 2>&1; then
+if ! id "${ANSIBLE_USER}" >/dev/null 2>&1; then
     useradd \
         -m \
         -s /bin/bash \
-        "$ANSIBLE_USER"
+        "${ANSIBLE_USER}"
 fi
 
-usermod -aG wheel "$ANSIBLE_USER"
+usermod -aG wheel "${ANSIBLE_USER}"
 
 install \
     -d \
-    -o "$ANSIBLE_USER" \
-    -g "$ANSIBLE_USER" \
+    -o "${ANSIBLE_USER}" \
+    -g "${ANSIBLE_USER}" \
     -m 0700 \
     "/home/${ANSIBLE_USER}/.ssh"
 
@@ -143,7 +140,7 @@ curl \
     --fail \
     --silent \
     --show-error \
-    "$DEPLOY_URL/bootstrap/ansible_authorized_keys" \
+    "${DEPLOY_URL}/bootstrap/ansible_authorized_keys" \
     -o "/home/${ANSIBLE_USER}/.ssh/authorized_keys"
 
 chown \
@@ -167,7 +164,7 @@ systemctl enable --now sshd
 
 # Base bootstrap is complete before registration, so a repeated run retries
 # registration only instead of reinstalling packages.
-touch "$MARKER"
+touch "${MARKER}"
 
 register_machine
 

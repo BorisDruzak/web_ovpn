@@ -90,10 +90,12 @@ def test_installer_creates_private_state_directories(
     installer_text: str,
 ) -> None:
     assert "install -d -o altserver -g altserver -m 0700" in installer_text
+    assert 'state_root=$(install_destination' in installer_text
     for path in (
-        "/var/lib/alt-deploy",
-        "/var/lib/alt-deploy/jobs",
-        "/var/lib/alt-deploy/assignments",
+        '"${state_root}/jobs"',
+        '"${state_root}/assignments"',
+        '"${state_root}/machine-archives"',
+        '"${state_root}/machine-archives/.transactions"',
         "/srv/alt-deploy/registration/pending",
         "/srv/alt-deploy/registration/ready",
         "/srv/alt-deploy/registration/failed",
@@ -127,6 +129,7 @@ def test_installer_updates_complete_registration_runtime(
     assert '"${ALT_ROOT}/api/register_api.py"' in installer_text
     assert '"${ALT_ROOT}/api/process_pending.py"' in installer_text
     assert '"${ALT_ROOT}/bootstrap/bootstrap.sh"' in installer_text
+    assert '"${ALT_ROOT}/bootstrap/alt-bootstrap-register"' in installer_text
     assert "/srv/alt-deploy/bootstrap" in installer_text
 
     for unit in (

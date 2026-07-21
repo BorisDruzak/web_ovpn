@@ -17,6 +17,7 @@ from .job_reconcile import JobReconciler
 from .job_retention import JobRetentionManager
 from .jobs import ACTIVE_STATES, JobRepository
 from .jsonio import read_json
+from .machine_archive import MachineArchiveService
 from .provision import (
     ProvisionPlanner,
     ProvisionRequest,
@@ -51,6 +52,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     show = machine_commands.add_parser("show")
     show.add_argument("machine_uuid")
+
+    remove = machine_commands.add_parser("remove")
+    remove_commands = remove.add_subparsers(
+        dest="machine_remove_command",
+        required=True,
+    )
+
+    remove_preview = remove_commands.add_parser("preview")
+    remove_preview.add_argument("machine_identifier")
+
+    remove_apply = remove_commands.add_parser("apply")
+    remove_apply.add_argument("machine_identifier")
+    remove_apply.add_argument(
+        "--reason",
+        required=True,
+    )
 
     preflight = commands.add_parser("preflight")
     preflight.add_argument("machine_uuid")
@@ -194,6 +211,45 @@ def main(
                 "status": "ok",
                 "machine": repository.get(
                     parsed.machine_uuid
+                ).to_public_dict(),
+            }
+
+        elif (
+            parsed.command == "machines"
+            and parsed.machine_command == "remove"
+            and parsed.machine_remove_command == "preview"
+        ):
+            payload = {
+                "status": "ok",
+                "preview": MachineArchiveService(
+                    active_settings
+                ).preview(
+                    parsed.machine_identifier
+                ).to_public_dict(),
+            }
+
+        elif (
+            parsed.command == "machines"
+            and parsed.machine_command == "remove"
+            and parsed.machine_remove_command == "apply"
+        ):
+            if os.geteuid() != 0:
+                raise ControlError(
+                    code="root_required",
+                    message=(
+                        "Machine archive apply must be executed "
+                        "as root"
+                    ),
+                    exit_code=6,
+                )
+
+            payload = {
+                "status": "ok",
+                "archive": MachineArchiveService(
+                    active_settings
+                ).apply(
+                    parsed.machine_identifier,
+                    parsed.reason,
                 ).to_public_dict(),
             }
 

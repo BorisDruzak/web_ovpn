@@ -58,6 +58,7 @@ validate_source_layout() {
         "${ALT_ROOT}/ansible/playbooks/01-preflight.yml"
         "${ALT_ROOT}/ansible/playbooks/02-provision-account.yml"
         "${ALT_ROOT}/bootstrap/bootstrap.sh"
+        "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
         "${ALT_ROOT}/install-control-plane.sh"
         "${ALT_ROOT}/install-control-plane-lib.sh"
     )
@@ -199,6 +200,7 @@ run_repository_verification() {
     bash -n "${ALT_ROOT}/install-control-plane.sh"
     bash -n "${ALT_ROOT}/install-control-plane-lib.sh"
     bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
+    bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
 
     (
         cd "${REPO_ROOT}"
@@ -307,16 +309,39 @@ install_controller_package() {
 
 ensure_private_state_directories() {
     local root_prefix=$1
+    local state_root
+    local lock_file
+    state_root=$(install_destination \
+        "${root_prefix}" \
+        /var/lib/alt-deploy)
+    lock_file="${state_root}/workstationctl.lock"
 
     install -d -o altserver -g altserver -m 0700 \
-        "$(install_destination "${root_prefix}" /var/lib/alt-deploy)" \
-        "$(install_destination "${root_prefix}" /var/lib/alt-deploy/jobs)" \
-        "$(install_destination "${root_prefix}" /var/lib/alt-deploy/assignments)" \
+        "${state_root}" \
+        "${state_root}/jobs" \
+        "${state_root}/assignments" \
+        "${state_root}/machine-archives" \
+        "${state_root}/machine-archives/.transactions" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/pending)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/ready)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/failed)" \
         "$(install_destination "${root_prefix}" /home/altserver/.ssh)"
+
+    if [[ -L "${lock_file}" ]] \
+        || [[ -e "${lock_file}" && ! -f "${lock_file}" ]]; then
+        echo "Unsafe controller lifecycle lock: ${lock_file}" >&2
+        return 1
+    fi
+
+    if [[ ! -e "${lock_file}" ]]; then
+        install -o altserver -g altserver -m 0600 \
+            /dev/null \
+            "${lock_file}"
+    else
+        chown altserver:altserver "${lock_file}"
+        chmod 0600 "${lock_file}"
+    fi
 }
 
 install_ansible_project() {
@@ -376,6 +401,9 @@ install_registration_runtime() {
     install -o root -g root -m 0644 \
         "${ALT_ROOT}/bootstrap/bootstrap.sh" \
         "${bootstrap_root}/bootstrap.sh"
+    install -o root -g root -m 0644 \
+        "${ALT_ROOT}/bootstrap/alt-bootstrap-register" \
+        "${bootstrap_root}/alt-bootstrap-register"
 }
 
 install_systemd_units() {

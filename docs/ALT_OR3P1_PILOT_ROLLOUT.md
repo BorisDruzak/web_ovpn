@@ -209,3 +209,14 @@ After controller rollout, use a new unassigned physical machine or VM:
 
 Operate one pilot machine at a time. Do not proceed to broad rollout until the
 second-machine acceptance result and OR-3P2/OR-3P3 controls are complete.
+
+## OR-3P2 follow-up status
+
+OR-3P2 is implemented and repository-verified, but it does not remove the
+OR-3P3 gate in this rollout document. The live controller update remains
+prohibited until backup and restore have been completed and verified.
+
+After OR-3P3, the controlled rollout must validate the OR-3P2 preview,
+archive apply and local `alt-bootstrap-register` flow on a new disposable,
+unassigned target. The accepted reference workstation `192.168.101.111`
+must not be used.

@@ -30,20 +30,21 @@ class ControllerSandbox:
         state: str = "ready",
         machine_uuid: str = TEST_MACHINE_UUID,
         preflight_ok: bool = False,
+        registration_id: str | None = None,
     ) -> Path:
         path = (
             self.settings.registration_root
             / state
             / f"{machine_uuid}.json"
         )
-        atomic_write_json(
-            path,
-            machine_registration_payload(
-                machine_uuid=machine_uuid,
-                status=state,
-                preflight_ok=preflight_ok,
-            ),
+        payload = machine_registration_payload(
+            machine_uuid=machine_uuid,
+            status=state,
+            preflight_ok=preflight_ok,
         )
+        if registration_id is not None:
+            payload["registration_id"] = registration_id
+        atomic_write_json(path, payload)
         return path
 
     def install_fake_stage_helper(self) -> Path:
