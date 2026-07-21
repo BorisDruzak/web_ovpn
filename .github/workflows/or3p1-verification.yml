@@ -20,4 +20,7 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements.txt
       - name: Run OR-3P1 focused tests
-        run: python -m pytest -q tests/alt_linux/test_or3p1_cli_readiness.py
+        run: |
+          python -m pytest -q \
+            tests/alt_linux/test_or3p1_cli_readiness.py \
+            tests/alt_linux/test_or3p1_controller_readiness.py
