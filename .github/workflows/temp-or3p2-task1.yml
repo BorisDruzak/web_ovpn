@@ -26,5 +26,13 @@ jobs:
           tests/alt_linux/test_machine_archive_repository.py
           tests/alt_linux/test_machine_lifecycle.py
           tests/alt_linux/test_machine_registry_generations.py
-      - name: Archive service contracts
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_service.py
+      - name: Archive service basic contracts
+        run: >-
+          python -m pytest -q
+          tests/alt_linux/test_machine_archive_service.py
+          -k 'preview_is_read_only or apply_archives_exact_bytes or invalid_reason or untrusted_sudo or assigned_machine or busy_machine or copy_failure'
+      - name: Archive service recovery contracts
+        run: >-
+          python -m pytest -q
+          tests/alt_linux/test_machine_archive_service.py
+          -k 'postcommit or completed_repeat or preview_reports_completed or newer_generation or later_generation'
