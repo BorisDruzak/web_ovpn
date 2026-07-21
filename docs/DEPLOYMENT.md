@@ -59,6 +59,19 @@ ssh ui-vpn-deploy "rm -rf /tmp/openvpn-web-src && mkdir -p /tmp/openvpn-web-src 
 
 Do not commit or publish the sudo password. For interactive deployment, enter it only in the shell command or through the operator's secret store.
 
+### VPN network-path visibility boundary
+
+The installer copies `deploy/network-paths.json.sample` to
+`/etc/openvpn-web/network-paths.json` only when that operational file is absent.
+The installed file is deliberately role-only; an operator must supply any local
+topology through the approved configuration process. The installer never
+replaces an existing file, including a dangling symlink.
+
+Installing this sample does not enable `netctl-collect.timer`, collect RouterOS
+data, or change RouterOS. Each of those actions requires separate, explicit
+operator approval and must be performed under the appropriate maintenance and
+network-change procedure.
+
 ## Remote Verification
 
 After deployment:
@@ -855,7 +868,7 @@ The installer creates:
 - `/var/lib/netctl/netctl.sqlite`
 - `netctl-collect.service`
 - `netctl-collect.timer`
-- Linux service user `netctl`; automatic collection runs as this user, not root.
+- Linux service user `netctl`; any separately approved collection runs as this user, not root.
 
 Before the first real collection, configure a read-only RouterOS API user and put its password into `/etc/netctl/secrets.env`:
 

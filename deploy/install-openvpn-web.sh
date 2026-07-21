@@ -232,6 +232,15 @@ fi
 sudo_cmd install -m 0440 "$SRC/deploy/sudoers-openvpn-web" /etc/sudoers.d/openvpn-web
 sudo_cmd visudo -cf /etc/sudoers.d/openvpn-web
 
+# Keep locally approved topology out of the repository. A first install gets
+# only the role-only sample; existing operator configuration, including a
+# dangling symlink, is never replaced by this installer.
+if ! sudo_cmd test -e /etc/openvpn-web/network-paths.json \
+  && ! sudo_cmd test -L /etc/openvpn-web/network-paths.json; then
+  sudo_cmd install -m 0640 -o root -g openvpn-web \
+    "$SRC/deploy/network-paths.json.sample" /etc/openvpn-web/network-paths.json
+fi
+
 cd "$APP"
 if [[ ! -x .venv/bin/python ]]; then
   sudo_cmd -u openvpn-web python3 -m venv .venv
@@ -251,7 +260,6 @@ sudo_cmd systemctl daemon-reload
 sudo_cmd systemctl enable openvpn-web.service
 sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
-sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer
 sudo_cmd systemctl restart openvpn-web.service
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'
