@@ -77,15 +77,15 @@ verified a coordinated backup of:
 /usr/local/libexec/alt-provision-worker
 /usr/local/libexec/alt-job-stage
 /etc/systemd/system/alt-deploy-*
-/home/altserver/ansible excluding no active secret
+/home/altserver/ansible excluding group_vars/vault.yml
 /var/lib/alt-deploy/jobs
 /var/lib/alt-deploy/assignments
 /srv/alt-deploy/registration
 ```
 
-Vault and SSH private identity remain in place and are not duplicated by the
-OR-3P1 installer. The OR-3P3 procedure must define their verification and the
-coordinated restore of package files and job state.
+Vault, its password file and SSH private identity remain in place and are not
+duplicated by the OR-3P1 installer. The OR-3P3 procedure must define their
+verification and the coordinated restore of package files and job state.
 
 ## Installation
 
