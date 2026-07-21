@@ -11,6 +11,8 @@ permissions:
 jobs:
   final-verification:
     runs-on: ubuntu-latest
+    env:
+      EVIDENCE_DIR: ${{ runner.temp }}/or3p1-verification
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,8 +25,9 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Record tested revisions
         run: |
-          printf 'tested_head=%s\n' "$(git rev-parse HEAD)" | tee verification-revisions.txt
-          printf 'main=%s\n' "$(git rev-parse origin/main)" | tee -a verification-revisions.txt
+          mkdir -p "$EVIDENCE_DIR"
+          printf 'tested_head=%s\n' "$(git rev-parse HEAD)" | tee "$EVIDENCE_DIR/verification-revisions.txt"
+          printf 'main=%s\n' "$(git rev-parse origin/main)" | tee -a "$EVIDENCE_DIR/verification-revisions.txt"
       - name: Run focused OR-3P1 suite
         run: |
           set -o pipefail
@@ -34,17 +37,17 @@ jobs:
             tests/alt_linux/test_or3p1_controller_readiness_failures.py \
             tests/alt_linux/test_or3p1_installer.py \
             tests/alt_linux/test_or3p1_installer_failure_phase.py \
-            | tee verification-focused.txt
+            | tee "$EVIDENCE_DIR/verification-focused.txt"
       - name: Run complete ALT suite
         run: |
           set -o pipefail
           python -m pytest -q tests/alt_linux \
-            | tee verification-alt.txt
+            | tee "$EVIDENCE_DIR/verification-alt.txt"
       - name: Run complete repository suite
         run: |
           set -o pipefail
           python -m pytest -q \
-            | tee verification-full.txt
+            | tee "$EVIDENCE_DIR/verification-full.txt"
       - name: Compile production Python boundaries
         run: |
           python3 -m py_compile \
@@ -87,9 +90,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: or3p1-verification
-          path: |
-            verification-revisions.txt
-            verification-focused.txt
-            verification-alt.txt
-            verification-full.txt
+          path: ${{ runner.temp }}/or3p1-verification
           if-no-files-found: warn
