@@ -7,7 +7,7 @@
 
 ## Tasks
 
-- Task 1: in progress — RED tests committed, focused CI pending.
+- Task 1: complete (`b3e863d..94f82fb`); RED workflow failed on missing production boundary, GREEN focused and neighboring regression passed; task review clean.
 - Task 2: pending.
 - Task 3: pending.
 - Task 4: pending.
