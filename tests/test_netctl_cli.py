@@ -125,6 +125,187 @@ def test_mikrotik_api_driver_parses_arp_and_dhcp_rows():
     assert dhcp[0]["status"] == "bound"
 
 
+def test_mikrotik_snapshot_persists_address_lists_rules_and_update_posture(tmp_path, capsys):
+    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.store import save_collection
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    snapshot = {
+        "firewall_address_lists": [{"list": "vpn", "address": "198.51.100.9", "disabled": False}],
+        "firewall_filter_rules": [
+            {
+                "id": "*1",
+                "table": "filter",
+                "chain": "forward",
+                "action": "accept",
+                "disabled": False,
+                "src_address": "198.51.100.9",
+                "dst_address_list": "vpn",
+                "protocol": "tcp",
+                "comment": "VPN access",
+                "packets": 7,
+                "bytes": 700,
+            }
+        ],
+        "firewall_nat_rules": [
+            {"id": "*2", "table": "nat", "chain": "srcnat", "action": "masquerade", "disabled": False}
+        ],
+        "firewall_mangle_rules": [
+            {"id": "*3", "table": "mangle", "chain": "prerouting", "action": "mark-connection", "disabled": True}
+        ],
+        "update_posture": {
+            "channel": "stable",
+            "installed_version": "7.19.4",
+            "latest_version": "",
+            "routerboot_current_version": "7.19.4",
+            "routerboot_upgrade_version": "7.20.1",
+            "schedulers": [{"name": "backup", "disabled": False, "next_run": "jul/22/2026 01:00:00", "on_event": "secret script"}],
+        },
+    }
+
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "mock-main")
+        assert source is not None
+        save_collection(conn, source, snapshot, "2026-07-03T12:00:00Z")
+    finally:
+        conn.close()
+
+    _, address_lists = run_cli(["--json", "--config", str(config_path), "--db", db_url, "address-lists", "list"], capsys)
+    assert address_lists["address_lists"][0]["list"] == "vpn"
+    assert address_lists["address_lists"][0]["address"] == "198.51.100.9"
+    _, rules = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "firewall-rules", "list", "--table", "filter"], capsys
+    )
+    assert len(rules["firewall_rules"]) == 1
+    assert {key: rules["firewall_rules"][0][key] for key in ("identity", "table", "chain", "action", "disabled", "src_address", "dst_address_list", "protocol", "comment", "packets", "bytes", "source")} == {
+        "identity": "*1",
+        "table": "filter",
+        "chain": "forward",
+        "action": "accept",
+        "disabled": 0,
+        "src_address": "198.51.100.9",
+        "dst_address_list": "vpn",
+        "protocol": "tcp",
+        "comment": "VPN access",
+        "packets": 7,
+        "bytes": 700,
+        "source": "mock-main",
+    }
+    _, posture = run_cli(["--json", "--config", str(config_path), "--db", db_url, "update-posture", "list"], capsys)
+    assert posture["update_posture"] == [
+        {
+            "source": "mock-main",
+            "channel": "stable",
+            "installed_version": "7.19.4",
+            "latest_version": "",
+            "routerboot_current_version": "7.19.4",
+            "routerboot_upgrade_version": "7.20.1",
+            "schedulers": [{"name": "backup", "disabled": False, "next_run": "jul/22/2026 01:00:00"}],
+        }
+    ]
+    assert "on_event" not in json.dumps(posture)
+
+
+def test_collector_status_uses_fixed_timer_show_command(tmp_path, capsys, monkeypatch):
+    import subprocess
+
+    import netctl.cli as cli
+
+    command: list[str] = []
+
+    def fake_run(args, **kwargs):
+        command.extend(args)
+        assert kwargs["shell"] is False
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="UnitFileState=enabled\nActiveState=active\nNextElapseUSecRealtime=Tue 2026-07-22 01:00:00 UTC\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    rc, status = run_cli(["--json", "--db", db_url, "collector-status"], capsys)
+
+    assert rc == 0
+    assert command == ["systemctl", "show", "netctl-collect.timer"]
+    assert status == {
+        "status": "ok",
+        "enabled": True,
+        "active": True,
+        "next_run": "2026-07-22T01:00:00Z",
+    }
+
+
+def test_collector_status_reports_error_for_disabled_or_inactive_timer(tmp_path, capsys, monkeypatch):
+    import subprocess
+
+    import netctl.cli as cli
+
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="UnitFileState=disabled\nActiveState=inactive\nNextElapseUSecRealtime=n/a\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+
+    rc, status = run_cli(["--json", "--db", db_url, "collector-status"], capsys)
+
+    assert rc == 1
+    assert status == {"status": "error", "enabled": False, "active": False, "next_run": ""}
+
+
+def test_mikrotik_ssh_driver_does_not_collect_scheduler_event_text(monkeypatch):
+    import subprocess
+
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        assert "/system scheduler" not in command[-1]
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    driver = MikroTikSshDriver(
+        {"name": "mikrotik-hex", "host": "192.168.99.1", "port": 22, "username": "netobserver"},
+        {},
+    )
+
+    snapshot = driver.collect()
+
+    assert snapshot["update_posture"]["schedulers"] == []
+    assert calls
+
+
+def test_mikrotik_update_posture_includes_routerboot_versions():
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+
+    posture = MikroTikApiDriver.normalize_update_posture(
+        [{"version": "7.19.4"}],
+        [{"channel": "stable", "installed-version": "7.19.4", "latest-version": ""}],
+        [],
+        [{"current-firmware": "7.19.4", "upgrade-firmware": "7.20.1"}],
+    )
+
+    assert posture["routerboot_current_version"] == "7.19.4"
+    assert posture["routerboot_upgrade_version"] == "7.20.1"
+    assert MikroTikApiDriver.COLLECT_PATHS["routerboard"] == (
+        "/system/routerboard/print",
+        ["current-firmware", "upgrade-firmware"],
+    )
+
+
 def test_normalizer_merges_dhcp_and_arp_and_assigns_categories():
     from netctl.normalizer import normalize_hosts
 

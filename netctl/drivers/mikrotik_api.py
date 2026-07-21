@@ -145,6 +145,21 @@ class MikroTikApiDriver(NetworkDriver):
         "bridge_hosts": ("/interface/bridge/host/print", ["mac-address", "bridge", "interface", "local", "external", "dynamic", "age"]),
         "bridge_ports": ("/interface/bridge/port/print", ["interface", "bridge", "disabled", "dynamic", "comment"]),
         "firewall_address_lists": ("/ip/firewall/address-list/print", ["list", "address", "comment", "dynamic", "disabled", "creation-time"]),
+        "firewall_filter_rules": (
+            "/ip/firewall/filter/print",
+            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "comment", "packets", "bytes"],
+        ),
+        "firewall_nat_rules": (
+            "/ip/firewall/nat/print",
+            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "comment", "packets", "bytes"],
+        ),
+        "firewall_mangle_rules": (
+            "/ip/firewall/mangle/print",
+            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "comment", "packets", "bytes"],
+        ),
+        "system_package_update": ("/system/package/update/print", ["channel", "installed-version", "latest-version"]),
+        "system_schedulers": ("/system/scheduler/print", ["name", "disabled", "next-run", "interval", "start-date", "start-time"]),
+        "routerboard": ("/system/routerboard/print", ["current-firmware", "upgrade-firmware"]),
     }
     IPSEC_PATHS: dict[str, tuple[str, list[str]]] = {
         "active_peers": (
@@ -312,6 +327,56 @@ class MikroTikApiDriver(NetworkDriver):
         ]
 
     @staticmethod
+    def normalize_firewall_rule_rows(rows: list[dict[str, Any]], table: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": row.get(".id") or row.get("id") or "",
+                "table": table,
+                "chain": row.get("chain") or "",
+                "action": row.get("action") or "",
+                "disabled": parse_bool(row.get("disabled")),
+                "src_address": row.get("src-address") or "",
+                "dst_address": row.get("dst-address") or "",
+                "src_address_list": row.get("src-address-list") or "",
+                "dst_address_list": row.get("dst-address-list") or "",
+                "protocol": row.get("protocol") or "",
+                "comment": row.get("comment") or "",
+                "packets": parse_int(row.get("packets")),
+                "bytes": parse_int(row.get("bytes")),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def normalize_update_posture(
+        resource_rows: list[dict[str, Any]],
+        update_rows: list[dict[str, Any]],
+        scheduler_rows: list[dict[str, Any]],
+        routerboard_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        update = update_rows[0] if update_rows else {}
+        resource = resource_rows[0] if resource_rows else {}
+        routerboard = routerboard_rows[0] if routerboard_rows else {}
+        return {
+            "channel": update.get("channel") or "",
+            "installed_version": update.get("installed-version") or resource.get("version") or "",
+            "latest_version": update.get("latest-version") or "",
+            "routerboot_current_version": routerboard.get("current-firmware") or "",
+            "routerboot_upgrade_version": routerboard.get("upgrade-firmware") or "",
+            "schedulers": [
+                {
+                    "name": row.get("name") or "",
+                    "disabled": parse_bool(row.get("disabled")),
+                    "next_run": row.get("next-run") or "",
+                    "interval": row.get("interval") or "",
+                    "start_date": row.get("start-date") or "",
+                    "start_time": row.get("start-time") or "",
+                }
+                for row in scheduler_rows
+            ],
+        }
+
+    @staticmethod
     def normalize_ipsec_active_peers(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
             {
@@ -423,6 +488,12 @@ class MikroTikApiDriver(NetworkDriver):
             "bridge_hosts": self.normalize_bridge_rows(raw.get("bridge_hosts", [])),
             "bridge_ports": raw.get("bridge_ports", []),
             "firewall_address_lists": self.normalize_address_list_rows(raw.get("firewall_address_lists", [])),
+            "firewall_filter_rules": self.normalize_firewall_rule_rows(raw.get("firewall_filter_rules", []), "filter"),
+            "firewall_nat_rules": self.normalize_firewall_rule_rows(raw.get("firewall_nat_rules", []), "nat"),
+            "firewall_mangle_rules": self.normalize_firewall_rule_rows(raw.get("firewall_mangle_rules", []), "mangle"),
+            "update_posture": self.normalize_update_posture(
+                raw.get("system_resource", []), raw.get("system_package_update", []), raw.get("system_schedulers", []), raw.get("routerboard", [])
+            ),
             "addresses": raw.get("addresses", []),
         }
 

@@ -45,6 +45,11 @@ class MikroTikSshDriver(NetworkDriver):
         "bridge_hosts": "/interface bridge host",
         "bridge_ports": "/interface bridge port",
         "firewall_address_lists": "/ip firewall address-list",
+        "firewall_filter_rules": "/ip firewall filter",
+        "firewall_nat_rules": "/ip firewall nat",
+        "firewall_mangle_rules": "/ip firewall mangle",
+        "system_package_update": "/system package update",
+        "routerboard": "/system routerboard",
     }
     IPSEC_PATHS: dict[str, str] = {
         "active_peers": "/ip ipsec active-peers",
@@ -109,7 +114,7 @@ class MikroTikSshDriver(NetworkDriver):
     def collect(self, include_connections: bool = False) -> dict[str, Any]:
         raw: dict[str, Any] = {}
         for key, path in self.COLLECT_PATHS.items():
-            raw[key] = self._run_print(path, terse=key not in {"system_resource", "identity"})
+            raw[key] = self._run_print(path, terse=key not in {"system_resource", "identity", "system_package_update"})
         return {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),
@@ -121,6 +126,12 @@ class MikroTikSshDriver(NetworkDriver):
             "bridge_hosts": MikroTikApiDriver.normalize_bridge_rows(raw.get("bridge_hosts", [])),
             "bridge_ports": raw.get("bridge_ports", []),
             "firewall_address_lists": MikroTikApiDriver.normalize_address_list_rows(raw.get("firewall_address_lists", [])),
+            "firewall_filter_rules": MikroTikApiDriver.normalize_firewall_rule_rows(raw.get("firewall_filter_rules", []), "filter"),
+            "firewall_nat_rules": MikroTikApiDriver.normalize_firewall_rule_rows(raw.get("firewall_nat_rules", []), "nat"),
+            "firewall_mangle_rules": MikroTikApiDriver.normalize_firewall_rule_rows(raw.get("firewall_mangle_rules", []), "mangle"),
+            "update_posture": MikroTikApiDriver.normalize_update_posture(
+                raw.get("system_resource", []), raw.get("system_package_update", []), [], raw.get("routerboard", [])
+            ),
             "addresses": raw.get("addresses", []),
         }
 

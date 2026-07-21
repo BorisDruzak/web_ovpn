@@ -139,6 +139,10 @@ def _clear_current(conn: sqlite3.Connection, source_id: int) -> None:
         "arp_entries",
         "bridge_hosts",
         "network_neighbors",
+        "firewall_address_lists",
+        "firewall_rules",
+        "update_posture",
+        "update_posture_schedulers",
     ]:
         conn.execute(f"DELETE FROM {table} WHERE source_id = ?", (source_id,))
 
@@ -262,6 +266,7 @@ def save_collection(
         "neighbors": len(snapshot.get("neighbors", [])),
         "bridge_hosts": len(snapshot.get("bridge_hosts", [])),
         "firewall_address_lists": len(snapshot.get("firewall_address_lists", [])),
+        "firewall_rules": sum(len(snapshot.get(key, [])) for key in ("firewall_filter_rules", "firewall_nat_rules", "firewall_mangle_rules")),
     }
     _clear_current(conn, source_id)
 
@@ -385,6 +390,86 @@ def save_collection(
             ),
         )
         _insert_observation(conn, source_id, observed_at, "neighbor", item)
+    for item in snapshot.get("firewall_address_lists", []):
+        conn.execute(
+            """
+            INSERT INTO firewall_address_lists
+              (source_id, list, address, comment, dynamic, disabled, creation_time, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id,
+                item.get("list"),
+                item.get("address"),
+                item.get("comment"),
+                int(bool(item.get("dynamic"))),
+                int(bool(item.get("disabled"))),
+                item.get("creation_time"),
+                observed_at,
+            ),
+        )
+    for key in ("firewall_filter_rules", "firewall_nat_rules", "firewall_mangle_rules"):
+        for item in snapshot.get(key, []):
+            conn.execute(
+                """
+                INSERT INTO firewall_rules
+                  (source_id, identity, table_name, chain, action, disabled, src_address, dst_address, src_address_list, dst_address_list, protocol, comment, packets, bytes, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    item.get("id"),
+                    item.get("table"),
+                    item.get("chain"),
+                    item.get("action"),
+                    int(bool(item.get("disabled"))),
+                    item.get("src_address"),
+                    item.get("dst_address"),
+                    item.get("src_address_list"),
+                    item.get("dst_address_list"),
+                    item.get("protocol"),
+                    item.get("comment"),
+                    int(item.get("packets") or 0),
+                    int(item.get("bytes") or 0),
+                    observed_at,
+                ),
+            )
+    posture = snapshot.get("update_posture") or {}
+    if posture:
+        conn.execute(
+            """
+            INSERT INTO update_posture
+              (source_id, channel, installed_version, latest_version, routerboot_current_version, routerboot_upgrade_version, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id,
+                posture.get("channel"),
+                posture.get("installed_version"),
+                posture.get("latest_version"),
+                posture.get("routerboot_current_version"),
+                posture.get("routerboot_upgrade_version"),
+                observed_at,
+            ),
+        )
+        for scheduler in posture.get("schedulers", []):
+            conn.execute(
+                """
+                INSERT INTO update_posture_schedulers
+                  (source_id, name, disabled, next_run, interval, start_date, start_time, last_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    scheduler.get("name"),
+                    int(bool(scheduler.get("disabled"))),
+                    scheduler.get("next_run"),
+                    scheduler.get("interval"),
+                    scheduler.get("start_date"),
+                    scheduler.get("start_time"),
+                    observed_at,
+                ),
+            )
 
     source_for_normalizer = dict(source)
     hosts = normalize_hosts(source_for_normalizer, snapshot, observed_at)

@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -198,6 +200,80 @@ def cmd_table(args: argparse.Namespace, table: str, key: str) -> tuple[int, dict
         return 0, ok(**{key: _rows(conn, table, getattr(args, "source", "") or "")})
     finally:
         conn.close()
+
+
+def cmd_firewall_rules(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        rows = _rows(conn, "firewall_rules", args.source or "")
+        return 0, ok(firewall_rules=[{**row, "table": row.pop("table_name")} for row in rows if row["table_name"] == args.table])
+    finally:
+        conn.close()
+
+
+def cmd_update_posture(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        params: list[Any] = []
+        where = ""
+        if args.source:
+            where = " WHERE s.name = ?"
+            params.append(args.source)
+        rows = conn.execute(
+            """
+            SELECT p.*, s.name AS source
+            FROM update_posture p JOIN network_sources s ON s.id = p.source_id
+            """ + where + " ORDER BY s.name",
+            params,
+        ).fetchall()
+        posture = []
+        for row in rows:
+            value = dict(row)
+            source_id = value.pop("source_id")
+            value.pop("last_seen_at", None)
+            value["schedulers"] = [
+                {
+                    "name": scheduler["name"] or "",
+                    "disabled": bool(scheduler["disabled"]),
+                    "next_run": scheduler["next_run"] or "",
+                }
+                for scheduler in conn.execute(
+                    "SELECT name, disabled, next_run FROM update_posture_schedulers WHERE source_id = ? ORDER BY id", (source_id,)
+                ).fetchall()
+            ]
+            posture.append(value)
+        return 0, ok(update_posture=posture)
+    finally:
+        conn.close()
+
+
+def _normalise_systemctl_time(value: str) -> str:
+    raw = value.strip()
+    if not raw or raw.lower() in {"n/a", "infinity"}:
+        return ""
+    try:
+        parsed = datetime.strptime(raw, "%a %Y-%m-%d %H:%M:%S %Z").replace(tzinfo=UTC)
+        return parsed.isoformat().replace("+00:00", "Z")
+    except ValueError:
+        return raw
+
+
+def cmd_collector_status(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    completed = subprocess.run(
+        ["systemctl", "show", "netctl-collect.timer"],
+        shell=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return 1, err("collector status unavailable")
+    fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+    enabled = fields.get("UnitFileState") == "enabled"
+    active = fields.get("ActiveState") == "active"
+    status = "ok" if enabled and active else "error"
+    return (0 if status == "ok" else 1), {"status": status, "enabled": enabled, "active": active, "next_run": _normalise_systemctl_time(fields.get("NextElapseUSecRealtime", ""))}
 
 
 def _ipsec_source_status(source: dict[str, Any]) -> dict[str, Any]:
@@ -517,6 +593,25 @@ def build_parser() -> argparse.ArgumentParser:
         list_parser.add_argument("--source", default="")
         list_parser.set_defaults(table=table, table_key=key)
 
+    address_lists = sub.add_parser("address-lists")
+    address_lists_sub = address_lists.add_subparsers(dest="address_lists_command", required=True)
+    address_lists_list = address_lists_sub.add_parser("list")
+    address_lists_list.add_argument("--source", default="")
+    address_lists_list.set_defaults(table="firewall_address_lists", table_key="address_lists")
+
+    firewall_rules = sub.add_parser("firewall-rules")
+    firewall_rules_sub = firewall_rules.add_subparsers(dest="firewall_rules_command", required=True)
+    firewall_rules_list = firewall_rules_sub.add_parser("list")
+    firewall_rules_list.add_argument("--table", required=True, choices=("filter", "nat", "mangle"))
+    firewall_rules_list.add_argument("--source", default="")
+
+    update_posture = sub.add_parser("update-posture")
+    update_posture_sub = update_posture.add_subparsers(dest="update_posture_command", required=True)
+    update_posture_list = update_posture_sub.add_parser("list")
+    update_posture_list.add_argument("--source", default="")
+
+    sub.add_parser("collector-status")
+
     observations = sub.add_parser("observations")
     observations_sub = observations.add_subparsers(dest="observations_command", required=True)
     observations_list = observations_sub.add_parser("list")
@@ -570,6 +665,12 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_hosts(args)
     if args.command == "tags":
         return cmd_tags(args)
+    if args.command == "firewall-rules":
+        return cmd_firewall_rules(args)
+    if args.command == "update-posture":
+        return cmd_update_posture(args)
+    if args.command == "collector-status":
+        return cmd_collector_status(args)
     if hasattr(args, "table"):
         return cmd_table(args, args.table, args.table_key)
     if args.command == "observations":
