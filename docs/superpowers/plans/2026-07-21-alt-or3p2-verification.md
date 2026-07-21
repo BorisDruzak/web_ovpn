@@ -11,7 +11,7 @@ merge base: 6eeaf514bda322ba73188ce625005e73d869dfcf
 GitHub Actions run: 29851231553
 ```
 
-The source commit removes the one-time whitespace-normalization workflow. The verified merge ref combines that source with the current `main` base.
+The dedicated verification source removed the one-time whitespace-normalization workflow. The verified merge ref combined that source with the current `main` base. Subsequent commits changed only permanent documentation and removed temporary workflows; production code and test code were unchanged.
 
 ## Test results
 
@@ -79,18 +79,32 @@ During implementation and CI:
 - archive apply contains no target-side SSH operation;
 - existing archive records are preserved byte-for-byte by installer tests.
 
+## Final clean-head evidence
+
+Temporary verification, whitespace-normalization and documentation-sync workflows were removed from the final diff.
+
+Standard repository workflows passed on clean head `9fab8b7078369a724e156090358708b1b179f9f3`:
+
+```text
+Verify netctl context stage
+run: 29851680946
+conclusion: success
+
+Verify netctl runtime identity
+run: 29851681355
+conclusion: success
+```
+
+A whole-branch review of archive persistence, lifecycle identity matching, admission, stale processor finalization, systemd sandboxing and installer ownership found no open Critical or Important issue.
+
 ## Operational boundary
 
 OR-3P2 is verified in the repository only. It must not be installed on the live controller until OR-3P3 backup/restore is approved, executed and restore-tested.
 
 The next acceptance target must be a new disposable and unassigned VM or workstation. Do not use `192.168.101.111`.
 
-## Cleanup before Ready for review
+## Review and merge state
 
-Before marking PR #22 Ready for review:
+PR #22 can be marked Ready for review after the standard workflows pass on the final documentation-only head.
 
-1. remove `.github/workflows/temp-or3p2-task1.yml`;
-2. confirm no other temporary workflow or CI-only fixture remains in the diff;
-3. run the repository's standard context-stage and runtime-identity workflows on the clean final head;
-4. confirm PR head and check results;
-5. do not merge without explicit user confirmation.
+Do not merge without explicit user confirmation.
