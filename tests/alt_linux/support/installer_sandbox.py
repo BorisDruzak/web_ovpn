@@ -122,16 +122,41 @@ class InstallerSandbox:
             + shlex.quote(sys.executable)
             + " \"$@\"; fi\nexit \"${INSTALLER_PYTHON_RC:-0}\"\n",
         )
+        self._fake_script(
+            "install",
+            "directory_mode=0\nmode=\nargs=()\n"
+            "while (( $# )); do\n"
+            "  case \"$1\" in\n"
+            "    -d) directory_mode=1; shift ;;\n"
+            "    -o|-g) shift 2 ;;\n"
+            "    -m) mode=$2; shift 2 ;;\n"
+            "    --) shift; while (( $# )); do args+=(\"$1\"); shift; done ;;\n"
+            "    *) args+=(\"$1\"); shift ;;\n"
+            "  esac\n"
+            "done\n"
+            "if (( directory_mode )); then\n"
+            "  for path in \"${args[@]}\"; do\n"
+            "    mkdir -p \"$path\"\n"
+            "    [[ -n $mode ]] && /bin/chmod \"$mode\" \"$path\"\n"
+            "  done\n"
+            "  exit 0\n"
+            "fi\n"
+            "(( ${#args[@]} >= 2 )) || exit 2\n"
+            "source=${args[${#args[@]}-2]}\n"
+            "destination=${args[${#args[@]}-1]}\n"
+            "mkdir -p \"$(dirname \"$destination\")\"\n"
+            "/bin/cp \"$source\" \"$destination\"\n"
+            "[[ -n $mode ]] && /bin/chmod \"$mode\" \"$destination\"\n",
+        )
+        self._fake_script("cp", "exec /bin/cp \"$@\"\n")
+        self._fake_script("rm", "exec /bin/rm \"$@\"\n")
+        self._fake_script("chmod", "exec /bin/chmod \"$@\"\n")
+        self._fake_script("find", "exec /usr/bin/find \"$@\"\n")
+        self._fake_script("chown", "exit 0\n")
         for name in (
             "ansible-playbook",
             "ansible-vault",
             "systemd-run",
-            "install",
-            "cp",
-            "rm",
-            "chown",
-            "chmod",
-            "find",
             "ssh",
             "ssh-keyscan",
             "mkpasswd",
