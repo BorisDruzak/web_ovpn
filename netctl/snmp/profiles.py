@@ -17,6 +17,8 @@ _SNR_SYS_OBJECT_ID_PREFIX = "1.3.6.1.4.1.57206"
 _SNR_PORT_NAME = re.compile(r"(?:ge|xe)([1-9][0-9]*)\Z", re.IGNORECASE)
 _SNR_LAG_NAME = re.compile(r"po([1-9][0-9]*)\Z", re.IGNORECASE)
 _TPLINK_T1600G_SYSTEM_DESCRIPTION = re.compile(r"\bT1600G-[0-9]+[A-Z0-9-]*\b")
+_TPLINK_JETSTREAM_SYSTEM_OBJECT_ID = "1.3.6.1.4.1.11863.5.29"
+_TPLINK_JETSTREAM_SYSTEM_DESCRIPTION = "JetStream 48-Port Gigabit Smart Switch with 4 SFP Slots"
 _CSS326_SYSTEM_DESCRIPTION = re.compile(r"\bCSS326-24G-2S\+?(?=$|[ /])")
 _CSS326_PHYSICAL_PORTS = range(1, 27)
 
@@ -382,7 +384,13 @@ class TplinkProfile(GenericProfile):
 
     @staticmethod
     def matches(system: SwitchSystem) -> bool:
-        return _TPLINK_T1600G_SYSTEM_DESCRIPTION.search(system.sys_descr) is not None
+        return (
+            _TPLINK_T1600G_SYSTEM_DESCRIPTION.search(system.sys_descr) is not None
+            or (
+                system.sys_object_id == _TPLINK_JETSTREAM_SYSTEM_OBJECT_ID
+                and system.sys_descr == _TPLINK_JETSTREAM_SYSTEM_DESCRIPTION
+            )
+        )
 
     @staticmethod
     def _resolution_from_port(

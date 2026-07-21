@@ -127,7 +127,7 @@ import secrets
 print(secrets.token_urlsafe(48))
 PY
 )"
-  ADMIN_PASS="$(sed -n 's/^ADMIN_PASSWORD=//p' /tmp/openvpn-web-admin-password.txt 2>/dev/null | head -1)"
+  ADMIN_PASS="${ADMIN_PASSWORD:-}"
   if [[ -z "$ADMIN_PASS" ]]; then
     ADMIN_PASS="$(python3 - <<'PY'
 import secrets
@@ -146,8 +146,8 @@ import os
 print(hashlib.sha256(os.environ["API_TOKEN"].encode("utf-8")).hexdigest())
 PY
 )"
-  TMP_ENV="$(mktemp)"
-  cat > "$TMP_ENV" <<ENV_FILE
+  TMP_ENV="$(sudo_cmd mktemp -p /etc/openvpn-web .openvpn-web.env.XXXXXX)"
+  sudo_cmd tee "$TMP_ENV" >/dev/null <<ENV_FILE
 DATABASE_URL=sqlite:////var/lib/openvpn-web/openvpn-web.sqlite
 VPNCTL_PATH=/usr/local/sbin/vpnctl
 VPNCTL_USE_SUDO=1
@@ -167,9 +167,7 @@ ROUTEROS_BACKUP_DIR=/var/backups/routeros
 DOWNLOAD_TOKEN_TTL_MINUTES=15
 ENV_FILE
   sudo_cmd install -m 0640 -o root -g openvpn-web "$TMP_ENV" "$ENV_PATH"
-  rm -f "$TMP_ENV"
-  printf 'ADMIN_PASSWORD=%s\n' "$ADMIN_PASS" > /tmp/openvpn-web-admin-password.txt
-  printf 'OPENVPN_WEB_API_TOKEN=%s\n' "$API_TOKEN" > /tmp/openvpn-web-api-token.txt
+  sudo_cmd rm -f "$TMP_ENV"
 else
   if ! sudo_cmd grep -q '^OPENVPN_WEB_API_TOKEN_HASH=' "$ENV_PATH"; then
     API_TOKEN="$(python3 - <<'PY'
@@ -184,20 +182,17 @@ print(hashlib.sha256(os.environ["API_TOKEN"].encode("utf-8")).hexdigest())
 PY
 )"
     sudo_cmd cp "$ENV_PATH" "$ENV_PATH.backup.$(date +%F_%H-%M-%S)"
-    TMP_ENV="$(mktemp)"
-    sudo_cmd cat "$ENV_PATH" > "$TMP_ENV"
-    {
-      printf 'OPENVPN_WEB_API_TOKEN_HASH=%s\n' "$API_TOKEN_HASH"
-      printf 'OPENVPN_WEB_API_ACTOR=api:codex-local\n'
-    } >> "$TMP_ENV"
+    TMP_ENV="$(sudo_cmd mktemp -p /etc/openvpn-web .openvpn-web.env.XXXXXX)"
+    sudo_cmd sh -c 'cat "$1" > "$2"' sh "$ENV_PATH" "$TMP_ENV"
+    sudo_cmd tee -a "$TMP_ENV" >/dev/null <<ENV_FILE
+OPENVPN_WEB_API_TOKEN_HASH=$API_TOKEN_HASH
+OPENVPN_WEB_API_ACTOR=api:codex-local
+ENV_FILE
     sudo_cmd install -m 0640 -o root -g openvpn-web "$TMP_ENV" "$ENV_PATH"
-    rm -f "$TMP_ENV"
-    printf 'OPENVPN_WEB_API_TOKEN=%s\n' "$API_TOKEN" > /tmp/openvpn-web-api-token.txt
-  else
-    printf 'API_TOKEN_EXISTS=1\n' > /tmp/openvpn-web-api-token.txt
+    sudo_cmd rm -f "$TMP_ENV"
   fi
-  TMP_ENV="$(mktemp)"
-  sudo_cmd cat "$ENV_PATH" > "$TMP_ENV"
+  TMP_ENV="$(sudo_cmd mktemp -p /etc/openvpn-web .openvpn-web.env.XXXXXX)"
+  sudo_cmd sh -c 'cat "$1" > "$2"' sh "$ENV_PATH" "$TMP_ENV"
   changed_env=0
   for line in \
     'NETCTL_PATH=/usr/local/sbin/netctl' \
@@ -206,8 +201,8 @@ PY
     'NETWORK_OBSERVER_ENABLED=1' \
     'ROUTEROS_BACKUP_DIR=/var/backups/routeros'; do
     key="${line%%=*}"
-    if ! grep -q "^${key}=" "$TMP_ENV"; then
-      printf '%s\n' "$line" >> "$TMP_ENV"
+    if ! sudo_cmd grep -q "^${key}=" "$TMP_ENV"; then
+      printf '%s\n' "$line" | sudo_cmd tee -a "$TMP_ENV" >/dev/null
       changed_env=1
     fi
   done
@@ -215,8 +210,7 @@ PY
     sudo_cmd cp "$ENV_PATH" "$ENV_PATH.backup.$(date +%F_%H-%M-%S)"
     sudo_cmd install -m 0640 -o root -g openvpn-web "$TMP_ENV" "$ENV_PATH"
   fi
-  rm -f "$TMP_ENV"
-  sudo_cmd awk -F= '/^ADMIN_PASSWORD=/{print $0}' "$ENV_PATH" > /tmp/openvpn-web-admin-password.txt
+  sudo_cmd rm -f "$TMP_ENV"
 fi
 
 sudo_cmd install -m 0440 "$SRC/deploy/sudoers-openvpn-web" /etc/sudoers.d/openvpn-web
@@ -244,4 +238,4 @@ sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer
 sudo_cmd systemctl restart openvpn-web.service
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'
-cat /tmp/openvpn-web-admin-password.txt
+printf '%s\n' 'OpenVPN Web Manager installed; credentials remain in the protected environment.'
