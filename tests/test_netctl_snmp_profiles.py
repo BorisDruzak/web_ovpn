@@ -1152,6 +1152,32 @@ def test_explicit_vendor_profile_hint_rejects_a_nonmatching_switch(
         detect_profile(system, profile_hint=profile_hint)
 
 
+def test_tplink_hint_accepts_only_the_observed_jetstream_identity() -> None:
+    from netctl.snmp.profiles import detect_profile
+
+    exact = SwitchSystem(
+        "JetStream 48-Port Gigabit Smart Switch with 4 SFP Slots",
+        "1.3.6.1.4.1.11863.5.29",
+        "",
+        "",
+        None,
+    )
+    wrong_oid = SwitchSystem(exact.sys_descr, "1.3.6.1.4.1.11863.5.30", "", "", None)
+    wrong_description = SwitchSystem(
+        "JetStream 48-Port Gigabit Smart Switch with 2 SFP Slots",
+        exact.sys_object_id,
+        "",
+        "",
+        None,
+    )
+
+    assert detect_profile(exact, profile_hint="tplink").profile_id == "tplink"
+    with pytest.raises(ValueError, match="profile_hint"):
+        detect_profile(wrong_oid, profile_hint="tplink")
+    with pytest.raises(ValueError, match="profile_hint"):
+        detect_profile(wrong_description, profile_hint="tplink")
+
+
 def test_config_and_runtime_reject_an_invalid_profile_hint() -> None:
     from netctl.config import normalize_source
     from netctl.snmp.profiles import detect_profile
