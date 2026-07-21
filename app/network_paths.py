@@ -282,7 +282,7 @@ def _policy_checks(definition: PathDefinition, router_rows: dict[str, Any], rout
     for index, matcher in enumerate(definition.policy_matchers, start=1):
         matches = _matching_rows(_mapping(router_rows).get("firewall_rules", _mapping(router_rows).get("rules")), definition.router_source, matcher)
         enabled = [row for row in matches if _known_bool(row.get("disabled", False)) is False]
-        if not _policy_matcher_relations(definition, matcher):
+        if not _policy_matcher_is_relevant(definition, matcher):
             status, observed = "critical", "unrelated"
         elif not matches or not enabled:
             status, observed = "critical", "absent" if not matches else "disabled"
@@ -398,27 +398,45 @@ def _address_matcher_relations(definition: PathDefinition, matcher: dict[str, st
     return relations
 
 
-def _list_relations(definition: PathDefinition, list_name: Any) -> set[str]:
+def _address_list_relates(
+    definition: PathDefinition, list_name: Any, expected: str
+) -> bool:
     normalized = _normal_optional(list_name)
-    relations = set()
-    for matcher in definition.address_lists:
-        if _normal_optional(matcher.get("list")) == normalized:
-            relations.update(_address_matcher_relations(definition, matcher))
-    return relations
+    return any(
+        _normal_optional(matcher.get("list")) == normalized
+        and _network_relates(matcher.get("address"), expected)
+        for matcher in definition.address_lists
+    )
 
 
-def _policy_matcher_relations(definition: PathDefinition, matcher: dict[str, str]) -> set[str]:
-    relations = set()
-    for key in ("src_address", "dst_address"):
-        value = matcher.get(key)
-        if _network_relates(value, definition.openvpn_pool):
-            relations.add("pool")
-        if _network_relates(value, definition.target_cidr):
-            relations.add("target")
-    for key in ("src_address_list", "dst_address_list"):
-        if key in matcher:
-            relations.update(_list_relations(definition, matcher[key]))
-    return relations
+def _policy_side_relates(
+    definition: PathDefinition,
+    matcher: dict[str, str],
+    side: str,
+    expected: str,
+) -> bool:
+    return _network_relates(matcher.get(f"{side}_address"), expected) or (
+        f"{side}_address_list" in matcher
+        and _address_list_relates(
+            definition, matcher[f"{side}_address_list"], expected
+        )
+    )
+
+
+def _policy_matcher_is_relevant(
+    definition: PathDefinition, matcher: dict[str, str]
+) -> bool:
+    return _policy_side_relates(
+        definition, matcher, "src", definition.openvpn_pool
+    ) or _policy_side_relates(definition, matcher, "dst", definition.target_cidr)
+
+
+def _policy_matcher_binds_path(
+    definition: PathDefinition, matcher: dict[str, str]
+) -> bool:
+    return _policy_side_relates(
+        definition, matcher, "src", definition.openvpn_pool
+    ) and _policy_side_relates(definition, matcher, "dst", definition.target_cidr)
 
 
 def _path_binding_check(definition: PathDefinition) -> dict[str, Any]:
@@ -430,10 +448,10 @@ def _path_binding_check(definition: PathDefinition) -> dict[str, Any]:
             "OpenVPN pool to target policy",
             "No policy matcher is configured",
         )
-    relations = set()
-    for matcher in definition.policy_matchers:
-        relations.update(_policy_matcher_relations(definition, matcher))
-    bound = {"pool", "target"} <= relations
+    bound = any(
+        _policy_matcher_binds_path(definition, matcher)
+        for matcher in definition.policy_matchers
+    )
     return _check(
         "target_binding",
         "ok" if bound else "critical",
@@ -570,7 +588,12 @@ def update_posture_summary(source: str, payload: Any, now: datetime) -> dict[str
             if isinstance(schedulers, list)
             else 0
         ),
-        "collected_at": timestamp if freshness == "fresh" else "",
+        "collected_at": (
+            timestamp
+            if (parsed_timestamp := _parse_timestamp(timestamp)) is not None
+            and parsed_timestamp - now <= FUTURE_TOLERANCE
+            else ""
+        ),
         "freshness": freshness,
         "status": status,
     }

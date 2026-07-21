@@ -11,17 +11,21 @@ sudo_cmd() {
 }
 
 validate_netctl_directory() {
-  local path="$1" expected_metadata="$2" resolved metadata
+  local path="$1" expected_metadata="$2" legacy_metadata="${3:-}" resolved metadata
   if sudo_cmd test -L "$path" || ! sudo_cmd test -d "$path"; then
     echo "unsafe netctl directory: $path" >&2
     exit 2
   fi
   resolved="$(sudo_cmd readlink -e -- "$path")"
   metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$path")"
-  if [[ "$resolved" != "$path" ]] || [[ "$metadata" != "$expected_metadata" ]]; then
+  if [[ "$resolved" != "$path" ]] || {
+    [[ "$metadata" != "$expected_metadata" ]] &&
+    { [[ -z "$legacy_metadata" ]] || [[ "$metadata" != "$legacy_metadata" ]]; }
+  }; then
     echo "unexpected netctl directory metadata: $path" >&2
     exit 2
   fi
+  validated_netctl_metadata="$metadata"
 }
 
 SRC="${SRC:-/tmp/openvpn-web-src}"
@@ -54,10 +58,23 @@ else
   if ! sudo_cmd test -e /etc/netctl && ! sudo_cmd test -L /etc/netctl; then
     sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl
   fi
-  validate_netctl_directory /etc/netctl root:netctl:750
+  validate_netctl_directory /etc/netctl root:netctl:750 root:root:755
+  netctl_config_metadata="$validated_netctl_metadata"
   if ! sudo_cmd test -e /etc/netctl/sources.d && ! sudo_cmd test -L /etc/netctl/sources.d; then
     sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl/sources.d
   fi
+  validate_netctl_directory /etc/netctl/sources.d root:netctl:750 root:root:755
+  netctl_sources_metadata="$validated_netctl_metadata"
+
+  if [[ "$netctl_config_metadata" == root:root:755 ]]; then
+    sudo_cmd chown root:netctl /etc/netctl
+    sudo_cmd chmod 0750 /etc/netctl
+  fi
+  if [[ "$netctl_sources_metadata" == root:root:755 ]]; then
+    sudo_cmd chown root:netctl /etc/netctl/sources.d
+    sudo_cmd chmod 0750 /etc/netctl/sources.d
+  fi
+  validate_netctl_directory /etc/netctl root:netctl:750
   validate_netctl_directory /etc/netctl/sources.d root:netctl:750
 fi
 

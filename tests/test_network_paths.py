@@ -352,6 +352,111 @@ def test_path_policy_and_address_list_must_bind_openvpn_pool_to_target_cidr():
     assert check(result[0], "policy:1")["status"] == "critical"
 
 
+def test_broad_source_address_cannot_bind_both_path_endpoints():
+    from app.network_paths import evaluate_paths
+
+    matcher = {
+        "table": "filter",
+        "chain": "forward",
+        "action": "accept",
+        "src_address": "0.0.0.0/0",
+    }
+    row = {
+        **matcher,
+        "source": "router-a",
+        "disabled": False,
+        "packets": 8,
+        "bytes": 800,
+        "last_seen_at": "2026-07-21T17:55:00Z",
+    }
+    result = evaluate_paths(**inputs(
+        definitions={"directum": definition("directum", policy_matchers=(matcher,))},
+        router_rows=router_rows(firewall_rules=[row]),
+    ))
+
+    assert result[0]["status"] == "critical"
+    assert check(result[0], "target_binding")["status"] == "critical"
+
+
+def test_pool_only_and_target_only_matchers_cannot_combine_into_one_path_binding():
+    from app.network_paths import evaluate_paths
+
+    pool_only = {
+        "table": "filter",
+        "chain": "forward",
+        "action": "accept",
+        "src_address": "198.51.100.0/24",
+    }
+    target_only = {
+        "table": "filter",
+        "chain": "forward",
+        "action": "accept",
+        "dst_address": "203.0.113.0/24",
+    }
+    rows = [
+        {
+            **matcher,
+            "source": "router-a",
+            "disabled": False,
+            "packets": 8,
+            "bytes": 800,
+            "last_seen_at": "2026-07-21T17:55:00Z",
+        }
+        for matcher in (pool_only, target_only)
+    ]
+    result = evaluate_paths(**inputs(
+        definitions={
+            "directum": definition(
+                "directum", policy_matchers=(pool_only, target_only)
+            )
+        },
+        router_rows=router_rows(firewall_rules=rows),
+    ))
+
+    assert result[0]["status"] == "critical"
+    assert check(result[0], "target_binding")["status"] == "critical"
+
+
+def test_address_list_bindings_cannot_be_resolved_from_the_wrong_side():
+    from app.network_paths import evaluate_paths
+
+    pool_list = {"list": "vpn-pool", "address": "198.51.100.0/24"}
+    target_list = {"list": "vpn-target", "address": "203.0.113.0/24"}
+    matcher = {
+        "table": "filter",
+        "chain": "forward",
+        "action": "accept",
+        "src_address_list": "vpn-target",
+        "dst_address_list": "vpn-pool",
+    }
+    row = {
+        **matcher,
+        "source": "router-a",
+        "disabled": False,
+        "packets": 8,
+        "bytes": 800,
+        "last_seen_at": "2026-07-21T17:55:00Z",
+    }
+    result = evaluate_paths(**inputs(
+        definitions={
+            "directum": definition(
+                "directum",
+                address_lists=(pool_list, target_list),
+                policy_matchers=(matcher,),
+            )
+        },
+        router_rows=router_rows(
+            address_lists=[
+                address_list(list="vpn-pool", address="198.51.100.0/24"),
+                address_list(list="vpn-target", address="203.0.113.0/24"),
+            ],
+            firewall_rules=[row],
+        ),
+    ))
+
+    assert check(result[0], "target_binding")["status"] == "critical"
+
+
 @pytest.mark.parametrize("evidence", ["router", "server_health"])
 def test_materially_future_path_evidence_is_stale(evidence):
     from app.network_paths import evaluate_paths
@@ -497,4 +602,34 @@ def test_update_posture_summary_rejects_future_source_timestamp_with_fresh_row()
 
     assert summary["status"] == "stale"
     assert summary["freshness"] == "stale"
-    assert summary["collected_at"] == ""
+    assert summary["collected_at"] == "2026-07-21T17:55:00Z"
+
+
+def test_update_posture_summary_retains_valid_stale_collection_time():
+    from app.network_paths import update_posture_summary
+
+    summary = update_posture_summary(
+        "router-a",
+        {
+            "status": "stale",
+            "sources": [
+                {"source": "router-a", "status": "stale", "collected_at": "2026-07-21T17:30:00Z"}
+            ],
+            "update_posture": [
+                {
+                    "source": "router-a",
+                    "channel": "stable",
+                    "installed_version": "7.19.4",
+                    "routerboot_current_version": "7.19.4",
+                    "routerboot_upgrade_version": "7.20.1",
+                    "last_seen_at": "2026-07-21T17:30:00Z",
+                    "schedulers": [],
+                }
+            ],
+        },
+        parse_utc("2026-07-21T18:00:00Z"),
+    )
+
+    assert summary["status"] == "stale"
+    assert summary["freshness"] == "stale"
+    assert summary["collected_at"] == "2026-07-21T17:30:00Z"
