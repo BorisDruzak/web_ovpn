@@ -8,9 +8,9 @@
 ## Tasks
 
 - Task 1: complete (`b3e863d..94f82fb`); RED failed on missing boundary, GREEN focused and neighboring regression passed; review clean.
-- Task 2: complete (`a43f2c5..8b768fb`); archive repository RED/ GREEN verified; exact bytes, commit index, cleanup matching and fail-closed scans passed.
+- Task 2: complete (`a43f2c5..8b768fb`); archive repository RED/GREEN verified; exact bytes, commit index, cleanup matching and fail-closed scans passed.
 - Task 3: complete (`ad6c2b1..e58c44f`); lifecycle and generation-filter suites passed; review clean.
-- Task 4: pending.
+- Task 4: complete (`5880b6a..042a22e`); blocker precheck stays mutation-free, authoritative checks repeat under lock, recovery/idempotency suites passed; review clean.
 - Task 5: pending.
 - Task 6: pending.
 - Task 7: pending.
