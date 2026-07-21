@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
 from pathlib import Path
+from urllib.request import urlopen
 
 from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
@@ -39,6 +41,13 @@ EXPECTED_UNIT_STATE = {
     "alt-deploy-process.service": ("loaded", "inactive", "static"),
 }
 
+REGISTRATION_HEALTH_URL = "http://127.0.0.1:8088/health"
+STATIC_HEALTH_URLS = (
+    "http://127.0.0.1:8087/bootstrap/bootstrap.sh",
+    "http://127.0.0.1:8087/bootstrap/ansible_authorized_keys",
+    "http://127.0.0.1:8087/metadata/autoinstall.scm",
+)
+
 
 def run_command(
     command: list[str],
@@ -66,6 +75,18 @@ def regular_nonempty(path: Path, *, executable: bool = False) -> bool:
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_size < 1:
         return False
     return not executable or os.access(path, os.X_OK)
+
+
+def _response_status(response: object) -> int | None:
+    status_value = getattr(response, "status", None)
+    if isinstance(status_value, int):
+        return status_value
+    getcode = getattr(response, "getcode", None)
+    if callable(getcode):
+        code = getcode()
+        if isinstance(code, int):
+            return code
+    return None
 
 
 class ControllerReadinessChecker:
@@ -158,14 +179,11 @@ class ControllerReadinessChecker:
                 completed.stdout if completed.returncode == 0 else ""
             )
             expected_load, expected_active, expected_file = expected
-            loaded_ok = loaded_ok and (
-                properties.get("LoadState") == expected_load
-            )
-            active_ok = active_ok and (
-                properties.get("ActiveState") == expected_active
-            )
-            enabled_ok = enabled_ok and (
-                properties.get("UnitFileState") == expected_file
+            loaded_ok = loaded_ok and properties.get("LoadState") == expected_load
+            active_ok = active_ok and properties.get("ActiveState") == expected_active
+            enabled_ok = (
+                enabled_ok
+                and properties.get("UnitFileState") == expected_file
             )
 
         return {
@@ -173,6 +191,31 @@ class ControllerReadinessChecker:
             "systemd_units_enabled": enabled_ok,
             "systemd_units_active": active_ok,
         }
+
+    @staticmethod
+    def registration_health_ok() -> bool:
+        try:
+            with urlopen(REGISTRATION_HEALTH_URL, timeout=5) as response:
+                if _response_status(response) != 200:
+                    return False
+                raw_body = response.read(4096)
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (OSError, UnicodeError, ValueError, TimeoutError):
+            return False
+        return isinstance(payload, dict) and payload.get("status") == "ok"
+
+    @staticmethod
+    def static_http_ok() -> bool:
+        for url in STATIC_HEALTH_URLS:
+            try:
+                with urlopen(url, timeout=5) as response:
+                    if _response_status(response) != 200:
+                        return False
+                    if not response.read(1):
+                        return False
+            except (OSError, ValueError, TimeoutError):
+                return False
+        return True
 
     def ansible_syntax_ok(self, playbook_name: str) -> bool:
         playbook = self.settings.ansible_project_dir / "playbooks" / playbook_name
@@ -190,3 +233,43 @@ class ControllerReadinessChecker:
             env=environment,
             cwd=self.settings.ansible_project_dir,
         )
+
+    def check(self) -> dict[str, object]:
+        checks = {
+            "active_jobs_empty": self.active_jobs_empty(),
+            "controller_permissions": self.permissions_ok(),
+            "vault": self.vault_ok(),
+            "runtime_entrypoints": all(
+                regular_nonempty(path, executable=True)
+                for path in RUNTIME_ENTRYPOINTS.values()
+            ),
+            "api_files": all(
+                regular_nonempty(path)
+                for path in API_FILES.values()
+            ),
+            "static_assets": self.static_assets_ok(),
+            **self.systemd_checks(),
+            "registration_api_health": self.registration_health_ok(),
+            "static_http_health": self.static_http_ok(),
+            "ansible_preflight_syntax": self.ansible_syntax_ok(
+                "01-preflight.yml"
+            ),
+            "ansible_provision_syntax": self.ansible_syntax_ok(
+                "02-provision-account.yml"
+            ),
+        }
+        result: dict[str, object] = {
+            "ready": all(checks.values()),
+            "checks": checks,
+            "failed_checks": [
+                name for name, succeeded in checks.items() if not succeeded
+            ],
+        }
+        if not result["ready"]:
+            raise ControlError(
+                code="controller_not_ready",
+                message="ALT deployment controller is not ready",
+                exit_code=11,
+                details=result,
+            )
+        return result
