@@ -127,54 +127,103 @@ def parse_qbridge_fdb(
     ports: Iterable[SwitchPort],
     bridge_to_ifindex: Mapping[int, int],
 ) -> tuple[SwitchFdbEntry, ...]:
+    entries, rejected_row_count = _parse_qbridge_fdb(
+        port_result,
+        status_result,
+        vlan_fdb_id_result,
+        profile=profile,
+        ports=ports,
+        bridge_to_ifindex=bridge_to_ifindex,
+        reject_invalid_rows=False,
+    )
+    assert rejected_row_count == 0
+    return entries
+
+
+def parse_qbridge_fdb_with_rejections(
+    port_result: CapabilityResult,
+    status_result: CapabilityResult,
+    vlan_fdb_id_result: CapabilityResult,
+    *,
+    profile: PortProfile,
+    ports: Iterable[SwitchPort],
+    bridge_to_ifindex: Mapping[int, int],
+) -> tuple[tuple[SwitchFdbEntry, ...], int]:
+    return _parse_qbridge_fdb(
+        port_result,
+        status_result,
+        vlan_fdb_id_result,
+        profile=profile,
+        ports=ports,
+        bridge_to_ifindex=bridge_to_ifindex,
+        reject_invalid_rows=True,
+    )
+
+
+def _parse_qbridge_fdb(
+    port_result: CapabilityResult,
+    status_result: CapabilityResult,
+    vlan_fdb_id_result: CapabilityResult,
+    *,
+    profile: PortProfile,
+    ports: Iterable[SwitchPort],
+    bridge_to_ifindex: Mapping[int, int],
+    reject_invalid_rows: bool,
+) -> tuple[tuple[SwitchFdbEntry, ...], int]:
     port_rows = _indexed_rows(port_result, DOT1Q_FDB_PORT, suffix_length=7)
     status_rows = _indexed_rows(status_result, DOT1Q_FDB_STATUS, suffix_length=7)
     vids_by_fid = _vids_by_fid(vlan_fdb_id_result)
+    if set(port_rows) != set(status_rows):
+        raise ValueError("Q-BRIDGE FDB tables do not join")
     ports_by_ifindex = {
         port.if_index: port for port in ports if port.if_index is not None
     }
-    entries: list[SwitchFdbEntry] = []
+    validated_indexes: list[tuple[tuple[int, ...], int, str]] = []
     for index in sorted(port_rows):
         fdb_id, *mac_octets = index
         if not 0 < fdb_id <= 4_294_967_295:
             raise ValueError("FDB ID is invalid")
-        mac = normalize_mac(tuple(mac_octets))
-        status_row = status_rows.get(index)
-        if status_row is None:
-            raise ValueError("FDB status row is missing")
-        raw_port = _integer(
-            port_rows[index],
-            "Q-BRIDGE FDB port",
-            value_type="integer",
-            minimum=1,
-            maximum=65_535,
-        )
-        resolution = profile.resolve_fdb_port(
-            raw_fdb_port=raw_port,
-            fdb_mode="qbridge",
-            bridge_to_ifindex=bridge_to_ifindex,
-            ports_by_ifindex=ports_by_ifindex,
-        )
-        vlan_key, vlan_id = profile.resolve_fdb_vlan(
-            fdb_id=fdb_id, vids_by_fid=vids_by_fid
-        )
-        entries.append(
-            SwitchFdbEntry(
-                fdb_id=fdb_id,
-                vlan_key=vlan_key,
-                vlan_id=vlan_id,
-                mac=mac,
-                port_key=resolution.port_key,
-                bridge_port=resolution.bridge_port,
-                if_index=resolution.if_index,
-                physical_port=resolution.physical_port,
-                port_name=resolution.port_name,
-                status=_status(status_row),
+        validated_indexes.append((index, fdb_id, normalize_mac(tuple(mac_octets))))
+
+    entries: list[SwitchFdbEntry] = []
+    rejected_row_count = 0
+    for index, fdb_id, mac in validated_indexes:
+        try:
+            raw_port = _integer(
+                port_rows[index],
+                "Q-BRIDGE FDB port",
+                value_type="integer",
+                minimum=1,
+                maximum=65_535,
             )
-        )
-    if set(status_rows) - set(port_rows):
-        raise ValueError("FDB status has no matching port row")
-    return tuple(entries)
+            resolution = profile.resolve_fdb_port(
+                raw_fdb_port=raw_port,
+                fdb_mode="qbridge",
+                bridge_to_ifindex=bridge_to_ifindex,
+                ports_by_ifindex=ports_by_ifindex,
+            )
+            vlan_key, vlan_id = profile.resolve_fdb_vlan(
+                fdb_id=fdb_id, vids_by_fid=vids_by_fid
+            )
+            entries.append(
+                SwitchFdbEntry(
+                    fdb_id=fdb_id,
+                    vlan_key=vlan_key,
+                    vlan_id=vlan_id,
+                    mac=mac,
+                    port_key=resolution.port_key,
+                    bridge_port=resolution.bridge_port,
+                    if_index=resolution.if_index,
+                    physical_port=resolution.physical_port,
+                    port_name=resolution.port_name,
+                    status=_status(status_rows[index]),
+                )
+            )
+        except ValueError:
+            if not reject_invalid_rows:
+                raise
+            rejected_row_count += 1
+    return tuple(entries), rejected_row_count
 
 
 def parse_legacy_fdb(

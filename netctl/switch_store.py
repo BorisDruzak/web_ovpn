@@ -50,6 +50,7 @@ _OPTIONAL_CAPABILITIES = frozenset(
         "stp_root_cost",
         "stp_root_port",
         "lldp_remote",
+        "qbridge_fdb_rejected_rows",
     }
 )
 _VLAN_MEMBERSHIP_FIELDS = frozenset(
@@ -85,6 +86,7 @@ _MAC = re.compile(r"(?:[0-9A-F]{2}:){5}[0-9A-F]{2}\Z")
 _VLAN_KEY = re.compile(r"(vid|fid):([1-9][0-9]*)\Z")
 _FDB_STATUSES = frozenset({"other", "invalid", "learned", "self", "mgmt"})
 _SQLITE_INTEGER_MAX = 2**63 - 1
+_QBRIDGE_REJECTED_ROWS_CAPABILITY = "qbridge_fdb_rejected_rows"
 
 
 class SwitchDriver(Protocol):
@@ -361,6 +363,11 @@ def _validate_snapshot(snapshot: object) -> str:
         return "unexpected_fdb_rows"
     if fdb_outcome not in _REPLACING_FDB_OUTCOMES and snapshot.fdb:
         return "failed_fdb_has_rows"
+    if (
+        _QBRIDGE_REJECTED_ROWS_CAPABILITY in capability_names
+        and fdb_outcome is not SnmpOutcome.SUCCESS_WITH_ROWS
+    ):
+        return "invalid_fdb_warning"
     return ""
 
 
@@ -427,7 +434,7 @@ def _valid_fdb_entry(entry: SwitchFdbEntry) -> bool:
 
 
 def _valid_capability(capability: CapabilityResult) -> bool:
-    return (
+    valid = (
         _valid_text(capability.capability)
         and isinstance(capability.outcome, SnmpOutcome)
         and type(capability.rows) is tuple
@@ -435,6 +442,18 @@ def _valid_capability(capability: CapabilityResult) -> bool:
         and type(capability.error_code) is str
         and type(capability.error_message) is str
         and type(capability.details) is dict
+    )
+    if not valid or capability.capability != _QBRIDGE_REJECTED_ROWS_CAPABILITY:
+        return valid
+    rejected_row_count = capability.details.get("rejected_row_count")
+    return (
+        capability.outcome is SnmpOutcome.PARSE_ERROR
+        and capability.rows == ()
+        and capability.error_code == "invalid_fdb_rows_rejected"
+        and capability.error_message == "Invalid SNMP FDB rows were rejected"
+        and set(capability.details) == {"rejected_row_count"}
+        and type(rejected_row_count) is int
+        and 1 <= rejected_row_count <= _SQLITE_INTEGER_MAX
     )
 
 
@@ -895,7 +914,9 @@ def _upsert_capabilities(
     ).isoformat().replace("+00:00", "Z")
     for capability in snapshot.capabilities:
         rows_seen = (
-            len(snapshot.fdb)
+            capability.details["rejected_row_count"]
+            if capability.capability == _QBRIDGE_REJECTED_ROWS_CAPABILITY
+            else len(snapshot.fdb)
             if capability.capability == "fdb"
             else len(capability.rows)
         )
