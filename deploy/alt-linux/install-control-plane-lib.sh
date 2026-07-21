@@ -248,8 +248,192 @@ install_control_plane_prechecks() {
     fi
 }
 
+stop_if_loaded() {
+    local unit=$1
+    local load_state
+
+    if ! load_state=$(systemctl show \
+        "${unit}" \
+        --property=LoadState \
+        --value); then
+        echo "Unable to inspect systemd unit: ${unit}" >&2
+        return 1
+    fi
+
+    if [[ "${load_state}" != "not-found" ]]; then
+        systemctl stop "${unit}"
+    fi
+}
+
+enter_control_plane_maintenance() {
+    stop_if_loaded alt-deploy-process.path
+    stop_if_loaded alt-deploy-register.service
+    stop_if_loaded alt-deploy-http.service
+
+    if systemctl is-active --quiet alt-deploy-process.service; then
+        echo "Pending-registration processor became active during maintenance" >&2
+        return 1
+    fi
+}
+
+install_controller_package() {
+    local root_prefix=$1
+    local control_root
+    control_root=$(install_destination \
+        "${root_prefix}" \
+        /opt/alt-deploy-control)
+
+    install -d -o root -g root -m 0755 "${control_root}"
+    rm -rf "${control_root}/alt_deploy"
+    cp -a "${ALT_ROOT}/control/alt_deploy" "${control_root}/alt_deploy"
+    chown -R root:root "${control_root}"
+    find "${control_root}" -type d -exec chmod 0755 {} +
+    find "${control_root}" -type f -exec chmod 0644 {} +
+
+    install -d -o root -g root -m 0755 \
+        "$(install_destination "${root_prefix}" /usr/local/sbin)" \
+        "$(install_destination "${root_prefix}" /usr/local/libexec)"
+
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/control/workstationctl" \
+        "$(install_destination "${root_prefix}" /usr/local/sbin/workstationctl)"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/control/alt-provision-worker" \
+        "$(install_destination "${root_prefix}" /usr/local/libexec/alt-provision-worker)"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/control/alt-job-stage" \
+        "$(install_destination "${root_prefix}" /usr/local/libexec/alt-job-stage)"
+}
+
+ensure_private_state_directories() {
+    local root_prefix=$1
+
+    install -d -o altserver -g altserver -m 0700 \
+        "$(install_destination "${root_prefix}" /var/lib/alt-deploy)" \
+        "$(install_destination "${root_prefix}" /var/lib/alt-deploy/jobs)" \
+        "$(install_destination "${root_prefix}" /var/lib/alt-deploy/assignments)" \
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/registration)" \
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/pending)" \
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/ready)" \
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/failed)" \
+        "$(install_destination "${root_prefix}" /home/altserver/.ssh)"
+}
+
+install_ansible_project() {
+    local root_prefix=$1
+    local ansible_root
+    ansible_root=$(install_destination \
+        "${root_prefix}" \
+        /home/altserver/ansible)
+
+    install -d -o altserver -g altserver -m 0750 \
+        "${ansible_root}" \
+        "${ansible_root}/playbooks" \
+        "${ansible_root}/roles" \
+        "${ansible_root}/group_vars"
+
+    install -o altserver -g altserver -m 0644 \
+        "${ALT_ROOT}/ansible/ansible.cfg" \
+        "${ansible_root}/ansible.cfg"
+    install -o altserver -g altserver -m 0644 \
+        "${ALT_ROOT}/ansible/group_vars/all.yml" \
+        "${ansible_root}/group_vars/all.yml"
+
+    cp -a "${ALT_ROOT}/ansible/playbooks/." "${ansible_root}/playbooks/"
+    cp -a "${ALT_ROOT}/ansible/roles/." "${ansible_root}/roles/"
+    chown -R altserver:altserver \
+        "${ansible_root}/playbooks" \
+        "${ansible_root}/roles"
+    find \
+        "${ansible_root}/playbooks" \
+        "${ansible_root}/roles" \
+        -type d -exec chmod 0750 {} +
+    find \
+        "${ansible_root}/playbooks" \
+        "${ansible_root}/roles" \
+        -type f -exec chmod 0640 {} +
+}
+
+install_registration_runtime() {
+    local root_prefix=$1
+    local api_root
+    local bootstrap_root
+    api_root=$(install_destination "${root_prefix}" /opt/alt-deploy-api)
+    bootstrap_root=$(install_destination "${root_prefix}" /srv/alt-deploy/bootstrap)
+
+    install -d -o root -g root -m 0755 \
+        "${api_root}" \
+        "$(install_destination "${root_prefix}" /srv/alt-deploy)" \
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata)" \
+        "${bootstrap_root}"
+
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/api/register_api.py" \
+        "${api_root}/register_api.py"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/api/process_pending.py" \
+        "${api_root}/process_pending.py"
+    install -o root -g root -m 0644 \
+        "${ALT_ROOT}/bootstrap/bootstrap.sh" \
+        "${bootstrap_root}/bootstrap.sh"
+}
+
+install_systemd_units() {
+    local root_prefix=$1
+    local systemd_root
+    systemd_root=$(install_destination \
+        "${root_prefix}" \
+        /etc/systemd/system)
+
+    install -d -o root -g root -m 0755 "${systemd_root}"
+
+    local unit
+    for unit in \
+        alt-deploy-http.service \
+        alt-deploy-register.service \
+        alt-deploy-process.path \
+        alt-deploy-process.service; do
+        install -o root -g root -m 0644 \
+            "${ALT_ROOT}/systemd/${unit}" \
+            "${systemd_root}/${unit}"
+    done
+}
+
+activate_control_plane() {
+    systemctl daemon-reload
+    systemctl enable --now alt-deploy-http.service
+    systemctl enable --now alt-deploy-register.service
+    systemctl enable --now alt-deploy-process.path
+}
+
+run_installed_readiness() {
+    local root_prefix=$1
+    local workstationctl
+    workstationctl=$(install_destination \
+        "${root_prefix}" \
+        /usr/local/sbin/workstationctl)
+
+    if ! sudo -u altserver \
+        "${workstationctl}" \
+        --json \
+        controller readiness >/dev/null; then
+        echo "Controller readiness failed; restore the OR-3P3 backup before retrying" >&2
+        return 1
+    fi
+}
+
 install_control_plane_main() {
     local root_prefix=$1
+
     install_control_plane_prechecks "${root_prefix}"
-    echo "ALT deployment control plane prechecks passed"
+    enter_control_plane_maintenance
+    install_controller_package "${root_prefix}"
+    ensure_private_state_directories "${root_prefix}"
+    install_ansible_project "${root_prefix}"
+    install_registration_runtime "${root_prefix}"
+    install_systemd_units "${root_prefix}"
+    activate_control_plane
+    run_installed_readiness "${root_prefix}"
+
+    echo "ALT deployment control plane installed successfully"
 }
