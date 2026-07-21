@@ -736,6 +736,148 @@ def test_collector_prefers_qbridge_rows_and_never_queries_legacy() -> None:
     assert next(cap for cap in snapshot.capabilities if cap.capability == "fdb").outcome is SnmpOutcome.SUCCESS_WITH_ROWS
 
 
+def test_collector_preserves_valid_qbridge_rows_and_reports_rejected_rows() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    valid_index = (44, 0, 1, 2, 3, 4, 5)
+    invalid_index = (44, 0, 1, 2, 3, 4, 6)
+    transport = _FixtureTransport(
+        {
+            IF_INDEX: _result("if_index", _vb(IF_INDEX + (9,), 9)),
+            IF_NAME: _result(
+                "if_name", _vb(IF_NAME + (9,), b"port9", "octet_string")
+            ),
+            DOT1D_BASE_PORT_IFINDEX: _result(
+                "bridge_port_ifindex", _vb(DOT1D_BASE_PORT_IFINDEX + (9,), 9)
+            ),
+            DOT1Q_FDB_PORT: _result(
+                "qbridge_port",
+                _vb(DOT1Q_FDB_PORT + valid_index, 9),
+                _vb(DOT1Q_FDB_PORT + invalid_index, -1),
+            ),
+            DOT1Q_FDB_STATUS: _result(
+                "qbridge_status",
+                _vb(DOT1Q_FDB_STATUS + valid_index, 3),
+                _vb(DOT1Q_FDB_STATUS + invalid_index, 3),
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert [entry.mac for entry in snapshot.fdb] == ["00:01:02:03:04:05"]
+    final = next(cap for cap in snapshot.capabilities if cap.capability == "fdb")
+    assert final.outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+    rejected = next(
+        cap
+        for cap in snapshot.capabilities
+        if cap.capability == "qbridge_fdb_rejected_rows"
+    )
+    assert (rejected.outcome, rejected.error_code, rejected.details) == (
+        SnmpOutcome.PARSE_ERROR,
+        "invalid_fdb_rows_rejected",
+        {"rejected_row_count": 1},
+    )
+    assert rejected.error_message == "Invalid SNMP FDB rows were rejected"
+    assert DOT1D_FDB_PORT not in transport.walked
+
+
+def test_collector_keeps_parse_error_when_all_qbridge_rows_are_rejected() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    first_index = (44, 0, 1, 2, 3, 4, 5)
+    second_index = (44, 0, 1, 2, 3, 4, 6)
+    transport = _FixtureTransport(
+        {
+            DOT1Q_FDB_PORT: _result(
+                "qbridge_port",
+                _vb(DOT1Q_FDB_PORT + first_index, -1),
+                _vb(DOT1Q_FDB_PORT + second_index, -2),
+            ),
+            DOT1Q_FDB_STATUS: _result(
+                "qbridge_status",
+                _vb(DOT1Q_FDB_STATUS + first_index, 3),
+                _vb(DOT1Q_FDB_STATUS + second_index, 3),
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert snapshot.fdb == ()
+    final = next(cap for cap in snapshot.capabilities if cap.capability == "fdb")
+    assert (final.outcome, final.error_code) == (
+        SnmpOutcome.PARSE_ERROR,
+        "malformed_fdb",
+    )
+    rejected = next(
+        cap
+        for cap in snapshot.capabilities
+        if cap.capability == "qbridge_fdb_rejected_rows"
+    )
+    assert rejected.details == {"rejected_row_count": 2}
+
+
+def test_collector_rejects_qbridge_table_mismatch_atomically() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    joined_index = (44, 0, 1, 2, 3, 4, 5)
+    missing_status_index = (44, 0, 1, 2, 3, 4, 6)
+    transport = _FixtureTransport(
+        {
+            IF_INDEX: _result("if_index", _vb(IF_INDEX + (9,), 9)),
+            DOT1D_BASE_PORT_IFINDEX: _result(
+                "bridge_port_ifindex", _vb(DOT1D_BASE_PORT_IFINDEX + (9,), 9)
+            ),
+            DOT1Q_FDB_PORT: _result(
+                "qbridge_port",
+                _vb(DOT1Q_FDB_PORT + joined_index, 9),
+                _vb(DOT1Q_FDB_PORT + missing_status_index, -1),
+            ),
+            DOT1Q_FDB_STATUS: _result(
+                "qbridge_status", _vb(DOT1Q_FDB_STATUS + joined_index, 3)
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert snapshot.fdb == ()
+    final = next(cap for cap in snapshot.capabilities if cap.capability == "fdb")
+    assert final.outcome is SnmpOutcome.PARSE_ERROR
+    assert not any(
+        cap.capability == "qbridge_fdb_rejected_rows"
+        for cap in snapshot.capabilities
+    )
+
+
+def test_public_qbridge_parser_remains_strict_for_negative_port() -> None:
+    from netctl.snmp.fdb import parse_qbridge_fdb
+    from netctl.snmp.profiles import GenericProfile
+
+    ports, bridge_map = _one_port()
+    valid_index = (55, 0, 1, 2, 3, 4, 5)
+    invalid_index = (55, 0, 1, 2, 3, 4, 6)
+
+    with pytest.raises(ValueError, match="Q-BRIDGE FDB port"):
+        parse_qbridge_fdb(
+            _result(
+                "qbridge_port",
+                _vb(DOT1Q_FDB_PORT + valid_index, 7),
+                _vb(DOT1Q_FDB_PORT + invalid_index, -1),
+            ),
+            _result(
+                "qbridge_status",
+                _vb(DOT1Q_FDB_STATUS + valid_index, 3),
+                _vb(DOT1Q_FDB_STATUS + invalid_index, 3),
+            ),
+            _result("vlan_fdb_id"),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
+
+
 def test_qbridge_status_unsupported_is_explicit_and_does_not_fall_back() -> None:
     from netctl.snmp.collector import collect_switch_snapshot
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 
-from .fdb import parse_legacy_fdb, parse_qbridge_fdb
+from .fdb import parse_legacy_fdb, parse_qbridge_fdb_with_rejections
 from .interfaces import parse_bridge_port_map, parse_interfaces
 from .lldp import parse_lldp_neighbors
 from .models import (
@@ -378,7 +378,7 @@ async def collect_switch_snapshot(
                 final_fdb = _propagate_fdb_failure(vlan_fdb_id)
             else:
                 try:
-                    fdb = parse_qbridge_fdb(
+                    fdb, rejected_row_count = parse_qbridge_fdb_with_rejections(
                         qbridge_port,
                         qbridge_status,
                         vlan_fdb_id,
@@ -394,8 +394,26 @@ async def collect_switch_snapshot(
                         error_message="SNMP FDB rows are malformed",
                     )
                 else:
-                    final_fdb = _final_fdb_result(
-                        SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb
+                    if rejected_row_count:
+                        capabilities.append(
+                            CapabilityResult(
+                                capability="qbridge_fdb_rejected_rows",
+                                outcome=SnmpOutcome.PARSE_ERROR,
+                                error_code="invalid_fdb_rows_rejected",
+                                error_message="Invalid SNMP FDB rows were rejected",
+                                details={
+                                    "rejected_row_count": rejected_row_count
+                                },
+                            )
+                        )
+                    final_fdb = (
+                        _final_fdb_result(SnmpOutcome.SUCCESS_WITH_ROWS, rows=fdb)
+                        if fdb
+                        else _final_fdb_result(
+                            SnmpOutcome.PARSE_ERROR,
+                            error_code="malformed_fdb",
+                            error_message="SNMP FDB rows are malformed",
+                        )
                     )
     elif qbridge_port.outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT:
         fdb, final_fdb, legacy_results = await _collect_legacy_fdb(
