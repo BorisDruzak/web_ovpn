@@ -9,8 +9,14 @@ def test_post_maintenance_failure_reports_phase_and_or3p3_recovery(
     tmp_path: Path,
 ) -> None:
     sandbox = InstallerSandbox.create(tmp_path)
+    failing_install = sandbox.fake_bin / "install"
+    failing_install.write_text(
+        "#!/bin/bash\nexit 23\n",
+        encoding="utf-8",
+    )
+    failing_install.chmod(0o755)
 
-    result = sandbox.run_library(INSTALLER_INSTALL_RC="23")
+    result = sandbox.run_library()
 
     assert result.returncode != 0
     assert "installed successfully" not in result.stdout.lower()
