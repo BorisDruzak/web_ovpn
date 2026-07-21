@@ -24,4 +24,5 @@ jobs:
           python -m pytest -q \
             tests/alt_linux/test_or3p1_cli_readiness.py \
             tests/alt_linux/test_or3p1_controller_readiness.py \
-            tests/alt_linux/test_or3p1_controller_readiness_failures.py
+            tests/alt_linux/test_or3p1_controller_readiness_failures.py \
+            tests/alt_linux/test_or3p1_installer.py
