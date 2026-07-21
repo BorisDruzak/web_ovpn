@@ -104,7 +104,9 @@ class InstallerSandbox:
             "if [[ ${1:-} == is-active && ${3:-} == alt-deploy-process.service ]]; then\n"
             "  [[ ${INSTALLER_PROCESS_ACTIVE:-0} == 1 ]] && exit 0\n"
             "  exit 3\n"
-            "fi\nexit 0\n",
+            "fi\n"
+            "if [[ ${1:-} == show ]]; then printf 'loaded\\n'; fi\n"
+            "exit 0\n",
         )
         self._fake_script(
             "stat",
@@ -154,8 +156,9 @@ class InstallerSandbox:
         environment.update(overrides)
         return environment
 
-    def run_library(
+    def _run_function(
         self,
+        function_name: str,
         **overrides: str,
     ) -> subprocess.CompletedProcess[str]:
         command = (
@@ -163,7 +166,7 @@ class InstallerSandbox:
             f"REPO_ROOT={json.dumps(str(REPO_ROOT))}; "
             f"ALT_ROOT={json.dumps(str(ALT_ROOT))}; "
             f"source {json.dumps(str(LIBRARY_PATH))}; "
-            f"install_control_plane_main {json.dumps(str(self.root))}"
+            f"{function_name} {json.dumps(str(self.root))}"
         )
         return subprocess.run(
             ["bash", "-c", command],
@@ -172,6 +175,24 @@ class InstallerSandbox:
             check=False,
             cwd=REPO_ROOT,
             env=self.environment(**overrides),
+        )
+
+    def run_prechecks(
+        self,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return self._run_function(
+            "install_control_plane_prechecks",
+            **overrides,
+        )
+
+    def run_library(
+        self,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
+        return self._run_function(
+            "install_control_plane_main",
+            **overrides,
         )
 
     def commands(self) -> list[list[str]]:
