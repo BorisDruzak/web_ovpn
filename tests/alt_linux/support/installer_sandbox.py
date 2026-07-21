@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -72,10 +73,11 @@ class InstallerSandbox:
 
     def _fake_script(self, name: str, body: str) -> None:
         path = self.fake_bin / name
+        logger = shlex.quote(sys.executable)
         path.write_text(
             "#!/bin/bash\nset -Eeuo pipefail\n"
             "printf '%s\\n' "
-            "\"$(python3 -c 'import json,sys; "
+            f"\"$({logger} -c 'import json,sys; "
             "print(json.dumps(sys.argv[1:]))' "
             f"{name} \"$@\")\" >> \"$INSTALLER_COMMAND_LOG\"\n"
             + body,
@@ -91,7 +93,7 @@ class InstallerSandbox:
         self._fake_script(
             "sudo",
             "case \" $* \" in\n"
-            "  *\" jobs active \"*) printf '%s\\n' \"${INSTALLER_JOBS_JSON:-{\\\"status\\\":\\\"ok\\\",\\\"active_jobs\\\":[],\\\"count\\\":0}}\"; exit \"${INSTALLER_JOBS_RC:-0}\" ;;\n"
+            "  *\" jobs active \"*) printf '%s\\n' \"$INSTALLER_JOBS_JSON\"; exit \"${INSTALLER_JOBS_RC:-0}\" ;;\n"
             "  *\" vault check \"*) exit \"${INSTALLER_VAULT_RC:-0}\" ;;\n"
             "  *\" controller permissions \"*) exit \"${INSTALLER_PERMISSIONS_RC:-0}\" ;;\n"
             "  *\" controller readiness \"*) exit \"${INSTALLER_READINESS_RC:-0}\" ;;\n"
@@ -115,7 +117,7 @@ class InstallerSandbox:
         self._fake_script(
             "python3",
             "if [[ ${1:-} == -c ]]; then exec "
-            + sys.executable
+            + shlex.quote(sys.executable)
             + " \"$@\"; fi\nexit \"${INSTALLER_PYTHON_RC:-0}\"\n",
         )
         for name in (
