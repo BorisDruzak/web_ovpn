@@ -1,4 +1,5 @@
 name: OR-3P1 documentation sync
+# one-shot trigger for approved OR-3P1 documentation synchronization
 
 on:
   push:
