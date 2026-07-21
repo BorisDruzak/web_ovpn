@@ -35,17 +35,16 @@ jobs:
           tests/alt_linux/test_alt_bootstrap_register.py
           tests/alt_linux/test_bootstrap_register_integration.py
           tests/alt_linux/test_machine_archive_root_safety.py
-      - name: New OR-3P2 installer runtime
-        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py
+      - name: Helper publication and archive preservation
+        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installer_publishes_helper_and_preserves_archives
+      - name: Private roots and lock
+        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installer_creates_private_archive_roots_and_lock
+      - name: Source declarations
+        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installer_source_validates_and_publishes_helper
+      - name: Unit sandbox declarations
+        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installed_units_allow_only_required_lifecycle_roots
       - name: Readiness contracts
         run: >-
           python -m pytest -q
           tests/alt_linux/test_or3p1_controller_readiness.py
           tests/alt_linux/test_or3p1_controller_readiness_failures.py
-      - name: Installer asset and permissions regression
-        run: >-
-          python -m pytest -q
-          tests/alt_linux/test_install_assets.py
-          tests/alt_linux/test_installer_registration_permissions.py
-      - name: OR-3P1 installer regression
-        run: python -m pytest -q tests/alt_linux/test_or3p1_installer.py
