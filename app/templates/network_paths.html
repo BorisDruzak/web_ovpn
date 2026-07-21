@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}VPN paths{% endblock %}
+{% block page_title %}VPN paths{% endblock %}
+{% block content %}
+<section class="table-wrap">
+  <h2>Registered server paths</h2>
+  <table>
+    <thead><tr><th>Role</th><th>Status</th><th>Evidence time</th><th></th></tr></thead>
+    <tbody>
+      {% for path in paths %}
+      <tr>
+        <td>{{ path.role }}</td>
+        <td><span class="badge {{ path.status|status_class }}">{{ path.status }}</span></td>
+        <td>{{ path.collected_at or "-" }}</td>
+        <td><a class="button secondary" href="/network/paths/{{ path.role }}">Details</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty">No registered path evidence is available.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

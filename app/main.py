@@ -33,6 +33,7 @@ from .models import (
 )
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
+from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
 from .vpnctl_client import VpnctlError, run_vpnctl
@@ -1498,6 +1499,21 @@ def network_dashboard(request: Request, db: Session = Depends(get_db)):
         {"summary": summary, "sources": dashboard_data.get("sources", []), "error": dashboard_error or connected_error},
         db,
     )
+
+
+@app.get("/network/paths", response_class=HTMLResponse)
+def network_paths(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return render(request, "network_paths.html", {"paths": list_network_paths()}, db)
+
+
+@app.get("/network/paths/{role}", response_class=HTMLResponse)
+def network_path_detail(role: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    path = get_network_path(role)
+    if path is None:
+        raise HTTPException(status_code=404)
+    return render(request, "network_path_detail.html", {"path": path}, db)
 
 
 def unified_network_rows(request: Request) -> tuple[list[dict[str, Any]], str | None]:

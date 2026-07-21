@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,8 @@ elif cmd == "runtime-health":
         },
         "warnings": [], "errors": ["VPN_POLICY_NAT chain or hook is missing"],
     }))
+elif cmd == "server-config":
+    print(json.dumps({"status": "ok", "settings": {"server_network": "198.51.100.0/24"}}))
 else:
     print(json.dumps({"status": "ok"}))
 """,
@@ -75,7 +78,13 @@ elif cmd[:2] == ["sources", "list"]:
 elif cmd[:2] == ["interfaces", "list"]:
     print(json.dumps({"status": "ok", "interfaces": [{"source": "mikrotik-main", "name": "bridge-lan", "type": "bridge", "running": True, "disabled": False, "rx_bytes": 10, "tx_bytes": 20}]}))
 elif cmd[:2] == ["routes", "list"]:
-    print(json.dumps({"status": "ok", "routes": [{"source": "mikrotik-main", "dst_address": "192.168.50.0/24", "gateway": "192.168.100.30", "active": True, "dynamic": False, "distance": "1"}]}))
+    print(json.dumps({"status": "ok", "sources": [{"source": "mikrotik-main", "status": "ok", "collected_at": "2026-07-03T12:00:00Z"}], "routes": [{"source": "mikrotik-main", "dst_address": "192.168.50.0/24", "gateway": "192.168.100.30", "active": True, "dynamic": False, "distance": "1"}, {"source": "mikrotik-main", "dst_address": "198.51.100.0/24", "gateway": "198.51.100.1", "active": True, "disabled": False, "command": "netctl collect all password=not-a-secret /etc/openvpn-web/server-observer.key"}]}))
+elif cmd[:2] == ["address-lists", "list"]:
+    print(json.dumps({"status": "ok", "sources": [{"source": "mikrotik-main", "status": "ok", "collected_at": "2026-07-03T12:00:00Z"}], "address_lists": [{"source": "mikrotik-main", "list": "vpn-targets", "address": "203.0.113.0/24", "disabled": False}]}))
+elif cmd[:2] == ["firewall-rules", "list"]:
+    print(json.dumps({"status": "ok", "sources": [{"source": "mikrotik-main", "status": "ok", "collected_at": "2026-07-03T12:00:00Z"}], "firewall_rules": [{"source": "mikrotik-main", "table": cmd[3], "chain": "forward", "action": "accept", "src_address": "198.51.100.0/24", "dst_address": "203.0.113.0/24", "comment": "vpn target policy", "disabled": False, "packets": 8, "bytes": 800}]}))
+elif cmd[:1] == ["collector-status"]:
+    print(json.dumps({"status": "ok", "enabled": True, "active": True, "next_run": ""}))
 elif cmd[:2] == ["ipsec", "status"]:
     print(json.dumps({"status": "ok", "summary": {"sources": 2, "ok": 2, "warn": 0, "error": 0, "site_checks_ok": 1, "site_checks_warn": 0}, "site_checks": [{
         "status": "ok",
@@ -113,6 +122,9 @@ elif cmd[:2] == ["observations", "list"]:
 elif cmd[:1] == ["logs"]:
     print(json.dumps({"status": "ok", "events": []}))
 elif cmd[:1] == ["collect"]:
+    marker = __import__("os").environ.get("NETCTL_COLLECT_MARKER")
+    if marker:
+        open(marker, "w", encoding="utf-8").write("invoked")
     print(json.dumps({"status": "ok", "source": cmd[1], "summary": {"arp": 1}}))
 else:
     print(json.dumps({"status": "ok"}))
@@ -156,6 +168,95 @@ def login(client: TestClient) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
+
+
+def write_path_evidence(tmp_path: Path, monkeypatch) -> None:
+    collected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    path_config = tmp_path / "network-paths.json"
+    path_config.write_text(
+        json.dumps(
+            {
+                "paths": [
+                    {
+                        "role": "directum",
+                        "router_source": "mikrotik-main",
+                        "openvpn_pool": "198.51.100.0/24",
+                        "target_cidr": "203.0.113.0/24",
+                        "return_route": {"dst_address": "198.51.100.0/24", "gateway": "198.51.100.1"},
+                        "address_lists": [{"list": "vpn-targets", "address": "203.0.113.0/24"}],
+                        "policy_matchers": [
+                            {
+                                "table": "filter",
+                                "chain": "forward",
+                                "action": "accept",
+                                "src_address": "198.51.100.0/24",
+                                "dst_address": "203.0.113.0/24",
+                                "comment_contains": "vpn",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "server-health.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "collected_at": collected_at,
+                "overall": "ok",
+                "targets": [{"role": "directum", "status": "ok", "checks": []}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NETWORK_PATHS_CONFIG_PATH", str(path_config))
+    monkeypatch.setenv("SERVER_OBSERVER_SNAPSHOT_PATH", str(snapshot))
+
+
+def test_network_paths_require_login_and_show_existing_server_roles(tmp_path, monkeypatch):
+    write_path_evidence(tmp_path, monkeypatch)
+    client, headers = make_client(tmp_path, monkeypatch)
+
+    assert client.get("/network/paths", follow_redirects=False).status_code == 303
+    login(client)
+
+    page = client.get("/network/paths")
+    api = client.get("/api/v1/network/paths", headers=headers)
+
+    assert page.status_code == 200
+    assert "directum" in page.text
+    assert api.status_code == 200
+    assert api.json()["data"]["paths"][0]["role"] == "directum"
+    assert client.get("/network/paths/directum").status_code == 200
+    assert client.get("/api/v1/network/paths/directum", headers=headers).status_code == 200
+
+
+def test_network_paths_gets_are_read_only_and_redact_local_evidence(tmp_path, monkeypatch):
+    write_path_evidence(tmp_path, monkeypatch)
+    marker = tmp_path / "collect-invoked"
+    monkeypatch.setenv("NETCTL_COLLECT_MARKER", str(marker))
+    client, headers = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    browser = client.get("/network/paths/directum")
+    api = client.get("/api/v1/network/paths/directum", headers=headers)
+
+    assert browser.status_code == 200
+    assert api.status_code == 200
+    assert not marker.exists()
+    for forbidden in (
+        "password=not-a-secret",
+        "/etc/openvpn-web/server-observer.key",
+        "netctl collect",
+        "Traceback",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+    ):
+        assert forbidden not in browser.text
+        assert forbidden not in api.text
+    assert set(api.json()["data"]["path"]["checks"][0]) == {"name", "status", "message"}
 
 
 def test_network_runtime_health_requires_session_and_is_read_only(tmp_path, monkeypatch):

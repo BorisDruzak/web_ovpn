@@ -18,6 +18,7 @@
       <a href="/networks" class="{{ 'active' if request.url.path in ['/networks', '/vipnet-nets'] else '' }}">Сети</a>
       <a href="/network-templates" class="{{ 'active' if request.url.path == '/network-templates' else '' }}">Шаблоны</a>
       <a href="/network/dashboard" class="{{ 'active' if request.url.path == '/network/dashboard' else '' }}">Сеть</a>
+      <a href="/network/paths" class="{{ 'active' if request.url.path.startswith('/network/paths') else '' }}">VPN paths</a>
       <a href="/network/hosts" class="{{ 'active' if request.url.path.startswith('/network/hosts') else '' }}">Устройства</a>
       <a href="/network/sources" class="{{ 'active' if request.url.path.startswith('/network/sources') else '' }}">Источники</a>
       <a href="/network/interfaces" class="{{ 'active' if request.url.path == '/network/interfaces' else '' }}">Интерфейсы</a>

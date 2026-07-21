@@ -31,6 +31,8 @@ class Settings:
     netctl_use_sudo: bool
     netctl_sudo_user: str
     network_observer_enabled: bool
+    network_paths_config_path: Path
+    server_observer_snapshot_path: Path
     out_dir: Path
     share_out_dir: Path
     archive_dir: Path
@@ -62,6 +64,10 @@ def get_settings() -> Settings:
         netctl_use_sudo=_bool_env("NETCTL_USE_SUDO", True),
         netctl_sudo_user=os.environ.get("NETCTL_SUDO_USER", "netctl"),
         network_observer_enabled=_bool_env("NETWORK_OBSERVER_ENABLED", True),
+        network_paths_config_path=_path_env("NETWORK_PATHS_CONFIG_PATH", "/etc/openvpn-web/network-paths.json"),
+        server_observer_snapshot_path=_path_env(
+            "SERVER_OBSERVER_SNAPSHOT_PATH", "/var/lib/openvpn-web/server-observer/latest.json"
+        ),
         out_dir=_path_env("OUT_DIR", "/etc/openvpn/client-generator/output"),
         share_out_dir=_path_env("SHARE_OUT_DIR", "/mnt/antares_soft/vpn_config"),
         archive_dir=_path_env("ARCHIVE_DIR", "/etc/openvpn/client-generator/archive"),
