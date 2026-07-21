@@ -14,7 +14,7 @@
 - Task 5: complete (`0ba050a..1f517b3`); parser RED/GREEN verified, root gate precedes service construction, CLI output/redaction contracts passed.
 - Task 6: complete (`432cdd0..7c69981`); admission and API RED/GREEN verified, concurrent requests serialize to one generation, lifecycle errors map safely.
 - Task 7: complete (`413cf8a..9a4eb6e`); existing processor and race suites pass, long target work remains outside lock, committed/stale generations cannot finalize.
-- Task 8: pending.
+- Task 8: complete (`6c76fca..e6031c1`); helper executable tests and bootstrap ordering passed; helper performs registration only.
 - Task 9: pending.
 - Task 10: pending.
 
