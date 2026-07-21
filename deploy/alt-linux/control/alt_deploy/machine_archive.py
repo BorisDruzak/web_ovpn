@@ -242,6 +242,18 @@ class MachineArchiveService:
         )
         normalized = identifier.strip().lower()
 
+        preliminary_resumable = self.archives.find_resumable(
+            normalized
+        )
+        if preliminary_resumable is None:
+            preliminary_snapshot = (
+                self.guard.snapshot_for_removal(normalized)
+            )
+            if preliminary_snapshot.candidates:
+                self.guard.assert_removal_allowed(
+                    preliminary_snapshot
+                )
+
         with exclusive_lock(self.settings.lock_file):
             resumable = self.archives.find_resumable(
                 normalized
