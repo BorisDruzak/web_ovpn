@@ -84,7 +84,7 @@ def run_helper(
             "import json, os, pathlib, sys\n"
             "args = sys.argv[1:]\n"
             "def value(name): return args[args.index(name) + 1]\n"
-            "pathlib.Path(value('--output')).write_text(" 
+            "pathlib.Path(value('--output')).write_text("
             "os.environ['HELPER_TEST_RESPONSE'], encoding='utf-8')\n"
             "body = value('--data')\n"
             "url = next(item for item in reversed(args) "

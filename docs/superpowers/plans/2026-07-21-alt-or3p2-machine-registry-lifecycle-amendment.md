@@ -1,8 +1,8 @@
 # ALT OR-3P2 Implementation Plan Amendment
 
-**Status:** normative plan correction  
-**Date:** 2026-07-21  
-**Applies to:** `docs/superpowers/plans/2026-07-21-alt-or3p2-machine-registry-lifecycle.md`  
+**Status:** normative plan correction
+**Date:** 2026-07-21
+**Applies to:** `docs/superpowers/plans/2026-07-21-alt-or3p2-machine-registry-lifecycle.md`
 **Design authority:** `docs/superpowers/specs/2026-07-21-alt-or3p2-machine-registry-lifecycle-design.md`
 
 This amendment resolves interface and test-harness gaps found during implementation-plan self-review. Where this document conflicts with the main plan, this document controls. It does not change the approved product scope.

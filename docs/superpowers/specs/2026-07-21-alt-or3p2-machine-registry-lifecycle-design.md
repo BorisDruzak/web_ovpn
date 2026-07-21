@@ -1,7 +1,7 @@
 # ALT OR-3P2 Machine Registry Lifecycle Design
 
-**Status:** approved for planning  
-**Date:** 2026-07-21  
+**Status:** approved for planning
+**Date:** 2026-07-21
 **Base:** `main` at `6eeaf514bda322ba73188ce625005e73d869dfcf`
 
 ## Goal
