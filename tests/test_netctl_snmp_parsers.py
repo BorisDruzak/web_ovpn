@@ -12,6 +12,7 @@ from netctl.snmp.oids import (
     DOT1D_FDB_STATUS,
     DOT1Q_FDB_PORT,
     DOT1Q_FDB_STATUS,
+    DOT1Q_PVID,
     DOT1Q_VLAN_FDB_ID,
     IF_ADMIN_STATUS,
     IF_ALIAS,
@@ -256,6 +257,87 @@ def test_qbridge_maps_exactly_one_vid_to_fid_but_not_multiple_vids() -> None:
 
     assert (single[0].vlan_key, single[0].vlan_id) == ("vid:20", 20)
     assert (multiple[0].vlan_key, multiple[0].vlan_id) == ("fid:55", None)
+
+
+def test_qbridge_accepts_gauge32_vlan_fdb_id() -> None:
+    from netctl.snmp.fdb import parse_qbridge_fdb
+    from netctl.snmp.profiles import GenericProfile
+
+    ports, bridge_map = _one_port()
+    index = (55, 2, 0, 0, 0, 0, 1)
+
+    entries = parse_qbridge_fdb(
+        _result("qbridge_port", _vb(DOT1Q_FDB_PORT + index, 7)),
+        _result("qbridge_status", _vb(DOT1Q_FDB_STATUS + index, 3)),
+        _result(
+            "vlan_fdb_id",
+            _vb(DOT1Q_VLAN_FDB_ID + (0, 20), 55, "gauge32"),
+        ),
+        profile=GenericProfile(),
+        ports=ports,
+        bridge_to_ifindex=bridge_map,
+    )
+
+    assert (entries[0].vlan_key, entries[0].vlan_id) == ("vid:20", 20)
+
+
+@pytest.mark.parametrize("value", [0, 4_294_967_296])
+def test_qbridge_rejects_out_of_range_gauge32_vlan_fdb_id(value: int) -> None:
+    from netctl.snmp.fdb import parse_qbridge_fdb
+    from netctl.snmp.profiles import GenericProfile
+
+    ports, bridge_map = _one_port()
+    index = (55, 2, 0, 0, 0, 0, 1)
+
+    with pytest.raises(ValueError, match="dot1qVlanFdbId"):
+        parse_qbridge_fdb(
+            _result("qbridge_port", _vb(DOT1Q_FDB_PORT + index, 7)),
+            _result("qbridge_status", _vb(DOT1Q_FDB_STATUS + index, 3)),
+            _result(
+                "vlan_fdb_id",
+                _vb(DOT1Q_VLAN_FDB_ID + (0, 20), value, "gauge32"),
+            ),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
+
+
+def test_vlan_memberships_accepts_gauge32_pvid() -> None:
+    from netctl.snmp.profiles import GenericProfile
+    from netctl.snmp.vlan import parse_vlan_memberships
+
+    ports, bridge_map = _one_port()
+
+    memberships = parse_vlan_memberships(
+        _result("vlan_current_egress"),
+        _result("vlan_current_untagged"),
+        _result("pvid", _vb(DOT1Q_PVID + (7,), 20, "gauge32")),
+        profile=GenericProfile(),
+        ports=ports,
+        bridge_to_ifindex=bridge_map,
+    )
+
+    assert memberships[0]["vlan_id"] == 20
+    assert memberships[0]["pvid"] is True
+
+
+@pytest.mark.parametrize("value", [0, 4095])
+def test_vlan_memberships_rejects_out_of_range_gauge32_pvid(value: int) -> None:
+    from netctl.snmp.profiles import GenericProfile
+    from netctl.snmp.vlan import parse_vlan_memberships
+
+    ports, bridge_map = _one_port()
+
+    with pytest.raises(ValueError, match="PVID"):
+        parse_vlan_memberships(
+            _result("vlan_current_egress"),
+            _result("vlan_current_untagged"),
+            _result("pvid", _vb(DOT1Q_PVID + (7,), value, "gauge32")),
+            profile=GenericProfile(),
+            ports=ports,
+            bridge_to_ifindex=bridge_map,
+        )
 
 
 def test_vlan_fdb_mapping_requires_timemark_and_vlan_index() -> None:
@@ -548,7 +630,7 @@ class _FixtureTransport:
 @pytest.mark.parametrize(
     ("qbridge_outcome", "legacy_expected", "fdb_outcome"),
     [
-        (SnmpOutcome.SUCCESS_EMPTY, False, SnmpOutcome.SUCCESS_EMPTY),
+        (SnmpOutcome.SUCCESS_EMPTY, True, SnmpOutcome.SUCCESS_EMPTY),
         (SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT, True, SnmpOutcome.SUCCESS_EMPTY),
         (SnmpOutcome.TIMEOUT, False, SnmpOutcome.TIMEOUT),
         (SnmpOutcome.AUTH_OR_VIEW_FAILURE, False, SnmpOutcome.AUTH_OR_VIEW_FAILURE),

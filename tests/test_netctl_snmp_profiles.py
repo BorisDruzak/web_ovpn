@@ -241,6 +241,26 @@ def _dgs_fixture_transport() -> _PagedFixtureTransport:
     return transport
 
 
+def test_ifx_timeout_keeps_valid_core_bridge_and_fdb_snapshot() -> None:
+    from netctl.snmp.oids import IF_HIGH_SPEED
+
+    transport = _dgs_fixture_transport()
+    transport.results[IF_HIGH_SPEED] = CapabilityResult(
+        "if_high_speed", SnmpOutcome.TIMEOUT
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert snapshot.ports
+    assert snapshot.fdb
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "fdb"
+    ).outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "if_high_speed"
+    ).outcome is SnmpOutcome.TIMEOUT
+
+
 def _tplink_fixture_transport() -> _PagedFixtureTransport:
     fixture = json.loads(_TPLINK_FIXTURE.read_text(encoding="utf-8"))
     return _PagedFixtureTransport(fixture["pages"])

@@ -272,7 +272,7 @@ async def collect_switch_snapshot(
     )
     capabilities.extend((*if_results, *ifx_results, bridge_result))
     required_failure = _required_group_failure(
-        (*system_results, *if_results, *ifx_results, bridge_result)
+        (*system_results, *if_results, bridge_result)
     )
     try:
         bridge_to_ifindex = parse_bridge_port_map(bridge_result.rows)

@@ -10,6 +10,7 @@ from .profiles import PortProfile
 
 
 _SUCCESS = {SnmpOutcome.SUCCESS_WITH_ROWS, SnmpOutcome.SUCCESS_EMPTY}
+_COMPATIBLE_INTEGRAL_TYPES = {"integer", "unsigned32", "gauge32"}
 
 
 def _rows(result: CapabilityResult) -> tuple[SnmpVarBind, ...]:
@@ -45,7 +46,7 @@ def _pvid(row: SnmpVarBind) -> tuple[int, int]:
     if not 1 <= bridge_port <= 65_535:
         raise ValueError("PVID OID index is invalid")
     if (
-        row.value_type != "integer"
+        row.value_type not in _COMPATIBLE_INTEGRAL_TYPES
         or isinstance(row.value, bool)
         or not isinstance(row.value, int)
         or not 1 <= row.value <= 4094
