@@ -6,55 +6,9 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  docs-fix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: feat/alt-or3p1-pilot-installer-readiness-20260721
-      - name: Restore exact dependency documentation
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("deploy/alt-linux/README.md")
-          text = path.read_text(encoding="utf-8")
-          old = (
-              "The public installer requires root before loading deployment logic. Before the\n"
-              "first runtime mutation, the installer validates all required commands and source\n"
-              "assets, the `altserver` account, Python and shell syntax, `tests/alt_linux`,\n"
-              "active jobs, Vault, controller permissions, SSH identity, static autoinstall\n"
-              "assets, the pending registration queue and processor inactivity.\n"
-          )
-          new = (
-              "The public installer requires root before loading deployment logic. Before the\n"
-              "first runtime mutation, the installer validates all required commands, including\n"
-              "`systemd-run` and `ssh-keyscan`, every source asset, the `altserver` account,\n"
-              "Python and shell syntax, `tests/alt_linux`, active jobs, Vault, controller\n"
-              "permissions, SSH identity, static autoinstall assets, the pending registration\n"
-              "queue and processor inactivity.\n"
-          )
-          if new in text:
-              raise SystemExit(0)
-          if old not in text:
-              raise SystemExit("expected OR-3P1 dependency paragraph not found")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
-          PY
-      - name: Commit documentation fix
-        run: |
-          git config user.name "OpenAI OR-3P1 automation"
-          git config user.email "actions@users.noreply.github.com"
-          if git diff --quiet; then
-            exit 0
-          fi
-          git add deploy/alt-linux/README.md
-          git diff --cached --check
-          git commit -m "docs: restore OR-3P1 dependency contract"
-          git push origin HEAD:feat/alt-or3p1-pilot-installer-readiness-20260721
-
   final-verification:
     runs-on: ubuntu-latest
     steps:
