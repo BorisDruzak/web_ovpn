@@ -44,7 +44,10 @@ def router_rows(**overrides):
 def inputs(role="directum", **overrides):
     values = {
         "definitions": {role: definition(role)},
-        "runtime": {"overall": "ok", "sections": {"openvpn": {"service_active": True}}},
+        "runtime": {
+            "overall": "ok",
+            "sections": {"openvpn": {"service_active": True, "server_network": "198.51.100.0/24"}},
+        },
         "collector": {"enabled": True, "active": True},
         "router_rows": router_rows(),
         "server_health": {
@@ -235,3 +238,57 @@ def test_load_path_config_rejects_unregistered_role(tmp_path):
 
     with pytest.raises(ValueError, match="registered"):
         load_path_config(path, {"directum"})
+
+
+def test_path_is_not_ok_when_openvpn_pool_evidence_is_absent():
+    from app.network_paths import evaluate_paths
+
+    result = evaluate_paths(**inputs(
+        definitions={"directum": full_definition()},
+        router_rows=all_evidence_rows(),
+        runtime={"overall": "ok", "sections": {"openvpn": {"service_active": True}}},
+    ))
+
+    assert result[0]["status"] == "critical"
+    assert check(result[0], "openvpn")["status"] == "critical"
+
+
+def test_source_less_route_does_not_match_configured_router():
+    from app.network_paths import evaluate_paths
+
+    row = router_rows()
+    row["routes"][0].pop("source")
+    result = evaluate_paths(**inputs(router_rows=row))
+
+    assert check(result[0], "return_route")["status"] == "critical"
+
+
+def test_source_less_address_list_does_not_match_configured_router():
+    from app.network_paths import evaluate_paths
+
+    row = all_evidence_rows()
+    row["address_lists"][0].pop("source")
+    result = evaluate_paths(**inputs(definitions={"directum": full_definition()}, router_rows=row))
+
+    assert check(result[0], "address_list:1")["status"] == "critical"
+
+
+def test_source_less_policy_does_not_match_configured_router():
+    from app.network_paths import evaluate_paths
+
+    row = all_evidence_rows()
+    row["firewall_rules"][0].pop("source")
+    result = evaluate_paths(**inputs(definitions={"directum": full_definition()}, router_rows=row))
+
+    assert check(result[0], "policy:1")["status"] == "critical"
+
+
+def test_malformed_router_row_collections_are_safe_and_not_ok():
+    from app.network_paths import evaluate_paths
+
+    result = evaluate_paths(**inputs(
+        definitions={"directum": full_definition()},
+        router_rows=router_rows(routes=1, address_lists="invalid", firewall_rules={"invalid": True}),
+    ))
+
+    assert result[0]["status"] != "ok"

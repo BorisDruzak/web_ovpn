@@ -168,7 +168,7 @@ def _openvpn_check(definition: PathDefinition, runtime: dict[str, Any]) -> dict[
     openvpn = _mapping(openvpn)
     active = openvpn.get("service_active") is True
     observed_pool = openvpn.get("server_network", openvpn.get("pool", openvpn.get("openvpn_pool")))
-    pool_matches = observed_pool is None or _same_address(observed_pool, definition.openvpn_pool)
+    pool_matches = observed_pool is not None and _same_address(observed_pool, definition.openvpn_pool)
     status = "ok" if active and pool_matches else "critical"
     observed = {"service_active": active}
     if observed_pool is not None:
@@ -272,7 +272,12 @@ def _matching_rows(rows: Any, source: str, matcher: dict[str, str]) -> list[dict
 
 def _has_stale_router_rows(rows: dict[str, Any], source: str, now: datetime) -> bool:
     for key in ("routes", "address_lists", "firewall_rules", "rules"):
-        for row in rows.get(key, []):
+        collection = rows.get(key)
+        if collection is None:
+            continue
+        if not isinstance(collection, list):
+            return True
+        for row in collection:
             if not isinstance(row, dict):
                 continue
             if row.get("source") is not None and _normal_optional(row.get("source")) != _normal_text(source):
@@ -285,7 +290,7 @@ def _has_stale_router_rows(rows: dict[str, Any], source: str, now: datetime) -> 
 
 def _row_matches(row: dict[str, Any], source: str, matcher: dict[str, str]) -> bool:
     row_source = row.get("source")
-    if row_source is not None and _normal_optional(row_source) != _normal_text(source):
+    if not isinstance(row_source, str) or _normal_optional(row_source) != _normal_text(source):
         return False
     for key, expected in matcher.items():
         actual = row.get(key)
