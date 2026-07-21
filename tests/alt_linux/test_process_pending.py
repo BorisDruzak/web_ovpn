@@ -8,6 +8,7 @@ from types import ModuleType
 
 import pytest
 
+from alt_deploy.config import Settings
 
 MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
 
@@ -41,9 +42,10 @@ def prepare_module(
 ):
     module = load_process_pending()
 
-    pending_dir = tmp_path / "pending"
-    ready_dir = tmp_path / "ready"
-    failed_dir = tmp_path / "failed"
+    registration = tmp_path / "registration"
+    pending_dir = registration / "pending"
+    ready_dir = registration / "ready"
+    failed_dir = registration / "failed"
 
     for directory in (
         pending_dir,
@@ -61,6 +63,35 @@ def prepare_module(
         encoding="utf-8",
     )
 
+    state = tmp_path / "state"
+    settings = Settings(
+        registration_root=registration,
+        state_root=state,
+        jobs_dir=state / "jobs",
+        assignments_dir=state / "assignments",
+        lock_file=state / "workstationctl.lock",
+        ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=known_hosts,
+        private_key_file=private_key,
+        ansible_playbook_path=Path(
+            "/usr/bin/ansible-playbook"
+        ),
+        systemd_run_path=Path("/usr/bin/systemd-run"),
+        worker_path=Path(
+            "/usr/local/libexec/alt-provision-worker"
+        ),
+        job_stage_helper_path=tmp_path / "alt-job-stage",
+        workstationctl_path=Path(
+            "/usr/local/sbin/workstationctl"
+        ),
+    )
+
+    monkeypatch.setattr(
+        module,
+        "SETTINGS",
+        settings,
+        raising=False,
+    )
     monkeypatch.setattr(
         module,
         "PENDING_DIR",
@@ -322,14 +353,8 @@ def test_failed_automatic_preflight_moves_record_to_failed(
 
 
 def test_pending_processor_disables_system_ssh_proxy() -> None:
-    from pathlib import Path
-
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "deploy"
-        / "alt-linux"
-        / "api"
-        / "process_pending.py"
-    ).read_text(encoding="utf-8")
+    source = PROCESS_PENDING_PATH.read_text(
+        encoding="utf-8"
+    )
 
     assert "-o ProxyCommand=none " in source
