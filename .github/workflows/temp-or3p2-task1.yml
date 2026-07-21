@@ -1,4 +1,4 @@
-name: Temporary OR-3P2 Task 1
+name: Temporary OR-3P2 Verification
 
 on:
   pull_request:
@@ -19,11 +19,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
-      - name: Focused registration record contracts
+      - name: Registration record contracts
         run: python -m pytest -q tests/alt_linux/test_registration_records.py
-      - name: Neighboring provisioning regression
-        run: >-
-          python -m pytest -q
-          tests/alt_linux/test_provision_preview.py
-          tests/alt_linux/test_provision_start.py
-          tests/alt_linux/test_registry_cli.py
+      - name: Archive repository contracts
+        run: python -m pytest -q tests/alt_linux/test_machine_archive_repository.py
