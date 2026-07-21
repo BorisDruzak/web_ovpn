@@ -19,12 +19,12 @@ def test_sudoers_runs_netctl_as_dedicated_user_not_root():
     assert "openvpn-web ALL=(root) NOPASSWD: /usr/local/sbin/netctl *" not in sudoers
 
 
-def test_installer_creates_netctl_user_and_locks_permissions():
+def test_installer_creates_netctl_user_without_changing_operational_config():
     installer = (ROOT / "deploy" / "install-openvpn-web.sh").read_text(encoding="utf-8")
 
     assert "useradd --system --home /var/lib/netctl --shell /usr/sbin/nologin --gid netctl netctl" in installer
     assert "groupadd --system netctl" in installer
-    assert "chown -R netctl:netctl /var/lib/netctl" in installer
-    assert "chown root:netctl /etc/netctl/secrets.env" in installer
-    assert "chmod 0640 /etc/netctl/secrets.env" in installer
+    assert "chown -R netctl:netctl /var/lib/netctl" not in installer
+    assert "chown root:netctl /etc/netctl/secrets.env" not in installer
+    assert "chmod 0640 /etc/netctl/secrets.env" not in installer
     assert "NETCTL_SUDO_USER=netctl" in installer

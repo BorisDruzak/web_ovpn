@@ -72,6 +72,11 @@ data, or change RouterOS. Each of those actions requires separate, explicit
 operator approval and must be performed under the appropriate maintenance and
 network-change procedure.
 
+The generic installer does not create, replace, or configure `/etc/netctl`
+RouterOS source files or secrets. An approved operator must provision any
+source YAML, credentials, and timer activation manually; an existing
+operational `/etc/netctl` configuration is left untouched.
+
 ## Remote Verification
 
 After deployment:
@@ -79,7 +84,14 @@ After deployment:
 ```bash
 ssh ui-vpn-deploy "cd /opt/openvpn-web && .venv/bin/python -m pytest -q"
 ssh ui-vpn-deploy "systemctl is-active openvpn-web && systemctl is-active openvpn-server@server"
-ssh ui-vpn-deploy "systemctl is-active netctl-collect.timer"
+```
+
+The default safe installation leaves `netctl-collect.timer` inactive and not
+configured. Do not treat an inactive timer as a deployment failure. Check that
+it is active or enabled only after a separately approved timer activation:
+
+```bash
+ssh ui-vpn-deploy "systemctl is-active netctl-collect.timer && systemctl is-enabled netctl-collect.timer"
 ```
 
 Useful live checks:
@@ -862,13 +874,14 @@ reopening a partially restored namespace by hand.
 The installer creates:
 
 - `/usr/local/sbin/netctl`
-- `/etc/netctl/sources.d/mikrotik-main.yaml`
-- `/etc/netctl/sources.d/mikrotik-hex.yaml`
-- `/etc/netctl/secrets.env`
-- `/var/lib/netctl/netctl.sqlite`
 - `netctl-collect.service`
 - `netctl-collect.timer`
 - Linux service user `netctl`; any separately approved collection runs as this user, not root.
+
+The generic installer does not generate RouterOS source YAML, secrets, or a
+collector database. Provision those operational files manually only after the
+required network-change approval; it preserves any existing `/etc/netctl`
+configuration.
 
 Before the first real collection, configure a read-only RouterOS API user and put its password into `/etc/netctl/secrets.env`:
 

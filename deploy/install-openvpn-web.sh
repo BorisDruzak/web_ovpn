@@ -62,59 +62,6 @@ sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
 sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
-sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
-sudo_cmd chmod 0755 /etc/netctl /etc/netctl/sources.d
-sudo_cmd chown -R netctl:netctl /var/lib/netctl
-sudo_cmd chmod 0750 /var/lib/netctl
-if [[ ! -f /etc/netctl/sources.d/mikrotik-main.yaml ]]; then
-  TMP_SOURCE="$(mktemp)"
-  cat > "$TMP_SOURCE" <<'SOURCE_FILE'
-name: mikrotik-main
-driver: mikrotik_api
-host: 192.168.100.250
-port: 8729
-tls: true
-verify_tls: false
-username: netobserver
-secret_ref: mikrotik-main
-site: main
-role: core-router
-enabled: true
-SOURCE_FILE
-  sudo_cmd install -m 0644 -o root -g root "$TMP_SOURCE" /etc/netctl/sources.d/mikrotik-main.yaml
-  rm -f "$TMP_SOURCE"
-fi
-if [[ ! -f /etc/netctl/sources.d/mikrotik-hex.yaml ]]; then
-  TMP_SOURCE="$(mktemp)"
-  cat > "$TMP_SOURCE" <<'SOURCE_FILE'
-name: mikrotik-hex
-driver: mikrotik_ssh
-host: 192.168.99.1
-port: 22
-tls: false
-verify_tls: false
-username: asmr_admin
-secret_ref: mikrotik-hex
-site: m-arhiv
-role: edge-router
-ssh_identity_file: /var/lib/netctl/.ssh/m_arhiv_hex_rsa
-ssh_connect_timeout: 12
-enabled: true
-SOURCE_FILE
-  sudo_cmd install -m 0644 -o root -g root "$TMP_SOURCE" /etc/netctl/sources.d/mikrotik-hex.yaml
-  rm -f "$TMP_SOURCE"
-fi
-if [[ ! -f /etc/netctl/secrets.env ]]; then
-  TMP_SECRETS="$(mktemp)"
-  cat > "$TMP_SECRETS" <<'SECRETS_FILE'
-# Add the MikroTik read-only API password here:
-# NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='strong-password'
-SECRETS_FILE
-  sudo_cmd install -m 0640 -o root -g netctl "$TMP_SECRETS" /etc/netctl/secrets.env
-  rm -f "$TMP_SECRETS"
-fi
-sudo_cmd chown root:netctl /etc/netctl/secrets.env
-sudo_cmd chmod 0640 /etc/netctl/secrets.env
 sudo_cmd mkdir -p /etc/openvpn/client-generator/output
 sudo_cmd chgrp openvpn-web /etc/openvpn/client-generator/output
 sudo_cmd chmod 0750 /etc/openvpn/client-generator/output
