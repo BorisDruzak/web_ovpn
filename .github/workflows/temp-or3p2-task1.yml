@@ -1,9 +1,9 @@
 name: Temporary OR-3P2 Task 1
 
 on:
-  push:
+  pull_request:
     branches:
-      - feat/alt-or3p2-machine-registry-lifecycle-20260721
+      - main
   workflow_dispatch:
 
 permissions:
