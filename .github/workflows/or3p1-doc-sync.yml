@@ -1,0 +1,187 @@
+name: OR-3P1 documentation sync
+
+on:
+  push:
+    branches:
+      - feat/alt-or3p1-pilot-installer-readiness-20260721
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.event.head_commit.message == 'ci: sync OR-3P1 docs'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/alt-or3p1-pilot-installer-readiness-20260721
+      - name: Apply exact documentation updates
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: Path, old: str, new: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"required documentation fragment missing: {path}: {old[:80]!r}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          readme = Path("deploy/alt-linux/README.md")
+          replace_exact(
+              readme,
+              "- [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)\n",
+              "- [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)\n"
+              "- [OR-3P1 pilot rollout](../../docs/ALT_OR3P1_PILOT_ROLLOUT.md)\n",
+          )
+          replace_exact(
+              readme,
+              "Before changing runtime files, the installer verifies `python3`,\n"
+              "`ansible-playbook`, `ansible-vault`, `systemd-run`, `install`, `cp`, `ssh`,\n"
+              "`ssh-keyscan` and `mkpasswd`. It then requires root and the `altserver` service\n"
+              "account.\n",
+              "The public installer requires root before loading deployment logic. Before the\n"
+              "first runtime mutation, the installer validates all required commands and source\n"
+              "assets, the `altserver` account, Python and shell syntax, `tests/alt_linux`,\n"
+              "active jobs, Vault, controller permissions, SSH identity, static autoinstall\n"
+              "assets, the pending registration queue and processor inactivity.\n",
+          )
+          replace_exact(
+              readme,
+              "The installer:\n\n"
+              "- installs `workstationctl`, the asynchronous provision worker and the internal\n"
+              "  stage helper;\n"
+              "- installs the Ansible project without copying an active Vault;\n"
+              "- prepares private job and assignment directories;\n"
+              "- installs the pending-registration processor;\n"
+              "- runs `tests/alt_linux`;\n"
+              "- syntax-checks `01-preflight.yml` and `02-provision-account.yml`;\n"
+              "- restarts `alt-deploy-process.path` only after verification succeeds.\n\n"
+              "It does not copy `.ansible-vault-pass` or create an active `vault.yml`.\n",
+              "The installer:\n\n"
+              "- blocks before mutation when a provision job is active, a real job is malformed,\n"
+              "  the pending registration queue is non-empty, Vault or permissions are\n"
+              "  unhealthy, SSH/static prerequisites are unsafe, or the processor is active;\n"
+              "- installs `workstationctl`, the provision worker, the stage helper, both API\n"
+              "  programs, all four systemd units, the served bootstrap script and the Ansible\n"
+              "  project;\n"
+              "- preserves active Vault files, SSH identity, the active authorized key, ISO\n"
+              "  metadata archives, jobs, assignments and registration records;\n"
+              "- stops only the path watcher, registration API and static HTTP service during\n"
+              "  the maintenance window;\n"
+              "- performs `daemon-reload`, enables the three long-lived units and prints success\n"
+              "  only after `controller readiness` passes.\n\n"
+              "OR-3P1 has no automatic rollback. Complete and verify OR-3P3 backup/restore before\n"
+              "running this installer on `192.168.100.17`.\n",
+          )
+          replace_exact(
+              readme,
+              "sudo -u altserver workstationctl --json controller permissions\n",
+              "sudo -u altserver workstationctl --json controller permissions\n"
+              "sudo -u altserver workstationctl --json jobs active\n"
+              "sudo -u altserver workstationctl --json controller readiness\n",
+          )
+          replace_exact(
+              readme,
+              "├── api/process_pending.py\n",
+              "├── api/\n"
+              "│   ├── register_api.py\n"
+              "│   └── process_pending.py\n",
+          )
+          replace_exact(
+              readme,
+              "│       ├── controller_permissions.py\n",
+              "│       ├── controller_permissions.py\n"
+              "│       ├── controller_readiness.py\n",
+          )
+          replace_exact(
+              readme,
+              "├── install-control-plane.sh\n",
+              "├── install-control-plane.sh\n"
+              "├── install-control-plane-lib.sh\n",
+          )
+          replace_exact(
+              readme,
+              "  deploy/alt-linux/api/process_pending.py \\\n  deploy/alt-linux/control/alt-job-stage\n",
+              "  deploy/alt-linux/api/register_api.py \\\n  deploy/alt-linux/api/process_pending.py \\\n  deploy/alt-linux/control/alt-job-stage\n",
+          )
+          replace_exact(
+              readme,
+              "bash -n deploy/alt-linux/install-control-plane.sh\n",
+              "bash -n deploy/alt-linux/install-control-plane.sh\n"
+              "bash -n deploy/alt-linux/install-control-plane-lib.sh\n",
+          )
+
+          context = Path("docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md")
+          context_marker = (
+              "This document is the operational source of truth for the ALT Workstation\n"
+              "provisioning control plane. Historical design and implementation-plan documents\n"
+              "remain useful for intent, but this file takes precedence when they differ.\n\n"
+          )
+          context_section = context_marker + (
+              "## OR-3P1 pilot readiness — repository state\n\n"
+              "OR-3P1 is implemented in PR #21 but has not been applied to the live controller.\n"
+              "It adds `jobs active`, the local read-only `controller readiness` gate, complete\n"
+              "installation of both API programs and all systemd units, pre-mutation active-job\n"
+              "and pending-registration blocks, and synthetic installer preservation tests.\n\n"
+              "The readiness gate uses only controller-local filesystem, systemd, loopback HTTP,\n"
+              "Vault/permission sources of truth and installed Ansible syntax checks. It never\n"
+              "contacts a workstation. A failure is `controller_not_ready` with exit code `11`.\n\n"
+              "OR-3P3 backup/restore is mandatory before live rollout. OR-3P2 machine archive and\n"
+              "re-registration remains a separate workflow. See\n"
+              "`docs/ALT_OR3P1_PILOT_ROLLOUT.md`.\n\n"
+          )
+          replace_exact(context, context_marker, context_section)
+          replace_exact(
+              context,
+              "/opt/alt-deploy-api/process_pending.py\n",
+              "/opt/alt-deploy-api/register_api.py\n"
+              "/opt/alt-deploy-api/process_pending.py\n",
+          )
+
+          next_steps = Path("docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md")
+          roadmap_marker = (
+              "The current MVP is operational. Do not redesign or replace the verified CLI,\n"
+              "job, assignment, Vault, structured-stage or Ansible boundaries without a\n"
+              "specific failing requirement and regression coverage.\n\n"
+          )
+          roadmap_section = roadmap_marker + (
+              "## Pilot-first execution order\n\n"
+              "Approved order:\n\n"
+              "```text\n"
+              "OR-3P1 installer completeness and local readiness — implemented in PR #21\n"
+              "OR-3P2 machine archive/removal preview and register-only re-registration\n"
+              "OR-3P3 coordinated backup/restore runbook\n"
+              "OR-3P4 controlled rollout on 192.168.100.17\n"
+              "OR-3P5 second disposable VM acceptance\n"
+              "OR-3P6 limited one-machine-at-a-time pilot\n"
+              "OR-3A transactional installer and automatic rollback\n"
+              "OR-3B complete failure/idempotency/conflict matrix\n"
+              "```\n\n"
+              "Do not apply OR-3P1 to the live controller until OR-3P3 is approved. The accepted\n"
+              "reference machine remains immutable.\n\n"
+          )
+          replace_exact(next_steps, roadmap_marker, roadmap_section)
+          replace_exact(
+              next_steps,
+              "11. Do not install Phase 2.3 into the controller runtime or delete old job state without separate approval.\n",
+              "11. Do not apply OR-3P1 to the live controller or delete old job state until the OR-3P3 backup/restore gate is approved.\n",
+          )
+          replace_exact(
+              next_steps,
+              "### 2.3.1 Controlled runtime rollout\n\nStatus: not started; requires explicit approval.\n",
+              "### 2.3.1 Controlled runtime rollout\n\n"
+              "Status: OR-3P1 repository implementation is complete in PR #21; live rollout is\n"
+              "blocked by OR-3P3 backup/restore and remains an explicitly approved operation.\n",
+          )
+          PY
+      - name: Commit documentation
+        run: |
+          git config user.name "OpenAI OR-3P1 automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add deploy/alt-linux/README.md \
+            docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md \
+            docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md
+          git diff --cached --check
+          git commit -m "docs: synchronize OR-3P1 pilot readiness"
+          git push origin HEAD:feat/alt-or3p1-pilot-installer-readiness-20260721
