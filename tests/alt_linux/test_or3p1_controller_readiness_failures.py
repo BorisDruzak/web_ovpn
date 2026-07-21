@@ -63,12 +63,14 @@ def test_controller_readiness_reports_each_failed_boundary_exactly(
     monkeypatch.setattr(
         ControllerReadinessChecker,
         "registration_health_ok",
-        lambda: failed_check != "registration_api_health",
+        staticmethod(
+            lambda: failed_check != "registration_api_health"
+        ),
     )
     monkeypatch.setattr(
         ControllerReadinessChecker,
         "static_http_ok",
-        lambda: failed_check != "static_http_health",
+        staticmethod(lambda: failed_check != "static_http_health"),
     )
     monkeypatch.setattr(
         ControllerReadinessChecker,
@@ -172,12 +174,12 @@ def test_controller_readiness_redacts_source_error_text(
     monkeypatch.setattr(
         ControllerReadinessChecker,
         "registration_health_ok",
-        lambda: True,
+        staticmethod(lambda: True),
     )
     monkeypatch.setattr(
         ControllerReadinessChecker,
         "static_http_ok",
-        lambda: True,
+        staticmethod(lambda: True),
     )
     monkeypatch.setattr(
         ControllerReadinessChecker,
