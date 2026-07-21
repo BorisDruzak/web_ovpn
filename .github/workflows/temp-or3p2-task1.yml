@@ -19,7 +19,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
-      - name: Archive foundation
+      - name: Archive and CLI foundation
         run: >-
           python -m pytest -q
           tests/alt_linux/test_registration_records.py
@@ -27,5 +27,8 @@ jobs:
           tests/alt_linux/test_machine_lifecycle.py
           tests/alt_linux/test_machine_registry_generations.py
           tests/alt_linux/test_machine_archive_service.py
-      - name: Archive CLI contracts
-        run: python -m pytest -q tests/alt_linux/test_machine_archive_cli.py
+          tests/alt_linux/test_machine_archive_cli.py
+      - name: Registration admission contracts
+        run: python -m pytest -q tests/alt_linux/test_registration_admission.py
+      - name: Registration API contracts
+        run: python -m pytest -q tests/alt_linux/test_register_api.py
