@@ -890,7 +890,7 @@ ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S install -m 0640 -o 
 ssh ui-vpn-deploy "printf '%s\n' '<sudo-password>' | sudo -S sh -c 'printf %s\\n \"NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='\"'\"'STRONG_PASSWORD'\"'\"'\" > /etc/netctl/secrets.env'"
 ```
 
-For the remote m-arhiv hEX, `netctl` uses SSH because that router is RouterOS 6 and may not expose API to the OpenVPN host. The installer creates `/etc/netctl/sources.d/mikrotik-hex.yaml`; the required private key is `/var/lib/netctl/.ssh/m_arhiv_hex_rsa`, owned by `netctl` with mode `0600`.
+For the remote m-arhiv hEX, `netctl` uses SSH because that router is RouterOS 6 and may not expose API to the OpenVPN host. An approved operator must provision `/etc/netctl/sources.d/mikrotik-hex.yaml`; the required private key is `/var/lib/netctl/.ssh/m_arhiv_hex_rsa`, owned by `netctl` with mode `0600`.
 
 Recommended RouterOS configuration:
 
