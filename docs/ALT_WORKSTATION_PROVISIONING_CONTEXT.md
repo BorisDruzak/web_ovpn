@@ -16,6 +16,21 @@ This document is the operational source of truth for the ALT Workstation
 provisioning control plane. Historical design and implementation-plan documents
 remain useful for intent, but this file takes precedence when they differ.
 
+## OR-3P1 pilot readiness — repository state
+
+OR-3P1 is implemented in PR #21 but has not been applied to the live controller.
+It adds `jobs active`, the local read-only `controller readiness` gate, complete
+installation of both API programs and all systemd units, pre-mutation active-job
+and pending-registration blocks, and synthetic installer preservation tests.
+
+The readiness gate uses only controller-local filesystem, systemd, loopback HTTP,
+Vault/permission sources of truth and installed Ansible syntax checks. It never
+contacts a workstation. A failure is `controller_not_ready` with exit code `11`.
+
+OR-3P3 backup/restore is mandatory before live rollout. OR-3P2 machine archive and
+re-registration remains a separate workflow. See
+`docs/ALT_OR3P1_PILOT_ROLLOUT.md`.
+
 ## 1. Purpose and verified result
 
 The control plane takes an ALT Workstation K 11.2 computer through:
@@ -67,6 +82,7 @@ Important runtime paths:
 /usr/local/libexec/alt-provision-worker
 /usr/local/libexec/alt-job-stage
 /opt/alt-deploy-control/alt_deploy/
+/opt/alt-deploy-api/register_api.py
 /opt/alt-deploy-api/process_pending.py
 /home/altserver/ansible/
 /home/altserver/ansible/group_vars/vault.yml
