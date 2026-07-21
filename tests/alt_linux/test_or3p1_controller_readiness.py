@@ -94,7 +94,7 @@ def test_controller_readiness_returns_exact_healthy_contract(
         lambda self: {"status": "ok"},
     )
 
-    def fake_run(command, *, timeout=30, env=None):
+    def fake_run(command, *, timeout=30, env=None, cwd=None):
         command = [str(item) for item in command]
         if command[:2] == ["systemctl", "show"]:
             unit = command[2]
