@@ -1,4 +1,4 @@
-name: Temporary OR-3P2 Verification
+name: Temporary OR-3P2 Final Verification
 
 on:
   pull_request:
@@ -10,41 +10,113 @@ permissions:
   contents: read
 
 jobs:
-  focused:
+  verification:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
-      - name: Functional foundation and archive root safety
-        run: >-
-          python -m pytest -q
-          tests/alt_linux/test_registration_records.py
-          tests/alt_linux/test_machine_archive_repository.py
-          tests/alt_linux/test_machine_lifecycle.py
-          tests/alt_linux/test_machine_registry_generations.py
-          tests/alt_linux/test_machine_archive_service.py
-          tests/alt_linux/test_machine_archive_cli.py
-          tests/alt_linux/test_registration_admission.py
-          tests/alt_linux/test_register_api.py
-          tests/alt_linux/test_process_pending.py
-          tests/alt_linux/test_process_pending_lifecycle.py
-          tests/alt_linux/test_alt_bootstrap_register.py
-          tests/alt_linux/test_bootstrap_register_integration.py
-          tests/alt_linux/test_machine_archive_root_safety.py
-      - name: Helper publication and archive preservation
-        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installer_publishes_helper_and_preserves_archives
-      - name: Private roots and lock
-        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installer_creates_private_archive_roots_and_lock
-      - name: Source declarations
-        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installer_source_validates_and_publishes_helper
-      - name: Unit sandbox declarations
-        run: python -m pytest -q tests/alt_linux/test_or3p2_installer_runtime.py::test_installed_units_allow_only_required_lifecycle_roots
-      - name: Readiness contracts
-        run: >-
-          python -m pytest -q
-          tests/alt_linux/test_or3p1_controller_readiness.py
-          tests/alt_linux/test_or3p1_controller_readiness_failures.py
+      - name: Install Ansible for syntax checks
+        run: python -m pip install ansible-core
+      - name: Focused OR-3P2 contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q \
+            tests/alt_linux/test_registration_records.py \
+            tests/alt_linux/test_machine_archive_repository.py \
+            tests/alt_linux/test_machine_archive_root_safety.py \
+            tests/alt_linux/test_machine_lifecycle.py \
+            tests/alt_linux/test_machine_registry_generations.py \
+            tests/alt_linux/test_machine_archive_service.py \
+            tests/alt_linux/test_machine_archive_cli.py \
+            tests/alt_linux/test_registration_admission.py \
+            tests/alt_linux/test_register_api.py \
+            tests/alt_linux/test_process_pending.py \
+            tests/alt_linux/test_process_pending_lifecycle.py \
+            tests/alt_linux/test_alt_bootstrap_register.py \
+            tests/alt_linux/test_bootstrap_register_integration.py \
+            tests/alt_linux/test_or3p2_installer_runtime.py \
+            tests/alt_linux/test_or3p1_controller_readiness.py \
+            tests/alt_linux/test_or3p1_controller_readiness_failures.py \
+            tests/alt_linux/test_or3p1_installer.py \
+            tests/alt_linux/test_installer_registration_permissions.py \
+            2>&1 | tee /tmp/or3p2-focused.txt
+      - name: Complete ALT Linux suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q tests/alt_linux \
+            2>&1 | tee /tmp/or3p2-alt-suite.txt
+      - name: Complete repository suite
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q \
+            2>&1 | tee /tmp/or3p2-full-suite.txt
+      - name: Python compilation
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 -m py_compile \
+            deploy/alt-linux/control/alt_deploy/*.py \
+            deploy/alt-linux/api/register_api.py \
+            deploy/alt-linux/api/process_pending.py \
+            deploy/alt-linux/control/alt-job-stage \
+            2>&1 | tee /tmp/or3p2-pycompile.txt
+      - name: Bash syntax
+        shell: bash
+        run: |
+          set -o pipefail
+          bash -n deploy/alt-linux/install-control-plane.sh
+          bash -n deploy/alt-linux/install-control-plane-lib.sh
+          bash -n deploy/alt-linux/bootstrap/bootstrap.sh
+          bash -n deploy/alt-linux/bootstrap/alt-bootstrap-register
+          printf 'Bash syntax: PASS\n' | tee /tmp/or3p2-bash.txt
+      - name: Ansible syntax
+        shell: bash
+        run: |
+          set -o pipefail
+          cp deploy/alt-linux/ansible/group_vars/vault.yml.example \
+            deploy/alt-linux/ansible/group_vars/vault.yml
+          (
+            cd deploy/alt-linux/ansible
+            ANSIBLE_CONFIG=ansible.cfg \
+              ansible-playbook --syntax-check playbooks/01-preflight.yml
+            ANSIBLE_CONFIG=ansible.cfg \
+              ansible-playbook --syntax-check playbooks/02-provision-account.yml
+          ) 2>&1 | tee /tmp/or3p2-ansible.txt
+          rm -f deploy/alt-linux/ansible/group_vars/vault.yml
+      - name: Diff and clean-tree checks
+        shell: bash
+        run: |
+          set -o pipefail
+          git diff --check origin/main...HEAD \
+            2>&1 | tee /tmp/or3p2-diff-check.txt
+          test -z "$(git status --short)"
+          printf 'Diff check: PASS\nClean tree: PASS\n' \
+            | tee -a /tmp/or3p2-diff-check.txt
+      - name: Capture verification metadata
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf 'head_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'merge_base=%s\n' "$(git merge-base origin/main HEAD)"
+            printf 'ref=%s\n' "$GITHUB_REF"
+            printf 'run_id=%s\n' "$GITHUB_RUN_ID"
+          } > /tmp/or3p2-metadata.txt
+          mkdir -p /tmp/or3p2-verification
+          cp /tmp/or3p2-*.txt /tmp/or3p2-verification/ 2>/dev/null || true
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: or3p2-verification-${{ github.run_id }}
+          path: /tmp/or3p2-verification
+          if-no-files-found: error
