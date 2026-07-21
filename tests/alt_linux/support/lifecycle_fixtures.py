@@ -24,7 +24,7 @@ def registration_payload(
     machine_uuid: str = TEST_MACHINE_UUID,
     machine_key: str | None = None,
     mac: str = TEST_MACHINE_MAC,
-    ip: str = "192.0.2.56",
+    ip: str = "192.168.101.56",
     registration_id: str | None = TEST_REGISTRATION_ID,
     status: str = "pending",
     registered_at: str = "2026-07-21T12:00:00+00:00",
