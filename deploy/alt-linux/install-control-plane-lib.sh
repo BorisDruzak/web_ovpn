@@ -422,18 +422,33 @@ run_installed_readiness() {
     fi
 }
 
+run_post_maintenance_step() {
+    local phase=$1
+    shift
+
+    if (
+        set -Eeuo pipefail
+        "$@"
+    ); then
+        return 0
+    fi
+
+    echo "ALT control-plane installation failed during ${phase}; restore the OR-3P3 backup before retrying" >&2
+    return 1
+}
+
 install_control_plane_main() {
     local root_prefix=$1
 
     install_control_plane_prechecks "${root_prefix}"
-    enter_control_plane_maintenance
-    install_controller_package "${root_prefix}"
-    ensure_private_state_directories "${root_prefix}"
-    install_ansible_project "${root_prefix}"
-    install_registration_runtime "${root_prefix}"
-    install_systemd_units "${root_prefix}"
-    activate_control_plane
-    run_installed_readiness "${root_prefix}"
+    run_post_maintenance_step maintenance enter_control_plane_maintenance
+    run_post_maintenance_step controller_package install_controller_package "${root_prefix}"
+    run_post_maintenance_step private_state ensure_private_state_directories "${root_prefix}"
+    run_post_maintenance_step ansible_project install_ansible_project "${root_prefix}"
+    run_post_maintenance_step registration_runtime install_registration_runtime "${root_prefix}"
+    run_post_maintenance_step systemd_units install_systemd_units "${root_prefix}"
+    run_post_maintenance_step activation activate_control_plane
+    run_post_maintenance_step readiness run_installed_readiness "${root_prefix}"
 
     echo "ALT deployment control plane installed successfully"
 }
