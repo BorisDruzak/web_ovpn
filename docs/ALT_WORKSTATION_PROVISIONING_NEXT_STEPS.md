@@ -633,3 +633,18 @@ The system is ready for a controlled multi-machine rollout only when:
 - operational alerts exist for failed jobs and controller services;
 - documentation does not present SDDM, dotted logins or coarse stages as current;
 - rollback and recovery procedures are repeatable and documented.
+
+## Updated pilot sequence after OR-3P2
+
+```text
+OR-3P1 merged: installer completeness and local readiness
+OR-3P2 repository-verified: archive/removal and register-only re-registration
+OR-3P3 next mandatory step: controller backup/restore and restore test
+OR-3P4 blocked: controlled rollout on 192.168.100.17
+OR-3P5 blocked: second disposable VM acceptance
+OR-3P6 blocked: limited pilot
+```
+
+Do not install OR-3P2 before OR-3P3. Do not use `192.168.101.111` for
+destructive or repeat acceptance. The next target must be new, disposable
+and unassigned.

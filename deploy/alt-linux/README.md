@@ -467,3 +467,14 @@ ai curl=http://192.168.100.17:8087/metadata/
 
 The current profile clears the first detected disk. Use a disposable target
 with one disk until disk-selection hardening is complete.
+
+## OR-3P2 machine registry lifecycle
+
+OR-3P2 adds audited registration archival, exact registration generations,
+lifecycle admission checks, stale pending-result suppression and the local
+`alt-bootstrap-register` command. See
+[the OR-3P2 operator runbook](../../docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md).
+
+OR-3P2 is repository-verified but not installed on `192.168.100.17`.
+Complete and restore-test OR-3P3 before running the updated installer.
+Do not use reference workstation `192.168.101.111` for acceptance.
