@@ -9,6 +9,7 @@ Authoritative documentation:
 - [Verified implementation context](../../docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md)
 - [Remaining work and acceptance roadmap](../../docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md)
 - [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)
+- [OR-3P1 pilot rollout](../../docs/ALT_OR3P1_PILOT_ROLLOUT.md)
 
 ## Architecture
 
@@ -34,10 +35,12 @@ Required controller facilities:
 - systemd and OpenSSH client tools;
 - `mkpasswd` for initial password-hash preparation.
 
-Before changing runtime files, the installer verifies `python3`,
-`ansible-playbook`, `ansible-vault`, `systemd-run`, `install`, `cp`, `ssh`,
-`ssh-keyscan` and `mkpasswd`. It then requires root and the `altserver` service
-account.
+The public installer requires root before loading deployment logic. Before the
+first runtime mutation, the installer validates all required commands, including
+`systemd-run` and `ssh-keyscan`, every source asset, the `altserver` account,
+Python and shell syntax, `tests/alt_linux`, active jobs, Vault, controller
+permissions, SSH identity, static autoinstall assets, the pending registration
+queue and processor inactivity.
 
 ## Install or update the controller
 
@@ -47,16 +50,21 @@ sudo bash deploy/alt-linux/install-control-plane.sh
 
 The installer:
 
-- installs `workstationctl`, the asynchronous provision worker and the internal
-  stage helper;
-- installs the Ansible project without copying an active Vault;
-- prepares private job and assignment directories;
-- installs the pending-registration processor;
-- runs `tests/alt_linux`;
-- syntax-checks `01-preflight.yml` and `02-provision-account.yml`;
-- restarts `alt-deploy-process.path` only after verification succeeds.
+- blocks before mutation when a provision job is active, a real job is malformed,
+  the pending registration queue is non-empty, Vault or permissions are
+  unhealthy, SSH/static prerequisites are unsafe, or the processor is active;
+- installs `workstationctl`, the provision worker, the stage helper, both API
+  programs, all four systemd units, the served bootstrap script and the Ansible
+  project;
+- preserves active Vault files, SSH identity, the active authorized key, ISO
+  metadata archives, jobs, assignments and registration records;
+- stops only the path watcher, registration API and static HTTP service during
+  the maintenance window;
+- performs `daemon-reload`, enables the three long-lived units and prints success
+  only after `controller readiness` passes.
 
-It does not copy `.ansible-vault-pass` or create an active `vault.yml`.
+OR-3P1 has no automatic rollback. Complete and verify OR-3P3 backup/restore before
+running this installer on `192.168.100.17`.
 
 ## Vault setup and validation
 
@@ -144,6 +152,8 @@ Read-only audit:
 
 ```bash
 sudo -u altserver workstationctl --json controller permissions
+sudo -u altserver workstationctl --json jobs active
+sudo -u altserver workstationctl --json controller readiness
 ```
 
 An unhealthy audit returns `error.code=controller_permissions_unhealthy` with
@@ -395,19 +405,23 @@ deploy/alt-linux/
 │       ├── local_employee/
 │       ├── lightdm_accounts/
 │       └── provision_verify/
-├── api/process_pending.py
+├── api/
+│   ├── register_api.py
+│   └── process_pending.py
 ├── control/
 │   ├── alt-job-stage
 │   ├── alt-provision-worker
 │   ├── workstationctl
 │   └── alt_deploy/
 │       ├── controller_permissions.py
+│       ├── controller_readiness.py
 │       ├── job_reconcile.py
 │       ├── job_retention.py
 │       ├── job_stage_helper.py
 │       ├── job_stages.py
 │       └── vault.py
 ├── install-control-plane.sh
+├── install-control-plane-lib.sh
 ├── autoinstall/
 ├── bootstrap/
 ├── ssh/
@@ -424,10 +438,12 @@ require `/etc/openvpn/vpnctl.env`.
 
 python3 -m py_compile \
   deploy/alt-linux/control/alt_deploy/*.py \
+  deploy/alt-linux/api/register_api.py \
   deploy/alt-linux/api/process_pending.py \
   deploy/alt-linux/control/alt-job-stage
 
 bash -n deploy/alt-linux/install-control-plane.sh
+bash -n deploy/alt-linux/install-control-plane-lib.sh
 bash -n deploy/alt-linux/bootstrap/bootstrap.sh
 
 ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \

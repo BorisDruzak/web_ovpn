@@ -11,10 +11,11 @@ from typing import TextIO
 from .ansible import AnsibleController
 from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
+from .controller_readiness import ControllerReadinessChecker
 from .errors import ControlError
 from .job_reconcile import JobReconciler
 from .job_retention import JobRetentionManager
-from .jobs import JobRepository
+from .jobs import ACTIVE_STATES, JobRepository
 from .jsonio import read_json
 from .provision import (
     ProvisionPlanner,
@@ -80,6 +81,8 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
+    job_commands.add_parser("active")
+
     job_status = job_commands.add_parser("status")
     job_status.add_argument("job_id")
 
@@ -106,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="controller_command",
         required=True,
     )
+    controller_commands.add_parser("readiness")
     permissions = controller_commands.add_parser(
         "permissions"
     )
@@ -267,6 +271,33 @@ def main(
 
         elif (
             parsed.command == "jobs"
+            and parsed.job_command == "active"
+        ):
+            active_jobs = [
+                job
+                for job in JobRepository(
+                    active_settings
+                ).list()
+                if job.state in ACTIVE_STATES
+            ]
+
+            payload = {
+                "status": "ok",
+                "active_jobs": [
+                    {
+                        "job_id": job.job_id,
+                        "machine_uuid": job.machine_uuid,
+                        "state": job.state,
+                        "stage": job.stage,
+                        "created_at": job.created_at,
+                    }
+                    for job in active_jobs
+                ],
+                "count": len(active_jobs),
+            }
+
+        elif (
+            parsed.command == "jobs"
             and parsed.job_command == "status"
         ):
             job = JobRepository(
@@ -330,6 +361,17 @@ def main(
             payload = {
                 "status": "ok",
                 "vault": VaultHealthChecker(
+                    active_settings
+                ).check(),
+            }
+
+        elif (
+            parsed.command == "controller"
+            and parsed.controller_command == "readiness"
+        ):
+            payload = {
+                "status": "ok",
+                "controller_readiness": ControllerReadinessChecker(
                     active_settings
                 ).check(),
             }
