@@ -36,10 +36,11 @@ Required controller facilities:
 - `mkpasswd` for initial password-hash preparation.
 
 The public installer requires root before loading deployment logic. Before the
-first runtime mutation, the installer validates all required commands and source
-assets, the `altserver` account, Python and shell syntax, `tests/alt_linux`,
-active jobs, Vault, controller permissions, SSH identity, static autoinstall
-assets, the pending registration queue and processor inactivity.
+first runtime mutation, the installer validates all required commands, including
+`systemd-run` and `ssh-keyscan`, every source asset, the `altserver` account,
+Python and shell syntax, `tests/alt_linux`, active jobs, Vault, controller
+permissions, SSH identity, static autoinstall assets, the pending registration
+queue and processor inactivity.
 
 ## Install or update the controller
 
