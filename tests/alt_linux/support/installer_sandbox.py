@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ALT_ROOT = REPO_ROOT / "deploy" / "alt-linux"
+LIBRARY_PATH = ALT_ROOT / "install-control-plane-lib.sh"
+PUBLIC_INSTALLER = ALT_ROOT / "install-control-plane.sh"
+
+
+@dataclass
+class InstallerSandbox:
+    root: Path
+    fake_bin: Path
+    command_log: Path
+
+    @classmethod
+    def create(cls, tmp_path: Path) -> "InstallerSandbox":
+        sandbox = cls(
+            root=tmp_path / "controller-root",
+            fake_bin=tmp_path / "fake-bin",
+            command_log=tmp_path / "commands.jsonl",
+        )
+        sandbox.root.mkdir()
+        sandbox.fake_bin.mkdir()
+        sandbox._seed_runtime_state()
+        sandbox._install_fakes()
+        return sandbox
+
+    def destination(self, absolute_path: str) -> Path:
+        return self.root / absolute_path.lstrip("/")
+
+    def _write(self, absolute_path: str, content: str) -> Path:
+        path = self.destination(absolute_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def _seed_runtime_state(self) -> None:
+        files = {
+            "/home/altserver/ansible/group_vars/vault.yml": "$ANSIBLE_VAULT;1.1;AES256\nfixture\n",
+            "/home/altserver/.ansible-vault-pass": "fixture-pass\n",
+            "/home/altserver/.ssh/id_ed25519": "fixture-private-key\n",
+            "/home/altserver/.ssh/id_ed25519.pub": "fixture-public-key\n",
+            "/home/altserver/.ssh/known_hosts_autoinstall": "fixture-host-key\n",
+            "/srv/alt-deploy/bootstrap/ansible_authorized_keys": "ssh-ed25519 fixture\n",
+            "/srv/alt-deploy/metadata/autoinstall.scm": "fixture-autoinstall\n",
+            "/srv/alt-deploy/metadata/vm-profile.scm": "fixture-vm-profile\n",
+            "/srv/alt-deploy/metadata/pkg-groups.tar": "fixture-pkg-groups\n",
+            "/srv/alt-deploy/metadata/install-scripts.tar": "fixture-install-scripts\n",
+            "/var/lib/alt-deploy/jobs/job-20260721T120000Z-11111111/request.json": "{}\n",
+            "/var/lib/alt-deploy/jobs/job-20260721T120000Z-11111111/status.json": "{}\n",
+            "/var/lib/alt-deploy/jobs/job-20260721T120000Z-11111111/ansible.log": "fixture-log\n",
+            "/var/lib/alt-deploy/assignments/fixture.json": "{}\n",
+            "/srv/alt-deploy/registration/ready/fixture.json": "{}\n",
+            "/srv/alt-deploy/registration/failed/fixture.json": "{}\n",
+        }
+        for path, content in files.items():
+            self._write(path, content)
+        self.destination(
+            "/srv/alt-deploy/registration/pending"
+        ).mkdir(parents=True, exist_ok=True)
+        self.destination(
+            "/home/altserver/.ssh/id_ed25519"
+        ).chmod(0o600)
+
+    def _fake_script(self, name: str, body: str) -> None:
+        path = self.fake_bin / name
+        path.write_text(
+            "#!/bin/bash\nset -Eeuo pipefail\n"
+            "printf '%s\\n' "
+            "\"$(python3 -c 'import json,sys; "
+            "print(json.dumps(sys.argv[1:]))' "
+            f"{name} \"$@\")\" >> \"$INSTALLER_COMMAND_LOG\"\n"
+            + body,
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+
+    def _install_fakes(self) -> None:
+        self._fake_script(
+            "id",
+            "[[ ${1:-} == altserver ]] && exit 0\nexec /usr/bin/id \"$@\"\n",
+        )
+        self._fake_script(
+            "sudo",
+            "case \" $* \" in\n"
+            "  *\" jobs active \"*) printf '%s\\n' \"${INSTALLER_JOBS_JSON:-{\\\"status\\\":\\\"ok\\\",\\\"active_jobs\\\":[],\\\"count\\\":0}}\"; exit \"${INSTALLER_JOBS_RC:-0}\" ;;\n"
+            "  *\" vault check \"*) exit \"${INSTALLER_VAULT_RC:-0}\" ;;\n"
+            "  *\" controller permissions \"*) exit \"${INSTALLER_PERMISSIONS_RC:-0}\" ;;\n"
+            "  *\" controller readiness \"*) exit \"${INSTALLER_READINESS_RC:-0}\" ;;\n"
+            "esac\nexit 0\n",
+        )
+        self._fake_script(
+            "systemctl",
+            "if [[ ${1:-} == is-active && ${3:-} == alt-deploy-process.service ]]; then\n"
+            "  [[ ${INSTALLER_PROCESS_ACTIVE:-0} == 1 ]] && exit 0\n"
+            "  exit 3\n"
+            "fi\nexit 0\n",
+        )
+        self._fake_script(
+            "stat",
+            "if [[ ${INSTALLER_STAT_UNSAFE:-0} == 1 ]]; then\n"
+            "  printf '644 root root\\n'\n"
+            "else\n"
+            "  printf '600 altserver altserver\\n'\n"
+            "fi\n",
+        )
+        self._fake_script(
+            "python3",
+            "if [[ ${1:-} == -c ]]; then exec "
+            + sys.executable
+            + " \"$@\"; fi\nexit \"${INSTALLER_PYTHON_RC:-0}\"\n",
+        )
+        for name in (
+            "ansible-playbook",
+            "ansible-vault",
+            "systemd-run",
+            "install",
+            "cp",
+            "rm",
+            "chown",
+            "chmod",
+            "find",
+            "ssh",
+            "ssh-keyscan",
+            "mkpasswd",
+        ):
+            self._fake_script(name, "exit 0\n")
+
+    def environment(self, **overrides: str) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PATH": f"{self.fake_bin}:{environment['PATH']}",
+                "INSTALLER_COMMAND_LOG": str(self.command_log),
+                "INSTALLER_JOBS_JSON": json.dumps(
+                    {
+                        "status": "ok",
+                        "active_jobs": [],
+                        "count": 0,
+                    }
+                ),
+            }
+        )
+        environment.update(overrides)
+        return environment
+
+    def run_library(
+        self,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
+        command = (
+            "set -Eeuo pipefail; "
+            f"REPO_ROOT={json.dumps(str(REPO_ROOT))}; "
+            f"ALT_ROOT={json.dumps(str(ALT_ROOT))}; "
+            f"source {json.dumps(str(LIBRARY_PATH))}; "
+            f"install_control_plane_main {json.dumps(str(self.root))}"
+        )
+        return subprocess.run(
+            ["bash", "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=REPO_ROOT,
+            env=self.environment(**overrides),
+        )
+
+    def commands(self) -> list[list[str]]:
+        if not self.command_log.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.command_log.read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line
+        ]
+
+    def protected_snapshot(self) -> dict[str, bytes]:
+        roots = (
+            self.destination("/home/altserver"),
+            self.destination("/var/lib/alt-deploy"),
+            self.destination("/srv/alt-deploy"),
+        )
+        result: dict[str, bytes] = {}
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    result[str(path.relative_to(self.root))] = path.read_bytes()
+        return result
+
+    def seed_pending(self) -> Path:
+        return self._write(
+            "/srv/alt-deploy/registration/pending/pending.json",
+            "{}\n",
+        )
+
+    @staticmethod
+    def mutation_commands(commands: list[list[str]]) -> list[list[str]]:
+        mutations: list[list[str]] = []
+        for command in commands:
+            if not command:
+                continue
+            if command[0] in {
+                "install",
+                "cp",
+                "rm",
+                "chown",
+                "chmod",
+                "find",
+            }:
+                mutations.append(command)
+            elif command[0] == "systemctl" and len(command) > 1:
+                if command[1] in {
+                    "stop",
+                    "restart",
+                    "enable",
+                    "disable",
+                    "daemon-reload",
+                }:
+                    mutations.append(command)
+        return mutations
