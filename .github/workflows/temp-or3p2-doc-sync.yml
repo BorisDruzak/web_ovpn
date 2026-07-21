@@ -1,0 +1,112 @@
+name: Temporary OR-3P2 Documentation Sync
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Append OR-3P2 status blocks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          updates = {
+              Path('deploy/alt-linux/README.md'): '''
+
+          ## OR-3P2 machine registry lifecycle
+
+          OR-3P2 adds audited registration archival, exact registration generations,
+          lifecycle admission checks, stale pending-result suppression and the local
+          `alt-bootstrap-register` command. See
+          [the OR-3P2 operator runbook](../../docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md).
+
+          OR-3P2 is repository-verified but not installed on `192.168.100.17`.
+          Complete and restore-test OR-3P3 before running the updated installer.
+          Do not use reference workstation `192.168.101.111` for acceptance.
+          ''',
+              Path('docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md'): '''
+
+          ## OR-3P2 verified repository state
+
+          OR-3P2 machine registry lifecycle is implemented and verified in PR #22.
+          It adds read-only removal preview, root-only audited archive apply,
+          generation-aware re-registration, shared API lifecycle admission,
+          pending-processor race protection and the register-only workstation helper.
+
+          The implementation has not been installed on controller `192.168.100.17`.
+          OR-3P3 backup/restore remains the mandatory next operational stage.
+          Reference workstation `192.168.101.111` remains immutable.
+
+          Operational details: `docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md`.
+          ''',
+              Path('docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md'): '''
+
+          ## Updated pilot sequence after OR-3P2
+
+          ```text
+          OR-3P1 merged: installer completeness and local readiness
+          OR-3P2 repository-verified: archive/removal and register-only re-registration
+          OR-3P3 next mandatory step: controller backup/restore and restore test
+          OR-3P4 blocked: controlled rollout on 192.168.100.17
+          OR-3P5 blocked: second disposable VM acceptance
+          OR-3P6 blocked: limited pilot
+          ```
+
+          Do not install OR-3P2 before OR-3P3. Do not use `192.168.101.111` for
+          destructive or repeat acceptance. The next target must be new, disposable
+          and unassigned.
+          ''',
+              Path('docs/ALT_OR3P1_PILOT_ROLLOUT.md'): '''
+
+          ## OR-3P2 follow-up status
+
+          OR-3P2 is implemented and repository-verified, but it does not remove the
+          OR-3P3 gate in this rollout document. The live controller update remains
+          prohibited until backup and restore have been completed and verified.
+
+          After OR-3P3, the controlled rollout must validate the OR-3P2 preview,
+          archive apply and local `alt-bootstrap-register` flow on a new disposable,
+          unassigned target. The accepted reference workstation `192.168.101.111`
+          must not be used.
+          ''',
+          }
+
+          marker = '## OR-3P2'
+          for path, addition in updates.items():
+              text = path.read_text(encoding='utf-8')
+              if marker in text:
+                  continue
+              normalized = '\n'.join(line.rstrip() for line in addition.strip().splitlines())
+              path.write_text(text.rstrip() + '\n\n' + normalized + '\n', encoding='utf-8')
+          PY
+          git diff --check
+      - name: Commit documentation sync
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            deploy/alt-linux/README.md \
+            docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md \
+            docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md \
+            docs/ALT_OR3P1_PILOT_ROLLOUT.md
+          git commit -m 'docs: synchronize OR-3P2 operational status'
+          git push origin HEAD:${{ github.head_ref }}
