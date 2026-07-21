@@ -201,6 +201,8 @@ def _router_status(source: str, router_rows: dict[str, Any], now: datetime) -> t
     collected_at = _safe_timestamp(state.get("collected_at"))
     if status == "error":
         return "error", collected_at
+    if not collected_at:
+        return "stale", ""
     if status == "stale" or _is_stale(collected_at, now) or _has_stale_router_rows(rows, source, now):
         return "stale", collected_at
     if status == "ok":
@@ -297,8 +299,14 @@ def _row_matches(row: dict[str, Any], source: str, matcher: dict[str, str]) -> b
         if key == "comment_contains":
             if not isinstance(row.get("comment"), str) or expected not in row["comment"].casefold():
                 return False
-        elif actual is None or _normal_for_key(key, actual) != expected:
+        elif actual is None:
             return False
+        else:
+            try:
+                if _normal_for_key(key, actual) != expected:
+                    return False
+            except ValueError:
+                return False
     return True
 
 

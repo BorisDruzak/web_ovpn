@@ -292,3 +292,26 @@ def test_malformed_router_row_collections_are_safe_and_not_ok():
     ))
 
     assert result[0]["status"] != "ok"
+
+
+def test_missing_router_source_timestamp_is_not_ok_with_fresh_row_evidence():
+    from app.network_paths import evaluate_paths
+
+    result = evaluate_paths(**inputs(
+        definitions={"directum": full_definition()},
+        router_rows=all_evidence_rows(sources=[{"source": "router-a", "status": "ok"}]),
+    ))
+
+    assert result[0]["status"] != "ok"
+    assert check(result[0], "router_source")["status"] in {"stale", "unknown"}
+
+
+def test_malformed_router_matcher_attribute_is_non_matching_and_safe():
+    from app.network_paths import evaluate_paths
+
+    result = evaluate_paths(**inputs(
+        definitions={"directum": full_definition()},
+        router_rows=all_evidence_rows(firewall_rules=[policy_rule(dst_address=1)]),
+    ))
+
+    assert check(result[0], "policy:1")["status"] == "critical"
