@@ -82,16 +82,22 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          printf 'ci-only-vault-password\n' > /tmp/or3p2-vault-pass
+          chmod 0600 /tmp/or3p2-vault-pass
           cp deploy/alt-linux/ansible/group_vars/vault.yml.example \
             deploy/alt-linux/ansible/group_vars/vault.yml
           (
             cd deploy/alt-linux/ansible
             ANSIBLE_CONFIG=ansible.cfg \
+            ANSIBLE_VAULT_PASSWORD_FILE=/tmp/or3p2-vault-pass \
               ansible-playbook --syntax-check playbooks/01-preflight.yml
             ANSIBLE_CONFIG=ansible.cfg \
+            ANSIBLE_VAULT_PASSWORD_FILE=/tmp/or3p2-vault-pass \
               ansible-playbook --syntax-check playbooks/02-provision-account.yml
           ) 2>&1 | tee /tmp/or3p2-ansible.txt
-          rm -f deploy/alt-linux/ansible/group_vars/vault.yml
+          rm -f \
+            deploy/alt-linux/ansible/group_vars/vault.yml \
+            /tmp/or3p2-vault-pass
       - name: Diff and clean-tree checks
         shell: bash
         run: |
