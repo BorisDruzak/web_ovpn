@@ -1,7 +1,7 @@
 # ALT OR-3P1 Pilot Installer Readiness Design
 
-**Status:** approved for planning  
-**Date:** 2026-07-21  
+**Status:** approved for planning
+**Date:** 2026-07-21
 **Base:** `main` at `500bca8fe0e309078930bc49c8fbd4ed0f2f6827`
 
 ## Goal
