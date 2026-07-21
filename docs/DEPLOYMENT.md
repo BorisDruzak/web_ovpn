@@ -61,21 +61,29 @@ Do not commit or publish the sudo password. For interactive deployment, enter it
 
 ### VPN network-path visibility boundary
 
-The installer copies `deploy/network-paths.json.sample` to
-`/etc/openvpn-web/network-paths.json` only when that operational file is absent.
-The installed file is deliberately role-only; an operator must supply any local
-topology through the approved configuration process. The installer never
-replaces an existing file, including a dangling symlink.
+The installer copies the empty `deploy/network-paths.json.sample` and
+`deploy/server-roles.json.sample` files to `/etc/openvpn-web/network-paths.json`
+and `/etc/openvpn-web/server-roles.json` only when each operational file is
+absent. The role registry is the web panel's authoritative, role-only list of
+registered Server Health targets; snapshot failures affect health evidence but
+do not remove those registrations. An operator must populate the allow-listed
+role names and supply any local path topology through the approved
+configuration process. The installer never replaces an existing file,
+including a dangling symlink.
 
 Installing this sample does not enable `netctl-collect.timer`, collect RouterOS
 data, or change RouterOS. Each of those actions requires separate, explicit
 operator approval and must be performed under the appropriate maintenance and
 network-change procedure.
 
-The generic installer does not create, replace, or configure `/etc/netctl`
-RouterOS source files or secrets. An approved operator must provision any
-source YAML, credentials, and timer activation manually; an existing
-operational `/etc/netctl` configuration is left untouched.
+On a clean host, the generic installer creates only `/var/lib/netctl`, owned by
+`netctl`, plus `/etc/netctl` and an empty `/etc/netctl/sources.d`, owned by
+`root:netctl`. It does not create or replace RouterOS source files, secrets,
+keys, or topology, does not collect, and does not enable
+`netctl-collect.timer`. An approved operator must provision any source YAML,
+credentials, keys, and timer activation manually. Existing directories must
+have the expected canonical ownership and mode; existing operational files are
+left untouched.
 
 ## Remote Verification
 

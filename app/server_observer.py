@@ -33,6 +33,8 @@ ALLOWED_ROLES = frozenset(
 )
 ALLOWED_SOURCES = frozenset({"gateway", "vpn_path", "target"})
 STALE_AFTER = timedelta(minutes=15)
+# Permit minor NTP skew, but never accept materially future evidence as fresh.
+FUTURE_TOLERANCE = timedelta(minutes=2)
 SSH_TIMEOUT_SECONDS = 20
 OBSERVER_KEY_PATH = "/etc/openvpn-web/server-observer.key"
 OBSERVER_KNOWN_HOSTS_PATH = "/etc/openvpn-web/server-observer.known_hosts"
@@ -627,7 +629,7 @@ def snapshot_status(snapshot: dict[str, Any], now: datetime) -> str:
     if now.tzinfo is None or now.utcoffset() != timedelta(0):
         raise ValueError("now must be timezone-aware UTC")
     collected_at = parse_utc(snapshot["collected_at"])
-    if now - collected_at > STALE_AFTER:
+    if now - collected_at > STALE_AFTER or collected_at - now > FUTURE_TOLERANCE:
         return "stale"
     return snapshot.get("overall") or _combined_status(
         [str(target.get("status", "ok")) for target in snapshot.get("targets", [])]

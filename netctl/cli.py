@@ -20,6 +20,11 @@ from .store import add_device_tag, dashboard_summary, inspect_host, list_device_
 from .util import utc_now, validate_source_name
 
 
+ROUTER_EVIDENCE_STALE_AFTER = timedelta(minutes=15)
+# Permit minor NTP skew, but never accept materially future evidence as fresh.
+ROUTER_EVIDENCE_FUTURE_TOLERANCE = timedelta(minutes=2)
+
+
 def emit(data: dict[str, Any]) -> None:
     print(json.dumps(data, ensure_ascii=False, default=str))
 
@@ -250,7 +255,12 @@ def router_evidence_health(conn, source_name: str = "") -> tuple[int, dict[str, 
         collected_at = str(source.get("last_collect_at") or "")
         source_status = str(source.get("last_status") or "")
         collected = _parse_utc(collected_at)
-        is_stale = collected is None or now is None or now - collected > timedelta(minutes=15)
+        is_stale = (
+            collected is None
+            or now is None
+            or now - collected > ROUTER_EVIDENCE_STALE_AFTER
+            or collected - now > ROUTER_EVIDENCE_FUTURE_TOLERANCE
+        )
         if source_status == "error":
             errored = True
         stale = stale or is_stale

@@ -769,6 +769,18 @@ def test_snapshot_write_rejects_unsafe_overall_and_keeps_valid_status(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["overall"] == "warn"
 
 
+def test_snapshot_status_rejects_materially_future_collection_time():
+    from app.server_observer import snapshot_status
+
+    snapshot = {
+        "collected_at": "2026-07-18T20:10:00Z",
+        "overall": "ok",
+        "targets": [{"role": "directum", "status": "ok", "checks": []}],
+    }
+
+    assert snapshot_status(snapshot, parse_utc("2026-07-18T20:00:00Z")) == "stale"
+
+
 @pytest.mark.parametrize("failure", [OSError("unavailable"), UnicodeDecodeError("utf-8", b"x", 0, 1, "bad")])
 def test_snapshot_read_failures_return_only_generic_error(tmp_path, monkeypatch, failure):
     path = tmp_path / "latest.json"

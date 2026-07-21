@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 
@@ -32,3 +33,25 @@ def test_deployment_docs_require_operator_to_provision_routeros_source():
     deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     assert "The installer creates `/etc/netctl/sources.d/mikrotik-hex.yaml`" not in deployment
     assert "approved operator must provision `/etc/netctl/sources.d/mikrotik-hex.yaml`" in deployment
+
+
+def test_clean_host_installer_bootstraps_only_empty_netctl_infrastructure():
+    installer = Path("deploy/install-openvpn-web.sh").read_text(encoding="utf-8")
+
+    assert "install -d -m 0750 -o netctl -g netctl /var/lib/netctl" in installer
+    assert "install -d -m 0750 -o root -g netctl /etc/netctl /etc/netctl/sources.d" in installer
+    for forbidden in (
+        "/etc/netctl/secrets.env",
+        "sources.d/mikrotik",
+        "netctl --json collect",
+        "enable --now netctl-collect.timer",
+    ):
+        assert forbidden not in installer
+
+
+def test_installer_bootstraps_an_empty_role_only_server_registry():
+    installer = Path("deploy/install-openvpn-web.sh").read_text(encoding="utf-8")
+    sample_path = Path("deploy/server-roles.json.sample")
+
+    assert json.loads(sample_path.read_text(encoding="utf-8")) == {"roles": []}
+    assert "server-roles.json.sample" in installer

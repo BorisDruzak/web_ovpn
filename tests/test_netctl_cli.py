@@ -219,6 +219,120 @@ def test_mikrotik_snapshot_persists_address_lists_rules_and_update_posture(tmp_p
     assert "on_event" not in json.dumps(posture)
 
 
+def test_persisted_router_booleans_are_evaluated_as_booleans_end_to_end(tmp_path, capsys, monkeypatch):
+    import netctl.cli as cli
+    import netctl.store as store
+    from app.network_paths import evaluate_paths
+    from app.server_observer import parse_utc
+    from netctl.db import connect, get_source, sync_config_sources
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    monkeypatch.setattr(store, "utc_now", lambda: "2026-07-21T17:55:00Z")
+    monkeypatch.setattr(cli, "utc_now", lambda: "2026-07-21T18:00:00Z")
+    monkeypatch.setattr(
+        cli,
+        "collector_status",
+        lambda: (0, {"status": "ok", "enabled": True, "active": True, "next_run": ""}),
+    )
+
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "mock-main")
+        assert source is not None
+        store.save_collection(
+            conn,
+            source,
+            {
+                "routes": [
+                    {
+                        "dst_address": "198.51.100.0/24",
+                        "gateway": "198.51.100.1",
+                        "active": True,
+                        "disabled": False,
+                    }
+                ],
+                "firewall_address_lists": [
+                    {"list": "vpn-targets", "address": "203.0.113.0/24", "disabled": True}
+                ],
+                "firewall_filter_rules": [
+                    {
+                        "id": "*1",
+                        "chain": "forward",
+                        "action": "accept",
+                        "disabled": True,
+                        "src_address": "198.51.100.0/24",
+                        "dst_address": "203.0.113.0/24",
+                        "packets": 8,
+                        "bytes": 800,
+                    }
+                ],
+            },
+            "2026-07-21T17:55:00Z",
+        )
+    finally:
+        conn.close()
+
+    _, routes = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "routes", "list", "--source", "mock-main"],
+        capsys,
+    )
+    _, address_lists = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "address-lists", "list", "--source", "mock-main"],
+        capsys,
+    )
+    _, rules = run_cli(
+        [
+            "--json", "--config", str(config_path), "--db", db_url,
+            "firewall-rules", "list", "--table", "filter", "--source", "mock-main",
+        ],
+        capsys,
+    )
+    definition = __import__("app.network_paths", fromlist=["PathDefinition"]).PathDefinition(
+        role="directum",
+        router_source="mock-main",
+        openvpn_pool="198.51.100.0/24",
+        target_cidr="203.0.113.0/24",
+        return_route={"dst_address": "198.51.100.0/24", "gateway": "198.51.100.1"},
+        address_lists=({"list": "vpn-targets", "address": "203.0.113.0/24"},),
+        policy_matchers=(
+            {
+                "table": "filter",
+                "chain": "forward",
+                "action": "accept",
+                "src_address": "198.51.100.0/24",
+                "dst_address": "203.0.113.0/24",
+            },
+        ),
+    )
+    result = evaluate_paths(
+        definitions={"directum": definition},
+        runtime={"sections": {"openvpn": {"service_active": True, "server_network": "198.51.100.0/24"}}},
+        collector={"enabled": True, "active": True},
+        router_rows={
+            "sources": address_lists["sources"],
+            "routes": routes["routes"],
+            "address_lists": address_lists["address_lists"],
+            "firewall_rules": rules["firewall_rules"],
+        },
+        server_health={
+            "collected_at": "2026-07-21T17:55:00Z",
+            "targets": [{"role": "directum", "status": "ok"}],
+        },
+        now=parse_utc("2026-07-21T18:00:00Z"),
+    )[0]
+    checks = {item["name"]: item for item in result["checks"]}
+
+    assert routes["routes"][0]["active"] == 1
+    assert address_lists["address_lists"][0]["disabled"] == 1
+    assert rules["firewall_rules"][0]["disabled"] == 1
+    assert checks["return_route"]["status"] == "ok"
+    assert checks["address_list:1"]["status"] == "critical"
+    assert checks["policy:1"]["status"] == "critical"
+
+
 def test_router_evidence_lists_report_error_when_collector_is_inactive(tmp_path, capsys, monkeypatch):
     import netctl.cli as cli
 
@@ -291,6 +405,40 @@ def test_router_evidence_lists_report_stale_and_preserve_update_timestamp(tmp_pa
         assert rc == 1
         assert data["status"] == "stale"
     assert data["update_posture"][0]["last_seen_at"] == "2026-07-21T18:00:00Z"
+
+
+def test_router_evidence_cli_rejects_materially_future_collection_time(tmp_path, capsys, monkeypatch):
+    import netctl.cli as cli
+    import netctl.store as store
+    from netctl.db import connect, get_source, sync_config_sources
+
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    monkeypatch.setattr(store, "utc_now", lambda: "2026-07-21T18:10:00Z")
+    monkeypatch.setattr(cli, "utc_now", lambda: "2026-07-21T18:00:00Z")
+    monkeypatch.setattr(
+        cli,
+        "collector_status",
+        lambda: (0, {"status": "ok", "enabled": True, "active": True, "next_run": ""}),
+    )
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "mock-main")
+        assert source is not None
+        store.save_collection(conn, source, {"firewall_address_lists": []}, "2026-07-21T18:10:00Z")
+    finally:
+        conn.close()
+
+    rc, data = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "address-lists", "list", "--source", "mock-main"],
+        capsys,
+    )
+
+    assert rc == 1
+    assert data["status"] == "stale"
+    assert data["sources"][0]["status"] == "stale"
 
 
 def test_firewall_rules_use_snapshot_table_not_item_value(tmp_path, capsys, monkeypatch):

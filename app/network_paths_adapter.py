@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import get_settings
 from .netctl_client import NetctlError, run_netctl
-from .network_paths import evaluate_paths, load_path_config
+from .network_paths import evaluate_paths, load_path_config, load_role_registry
 from .server_observer import load_snapshot
 from .vpnctl_client import VpnctlError, run_vpnctl
 
@@ -18,12 +18,8 @@ def list_network_paths() -> list[dict[str, Any]]:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     server_health = load_snapshot(settings.server_observer_snapshot_path, now)
-    roles = {
-        target["role"]
-        for target in _rows(server_health.get("targets"))
-        if isinstance(target.get("role"), str)
-    }
     try:
+        roles = load_role_registry(settings.server_role_registry_path)
         definitions = load_path_config(settings.network_paths_config_path, roles)
     except ValueError:
         return []
@@ -56,12 +52,13 @@ def _runtime_with_pool() -> dict[str, Any]:
     return {**runtime, "sections": sections}
 
 
-def _router_rows(definitions: Any) -> dict[str, list[dict[str, Any]]]:
-    rows: dict[str, list[dict[str, Any]]] = {
+def _router_rows(definitions: Any) -> dict[str, Any]:
+    rows: dict[str, Any] = {
         "sources": [],
         "routes": [],
         "address_lists": [],
         "firewall_rules": [],
+        "update_posture_results": {},
     }
     sources = sorted({definition.router_source for definition in definitions})
     for source in sources:
@@ -75,6 +72,9 @@ def _router_rows(definitions: Any) -> dict[str, list[dict[str, Any]]]:
             rows["firewall_rules"].extend(_rows(rules.get("firewall_rules")))
             if not rows["sources"]:
                 rows["sources"].extend(_rows(rules.get("sources")))
+        rows["update_posture_results"][source] = _netctl(
+            ["update-posture", "list", "--source", source]
+        )
     return rows
 
 
@@ -97,10 +97,36 @@ def _netctl(args: list[str]) -> dict[str, Any]:
 
 
 def _public_path(row: dict[str, Any]) -> dict[str, Any]:
+    posture = _mapping(row.get("update_posture"))
     return {
         "role": row.get("role") if isinstance(row.get("role"), str) else "",
         "status": row.get("status") if isinstance(row.get("status"), str) else "unknown",
         "collected_at": row.get("collected_at") if isinstance(row.get("collected_at"), str) else "",
+        "update_posture": {
+            "installed_version": posture.get("installed_version")
+            if isinstance(posture.get("installed_version"), str)
+            else "",
+            "channel": posture.get("channel") if isinstance(posture.get("channel"), str) else "",
+            "routerboot_current_version": posture.get("routerboot_current_version")
+            if isinstance(posture.get("routerboot_current_version"), str)
+            else "",
+            "routerboot_upgrade_version": posture.get("routerboot_upgrade_version")
+            if isinstance(posture.get("routerboot_upgrade_version"), str)
+            else "",
+            "scheduler_count": posture.get("scheduler_count")
+            if isinstance(posture.get("scheduler_count"), int)
+            and not isinstance(posture.get("scheduler_count"), bool)
+            else 0,
+            "collected_at": posture.get("collected_at")
+            if isinstance(posture.get("collected_at"), str)
+            else "",
+            "freshness": posture.get("freshness")
+            if posture.get("freshness") in {"fresh", "stale", "unknown"}
+            else "unknown",
+            "status": posture.get("status")
+            if posture.get("status") in {"ok", "stale", "error", "unknown"}
+            else "unknown",
+        },
         "checks": [
             {
                 "name": check.get("name") if isinstance(check.get("name"), str) else "check",

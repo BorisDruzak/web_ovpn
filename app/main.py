@@ -60,9 +60,9 @@ def status_class(value: Any) -> str:
     raw = str(value or "").lower()
     if raw in {"active", "connected", "valid", "ok", "true"}:
         return "ok"
-    if raw in {"disabled", "warning"}:
+    if raw in {"disabled", "warning", "warn", "stale"}:
         return "warn"
-    if raw in {"deleted", "revoked", "error", "failed", "inactive"}:
+    if raw in {"deleted", "revoked", "error", "failed", "inactive", "critical"}:
         return "bad"
     return "muted"
 

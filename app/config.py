@@ -32,6 +32,7 @@ class Settings:
     netctl_sudo_user: str
     network_observer_enabled: bool
     network_paths_config_path: Path
+    server_role_registry_path: Path
     server_observer_snapshot_path: Path
     out_dir: Path
     share_out_dir: Path
@@ -65,6 +66,9 @@ def get_settings() -> Settings:
         netctl_sudo_user=os.environ.get("NETCTL_SUDO_USER", "netctl"),
         network_observer_enabled=_bool_env("NETWORK_OBSERVER_ENABLED", True),
         network_paths_config_path=_path_env("NETWORK_PATHS_CONFIG_PATH", "/etc/openvpn-web/network-paths.json"),
+        server_role_registry_path=_path_env(
+            "SERVER_ROLE_REGISTRY_PATH", "/etc/openvpn-web/server-roles.json"
+        ),
         server_observer_snapshot_path=_path_env(
             "SERVER_OBSERVER_SNAPSHOT_PATH", "/var/lib/openvpn-web/server-observer/latest.json"
         ),

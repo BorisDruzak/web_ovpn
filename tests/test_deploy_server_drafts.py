@@ -176,6 +176,19 @@ def test_worker_installer_quiesces_and_atomically_swaps_runtime_with_rollback():
     assert '"$path_was_active" == 1 && "$runtime_swapped" == 0' in cleanup
 
 
+def test_worker_installer_rejects_untrusted_source_tree_before_staging_or_quiescing():
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+
+    assert "validate_source_tree" in installer
+    assert 'find "$SRC" -maxdepth 0 \\( -perm /022 -o -user openvpn-web \\)' in installer
+    assert 'find "$SRC/app" "$SRC/deploy" \\( -type l -o -perm /022 -o -user openvpn-web \\)' in installer
+    validation = installer.rindex("validate_source_tree")
+    staging = installer.index('-d -m 0755 -o root -g root "$STAGED_RUNTIME/app"')
+    quiesce = installer.index("systemctl stop server-draft-worker.path")
+    swap = installer.index('mv -- "$STAGED_RUNTIME" "$WORKER_RUNTIME"')
+    assert validation < quiesce < staging < swap
+
+
 def test_worker_installer_validates_exact_shared_observer_key_metadata():
     installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
 

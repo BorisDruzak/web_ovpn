@@ -5,17 +5,22 @@
 <section class="table-wrap">
   <h2>Registered server paths</h2>
   <table>
-    <thead><tr><th>Role</th><th>Status</th><th>Evidence time</th><th></th></tr></thead>
+    <thead><tr><th>Role</th><th>Status</th><th>Evidence time</th><th>RouterOS</th><th>Update posture</th><th></th></tr></thead>
     <tbody>
       {% for path in paths %}
       <tr>
         <td>{{ path.role }}</td>
         <td><span class="badge {{ path.status|status_class }}">{{ path.status }}</span></td>
         <td>{{ path.collected_at or "-" }}</td>
+        <td>{{ path.update_posture.installed_version or "-" }} / {{ path.update_posture.channel or "-" }}</td>
+        <td>
+          <span class="badge {{ path.update_posture.status|status_class }}">{{ path.update_posture.status }}</span>
+          {{ path.update_posture.collected_at or "-" }}
+        </td>
         <td><a class="button secondary" href="/network/paths/{{ path.role }}">Details</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="4" class="empty">No registered path evidence is available.</td></tr>
+      <tr><td colspan="6" class="empty">No registered path evidence is available.</td></tr>
       {% endfor %}
     </tbody>
   </table>

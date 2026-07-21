@@ -10,6 +10,20 @@ sudo_cmd() {
   printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' "$@"
 }
 
+validate_netctl_directory() {
+  local path="$1" expected_metadata="$2" resolved metadata
+  if sudo_cmd test -L "$path" || ! sudo_cmd test -d "$path"; then
+    echo "unsafe netctl directory: $path" >&2
+    exit 2
+  fi
+  resolved="$(sudo_cmd readlink -e -- "$path")"
+  metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$path")"
+  if [[ "$resolved" != "$path" ]] || [[ "$metadata" != "$expected_metadata" ]]; then
+    echo "unexpected netctl directory metadata: $path" >&2
+    exit 2
+  fi
+}
+
 SRC="${SRC:-/tmp/openvpn-web-src}"
 APP="${APP:-/opt/openvpn-web}"
 
@@ -26,6 +40,25 @@ sudo_cmd usermod -aG openvpn-web openvpn-web
 sudo_cmd groupadd --system netctl >/dev/null 2>&1 || true
 if ! id netctl >/dev/null 2>&1; then
   sudo_cmd useradd --system --home /var/lib/netctl --shell /usr/sbin/nologin --gid netctl netctl
+fi
+
+if ! sudo_cmd test -e /var/lib/netctl && ! sudo_cmd test -L /var/lib/netctl; then
+  sudo_cmd install -d -m 0750 -o netctl -g netctl /var/lib/netctl
+else
+  validate_netctl_directory /var/lib/netctl netctl:netctl:750
+fi
+if ! sudo_cmd test -e /etc/netctl && ! sudo_cmd test -L /etc/netctl && \
+   ! sudo_cmd test -e /etc/netctl/sources.d && ! sudo_cmd test -L /etc/netctl/sources.d; then
+  sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl /etc/netctl/sources.d
+else
+  if ! sudo_cmd test -e /etc/netctl && ! sudo_cmd test -L /etc/netctl; then
+    sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl
+  fi
+  validate_netctl_directory /etc/netctl root:netctl:750
+  if ! sudo_cmd test -e /etc/netctl/sources.d && ! sudo_cmd test -L /etc/netctl/sources.d; then
+    sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl/sources.d
+  fi
+  validate_netctl_directory /etc/netctl/sources.d root:netctl:750
 fi
 
 sudo_cmd mkdir -p "$APP" /etc/openvpn-web /etc/openvpn
@@ -186,6 +219,11 @@ if ! sudo_cmd test -e /etc/openvpn-web/network-paths.json \
   && ! sudo_cmd test -L /etc/openvpn-web/network-paths.json; then
   sudo_cmd install -m 0640 -o root -g openvpn-web \
     "$SRC/deploy/network-paths.json.sample" /etc/openvpn-web/network-paths.json
+fi
+if ! sudo_cmd test -e /etc/openvpn-web/server-roles.json \
+  && ! sudo_cmd test -L /etc/openvpn-web/server-roles.json; then
+  sudo_cmd install -m 0640 -o root -g openvpn-web \
+    "$SRC/deploy/server-roles.json.sample" /etc/openvpn-web/server-roles.json
 fi
 
 cd "$APP"

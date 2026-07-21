@@ -315,3 +315,186 @@ def test_malformed_router_matcher_attribute_is_non_matching_and_safe():
     ))
 
     assert check(result[0], "policy:1")["status"] == "critical"
+
+
+def test_path_policy_and_address_list_must_bind_openvpn_pool_to_target_cidr():
+    from app.network_paths import evaluate_paths
+
+    unrelated_matcher = {
+        "table": "filter",
+        "chain": "forward",
+        "action": "accept",
+        "src_address": "192.0.2.0/24",
+        "dst_address": "192.0.3.0/24",
+    }
+    unrelated_address_list = {"list": "unrelated", "address": "192.0.3.0/24"}
+    result = evaluate_paths(**inputs(
+        definitions={
+            "directum": full_definition(
+                address_lists=(unrelated_address_list,),
+                policy_matchers=(unrelated_matcher,),
+            )
+        },
+        router_rows=router_rows(
+            address_lists=[address_list(list="unrelated", address="192.0.3.0/24")],
+            firewall_rules=[
+                policy_rule(
+                    src_address="192.0.2.0/24",
+                    dst_address="192.0.3.0/24",
+                    comment="unrelated policy",
+                )
+            ],
+        ),
+    ))
+
+    assert result[0]["status"] == "critical"
+    assert check(result[0], "address_list:1")["status"] == "critical"
+    assert check(result[0], "policy:1")["status"] == "critical"
+
+
+@pytest.mark.parametrize("evidence", ["router", "server_health"])
+def test_materially_future_path_evidence_is_stale(evidence):
+    from app.network_paths import evaluate_paths
+
+    future = "2026-07-21T18:10:00Z"
+    values = inputs(definitions={"directum": full_definition()}, router_rows=all_evidence_rows())
+    if evidence == "router":
+        values["router_rows"]["sources"][0]["collected_at"] = future
+        for collection in ("routes", "address_lists", "firewall_rules"):
+            values["router_rows"][collection][0]["last_seen_at"] = future
+    else:
+        values["server_health"]["collected_at"] = future
+
+    result = evaluate_paths(**values)
+
+    assert result[0]["status"] == "stale"
+    assert check(result[0], "router_source" if evidence == "router" else "server_health")["status"] == "stale"
+
+
+def test_matching_server_target_status_is_not_overridden_by_unrelated_aggregate_error():
+    from app.network_paths import evaluate_paths
+
+    server_health = {
+        "collected_at": "2026-07-21T17:55:00Z",
+        "overall": "error",
+        "targets": [
+            {"role": "directum", "status": "ok"},
+            {"role": "file_server", "status": "error"},
+        ],
+    }
+    result = evaluate_paths(**inputs(
+        definitions={"directum": full_definition()},
+        router_rows=all_evidence_rows(),
+        server_health=server_health,
+    ))
+
+    assert check(result[0], "server_health")["status"] == "ok"
+    assert result[0]["status"] == "ok"
+
+
+def test_path_evidence_time_is_oldest_contributing_timestamp():
+    from app.network_paths import evaluate_paths
+
+    rows = all_evidence_rows()
+    rows["sources"][0]["collected_at"] = "2026-07-21T17:58:00Z"
+    rows["routes"][0]["last_seen_at"] = "2026-07-21T17:57:00Z"
+    rows["address_lists"][0]["last_seen_at"] = "2026-07-21T17:56:00Z"
+    rows["firewall_rules"][0]["last_seen_at"] = "2026-07-21T17:55:00Z"
+    result = evaluate_paths(**inputs(
+        definitions={"directum": full_definition()},
+        router_rows=rows,
+        server_health={
+            "collected_at": "2026-07-21T17:59:00Z",
+            "targets": [{"role": "directum", "status": "ok"}],
+        },
+    ))
+
+    assert result[0]["collected_at"] == "2026-07-21T17:55:00Z"
+
+
+def test_role_registry_accepts_only_unique_allowlisted_role_names(tmp_path):
+    from app.network_paths import load_role_registry
+
+    registry = tmp_path / "server-roles.json"
+    registry.write_text(json.dumps({"roles": ["directum"]}), encoding="utf-8")
+    assert load_role_registry(registry) == {"directum"}
+
+    registry.write_text(json.dumps({"roles": ["directum", "directum"]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="unique"):
+        load_role_registry(registry)
+
+    registry.write_text(json.dumps({"roles": ["unregistered"]}), encoding="utf-8")
+    with pytest.raises(ValueError, match="allowed"):
+        load_role_registry(registry)
+
+
+@pytest.mark.parametrize("timestamp", ["2026-07-21T18:10:00Z", "corrupt"])
+def test_update_posture_summary_never_marks_future_or_corrupt_cli_evidence_fresh(timestamp):
+    from app.network_paths import update_posture_summary
+
+    summary = update_posture_summary(
+        "router-a",
+        {
+            "status": "ok",
+            "sources": [{"source": "router-a", "status": "ok", "collected_at": timestamp}],
+            "update_posture": [
+                {
+                    "source": "router-a",
+                    "channel": "stable",
+                    "installed_version": "7.19.4",
+                    "routerboot_current_version": "7.19.4",
+                    "routerboot_upgrade_version": "7.20.1",
+                    "last_seen_at": timestamp,
+                    "schedulers": [],
+                    "raw_output": "must-not-escape",
+                }
+            ],
+        },
+        parse_utc("2026-07-21T18:00:00Z"),
+    )
+
+    assert summary["status"] == "stale"
+    assert summary["freshness"] == "stale"
+    assert summary["collected_at"] == ""
+    assert "must-not-escape" not in json.dumps(summary)
+
+
+def test_missing_update_posture_summary_is_unknown():
+    from app.network_paths import update_posture_summary
+
+    summary = update_posture_summary(
+        "router-a", {}, parse_utc("2026-07-21T18:00:00Z")
+    )
+
+    assert summary["status"] == "unknown"
+    assert summary["freshness"] == "unknown"
+
+
+def test_update_posture_summary_rejects_future_source_timestamp_with_fresh_row():
+    from app.network_paths import update_posture_summary
+
+    summary = update_posture_summary(
+        "router-a",
+        {
+            "status": "ok",
+            "sources": [
+                {"source": "router-a", "status": "ok", "collected_at": "2026-07-21T18:10:00Z"}
+            ],
+            "update_posture": [
+                {
+                    "source": "router-a",
+                    "channel": "stable",
+                    "installed_version": "7.19.4",
+                    "routerboot_current_version": "7.19.4",
+                    "routerboot_upgrade_version": "7.20.1",
+                    "last_seen_at": "2026-07-21T17:55:00Z",
+                    "schedulers": [],
+                }
+            ],
+        },
+        parse_utc("2026-07-21T18:00:00Z"),
+    )
+
+    assert summary["status"] == "stale"
+    assert summary["freshness"] == "stale"
+    assert summary["collected_at"] == ""

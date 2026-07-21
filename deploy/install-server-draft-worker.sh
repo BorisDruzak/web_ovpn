@@ -88,6 +88,29 @@ validate_python_runtime() {
   fi
 }
 
+validate_source_tree() {
+  local resolved unsafe_entry
+  if [[ "$SRC" != /* ]] || sudo_cmd test -L "$SRC" || ! sudo_cmd test -d "$SRC"; then
+    echo "server-draft-worker source root must be a canonical directory" >&2
+    exit 2
+  fi
+  resolved="$(sudo_cmd readlink -e -- "$SRC")"
+  if [[ "$resolved" != "$SRC" ]]; then
+    echo "server-draft-worker source root is noncanonical" >&2
+    exit 2
+  fi
+  unsafe_entry="$(sudo_cmd find "$SRC" -maxdepth 0 \( -perm /022 -o -user openvpn-web \) -print -quit)"
+  if [[ -n "$unsafe_entry" ]]; then
+    echo "server-draft-worker source root is web-owned or mutable" >&2
+    exit 2
+  fi
+  unsafe_entry="$(sudo_cmd find "$SRC/app" "$SRC/deploy" \( -type l -o -perm /022 -o -user openvpn-web \) -print -quit)"
+  if [[ -n "$unsafe_entry" ]]; then
+    echo "server-draft-worker source tree is web-owned, mutable, or symlinked" >&2
+    exit 2
+  fi
+}
+
 validate_worker_runtime() {
   local path="$1" resolved unsafe_entry
   if ! sudo_cmd test -e "$path" && ! sudo_cmd test -L "$path"; then
@@ -215,6 +238,7 @@ for source_file in \
     exit 2
   fi
 done
+validate_source_tree
 
 for account in openvpn-web openvpm; do
   if ! id "$account" >/dev/null 2>&1; then
