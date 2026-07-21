@@ -4,42 +4,71 @@
 
 **Goal:** Add audited machine-registration archival and register-only re-registration while preventing assignments, active jobs, interrupted archive cleanup, or stale pending processors from creating conflicting controller state.
 
-**Architecture:** Add focused lifecycle, archive-persistence, archive-service, and registration-admission boundaries under the existing `alt_deploy` package. Use registration generations plus a durable archive commit marker to provide logical atomicity across `/srv/alt-deploy` and `/var/lib/alt-deploy`; all mutating lifecycle operations share `workstationctl.lock`. Keep long-running SSH/Ansible work outside the lock, and make the standalone API programs thin adapters over the installed control package.
+**Architecture:** Keep record parsing, archive persistence, lifecycle policy, archive orchestration, and registration admission in separate modules with a one-way dependency graph. Registration generations plus a durable archive commit marker provide logical atomicity across `/srv/alt-deploy` and `/var/lib/alt-deploy`; mutating lifecycle operations share `workstationctl.lock`, while SSH and Ansible work remains outside that lock. The standalone registration and pending-processing programs become thin adapters over the installed control package.
 
-**Tech Stack:** Python 3.11+, stdlib dataclasses, pathlib, hashlib, secrets, fcntl, stat, pwd, argparse, `http.server`, Bash, curl, systemd sandboxing, pytest, synthetic filesystem tests, fake PATH tests, and existing Ansible syntax checks.
+**Tech Stack:** Python 3.11+, stdlib dataclasses, pathlib, hashlib, secrets, fcntl, stat, pwd, argparse, `http.server`, Bash, curl, systemd sandboxing, pytest, synthetic filesystem tests, fake-PATH tests, and existing Ansible syntax checks.
 
 ## Global Constraints
 
-- Base implementation branch: `feat/alt-or3p2-machine-registry-lifecycle-20260721` at design commit `7d2effc3b9dc4e5a69c8aba2ae1c61ca8b23c685`.
+- Base branch: `feat/alt-or3p2-machine-registry-lifecycle-20260721`.
+- Approved design commit: `7d2effc3b9dc4e5a69c8aba2ae1c61ca8b23c685`.
 - Approved specification: `docs/superpowers/specs/2026-07-21-alt-or3p2-machine-registry-lifecycle-design.md`.
 - Use TDD and commit after each independently reviewable task.
-- Re-registration is initiated locally with `sudo alt-bootstrap-register`; the controller archive command never contacts a workstation.
+- Re-registration is initiated locally with `sudo alt-bootstrap-register`; the archive command never contacts a workstation.
 - Archive every matching active registration record from `pending`, `ready`, and `failed` in one operation.
-- Preview is read-only. Apply requires EUID `0` and a validated non-empty `--reason` of at most 500 Unicode code points with no control characters.
-- Assigned machines fail with `machine_assigned`; active `queued` or `running` jobs fail with `machine_busy` and expose only `job_id`, `state`, and `stage`.
-- Existing job history, logs, assignments, Vault state, SSH identity, known hosts, and ISO-derived assets remain unchanged.
-- Source registration bytes are preserved exactly in the protected archive; do not reserialize archived records.
-- Archive state lives only under `/var/lib/alt-deploy/machine-archives`, mode `0700`, owned by `altserver:altserver`; archive files use mode `0600`.
-- `manifest.json` and `commit.json` are immutable after durable creation. Mutable cleanup phase remains only in `transaction.json`.
-- Archive apply holds the existing global lock continuously from authoritative recheck through copy, commit, source cleanup, and final archive rename.
+- Preview is read-only. Apply requires EUID `0` and a trimmed reason containing 1–500 Unicode code points and no Unicode control characters.
+- Assigned machines fail with `machine_assigned`.
+- Jobs in `queued` or `running` fail with `machine_busy` and expose only `job_id`, `state`, and `stage`.
+- Existing jobs, logs, assignments, Vault state, SSH identity, known hosts, and ISO-derived assets remain unchanged.
+- Archived registration bytes remain byte-identical to the source.
+- Archive state exists only under `/var/lib/alt-deploy/machine-archives` and is private to `altserver:altserver`.
+- Archive directories use mode `0700`; archive JSON and copied records use mode `0600`.
+- `manifest.json` and `commit.json` are immutable after durable creation; only `transaction.json` carries mutable phase.
+- Archive apply holds `workstationctl.lock` from authoritative recheck through copy, commit, source cleanup, and final archive rename.
 - No lock is held during SSH wait, host-key scan, Ansible ping, or preflight.
-- A committed archive hides only its exact registration generations. A later generation with a new `registration_id` remains visible.
-- Legacy records without `registration_id` use `legacy-sha256:<digest of exact source bytes>` and are never rewritten merely to add an identifier.
-- There is no archive restore, assignment release, reassignment, job deletion, or worker cancellation in OR-3P2.
-- Do not access controller `192.168.100.17` or reference workstation `192.168.101.111` during implementation or CI.
+- A committed archive hides only its exact registration generations.
+- New registrations receive `reg-` plus 32 lowercase hexadecimal characters generated by the controller.
+- Legacy records use `legacy-sha256:<SHA-256 of exact source bytes>` and are not rewritten.
+- OR-3P2 contains no restore, assignment release, reassignment, job deletion, worker cancellation, or target-side remote execution.
+- Do not access controller `192.168.100.17` during implementation or CI.
+- Do not access reference workstation `192.168.101.111` during implementation or CI.
 - Do not install OR-3P2 on the live controller until OR-3P3 backup/restore is approved and executed.
-- Use only synthetic identities, temporary roots, fake commands, loopback-only HTTP tests, and CI-safe Vault fixtures.
+- Tests use synthetic identities, temporary roots, fake commands, loopback-only HTTP, and CI-safe Vault fixtures.
 - Remove temporary CI workflows and patch helpers before marking the PR Ready for review.
 - Do not merge without explicit user confirmation.
+
+## Dependency Graph
+
+```text
+config.py, errors.py, locks.py
+        │
+        ├── registration_records.py
+        │          │
+        │          └── machine_archive_repository.py
+        │                         │
+        ├─────────────────────────┴── machine_lifecycle.py
+        │                                      │
+        │                                      ├── machine_archive.py
+        │                                      └── registration_admission.py
+        │
+        ├── registry.py
+        ├── cli.py
+        ├── register_api.py
+        └── process_pending.py
+```
+
+`machine_archive_repository.py` never imports lifecycle policy. `machine_lifecycle.py` may import the archive repository. `machine_archive.py` imports both. This prevents the cyclic dependency that would result from placing persistence and service policy in the same module.
 
 ## File Map
 
 **Create production:**
 
-- `deploy/alt-linux/control/alt_deploy/machine_lifecycle.py` — normalized physical identity, registration generation parsing, safe active-record discovery, lifecycle snapshots, blockers, and committed-generation lookup.
-- `deploy/alt-linux/control/alt_deploy/machine_archive.py` — durable archive repository, transaction state machine, preview/apply service, reason validation, operator audit, cleanup resume, and idempotency.
-- `deploy/alt-linux/control/alt_deploy/registration_admission.py` — shared `/register` admission and atomic pending-record creation.
-- `deploy/alt-linux/bootstrap/alt-bootstrap-register` — workstation-side registration-only helper.
+- `deploy/alt-linux/control/alt_deploy/registration_records.py`
+- `deploy/alt-linux/control/alt_deploy/machine_archive_repository.py`
+- `deploy/alt-linux/control/alt_deploy/machine_lifecycle.py`
+- `deploy/alt-linux/control/alt_deploy/machine_archive.py`
+- `deploy/alt-linux/control/alt_deploy/registration_admission.py`
+- `deploy/alt-linux/bootstrap/alt-bootstrap-register`
 
 **Modify production:**
 
@@ -58,8 +87,9 @@
 **Create tests/support:**
 
 - `tests/alt_linux/support/lifecycle_fixtures.py`
-- `tests/alt_linux/test_machine_lifecycle.py`
+- `tests/alt_linux/test_registration_records.py`
 - `tests/alt_linux/test_machine_archive_repository.py`
+- `tests/alt_linux/test_machine_lifecycle.py`
 - `tests/alt_linux/test_machine_archive_service.py`
 - `tests/alt_linux/test_machine_archive_cli.py`
 - `tests/alt_linux/test_registration_admission.py`
@@ -81,6 +111,7 @@
 **Create/modify documentation:**
 
 - Create: `docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md`
+- Create after verification: `docs/superpowers/plans/2026-07-21-alt-or3p2-verification.md`
 - Modify: `deploy/alt-linux/README.md`
 - Modify: `docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md`
 - Modify: `docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md`
@@ -88,41 +119,51 @@
 
 ---
 
-### Task 1: Add lifecycle paths, safe lock opening, generation identity, and test fixtures
+### Task 1: Add archive paths, safe lock opening, record parsing, and reusable fixtures
 
 **Files:**
 
 - Modify: `deploy/alt-linux/control/alt_deploy/config.py`
 - Modify: `deploy/alt-linux/control/alt_deploy/locks.py`
-- Create: `deploy/alt-linux/control/alt_deploy/machine_lifecycle.py`
+- Create: `deploy/alt-linux/control/alt_deploy/registration_records.py`
 - Create: `tests/alt_linux/support/lifecycle_fixtures.py`
 - Modify: `tests/alt_linux/support/controller_sandbox.py`
-- Create: `tests/alt_linux/test_machine_lifecycle.py`
+- Create: `tests/alt_linux/test_registration_records.py`
 
 **Interfaces:**
 
-- Consumes: existing `Settings.state_root`, `Settings.registration_root`, `ControlError`, `AssignmentRepository`, `JobRepository`, and `ACTIVE_STATES`.
-- Produces:
-  - `Settings.machine_archives_dir -> Path`.
-  - `Settings.archive_transactions_dir -> Path`.
-  - `RegistrationGeneration(value: str, legacy: bool)`.
-  - `RegistrationCandidate(path, registration_state, machine_key, machine_uuid, hostname, ip, mac, registered_at, status, generation, raw_bytes, payload)`.
-  - `MachineIdentity(machine_key: str, machine_uuid: str, mac: str)`.
-  - `MachineLifecycleSnapshot(identity, candidates, assignment, active_job, completed_archive_id, cleanup_archive_id)`.
-  - `registration_generation(payload, raw_bytes) -> RegistrationGeneration`.
-  - `load_registration_candidate(path, registration_state) -> RegistrationCandidate`.
-  - `exclusive_lock(path)` that refuses symlinks and non-regular lock objects.
+- Produces `Settings.machine_archives_dir` and `Settings.archive_transactions_dir` as derived properties.
+- Produces `RegistrationGeneration`, `MachineIdentity`, and `RegistrationCandidate` dataclasses.
+- Produces `registration_generation(payload, raw_bytes)` and `load_registration_candidate(path, state)`.
+- Preserves the existing `exclusive_lock(path)` call signature while making its file opening no-follow and regular-file-only.
 
-- [ ] **Step 1: Write failing path-property and generation tests**
+- [ ] **Step 1: Write failing path and generation tests**
 
-Add these tests to `tests/alt_linux/test_machine_lifecycle.py`:
+Create `tests/alt_linux/test_registration_records.py`:
 
 ```python
-from alt_deploy.machine_lifecycle import registration_generation
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from alt_deploy.errors import ControlError
+from alt_deploy.registration_records import (
+    load_registration_candidate,
+    registration_generation,
+)
+from support.controller_sandbox import make_controller_sandbox
+from support.lifecycle_fixtures import (
+    TEST_MACHINE_UUID,
+    TEST_REGISTRATION_ID,
+    registration_payload,
+    write_registration,
+)
 
 
-def test_settings_derive_archive_paths(controller_sandbox) -> None:
-    settings = controller_sandbox.settings
+def test_settings_derive_archive_paths(tmp_path: Path) -> None:
+    settings = make_controller_sandbox(tmp_path).settings
     assert settings.machine_archives_dir == settings.state_root / "machine-archives"
     assert settings.archive_transactions_dir == (
         settings.state_root / "machine-archives" / ".transactions"
@@ -131,34 +172,40 @@ def test_settings_derive_archive_paths(controller_sandbox) -> None:
 
 def test_registration_generation_prefers_valid_registration_id() -> None:
     result = registration_generation(
-        {"registration_id": "reg-0123456789abcdef0123456789abcdef"},
-        b'{"registration_id":"reg-0123456789abcdef0123456789abcdef"}\n',
+        {"registration_id": TEST_REGISTRATION_ID},
+        b'{"registration_id":"reg-11111111111111111111111111111111"}\n',
     )
-    assert result.value == "reg-0123456789abcdef0123456789abcdef"
+    assert result.value == TEST_REGISTRATION_ID
     assert result.legacy is False
 
 
 def test_registration_generation_uses_exact_legacy_bytes() -> None:
-    first = registration_generation({"machine_key": "a"}, b'{"machine_key":"a"}\n')
-    second = registration_generation({"machine_key": "a"}, b'{ "machine_key": "a" }\n')
-    assert first.value.startswith("legacy-sha256:")
-    assert second.value.startswith("legacy-sha256:")
-    assert first.value != second.value
-    assert first.legacy is True
+    compact = registration_generation(
+        {"machine_key": "a"},
+        b'{"machine_key":"a"}\n',
+    )
+    spaced = registration_generation(
+        {"machine_key": "a"},
+        b'{ "machine_key": "a" }\n',
+    )
+    assert compact.value.startswith("legacy-sha256:")
+    assert spaced.value.startswith("legacy-sha256:")
+    assert compact.value != spaced.value
+    assert compact.legacy is True
 ```
 
 Run:
 
 ```bash
-python -m pytest -q tests/alt_linux/test_machine_lifecycle.py \
+python -m pytest -q tests/alt_linux/test_registration_records.py \
   -k 'settings_derive_archive_paths or registration_generation'
 ```
 
-Expected: FAIL because the properties and module do not exist.
+Expected: FAIL because the properties and module are absent.
 
-- [ ] **Step 2: Add derived `Settings` properties without breaking existing constructors**
+- [ ] **Step 2: Add derived `Settings` properties**
 
-Append to `Settings` rather than adding required dataclass constructor fields:
+Append to `Settings`:
 
 ```python
 @property
@@ -170,11 +217,72 @@ def archive_transactions_dir(self) -> Path:
     return self.machine_archives_dir / ".transactions"
 ```
 
-This preserves every existing `Settings(...)` fixture.
+Do not add required dataclass fields; existing `Settings(...)` fixtures must continue to construct without changes.
 
-- [ ] **Step 3: Add generation and candidate dataclasses**
+- [ ] **Step 3: Add deterministic fixture helpers**
 
-Create `machine_lifecycle.py` with these public definitions:
+Create `tests/alt_linux/support/lifecycle_fixtures.py`:
+
+```python
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from alt_deploy.config import Settings
+
+TEST_MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
+TEST_MACHINE_MAC = "c0:9b:f4:62:54:e5"
+TEST_REGISTRATION_ID = "reg-11111111111111111111111111111111"
+
+
+def registration_payload(
+    *,
+    machine_uuid: str = TEST_MACHINE_UUID,
+    machine_key: str | None = None,
+    mac: str = TEST_MACHINE_MAC,
+    registration_id: str | None = TEST_REGISTRATION_ID,
+    status: str = "pending",
+    registered_at: str = "2026-07-21T12:00:00+00:00",
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "machine_key": machine_key or machine_uuid,
+        "uuid": machine_uuid,
+        "hostname": "alt-lifecycle-test",
+        "ip": "192.0.2.56",
+        "mac": mac,
+        "registered_at": registered_at,
+        "status": status,
+    }
+    if registration_id is not None:
+        payload["registration_id"] = registration_id
+    return payload
+
+
+def write_registration(
+    settings: Settings,
+    state: str,
+    payload: dict[str, object],
+    *,
+    filename: str | None = None,
+) -> Path:
+    path = settings.registration_root / state / (
+        filename or f"{payload['machine_key']}.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+```
+
+Extend `ControllerSandbox.register_machine()` with an optional `registration_id` argument and write it only when non-null. Keep every existing caller valid.
+
+- [ ] **Step 4: Implement record dataclasses and exact-byte generation**
+
+Create `registration_records.py` with these public definitions:
 
 ```python
 from __future__ import annotations
@@ -192,6 +300,7 @@ from .errors import ControlError
 
 REGISTRATION_ID_RE = re.compile(r"^reg-[0-9a-f]{32}$")
 ACTIVE_REGISTRATION_STATES = ("pending", "ready", "failed")
+MAX_REGISTRATION_RECORD_BYTES = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -237,191 +346,248 @@ def registration_generation(
             )
         return RegistrationGeneration(value=value, legacy=False)
     digest = hashlib.sha256(raw_bytes).hexdigest()
-    return RegistrationGeneration(value=f"legacy-sha256:{digest}", legacy=True)
+    return RegistrationGeneration(
+        value=f"legacy-sha256:{digest}",
+        legacy=True,
+    )
 ```
 
-Implement `load_registration_candidate()` with `lstat`, regular-file validation, `os.open(..., O_NOFOLLOW)` when available, `fstat`, bounded full read, JSON-object validation, normalized identity, and directory-supplied `registration_state`. Do not require payload `status` to equal the directory name.
+Implement a private `_read_regular_bytes(path)` using `lstat`, `O_NOFOLLOW` when available, `fstat`, a size limit of `MAX_REGISTRATION_RECORD_BYTES`, and a second `fstat` after reading. Reject symlinks, non-regular files, size changes, and unsafe open failures with `machine_record_unsafe`.
 
-- [ ] **Step 4: Add exact candidate safety tests**
-
-Add named tests with these assertions:
+Implement `load_registration_candidate()` with this exact validation order:
 
 ```python
-def test_ready_directory_accepts_awaiting_assignment_status(tmp_path: Path) -> None:
+def load_registration_candidate(
+    path: Path,
+    registration_state: str,
+) -> RegistrationCandidate:
+    if registration_state not in ACTIVE_REGISTRATION_STATES:
+        raise ControlError(
+            code="machine_record_invalid",
+            message="Registration record has an invalid state directory",
+            exit_code=4,
+        )
+    raw_bytes = _read_regular_bytes(path)
+    try:
+        decoded = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ControlError(
+            code="machine_record_invalid",
+            message="Registration record is not valid UTF-8 JSON",
+            exit_code=4,
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise ControlError(
+            code="machine_record_invalid",
+            message="Registration record must be a JSON object",
+            exit_code=4,
+        )
+    machine_key = str(decoded.get("machine_key") or "").strip().lower()
+    machine_uuid = str(decoded.get("uuid") or machine_key).strip().lower()
+    mac = str(decoded.get("mac") or "").strip().lower()
+    if not machine_key or not machine_uuid:
+        raise ControlError(
+            code="machine_record_invalid",
+            message="Registration record identity is missing",
+            exit_code=4,
+        )
+    return RegistrationCandidate(
+        path=path,
+        registration_state=registration_state,
+        machine_key=machine_key,
+        machine_uuid=machine_uuid,
+        hostname=str(decoded.get("hostname") or ""),
+        ip=str(decoded.get("ip") or ""),
+        mac=mac,
+        registered_at=str(decoded.get("registered_at") or ""),
+        status=str(decoded.get("status") or registration_state),
+        generation=registration_generation(decoded, raw_bytes),
+        raw_bytes=raw_bytes,
+        payload=dict(decoded),
+    )
+```
+
+The directory defines `registration_state`; payload `status=awaiting_assignment` is valid in `ready`.
+
+- [ ] **Step 5: Add record safety tests**
+
+Append:
+
+```python
+def test_ready_directory_accepts_awaiting_assignment(tmp_path: Path) -> None:
+    settings = make_controller_sandbox(tmp_path).settings
     path = write_registration(
-        tmp_path,
-        state="ready",
-        status="awaiting_assignment",
-        registration_id="reg-11111111111111111111111111111111",
+        settings,
+        "ready",
+        registration_payload(status="awaiting_assignment"),
     )
     candidate = load_registration_candidate(path, "ready")
     assert candidate.registration_state == "ready"
     assert candidate.status == "awaiting_assignment"
+    assert candidate.raw_bytes == path.read_bytes()
 
 
 def test_candidate_rejects_symlink(tmp_path: Path) -> None:
-    target = write_registration(tmp_path, state="ready")
-    link = tmp_path / "ready" / "linked.json"
+    settings = make_controller_sandbox(tmp_path).settings
+    target = write_registration(settings, "ready", registration_payload())
+    link = settings.registration_root / "ready" / "linked.json"
     link.symlink_to(target)
     with pytest.raises(ControlError) as exc:
         load_registration_candidate(link, "ready")
     assert exc.value.code == "machine_record_unsafe"
 
 
-def test_candidate_rejects_non_object_json(tmp_path: Path) -> None:
-    path = tmp_path / "ready" / "bad.json"
+@pytest.mark.parametrize(
+    "raw_text",
+    ["[]\n", "{broken\n", "\"text\"\n"],
+)
+def test_candidate_rejects_invalid_json_shape(
+    tmp_path: Path,
+    raw_text: str,
+) -> None:
+    settings = make_controller_sandbox(tmp_path).settings
+    path = settings.registration_root / "ready" / f"{TEST_MACHINE_UUID}.json"
     path.parent.mkdir(parents=True)
-    path.write_text("[]\n", encoding="utf-8")
+    path.write_text(raw_text, encoding="utf-8")
     with pytest.raises(ControlError) as exc:
         load_registration_candidate(path, "ready")
     assert exc.value.code == "machine_record_invalid"
 ```
 
-Also test invalid `registration_id`, missing identity, UUID normalization, MAC normalization, and byte preservation.
+Add concrete tests for invalid registration ID, missing identity, lowercase normalization, byte-size limit, and non-regular FIFO when `os.mkfifo` is available.
 
-- [ ] **Step 5: Harden the shared lock against symlinks and non-regular files**
+- [ ] **Step 6: Harden `exclusive_lock`**
 
-Replace `Path.open("a+")` with descriptor-based opening:
+Replace `Path.open("a+")` in `locks.py` with:
 
 ```python
-flags = os.O_RDWR | os.O_CREAT
-if hasattr(os, "O_NOFOLLOW"):
-    flags |= os.O_NOFOLLOW
-try:
-    descriptor = os.open(path, flags, 0o600)
-except OSError as exc:
-    raise ControlError(
-        code="controller_lock_unsafe",
-        message="Controller lifecycle lock cannot be opened safely",
-        exit_code=6,
-    ) from exc
-
-with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
-    metadata = os.fstat(handle.fileno())
-    if not stat.S_ISREG(metadata.st_mode):
+@contextmanager
+def exclusive_lock(path: Path) -> Iterator[None]:
+    ensure_private_dir(path.parent)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as exc:
         raise ControlError(
             code="controller_lock_unsafe",
-            message="Controller lifecycle lock is not a regular file",
+            message="Controller lifecycle lock cannot be opened safely",
             exit_code=6,
-        )
-    os.fchmod(handle.fileno(), 0o600)
-    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        ) from exc
     try:
-        yield
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ControlError(
+                code="controller_lock_unsafe",
+                message="Controller lifecycle lock is not a regular file",
+                exit_code=6,
+            )
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        os.close(descriptor)
 ```
 
-Add tests proving a symlink lock fails before the body executes and a regular lock remains mode `0600`.
+Import `ControlError` and `stat`. Add tests that a symlink lock fails before the context body and a regular lock ends with mode `0600`.
 
-- [ ] **Step 6: Add reusable synthetic lifecycle fixtures**
-
-Create `tests/alt_linux/support/lifecycle_fixtures.py` with:
-
-```python
-TEST_MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
-TEST_MACHINE_MAC = "c0:9b:f4:62:54:e5"
-TEST_REGISTRATION_ID = "reg-11111111111111111111111111111111"
-
-
-def registration_payload(
-    *,
-    machine_uuid: str = TEST_MACHINE_UUID,
-    registration_id: str | None = TEST_REGISTRATION_ID,
-    status: str = "pending",
-    registered_at: str = "2026-07-21T12:00:00+00:00",
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "machine_key": machine_uuid,
-        "uuid": machine_uuid,
-        "hostname": "alt-lifecycle-test",
-        "ip": "192.0.2.56",
-        "mac": TEST_MACHINE_MAC,
-        "registered_at": registered_at,
-        "status": status,
-    }
-    if registration_id is not None:
-        payload["registration_id"] = registration_id
-    return payload
-```
-
-Add `write_registration(settings, state, payload, filename=None) -> Path` that writes deterministic UTF-8 JSON mode `0600` and returns the path. Extend `ControllerSandbox.register_machine()` with optional `registration_id` while preserving existing call sites.
-
-- [ ] **Step 7: Run focused and regression tests, then commit**
+- [ ] **Step 7: Run and commit**
 
 ```bash
 python -m pytest -q \
-  tests/alt_linux/test_machine_lifecycle.py \
+  tests/alt_linux/test_registration_records.py \
   tests/alt_linux/test_provision_preview.py \
-  tests/alt_linux/test_provision_start.py \
-  tests/alt_linux/test_registry_cli.py
+  tests/alt_linux/test_provision_start.py
 
 git add \
   deploy/alt-linux/control/alt_deploy/config.py \
   deploy/alt-linux/control/alt_deploy/locks.py \
-  deploy/alt-linux/control/alt_deploy/machine_lifecycle.py \
+  deploy/alt-linux/control/alt_deploy/registration_records.py \
   tests/alt_linux/support/lifecycle_fixtures.py \
   tests/alt_linux/support/controller_sandbox.py \
-  tests/alt_linux/test_machine_lifecycle.py
+  tests/alt_linux/test_registration_records.py
 
-git commit -m "feat: add ALT registration lifecycle primitives"
+git commit -m "feat: add ALT registration record primitives"
 ```
 
-Expected: all selected tests PASS.
+Expected: PASS.
 
 ---
 
-### Task 2: Implement protected archive persistence and durable transaction mechanics
+### Task 2: Implement durable archive persistence without lifecycle policy
 
 **Files:**
 
-- Create: `deploy/alt-linux/control/alt_deploy/machine_archive.py`
+- Create: `deploy/alt-linux/control/alt_deploy/machine_archive_repository.py`
 - Create: `tests/alt_linux/test_machine_archive_repository.py`
 
 **Interfaces:**
 
-- Consumes: `Settings.machine_archives_dir`, `Settings.archive_transactions_dir`, `RegistrationCandidate`, `ensure_private_dir`, and `ControlError`.
-- Produces:
-  - `ArchiveRecordPlan(state, source_path, archive_name, generation, size, sha256)`.
-  - `ArchiveTransaction(archive_id, directory, phase, machine_key, machine_uuid, record_plans)`.
-  - `MachineArchiveRepository.allocate_archive_id() -> str`.
-  - `MachineArchiveRepository.prepare(...) -> ArchiveTransaction`.
-  - `MachineArchiveRepository.copy_and_verify(transaction, candidates, manifest) -> ArchiveTransaction`.
-  - `MachineArchiveRepository.commit(transaction) -> ArchiveTransaction`.
-  - `MachineArchiveRepository.cleanup_sources(transaction) -> ArchiveTransaction`.
-  - `MachineArchiveRepository.finalize(transaction) -> Path`.
-  - `MachineArchiveRepository.find_committed_for_generation(generation) -> str | None`.
-  - `MachineArchiveRepository.find_latest_for_machine(machine_key) -> dict[str, object] | None`.
+- Produces `ArchiveRecordPlan` and `ArchiveTransaction` dataclasses.
+- Produces `MachineArchiveRepository` methods:
+  - `allocate_archive_id()`.
+  - `prepare(machine_identity, candidates, audit)`.
+  - `copy_and_verify(transaction, candidates)`.
+  - `commit(transaction)`.
+  - `cleanup_sources(transaction)`.
+  - `finalize(transaction)`.
+  - `find_resumable(machine_key)`.
+  - `find_latest_completed(machine_key)`.
+  - `committed_generation_index()`.
+- Contains filesystem mechanics only; it does not inspect assignments or jobs.
 
-- [ ] **Step 1: Write failing repository-layout and permission tests**
+- [ ] **Step 1: Write failing private-layout test**
 
 ```python
+from __future__ import annotations
+
+import json
+import stat
+from pathlib import Path
+
+import pytest
+
+from alt_deploy.errors import ControlError
+from alt_deploy.machine_archive_repository import MachineArchiveRepository
+from alt_deploy.registration_records import MachineIdentity
+from support.controller_sandbox import make_controller_sandbox
+from support.lifecycle_fixtures import registration_payload, write_registration
+
+
 def test_prepare_creates_private_transaction_without_commit(
     tmp_path: Path,
-    controller_sandbox,
 ) -> None:
-    repository = MachineArchiveRepository(controller_sandbox.settings)
+    sandbox = make_controller_sandbox(tmp_path)
+    source = write_registration(
+        sandbox.settings,
+        "ready",
+        registration_payload(status="awaiting_assignment"),
+    )
+    candidate = load_registration_candidate(source, "ready")
+    repository = MachineArchiveRepository(sandbox.settings)
     transaction = repository.prepare(
-        archive_id="archive-20260721T120000Z-11111111",
-        machine_key=TEST_MACHINE_UUID,
-        machine_uuid=TEST_MACHINE_UUID,
-        planned_sources=[("ready", Path("/synthetic/ready.json"))],
+        MachineIdentity(
+            machine_key=candidate.machine_key,
+            machine_uuid=candidate.machine_uuid,
+            mac=candidate.mac,
+        ),
+        (candidate,),
+        {
+            "reason": "Переустановка тестовой машины",
+            "operator_uid": 1000,
+            "operator_username": "operator",
+            "archived_at": "2026-07-21T12:00:00+00:00",
+        },
     )
     assert transaction.phase == "prepared"
     assert stat.S_IMODE(transaction.directory.stat().st_mode) == 0o700
     assert (transaction.directory / "transaction.json").is_file()
+    assert not (transaction.directory / "manifest.json").exists()
     assert not (transaction.directory / "commit.json").exists()
-
-
-def test_archive_root_rejects_symlink(controller_sandbox) -> None:
-    settings = controller_sandbox.settings
-    target = settings.state_root / "elsewhere"
-    target.mkdir(parents=True)
-    settings.machine_archives_dir.parent.mkdir(parents=True, exist_ok=True)
-    settings.machine_archives_dir.symlink_to(target, target_is_directory=True)
-    with pytest.raises(ControlError) as exc:
-        MachineArchiveRepository(settings).list_committed()
-    assert exc.value.code == "machine_archive_invalid"
 ```
 
 Run:
@@ -430,16 +596,18 @@ Run:
 python -m pytest -q tests/alt_linux/test_machine_archive_repository.py
 ```
 
-Expected: FAIL because `MachineArchiveRepository` does not exist.
+Expected: FAIL because the repository module is absent.
 
-- [ ] **Step 2: Add immutable and mutable archive schemas**
+- [ ] **Step 2: Define persistence dataclasses and archive IDs**
 
-Define constants and dataclasses:
+Use:
 
 ```python
 ARCHIVE_SCHEMA_VERSION = 1
 ARCHIVE_ID_RE = re.compile(r"^archive-\d{8}T\d{6}Z-[0-9a-f]{8}$")
-TRANSACTION_PHASES = {"prepared", "copied", "committed", "cleaned", "aborted"}
+TRANSACTION_PHASES = frozenset(
+    {"prepared", "copied", "committed", "cleaned", "aborted"}
+)
 
 
 @dataclass(frozen=True)
@@ -462,11 +630,13 @@ class ArchiveTransaction:
     record_plans: tuple[ArchiveRecordPlan, ...]
 ```
 
-Use one canonical archive filename per state: `pending.json`, `ready.json`, `failed.json`. Duplicate candidates for the same state are rejected before persistence.
+`allocate_archive_id()` returns `archive-<UTC YYYYMMDDTHHMMSSZ>-<8 lowercase hex>` and retries collisions 20 times before `machine_archive_failed`.
 
-- [ ] **Step 3: Add durable no-follow write helpers**
+- [ ] **Step 3: Implement service-owned private roots and durable writes**
 
-Inside `machine_archive.py`, implement focused private helpers:
+Resolve service UID/GID with `pwd.getpwnam(settings.service_user)`. Every created archive directory and file must be `fchown`ed or `chown`ed to that UID/GID after no-follow validation.
+
+Implement these private helpers with real bodies:
 
 ```python
 def _fsync_directory(path: Path) -> None:
@@ -480,98 +650,158 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _durable_write_json(path: Path, payload: Mapping[str, object]) -> None:
-    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
-    encoded = (
+def _encoded_json(payload: Mapping[str, object]) -> bytes:
+    return (
         json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n"
     ).encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(temporary, flags, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb", closefd=False) as handle:
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-        temporary.unlink(missing_ok=True)
 ```
 
-Implement exact-byte copying with source `O_NOFOLLOW`, destination `O_EXCL|O_NOFOLLOW`, SHA-256 during copy, destination fsync, reopen verification, and directory fsync.
+Implement `_durable_create(path, data, mode)` using `O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW`, `fchmod`, `fchown`, write, flush, file fsync, close, and parent directory fsync. Implement `_durable_replace_json()` through a unique temporary file in the same directory and `os.replace`.
 
-- [ ] **Step 4: Implement transaction phase writes and immutable commit evidence**
+If required fsync fails, raise `machine_archive_failed`; do not silently report success.
 
-Required payload shapes:
+- [ ] **Step 4: Implement phase files and exact-byte copy**
+
+`prepare()` creates `.transactions/<archive-id>/records`, writes `transaction.json` phase `prepared`, and leaves sources unchanged.
+
+`copy_and_verify()` performs, for each candidate:
+
+1. open source no-follow;
+2. verify current generation equals the planned generation;
+3. create `records/<state>.json` exclusively;
+4. copy exact bytes while computing SHA-256;
+5. fsync and reopen destination;
+6. verify size and digest;
+7. collect one `ArchiveRecordPlan` per state;
+8. write immutable `manifest.json` once after all records verify;
+9. replace `transaction.json` with phase `copied`.
+
+Manifest shape:
 
 ```python
-transaction_payload = {
-    "schema_version": ARCHIVE_SCHEMA_VERSION,
-    "archive_id": archive_id,
-    "machine_key": machine_key,
-    "machine_uuid": machine_uuid,
-    "phase": phase,
-    "planned_sources": planned_sources,
-    "updated_at": utc_now(),
-}
-
-commit_payload = {
-    "schema_version": ARCHIVE_SCHEMA_VERSION,
-    "archive_id": archive_id,
-    "machine_uuid": machine_uuid,
-    "machine_key": machine_key,
+{
+    "schema_version": 1,
+    "archive_id": transaction.archive_id,
+    "machine_uuid": transaction.machine_uuid,
+    "machine_key": transaction.machine_key,
+    "archived_at": audit["archived_at"],
+    "reason": audit["reason"],
+    "operator_uid": audit["operator_uid"],
+    "operator_username": audit["operator_username"],
+    "source_states": [plan.state for plan in plans],
     "registration_generations": [plan.generation for plan in plans],
-    "committed_at": utc_now(),
-    "manifest_sha256": manifest_digest,
+    "records": [
+        {
+            "state": plan.state,
+            "filename": plan.archive_name,
+            "size": plan.size,
+            "sha256": plan.sha256,
+        }
+        for plan in plans
+    ],
+    "commit_phase": "committed",
 }
 ```
 
-`manifest.json` is written once after all copied records verify. `commit.json` uses exclusive creation and is never replaced. A pre-existing commit with different bytes is `machine_archive_invalid`.
+Reject two candidates from the same state with `machine_identity_conflict`.
 
-- [ ] **Step 5: Add copy, commit, cleanup, and finalization tests**
+- [ ] **Step 5: Implement durable commit, cleanup, and finalization**
 
-Add tests proving:
+`commit()` calculates SHA-256 of exact `manifest.json` bytes and exclusively creates:
 
 ```python
-def test_copy_preserves_exact_bytes_and_manifest_hash(...):
+{
+    "schema_version": 1,
+    "archive_id": transaction.archive_id,
+    "machine_uuid": transaction.machine_uuid,
+    "machine_key": transaction.machine_key,
+    "registration_generations": [
+        plan.generation for plan in transaction.record_plans
+    ],
+    "committed_at": utc_now(),
+    "manifest_sha256": manifest_sha256,
+}
+```
+
+Then replace `transaction.json` with phase `committed`.
+
+`cleanup_sources()` reopens every source no-follow, recomputes generation, size, and digest, and unlinks only an exact match. A missing source counts as already cleaned. A different generation or digest raises `machine_archive_cleanup_required` with only `archive_id`. After successful unlinks, fsync state directories and write phase `cleaned`.
+
+`finalize()` uses `os.replace(transaction.directory, machine_archives_dir/archive_id)` and fsyncs the archive root. Source and destination are inside the same archive filesystem.
+
+- [ ] **Step 6: Implement strict archive scanning**
+
+`committed_generation_index()` scans completed archives and committed transaction directories. Every expected archive object must be a non-symlink regular file or directory with valid schema, matching IDs, valid manifest hash, and valid phase. Any malformed archive state raises `machine_archive_invalid` rather than returning a partial index.
+
+Return type:
+
+```python
+def committed_generation_index(self) -> dict[str, str]:
+    """Map registration generation to archive ID."""
+```
+
+`find_resumable(machine_key)` returns exactly one committed, non-cleaned transaction or `None`; multiple matches are `machine_archive_invalid`.
+
+- [ ] **Step 7: Add persistence tests**
+
+Add tests with exact assertions:
+
+```python
+def test_copy_preserves_bytes_and_hash(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    source = write_registration(
+        sandbox.settings,
+        "ready",
+        registration_payload(status="awaiting_assignment"),
+    )
     original = source.read_bytes()
-    copied = transaction.directory / "records" / "ready.json"
-    assert copied.read_bytes() == original
-    entry = json.loads((transaction.directory / "manifest.json").read_text())["records"][0]
-    assert entry["size"] == len(original)
-    assert entry["sha256"] == hashlib.sha256(original).hexdigest()
+    repository = MachineArchiveRepository(sandbox.settings)
+    transaction = prepared_transaction(repository, source, "ready")
+    copied = repository.copy_and_verify(
+        transaction,
+        (load_registration_candidate(source, "ready"),),
+    )
+    archived = copied.directory / "records" / "ready.json"
+    assert archived.read_bytes() == original
+    manifest = json.loads(
+        (copied.directory / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["records"][0]["size"] == len(original)
+    assert manifest["records"][0]["sha256"] == hashlib.sha256(original).hexdigest()
 
 
-def test_commit_marker_makes_generation_discoverable(...):
-    committed = repository.commit(transaction)
-    assert committed.phase == "committed"
-    assert repository.find_committed_for_generation(TEST_REGISTRATION_ID) == transaction.archive_id
-
-
-def test_cleanup_refuses_newer_generation_at_same_source_path(...):
-    repository.commit(transaction)
-    write_registration(..., registration_id="reg-22222222222222222222222222222222")
+def test_cleanup_refuses_new_generation_at_same_path(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    source = write_registration(
+        sandbox.settings,
+        "pending",
+        registration_payload(),
+    )
+    repository = MachineArchiveRepository(sandbox.settings)
+    transaction = committed_transaction(repository, source, "pending")
+    write_registration(
+        sandbox.settings,
+        "pending",
+        registration_payload(
+            registration_id="reg-22222222222222222222222222222222"
+        ),
+    )
     with pytest.raises(ControlError) as exc:
         repository.cleanup_sources(transaction)
     assert exc.value.code == "machine_archive_cleanup_required"
+    assert exc.value.details == {"archive_id": transaction.archive_id}
     assert source.is_file()
 ```
 
-Also prove malformed `transaction.json`, malformed `manifest.json`, symlinked commit, wrong manifest hash, unexpected archive child type, and final rename within the archive filesystem fail closed.
+Add tests for private modes/ownership, symlink archive root, malformed transaction JSON, malformed manifest JSON, wrong manifest hash, symlink commit marker, unexpected child type, source disappearance after commit, completed final rename, and committed generation index.
 
-- [ ] **Step 6: Run and commit**
+- [ ] **Step 8: Run and commit**
 
 ```bash
 python -m pytest -q tests/alt_linux/test_machine_archive_repository.py
 
 git add \
-  deploy/alt-linux/control/alt_deploy/machine_archive.py \
+  deploy/alt-linux/control/alt_deploy/machine_archive_repository.py \
   tests/alt_linux/test_machine_archive_repository.py
 
 git commit -m "feat: add durable ALT machine archive storage"
@@ -581,90 +811,148 @@ Expected: PASS.
 
 ---
 
-### Task 3: Add lifecycle guard, blockers, active-generation discovery, and registry filtering
+### Task 3: Add lifecycle discovery, blockers, and generation-aware registry reads
 
 **Files:**
 
-- Modify: `deploy/alt-linux/control/alt_deploy/machine_lifecycle.py`
+- Create: `deploy/alt-linux/control/alt_deploy/machine_lifecycle.py`
 - Modify: `deploy/alt-linux/control/alt_deploy/registry.py`
-- Modify: `tests/alt_linux/test_machine_lifecycle.py`
+- Create: `tests/alt_linux/test_machine_lifecycle.py`
 - Modify: `tests/alt_linux/test_registry_cli.py`
 
 **Interfaces:**
 
-- Consumes: `MachineArchiveRepository`, `AssignmentRepository`, `JobRepository.active_for_machine()`, and registration candidate primitives.
-- Produces:
-  - `MachineLifecycleGuard.discover(identifier) -> tuple[RegistrationCandidate, ...]`.
-  - `MachineLifecycleGuard.snapshot_for_removal(identifier) -> MachineLifecycleSnapshot`.
-  - `MachineLifecycleGuard.assert_removal_allowed(snapshot) -> None`.
-  - `MachineLifecycleGuard.generation_is_committed(generation) -> bool`.
-  - `MachineLifecycleGuard.assert_generation_active(candidate) -> None`.
-  - generation-aware `MachineRepository.list()` and `get()`.
+- Produces `MachineLifecycleSnapshot`.
+- Produces `MachineLifecycleGuard.discover(identifier)`.
+- Produces `snapshot_for_removal(identifier)` and `assert_removal_allowed(snapshot)`.
+- Produces `generation_is_committed(generation)` and `generation_is_active(path, state, generation)`.
+- `MachineRepository` filters only exact committed generations.
 
 - [ ] **Step 1: Write failing discovery and blocker tests**
 
+Create `tests/alt_linux/test_machine_lifecycle.py` with:
+
 ```python
-def test_discovery_collects_all_states_for_same_machine(controller_sandbox) -> None:
-    write_registration(controller_sandbox.settings, "pending", registration_payload(
-        registration_id="reg-11111111111111111111111111111111"
-    ))
-    write_registration(controller_sandbox.settings, "ready", registration_payload(
-        registration_id="reg-22222222222222222222222222222222"
-    ))
-    write_registration(controller_sandbox.settings, "failed", registration_payload(
-        registration_id="reg-33333333333333333333333333333333"
-    ))
-    snapshot = MachineLifecycleGuard(controller_sandbox.settings).snapshot_for_removal(
-        TEST_MACHINE_UUID
-    )
-    assert [candidate.registration_state for candidate in snapshot.candidates] == [
-        "pending", "ready", "failed"
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from alt_deploy.assignments import AssignmentRepository
+from alt_deploy.errors import ControlError
+from alt_deploy.jobs import JobRepository
+from alt_deploy.machine_lifecycle import MachineLifecycleGuard
+from support.controller_sandbox import make_controller_sandbox
+from support.lifecycle_fixtures import (
+    TEST_MACHINE_UUID,
+    registration_payload,
+    write_registration,
+)
+from support.payloads import provision_request
+
+
+def test_discovery_collects_all_states(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    for state, generation in (
+        ("pending", "reg-11111111111111111111111111111111"),
+        ("ready", "reg-22222222222222222222222222222222"),
+        ("failed", "reg-33333333333333333333333333333333"),
+    ):
+        write_registration(
+            sandbox.settings,
+            state,
+            registration_payload(registration_id=generation),
+        )
+    snapshot = MachineLifecycleGuard(
+        sandbox.settings
+    ).snapshot_for_removal(TEST_MACHINE_UUID)
+    assert [item.registration_state for item in snapshot.candidates] == [
+        "pending",
+        "ready",
+        "failed",
     ]
 
 
-def test_assigned_machine_is_blocked(controller_sandbox) -> None:
-    candidate = write_registration(...)
-    AssignmentRepository(controller_sandbox.settings).write(TEST_MACHINE_UUID, assignment_payload())
-    guard = MachineLifecycleGuard(controller_sandbox.settings)
+def test_assigned_machine_is_blocked(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(sandbox.settings, "ready", registration_payload())
+    AssignmentRepository(sandbox.settings).write(
+        TEST_MACHINE_UUID,
+        {
+            "machine_uuid": TEST_MACHINE_UUID,
+            "employee_login": "test-user",
+            "employee_full_name": "Тестовый Пользователь",
+            "final_hostname": "alt-lifecycle-test",
+            "profile": "standard",
+            "job_id": "job-test",
+            "completed_at": "2026-07-21T12:30:00+00:00",
+            "verification": {"hostname": True},
+        },
+    )
+    guard = MachineLifecycleGuard(sandbox.settings)
     snapshot = guard.snapshot_for_removal(TEST_MACHINE_UUID)
     with pytest.raises(ControlError) as exc:
         guard.assert_removal_allowed(snapshot)
     assert exc.value.code == "machine_assigned"
 
 
-def test_busy_machine_exposes_safe_job_fields_only(controller_sandbox) -> None:
-    job = JobRepository(controller_sandbox.settings).create(provision_request())
-    snapshot = MachineLifecycleGuard(controller_sandbox.settings).snapshot_for_removal(
-        TEST_MACHINE_UUID
-    )
+def test_busy_machine_exposes_safe_fields(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(sandbox.settings, "ready", registration_payload())
+    job = JobRepository(sandbox.settings).create(provision_request())
+    guard = MachineLifecycleGuard(sandbox.settings)
+    snapshot = guard.snapshot_for_removal(TEST_MACHINE_UUID)
     with pytest.raises(ControlError) as exc:
-        MachineLifecycleGuard(controller_sandbox.settings).assert_removal_allowed(snapshot)
+        guard.assert_removal_allowed(snapshot)
     assert exc.value.code == "machine_busy"
-    assert set(exc.value.details) == {"job_id", "state", "stage"}
-    assert exc.value.details["job_id"] == job.job_id
+    assert exc.value.details == {
+        "job_id": job.job_id,
+        "state": "queued",
+        "stage": "created",
+    }
 ```
 
-Expected: FAIL because the guard methods do not exist.
+Expected: FAIL because the guard module is absent.
 
 - [ ] **Step 2: Implement two-pass candidate discovery**
 
-Use this algorithm exactly:
-
-1. Normalize the requested identifier to lowercase.
-2. Inspect exact filenames `<state>/<identifier>.json`; an unsafe or malformed exact path fails closed.
-3. Safely scan regular `*.json` files in all three states; skip malformed non-exact files because they cannot be attributed to the selected machine.
-4. Select valid records whose normalized `machine_key` or resolved physical UUID equals the requested identifier.
-5. Resolve one canonical `MachineIdentity` from the selected candidates.
-6. Include every other valid record matching that physical identity, even under a non-canonical filename.
-7. Reject conflicts in UUID, machine key, MAC, generation, or multiple records in one state with `machine_identity_conflict`.
-8. Sort candidates in state order `pending`, `ready`, `failed`.
-
-Do not reuse `MachineRepository.list()` inside the guard; that would create a circular dependency after registry filtering is added.
-
-- [ ] **Step 3: Implement blockers and malformed-store behavior**
+Define:
 
 ```python
-def assert_removal_allowed(self, snapshot: MachineLifecycleSnapshot) -> None:
+@dataclass(frozen=True)
+class MachineLifecycleSnapshot:
+    identity: MachineIdentity
+    candidates: tuple[RegistrationCandidate, ...]
+    assignment: dict[str, object] | None
+    active_job: JobRecord | None
+    completed_archive_id: str | None
+    cleanup_archive_id: str | None
+```
+
+`discover(identifier)` executes this fixed algorithm:
+
+1. lowercase and trim the identifier; empty input is `machine_not_found`;
+2. inspect exact `<state>/<identifier>.json` paths first; an exact unsafe or malformed object fails closed;
+3. scan direct regular `*.json` children in all three state directories;
+4. skip malformed non-exact files because they cannot be attributed to the selected identity;
+5. select valid records whose `machine_key` or `machine_uuid` matches the identifier;
+6. resolve canonical physical identity from the first selected record;
+7. include every valid record with the same normalized physical identity;
+8. reject UUID, machine-key, MAC, generation, or per-state duplicate conflicts with `machine_identity_conflict`;
+9. sort by `pending`, `ready`, `failed`.
+
+Do not call `MachineRepository.list()` from this module.
+
+- [ ] **Step 3: Implement snapshots and blockers**
+
+Use `AssignmentRepository.get(machine_uuid)`, `JobRepository.active_for_machine(machine_uuid)`, `find_latest_completed(machine_key)`, and `find_resumable(machine_key)`.
+
+```python
+def assert_removal_allowed(
+    self,
+    snapshot: MachineLifecycleSnapshot,
+) -> None:
     if snapshot.assignment is not None:
         raise ControlError(
             code="machine_assigned",
@@ -692,36 +980,54 @@ def assert_removal_allowed(self, snapshot: MachineLifecycleSnapshot) -> None:
         )
 ```
 
-Malformed real jobs and malformed assignment/archive state propagate as fail-closed `ControlError`; never convert them to an empty blocker result.
+Malformed jobs, assignments, or archive state must propagate and never become an empty blocker result.
 
-- [ ] **Step 4: Filter exact committed generations in `MachineRepository`**
+- [ ] **Step 4: Add exact-generation registry filtering**
 
-Refactor record loading to obtain exact bytes and generation identity before selection. Exclude a record only when:
+In `MachineRepository.list()`:
+
+1. obtain `committed = MachineArchiveRepository(settings).committed_generation_index()`;
+2. load valid active records with `load_registration_candidate()`;
+3. exclude only candidates where `candidate.generation.value in committed`;
+4. preserve current newest-record precedence and assignment/job overlays;
+5. construct `MachineRecord` from candidate payload and path.
+
+The existing behavior of skipping malformed unrelated active records remains unchanged. Malformed archive state fails the whole list operation.
+
+- [ ] **Step 5: Add registry-generation tests**
+
+Append to `test_registry_cli.py`:
 
 ```python
-archive_repository.find_committed_for_generation(
-    candidate.generation.value
-) is not None
-```
-
-Then construct `MachineRecord` from `candidate.payload`, retaining the existing newest-record sort and assignment/job overlays. A committed old generation plus an active new generation must return the new record.
-
-- [ ] **Step 5: Add committed-generation registry tests**
-
-```python
-def test_committed_old_generation_is_hidden(settings) -> None:
-    old = write_registration(settings, "ready", registration_payload(
-        registration_id="reg-11111111111111111111111111111111"
-    ))
-    commit_generation(settings, generation="reg-11111111111111111111111111111111")
+def test_committed_old_generation_is_hidden(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    source = write_registration(
+        settings,
+        "ready",
+        registration_payload(status="awaiting_assignment"),
+    )
+    commit_candidate(settings, source, "ready")
     assert MachineRepository(settings).list() == []
 
 
-def test_new_generation_is_visible_after_old_archive(settings) -> None:
-    commit_generation(settings, generation="reg-11111111111111111111111111111111")
-    write_registration(settings, "pending", registration_payload(
-        registration_id="reg-22222222222222222222222222222222"
-    ))
+def test_new_generation_is_visible_after_old_archive(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    old_source = write_registration(
+        settings,
+        "ready",
+        registration_payload(
+            registration_id="reg-11111111111111111111111111111111",
+            status="awaiting_assignment",
+        ),
+    )
+    commit_candidate(settings, old_source, "ready")
+    write_registration(
+        settings,
+        "pending",
+        registration_payload(
+            registration_id="reg-22222222222222222222222222222222"
+        ),
+    )
     machines = MachineRepository(settings).list()
     assert len(machines) == 1
     assert machines[0].raw["registration_id"] == (
@@ -729,7 +1035,7 @@ def test_new_generation_is_visible_after_old_archive(settings) -> None:
     )
 ```
 
-Also test legacy fingerprints, malformed archive state, assigned status overlay, malformed-job fail-closed behavior, and current newest-duplicate precedence.
+Add tests for legacy fingerprint filtering, malformed archive fail-closed behavior, current assigned overlay, current malformed-job fail-closed behavior, and newest duplicate precedence.
 
 - [ ] **Step 6: Run and commit**
 
@@ -755,71 +1061,100 @@ Expected: PASS.
 
 **Files:**
 
-- Modify: `deploy/alt-linux/control/alt_deploy/machine_archive.py`
+- Create: `deploy/alt-linux/control/alt_deploy/machine_archive.py`
 - Create: `tests/alt_linux/test_machine_archive_service.py`
 
 **Interfaces:**
 
-- Consumes: `MachineLifecycleGuard`, `MachineArchiveRepository`, `exclusive_lock`, and lifecycle dataclasses.
-- Produces:
-  - `ArchivePreview.to_public_dict() -> dict[str, object]`.
-  - `ArchiveResult.to_public_dict() -> dict[str, object]`.
-  - `MachineArchiveService.preview(identifier) -> ArchivePreview`.
-  - `MachineArchiveService.apply(identifier, reason, operator_env=None) -> ArchiveResult`.
-  - `validate_archive_reason(reason) -> str`.
-  - `resolve_operator_identity(environ) -> tuple[int, str]`.
+- Produces `ArchivePreview` and `ArchiveResult` dataclasses with `to_public_dict()`.
+- Produces `validate_archive_reason(reason)` and `resolve_operator_identity(environ)`.
+- Produces `MachineArchiveService.preview(identifier)` and `apply(identifier, reason, operator_env=None)`.
 
-- [ ] **Step 1: Write failing preview and success-path tests**
+- [ ] **Step 1: Write failing preview and archive tests**
+
+Create `tests/alt_linux/test_machine_archive_service.py` with:
 
 ```python
-def test_preview_is_read_only_and_reports_all_states(controller_sandbox) -> None:
-    write_registration(... state="pending" ...)
-    write_registration(... state="failed" ...)
-    before = snapshot_tree(controller_sandbox.root)
-    preview = MachineArchiveService(controller_sandbox.settings).preview(TEST_MACHINE_UUID)
+from __future__ import annotations
+
+import getpass
+import os
+from pathlib import Path
+
+import pytest
+
+from alt_deploy.errors import ControlError
+from alt_deploy.machine_archive import MachineArchiveService
+from alt_deploy.registry import MachineRepository
+from support.controller_sandbox import make_controller_sandbox
+from support.lifecycle_fixtures import (
+    TEST_MACHINE_UUID,
+    registration_payload,
+    write_registration,
+)
+
+
+def test_preview_is_read_only(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(sandbox.settings, "pending", registration_payload())
+    before = snapshot_tree(sandbox.root)
+    preview = MachineArchiveService(sandbox.settings).preview(TEST_MACHINE_UUID)
     assert preview.to_public_dict() == {
         "machine_uuid": TEST_MACHINE_UUID,
         "machine_key": TEST_MACHINE_UUID,
-        "source_states": ["pending", "failed"],
-        "record_count": 2,
+        "source_states": ["pending"],
+        "record_count": 1,
         "assignment_present": False,
         "active_job": None,
         "action": "archive_registration_records",
     }
-    assert snapshot_tree(controller_sandbox.root) == before
+    assert snapshot_tree(sandbox.root) == before
 
 
-def test_apply_archives_exact_bytes_and_removes_active_records(controller_sandbox) -> None:
-    source = write_registration(... state="ready" ...)
+def test_apply_archives_exact_bytes(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    source = write_registration(
+        sandbox.settings,
+        "ready",
+        registration_payload(status="awaiting_assignment"),
+    )
     original = source.read_bytes()
-    result = MachineArchiveService(controller_sandbox.settings).apply(
+    result = MachineArchiveService(sandbox.settings).apply(
         TEST_MACHINE_UUID,
         "Переустановка тестовой машины",
-        operator_env={"SUDO_UID": str(os.getuid()), "SUDO_USER": getpass.getuser()},
+        operator_env={
+            "SUDO_UID": str(os.getuid()),
+            "SUDO_USER": getpass.getuser(),
+        },
     )
     assert result.result == "archived"
     assert not source.exists()
     archived = (
-        controller_sandbox.settings.machine_archives_dir
+        sandbox.settings.machine_archives_dir
         / result.archive_id
         / "records"
         / "ready.json"
     )
     assert archived.read_bytes() == original
+    assert MachineRepository(sandbox.settings).list() == []
 ```
 
-Expected: FAIL because the service does not exist.
+Expected: FAIL because the service module is absent.
 
 - [ ] **Step 2: Implement reason and operator validation**
 
 ```python
 def validate_archive_reason(reason: str) -> str:
     normalized = reason.strip()
-    if (
+    invalid = (
         not normalized
         or len(normalized) > 500
-        or any(unicodedata.category(char).startswith("C") for char in normalized)
-    ):
+        or any(
+            unicodedata.category(character).startswith("C")
+            for character in normalized
+        )
+    )
+    if invalid:
         raise ControlError(
             code="invalid_archive_reason",
             message="Archive reason is invalid",
@@ -828,81 +1163,207 @@ def validate_archive_reason(reason: str) -> str:
     return normalized
 ```
 
-`resolve_operator_identity()` must trust `SUDO_UID` and `SUDO_USER` only when both parse and `pwd.getpwnam(SUDO_USER).pw_uid == int(SUDO_UID)`. Otherwise use real UID/account, then effective UID/account. Do not accept an arbitrary environment username.
+`resolve_operator_identity()` trusts `SUDO_UID` and `SUDO_USER` only when both are present, UID is decimal, the named local account exists, and `pwd.getpwnam(name).pw_uid` equals the parsed UID. Otherwise use real UID/account, then effective UID/account. Return `(uid, username)`.
 
-- [ ] **Step 3: Implement preview without lock or mutation**
-
-Preview performs guard discovery, archive-state validation, assignment/job checks, and returns `already_archived` information only when there is no active generation and a completed archive exists. It creates no directories, IDs, or files.
-
-- [ ] **Step 4: Implement locked apply transaction**
-
-Use one continuous lock scope:
+- [ ] **Step 3: Implement public result dataclasses**
 
 ```python
-with exclusive_lock(self.settings.lock_file):
-    snapshot = self.guard.snapshot_for_removal(identifier)
-    if not snapshot.candidates:
-        existing = self.archives.find_latest_for_machine(snapshot.identity.machine_key)
-        if existing is not None:
-            return ArchiveResult.already_archived(existing)
-        raise machine_not_found(identifier)
+@dataclass(frozen=True)
+class ArchivePreview:
+    machine_uuid: str
+    machine_key: str
+    source_states: tuple[str, ...]
+    record_count: int
+    assignment_present: bool
+    active_job: dict[str, str] | None
+    action: str = "archive_registration_records"
 
-    self.guard.assert_removal_allowed(snapshot)
-    transaction = self.archives.find_resumable(snapshot.identity.machine_key)
-    if transaction is None:
-        transaction = self.archives.prepare(...)
-        transaction = self.archives.copy_and_verify(...)
-        transaction = self.archives.commit(transaction)
-    transaction = self.archives.cleanup_sources(transaction)
-    self.archives.finalize(transaction)
-    return ArchiveResult.archived(transaction)
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "machine_uuid": self.machine_uuid,
+            "machine_key": self.machine_key,
+            "source_states": list(self.source_states),
+            "record_count": self.record_count,
+            "assignment_present": self.assignment_present,
+            "active_job": self.active_job,
+            "action": self.action,
+        }
+
+
+@dataclass(frozen=True)
+class ArchiveResult:
+    result: str
+    archive_id: str
+    machine_uuid: str
+    machine_key: str
+    source_states: tuple[str, ...]
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "result": self.result,
+            "archive_id": self.archive_id,
+            "machine_uuid": self.machine_uuid,
+            "machine_key": self.machine_key,
+            "source_states": list(self.source_states),
+        }
 ```
 
-The service must never allocate a second archive ID for a committed transaction. A valid abandoned precommit transaction may be removed and restarted; malformed or ambiguous state fails with `machine_archive_invalid`.
+- [ ] **Step 4: Implement preview**
 
-- [ ] **Step 5: Add blocker and precommit-failure tests**
+`preview()` obtains a lifecycle snapshot without creating directories or IDs. If active candidates exist, run `assert_removal_allowed()` and return their states. If no active candidates and a completed archive exists, return a preview object whose action is `already_archived` and whose states come from the completed manifest. If neither exists, raise `machine_not_found` exit `3`.
 
-Add exact named tests:
+- [ ] **Step 5: Implement one-lock apply**
 
-- `test_preview_rejects_assigned_machine_without_mutation`.
-- `test_apply_rejects_assigned_machine_without_mutation`.
-- `test_preview_rejects_busy_machine_with_safe_fields_only`.
-- `test_apply_rejects_busy_machine_with_safe_fields_only`.
-- `test_apply_rejects_empty_control_character_and_overlong_reasons`.
-- `test_malformed_exact_record_blocks_whole_operation`.
-- `test_symlink_candidate_blocks_whole_operation`.
-- `test_identity_conflict_blocks_whole_operation`.
-- `test_copy_failure_leaves_active_records_visible_and_unmodified`.
-- `test_manifest_failure_leaves_active_records_visible_and_unmodified`.
-
-Use monkeypatch on repository methods to inject copy/manifest failures. Assert no source is removed and no committed generation is visible.
-
-- [ ] **Step 6: Add postcommit recovery and idempotency tests**
+Use this control flow:
 
 ```python
-def test_postcommit_cleanup_failure_hides_generation_and_reuses_id(...):
-    first = service.apply(... injected_cleanup_failure ...)
-    assert first_error.code == "machine_archive_cleanup_required"
-    committed_id = first_error.details["archive_id"]
-    assert MachineRepository(settings).list() == []
-
-    second = service.apply(TEST_MACHINE_UUID, "same reason", operator_env=...)
-    assert second.archive_id == committed_id
-    assert second.result == "archived"
-
-
-def test_completed_repeat_returns_already_archived_without_new_state(...):
-    first = service.apply(...)
-    before = snapshot_tree(settings.machine_archives_dir)
-    second = service.apply(TEST_MACHINE_UUID, "repeat", operator_env=...)
-    assert second.result == "already_archived"
-    assert second.archive_id == first.archive_id
-    assert snapshot_tree(settings.machine_archives_dir) == before
+def apply(
+    self,
+    identifier: str,
+    reason: str,
+    *,
+    operator_env: Mapping[str, str] | None = None,
+) -> ArchiveResult:
+    validated_reason = validate_archive_reason(reason)
+    operator_uid, operator_username = resolve_operator_identity(
+        dict(operator_env or os.environ)
+    )
+    with exclusive_lock(self.settings.lock_file):
+        snapshot = self.guard.snapshot_for_removal(identifier)
+        if not snapshot.candidates:
+            completed = self.archives.find_latest_completed(
+                snapshot.identity.machine_key
+            )
+            if completed is None:
+                raise ControlError(
+                    code="machine_not_found",
+                    message=f"Machine not found: {identifier.strip().lower()}",
+                    exit_code=3,
+                )
+            return ArchiveResult(
+                result="already_archived",
+                archive_id=str(completed["archive_id"]),
+                machine_uuid=str(completed["machine_uuid"]),
+                machine_key=str(completed["machine_key"]),
+                source_states=tuple(completed["source_states"]),
+            )
+        self.guard.assert_removal_allowed(snapshot)
+        transaction = self.archives.find_resumable(
+            snapshot.identity.machine_key
+        )
+        if transaction is None:
+            transaction = self.archives.prepare(
+                snapshot.identity,
+                snapshot.candidates,
+                {
+                    "reason": validated_reason,
+                    "operator_uid": operator_uid,
+                    "operator_username": operator_username,
+                    "archived_at": utc_now(),
+                },
+            )
+            transaction = self.archives.copy_and_verify(
+                transaction,
+                snapshot.candidates,
+            )
+            transaction = self.archives.commit(transaction)
+        transaction = self.archives.cleanup_sources(transaction)
+        self.archives.finalize(transaction)
+        return ArchiveResult(
+            result="archived",
+            archive_id=transaction.archive_id,
+            machine_uuid=transaction.machine_uuid,
+            machine_key=transaction.machine_key,
+            source_states=tuple(
+                plan.state for plan in transaction.record_plans
+            ),
+        )
 ```
 
-Also prove cleanup does not delete a newer generation placed at the same source path and returns `machine_archive_cleanup_required` with only `archive_id`.
+A committed cleanup failure is converted to `machine_archive_cleanup_required` with only `archive_id`. A valid abandoned precommit transaction may be removed and restarted; malformed state remains `machine_archive_invalid`.
 
-- [ ] **Step 7: Run and commit**
+- [ ] **Step 6: Add blockers and failure-injection tests**
+
+Add parametrized reason validation:
+
+```python
+@pytest.mark.parametrize(
+    "reason",
+    ["", "   ", "bad\nreason", "x" * 501],
+)
+def test_invalid_reason_changes_nothing(
+    tmp_path: Path,
+    reason: str,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(sandbox.settings, "pending", registration_payload())
+    before = snapshot_tree(sandbox.root)
+    with pytest.raises(ControlError) as exc:
+        MachineArchiveService(sandbox.settings).apply(
+            TEST_MACHINE_UUID,
+            reason,
+            operator_env={},
+        )
+    assert exc.value.code == "invalid_archive_reason"
+    assert snapshot_tree(sandbox.root) == before
+```
+
+Add concrete tests that assigned and busy machines change no files; malformed exact JSON, symlink candidate, per-state duplicate, UUID conflict, MAC conflict, and invalid archive state fail the whole operation.
+
+Inject repository failures with monkeypatch:
+
+```python
+def test_copy_failure_leaves_source_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    source = write_registration(
+        sandbox.settings,
+        "pending",
+        registration_payload(),
+    )
+    service = MachineArchiveService(sandbox.settings)
+
+    def fail_copy(transaction, candidates):
+        raise ControlError(
+            code="machine_archive_failed",
+            message="Synthetic copy failure",
+            exit_code=6,
+        )
+
+    monkeypatch.setattr(service.archives, "copy_and_verify", fail_copy)
+    with pytest.raises(ControlError) as exc:
+        service.apply(TEST_MACHINE_UUID, "Test copy failure", operator_env={})
+    assert exc.value.code == "machine_archive_failed"
+    assert source.is_file()
+    assert len(MachineRepository(sandbox.settings).list()) == 1
+```
+
+- [ ] **Step 7: Add recovery and idempotency tests**
+
+Add tests that:
+
+- a synthetic cleanup failure after commit hides the old generation;
+- the error is `machine_archive_cleanup_required` with only `archive_id`;
+- rerunning apply resumes the same archive ID;
+- completed rerun returns `already_archived` without new files;
+- a newer generation at the old source path is never unlinked;
+- later archival of the newer generation creates a different archive ID.
+
+Use a concrete assertion for completed idempotency:
+
+```python
+assert second.to_public_dict() == {
+    "result": "already_archived",
+    "archive_id": first.archive_id,
+    "machine_uuid": TEST_MACHINE_UUID,
+    "machine_key": TEST_MACHINE_UUID,
+    "source_states": ["ready"],
+}
+```
+
+- [ ] **Step 8: Run and commit**
 
 ```bash
 python -m pytest -q \
@@ -920,7 +1381,7 @@ Expected: PASS.
 
 ---
 
-### Task 5: Expose root-gated CLI preview and apply contracts
+### Task 5: Expose root-gated CLI preview and apply
 
 **Files:**
 
@@ -929,19 +1390,54 @@ Expected: PASS.
 
 **Interfaces:**
 
-- Consumes: `MachineArchiveService.preview()` and `.apply()`.
-- Produces:
-  - `workstationctl --json machines remove preview <identifier>`.
-  - `workstationctl --json machines remove apply <identifier> --reason <text>`.
+- Produces `workstationctl --json machines remove preview <machine-identifier>`.
+- Produces `workstationctl --json machines remove apply <machine-identifier> --reason <text>`.
 
-- [ ] **Step 1: Write failing parser and preview test**
+- [ ] **Step 1: Write failing parser test**
 
 ```python
-def test_remove_preview_returns_public_contract(settings) -> None:
-    write_registration(settings, "ready", registration_payload(status="awaiting_assignment"))
+from __future__ import annotations
+
+import io
+import json
+from pathlib import Path
+
+from alt_deploy.cli import main
+from support.controller_sandbox import make_controller_sandbox
+from support.lifecycle_fixtures import (
+    TEST_MACHINE_UUID,
+    registration_payload,
+    write_registration,
+)
+
+
+def run_cli(arguments: list[str], settings) -> tuple[int, dict[str, object]]:
+    stdout = io.StringIO()
+    rc = main(
+        arguments,
+        settings=settings,
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+    return rc, json.loads(stdout.getvalue())
+
+
+def test_remove_preview_contract(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(
+        sandbox.settings,
+        "ready",
+        registration_payload(status="awaiting_assignment"),
+    )
     rc, payload = run_cli(
-        ["--json", "machines", "remove", "preview", TEST_MACHINE_UUID],
-        settings,
+        [
+            "--json",
+            "machines",
+            "remove",
+            "preview",
+            TEST_MACHINE_UUID,
+        ],
+        sandbox.settings,
     )
     assert rc == 0
     assert payload["status"] == "ok"
@@ -950,15 +1446,11 @@ def test_remove_preview_returns_public_contract(settings) -> None:
     assert payload["preview"]["record_count"] == 1
 ```
 
-Run:
-
-```bash
-python -m pytest -q tests/alt_linux/test_machine_archive_cli.py::test_remove_preview_returns_public_contract
-```
-
 Expected: FAIL because `remove` is unknown.
 
-- [ ] **Step 2: Add nested parser**
+- [ ] **Step 2: Add nested parser and dispatch**
+
+Parser:
 
 ```python
 remove = machine_commands.add_parser("remove")
@@ -973,7 +1465,7 @@ remove_apply.add_argument("machine_identifier")
 remove_apply.add_argument("--reason", required=True)
 ```
 
-- [ ] **Step 3: Add dispatch with authorization before service mutation**
+Dispatch:
 
 ```python
 elif (
@@ -1006,31 +1498,39 @@ elif (
     }
 ```
 
-- [ ] **Step 4: Add exact CLI error and mutation tests**
+The root check occurs before service construction.
 
-Add:
+- [ ] **Step 3: Add CLI authorization and exact-output tests**
 
 ```python
-def test_remove_apply_requires_root_before_service_construction(monkeypatch, settings):
+def test_remove_apply_requires_root_before_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(sandbox.settings, "pending", registration_payload())
+    before = snapshot_tree(sandbox.root)
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
-    before = snapshot_tree(settings.state_root.parent)
-    rc, payload = run_cli([...], settings)
+    rc, payload = run_cli(
+        [
+            "--json",
+            "machines",
+            "remove",
+            "apply",
+            TEST_MACHINE_UUID,
+            "--reason",
+            "Переустановка",
+        ],
+        sandbox.settings,
+    )
     assert rc == 6
     assert payload["error"]["code"] == "root_required"
-    assert snapshot_tree(settings.state_root.parent) == before
+    assert snapshot_tree(sandbox.root) == before
 ```
 
-Also assert:
+Add tests for invalid reason, assigned, busy safe details, successful exact archive keys, completed `already_archived`, preview zero mutation, and non-JSON safe stderr.
 
-- invalid reason returns `invalid_archive_reason` and no state change;
-- assigned returns `machine_assigned`;
-- busy returns only safe details;
-- successful apply returns exact `archive` key set;
-- repeated apply returns `result=already_archived` and original ID;
-- preview produces no archive directory;
-- non-JSON mode writes only safe `ERROR [code]: message` to stderr.
-
-- [ ] **Step 5: Run and commit**
+- [ ] **Step 4: Run and commit**
 
 ```bash
 python -m pytest -q tests/alt_linux/test_machine_archive_cli.py
@@ -1046,7 +1546,7 @@ Expected: PASS.
 
 ---
 
-### Task 6: Add registration admission and refactor `/register` into a thin adapter
+### Task 6: Add shared registration admission and refactor the HTTP API
 
 **Files:**
 
@@ -1058,47 +1558,68 @@ Expected: PASS.
 
 **Interfaces:**
 
-- Consumes: `MachineLifecycleGuard`, `MachineArchiveRepository`, `exclusive_lock`, `atomic_write_json`, `Settings`.
-- Produces:
-  - `RegistrationRequest(hostname, mac, machine_uuid, ip)`.
-  - `RegistrationDecision(http_status: int, payload: dict[str, object])`.
-  - `RegistrationAdmissionService.admit(request) -> RegistrationDecision`.
-  - `register_api.handle_registration(payload, client_ip, settings) -> tuple[int, dict[str, object]]`.
+- Produces `RegistrationRequest` and `RegistrationDecision`.
+- Produces `RegistrationAdmissionService.admit(request)`.
+- Produces pure adapter `handle_registration(payload, client_ip, settings)`.
 
-- [ ] **Step 1: Write failing new-registration and idempotent-registration tests**
+- [ ] **Step 1: Write failing service tests**
 
 ```python
-def test_new_registration_gets_controller_generation(controller_sandbox) -> None:
-    decision = RegistrationAdmissionService(controller_sandbox.settings).admit(
-        RegistrationRequest(
-            hostname="alt-lifecycle-test",
-            mac=TEST_MACHINE_MAC,
-            machine_uuid=TEST_MACHINE_UUID,
-            ip="192.0.2.56",
-        )
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from alt_deploy.jsonio import read_json
+from alt_deploy.registration_admission import (
+    RegistrationAdmissionService,
+    RegistrationRequest,
+)
+from support.controller_sandbox import make_controller_sandbox
+from support.lifecycle_fixtures import TEST_MACHINE_MAC, TEST_MACHINE_UUID
+
+
+def request() -> RegistrationRequest:
+    return RegistrationRequest(
+        hostname="alt-lifecycle-test",
+        mac=TEST_MACHINE_MAC,
+        machine_uuid=TEST_MACHINE_UUID,
+        ip="192.0.2.56",
     )
+
+
+def test_new_registration_gets_controller_generation(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    decision = RegistrationAdmissionService(sandbox.settings).admit(request())
     assert decision.http_status == 201
     assert decision.payload["status"] == "registered"
     registration_id = str(decision.payload["registration_id"])
     assert re.fullmatch(r"reg-[0-9a-f]{32}", registration_id)
     pending = read_json(
-        controller_sandbox.settings.registration_root
+        sandbox.settings.registration_root
         / "pending"
         / f"{TEST_MACHINE_UUID}.json"
     )
     assert pending["registration_id"] == registration_id
 
 
-def test_active_consistent_registration_is_not_overwritten(controller_sandbox) -> None:
-    path = write_registration(...)
+def test_active_registration_is_not_overwritten(tmp_path: Path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    first = RegistrationAdmissionService(sandbox.settings).admit(request())
+    path = (
+        sandbox.settings.registration_root
+        / "pending"
+        / f"{TEST_MACHINE_UUID}.json"
+    )
     before = path.read_bytes()
-    decision = RegistrationAdmissionService(controller_sandbox.settings).admit(...)
-    assert decision.http_status == 200
-    assert decision.payload["status"] == "already_registered"
+    second = RegistrationAdmissionService(sandbox.settings).admit(request())
+    assert first.http_status == 201
+    assert second.http_status == 200
+    assert second.payload["status"] == "already_registered"
     assert path.read_bytes() == before
 ```
 
-Expected: FAIL because the service does not exist.
+Expected: FAIL because the module is absent.
 
 - [ ] **Step 2: Implement request and decision dataclasses**
 
@@ -1121,54 +1642,78 @@ class RegistrationDecision:
     payload: dict[str, object]
 ```
 
-The HTTP adapter retains existing hostname, MAC, UUID, source network, JSON, content-length, and payload-size validation. The service receives normalized validated values.
+The HTTP layer validates and normalizes fields before constructing this request.
 
-- [ ] **Step 3: Implement admission under the shared lock**
+- [ ] **Step 3: Implement admission under one lock**
 
 Inside `admit()`:
 
-1. Acquire `exclusive_lock(settings.lock_file)`.
-2. Discover active records and relevant archive state for `request.machine_key`.
-3. Fail assigned with `machine_assigned`.
-4. Fail active job with `machine_busy` safe details.
-5. Fail committed incomplete cleanup with `machine_archive_cleanup_required` and `archive_id`.
-6. If a consistent active candidate exists, return HTTP `200 already_registered` without rewriting any byte or timestamp.
-7. If active identity conflicts with the request, raise `machine_identity_conflict`.
-8. Allocate `registration_id = "reg-" + secrets.token_hex(16)` only for a new generation.
-9. Atomically write `pending/<machine_key>.json` mode `0600`.
-10. Return HTTP `201 registered`.
-
-The pending payload is:
-
 ```python
-record = {
-    "machine_key": request.machine_key,
-    "hostname": request.hostname,
-    "ip": request.ip,
-    "mac": request.mac,
-    "uuid": request.machine_uuid,
-    "registration_id": registration_id,
-    "registered_at": utc_now(),
-    "status": "pending",
-}
+with exclusive_lock(self.settings.lock_file):
+    snapshot = self.guard.snapshot_for_registration(
+        machine_key=request.machine_key,
+        machine_uuid=request.machine_uuid,
+        mac=request.mac,
+    )
+    self.guard.assert_registration_allowed(snapshot)
+    if snapshot.candidates:
+        candidate = snapshot.candidates[0]
+        if not identities_match_request(candidate, request):
+            raise ControlError(
+                code="machine_identity_conflict",
+                message="Active registration conflicts with the request identity",
+                exit_code=4,
+            )
+        payload: dict[str, object] = {
+            "status": "already_registered",
+            "machine_key": candidate.machine_key,
+            "registration_state": candidate.registration_state,
+        }
+        if candidate.generation.legacy:
+            payload["legacy"] = True
+        else:
+            payload["registration_id"] = candidate.generation.value
+        return RegistrationDecision(http_status=200, payload=payload)
+
+    registration_id = f"reg-{secrets.token_hex(16)}"
+    record = {
+        "machine_key": request.machine_key,
+        "hostname": request.hostname,
+        "ip": request.ip,
+        "mac": request.mac,
+        "uuid": request.machine_uuid,
+        "registration_id": registration_id,
+        "registered_at": utc_now(),
+        "status": "pending",
+    }
+    atomic_write_json(
+        self.settings.registration_root
+        / "pending"
+        / f"{request.machine_key}.json",
+        record,
+    )
+    return RegistrationDecision(
+        http_status=201,
+        payload={
+            "status": "registered",
+            "machine_key": request.machine_key,
+            "registration_id": registration_id,
+            "ip": request.ip,
+        },
+    )
 ```
 
-- [ ] **Step 4: Add lifecycle conflict and concurrency tests**
+`assert_registration_allowed()` returns `machine_assigned`, `machine_busy`, or `machine_archive_cleanup_required` before any write. Completed old archives do not block a new generation.
 
-Add tests proving:
+- [ ] **Step 4: Add service conflict and concurrency tests**
 
-- assignment returns `machine_assigned` and no pending file;
-- active job returns `machine_busy` with exact safe detail keys;
-- committed incomplete cleanup returns `machine_archive_cleanup_required`;
-- completed old archive accepts a new generation;
-- new generation differs from old committed generation;
-- malformed active/archive state fails closed;
-- two concurrent admissions serialize through the lock and produce one generation, with responses `201 registered` and `200 already_registered`;
-- a legacy active record returns `already_registered`, omits `registration_id`, and includes `legacy: true`.
+Add tests for assigned, busy safe details, committed cleanup required, completed archive accepting a new generation, old/new registration IDs differing, malformed state fail-closed behavior, and legacy `already_registered`.
 
-- [ ] **Step 5: Refactor API validation into a pure adapter function**
+For concurrency, run two threads against one `RegistrationAdmissionService`; assert HTTP statuses sort to `[200, 201]`, both responses refer to one registration ID, and exactly one pending file exists.
 
-In `register_api.py`, retain the `BaseHTTPRequestHandler` but add:
+- [ ] **Step 5: Refactor API validation into a pure function**
+
+In `register_api.py`, import `Settings`, `ControlError`, `RegistrationAdmissionService`, and `RegistrationRequest`. Define:
 
 ```python
 def handle_registration(
@@ -1178,10 +1723,23 @@ def handle_registration(
 ) -> tuple[int, dict[str, object]]:
     if not isinstance(payload, dict):
         return 400, {"status": "invalid_json_object"}
-    # existing field regex validation remains here
+    hostname = str(payload.get("hostname", "")).strip().lower()
+    mac = str(payload.get("mac", "")).strip().lower()
+    machine_uuid = str(payload.get("uuid", "")).strip().lower()
+    if not HOSTNAME_RE.fullmatch(hostname):
+        return 400, {"status": "invalid_hostname"}
+    if not MAC_RE.fullmatch(mac):
+        return 400, {"status": "invalid_mac"}
+    if machine_uuid and not UUID_RE.fullmatch(machine_uuid):
+        return 400, {"status": "invalid_uuid"}
     try:
         decision = RegistrationAdmissionService(settings).admit(
-            RegistrationRequest(...)
+            RegistrationRequest(
+                hostname=hostname,
+                mac=mac,
+                machine_uuid=machine_uuid,
+                ip=client_ip,
+            )
         )
     except ControlError as exc:
         status = {
@@ -1199,27 +1757,17 @@ def handle_registration(
     return decision.http_status, decision.payload
 ```
 
-`RegisterHandler.do_POST()` parses the bounded body, calls this function, and sends the returned status/body. Do not return filesystem paths, tracebacks, or raw exceptions.
+`RegisterHandler.do_POST()` retains network, content-length, payload-size, UTF-8, and JSON validation, calls this function, and returns its status/body.
 
-- [ ] **Step 6: Add API adapter and loopback handler tests**
+- [ ] **Step 6: Add API tests**
 
-`tests/alt_linux/test_register_api.py` must load the script using `importlib.util`, pass a temporary `Settings`, and test:
+Load the script with `importlib.util` and test the pure function for HTTP `201`, `200`, `409 machine_assigned`, `409 machine_busy`, `409 machine_archive_cleanup_required`, existing `400` field errors, and safe `500` storage failure.
 
-- `201 registered` response body;
-- `200 already_registered` with unchanged bytes;
-- `409 machine_assigned`;
-- `409 machine_busy` safe fields;
-- `409 machine_archive_cleanup_required`;
-- existing `400 invalid_hostname`, `invalid_mac`, `invalid_uuid`;
-- existing `403 forbidden` source network behavior;
-- existing `413 invalid_payload_size`;
-- unexpected storage exception becomes safe HTTP `500` with no absolute temporary path.
-
-Use a loopback-only ephemeral `ThreadingHTTPServer(("127.0.0.1", 0), handler)` for one end-to-end handler test; shut it down in `finally`.
+Add one loopback test using `ThreadingHTTPServer(("127.0.0.1", 0), RegisterHandler)` and an injected temporary `Settings`. Shut down and close the server in `finally`. Assert no temporary absolute path appears in the response body.
 
 - [ ] **Step 7: Update registration systemd sandbox**
 
-Add:
+Add to `alt-deploy-register.service`:
 
 ```ini
 Environment=PYTHONPATH=/opt/alt-deploy-control
@@ -1227,7 +1775,7 @@ ReadWritePaths=/srv/alt-deploy/registration
 ReadWritePaths=/var/lib/alt-deploy
 ```
 
-Keep `User=altserver`, `Group=altserver`, `NoNewPrivileges=true`, `PrivateTmp=true`, and `ProtectSystem=strict`. The state-root write allowance is required for the shared lock; service policy still prevents writes outside the two approved roots.
+Keep `User=altserver`, `Group=altserver`, `NoNewPrivileges=true`, `PrivateTmp=true`, and `ProtectSystem=strict`.
 
 - [ ] **Step 8: Run and commit**
 
@@ -1235,7 +1783,6 @@ Keep `User=altserver`, `Group=altserver`, `NoNewPrivileges=true`, `PrivateTmp=tr
 python -m pytest -q \
   tests/alt_linux/test_registration_admission.py \
   tests/alt_linux/test_register_api.py
-
 python3 -m py_compile \
   deploy/alt-linux/control/alt_deploy/registration_admission.py \
   deploy/alt-linux/api/register_api.py
@@ -1254,7 +1801,7 @@ Expected: PASS.
 
 ---
 
-### Task 7: Prevent pending processing from resurrecting an archived generation
+### Task 7: Prevent pending processing from resurrecting archived generations
 
 **Files:**
 
@@ -1264,53 +1811,49 @@ Expected: PASS.
 
 **Interfaces:**
 
-- Consumes: `Settings.from_env()`, `MachineLifecycleGuard`, `exclusive_lock`, captured `RegistrationGeneration`.
-- Produces:
-  - long-running target work outside the global lock;
-  - locked finalization to `ready` or `failed` only when the captured generation remains active and uncommitted.
+- Captures exact pending generation before target work.
+- Finalizes `ready` or `failed` only while holding the shared lock and only when the captured generation remains active and uncommitted.
 
-- [ ] **Step 1: Write failing archive-first success-suppression test**
+- [ ] **Step 1: Write failing archive-first suppression tests**
+
+Extend `write_pending_record()` with a required `registration_id` parameter. Add:
 
 ```python
 def test_committed_generation_cannot_finalize_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module, pending_dir, ready_dir, failed_dir = prepare_module(tmp_path, monkeypatch)
+    module, pending_dir, ready_dir, failed_dir = prepare_module(
+        tmp_path,
+        monkeypatch,
+    )
     pending = write_pending_record(
         pending_dir,
-        registration_id="reg-11111111111111111111111111111111",
+        "reg-11111111111111111111111111111111",
     )
-
-    def fake_run(command, *, timeout=60):
-        if command[0] == module.WORKSTATIONCTL:
-            commit_generation(
-                module.settings,
-                generation="reg-11111111111111111111111111111111",
-            )
-            return successful_preflight(command)
-        return successful_transport(command)
-
-    monkeypatch.setattr(module, "run_command", fake_run)
+    install_committed_generation(
+        module.SETTINGS,
+        "reg-11111111111111111111111111111111",
+    )
+    monkeypatch.setattr(module, "run_command", successful_run_command(module))
     module.process_record(pending)
     assert not (ready_dir / pending.name).exists()
     assert not (failed_dir / pending.name).exists()
 ```
 
-Expected: FAIL because current code writes `ready` after preflight.
+Add the equivalent test where transport or preflight fails and assert no `failed` record is created.
 
-- [ ] **Step 2: Replace global path-only policy with `Settings` plus installed package imports**
+Expected: FAIL because current finalization ignores generation commit state.
 
-At module startup:
+- [ ] **Step 2: Use installed control-package boundaries**
+
+Replace path-only configuration with:
 
 ```python
 from alt_deploy.config import Settings
-from alt_deploy.errors import ControlError
 from alt_deploy.locks import exclusive_lock
-from alt_deploy.machine_lifecycle import (
-    MachineLifecycleGuard,
-    load_registration_candidate,
-)
+from alt_deploy.machine_archive_repository import MachineArchiveRepository
+from alt_deploy.registration_records import load_registration_candidate
 
 SETTINGS = Settings.from_env()
 PENDING_DIR = SETTINGS.registration_root / "pending"
@@ -1320,11 +1863,11 @@ KNOWN_HOSTS = SETTINGS.known_hosts_file
 PRIVATE_KEY = SETTINGS.private_key_file
 ```
 
-Keep environment-overridable `WORKSTATIONCTL` compatibility.
+Keep `WORKSTATIONCTL` environment override compatibility.
 
-- [ ] **Step 3: Split long-running work from locked finalization**
+- [ ] **Step 3: Add locked generation finalization**
 
-Load the candidate and capture `generation.value` before target work. Replace unconditional `save_record()` with:
+Implement:
 
 ```python
 def finalize_record(
@@ -1334,38 +1877,41 @@ def finalize_record(
     captured_generation: str,
 ) -> bool:
     with exclusive_lock(SETTINGS.lock_file):
-        guard = MachineLifecycleGuard(SETTINGS)
+        if not source_path.exists():
+            return False
         current = load_registration_candidate(source_path, "pending")
         if current.generation.value != captured_generation:
             return False
-        if guard.generation_is_committed(current.generation.value):
+        committed = MachineArchiveRepository(
+            SETTINGS
+        ).committed_generation_index()
+        if captured_generation in committed:
             return False
         save_record(source_path, record, destination_dir)
         return True
 ```
 
-If the source no longer exists after an archive cleanup, return `False` without recreating it. If a newer generation exists at the same path, return `False` without deleting or replacing it.
+Capture generation immediately after initial pending load. Success and failure paths call `finalize_record()`. Do not recreate a missing source and do not delete a newer generation at the same path.
 
-- [ ] **Step 4: Protect both success and failure paths**
+- [ ] **Step 4: Keep long-running work outside lock**
 
-`process_record()` calls `finalize_record(..., READY_DIR, captured_generation)` after success. `mark_failed()` accepts the captured generation and calls the same locked finalizer for `FAILED_DIR`. Invalid JSON that cannot establish a generation keeps the current safe behavior of removing the malformed pending file, but only after verifying it is a regular non-symlink exact pending object.
+Do not wrap `wait_for_ssh`, `ssh-keygen`, `ssh-keyscan`, Ansible ping, or workstation preflight with `exclusive_lock`. Acquire the lock only inside finalization.
+
+For malformed pending JSON that cannot establish a generation, retain safe removal only after `lstat` confirms the exact path is a regular non-symlink file.
 
 - [ ] **Step 5: Add ordering and lock-duration tests**
 
-Add tests:
+Add tests for:
 
 - committed generation cannot create `ready`;
 - committed generation cannot create `failed`;
-- processor-first `ready` result remains discoverable and archivable;
-- old generation suppression does not suppress a newer generation;
-- source replacement with newer generation is untouched;
-- `wait_for_ssh`, `ssh-keyscan`, Ansible ping, and preflight execute while no global lock is held;
-- finalization executes while the lock is held;
-- existing proxy-disable assertion remains true.
+- processor-first `ready` remains archivable;
+- old committed generation does not suppress a newer pending generation;
+- source replacement with newer generation remains untouched;
+- a test lock context flag is false inside SSH/Ansible fakes and true inside final write;
+- existing `ProxyCommand=none` assertion remains true.
 
-Instrument lock state with a test context manager that flips a boolean; assert the boolean is false inside fake long-running commands and true inside a monkeypatched final write.
-
-- [ ] **Step 6: Update processor systemd sandbox**
+- [ ] **Step 6: Update process systemd sandbox**
 
 Add:
 
@@ -1376,7 +1922,7 @@ ReadWritePaths=/home/altserver/.ssh
 ReadWritePaths=/var/lib/alt-deploy
 ```
 
-Keep the existing oneshot user/group and protection directives.
+Keep the existing oneshot account and protection directives.
 
 - [ ] **Step 7: Run and commit**
 
@@ -1396,7 +1942,7 @@ Expected: PASS.
 
 ---
 
-### Task 8: Add the workstation register-only helper and integrate bootstrap
+### Task 8: Add the workstation register-only helper and bootstrap integration
 
 **Files:**
 
@@ -1407,12 +1953,13 @@ Expected: PASS.
 
 **Interfaces:**
 
-- Consumes: registration API at `ALT_DEPLOY_REGISTER_URL`, default `http://192.168.100.17:8088/register`.
-- Produces: `/usr/local/sbin/alt-bootstrap-register` on newly bootstrapped workstations.
+- Default API: `http://192.168.100.17:8088/register`.
+- Test override: `ALT_DEPLOY_REGISTER_URL`.
+- Successful statuses: HTTP `201 registered` and HTTP `200 already_registered`.
 
-- [ ] **Step 1: Write failing helper safety and success tests**
+- [ ] **Step 1: Write failing helper contract tests**
 
-Use fake `ip`, `hostname`, `curl`, and `python3` through a temporary PATH:
+Create a fake-PATH harness that logs commands and makes `curl` write a configured body/status to the requested output path. Add:
 
 ```python
 def test_helper_posts_identity_and_accepts_registered(tmp_path: Path) -> None:
@@ -1427,28 +1974,32 @@ def test_helper_posts_identity_and_accepts_registered(tmp_path: Path) -> None:
         },
     )
     assert result.returncode == 0
-    request = calls.single_curl_request()
-    assert request.url.endswith("/register")
-    assert json.loads(request.body) == {
+    curl_call = calls.single("curl")
+    assert curl_call.url == "http://127.0.0.1:18088/register"
+    assert json.loads(curl_call.body) == {
         "hostname": "alt-lifecycle-test",
         "mac": TEST_MACHINE_MAC,
         "uuid": TEST_MACHINE_UUID,
     }
 
 
-def test_helper_does_not_run_bootstrap_mutations(tmp_path: Path) -> None:
-    result, calls = run_helper(tmp_path, http_status=200, response={"status": "already_registered"})
+def test_helper_runs_no_bootstrap_mutation_commands(tmp_path: Path) -> None:
+    result, calls = run_helper(
+        tmp_path,
+        http_status=200,
+        response={"status": "already_registered"},
+    )
     assert result.returncode == 0
-    assert calls.names().isdisjoint({
-        "apt-get", "useradd", "usermod", "systemctl", "visudo", "chown"
-    })
+    assert set(calls.names()).isdisjoint(
+        {"apt-get", "useradd", "usermod", "systemctl", "visudo", "chown"}
+    )
 ```
 
 Expected: FAIL because the helper is absent.
 
 - [ ] **Step 2: Implement strict root-only helper**
 
-Required shell structure:
+Start with:
 
 ```bash
 #!/bin/bash
@@ -1462,9 +2013,9 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 ```
 
-Determine interface with `ip -o route show default`, read MAC from `/sys/class/net/${iface}/address`, hostname with `hostname -s`, and optional UUID from `/sys/class/dmi/id/product_uuid`.
+Determine interface from `ip -o route show default`, MAC from `/sys/class/net/${iface}/address`, hostname from `hostname -s`, and optional DMI UUID from `/sys/class/dmi/id/product_uuid`.
 
-Construct JSON with Python arguments, not shell interpolation:
+Construct payload through Python arguments:
 
 ```bash
 payload=$(python3 - "${hostname_value}" "${mac_value}" "${uuid_value}" <<'PY'
@@ -1479,56 +2030,40 @@ PY
 )
 ```
 
-Use a mode-`0600` temporary response file, `curl --silent --show-error --connect-timeout 5 --max-time 15 --output ... --write-out '%{http_code}'`, print the body, parse JSON, and exit `0` only for:
+Create a mode-`0600` response temporary file and `trap` removal. Use curl with bounded timeouts, `--output`, and `--write-out '%{http_code}'`. Print the response body. Parse JSON with Python and exit `0` only for the two approved HTTP/status pairs. All other responses exit non-zero.
 
-- HTTP `201` with `status=registered`;
-- HTTP `200` with `status=already_registered`.
+- [ ] **Step 3: Add conflict and safety tests**
 
-All other HTTP status, malformed JSON, or network failure exits non-zero. Always remove the temporary file through `trap`.
+Add tests for non-root before network, missing default interface, missing MAC, empty DMI UUID, HTTP `409 machine_assigned`, HTTP `409 machine_busy`, malformed JSON, curl failure, and absence of reads/writes/removals for both bootstrap marker paths.
 
-- [ ] **Step 3: Add conflict, malformed-response, and no-marker tests**
+- [ ] **Step 4: Refactor bootstrap to install the helper**
 
-Add tests proving:
-
-- non-root exits `6` before network command;
-- no default interface exits non-zero;
-- missing MAC exits non-zero;
-- DMI UUID may be empty;
-- HTTP `409 machine_assigned` prints safe body and exits non-zero;
-- HTTP `409 machine_busy` prints safe body and exits non-zero;
-- malformed JSON exits non-zero;
-- network failure exits non-zero;
-- helper never reads, removes, or writes `/var/lib/alt-bootstrap-completed` or `/var/lib/alt-bootstrap-registered`.
-
-- [ ] **Step 4: Refactor bootstrap to install and invoke the helper**
-
-Add constants:
+Add:
 
 ```bash
 REGISTER_HELPER_URL="${DEPLOY_URL}/bootstrap/alt-bootstrap-register"
 REGISTER_HELPER_TARGET="/usr/local/sbin/alt-bootstrap-register"
 ```
 
-Add:
+Implement:
 
 ```bash
 install_registration_helper() {
     local temporary
     temporary=$(mktemp)
-    trap 'rm -f "${temporary}"' RETURN
     curl --fail --silent --show-error \
-        --connect-timeout 5 --max-time 15 \
-        "${REGISTER_HELPER_URL}" -o "${temporary}"
+        --connect-timeout 5 \
+        --max-time 15 \
+        "${REGISTER_HELPER_URL}" \
+        -o "${temporary}"
     [[ -s "${temporary}" ]]
     bash -n "${temporary}"
     install -o root -g root -m 0755 \
-        "${temporary}" "${REGISTER_HELPER_TARGET}"
+        "${temporary}" \
+        "${REGISTER_HELPER_TARGET}"
+    rm -f "${temporary}"
 }
-```
 
-Replace the embedded `register_machine()` implementation with:
-
-```bash
 register_machine() {
     install_registration_helper
     "${REGISTER_HELPER_TARGET}"
@@ -1536,19 +2071,11 @@ register_machine() {
 }
 ```
 
-The registration marker is written only after helper exit `0`. In the already-completed branch, a missing registration marker still calls `register_machine`; a present marker does not call the helper.
+Add an ERR/RETURN-safe cleanup trap so the temporary file is removed when curl, syntax validation, or install fails. The registration marker remains after helper success only.
 
 - [ ] **Step 5: Add bootstrap source-order tests**
 
-In `test_install_assets.py`, assert:
-
-- helper source exists and starts with strict Bash;
-- bootstrap references helper URL and target;
-- helper installation occurs before invocation;
-- completion marker occurs before registration on the initial path;
-- registration marker occurs after helper invocation;
-- embedded curl POST logic is absent from `bootstrap.sh`;
-- helper passes `bash -n`.
+Assert helper source exists, both scripts pass `bash -n`, helper installation precedes invocation, completion marker precedes initial registration, registration marker follows helper invocation, embedded POST construction is absent from `bootstrap.sh`, and existing registered-marker behavior remains unchanged.
 
 - [ ] **Step 6: Run and commit**
 
@@ -1556,7 +2083,6 @@ In `test_install_assets.py`, assert:
 python -m pytest -q \
   tests/alt_linux/test_alt_bootstrap_register.py \
   tests/alt_linux/test_install_assets.py
-
 bash -n deploy/alt-linux/bootstrap/alt-bootstrap-register
 bash -n deploy/alt-linux/bootstrap/bootstrap.sh
 
@@ -1573,7 +2099,7 @@ Expected: PASS.
 
 ---
 
-### Task 9: Extend installer, readiness, state preservation, and systemd asset checks
+### Task 9: Extend installer, readiness, archive preservation, and unit assets
 
 **Files:**
 
@@ -1588,16 +2114,13 @@ Expected: PASS.
 
 **Interfaces:**
 
-- Consumes: OR-3P1 installer phases and readiness structure.
-- Produces:
-  - published `/srv/alt-deploy/bootstrap/alt-bootstrap-register`.
-  - private archive and transaction directories.
-  - installed lifecycle modules through package copy.
-  - syntax validation for both bootstrap scripts.
-  - readiness check for served helper file and loopback endpoint.
-  - preservation of pre-existing archives.
+- Publishes `/srv/alt-deploy/bootstrap/alt-bootstrap-register` mode `0644`.
+- Creates archive roots mode `0700` without recursively mutating existing archives.
+- Installs all new control-package modules through the existing package copy.
+- Validates both bootstrap scripts.
+- Readiness verifies the served helper file and loopback URL.
 
-- [ ] **Step 1: Write failing installer-publication and archive-preservation tests**
+- [ ] **Step 1: Write failing installer preservation test**
 
 Extend `InstallerSandbox._seed_runtime_state()` with:
 
@@ -1610,13 +2133,19 @@ Extend `InstallerSandbox._seed_runtime_state()` with:
 Add:
 
 ```python
-def test_installer_publishes_register_helper_and_preserves_archives(tmp_path: Path) -> None:
+def test_installer_publishes_helper_and_preserves_archives(
+    tmp_path: Path,
+) -> None:
     sandbox = InstallerSandbox.create(tmp_path)
-    archive_before = sandbox.destination(
-        "/var/lib/alt-deploy/machine-archives/archive-20260721T120000Z-11111111"
+    archive = sandbox.destination(
+        "/var/lib/alt-deploy/machine-archives/"
+        "archive-20260721T120000Z-11111111"
     )
-    before = {str(path.relative_to(archive_before)): path.read_bytes()
-              for path in archive_before.rglob("*") if path.is_file()}
+    before = {
+        str(path.relative_to(archive)): path.read_bytes()
+        for path in archive.rglob("*")
+        if path.is_file()
+    }
     result = sandbox.run_library()
     assert result.returncode == 0, result.stderr
     assert sandbox.destination(
@@ -1624,38 +2153,48 @@ def test_installer_publishes_register_helper_and_preserves_archives(tmp_path: Pa
     ).read_bytes() == (
         ALT_ROOT / "bootstrap" / "alt-bootstrap-register"
     ).read_bytes()
-    after = {str(path.relative_to(archive_before)): path.read_bytes()
-             for path in archive_before.rglob("*") if path.is_file()}
+    after = {
+        str(path.relative_to(archive)): path.read_bytes()
+        for path in archive.rglob("*")
+        if path.is_file()
+    }
     assert after == before
 ```
 
-Expected: FAIL because the helper and archive roots are not installed.
+Expected: FAIL because helper publication and archive roots are absent.
 
-- [ ] **Step 2: Extend source validation and repository verification**
+- [ ] **Step 2: Extend source and syntax validation**
 
-Add helper source to `required_files`. Add:
+Add helper source to `validate_source_layout()`. Add to repository verification:
 
 ```bash
 bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
 bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
 ```
 
-The existing wildcard `py_compile` covers the new Python modules. Keep complete `tests/alt_linux` execution before maintenance.
+The existing wildcard Python compilation includes all new package modules.
 
-- [ ] **Step 3: Create private archive roots without recursive mutation**
+- [ ] **Step 3: Create private archive roots and a service-owned lock file**
 
-Extend `ensure_private_state_directories()`:
+Extend `ensure_private_state_directories()` with:
 
 ```bash
 "$(install_destination "${root_prefix}" /var/lib/alt-deploy/machine-archives)" \
 "$(install_destination "${root_prefix}" /var/lib/alt-deploy/machine-archives/.transactions)"
 ```
 
-Do not add recursive `chown`, `chmod`, `rm`, or `cp` for archive contents. Existing files remain byte-identical.
+After services are stopped and processor inactivity is rechecked, safely ensure `/var/lib/alt-deploy/workstationctl.lock`:
 
-- [ ] **Step 4: Publish helper with registration runtime**
+- fail if it is a symlink or non-regular existing object;
+- create it only when absent;
+- set owner `altserver:altserver` and mode `0600`;
+- do not truncate an existing regular lock file.
 
-Add:
+Do not recursively chown, chmod, remove, or copy existing archive content.
+
+- [ ] **Step 4: Publish helper**
+
+In `install_registration_runtime()` add:
 
 ```bash
 install -o root -g root -m 0644 \
@@ -1663,9 +2202,7 @@ install -o root -g root -m 0644 \
     "${bootstrap_root}/alt-bootstrap-register"
 ```
 
-The served source is `0644`; the workstation bootstrap installs it as `0755`.
-
-- [ ] **Step 5: Extend readiness static assets and loopback checks**
+- [ ] **Step 5: Extend readiness**
 
 Add:
 
@@ -1675,24 +2212,20 @@ STATIC_FILES["register_helper"] = Path(
 )
 ```
 
-`static_assets_ok()` runs `bash -n` for both `bootstrap` and `register_helper`. Add loopback URL:
+`static_assets_ok()` must run `bash -n` separately for `bootstrap` and `register_helper`. Add `http://127.0.0.1:8087/bootstrap/alt-bootstrap-register` to `STATIC_HEALTH_URLS`.
 
-```text
-http://127.0.0.1:8087/bootstrap/alt-bootstrap-register
-```
+Keep the same safe readiness output shape; no script content or response body is returned.
 
-Readiness still returns only booleans and fixed check names; do not expose response bodies or script contents.
+- [ ] **Step 6: Assert systemd runtime access**
 
-- [ ] **Step 6: Assert systemd unit runtime access contracts**
-
-In installer/permission tests, assert installed units contain:
+Installer asset tests must assert both updated units contain:
 
 ```ini
 Environment=PYTHONPATH=/opt/alt-deploy-control
 ReadWritePaths=/var/lib/alt-deploy
 ```
 
-and preserve existing `User=altserver`, `Group=altserver`, `ProtectSystem=strict`, and registration/SSH write paths.
+and preserve their existing account and protection directives.
 
 - [ ] **Step 7: Run focused installer/readiness tests**
 
@@ -1707,7 +2240,7 @@ python -m pytest -q \
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit installer/readiness changes**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add \
@@ -1727,25 +2260,25 @@ git commit -m "feat: install ALT machine lifecycle runtime"
 
 ---
 
-### Task 10: Document operations, run full verification, review, and prepare the PR
+### Task 10: Document operations, verify, review, and prepare the PR
 
 **Files:**
 
 - Create: `docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md`
+- Create after verification: `docs/superpowers/plans/2026-07-21-alt-or3p2-verification.md`
 - Modify: `deploy/alt-linux/README.md`
 - Modify: `docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md`
 - Modify: `docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md`
 - Modify: `docs/ALT_OR3P1_PILOT_ROLLOUT.md`
-- Create after verification: `docs/superpowers/plans/2026-07-21-alt-or3p2-verification.md`
 
 **Interfaces:**
 
-- Consumes: completed CLI/API/helper/installer contracts.
-- Produces: operator runbook, current-state handoff, verification evidence, and a reviewable PR that remains unmerged.
+- Produces an operator runbook and verification evidence.
+- Produces a draft PR that remains unmerged until explicit confirmation.
 
 - [ ] **Step 1: Write the operator runbook**
 
-`docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md` must include exact commands:
+Include exact commands:
 
 ```bash
 sudo -u altserver workstationctl --json \
@@ -1758,40 +2291,28 @@ sudo workstationctl --json \
 sudo alt-bootstrap-register
 ```
 
-Document:
+Document active paths, archive paths, preview behavior, root/reason requirements, stable errors, `already_archived`, `already_registered`, no restore, no assignment release, cleanup resume by rerunning apply, generation distinction, helper exclusions, existing-workstation distribution limits, OR-3P3 gate, reference-machine prohibition, and disposable acceptance target.
 
-- active paths and protected archive paths;
-- preview read-only behavior;
-- root/reason requirements;
-- `machine_assigned`, `machine_busy`, `machine_archive_cleanup_required`, `already_archived`, and `already_registered` outcomes;
-- no restore and no assignment release;
-- cleanup resume procedure: rerun the same apply command and investigate if cleanup remains blocked;
-- old/new registration generation distinction;
-- helper does not reinstall packages or alter SSH/sudoers/users;
-- existing workstations do not receive the helper automatically;
-- OR-3P3 gate before live installation;
-- prohibition on using `192.168.101.111`;
-- next acceptance target must be a new disposable unassigned machine or VM.
+- [ ] **Step 2: Update context and roadmap**
 
-- [ ] **Step 2: Update current context and roadmap**
-
-Update the three existing context/roadmap documents so they state:
+Record:
 
 ```text
 OR-3P1: merged
-OR-3P2: implemented in repository after this PR, not installed live
-OR-3P3: next mandatory step
+OR-3P2: repository implementation pending PR verification/merge
+OR-3P3: next mandatory live-safety step
 OR-3P4: blocked until OR-3P3
 ```
 
-Keep the root-run static HTTP exposure item separate; do not claim OR-3P2 fixes it.
+Keep root-run static HTTP exposure as a separate hardening item.
 
 - [ ] **Step 3: Run focused OR-3P2 tests**
 
 ```bash
 python -m pytest -q \
-  tests/alt_linux/test_machine_lifecycle.py \
+  tests/alt_linux/test_registration_records.py \
   tests/alt_linux/test_machine_archive_repository.py \
+  tests/alt_linux/test_machine_lifecycle.py \
   tests/alt_linux/test_machine_archive_service.py \
   tests/alt_linux/test_machine_archive_cli.py \
   tests/alt_linux/test_registration_admission.py \
@@ -1807,14 +2328,14 @@ python -m pytest -q \
 
 Expected: PASS with no skipped OR-3P2 contract tests.
 
-- [ ] **Step 4: Run the complete ALT and repository suites**
+- [ ] **Step 4: Run complete suites**
 
 ```bash
 python -m pytest -q tests/alt_linux
 python -m pytest -q
 ```
 
-Expected: PASS. Record exact pass/warning counts and durations.
+Expected: PASS. Record exact counts, warnings, and durations.
 
 - [ ] **Step 5: Run static and syntax verification**
 
@@ -1845,19 +2366,11 @@ ansible-playbook --syntax-check \
   deploy/alt-linux/ansible/playbooks/02-provision-account.yml
 ```
 
-Expected: all PASS.
+Expected: PASS.
 
 - [ ] **Step 6: Prove prohibited operations are absent**
 
-Search the OR-3P2 diff and tests. Record evidence that:
-
-- no target SSH invocation was added to archive CLI/service;
-- no assignment file deletion exists;
-- no job directory/log deletion exists;
-- no Vault/private-key content enters fixtures or output;
-- no controller or reference-workstation IP is contacted by tests;
-- helper does not run package, user, SSH, sudoers, preflight, or provisioning commands;
-- installer never recursively mutates existing archive contents.
+Inspect the production diff and record evidence that archive code adds no target SSH call, assignment deletion, job/log deletion, Vault/private-key output, controller/reference-machine access, helper package/user/SSH/sudoers mutation, or recursive archive mutation.
 
 Use:
 
@@ -1869,20 +2382,9 @@ git diff --unified=0 origin/main...HEAD -- \
   deploy/alt-linux/install-control-plane-lib.sh
 ```
 
-- [ ] **Step 7: Create verification evidence document**
+- [ ] **Step 7: Create verification evidence**
 
-Create `docs/superpowers/plans/2026-07-21-alt-or3p2-verification.md` containing:
-
-- branch source SHA;
-- tested merge ref against current `main`;
-- focused test counts/duration;
-- ALT suite counts/duration;
-- full repository counts/warnings/duration;
-- Python/Bash/Ansible/diff-check results;
-- exact safety boundary statement;
-- confirmation that no temporary workflow or fixture remains.
-
-Do not invent counts; copy them from completed command output.
+Create `docs/superpowers/plans/2026-07-21-alt-or3p2-verification.md` with branch source SHA, tested merge ref, focused/ALT/full suite counts and durations, Python/Bash/Ansible/diff results, safety statement, and cleanup confirmation. Copy values from actual command output; do not estimate them.
 
 - [ ] **Step 8: Commit documentation and evidence**
 
@@ -1898,45 +2400,55 @@ git add \
 git commit -m "docs: document ALT machine registry lifecycle"
 ```
 
-- [ ] **Step 9: Request two-stage code review**
+- [ ] **Step 9: Request two-stage review**
 
-Use `superpowers:requesting-code-review` after all tests pass:
+Use `superpowers:requesting-code-review` for:
 
-1. specification-compliance review against `docs/superpowers/specs/2026-07-21-alt-or3p2-machine-registry-lifecycle-design.md`;
-2. code-quality/safety review focused on no-follow filesystem access, lock scope, generation matching, postcommit recovery, systemd permissions, and output redaction.
+1. specification compliance;
+2. code quality and safety, focused on no-follow access, lock scope, generation matching, postcommit recovery, service ownership, systemd access, and output redaction.
 
-Address every actionable issue through TDD and rerun affected plus full suites.
+Address every actionable issue through a failing test, minimal fix, focused test run, and full regression run.
 
-- [ ] **Step 10: Open a draft PR and verify the clean head**
+- [ ] **Step 10: Open a draft PR**
 
-PR title:
+Title:
 
 ```text
 feat: add ALT machine registry lifecycle
 ```
 
-PR body must summarize:
+Body includes contracts, logical transaction model, blockers, admission, processor race protection, helper, installer/readiness, verification evidence, safety boundaries, OR-3P3 gate, and:
 
-- archive preview/apply contracts;
-- generation-aware logical atomicity;
-- blockers and safe errors;
-- registration admission and pending race protection;
-- register-only helper;
-- installer/readiness changes;
-- complete verification evidence;
-- no live controller/reference-machine access;
-- OR-3P3 gate;
-- explicit `Do not merge without explicit user confirmation.`
+```text
+Do not merge without explicit user confirmation.
+```
 
-Run standard repository workflows on the final clean head. Remove any temporary dedicated verification workflow and CI-only fixture, then rerun the standard workflows if the head changed.
+- [ ] **Step 11: Verify clean final head and mark Ready**
 
-- [ ] **Step 11: Mark Ready only after clean verification**
+Run standard repository workflows on the final clean head. Remove temporary workflows and CI-only fixtures. If removal changes the head, rerun standard workflows.
 
-Before changing draft state, verify:
+Before Ready:
 
 ```bash
 git status --short
 git diff --check origin/main...HEAD
 ```
 
-Expected: clean worktree and no whitespace errors. Confirm the PR head SHA matches the verified SHA and all required checks are successful. Do not merge.
+Expected: clean worktree and no whitespace errors. Confirm PR head SHA equals verified SHA and required checks are successful. Do not merge.
+
+## Coverage Matrix
+
+| Specification requirement | Implementation task |
+|---|---|
+| Generation identity and legacy fingerprint | Task 1 |
+| Protected archive persistence and durability | Task 2 |
+| Candidate discovery and blockers | Task 3 |
+| Exact-generation active view | Task 3 |
+| Preview/apply, reason, audit, recovery, idempotency | Task 4 |
+| Root-gated CLI contracts | Task 5 |
+| Assigned/busy/cleanup admission and new registration IDs | Task 6 |
+| HTTP status mapping and redaction | Task 6 |
+| Pending processor race protection | Task 7 |
+| Register-only helper and marker behavior | Task 8 |
+| Installer, systemd, readiness, preservation | Task 9 |
+| Runbook, OR-3P3 gate, verification, PR review | Task 10 |
