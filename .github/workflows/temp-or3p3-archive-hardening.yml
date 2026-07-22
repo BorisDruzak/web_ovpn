@@ -1,0 +1,270 @@
+name: Temporary OR-3P3 archive hardening
+
+on:
+  push:
+    branches:
+      - feat/alt-or3p3-backup-restore-20260722
+    paths:
+      - .github/workflows/temp-or3p3-archive-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/alt-or3p3-backup-restore-20260722
+          fetch-depth: 0
+      - name: Apply exact archive hardening patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("deploy/alt-linux/backup/alt_deploy_backup/archive.py")
+          text = path.read_text(encoding="utf-8")
+
+          old_capture = '''        try:
+              self._run_capture_pipeline(spec, list_path, temporary)
+              after = source_inventory(present_paths)
+              if after != before:
+                  raise _component_error(
+                      "Component sources changed during capture"
+                  )
+              os.replace(temporary, destination)
+              os.chmod(destination, 0o600)
+              fsync_directory(destination.parent)
+              size, digest = self._file_digest(destination)
+              return ComponentRecord(
+                  name=spec.name,
+                  filename=spec.filename,
+                  namespace=spec.namespace,
+                  size_bytes=size,
+                  sha256=digest,
+                  paths=tuple(
+                      self._path_record(path)
+                      for path in spec.paths
+                  ),
+                  archive_format="tar.zst",
+              )
+          except BackupError:
+              raise
+          except OSError as exc:
+              raise _component_error(
+                  "Component archive publication failed"
+              ) from exc
+          finally:
+              for path in (list_path, temporary):
+                  try:
+                      path.unlink(missing_ok=True)
+                  except OSError:
+                      pass
+          '''
+          new_capture = '''        published = False
+          completed = False
+          try:
+              self._run_capture_pipeline(spec, list_path, temporary)
+              after = source_inventory(present_paths)
+              if after != before:
+                  raise _component_error(
+                      "Component sources changed during capture"
+                  )
+              os.replace(temporary, destination)
+              published = True
+              os.chmod(destination, 0o600)
+              fsync_directory(destination.parent)
+              size, digest = self._file_digest(destination)
+              record = ComponentRecord(
+                  name=spec.name,
+                  filename=spec.filename,
+                  namespace=spec.namespace,
+                  size_bytes=size,
+                  sha256=digest,
+                  paths=tuple(
+                      self._path_record(path)
+                      for path in spec.paths
+                  ),
+                  archive_format="tar.zst",
+              )
+              completed = True
+              return record
+          except BackupError:
+              raise
+          except OSError as exc:
+              raise _component_error(
+                  "Component archive publication failed"
+              ) from exc
+          finally:
+              for cleanup_path in (list_path, temporary):
+                  try:
+                      cleanup_path.unlink(missing_ok=True)
+                  except OSError:
+                      pass
+              if published and not completed:
+                  try:
+                      metadata = destination.lstat()
+                  except OSError:
+                      metadata = None
+                  if metadata is not None and stat.S_ISREG(metadata.st_mode):
+                      try:
+                          destination.unlink()
+                          fsync_directory(destination.parent)
+                      except (BackupError, OSError):
+                          pass
+          '''
+          if old_capture not in text:
+              raise SystemExit("capture patch anchor not found")
+          text = text.replace(old_capture, new_capture, 1)
+
+          open_anchor = '''        return metadata.st_size, process
+
+      @staticmethod
+      def _canonical_member_name(member: tarfile.TarInfo) -> str:
+          '''
+          open_replacement = '''        return metadata.st_size, process
+
+      @staticmethod
+      def _finish_decompressor(process: subprocess.Popen[bytes]) -> int:
+          try:
+              process.stdout.close()
+          finally:
+              if process.poll() is None:
+                  try:
+                      return process.wait(timeout=5)
+                  except TypeError:
+                      return process.wait()
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+              return process.wait()
+
+      @staticmethod
+      def _canonical_member_name(member: tarfile.TarInfo) -> str:
+          '''
+          if open_anchor not in text:
+              raise SystemExit("decompressor helper anchor not found")
+          text = text.replace(open_anchor, open_replacement, 1)
+
+          uid_anchor = '''        if member.size < 0 or member.size > _MAX_MEMBER_SIZE:
+              raise _integrity_error("Archive member size is unsafe")
+          '''
+          uid_replacement = '''        if member.size < 0 or member.size > _MAX_MEMBER_SIZE:
+              raise _integrity_error("Archive member size is unsafe")
+          if member.uid < 0 or member.gid < 0:
+              raise _integrity_error("Archive numeric ownership is unsafe")
+          '''
+          if uid_anchor not in text:
+              raise SystemExit("numeric ownership anchor not found")
+          text = text.replace(uid_anchor, uid_replacement, 1)
+
+          old_inspect = '''        try:
+              try:
+                  with tarfile.open(
+                      fileobj=process.stdout,
+                      mode="r|",
+                  ) as stream:
+                      for raw_member in stream:
+                          if len(members) >= _MAX_ARCHIVE_MEMBERS:
+                              raise _integrity_error(
+                                  "Archive contains too many members"
+                              )
+                          member = self._validated_member(
+                              spec,
+                              raw_member,
+                          )
+                          if member.name in names:
+                              raise _integrity_error(
+                                  "Archive contains duplicate members"
+                              )
+                          names.add(member.name)
+                          total_size += member.size
+                          if total_size > _MAX_TOTAL_SIZE:
+                              raise _integrity_error(
+                                  "Archive expanded size is unsafe"
+                              )
+                          members.append(member)
+              except (tarfile.TarError, OSError) as exc:
+                  raise _integrity_error(
+                      "Component tar stream is invalid"
+                  ) from exc
+          finally:
+              process.stdout.close()
+          return_code = process.wait()
+          '''
+          new_inspect = '''        try:
+              try:
+                  with tarfile.open(
+                      fileobj=process.stdout,
+                      mode="r|",
+                  ) as stream:
+                      for raw_member in stream:
+                          if len(members) >= _MAX_ARCHIVE_MEMBERS:
+                              raise _integrity_error(
+                                  "Archive contains too many members"
+                              )
+                          member = self._validated_member(
+                              spec,
+                              raw_member,
+                          )
+                          if member.name in names:
+                              raise _integrity_error(
+                                  "Archive contains duplicate members"
+                              )
+                          names.add(member.name)
+                          total_size += member.size
+                          if total_size > _MAX_TOTAL_SIZE:
+                              raise _integrity_error(
+                                  "Archive expanded size is unsafe"
+                              )
+                          members.append(member)
+              except (tarfile.TarError, OSError) as exc:
+                  raise _integrity_error(
+                      "Component tar stream is invalid"
+                  ) from exc
+          except BaseException:
+              self._finish_decompressor(process)
+              raise
+          return_code = self._finish_decompressor(process)
+          '''
+          if old_inspect not in text:
+              raise SystemExit("inspect patch anchor not found")
+          text = text.replace(old_inspect, new_inspect, 1)
+
+          old_extract_tail = '''            except (tarfile.TarError, OSError) as exc:
+                  raise _integrity_error(
+                      "Component extraction stream is invalid"
+                  ) from exc
+          finally:
+              process.stdout.close()
+          if process.wait() != 0:
+              raise _integrity_error(
+                  "Component extraction zstd stream is invalid"
+              )
+          '''
+          new_extract_tail = '''            except (tarfile.TarError, OSError) as exc:
+                  raise _integrity_error(
+                      "Component extraction stream is invalid"
+                  ) from exc
+          except BaseException:
+              self._finish_decompressor(process)
+              raise
+          if self._finish_decompressor(process) != 0:
+              raise _integrity_error(
+                  "Component extraction zstd stream is invalid"
+              )
+          '''
+          if old_extract_tail not in text:
+              raise SystemExit("extraction patch anchor not found")
+          text = text.replace(old_extract_tail, new_extract_tail, 1)
+
+          path.write_text(text, encoding="utf-8")
+      - name: Run focused archive tests
+        run: python -m pytest -q tests/alt_linux/test_or3p3_backup_archive.py
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/alt-linux/backup/alt_deploy_backup/archive.py
+          git commit -m "fix: harden OR-3P3 archive cleanup"
+          git push origin HEAD:feat/alt-or3p3-backup-restore-20260722
