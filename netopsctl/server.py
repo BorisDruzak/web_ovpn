@@ -83,6 +83,7 @@ def serve(listener: socket.socket, *, peers_by_uid: dict[int, AuthenticatedPeer]
     while True:
         connection, _ = listener.accept()
         with connection:
+            request_id = ""
             try:
                 uid, gid, pid = peer_credentials(connection)
                 peer = peers_by_uid.get(uid)
@@ -90,10 +91,11 @@ def serve(listener: socket.socket, *, peers_by_uid: dict[int, AuthenticatedPeer]
                     raise ProtocolError("untrusted local caller")
                 data = connection.recv(16_385)
                 request = decode_request(data)
+                request_id = request.request_id
                 authorization = authorize_broker_request(conn, request, peer)
                 response = handle(request, service, peer, authorization)
             except (ProtocolError, ValueError, RuntimeError) as exc:
-                response = {"status": "error", "request_id": "", "error": str(exc)}
+                response = {"status": "error", "request_id": request_id, "error": str(exc)}
             connection.sendall(encode_response(response))
 
 

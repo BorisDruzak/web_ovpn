@@ -62,3 +62,35 @@ def test_change_plan_state_machine_and_desired_policy_are_bounded(tmp_path) -> N
         assert policy["source_plan_key"] == "plan-2"
     finally:
         conn.close()
+
+
+def test_control_service_inspection_returns_persisted_plan_and_digest(tmp_path) -> None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from netopsctl.audit import AuditSigner
+    from netopsctl.service import ControlService
+    from netopsctl.store import connect, create_change_plan
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netopsctl.sqlite').as_posix()}")
+    try:
+        create_change_plan(
+            conn, plan_key="plan-inspect", actor="api:network-admin", reason="policy",
+            subject_type="asset", subject_key="mac:AA:BB:CC:DD:EE:FF", operation_type="internet_access_set",
+            desired_state={"internet_access": "deny"}, resolved_targets=[], context_evidence_hash="c" * 64,
+            precheck={}, rollback={},
+        )
+        service = ControlService(
+            conn=conn, netctl_db_url="sqlite:///unused", adapter=object(), enforcement_sources_by_site={},
+            source_sla_seconds=300, audit_signer=AuditSigner("test", Ed25519PrivateKey.generate()),
+            writes_enabled=False, audit_sink={},
+        )
+
+        result = service.dispatch(
+            "plan.inspect", {"plan_key": "plan-inspect"}, peer="openvpn-web",
+            subject={"principal_type": "api_principal", "principal_id": "api:netops", "principal_name": "api:netops", "session_id": "request-1", "authorization_id": "auth-1"},
+        )
+
+        assert result["plan_key"] == "plan-inspect"
+        assert result["plan_digest"].startswith("sha256:")
+    finally:
+        conn.close()

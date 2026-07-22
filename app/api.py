@@ -12,10 +12,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .audit import write_audit
+from .auth import authorize_network_change
 from .auto_sync import force_client_sync
 from .config import get_settings
 from .db import get_db
 from .netctl_client import NetctlError, run_netctl
+from .netopsctl_client import NetworkControlError, run_network_control
 from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -131,6 +133,13 @@ class NetworkSessionCloseRequest(BaseModel):
     ended_at: str = Field(min_length=1, max_length=64)
 
 
+class NetworkChangePlanCreateRequest(BaseModel):
+    subject_type: Literal["asset", "user"]
+    subject_key: str = Field(min_length=1, max_length=240)
+    desired_state: Literal["allow", "deny"]
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 def api_response(data: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "data": data}
 
@@ -180,6 +189,106 @@ def call_netctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
         return run_netctl(args, timeout=timeout)
     except NetctlError as exc:
         raise HTTPException(status_code=502, detail=netctl_error_detail(exc)) from exc
+
+
+def call_network_control(
+    action: str,
+    payload: dict[str, Any],
+    *,
+    actor: str,
+    session_id: str,
+    authorization_id: str,
+) -> dict[str, Any]:
+    try:
+        return run_network_control(
+            action, payload, actor=actor, session_id=session_id,
+            authorization_id=authorization_id,
+        )
+    except NetworkControlError as exc:
+        raise HTTPException(status_code=502, detail=exc.message) from exc
+
+
+def _network_change(
+    action: str,
+    payload: dict[str, Any],
+    *,
+    required_scope: str,
+    request: Request,
+    authorization: str | None,
+    db: Session,
+) -> dict[str, Any]:
+    actor = authorize_network_change(request, authorization, db, required_scope)
+    request_id = str(getattr(request.state, "request_id", "")) or "api-request"
+    try:
+        result = call_network_control(
+            action, payload, actor=actor, session_id=request_id,
+            authorization_id=f"{request_id}:{action}",
+        )
+    except HTTPException as exc:
+        write_audit(db, request, actor, f"api-network-change-{action}", "error", str(exc.detail), target_client=str(payload.get("plan_key") or ""))
+        raise
+    write_audit(db, request, actor, f"api-network-change-{action}", "ok", "broker accepted request", target_client=str(payload.get("plan_key") or result.get("plan_key") or ""))
+    return result
+
+
+@router.post("/network-changes/plans")
+def api_network_change_plan_create(
+    payload: NetworkChangePlanCreateRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    return api_response(_network_change(
+        "plan.create", {"plan": payload.model_dump()}, required_scope="network:plan",
+        request=request, authorization=authorization, db=db,
+    ))
+
+
+@router.get("/network-changes/plans/{plan_key}")
+def api_network_change_plan_inspect(
+    plan_key: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    return api_response(_network_change(
+        "plan.inspect", {"plan_key": plan_key}, required_scope="network:read",
+        request=request, authorization=authorization, db=db,
+    ))
+
+
+def _network_change_plan_action(
+    action: Literal["plan.approve", "plan.apply", "plan.verify", "plan.rollback"],
+    plan_key: str,
+    required_scope: str,
+    request: Request,
+    authorization: str | None,
+    db: Session,
+):
+    return api_response(_network_change(
+        action, {"plan_key": plan_key}, required_scope=required_scope,
+        request=request, authorization=authorization, db=db,
+    ))
+
+
+@router.post("/network-changes/plans/{plan_key}/approve")
+def api_network_change_plan_approve(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.approve", plan_key, "network:plan", request, authorization, db)
+
+
+@router.post("/network-changes/plans/{plan_key}/apply")
+def api_network_change_plan_apply(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.apply", plan_key, "network:apply", request, authorization, db)
+
+
+@router.post("/network-changes/plans/{plan_key}/verify")
+def api_network_change_plan_verify(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.verify", plan_key, "network:apply", request, authorization, db)
+
+
+@router.post("/network-changes/plans/{plan_key}/rollback")
+def api_network_change_plan_rollback(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.rollback", plan_key, "network:rollback", request, authorization, db)
 
 
 def profile_command_args(command: str, client: str, payload: ClientProfileRequest) -> list[str]:

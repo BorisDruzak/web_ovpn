@@ -10,7 +10,7 @@ from .audit import AuditSigner, append_event
 from .checkpoint import build_checkpoint, deliver_checkpoint
 from .policy_resolver import create_asset_internet_access_plan
 from .reconcile import apply_plan, rollback_plan, verify_plan
-from .store import transition_plan, upsert_desired_policy
+from .store import get_change_plan, plan_digest, transition_plan, upsert_desired_policy
 
 
 @dataclass
@@ -58,10 +58,15 @@ class ControlService:
                     from .policy_resolver import create_user_internet_access_plan
 
                     result = create_user_internet_access_plan(self.conn, self.netctl_db_url, user_key=plan["subject_key"], **common)
+                result["plan_digest"] = plan_digest(self.conn, result["plan_key"])
+            elif action == "plan.inspect":
+                result = get_change_plan(self.conn, payload["plan_key"])
+                result["plan_digest"] = plan_digest(self.conn, payload["plan_key"])
             elif action == "plan.approve":
                 plan_key = payload["plan_key"]
                 transition_plan(self.conn, plan_key, "validated")
                 result = transition_plan(self.conn, plan_key, "approved")
+                result["plan_digest"] = plan_digest(self.conn, plan_key)
             elif action == "plan.apply":
                 self._checkpoint()
                 result = apply_plan(self.conn, payload["plan_key"], self.adapter)

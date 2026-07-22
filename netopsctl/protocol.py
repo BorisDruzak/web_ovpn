@@ -10,7 +10,7 @@ from typing import Any
 PROTOCOL_VERSION = 2
 MAX_REQUEST_BYTES = 16_384
 MAX_RESPONSE_BYTES = 16_384
-ACTIONS = frozenset({"plan.create", "plan.approve", "plan.apply", "plan.verify", "plan.rollback", "policy.reconcile", "status"})
+ACTIONS = frozenset({"plan.create", "plan.inspect", "plan.approve", "plan.apply", "plan.verify", "plan.rollback", "policy.reconcile", "status"})
 _PLAN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -34,7 +34,7 @@ def _validate_payload(action: str, payload: object) -> dict[str, Any]:
         if payload:
             raise ProtocolError("status does not accept payload")
         return {}
-    if action in {"plan.approve", "plan.apply", "plan.verify", "plan.rollback"}:
+    if action in {"plan.inspect", "plan.approve", "plan.apply", "plan.verify", "plan.rollback"}:
         if set(payload) != {"plan_key"} or not isinstance(payload.get("plan_key"), str) or not _PLAN_KEY_RE.fullmatch(str(payload["plan_key"])):
             raise ProtocolError("invalid plan payload")
         return {"plan_key": str(payload["plan_key"])}

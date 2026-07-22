@@ -76,6 +76,10 @@ def _public_plan(row: sqlite3.Row) -> dict[str, Any]:
     return value
 
 
+def get_change_plan(conn: sqlite3.Connection, plan_key: str) -> dict[str, Any]:
+    return _public_plan(_plan(conn, plan_key))
+
+
 def create_change_plan(
     conn: sqlite3.Connection,
     *,

@@ -37,6 +37,18 @@ def test_broker_protocol_accepts_only_registered_bounded_envelopes() -> None:
     }
 
 
+def test_broker_protocol_accepts_plan_inspection_request() -> None:
+    from netopsctl.protocol import decode_request
+
+    request = _request(
+        action="plan.inspect",
+        payload={"plan_key": "plan-20260722-0001"},
+    )
+
+    decoded = decode_request(json.dumps(request).encode())
+    assert decoded.action == "plan.inspect"
+
+
 @pytest.mark.parametrize("mutate", [
     lambda value: value.update({"command": "rm -rf /"}),
     lambda value: value.update({"actor": "forged-admin"}),

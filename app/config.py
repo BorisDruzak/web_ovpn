@@ -28,6 +28,8 @@ class Settings:
     network_change_trusted_https: bool
     network_change_trust_proxy: bool
     network_change_tokens_json: str
+    network_control_socket_path: Path
+    network_control_signing_key_path: Path
     vpnctl_path: str
     vpnctl_use_sudo: bool
     netctl_path: str
@@ -65,6 +67,10 @@ def get_settings() -> Settings:
         network_change_trusted_https=_bool_env("NETWORK_CHANGE_TRUSTED_HTTPS", False),
         network_change_trust_proxy=_bool_env("NETWORK_CHANGE_TRUST_PROXY", False),
         network_change_tokens_json=os.environ.get("NETWORK_CHANGE_TOKENS_JSON", "[]"),
+        network_control_socket_path=_path_env("NETWORK_CONTROL_SOCKET_PATH", "/run/netopsctl/netopsctl.sock"),
+        network_control_signing_key_path=_path_env(
+            "NETWORK_CONTROL_SIGNING_KEY_PATH", "/etc/openvpn-web/credentials/netops_web_signing_ed25519.raw"
+        ),
         vpnctl_path=os.environ.get("VPNCTL_PATH", "/usr/local/sbin/vpnctl"),
         vpnctl_use_sudo=_bool_env("VPNCTL_USE_SUDO", False),
         netctl_path=os.environ.get("NETCTL_PATH", "/usr/local/sbin/netctl"),

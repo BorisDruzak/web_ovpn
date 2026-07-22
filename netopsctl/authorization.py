@@ -14,6 +14,7 @@ from .audit import canonical_json
 
 ACTION_SCOPES = {
     "plan.create": "network.plan.create",
+    "plan.inspect": "network.plan.read",
     "plan.approve": "network.plan.approve",
     "plan.apply": "network.plan.apply",
     "plan.verify": "network.plan.verify",
@@ -25,7 +26,7 @@ _BASE_FIELDS = {
     "authorization_version", "action", "principal_type", "principal_id", "principal_name",
     "session_id", "authorization_id", "scopes", "issued_at", "expires_at", "nonce",
 }
-_NO_PLAN_ACTIONS = frozenset({"status", "policy.reconcile"})
+_NO_PLAN_ACTIONS = frozenset({"status", "policy.reconcile", "plan.inspect"})
 
 
 def canonical_envelope(envelope: Mapping[str, Any]) -> bytes:
