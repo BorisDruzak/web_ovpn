@@ -129,6 +129,7 @@ def _dispatch(
             "phase": result.phase,
             "services_restored": result.services_restored,
             "rollback_performed": result.rollback_performed,
+            "cleanup_complete": result.cleanup_complete,
         }
     if command == "delete":
         result = repository.delete(backup_id)
