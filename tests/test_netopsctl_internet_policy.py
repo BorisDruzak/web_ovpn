@@ -102,6 +102,35 @@ def test_asset_policy_rejects_duplicate_current_ip_on_another_asset(tmp_path) ->
         context.close()
 
 
+def test_asset_policy_rejects_ambiguous_attachment(tmp_path) -> None:
+    from netctl.db import connect as connect_netctl
+    from netopsctl.policy_resolver import resolve_asset_targets
+
+    context = connect_netctl(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    now = utc_now()
+    try:
+        asset_id = context.execute(
+            """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA', 'manual', 100, 0, ?, ?, ?, ?)""", (now, now, now, now)
+        ).lastrowid
+        interface_id = context.execute(
+            """INSERT INTO asset_interfaces (asset_id, interface_key, mac, first_seen_at, last_seen_at)
+               VALUES (?, 'eth0', 'AA:BB:CC:DD:EE:FF', ?, ?)""", (asset_id, now, now)
+        ).lastrowid
+        run_id = context.execute(
+            "INSERT INTO network_correlation_runs (run_type, started_at, status) VALUES ('attachments', ?, 'success')", (now,)
+        ).lastrowid
+        context.execute(
+            """INSERT INTO asset_attachment_resolutions (asset_interface_id, asset_id, status, confidence, first_seen_at, last_seen_at, correlation_run_id)
+               VALUES (?, ?, 'ambiguous', 0, ?, ?, ?)""", (interface_id, asset_id, now, now, run_id)
+        )
+        context.commit()
+        with pytest.raises(ValueError, match="attachment"):
+            resolve_asset_targets(context, "mac:AA", enforcement_sources_by_site={}, source_sla_seconds=300, anchor_check=lambda _: True)
+    finally:
+        context.close()
+
+
 def test_approved_plan_applies_idempotently_and_verifies(tmp_path) -> None:
     from netopsctl.reconcile import apply_plan, verify_plan
     from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan

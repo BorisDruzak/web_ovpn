@@ -48,6 +48,13 @@ def resolve_asset_targets(
     ).fetchone()
     if collision is not None:
         raise ValueError("asset has an open identity collision")
+    ambiguous_attachment = conn.execute(
+        """SELECT 1 FROM asset_attachment_resolutions
+           WHERE asset_id = ? AND status IN ('ambiguous', 'uplink_only', 'unresolved') LIMIT 1""",
+        (asset["id"],),
+    ).fetchone()
+    if ambiguous_attachment is not None:
+        raise ValueError("asset attachment is ambiguous or unresolved")
     rows = conn.execute(
         """SELECT observations.ip, observations.site, observations.source_id,
                   sources.name AS source_name, sources.site AS source_site,
