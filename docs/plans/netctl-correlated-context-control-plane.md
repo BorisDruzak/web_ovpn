@@ -1824,7 +1824,7 @@ git commit -m "security: add network change authorization scopes"
 - Produces a separate database at `/var/lib/netopsctl/netopsctl.sqlite`.
 - Opens `netctl.sqlite` only through `netctl.db.connect_read_only()`.
 
-- [ ] **Step 1: Write failing store tests**
+- [x] **Step 1: Write failing store tests**
 
 Netopsctl migration 1 creates:
 
@@ -1895,17 +1895,17 @@ CREATE TABLE desired_network_policies (
 );
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netopsctl_store.py -q
 ```
 
-- [ ] **Step 3: Implement immutable plan rules**
+- [x] **Step 3: Implement immutable plan rules**
 
 After status `approved`, actor, reason, subject, operation, desired state, targets, evidence hash, steps and rollback payload are immutable. Status transitions are validated by one explicit state machine.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netopsctl_store.py -q
