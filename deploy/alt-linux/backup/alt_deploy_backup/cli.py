@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from .audit import AuditLog
 from .errors import BackupError
 from .rehearsal import RehearsalService
 from .repository import BackupRepository
@@ -178,6 +180,8 @@ def main(
     env: Mapping[str, str] = os.environ if environ is None else environ
     uid = os.geteuid() if effective_uid is None else effective_uid
 
+    audit: AuditLog | None = None
+    audit_started = False
     try:
         if uid != 0:
             raise BackupError(
@@ -186,10 +190,33 @@ def main(
                 exit_code=6,
             )
         command, backup_id = _parse(args)
-        payload = _dispatch(command, backup_id, _settings(env))
+        settings = _settings(env)
+        audit = AuditLog(
+            settings,
+            operation_id=f"op-{secrets.token_hex(8)}",
+            command=command,
+            backup_id=backup_id,
+        )
+        audit.write("command_started", status="started")
+        audit_started = True
+        payload = _dispatch(command, backup_id, settings)
+        audit.write(
+            "command_completed",
+            status="ok",
+            result=str(payload.get("result", "ok")),
+        )
         print(json.dumps(payload, ensure_ascii=False))
         return 0
     except BackupError as exc:
+        if audit is not None and audit_started:
+            try:
+                audit.write(
+                    "command_failed",
+                    status="error",
+                    error_code=exc.code,
+                )
+            except BackupError as audit_error:
+                exc = audit_error
         print(json.dumps(exc.to_dict(), ensure_ascii=False))
         return exc.exit_code
 

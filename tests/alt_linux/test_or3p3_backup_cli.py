@@ -95,3 +95,52 @@ def test_production_mode_rejects_identity_override() -> None:
 
     with pytest.raises(ValueError):
         BackupSettings.from_env(environment)
+
+
+def test_cli_writes_bounded_start_and_success_audit_records(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+
+    result = sandbox.run_cli("list", effective_uid=0)
+
+    assert result.returncode == 0
+    records = [
+        json.loads(line)
+        for line in sandbox.settings.log_file.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [record["event"] for record in records] == [
+        "command_started",
+        "command_completed",
+    ]
+    assert records[0]["operation_id"] == records[1]["operation_id"]
+    assert records[0]["command"] == "list"
+    assert records[0]["backup_id"] is None
+    assert records[0]["status"] == "started"
+    assert records[1]["status"] == "ok"
+    assert records[1]["result"] == "backups_listed"
+
+
+def test_cli_writes_terminal_failure_audit_record(tmp_path: Path) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = "backup-20260722T120000Z-11111111"
+
+    result = sandbox.run_cli("verify", backup_id, effective_uid=0)
+
+    payload = json.loads(result.stdout)
+    assert result.returncode != 0
+    records = [
+        json.loads(line)
+        for line in sandbox.settings.log_file.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [record["event"] for record in records] == [
+        "command_started",
+        "command_failed",
+    ]
+    assert records[0]["operation_id"] == records[1]["operation_id"]
+    assert records[1]["backup_id"] == backup_id
+    assert records[1]["error_code"] == payload["error"]["code"]

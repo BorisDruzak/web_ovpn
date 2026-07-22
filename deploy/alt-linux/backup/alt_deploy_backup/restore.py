@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 import urllib.error
@@ -16,11 +17,17 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .bundle_management import BundleManager
+from .archive import ArchiveInspection
+from .bundle_management import BundleManager, _VerifiedBundle
 from .components import ComponentSpec, component_specs
 from .errors import BackupError
 from .extracted_metadata import apply_archive_metadata
-from .fs import assert_safe_parents, fsync_directory, read_regular_bytes
+from .fs import (
+    assert_safe_parents,
+    fsync_directory,
+    read_regular_bytes,
+    source_inventory,
+)
 from .locks import exclusive_lifecycle_lock, exclusive_operation_lock
 from .manifest import BackupManifest
 from .repository import BackupRepository
@@ -97,6 +104,9 @@ def _is_unsupported_metadata_error(exc: OSError) -> bool:
     }
 
 
+_CAPACITY_MARGIN_BYTES = 64 * 1024 * 1024
+
+
 class RestoreService:
     def __init__(
         self,
@@ -143,15 +153,124 @@ class RestoreService:
             )
         return verified
 
+    @staticmethod
+    def _archive_path_regular_bytes(
+        inspection: ArchiveInspection,
+        namespace: str,
+        absolute_path: str,
+    ) -> int:
+        root = f"{namespace}/{absolute_path.lstrip('/')}"
+        members = inspection.members
+        return sum(
+            member.size
+            for member in members
+            if member.kind == "regular"
+            and (
+                member.name == root
+                or member.name.startswith(root + "/")
+            )
+        )
+
+    @staticmethod
+    def _capacity_device(path: Path) -> int:
+        try:
+            assert_safe_parents(path)
+            metadata = path.lstat()
+        except (OSError, BackupError) as exc:
+            raise _staging(
+                "Restore capacity path cannot be inspected"
+            ) from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+        ):
+            raise _staging("Restore capacity path is unsafe")
+        return metadata.st_dev
+
+    def _assert_restore_capacity(
+        self,
+        verified: _VerifiedBundle,
+    ) -> None:
+        requirements: dict[int, int] = {}
+        probes: dict[int, Path] = {}
+
+        def add(path: Path, amount: int) -> None:
+            device = self._capacity_device(path)
+            requirements[device] = requirements.get(device, 0) + max(
+                0,
+                amount,
+            )
+            probes.setdefault(device, path)
+
+        specs = component_specs(self.settings)
+        manifest = verified.manifest
+        bundle_path = verified.path
+        total_expanded = 0
+        for spec, record in zip(
+            specs,
+            manifest.components,
+            strict=True,
+        ):
+            inspection = self.repository.archive_engine.inspect(
+                spec,
+                bundle_path / record.filename,
+            )
+            total_expanded += inspection.total_size
+            for path_record in record.paths:
+                if not path_record.present:
+                    continue
+                production = self.repository._controller_path(
+                    path_record.absolute_path
+                )
+                restored_bytes = self._archive_path_regular_bytes(
+                    inspection,
+                    record.namespace,
+                    path_record.absolute_path,
+                )
+                add(production.parent, restored_bytes * 2)
+
+        try:
+            current_inventory = source_inventory(
+                self.repository._source_paths(specs)
+            )
+        except BackupError as exc:
+            raise _staging(
+                "Current restore generation cannot be measured"
+            ) from exc
+        current_regular_bytes = sum(
+            entry.size
+            for entry in current_inventory
+            if entry.kind == "regular"
+        )
+        add(
+            self.settings.backup_root,
+            (total_expanded * 2) + (current_regular_bytes * 2),
+        )
+
+        for device, raw_required in requirements.items():
+            required = raw_required + _CAPACITY_MARGIN_BYTES
+            try:
+                free = shutil.disk_usage(probes[device]).free
+            except OSError as exc:
+                raise _staging(
+                    "Restore free space cannot be inspected"
+                ) from exc
+            if free < required:
+                raise _staging("Insufficient free space for restore")
+
     def prepare_restore(self, backup_id: str) -> RestoreJournal:
         self.repository.assert_rehearsed_eligibility(backup_id)
         self.repository.quiescence.assert_quiescent()
-        pre_states = self.repository.systemd.capture()
-        journal = RestoreJournal.create(self.settings, backup_id)
-        journal.record_phase(
-            {"pre_states": self._serialize_states(pre_states)}
-        )
-        return journal
+        with exclusive_operation_lock(self.settings):
+            verified = self._assert_eligibility_unlocked(backup_id)
+            self.repository.quiescence.assert_quiescent()
+            self._assert_restore_capacity(verified)
+            pre_states = self.repository.systemd.capture()
+            journal = RestoreJournal.create(self.settings, backup_id)
+            journal.record_phase(
+                {"pre_states": self._serialize_states(pre_states)}
+            )
+            return journal
 
     @staticmethod
     def _write_all(descriptor: int, raw: bytes) -> None:
@@ -1513,7 +1632,8 @@ class RestoreService:
         self.repository.assert_rehearsed_eligibility(backup_id)
         self.repository.quiescence.assert_quiescent()
         with exclusive_operation_lock(self.settings):
-            self._assert_eligibility_unlocked(backup_id)
+            verified = self._assert_eligibility_unlocked(backup_id)
+            self._assert_restore_capacity(verified)
             pre_states = self.repository.systemd.capture()
             journal = RestoreJournal.create(self.settings, backup_id)
             journal.record_phase(

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from alt_deploy_backup.archive import ArchiveInspection, ArchiveMember
+from alt_deploy_backup.components import component_specs
 from alt_deploy_backup.errors import BackupError
 from alt_deploy_backup.restore_journal import RestoreJournal
 from support.backup_restore_sandbox import BackupSandbox
@@ -347,3 +351,147 @@ def test_recover_is_idempotent_after_rollback(tmp_path: Path) -> None:
     assert first.phase == "rolled_back"
     assert second.phase == "rolled_back"
     assert second.rollback_performed is True
+
+
+def test_restore_capacity_failure_precedes_journal_and_service_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    service = sandbox.restore_service()
+    backup_id = "backup-20260722T120000Z-11111111"
+    verified = SimpleNamespace()
+    calls: list[object] = []
+
+    monkeypatch.setattr(
+        service.repository,
+        "assert_rehearsed_eligibility",
+        lambda selected: None,
+    )
+    monkeypatch.setattr(
+        service.repository.quiescence,
+        "assert_quiescent",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_assert_eligibility_unlocked",
+        lambda selected: verified,
+    )
+
+    def reject_capacity(selected: object) -> None:
+        calls.append(selected)
+        raise BackupError(
+            code="restore_staging_failed",
+            message="Insufficient free space for restore",
+            exit_code=4,
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_assert_restore_capacity",
+        reject_capacity,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service.repository.systemd,
+        "capture",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("service state inspected before capacity")
+        ),
+    )
+
+    with pytest.raises(BackupError) as error:
+        service.restore(backup_id)
+
+    assert error.value.code == "restore_staging_failed"
+    assert calls == [verified]
+    assert not (
+        sandbox.settings.backup_root / ".restore-transactions"
+    ).exists()
+
+
+def test_restore_capacity_groups_one_probe_per_filesystem(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    service = sandbox.restore_service()
+    specifications = component_specs(sandbox.settings)
+    records: list[object] = []
+    inspections: dict[str, ArchiveInspection] = {}
+
+    for specification in specifications:
+        path_records: list[object] = []
+        members: list[ArchiveMember] = []
+        for source in specification.paths:
+            logical = service.repository.archive_engine._logical_path(
+                source
+            )
+            path_records.append(
+                SimpleNamespace(absolute_path=logical, present=True)
+            )
+            members.append(
+                ArchiveMember(
+                    name=(
+                        f"{specification.namespace}/"
+                        f"{logical.lstrip('/')}"
+                    ),
+                    kind="regular",
+                    size=1024,
+                    mode=0o600,
+                    uid=sandbox.settings.expected_root_uid,
+                    gid=sandbox.settings.expected_root_gid,
+                    link_name=None,
+                )
+            )
+        records.append(
+            SimpleNamespace(
+                filename=specification.filename,
+                namespace=specification.namespace,
+                paths=tuple(path_records),
+            )
+        )
+        inspections[specification.filename] = ArchiveInspection(
+            members=tuple(members),
+            total_size=sum(member.size for member in members),
+        )
+
+    verified = SimpleNamespace(
+        path=tmp_path / "bundle",
+        manifest=SimpleNamespace(components=tuple(records)),
+    )
+    monkeypatch.setattr(
+        service.repository.archive_engine,
+        "inspect",
+        lambda specification, path: inspections[path.name],
+    )
+    monkeypatch.setattr(
+        service.repository,
+        "_source_paths",
+        lambda specifications: (),
+    )
+    monkeypatch.setattr(
+        "alt_deploy_backup.restore.source_inventory",
+        lambda paths: (),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "_capacity_device",
+        lambda path: 7,
+        raising=False,
+    )
+    probes: list[Path] = []
+
+    def no_free_space(path: str | Path):
+        probes.append(Path(path))
+        return shutil._ntuple_diskusage(1024, 1024, 0)
+
+    monkeypatch.setattr(shutil, "disk_usage", no_free_space)
+
+    with pytest.raises(BackupError) as error:
+        service._assert_restore_capacity(verified)
+
+    assert error.value.code == "restore_staging_failed"
+    assert len(probes) == 1
