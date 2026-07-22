@@ -166,19 +166,23 @@ jobs:
         run: |
           set -Eeuo pipefail
           vault=deploy/alt-linux/ansible/group_vars/vault.yml
+          vault_pass="${RUNNER_TEMP}/or3p3-vault-pass"
           cp deploy/alt-linux/ansible/group_vars/vault.yml.example "${vault}"
-          trap 'rm -f "${vault}"' EXIT
+          printf 'synthetic-or3p3-password\n' > "${vault_pass}"
+          chmod 0600 "${vault_pass}"
+          trap 'rm -f "${vault}" "${vault_pass}"' EXIT
           export ANSIBLE_CONFIG="${PWD}/deploy/alt-linux/ansible/ansible.cfg"
+          export ANSIBLE_VAULT_PASSWORD_FILE="${vault_pass}"
           ansible-playbook \
             --syntax-check \
             --inventory 'localhost,' \
-            --vault-password-file /dev/null \
+            --vault-password-file "${vault_pass}" \
             deploy/alt-linux/ansible/playbooks/01-preflight.yml \
             2>&1 | tee "${RUNNER_TEMP}/or3p3-ansible-preflight.log"
           ansible-playbook \
             --syntax-check \
             --inventory 'localhost,' \
-            --vault-password-file /dev/null \
+            --vault-password-file "${vault_pass}" \
             deploy/alt-linux/ansible/playbooks/02-provision-account.yml \
             2>&1 | tee "${RUNNER_TEMP}/or3p3-ansible-provision.log"
 
