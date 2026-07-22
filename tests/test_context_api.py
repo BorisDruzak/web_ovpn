@@ -218,3 +218,15 @@ def test_context_network_session_endpoints_are_authenticated_and_delegate_to_net
     assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
         "--json", "network-sessions", "close", "--session-key", "radius:one", "--ended-at", "2026-07-22T12:10:00Z"
     ]
+
+
+def test_context_user_sessions_api_returns_only_session_evidence(tmp_path, monkeypatch):
+    client, headers, log_path = make_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/v1/context/users/employee:api/sessions", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["sessions"] == []
+    assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
+        "--json", "users", "inspect", "--user-key", "employee:api",
+    ]

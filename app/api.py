@@ -955,6 +955,17 @@ def api_context_user_inspect(user_key: str, actor: str = Depends(require_api_act
     return api_response(call_netctl(["users", "inspect", "--user-key", user_key]))
 
 
+@router.get("/context/users/{user_key}/sessions")
+def api_context_user_sessions(user_key: str, actor: str = Depends(require_api_actor)):
+    context = call_netctl(["users", "inspect", "--user-key", user_key]).get("context", {})
+    if not isinstance(context, dict):
+        raise HTTPException(status_code=502, detail="netctl returned invalid user context")
+    sessions = context.get("sessions", [])
+    if not isinstance(sessions, list):
+        raise HTTPException(status_code=502, detail="netctl returned invalid session evidence")
+    return api_response({"sessions": sessions[:100]})
+
+
 @router.post("/context/network-sessions")
 def api_context_network_session_create(
     payload: NetworkSessionCreateRequest,
