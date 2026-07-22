@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -56,6 +58,24 @@ def connect_read_only(db_url: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@contextmanager
+def read_context_snapshot(db_url: str) -> Iterator[sqlite3.Connection]:
+    """Yield one WAL-aware, read-only SQLite snapshot with no write side effects."""
+    conn = connect_read_only(db_url)
+    try:
+        conn.execute("BEGIN")
+        try:
+            yield conn
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
+    finally:
+        conn.close()
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:

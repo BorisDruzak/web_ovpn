@@ -240,7 +240,9 @@ def reconcile_desired_policies(
     """Reconcile only existing deny intent; identity failures retain the old deny entries."""
     if not 1 <= limit <= 256:
         raise ValueError("invalid reconcile limit")
-    from .policy_resolver import _open_context_immutable, resolve_asset_targets
+    from netctl.db import read_context_snapshot
+
+    from .policy_resolver import resolve_asset_targets
 
     policies = conn.execute(
         """SELECT policies.*, plans.plan_key AS source_plan_key
@@ -255,19 +257,17 @@ def reconcile_desired_policies(
         if str(policy["desired_state"]) != "deny":
             skipped += 1
             continue
-        context = _open_context_immutable(netctl_db_url)
         try:
-            asset_key = _resolve_reconcile_asset(context, policy)
-            targets = resolve_asset_targets(
-                context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
-                source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
-            )
+            with read_context_snapshot(netctl_db_url) as context:
+                asset_key = _resolve_reconcile_asset(context, policy)
+                targets = resolve_asset_targets(
+                    context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
+                    source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
+                )
         except ValueError as exc:
             _record_policy_stale_identity(conn, int(policy["id"]), str(exc))
             stale += 1
             continue
-        finally:
-            context.close()
         devices = {str(target["source"]) for target in targets}
         if len(devices) != 1:
             _record_policy_stale_identity(conn, int(policy["id"]), "policy spans multiple enforcement devices")

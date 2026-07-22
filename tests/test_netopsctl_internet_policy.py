@@ -7,6 +7,28 @@ from netctl.util import utc_now
 import pytest
 
 
+def test_context_snapshot_is_wal_aware_and_consistent_across_a_writer_commit(tmp_path) -> None:
+    from netctl.db import connect, read_context_snapshot
+
+    db_url = f"sqlite:///{(tmp_path / 'context.sqlite').as_posix()}"
+    writer = connect(db_url)
+    try:
+        writer.execute("CREATE TABLE snapshot_probe (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+        writer.execute("INSERT INTO snapshot_probe (id, value) VALUES (1, 'before')")
+        writer.commit()
+
+        with read_context_snapshot(db_url) as first:
+            assert first.execute("SELECT value FROM snapshot_probe WHERE id = 1").fetchone()[0] == "before"
+            writer.execute("UPDATE snapshot_probe SET value = 'after' WHERE id = 1")
+            writer.commit()
+            assert first.execute("SELECT value FROM snapshot_probe WHERE id = 1").fetchone()[0] == "before"
+
+        with read_context_snapshot(db_url) as second:
+            assert second.execute("SELECT value FROM snapshot_probe WHERE id = 1").fetchone()[0] == "after"
+    finally:
+        writer.close()
+
+
 def test_asset_deny_plan_resolves_current_ipv4_to_one_bounded_step(tmp_path) -> None:
     from netctl.db import connect as connect_netctl
     from netopsctl.policy_resolver import create_asset_internet_access_plan
