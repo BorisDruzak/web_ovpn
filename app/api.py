@@ -147,6 +147,18 @@ def api_response(data: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "data": data}
 
 
+def context_response(request: Request, data: dict[str, Any]) -> dict[str, Any]:
+    """Return the additive v1 contract for correlated-context endpoints."""
+    body = dict(data)
+    snapshot = body.pop("snapshot", None)
+    return {
+        "status": "ok", "api_version": "1.0",
+        "request_id": str(getattr(request.state, "request_id", "")),
+        "generated_at": utcnow().isoformat(), "snapshot": snapshot,
+        "data": body, "pagination": None, "errors": [],
+    }
+
+
 def error_detail(exc: VpnctlError) -> str:
     suffix = exc.stderr.strip() or exc.stdout.strip()
     if suffix:
@@ -863,9 +875,10 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 def api_context_search(
     q: str = Query(min_length=1),
     limit: int = Query(default=25, ge=1, le=100),
+    request: Request = None,
     actor: str = Depends(require_api_actor),
 ):
-    return api_response(call_netctl(["context-view", "search", "--query", q, "--limit", str(limit)]))
+    return context_response(request, call_netctl(["context-view", "search", "--query", q, "--limit", str(limit)]))
 
 
 @router.get("/context/assets/{asset_key}")

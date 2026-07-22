@@ -20,7 +20,7 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_NETCTL_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(args) + "\\n")
 if args[1:3] == ["context-view", "search"]:
-    print(json.dumps({"status": "ok", "results": [{"asset_key": "mac:aa:bb:cc:dd:ee:ff"}]}))
+    print(json.dumps({"status": "ok", "snapshot": {"context_revision_id": 1, "topology_correlation_run_id": 2, "attachment_correlation_run_id": 3, "observation_cutoff": "2026-07-22T12:00:00Z"}, "results": [{"asset_key": "mac:aa:bb:cc:dd:ee:ff"}]}))
 elif args[1:3] == ["context-view", "asset"]:
     print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": args[-1]}}}))
 elif args[1:3] == ["context-view", "topology"]:
@@ -85,6 +85,14 @@ def test_context_search_api_delegates_to_netctl(tmp_path, monkeypatch):
     response = client.get("/api/v1/context/search", params={"q": "workstation", "limit": 7}, headers=headers)
 
     assert response.status_code == 200
+    assert response.json()["api_version"] == "1.0"
+    assert response.json()["request_id"]
+    assert response.json()["snapshot"] == {
+        "context_revision_id": 1, "topology_correlation_run_id": 2,
+        "attachment_correlation_run_id": 3, "observation_cutoff": "2026-07-22T12:00:00Z",
+    }
+    assert response.json()["pagination"] is None
+    assert response.json()["errors"] == []
     assert response.json()["data"]["results"] == [{"asset_key": "mac:aa:bb:cc:dd:ee:ff"}]
     assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
         "--json",

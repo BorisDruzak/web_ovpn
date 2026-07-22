@@ -17,7 +17,7 @@ from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
-from .context_query import inspect_asset_context, list_topology_context, search_context
+from .context_query import context_snapshot, inspect_asset_context, list_topology_context, search_context
 from .source_identity import source_readiness
 from .path_engine import PathRequest
 from .path_query import DEFAULT_PATH_FACT_MAX_AGE_SECONDS, explain_asset_path
@@ -664,20 +664,22 @@ def cmd_attachments(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = connect_read_only(args.db)
     try:
+        snapshot = context_snapshot(conn)
         if args.context_view_command == "asset":
             context = inspect_asset_context(conn, args.asset_key)
-            return (0, ok(context=context)) if context is not None else (1, err("asset not found", asset_key=args.asset_key))
+            return (0, ok(context=context, snapshot=snapshot)) if context is not None else (1, err("asset not found", asset_key=args.asset_key))
         if args.context_view_command == "search":
-            return 0, ok(results=search_context(conn, args.query, args.limit))
+            return 0, ok(results=search_context(conn, args.query, args.limit), snapshot=snapshot)
         if args.context_view_command == "topology":
             return 0, ok(
                 depth=args.depth,
                 links=list_topology_context(conn, args.site, args.state, args.depth),
+                snapshot=snapshot,
             )
         if args.context_view_command == "findings":
-            return 0, ok(findings=list_context_findings(conn, args.finding_status))
+            return 0, ok(findings=list_context_findings(conn, args.finding_status), snapshot=snapshot)
         if args.context_view_command == "source-readiness":
-            return 0, ok(sources=source_readiness(conn))
+            return 0, ok(sources=source_readiness(conn), snapshot=snapshot)
         return 2, err("unsupported context-view command")
     finally:
         conn.close()
