@@ -326,7 +326,7 @@ def reconcile_topology(conn: sqlite3.Connection, observed_at: str) -> dict[str, 
             SET status = 'failed', finished_at = ?, error_class = ?, error_message = ?
             WHERE id = ?
             """,
-            (observed_at, type(exc).__name__, str(exc), run_id),
+            (observed_at, type(exc).__name__, "correlation_failed", run_id),
         )
         conn.commit()
         raise

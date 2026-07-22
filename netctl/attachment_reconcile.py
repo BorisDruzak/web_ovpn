@@ -274,6 +274,6 @@ def reconcile_attachments(conn: sqlite3.Connection, observed_at: str) -> dict[st
         if conn.in_transaction:
             conn.rollback()
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("UPDATE network_correlation_runs SET status='failed', finished_at=?, error_class=?, error_message=? WHERE id=?", (observed_at, type(exc).__name__, str(exc), run_id))
+        conn.execute("UPDATE network_correlation_runs SET status='failed', finished_at=?, error_class=?, error_message=? WHERE id=?", (observed_at, type(exc).__name__, "correlation_failed", run_id))
         conn.commit()
         raise

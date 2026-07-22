@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 
 def _db_url(path: Path) -> str:
     return f"sqlite:///{path.as_posix()}"
@@ -264,5 +266,40 @@ def test_reconcile_attachments_persists_candidates_and_a_move(
         assert conn.execute(
             "SELECT event_type FROM asset_attachment_events ORDER BY id DESC LIMIT 1"
         ).fetchone()[0] == "moved"
+    finally:
+        conn.close()
+
+
+def test_reconcile_attachments_preserves_current_state_on_candidate_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from netctl import attachment_reconcile
+
+    conn = _attachment_db(tmp_path)
+    try:
+        monkeypatch.setattr(attachment_reconcile, "list_source_identities", lambda _conn: ())
+        monkeypatch.setattr(
+            attachment_reconcile, "attachment_candidates", lambda _conn, _depths: (_candidate(score=85),),
+        )
+        attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:00:00Z")
+        before = [tuple(row) for row in conn.execute(
+            "SELECT * FROM asset_attachment_resolutions ORDER BY asset_interface_id"
+        )]
+        events_before = conn.execute("SELECT count(*) FROM asset_attachment_events").fetchone()[0]
+
+        def fail_candidates(_conn, _depths):
+            raise RuntimeError("private collector detail")
+
+        monkeypatch.setattr(attachment_reconcile, "attachment_candidates", fail_candidates)
+        with pytest.raises(RuntimeError, match="private collector detail"):
+            attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:01:00Z")
+
+        assert [tuple(row) for row in conn.execute(
+            "SELECT * FROM asset_attachment_resolutions ORDER BY asset_interface_id"
+        )] == before
+        assert conn.execute("SELECT count(*) FROM asset_attachment_events").fetchone()[0] == events_before
+        assert tuple(conn.execute(
+            "SELECT status, error_message FROM network_correlation_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()) == ("failed", "correlation_failed")
     finally:
         conn.close()
