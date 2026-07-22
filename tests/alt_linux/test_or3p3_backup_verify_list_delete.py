@@ -68,6 +68,23 @@ def test_list_ignores_non_normal_backup_directories(tmp_path: Path) -> None:
     assert [summary.backup_id for summary in summaries] == [backup_id]
 
 
+def test_operations_reject_symlink_backup_root(tmp_path: Path) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_valid_backup()
+    real_root = sandbox.root / "real-backups"
+    sandbox.settings.backup_root.rename(real_root)
+    sandbox.settings.backup_root.symlink_to(real_root)
+
+    with pytest.raises(BackupError) as verify_error:
+        sandbox.repository().verify(backup_id, write_evidence=False)
+    assert verify_error.value.code == "backup_integrity_failed"
+
+    with pytest.raises(BackupError) as delete_error:
+        sandbox.repository().delete(backup_id)
+    assert delete_error.value.code == "backup_delete_unsafe"
+    assert (real_root / backup_id).is_dir()
+
+
 def test_delete_allows_corrupt_safe_direct_child(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     backup_id = sandbox.create_valid_backup()
