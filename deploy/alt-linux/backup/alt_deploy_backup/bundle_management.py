@@ -127,6 +127,27 @@ class BundleManager:
         self.repository = repository
         self.settings = repository.settings
 
+    def _validate_backup_root(self, *, for_delete: bool = False) -> os.stat_result:
+        root = self.settings.backup_root
+        try:
+            metadata = root.lstat()
+        except OSError as exc:
+            if for_delete:
+                raise _delete_unsafe("Backup root cannot be inspected") from exc
+            raise _integrity("Backup root cannot be inspected") from exc
+        unsafe = (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != self.settings.expected_root_uid
+            or metadata.st_gid != self.settings.expected_root_gid
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+        )
+        if unsafe:
+            if for_delete:
+                raise _delete_unsafe("Backup root is unsafe")
+            raise _integrity("Backup root is unsafe")
+        return metadata
+
     def _bundle_path(self, backup_id: str) -> Path:
         if not isinstance(backup_id, str) or not BACKUP_ID_RE.fullmatch(backup_id):
             raise _not_found()
@@ -178,6 +199,7 @@ class BundleManager:
         return f"{namespace}/{absolute_path.lstrip('/')}"
 
     def _verify_bundle(self, backup_id: str) -> _VerifiedBundle:
+        self._validate_backup_root()
         path = self._bundle_path(backup_id)
         self._validate_directory(path)
         entries = self._top_level(path)
@@ -336,12 +358,7 @@ class BundleManager:
             root = self.settings.backup_root
             if not root.exists() and not root.is_symlink():
                 return ()
-            try:
-                metadata = root.lstat()
-            except OSError as exc:
-                raise _integrity("Backup root cannot be inspected") from exc
-            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                raise _integrity("Backup root is unsafe")
+            self._validate_backup_root()
             try:
                 children = sorted(
                     root.iterdir(),
@@ -417,17 +434,22 @@ class BundleManager:
                 return True
         return False
 
-    def _delete_tree(self, path: Path) -> int:
+    def _delete_tree(self, path: Path, *, expected_device: int) -> int:
         try:
             metadata = path.lstat()
         except OSError as exc:
             raise _delete_unsafe("Backup deletion target cannot be inspected") from exc
+        if metadata.st_dev != expected_device:
+            raise _delete_unsafe("Backup deletion cannot cross a filesystem boundary")
         if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
             try:
                 children = list(path.iterdir())
             except OSError as exc:
                 raise _delete_unsafe("Backup deletion target cannot be enumerated") from exc
-            total = sum(self._delete_tree(child) for child in children)
+            total = sum(
+                self._delete_tree(child, expected_device=expected_device)
+                for child in children
+            )
             try:
                 path.rmdir()
             except OSError as exc:
@@ -442,6 +464,7 @@ class BundleManager:
 
     def delete(self, backup_id: str) -> DeleteResult:
         with exclusive_operation_lock(self.settings):
+            root_metadata = self._validate_backup_root(for_delete=True)
             path = self._bundle_path(backup_id)
             try:
                 metadata = path.lstat()
@@ -453,11 +476,15 @@ class BundleManager:
                 or metadata.st_uid != self.settings.expected_root_uid
                 or metadata.st_gid != self.settings.expected_root_gid
                 or stat.S_IMODE(metadata.st_mode) != 0o700
+                or metadata.st_dev != root_metadata.st_dev
             ):
                 raise _delete_unsafe("Backup deletion target is unsafe")
             if self._active_restore_reference(backup_id):
                 raise _delete_unsafe("Backup is referenced by an active restore")
-            deleted_bytes = self._delete_tree(path)
+            deleted_bytes = self._delete_tree(
+                path,
+                expected_device=root_metadata.st_dev,
+            )
             fsync_directory(self.settings.backup_root)
             return DeleteResult(
                 backup_id=backup_id,
