@@ -69,7 +69,7 @@ def resolve_asset_targets(
         enforcement_source = enforcement_sources_by_site.get(site)
         if not site or not enforcement_source:
             raise ValueError("current IP has unresolved enforcement point")
-        if str(row["last_status"] or "") != "success" or not _is_fresh(str(row["last_collect_at"] or ""), source_sla_seconds):
+        if str(row["last_status"] or "") not in {"ok", "success"} or not _is_fresh(str(row["last_collect_at"] or ""), source_sla_seconds):
             raise ValueError("source collection is stale or failed")
         if not anchor_check(enforcement_source):
             raise ValueError("Internet policy anchor pre-check failed")
