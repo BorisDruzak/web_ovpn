@@ -126,3 +126,38 @@ def test_reconciler_peer_cannot_use_web_plan_apply_scope(tmp_path) -> None:
             )
     finally:
         conn.close()
+
+
+def test_signed_audit_event_records_the_accepted_socket_peer_not_json_actor(tmp_path) -> None:
+    from netopsctl.audit import AuditSigner
+    from netopsctl.server import AuthenticatedPeer
+    from netopsctl.service import ControlService
+    from netopsctl.store import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    signer = AuditSigner("test-key", Ed25519PrivateKey.generate())
+    peer = AuthenticatedPeer(
+        uid=1001, gid=1002, pid=4321, service_principal="openvpn-web",
+        public_key=Ed25519PrivateKey.generate().public_key().public_bytes_raw(),
+        allowed_actions=frozenset({"status"}),
+    )
+    service = ControlService(
+        conn=conn, netctl_db_url="sqlite:///unused.sqlite", adapter=None,
+        enforcement_sources_by_site={}, source_sla_seconds=300, audit_signer=signer,
+        writes_enabled=False, audit_sink={"instance_id": "test", "host": "test", "identity_file": "test", "known_hosts": "test"},
+    )
+    try:
+        assert service.dispatch(
+            "status", {}, peer=peer,
+            subject={
+                "principal_type": "api_principal", "principal_id": "forged-json-actor",
+                "principal_name": "forged", "session_id": "session-1", "authorization_id": "auth-1",
+            },
+        )["status"] == "ok"
+        payload = json.loads(conn.execute("SELECT payload_json FROM audit_events").fetchone()[0])
+        assert payload["authenticated_peer"] == {
+            "uid": 1001, "gid": 1002, "pid": 4321, "service_principal": "openvpn-web",
+        }
+        assert payload["authorized_subject"]["principal_id"] == "forged-json-actor"
+    finally:
+        conn.close()

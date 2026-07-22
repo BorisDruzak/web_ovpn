@@ -3,6 +3,17 @@ from __future__ import annotations
 import pytest
 
 
+def _peer(service_principal: str):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from netopsctl.server import AuthenticatedPeer
+
+    return AuthenticatedPeer(
+        uid=1001, gid=1001, pid=1234, service_principal=service_principal,
+        public_key=Ed25519PrivateKey.generate().public_key().public_bytes_raw(),
+        allowed_actions=frozenset(),
+    )
+
+
 def test_change_plans_use_a_separate_database_and_freeze_after_approval(tmp_path) -> None:
     from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan, update_draft_plan
 
@@ -91,7 +102,7 @@ def test_control_service_inspection_returns_persisted_plan_and_digest(tmp_path) 
         )
 
         result = service.dispatch(
-            "plan.inspect", {"plan_key": "plan-inspect"}, peer="openvpn-web",
+            "plan.inspect", {"plan_key": "plan-inspect"}, peer=_peer("openvpn-web"),
             subject={"principal_type": "api_principal", "principal_id": "api:netops", "principal_name": "api:netops", "session_id": "request-1", "authorization_id": "auth-1"},
         )
 
@@ -121,7 +132,7 @@ def test_control_service_routes_the_dedicated_reconcile_action(tmp_path, monkeyp
             lambda *_args, **kwargs: {"reconciled": 1, "stale_identity": 0, "skipped": 0},
         )
         assert service.dispatch(
-            "policy.reconcile", {"limit": 4}, peer="netopsctl-reconcile",
+            "policy.reconcile", {"limit": 4}, peer=_peer("netopsctl-reconcile"),
             subject={"principal_type": "service", "principal_id": "reconciler", "principal_name": "reconciler", "session_id": "timer", "authorization_id": "reconcile-1"},
         ) == {"reconciled": 1, "stale_identity": 0, "skipped": 0}
     finally:

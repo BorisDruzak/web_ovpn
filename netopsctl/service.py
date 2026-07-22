@@ -31,9 +31,17 @@ class ControlService:
     plan_ttl_seconds: int = DEFAULT_PLAN_TTL_SECONDS
     identity_observation_max_age_seconds: int = DEFAULT_IDENTITY_OBSERVATION_MAX_AGE_SECONDS
 
-    def _audit(self, event_type: str, *, action: str, peer: str, subject: dict[str, str], outcome: str) -> None:
+    def _audit(self, event_type: str, *, action: str, peer: Any, subject: dict[str, str], outcome: str) -> None:
+        try:
+            authenticated_peer = {
+                "uid": int(peer.uid), "gid": int(peer.gid), "pid": int(peer.pid),
+                "service_principal": str(peer.service_principal),
+            }
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("authenticated peer evidence is invalid") from exc
         append_event(self.conn, self.audit_signer, event_type, {
-            "action": action, "authenticated_peer": peer, "authorized_subject": subject, "outcome": outcome,
+            "action": action, "authenticated_peer": authenticated_peer,
+            "authorized_subject": subject, "outcome": outcome,
         })
 
     def _checkpoint(self) -> None:
@@ -45,7 +53,7 @@ class ControlService:
             known_hosts=self.audit_sink["known_hosts"],
         )
 
-    def dispatch(self, action: str, payload: dict[str, Any], *, peer: str, subject: dict[str, str]) -> dict[str, Any]:
+    def dispatch(self, action: str, payload: dict[str, Any], *, peer: Any, subject: dict[str, str]) -> dict[str, Any]:
         try:
             if action == "status":
                 result = {"status": "ok", "service": "netopsctl", "writes_enabled": self.writes_enabled}

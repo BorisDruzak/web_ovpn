@@ -67,7 +67,7 @@ def authorize_broker_request(
 
 def handle(request: BrokerRequest, service: ControlService, peer: AuthenticatedPeer, authorization: VerifiedAuthorization) -> dict[str, Any]:
     result = service.dispatch(
-        request.action, request.payload, peer=peer.service_principal,
+        request.action, request.payload, peer=peer,
         subject={
             "principal_type": authorization.principal_type,
             "principal_id": authorization.principal_id,
