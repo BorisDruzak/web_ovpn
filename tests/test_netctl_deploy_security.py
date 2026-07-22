@@ -12,6 +12,14 @@ def test_netctl_collect_service_runs_as_dedicated_user():
     assert "ExecStart=/usr/local/sbin/netctl --json collect all" in unit
 
 
+def test_netctl_collect_timer_retries_on_a_calendar_even_after_a_failed_run():
+    timer = (ROOT / "deploy" / "netctl-collect.timer").read_text(encoding="utf-8")
+
+    assert "OnCalendar=*:0/5" in timer
+    assert "OnUnitActiveSec" not in timer
+    assert "Persistent=true" in timer
+
+
 def test_sudoers_runs_netctl_as_dedicated_user_not_root():
     sudoers = (ROOT / "deploy" / "sudoers-openvpn-web").read_text(encoding="utf-8")
 
