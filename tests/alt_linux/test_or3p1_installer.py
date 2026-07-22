@@ -152,6 +152,9 @@ def test_installer_deploys_complete_runtime_and_preserves_state(
     assert "installed successfully" in result.stdout.lower()
 
     expected_files = {
+        "/opt/alt-deploy-api/static_server.py": (
+            ALT_ROOT / "api" / "static_server.py"
+        ).read_bytes(),
         "/opt/alt-deploy-api/register_api.py": (
             ALT_ROOT / "api" / "register_api.py"
         ).read_bytes(),

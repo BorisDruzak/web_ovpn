@@ -3,6 +3,8 @@ from __future__ import annotations
 import stat
 from pathlib import Path
 
+import pytest
+
 from support.backup_installer_sandbox import BackupInstallerSandbox
 
 
@@ -138,3 +140,43 @@ def test_backup_installer_preserves_existing_public_parent_modes(
         )
         for absolute_path in expected
     } == expected
+
+
+@pytest.mark.parametrize(
+    "absolute_path,target_is_directory",
+    [
+        ("/var/lib/alt-deploy-backup", True),
+        ("/var/backups/alt-deploy", True),
+        ("/opt/alt-deploy-backup", True),
+        ("/usr/local/sbin", True),
+        ("/etc/systemd/system", True),
+        ("/var/log/alt-deploy-backup.log", False),
+    ],
+)
+def test_backup_installer_rejects_symlink_destinations_before_mutation(
+    tmp_path: Path,
+    absolute_path: str,
+    target_is_directory: bool,
+) -> None:
+    sandbox = BackupInstallerSandbox.create(tmp_path)
+    destination = sandbox.destination(absolute_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside-target"
+    if target_is_directory:
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_bytes(b"outside-directory-sentinel")
+    else:
+        outside.write_bytes(b"outside-file-sentinel")
+        sentinel = outside
+    before = sentinel.read_bytes()
+    destination.symlink_to(
+        outside,
+        target_is_directory=target_is_directory,
+    )
+
+    result = sandbox.run_library()
+
+    assert result.returncode != 0
+    assert sentinel.read_bytes() == before
+    assert sandbox.mutation_commands() == []

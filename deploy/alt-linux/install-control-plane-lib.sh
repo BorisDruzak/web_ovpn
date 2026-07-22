@@ -145,6 +145,7 @@ validate_source_layout() {
         "${ALT_ROOT}/control/workstationctl"
         "${ALT_ROOT}/control/alt-provision-worker"
         "${ALT_ROOT}/control/alt-job-stage"
+        "${ALT_ROOT}/api/static_server.py"
         "${ALT_ROOT}/api/register_api.py"
         "${ALT_ROOT}/api/process_pending.py"
         "${ALT_ROOT}/systemd/alt-deploy-http.service"
@@ -293,6 +294,7 @@ run_repository_verification() {
 
     python3 -m py_compile \
         "${ALT_ROOT}/control/alt_deploy"/*.py \
+        "${ALT_ROOT}/api/static_server.py" \
         "${ALT_ROOT}/api/register_api.py" \
         "${ALT_ROOT}/api/process_pending.py" \
         "${ALT_ROOT}/control/alt-job-stage"
@@ -495,6 +497,9 @@ install_registration_runtime() {
         "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata)" \
         "${bootstrap_root}"
 
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/api/static_server.py" \
+        "${api_root}/static_server.py"
     install -o root -g root -m 0755 \
         "${ALT_ROOT}/api/register_api.py" \
         "${api_root}/register_api.py"

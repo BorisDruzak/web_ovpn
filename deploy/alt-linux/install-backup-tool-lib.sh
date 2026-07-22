@@ -38,37 +38,155 @@ backup_validate_sources() {
     backup_require_regular_nonempty "${ALT_ROOT}/install-backup-tool-lib.sh"
 }
 
+backup_expected_root_identity() {
+    local root_prefix=$1
+    if [[ -n "${root_prefix}" ]]; then
+        printf '%s %s\n' \
+            "${ALT_DEPLOY_BACKUP_EXPECTED_ROOT_UID:?}" \
+            "${ALT_DEPLOY_BACKUP_EXPECTED_ROOT_GID:?}"
+    else
+        printf '0 0\n'
+    fi
+}
+
+backup_validate_existing_directory() {
+    local root_prefix=$1
+    local absolute_path=$2
+    local policy=${3:-repairable}
+    local expected_mode=${4:-}
+    local directory
+    directory=$(backup_install_destination "${root_prefix}" "${absolute_path}")
+
+    if [[ ! -e "${directory}" && ! -L "${directory}" ]]; then
+        return 0
+    fi
+    if [[ -L "${directory}" || ! -d "${directory}" ]]; then
+        echo "Backup installer directory is unsafe: ${absolute_path}" >&2
+        return 1
+    fi
+
+    local expected_uid expected_gid
+    read -r expected_uid expected_gid < <(
+        backup_expected_root_identity "${root_prefix}"
+    )
+    local metadata uid gid mode
+    metadata=$(stat -c '%u %g %a' "${directory}") || return 1
+    read -r uid gid mode <<<"${metadata}"
+    if [[ "${uid}" != "${expected_uid}" || "${gid}" != "${expected_gid}" ]]; then
+        echo "Backup installer directory ownership is unsafe: ${absolute_path}" >&2
+        return 1
+    fi
+    if [[ "${policy}" == public ]]; then
+        if (( 8#${mode} & 8#022 )); then
+            echo "Backup installer directory is writable by group or others: ${absolute_path}" >&2
+            return 1
+        fi
+    elif [[ "${policy}" == exact && "${mode}" != "${expected_mode}" ]]; then
+        echo "Backup installer directory mode is unsafe: ${absolute_path}" >&2
+        return 1
+    fi
+}
+
+backup_validate_existing_regular() {
+    local root_prefix=$1
+    local absolute_path=$2
+    local expected_mode=${3:-}
+    local expected_size=${4:-}
+    local path
+    path=$(backup_install_destination "${root_prefix}" "${absolute_path}")
+
+    if [[ ! -e "${path}" && ! -L "${path}" ]]; then
+        return 0
+    fi
+    if [[ -L "${path}" || ! -f "${path}" ]]; then
+        echo "Backup installer file is unsafe: ${absolute_path}" >&2
+        return 1
+    fi
+
+    local expected_uid expected_gid
+    read -r expected_uid expected_gid < <(
+        backup_expected_root_identity "${root_prefix}"
+    )
+    local metadata uid gid mode size
+    metadata=$(stat -c '%u %g %a %s' "${path}") || return 1
+    read -r uid gid mode size <<<"${metadata}"
+    if [[ "${uid}" != "${expected_uid}" || "${gid}" != "${expected_gid}" ]]; then
+        echo "Backup installer file ownership is unsafe: ${absolute_path}" >&2
+        return 1
+    fi
+    if [[ -n "${expected_mode}" && "${mode}" != "${expected_mode}" ]]; then
+        echo "Backup installer file mode is unsafe: ${absolute_path}" >&2
+        return 1
+    fi
+    if [[ -n "${expected_size}" && "${size}" != "${expected_size}" ]]; then
+        echo "Backup installer file size is unsafe: ${absolute_path}" >&2
+        return 1
+    fi
+}
+
+backup_validate_destination_layout() {
+    local root_prefix=$1
+
+    local public_directory
+    for public_directory in \
+        /opt \
+        /usr/local \
+        /usr/local/sbin \
+        /etc/systemd \
+        /etc/systemd/system \
+        /var \
+        /var/lib \
+        /var/backups \
+        /var/log; do
+        backup_validate_existing_directory \
+            "${root_prefix}" \
+            "${public_directory}" \
+            public
+    done
+
+    backup_validate_existing_directory \
+        "${root_prefix}" \
+        /opt/alt-deploy-backup
+    backup_validate_existing_directory \
+        "${root_prefix}" \
+        /var/lib/alt-deploy-backup \
+        exact \
+        700
+    backup_validate_existing_directory \
+        "${root_prefix}" \
+        /var/backups/alt-deploy \
+        exact \
+        700
+
+    backup_validate_existing_regular \
+        "${root_prefix}" \
+        /usr/local/sbin/alt-deploy-backup
+    backup_validate_existing_regular \
+        "${root_prefix}" \
+        /etc/systemd/system/alt-deploy-guard.service
+    backup_validate_existing_regular \
+        "${root_prefix}" \
+        /var/log/alt-deploy-backup.log \
+        600
+    backup_validate_existing_regular \
+        "${root_prefix}" \
+        /var/lib/alt-deploy-backup/fingerprint.key \
+        600 \
+        32
+}
+
 backup_ensure_public_directory() {
     local root_prefix=$1
     local absolute_path=$2
     local directory
     directory=$(backup_install_destination "${root_prefix}" "${absolute_path}")
-    local expected_uid=0
-    local expected_gid=0
-    if [[ -n "${root_prefix}" ]]; then
-        expected_uid=${ALT_DEPLOY_BACKUP_EXPECTED_ROOT_UID:?}
-        expected_gid=${ALT_DEPLOY_BACKUP_EXPECTED_ROOT_GID:?}
-    fi
 
+    backup_validate_existing_directory \
+        "${root_prefix}" \
+        "${absolute_path}" \
+        public
     if [[ ! -e "${directory}" ]]; then
         install -d -o root -g root -m 0755 "${directory}"
-        return 0
-    fi
-    if [[ -L "${directory}" || ! -d "${directory}" ]]; then
-        echo "Backup installer public directory is unsafe: ${absolute_path}" >&2
-        return 1
-    fi
-    local metadata
-    metadata=$(stat -c '%u %g %a' "${directory}") || return 1
-    local uid gid mode
-    read -r uid gid mode <<<"${metadata}"
-    if [[ "${uid}" != "${expected_uid}" || "${gid}" != "${expected_gid}" ]]; then
-        echo "Backup installer public directory ownership is unsafe: ${absolute_path}" >&2
-        return 1
-    fi
-    if (( 8#${mode} & 8#022 )); then
-        echo "Backup installer public directory is writable by group or others: ${absolute_path}" >&2
-        return 1
     fi
 }
 
@@ -163,7 +281,25 @@ backup_initialize_fingerprint_key() {
 
 install_backup_tool_main() {
     local root_prefix=$1
-    local required=(python3 install rm chmod chown stat bash basename env id sha256sum tar zstd systemctl systemd-analyze ansible-playbook ssh-keygen)
+    local required=(
+        python3
+        install
+        cp
+        rm
+        chmod
+        chown
+        stat
+        bash
+        env
+        id
+        sha256sum
+        tar
+        zstd
+        systemctl
+        systemd-analyze
+        ansible-playbook
+        ssh-keygen
+    )
     local command_name
     for command_name in "${required[@]}"; do
         backup_require_command "${command_name}"
@@ -174,6 +310,7 @@ install_backup_tool_main() {
     fi
     backup_validate_sources
     backup_run_source_checks
+    backup_validate_destination_layout "${root_prefix}"
     backup_prepare_private_state "${root_prefix}"
     backup_install_package "${root_prefix}"
     backup_initialize_fingerprint_key "${root_prefix}"
