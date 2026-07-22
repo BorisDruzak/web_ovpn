@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from netctl.util import utc_now
 
@@ -27,6 +28,56 @@ def test_context_snapshot_is_wal_aware_and_consistent_across_a_writer_commit(tmp
             assert second.execute("SELECT value FROM snapshot_probe WHERE id = 1").fetchone()[0] == "after"
     finally:
         writer.close()
+
+
+def test_plan_preflight_returns_sanitized_context_snapshot_failure(tmp_path, monkeypatch) -> None:
+    from netctl.db import connect as connect_netctl
+    from netopsctl.policy_resolver import changed_plan_preconditions, create_asset_internet_access_plan
+    from netopsctl.store import connect as connect_netops
+    import netopsctl.policy_resolver as resolver
+
+    netctl_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    now = utc_now()
+    context = connect_netctl(netctl_url)
+    try:
+        source_id = context.execute(
+            """INSERT INTO network_sources (name, driver, host, port, username, secret_ref, tls, verify_tls, site, enabled, created_at, updated_at, last_collect_at, last_status)
+               VALUES ('edge-a', 'mock', '127.0.0.1', 1, '', '', 0, 0, 'site-a', 1, ?, ?, ?, 'success')""",
+            (now, now, now),
+        ).lastrowid
+        asset_id = context.execute(
+            """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        ).lastrowid
+        context.execute(
+            """INSERT INTO ip_observations (asset_id, site, source_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+               VALUES (?, 'site-a', ?, 'edge-a', '192.0.2.10', ?, ?, 1, 'manual')""",
+            (asset_id, source_id, now, now),
+        )
+        context.commit()
+    finally:
+        context.close()
+
+    netops = connect_netops(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_asset_internet_access_plan(
+            netops, netctl_url, plan_key="snapshot-failure", actor="api", asset_key="mac:AA",
+            desired_state="deny", reason="test", enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300, anchor_check=lambda _: {"valid": True, "fingerprint": "anchor"},
+        )
+        plan = netops.execute("SELECT * FROM change_plans WHERE plan_key = 'snapshot-failure'").fetchone()
+
+        def unavailable(_db_url: str):
+            raise sqlite3.OperationalError("database is locked at /private/path")
+
+        monkeypatch.setattr(resolver, "read_context_snapshot", unavailable)
+        assert changed_plan_preconditions(
+            plan, netctl_url, enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300, anchor_check=lambda _: {"valid": True, "fingerprint": "anchor"},
+        ) == ["context_snapshot_unavailable"]
+    finally:
+        netops.close()
 
 
 def test_asset_deny_plan_resolves_current_ipv4_to_one_bounded_step(tmp_path) -> None:

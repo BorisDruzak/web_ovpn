@@ -16,6 +16,10 @@ MAX_PLAN_TTL_SECONDS = 900
 DEFAULT_IDENTITY_OBSERVATION_MAX_AGE_SECONDS = 900
 
 
+class ContextSnapshotUnavailable(ValueError):
+    """The live netctl context could not be read as one transaction."""
+
+
 def _is_fresh(value: str, max_age_seconds: int) -> bool:
     try:
         observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -205,12 +209,15 @@ def create_asset_internet_access_plan(
         plan_ttl_seconds=plan_ttl_seconds,
         identity_observation_max_age_seconds=identity_observation_max_age_seconds,
     )
-    with read_context_snapshot(netctl_db_url) as context:
-        targets, plan_basis = _asset_plan_basis(
-            context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
-            source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
-            identity_observation_max_age_seconds=identity_observation_max_age_seconds,
-        )
+    try:
+        with read_context_snapshot(netctl_db_url) as context:
+            targets, plan_basis = _asset_plan_basis(
+                context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
+                source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
+                identity_observation_max_age_seconds=identity_observation_max_age_seconds,
+            )
+    except sqlite3.Error as exc:
+        raise ContextSnapshotUnavailable("context snapshot is unavailable") from exc
     action = "ensure_address_list_entry" if desired_state == "deny" else "remove_address_list_entry"
     rollback_action = "remove_address_list_entry" if desired_state == "deny" else "ensure_address_list_entry"
     rollback = {"steps": [{"adapter": "mikrotik", "operation": rollback_action, "target_key": item["source"], "request": {"address": item["address"], "asset_key": asset_key}} for item in targets]}
@@ -269,6 +276,8 @@ def changed_plan_preconditions(
                         "user_key": str(plan["subject_key"]),
                         "asset_key": str(resolved["asset_key"]),
                     }
+    except sqlite3.Error:
+        return ["context_snapshot_unavailable"]
     except ValueError as exc:
         return [str(exc)]
     try:
@@ -310,19 +319,22 @@ def create_user_internet_access_plan(
         plan_ttl_seconds=plan_ttl_seconds,
         identity_observation_max_age_seconds=identity_observation_max_age_seconds,
     )
-    with read_context_snapshot(netctl_db_url) as context:
-        from netctl.user_context import resolve_policy_asset_for_user
+    try:
+        with read_context_snapshot(netctl_db_url) as context:
+            from netctl.user_context import resolve_policy_asset_for_user
 
-        resolved = resolve_policy_asset_for_user(context, user_key)
-        if resolved is None:
-            raise ValueError("user has no eligible confirmed primary asset")
-        asset_key = resolved["asset_key"]
-        targets, plan_basis = _asset_plan_basis(
-            context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
-            source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
-            identity_observation_max_age_seconds=identity_observation_max_age_seconds,
-        )
-        plan_basis["user_policy_binding"] = {"user_key": user_key, "asset_key": asset_key}
+            resolved = resolve_policy_asset_for_user(context, user_key)
+            if resolved is None:
+                raise ValueError("user has no eligible confirmed primary asset")
+            asset_key = resolved["asset_key"]
+            targets, plan_basis = _asset_plan_basis(
+                context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
+                source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
+                identity_observation_max_age_seconds=identity_observation_max_age_seconds,
+            )
+            plan_basis["user_policy_binding"] = {"user_key": user_key, "asset_key": asset_key}
+    except sqlite3.Error as exc:
+        raise ContextSnapshotUnavailable("context snapshot is unavailable") from exc
     action = "ensure_address_list_entry" if desired_state == "deny" else "remove_address_list_entry"
     rollback_action = "remove_address_list_entry" if desired_state == "deny" else "ensure_address_list_entry"
     plan = create_change_plan(
