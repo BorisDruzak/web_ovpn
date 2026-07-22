@@ -68,6 +68,14 @@ def test_network_change_create_authorizes_scope_and_relays_to_broker(tmp_path, m
         "actor": "api:netops", "session_id": calls[0]["session_id"], "authorization_id": calls[0]["authorization_id"],
     }]
 
+    replay = client.post(
+        "/api/v1/network-changes/plans", headers=headers,
+        json={"subject_type": "asset", "subject_key": "mac:aa:bb:cc:dd:ee:ff", "desired_state": "deny", "reason": "test"},
+    )
+    assert replay.status_code == 200
+    assert replay.json() == response.json()
+    assert len(calls) == 1
+
 
 def test_network_change_apply_requires_apply_scope(tmp_path, monkeypatch) -> None:
     client, headers = _client(tmp_path, monkeypatch)

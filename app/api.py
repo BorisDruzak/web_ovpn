@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .audit import write_audit
@@ -18,6 +19,7 @@ from .config import get_settings
 from .db import get_db
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
+from .models import NetworkChangeIdempotency, utcnow
 from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -220,6 +222,25 @@ def _network_change(
     idempotency_key: str = "",
 ) -> dict[str, Any]:
     actor = authorize_network_change(request, authorization, db, required_scope)
+    operation: NetworkChangeIdempotency | None = None
+    if idempotency_key:
+        request_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        operation = db.scalar(select(NetworkChangeIdempotency).where(
+            NetworkChangeIdempotency.actor == actor,
+            NetworkChangeIdempotency.action == action,
+            NetworkChangeIdempotency.idempotency_key == idempotency_key,
+        ))
+        if operation is not None:
+            if operation.request_hash != request_hash:
+                raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different request")
+            if operation.status == "completed":
+                return json.loads(operation.response_json)
+            raise HTTPException(status_code=409, detail="network change request is already in progress")
+        operation = NetworkChangeIdempotency(
+            actor=actor, action=action, idempotency_key=idempotency_key, request_hash=request_hash,
+        )
+        db.add(operation)
+        db.commit()
     request_id = str(getattr(request.state, "request_id", "")) or "api-request"
     try:
         result = call_network_control(
@@ -227,8 +248,17 @@ def _network_change(
             authorization_id=f"{idempotency_key or request_id}:{action}",
         )
     except HTTPException as exc:
+        if operation is not None:
+            operation.status = "failed"
+            operation.completed_at = utcnow()
+            db.commit()
         write_audit(db, request, actor, f"api-network-change-{action}", "error", str(exc.detail), target_client=str(payload.get("plan_key") or ""))
         raise
+    if operation is not None:
+        operation.status = "completed"
+        operation.response_json = json.dumps(result, sort_keys=True, separators=(",", ":"))
+        operation.completed_at = utcnow()
+        db.commit()
     write_audit(db, request, actor, f"api-network-change-{action}", "ok", "broker accepted request", target_client=str(payload.get("plan_key") or result.get("plan_key") or ""))
     return result
 

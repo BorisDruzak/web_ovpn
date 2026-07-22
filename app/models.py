@@ -39,6 +39,21 @@ class WebAuditLog(Base):
     ip_address: Mapped[str] = mapped_column(String(80), default="", nullable=False)
 
 
+class NetworkChangeIdempotency(Base):
+    __tablename__ = "network_change_idempotency"
+    __table_args__ = (UniqueConstraint("actor", "action", "idempotency_key", name="uq_network_change_idempotency"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor: Mapped[str] = mapped_column(String(120), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    response_json: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class DownloadToken(Base):
     __tablename__ = "download_tokens"
 
