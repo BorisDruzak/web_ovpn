@@ -3,7 +3,8 @@
 **Date:** 2026-07-22  
 **Repository:** `BorisDruzak/web_ovpn`  
 **Branch:** `feat/alt-or3p3-completion-20260722`  
-**Pull request:** `#24` (draft; merge prohibited without explicit user confirmation)
+**Pull request:** `#24` (draft; merge prohibited without explicit user confirmation)  
+**Clean implementation head:** `50bfbfd74bbaaf2d80258d6edde9b37244418cf5`
 
 ## Scope
 
@@ -25,15 +26,16 @@ It does not claim completion of the live operational gate on controller `192.168
 | --- | --- | --- |
 | Focused OR-3P3 | GitHub Actions run `29943063330`, job `final-or3p3-gate` | `152 passed` |
 | Complete ALT Linux suite | GitHub Actions run `29943063330`, job `final-or3p3-gate` | `550 passed` |
-| Complete repository suite | GitHub Actions runs `29943063330` and `29943063289` | `1492 passed, 2 skipped, 246 warnings` in the runtime full-regression job; the independent context full-regression job also passed |
 | Python compilation | run `29943063330` | exit `0` |
 | Bash syntax | run `29943063330` | exit `0` |
 | systemd verification | run `29943063330` | all five managed/guard units accepted |
 | Ansible syntax | run `29943063330` | both playbooks accepted with synthetic non-secret Vault inputs |
 | Diff/clean-tree hygiene | run `29943063330` | exit `0` |
-| Standard PR checks | final clean head after temporary-workflow removal | required before merge approval |
+| Clean-head runtime checks | run `29943995304` | focused job and full regression passed |
+| Clean-head context checks | run `29943996025` | context-stage job and independent full regression passed |
+| Complete clean-head repository suite | runtime artifact from run `29943995304` | `1510 passed, 2 skipped, 258 warnings`; exit code `0` |
 
-The 246 repository warnings are existing FastAPI `on_event` and Starlette `TemplateResponse` deprecation warnings. The test exit code is `0`.
+The 258 clean-head warnings are existing FastAPI `on_event` and Starlette `TemplateResponse` deprecation warnings. The increase from the earlier final-gate count reflects additional repository tests present in the current PR merge ref; no OR-3P3 failure was introduced.
 
 ## Implemented behavior gates
 
@@ -66,7 +68,7 @@ Major verified implementation commits include:
 - `9d36482146c7e33b5cb17571087e581bcbac12e9` — synchronized Task 13 documentation/cleanup tree;
 - `25c92a317379b3d9cf9cc1e611e9df2c4af85d5a` — complete operator runbook.
 
-The final whole-branch review found no unresolved PR review thread and no Critical or Important finding after the installer, restore, guard and static-service hardening series.
+The final whole-branch review found no unresolved PR review thread and no Critical or Important finding after the installer, restore, guard and static-service hardening series. Temporary patch, export, verification and locator workflows/files are absent from the clean PR diff, and the standard runtime workflow is byte-identical to its original repository version.
 
 ## Operational gate still pending
 
