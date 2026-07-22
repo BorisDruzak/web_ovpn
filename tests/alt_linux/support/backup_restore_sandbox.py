@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from alt_deploy_backup.restore import RestoreService
@@ -12,6 +12,8 @@ from support.backup_rehearsal_sandbox import BackupSandbox as RehearsalSandbox
 
 @dataclass(frozen=True)
 class BackupSandbox(RehearsalSandbox):
+    health_probe_urls: list[str] = field(default_factory=list)
+
     @classmethod
     def create(cls, tmp_path: Path) -> "BackupSandbox":
         base = RehearsalSandbox.create(tmp_path)
@@ -46,18 +48,29 @@ class BackupSandbox(RehearsalSandbox):
         )
         script.chmod(0o755)
 
+    def _health_probe(self, url: str) -> bytes:
+        self.health_probe_urls.append(url)
+        if url.endswith("/health"):
+            return b'{"status":"ok"}'
+        return b"fixture-static-root"
+
     def restore_service(
         self,
         *,
         fail_stage_component: str | None = None,
         fail_health_check: str | None = None,
         fail_rollback: bool = False,
+        fail_move_after: int | None = None,
+        fail_cleanup: bool = False,
     ) -> RestoreService:
         return RestoreService(
             self.repository(),
             fail_stage_component=fail_stage_component,
             fail_health_check=fail_health_check,
             fail_rollback=fail_rollback,
+            fail_move_after=fail_move_after,
+            fail_cleanup=fail_cleanup,
+            health_probe=self._health_probe,
         )
 
     def prepare_restore(self, backup_id: str) -> RestoreJournal:
