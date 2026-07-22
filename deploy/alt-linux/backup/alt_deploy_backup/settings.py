@@ -85,6 +85,13 @@ class BackupSettings:
     systemd_root: Path
     bootstrap_root: Path
     metadata_root: Path
+    fingerprint_key: Path
+    ssh_keygen_path: Path
+    ansible_playbook_path: Path
+    systemctl_path: Path
+    systemd_analyze_path: Path
+    tar_path: Path
+    zstd_path: Path
     service_user: str
     service_group: str
     expected_root_uid: int
@@ -165,6 +172,45 @@ class BackupSettings:
             systemd_root=rooted("/etc/systemd/system"),
             bootstrap_root=rooted("/srv/alt-deploy/bootstrap"),
             metadata_root=rooted("/srv/alt-deploy/metadata"),
+            fingerprint_key=rooted(
+                "/var/lib/alt-deploy-backup/fingerprint.key"
+            ),
+            ssh_keygen_path=Path(
+                env.get(
+                    "ALT_DEPLOY_BACKUP_SSH_KEYGEN",
+                    "/usr/bin/ssh-keygen",
+                )
+            ),
+            ansible_playbook_path=Path(
+                env.get(
+                    "ALT_DEPLOY_BACKUP_ANSIBLE_PLAYBOOK",
+                    "/usr/bin/ansible-playbook",
+                )
+            ),
+            systemctl_path=Path(
+                env.get(
+                    "ALT_DEPLOY_BACKUP_SYSTEMCTL",
+                    "/usr/bin/systemctl",
+                )
+            ),
+            systemd_analyze_path=Path(
+                env.get(
+                    "ALT_DEPLOY_BACKUP_SYSTEMD_ANALYZE",
+                    "/usr/bin/systemd-analyze",
+                )
+            ),
+            tar_path=Path(
+                env.get(
+                    "ALT_DEPLOY_BACKUP_TAR",
+                    "/usr/bin/tar",
+                )
+            ),
+            zstd_path=Path(
+                env.get(
+                    "ALT_DEPLOY_BACKUP_ZSTD",
+                    "/usr/bin/zstd",
+                )
+            ),
             service_user=env.get(
                 "ALT_DEPLOY_SERVICE_USER",
                 "altserver",
