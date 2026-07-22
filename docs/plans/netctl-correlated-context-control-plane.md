@@ -1355,7 +1355,7 @@ git commit -m "feat: expose unified network context API"
 - Produces user and binding persistence.
 - Does not authenticate users or contact AD/LDAP.
 
-- [ ] **Step 1: Write failing migration and model tests**
+- [x] **Step 1: Write failing migration and model tests**
 
 Migration 10 creates:
 
@@ -1413,13 +1413,13 @@ CREATE TABLE network_sessions (
 );
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_user_context.py -q
 ```
 
-- [ ] **Step 3: Implement bounded service functions**
+- [x] **Step 3: Implement bounded service functions**
 
 ```python
 def create_user(...): ...
@@ -1431,7 +1431,7 @@ def resolve_policy_asset_for_user(...): ...
 
 `resolve_policy_asset_for_user()` succeeds only when exactly one current binding has relation `primary_user`, status `confirmed`, confidence `100`, no active `shared_user` binding exists for the asset, and the binding validity interval includes the current time.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_user_context.py tests/test_netctl_context_query.py -q

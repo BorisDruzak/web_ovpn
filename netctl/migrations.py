@@ -1514,6 +1514,73 @@ def _migration_9(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_10(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_key TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'retired')),
+            department TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL CHECK (source_type IN ('manual', 'directory', 'helpdesk')),
+            external_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE user_identities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            identity_type TEXT NOT NULL CHECK (identity_type IN ('login', 'email', 'employee_id', 'directory_dn')),
+            identity_value TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            UNIQUE(identity_type, identity_value, source_type)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE user_asset_bindings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
+            relation TEXT NOT NULL CHECK (relation IN ('primary_user', 'shared_user', 'temporary_user', 'owner')),
+            status TEXT NOT NULL CHECK (status IN ('candidate', 'confirmed', 'rejected', 'retired')),
+            binding_source TEXT NOT NULL CHECK (binding_source IN ('manual', 'directory', 'helpdesk', 'session_inference')),
+            confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+            valid_from TEXT NOT NULL,
+            valid_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(user_id, asset_id, relation, binding_source, valid_from)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE network_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            asset_id INTEGER REFERENCES assets(id) ON DELETE RESTRICT,
+            source_type TEXT NOT NULL CHECK (source_type IN ('captive_portal', 'radius', 'directory_agent', 'manual')),
+            session_key TEXT NOT NULL UNIQUE,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            accepted_policy_version TEXT NOT NULL DEFAULT '',
+            evidence_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1524,6 +1591,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (7, _migration_7),
     (8, _migration_8),
     (9, _migration_9),
+    (10, _migration_10),
 )
 
 
