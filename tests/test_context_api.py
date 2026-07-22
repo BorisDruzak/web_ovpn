@@ -37,6 +37,10 @@ elif args[1:3] == ["users", "inspect"]:
     print(json.dumps({"status": "ok", "context": {"user": {"user_key": args[-1]}}}))
 elif args[1:3] == ["users", "retire-binding"]:
     print(json.dumps({"status": "ok", "binding": {"id": int(args[args.index("--binding-id") + 1]), "status": "retired"}}))
+elif args[1:3] == ["network-sessions", "open"]:
+    print(json.dumps({"status": "ok", "session": {"session_key": args[args.index("--session-key") + 1]}}))
+elif args[1:3] == ["network-sessions", "close"]:
+    print(json.dumps({"status": "ok", "session": {"session_key": args[args.index("--session-key") + 1], "ended_at": args[args.index("--ended-at") + 1]}}))
 else:
     print(json.dumps({"status": "ok"}))
 """,
@@ -198,4 +202,19 @@ def test_context_user_binding_inspection_and_retirement_api_delegate_to_netctl(t
     assert retired.json()["data"]["binding"]["status"] == "retired"
     assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
         "--json", "users", "retire-binding", "--binding-id", "42", "--reason", "reassigned"
+    ]
+
+
+def test_context_network_session_endpoints_are_authenticated_and_delegate_to_netctl(tmp_path, monkeypatch):
+    client, headers, log_path = make_client(tmp_path, monkeypatch)
+    created = client.post(
+        "/api/v1/context/network-sessions",
+        json={"user_key": "employee:api", "session_key": "radius:one", "source_type": "radius", "started_at": "2026-07-22T12:00:00Z", "evidence": {"ip": "192.0.2.10"}},
+        headers=headers,
+    )
+    closed = client.post("/api/v1/context/network-sessions/radius:one/close", json={"ended_at": "2026-07-22T12:10:00Z"}, headers=headers)
+    assert created.json()["data"]["session"]["session_key"] == "radius:one"
+    assert closed.json()["data"]["session"]["ended_at"] == "2026-07-22T12:10:00Z"
+    assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
+        "--json", "network-sessions", "close", "--session-key", "radius:one", "--ended-at", "2026-07-22T12:10:00Z"
     ]
