@@ -38,6 +38,7 @@ from .switch_queries import (
     validate_pagination,
 )
 from .switch_store import collect_and_save_switch
+from .topology_reconcile import reconcile_topology
 from .switch_discovery_store import (
     UnknownSwitchFingerprint,
     list_unknown_fingerprints,
@@ -535,6 +536,79 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             page = query_switch_stp(conn, **common)
             return 0, ok(stp=page["items"], pagination=page["pagination"])
         return 2, err("unsupported switches command")
+    finally:
+        conn.close()
+
+
+def _topology_link_public(row: Any) -> dict[str, Any]:
+    public = dict(row)
+    try:
+        public["evidence"] = json.loads(str(public.pop("evidence_json")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        public["evidence"] = []
+    return public
+
+
+def _topology_finding_public(row: Any) -> dict[str, Any]:
+    public = dict(row)
+    try:
+        public["details"] = json.loads(str(public.pop("details_json")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        public["details"] = {}
+    return public
+
+
+def cmd_topology(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.topology_command == "reconcile":
+        conn = prepare_conn(args)
+        try:
+            return 0, ok(**reconcile_topology(conn, utc_now()))
+        finally:
+            conn.close()
+
+    conn = connect_read_only(args.db)
+    try:
+        if args.topology_command == "status":
+            links = {state: 0 for state in ("confirmed", "inferred", "ambiguous", "conflicting")}
+            links.update(
+                {
+                    str(row["state"]): int(row["count"])
+                    for row in conn.execute(
+                        "SELECT state, count(*) AS count FROM current_switch_links GROUP BY state"
+                    )
+                }
+            )
+            findings = {
+                str(row["status"]): int(row["count"])
+                for row in conn.execute(
+                    "SELECT status, count(*) AS count FROM topology_findings GROUP BY status"
+                )
+            }
+            latest = conn.execute(
+                "SELECT * FROM network_correlation_runs WHERE run_type = 'topology' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return 0, ok(links=links, findings=findings, latest_run=dict(latest) if latest else None)
+        if args.topology_command == "links":
+            params: list[Any] = []
+            where = ""
+            if args.state:
+                where = " WHERE state = ?"
+                params.append(args.state)
+            rows = conn.execute(
+                f"SELECT * FROM current_switch_links{where} ORDER BY link_key", params
+            ).fetchall()
+            return 0, ok(links=[_topology_link_public(row) for row in rows])
+        if args.topology_command == "findings":
+            params = []
+            where = ""
+            if args.finding_status:
+                where = " WHERE status = ?"
+                params.append(args.finding_status)
+            rows = conn.execute(
+                f"SELECT * FROM topology_findings{where} ORDER BY last_seen_at DESC, finding_key", params
+            ).fetchall()
+            return 0, ok(findings=[_topology_finding_public(row) for row in rows])
+        return 2, err("unsupported topology command")
     finally:
         conn.close()
 
@@ -1099,6 +1173,19 @@ def build_parser() -> argparse.ArgumentParser:
                 default="",
             )
 
+    topology = sub.add_parser("topology")
+    topology_sub = topology.add_subparsers(dest="topology_command", required=True)
+    topology_sub.add_parser("reconcile")
+    topology_sub.add_parser("status")
+    topology_links = topology_sub.add_parser("links")
+    topology_links.add_argument(
+        "--state", choices=("confirmed", "inferred", "ambiguous", "conflicting"), default=""
+    )
+    topology_findings = topology_sub.add_parser("findings")
+    topology_findings.add_argument(
+        "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
+    )
+
     ipsec = sub.add_parser("ipsec")
     ipsec_sub = ipsec.add_subparsers(dest="ipsec_command", required=True)
     ipsec_status = ipsec_sub.add_parser("status")
@@ -1175,6 +1262,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_table(args, "host_observations", "observations")
     if args.command == "switches":
         return cmd_switches(args)
+    if args.command == "topology":
+        return cmd_topology(args)
     if args.command == "ipsec":
         return cmd_ipsec(args)
     if args.command == "dashboard":

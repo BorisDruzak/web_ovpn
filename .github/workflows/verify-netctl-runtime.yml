@@ -26,6 +26,8 @@ jobs:
           tests/test_netctl_runtime_assets.py
           tests/test_netctl_context_import.py
           tests/test_netctl_context_migrations.py
+          tests/test_netctl_source_identity.py
+          tests/test_netctl_topology.py
           tests/test_netctl_cli.py
           tests/test_netctl_snmp_config.py
           tests/test_netctl_snmp_transport.py
