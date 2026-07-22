@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from . import __version__
 from .bundle_management import BundleManager
 from .components import component_specs
 from .errors import BackupError
+from .extracted_metadata import apply_archive_metadata
 from .fs import assert_safe_parents, fsync_directory, read_regular_bytes
 from .locks import exclusive_operation_lock
 from .manifest import RehearsalEvidence, SCHEMA_VERSION
@@ -119,13 +119,17 @@ class RehearsalService:
                 try:
                     children = list(current.iterdir())
                 except OSError as exc:
-                    raise _failed("Rehearsal cleanup cannot enumerate a directory") from exc
+                    raise _failed(
+                        "Rehearsal cleanup cannot enumerate a directory"
+                    ) from exc
                 for child in children:
                     remove(child)
                 try:
                     current.rmdir()
                 except OSError as exc:
-                    raise _failed("Rehearsal cleanup cannot remove a directory") from exc
+                    raise _failed(
+                        "Rehearsal cleanup cannot remove a directory"
+                    ) from exc
             else:
                 try:
                     current.unlink()
@@ -138,11 +142,18 @@ class RehearsalService:
     def _extract_all(self, selected: Path, bundle_path: Path) -> None:
         for spec in component_specs(self.settings):
             temporary = selected / f".extract-{spec.name}"
+            archive_path = bundle_path / spec.filename
             try:
                 temporary.mkdir(mode=0o700)
                 self.repository.archive_engine.extract_for_rehearsal(
                     spec,
-                    bundle_path / spec.filename,
+                    archive_path,
+                    temporary,
+                )
+                apply_archive_metadata(
+                    self.repository.archive_engine,
+                    spec,
+                    archive_path,
                     temporary,
                 )
                 source = temporary / spec.namespace
@@ -189,9 +200,26 @@ class RehearsalService:
                 except OSError as exc:
                     raise _failed("Extracted component cannot be inspected") from exc
                 if self._kind(metadata) != record.kind:
-                    raise _failed("Extracted component kind does not match manifest")
-                if record.mode is not None and stat.S_IMODE(metadata.st_mode) != record.mode:
-                    raise _failed("Extracted component mode does not match manifest")
+                    raise _failed(
+                        "Extracted component kind does not match manifest"
+                    )
+                if (
+                    record.mode is not None
+                    and stat.S_IMODE(metadata.st_mode) != record.mode
+                ):
+                    raise _failed(
+                        "Extracted component mode does not match manifest"
+                    )
+                if (
+                    record.uid is not None
+                    and metadata.st_uid != record.uid
+                ) or (
+                    record.gid is not None
+                    and metadata.st_gid != record.gid
+                ):
+                    raise _failed(
+                        "Extracted component ownership does not match manifest"
+                    )
         return "manifest_metadata"
 
     def _compile_python(self, selected: Path) -> str:
@@ -210,7 +238,9 @@ class RehearsalService:
                     source = raw.decode("utf-8")
                     compile(source, str(path), "exec", dont_inherit=True)
                 except (UnicodeDecodeError, SyntaxError) as exc:
-                    raise _failed("Restored Python source has invalid syntax") from exc
+                    raise _failed(
+                        "Restored Python source has invalid syntax"
+                    ) from exc
         return "python_syntax"
 
     def _run_bounded(
@@ -242,17 +272,43 @@ class RehearsalService:
 
     def _validate_shell(self, selected: Path) -> str:
         candidates = (
-            selected / "runtime" / "usr" / "local" / "sbin" / "workstationctl",
-            selected / "runtime" / "usr" / "local" / "libexec" / "alt-provision-worker",
-            selected / "runtime" / "usr" / "local" / "libexec" / "alt-job-stage",
-            selected / "deployment-assets" / "srv" / "alt-deploy" / "bootstrap" / "bootstrap.sh",
-            selected / "deployment-assets" / "srv" / "alt-deploy" / "bootstrap" / "alt-bootstrap-register",
+            selected
+            / "runtime"
+            / "usr"
+            / "local"
+            / "sbin"
+            / "workstationctl",
+            selected
+            / "runtime"
+            / "usr"
+            / "local"
+            / "libexec"
+            / "alt-provision-worker",
+            selected
+            / "runtime"
+            / "usr"
+            / "local"
+            / "libexec"
+            / "alt-job-stage",
+            selected
+            / "deployment-assets"
+            / "srv"
+            / "alt-deploy"
+            / "bootstrap"
+            / "bootstrap.sh",
+            selected
+            / "deployment-assets"
+            / "srv"
+            / "alt-deploy"
+            / "bootstrap"
+            / "alt-bootstrap-register",
         )
         for path in candidates:
             if not path.exists():
                 continue
             raw = read_regular_bytes(path, max_bytes=16 * 1024 * 1024)
-            first_line = raw.splitlines()[0] if raw.splitlines() else b""
+            lines = raw.splitlines()
+            first_line = lines[0] if lines else b""
             if b"sh" in first_line:
                 self._run_bounded(
                     ["/bin/bash", "-n", str(path)],
@@ -261,8 +317,14 @@ class RehearsalService:
         return "shell_syntax"
 
     def _validate_systemd(self, selected: Path) -> str:
-        unit_root = selected / "systemd" / "etc" / "systemd" / "system"
-        units = sorted(unit_root.glob("alt-deploy-*")) if unit_root.exists() else []
+        unit_root = (
+            selected / "systemd" / "etc" / "systemd" / "system"
+        )
+        units = (
+            sorted(unit_root.glob("alt-deploy-*"))
+            if unit_root.exists()
+            else []
+        )
         for unit in units:
             if unit.is_symlink() or not unit.is_file():
                 raise _failed("Restored systemd unit is unsafe")
@@ -278,7 +340,9 @@ class RehearsalService:
         return "systemd_units"
 
     def _validate_ansible(self, selected: Path) -> str:
-        ansible_root = selected / "ansible" / "home" / "altserver" / "ansible"
+        ansible_root = (
+            selected / "ansible" / "home" / "altserver" / "ansible"
+        )
         playbooks = (
             sorted((ansible_root / "playbooks").glob("*.yml"))
             if (ansible_root / "playbooks").exists()
@@ -288,7 +352,9 @@ class RehearsalService:
             if playbook.is_symlink() or not playbook.is_file():
                 raise _failed("Restored Ansible playbook is unsafe")
             environment = os.environ.copy()
-            environment["ANSIBLE_CONFIG"] = str(ansible_root / "ansible.cfg")
+            environment["ANSIBLE_CONFIG"] = str(
+                ansible_root / "ansible.cfg"
+            )
             self._run_bounded(
                 [
                     str(self.settings.ansible_playbook_path),
@@ -328,8 +394,13 @@ class RehearsalService:
             / ".ssh"
             / "id_ed25519",
         )
-        if any(path.exists() or path.is_symlink() for path in prohibited):
-            raise _failed("Prohibited secret path exists in rehearsal tree")
+        if any(
+            path.exists() or path.is_symlink()
+            for path in prohibited
+        ):
+            raise _failed(
+                "Prohibited secret path exists in rehearsal tree"
+            )
         secret_values = tuple(
             raw
             for raw in (
@@ -354,7 +425,10 @@ class RehearsalService:
             metadata = path.lstat()
             if metadata.st_size > 64 * 1024 * 1024:
                 continue
-            raw = read_regular_bytes(path, max_bytes=64 * 1024 * 1024)
+            raw = read_regular_bytes(
+                path,
+                max_bytes=64 * 1024 * 1024,
+            )
             if any(secret in raw for secret in secret_values):
                 raise _failed("Secret content exists in rehearsal tree")
         return "secret_exclusion"
@@ -375,7 +449,10 @@ class RehearsalService:
                 self._extract_all(selected, verified.path)
                 checks = (
                     "component_extraction",
-                    self._validate_manifest_paths(selected, verified.manifest),
+                    self._validate_manifest_paths(
+                        selected,
+                        verified.manifest,
+                    ),
                     self._compile_python(selected),
                     self._validate_shell(selected),
                     self._validate_systemd(selected),
@@ -395,7 +472,9 @@ class RehearsalService:
                     verification_sha256=hashlib.sha256(
                         verification_raw
                     ).hexdigest(),
-                    secret_identities=verified.manifest.secret_identities,
+                    secret_identities=(
+                        verified.manifest.secret_identities
+                    ),
                     passed_checks=tuple(checks),
                     status="ok",
                 )
@@ -420,5 +499,9 @@ class RehearsalService:
         except (OSError, ValueError) as exc:
             raise _failed("Backup restore rehearsal failed") from exc
         finally:
-            if successful and selected is not None and selected.exists():
+            if (
+                successful
+                and selected is not None
+                and selected.exists()
+            ):
                 self._remove_tree(selected)
