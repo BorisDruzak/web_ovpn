@@ -96,6 +96,23 @@ def test_secret_identity_mismatch_is_detected(tmp_path: Path) -> None:
     assert error.value.code == "restore_secret_mismatch"
 
 
+def test_assert_matches_never_recreates_missing_fingerprint_key(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_secrets()
+    provider = sandbox.secret_provider()
+    expected = provider.capture()
+    key_path = sandbox.settings.fingerprint_key
+    key_path.unlink()
+
+    with pytest.raises(BackupError) as error:
+        provider.assert_matches(expected)
+
+    assert error.value.code == "restore_secret_mismatch"
+    assert not key_path.exists()
+
+
 def test_serialized_identities_never_contain_raw_secret_bytes(
     tmp_path: Path,
 ) -> None:
