@@ -4,15 +4,15 @@
 
 **Goal:** Turn the existing intent, runtime identity, RouterOS and SNMP observations into one evidence-backed asset context API, then add an isolated and auditable control plane whose first bounded operation is asset-level Internet allow/deny.
 
-**Architecture:** Keep `netctl` as the read-only facts, correlation and explanation backend. Materialize switch-to-switch links and endpoint attachments from imported intent, management identities, FDB and optional LLDP, expose one asset-centric query contract, and implement path explanation as a conservative tri-state evaluator. Device writes live in a separate root-owned `netopsctld` broker over a Unix socket; the web application can submit only enumerated change plans and cannot send arbitrary RouterOS or shell commands.
+**Architecture:** Keep `netctl` as the read-only facts, correlation and explanation backend. Materialize switch-to-switch links and endpoint attachments from imported intent, source identity, FDB and optional LLDP, expose one asset-centric query contract, and implement path explanation as a conservative tri-state evaluator. Device writes live in a separate, unprivileged `netopsctld` service behind a Unix socket; the web application can submit only enumerated change plans and cannot send arbitrary RouterOS or shell commands.
 
-**Tech Stack:** Python 3.12, SQLite migrations, existing `netctl` collectors and runtime asset model, FastAPI HTTP API, pytest, systemd socket activation, RouterOS API-SSL, GitHub Actions.
+**Tech Stack:** Python 3.12, SQLite migrations, existing `netctl` collectors and runtime asset model, FastAPI HTTP API, pytest, systemd socket activation, RouterOS API-SSL and GitHub Actions.
 
 ## Global Constraints
 
 - Start from `web_ovpn/main` commit `bc50c0ce1494ef48282f50a7d0df624235540cb0` or a later fast-forward `main` containing it.
 - Netctl migrations `1` through `8` are immutable. New netctl schema starts at migration `9`.
-- Preserve the existing separation of `intent`, runtime observations, correlations, findings and desired change state.
+- Preserve the existing separation of imported intent, runtime observations, correlations, findings and desired change state.
 - IP addresses remain observations. No new table or API may use an IP address as the stable identity of an asset.
 - Different MAC addresses are never merged into one asset automatically. Correlation may propose a candidate merge but cannot execute it.
 - Imported `intent_assets` and runtime `assets` remain separate. A matching string ID is not a confirmed binding.
@@ -23,7 +23,8 @@
 - The unified context and topology contracts are API-first. Do not make web-page redesign a prerequisite for backend acceptance.
 - Path evaluation returns only `allowed`, `blocked` or `unknown`. Missing or unsupported evidence must produce `unknown`, never a guessed allow or deny.
 - `netctl` performs no device writes. Network changes are handled only by the separate `netopsctld` broker.
-- `netopsctld` accepts enumerated structured operations only. It must never accept arbitrary RouterOS paths, commands, shell strings or Python expressions from HTTP/API callers.
+- `netopsctld` accepts enumerated structured operations only. It must never accept arbitrary RouterOS paths, commands, shell strings or Python expressions from API callers.
+- `netopsctld` runs as a dedicated `netopsctl` system user. It does not run as root and does not receive wildcard sudo.
 - Network writes remain disabled until TLS, change-scoped authorization and durable audit logging are verified in production.
 - The first write capability is asset-level Internet allow/deny through a dedicated MikroTik address list. Switch-port shutdown, VLAN changes, DHCP writes and DNS writes remain deferred.
 - A user-level Internet policy is allowed only when the user has one active, confirmed, non-shared primary asset binding. Otherwise the operation is rejected.
@@ -37,23 +38,23 @@
 
 ### 1.1 Existing foundation
 
-The repository already contains the following usable facts and models:
+The repository already contains these usable models and observations:
 
 ```text
-canonical context revisions and active context head
+canonical context revisions and one active context head
 versioned intent sites, locations, segments, assets, services and links
 runtime assets and interfaces
-current and historical IP/hostname observations
+current and historical IP and hostname observations
 runtime identity findings
 RouterOS interfaces, DHCP, ARP, bridge hosts, neighbors, routes and IPsec views
 SNMP switch identity, ports, FDB, FDB events, VLAN membership, STP and optional LLDP
 source health and collection-run history
 ```
 
-The principal missing layer is correlation. The backend can currently know both of these facts independently:
+The principal missing layer is correlation. The backend can independently know:
 
 ```text
-asset interface MAC AA:BB:CC:DD:EE:FF belongs to runtime asset X
+runtime interface MAC AA:BB:CC:DD:EE:FF belongs to asset X
 switch SNR port ge18 currently learns MAC AA:BB:CC:DD:EE:FF
 ```
 
@@ -98,28 +99,28 @@ After PR 6C: eligible user-level policy resolution and session-ready model.
 ### 2.1 Raw facts, correlations and desired state are different records
 
 ```text
-raw observation:
-  current_switch_fdb, asset_interfaces, ip_observations, routes
+raw observations:
+  current_switch_fdb, switch_ports, asset_interfaces, ip_observations, routes
 
-correlated conclusion:
+correlated conclusions:
   current_switch_links, asset_attachment_resolutions
 
 desired state:
   desired_network_policies in netopsctl.sqlite
 
-executed change:
-  immutable change plan and execution rows in netopsctl.sqlite
+executed changes:
+  immutable change plans and execution rows in netopsctl.sqlite
 ```
 
 No correlation table is an input source for a collector. No desired-state record rewrites observation history.
 
-### 2.2 Physical backbone before endpoint selection
+### 2.2 Physical backbone is resolved before endpoint selection
 
 Endpoint resolution depends on knowing which ports are uplinks. Build the switch/router backbone first from:
 
 ```text
 imported intent links
-known runtime/intent identity of each source
+known runtime and intent identity of each source
 management MACs observed through FDB
 optional LLDP neighbors
 source topology role
@@ -148,14 +149,14 @@ Confidence never replaces evidence. API consumers receive both.
 
 ### 2.5 Ambiguity is a valid result
 
-The correlation engine must preserve these states:
+The correlation engine preserves these states:
 
 ```text
-confirmed   one sufficiently strong non-uplink candidate
-ambiguous   multiple comparable candidates
-uplink_only MAC is visible only through known inter-switch/uplink ports
-unresolved  no usable FDB candidate
-conflicting evidence sources disagree about a backbone link
+confirmed    one sufficiently strong non-uplink candidate
+ambiguous    multiple comparable candidates
+uplink_only  MAC is visible only through known inter-switch/uplink ports
+unresolved   no usable FDB candidate
+conflicting  evidence sources disagree about a backbone link
 ```
 
 It must not select a convenient candidate merely to make the card look complete.
@@ -164,17 +165,17 @@ It must not select a convenient candidate merely to make the card look complete.
 
 ```text
 primary_user binding:
-  long-lived administrative ownership of an asset
+  long-lived administrative assignment of an asset
 
 network_session:
-  a user used an asset during a bounded time interval
+  evidence that a user used an asset during a bounded time interval
 ```
 
 A captive portal, directory login or endpoint agent may create session evidence later. It must not silently overwrite a primary ownership binding.
 
 ### 2.7 Path explanation is conservative
 
-Initial path evaluation supports IPv4 and one forward direction through known RouterOS enforcement points. Unsupported matchers, missing tables, stale facts, multiple possible gateways or incomplete reverse-path evidence produce `unknown` with reasons.
+Initial path evaluation supports IPv4 and one forward direction through known RouterOS enforcement points. Unsupported matchers, missing tables, stale facts, multiple possible gateways or incomplete reverse-path evidence produce `unknown` with explicit reasons.
 
 ### 2.8 Control uses desired policy, not raw IP commands
 
@@ -203,7 +204,7 @@ collector failure:
   retain last successful observations
 
 correlation failure:
-  retain last successful topology/attachments
+  retain last successful topology and attachments
 
 control broker unavailable:
   retain current network-device state
@@ -281,7 +282,7 @@ optional retained active-probe evidence
 ```text
 change-scoped API authorization gate
 netopsctl database and Unix-socket protocol
-root-owned netopsctld systemd socket/service
+dedicated unprivileged netopsctld systemd socket/service
 immutable plans, executions and rollback records
 MikroTik adapter with enumerated operations only
 ```
@@ -338,11 +339,9 @@ netctl/cli.py
 netctl/store.py
 netctl/runtime_assets.py
 netctl/switch_queries.py
-netctl/drivers/routeros_api.py
-netctl/drivers/routeros_ssh.py
+netctl/drivers/mikrotik_api.py
+netctl/drivers/mikrotik_ssh.py
 ```
-
-If the current RouterOS driver filenames differ, locate the modules registered by `legacy_driver_for()` and modify those exact modules; do not create a parallel RouterOS collector.
 
 ### HTTP/API files
 
@@ -351,6 +350,7 @@ app/api.py
 app/main.py
 app/netctl_client.py
 app/models.py
+app/auth.py
 ```
 
 No new Jinja page is required by this plan.
@@ -365,6 +365,8 @@ netopsctl/store.py
 netopsctl/protocol.py
 netopsctl/server.py
 netopsctl/client.py
+netopsctl/policy_resolver.py
+netopsctl/reconcile.py
 netopsctl/adapters/__init__.py
 netopsctl/adapters/mikrotik.py
 deploy/netopsctl.service
@@ -386,10 +388,12 @@ tests/test_netctl_route_metadata.py
 tests/test_netctl_path_facts.py
 tests/test_netctl_path_engine.py
 tests/test_context_api.py
+tests/test_network_change_authorization.py
 tests/test_netopsctl_store.py
 tests/test_netopsctl_protocol.py
 tests/test_netopsctl_mikrotik.py
 tests/test_netopsctl_internet_policy.py
+tests/test_netctl_reconcile_units.py
 ```
 
 ### Runbooks and evidence
@@ -426,9 +430,12 @@ def test_migration_9_creates_correlation_schema(tmp_path: Path) -> None:
     conn = create_database_at_migration_8(db_path)
     apply_migrations(conn)
 
-    assert [row[0] for row in conn.execute(
-        "SELECT version FROM schema_migrations ORDER BY version"
-    )] == list(range(1, 10))
+    assert [
+        row[0]
+        for row in conn.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        )
+    ] == list(range(1, 10))
 
     tables = {
         row[0]
@@ -451,8 +458,6 @@ Add an injected migration failure test and assert that no migration-9 table or l
 
 - [ ] **Step 2: Verify RED**
 
-Run:
-
 ```bash
 python -m pytest tests/test_netctl_topology.py::test_migration_9_creates_correlation_schema -q
 ```
@@ -466,6 +471,7 @@ Do not use `executescript()` and do not call `commit()` inside the migration.
 ```sql
 CREATE TABLE network_correlation_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_type TEXT NOT NULL CHECK (run_type IN ('topology','attachments')),
     started_at TEXT NOT NULL,
     finished_at TEXT,
     status TEXT NOT NULL CHECK (status IN ('running','success','partial','failed')),
@@ -476,8 +482,8 @@ CREATE TABLE network_correlation_runs (
     error_message TEXT NOT NULL DEFAULT ''
 );
 
-CREATE INDEX network_correlation_runs_started_idx
-ON network_correlation_runs(started_at DESC, id DESC);
+CREATE INDEX network_correlation_runs_type_started_idx
+ON network_correlation_runs(run_type, started_at DESC, id DESC);
 
 CREATE TABLE current_switch_links (
     link_key TEXT PRIMARY KEY,
@@ -632,10 +638,12 @@ class SourceIdentity:
     management_macs: tuple[str, ...]
 
 
-def list_source_identities(conn: sqlite3.Connection) -> tuple[SourceIdentity, ...]: ...
+def list_source_identities(
+    conn: sqlite3.Connection,
+) -> tuple[SourceIdentity, ...]: ...
 ```
 
-Tests must prove:
+Tests prove:
 
 ```text
 SNMP source binding resolves through switch_devices.runtime_asset_id.
@@ -666,7 +674,7 @@ intent_stable_id: mikrotik-rb3011-sosn
 topology_role: core
 ```
 
-Validation rules:
+Validation rule:
 
 ```python
 TOPOLOGY_ROLES = frozenset({"core", "distribution", "access", "edge", "unknown"})
@@ -741,14 +749,14 @@ def collect_link_evidence(
 ) -> tuple[LinkEvidence, ...]: ...
 ```
 
-Tests must cover:
+Tests cover:
 
 ```text
 intent link with exact port-name match returns two known ports and confidence 90;
 intent link with one unresolved port remains useful with confidence 65;
 FDB management-MAC evidence returns local port and remote source with confidence 70;
 LLDP match by chassis MAC returns confidence 90;
-LLDP plus matching intent is represented as separate evidence, not overwritten;
+LLDP plus matching intent remains separate evidence;
 non-unique system names do not resolve an LLDP neighbor;
 normal endpoint MACs are not treated as backbone identities;
 self-links are rejected.
@@ -784,7 +792,7 @@ otherwise empty port_key
 
 Never use substring matching for a confirmed port.
 
-- [ ] **Step 4: Implement the three evidence adapters**
+- [ ] **Step 4: Implement the evidence adapters**
 
 ```python
 def intent_link_evidence(...): ...
@@ -860,17 +868,20 @@ Persist the complete sorted evidence list in `evidence_json`.
 
 - [ ] **Step 4: Implement topology depth**
 
-Build an undirected graph from non-conflicting current links. Start BFS from sources with `topology_role = core`. Store depth only in the in-memory topology result; attachment reconciliation consumes it through:
+Build an undirected graph from non-conflicting current links. Start BFS from sources with `topology_role = core`.
 
 ```python
-def topology_depths(links: Sequence[CurrentSwitchLink], roots: set[int]) -> dict[int, int]: ...
+def topology_depths(
+    links: Sequence[CurrentSwitchLink],
+    roots: set[int],
+) -> dict[int, int]: ...
 ```
 
 Unreachable sources have no depth.
 
 - [ ] **Step 5: Implement atomic current-state replacement and events**
 
-Create and commit the `running` correlation row before reconciliation. Replace current links, events, findings and final run status in one `BEGIN IMMEDIATE` transaction. On failure, rollback all replacement changes and finalize the durable run as `failed` in a recovery transaction.
+Create and commit a `network_correlation_runs` row with `run_type = 'topology'` and status `running` before reconciliation. Replace current links, events, findings and final run status in one `BEGIN IMMEDIATE` transaction. On failure, rollback all replacement changes and finalize the durable run as `failed` in a recovery transaction.
 
 - [ ] **Step 6: Add CLI**
 
@@ -939,10 +950,10 @@ def attachment_candidates(
 ) -> tuple[AttachmentCandidate, ...]: ...
 ```
 
-Tests must prove:
+Tests prove:
 
 ```text
-MAC match is case-insensitive after normalization;
+MAC matching is case-insensitive after normalization;
 known inter-switch link port is candidate_class uplink;
 port not participating in a backbone link is candidate_class direct;
 missing topology depth remains None;
@@ -969,7 +980,7 @@ base unknown candidate                                     35
 known topology depth                                    + min(depth * 5, 20)
 known VLAN ID                                                +5
 port oper_status == up                                       +5
-FDB seen in the selected current collector run               +5
+FDB belongs to selected current collector run                +5
 port is a verified backbone port                            -20
 ```
 
@@ -1019,10 +1030,12 @@ uplink_only:
   candidates exist but every candidate is uplink.
 
 unresolved:
-  no candidates exist.
+  no candidates exist for an eligible current interface.
 ```
 
-Tests must cover:
+An interface is eligible for an operational unresolved finding only when it has a normalized MAC, belongs to a non-retired asset, has a current IP or hostname observation and its site has at least one successfully collected switch source. Other interfaces may have an unresolved status but do not create warning noise.
+
+Tests cover:
 
 ```text
 C0:9B:F4:61:4B:CD -> TP-Link ITO port48 -> VLAN20 -> confirmed;
@@ -1054,7 +1067,7 @@ def resolve_attachment(
 
 - [ ] **Step 4: Implement persistence and event comparison**
 
-Candidate replacement, resolution replacement, event insertions, finding reconciliation and run completion occur in one transaction. A collector failure does not invoke attachment reconciliation; a correlation process failure preserves the previous state.
+Create a durable `network_correlation_runs` row with `run_type = 'attachments'`. Candidate replacement, resolution replacement, event insertions, finding reconciliation and run completion occur in one transaction. A collector failure does not invoke attachment reconciliation; a correlation process failure preserves the previous state.
 
 Finding keys:
 
@@ -1091,7 +1104,6 @@ git commit -m "feat: reconcile endpoint network attachments"
 ## Task 7: Schedule correlation without mixing network I/O
 
 **Files:**
-- Modify: `deploy/netctl-collect.service`
 - Create: `deploy/netctl-reconcile.service`
 - Create: `deploy/netctl-reconcile.timer`
 - Modify: `deploy/install-openvpn-web.sh`
@@ -1111,7 +1123,7 @@ Tests assert:
 netctl-reconcile.service runs as user netctl;
 ExecStart invokes topology reconcile then attachments reconcile;
 service performs no sudo and no network-device command;
-timer runs after collection cadence and is Persistent=true;
+timer cadence is five minutes and Persistent=true;
 installer installs and enables the timer;
 OpenVPN and WireGuard units are not restarted by reconciliation deployment.
 ```
@@ -1155,7 +1167,7 @@ WantedBy=timers.target
 
 - [ ] **Step 4: Write rollout and rollback commands**
 
-The runbook must create a SQLite `.backup`, verify integrity, apply migration 9 with the timer disabled, run one manual topology/attachment reconciliation, inspect aggregate counts only, then enable the timer. Rollback restores the database and prior application tree.
+The runbook creates a SQLite `.backup`, verifies integrity, applies migration 9 with the timer disabled, runs one manual topology/attachment reconciliation, inspects aggregate counts only, then enables the timer. Rollback restores the database and prior application tree.
 
 - [ ] **Step 5: Run tests and commit**
 
@@ -1173,6 +1185,7 @@ git commit -m "ops: schedule local network correlation"
 
 **Files:**
 - Create: `netctl/context_query.py`
+- Create: `netctl/findings.py`
 - Modify: `netctl/runtime_assets.py`
 - Create: `tests/test_netctl_context_query.py`
 
@@ -1215,7 +1228,7 @@ evidence
 
 Before PR 5A, `owner` is `null`.
 
-Tests must cover exact searches by:
+Tests cover exact searches by:
 
 ```text
 asset_key
@@ -1253,11 +1266,23 @@ Do not return secret refs, raw source configuration, raw SNMP values, firewall c
 
 For a confirmed attachment, traverse current non-conflicting links from the selected switch toward the nearest `core` source. Return the shortest deterministic path. If no core is reachable, return the attachment switch alone with `complete: false` and reason `no_core_path`.
 
-- [ ] **Step 5: Run tests and commit**
+- [ ] **Step 5: Aggregate findings without rewriting them**
+
+`netctl/findings.py` reads and normalizes:
+
+```text
+runtime_identity_findings
+topology_findings
+switch source/run failures
+```
+
+It returns the original finding source and key. It does not copy or change lifecycle state in the source tables.
+
+- [ ] **Step 6: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_context_query.py tests/test_netctl_attachments.py -q
-git add netctl/context_query.py netctl/runtime_assets.py tests/test_netctl_context_query.py
+git add netctl/context_query.py netctl/findings.py netctl/runtime_assets.py tests/test_netctl_context_query.py
 git commit -m "feat: compose unified asset network context"
 ```
 
@@ -1450,7 +1475,7 @@ Tests assert CSRF/session or bearer authorization, audit records, validation and
 
 - [ ] **Step 2: Implement and integrate search**
 
-`search_context()` must return user matches alongside asset matches and include confirmed asset bindings without inventing an active session.
+`search_context()` returns user matches alongside asset matches and includes confirmed asset bindings without inventing an active session.
 
 - [ ] **Step 3: Run tests and commit**
 
@@ -1469,8 +1494,8 @@ git commit -m "feat: manage user asset context through API"
 **Files:**
 - Modify: `netctl/migrations.py`
 - Modify: `netctl/store.py`
-- Modify: `netctl/drivers/routeros_api.py`
-- Modify: `netctl/drivers/routeros_ssh.py`
+- Modify: `netctl/drivers/mikrotik_api.py`
+- Modify: `netctl/drivers/mikrotik_ssh.py`
 - Create: `tests/test_netctl_route_metadata.py`
 
 **Interfaces:**
@@ -1511,7 +1536,7 @@ python -m pytest tests/test_netctl_route_metadata.py tests/test_netctl_cli.py -q
 - [ ] **Step 5: Commit**
 
 ```bash
-git add netctl/migrations.py netctl/store.py netctl/drivers tests/test_netctl_route_metadata.py
+git add netctl/migrations.py netctl/store.py netctl/drivers/mikrotik_api.py netctl/drivers/mikrotik_ssh.py tests/test_netctl_route_metadata.py
 git commit -m "feat: persist RouterOS route table metadata"
 ```
 
@@ -1522,8 +1547,8 @@ git commit -m "feat: persist RouterOS route table metadata"
 - Create: `netctl/path_models.py`
 - Create: `netctl/path_facts.py`
 - Modify: `netctl/store.py`
-- Modify: `netctl/drivers/routeros_api.py`
-- Modify: `netctl/drivers/routeros_ssh.py`
+- Modify: `netctl/drivers/mikrotik_api.py`
+- Modify: `netctl/drivers/mikrotik_ssh.py`
 - Create: `tests/test_netctl_path_facts.py`
 
 **Interfaces:**
@@ -1604,7 +1629,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add netctl/migrations.py netctl/path_models.py netctl/path_facts.py netctl/store.py netctl/drivers tests/test_netctl_path_facts.py
+git add netctl/migrations.py netctl/path_models.py netctl/path_facts.py netctl/store.py netctl/drivers/mikrotik_api.py netctl/drivers/mikrotik_ssh.py tests/test_netctl_path_facts.py
 git commit -m "feat: collect RouterOS path facts"
 ```
 
@@ -1654,7 +1679,7 @@ class PathExplanation:
     evidence: tuple[dict[str, Any], ...]
 ```
 
-Tests must cover:
+Tests cover:
 
 ```text
 longest-prefix route selection within selected table;
@@ -1795,7 +1820,7 @@ git commit -m "security: add network change authorization scopes"
 
 **Interfaces:**
 - Produces a separate database at `/var/lib/netopsctl/netopsctl.sqlite`.
-- Does not open `netctl.sqlite` in write mode.
+- Opens `netctl.sqlite` only through `netctl.db.connect_read_only()`.
 
 - [ ] **Step 1: Write failing store tests**
 
@@ -1814,6 +1839,7 @@ CREATE TABLE change_plans (
     )),
     desired_state_json TEXT NOT NULL,
     resolved_targets_json TEXT NOT NULL,
+    context_evidence_hash TEXT NOT NULL,
     precheck_json TEXT NOT NULL,
     rollback_json TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN (
@@ -1875,7 +1901,7 @@ python -m pytest tests/test_netopsctl_store.py -q
 
 - [ ] **Step 3: Implement immutable plan rules**
 
-After status `approved`, actor, reason, subject, operation, desired state, targets, steps and rollback payload are immutable. Status transitions are validated by one explicit state machine.
+After status `approved`, actor, reason, subject, operation, desired state, targets, evidence hash, steps and rollback payload are immutable. Status transitions are validated by one explicit state machine.
 
 - [ ] **Step 4: Run tests and commit**
 
@@ -1898,7 +1924,7 @@ git commit -m "feat: add immutable network change plans"
 
 **Interfaces:**
 - Web uses the unprivileged client.
-- Root-owned server performs only registered operations.
+- The dedicated `netopsctl` service performs only registered operations.
 
 - [ ] **Step 1: Write failing protocol tests**
 
@@ -1928,13 +1954,17 @@ status
 
 Tests reject unknown fields, unknown actions, oversized payloads, newline injection, path traversal and arbitrary command strings.
 
-- [ ] **Step 2: Implement systemd socket activation**
+- [ ] **Step 2: Implement system users and read-only netctl access**
+
+Create system user `netopsctl`. Add it to the existing `netctl` group so it can open `/var/lib/netctl/netctl.sqlite` read-only. Set the netctl data directory to `0750 netctl:netctl`, the database/WAL/SHM files to `0640 netctl:netctl`, and keep netopsctl's own database under `0750 netopsctl:netopsctl`. The daemon never writes the netctl database.
+
+- [ ] **Step 3: Implement systemd socket activation**
 
 ```ini
 # deploy/netopsctl.socket
 [Socket]
 ListenStream=/run/netopsctl/netopsctl.sock
-SocketUser=root
+SocketUser=netopsctl
 SocketGroup=openvpn-web
 SocketMode=0660
 RemoveOnStop=true
@@ -1947,19 +1977,21 @@ WantedBy=sockets.target
 # deploy/netopsctl.service
 [Service]
 Type=simple
-User=root
-Group=root
+User=netopsctl
+Group=netopsctl
+SupplementaryGroups=netctl
 ExecStart=/opt/openvpn-web/.venv/bin/python -m netopsctl.server
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+ReadOnlyPaths=/var/lib/netctl
 ReadWritePaths=/var/lib/netopsctl /run/netopsctl
 ```
 
-Add only the additional capabilities actually required by the RouterOS client; do not grant shell access or wildcard sudo.
+RouterOS API access requires no Linux root privilege or Linux capabilities.
 
-- [ ] **Step 3: Run tests and commit**
+- [ ] **Step 4: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netopsctl_protocol.py -q
@@ -1976,7 +2008,7 @@ git commit -m "feat: add isolated network control broker"
 
 **Interfaces:**
 - Produces only address-list and bootstrap-audit operations.
-- Consumes enforcement-point configuration from a root-owned netopsctl config file.
+- Consumes enforcement-point configuration from `/etc/netopsctl/netopsctl.env` and protected secret references.
 
 - [ ] **Step 1: Write failing adapter tests**
 
@@ -2034,7 +2066,7 @@ git commit -m "feat: add bounded MikroTik policy adapter"
 - Create: `tests/test_netopsctl_internet_policy.py`
 
 **Interfaces:**
-- Reads netctl context through the public CLI/API contract, never by writing `netctl.sqlite`.
+- Reads netctl context through `connect_read_only()` and the same bounded query functions used by the public context API.
 - Produces deterministic `internet_access_set` plans.
 
 - [ ] **Step 1: Write failing resolver tests**
@@ -2070,6 +2102,8 @@ Managed comment:
 ```text
 web_ovpn:asset=<asset_key>;plan=<plan_key>
 ```
+
+The angle-bracket tokens above describe serialized fields, not operator-supplied command text. The implementation uses validated values from the immutable plan.
 
 - [ ] **Step 3: Run tests and commit**
 
@@ -2108,7 +2142,7 @@ rollback removes only entries managed by the plan/asset;
 repeat apply is idempotent;
 reconciler updates deny entries when current DHCP IP changes;
 failed netctl collection preserves previous managed entries and opens policy_stale_identity;
-expired policy is retired and entries removed only after fresh identity evidence;
+expired policy is retired and entries are removed only after fresh identity evidence;
 web read token cannot plan/apply/rollback.
 ```
 
@@ -2248,7 +2282,7 @@ git commit -m "feat: add network session context contract"
 
 ## 5. Explicitly deferred work
 
-The following items are not part of this implementation plan and require separate approved plans after asset-level Internet policy is proven:
+The following items require separate approved plans after asset-level Internet policy is proven:
 
 ```text
 switch-port shutdown or enable
@@ -2271,7 +2305,7 @@ active endpoint agent deployment
 
 ### Correlated asset card
 
-Given a runtime asset with MAC `C0:9B:F4:61:4B:CD`, the context API must return:
+Given a runtime asset with MAC `C0:9B:F4:61:4B:CD`, the context API returns:
 
 ```text
 runtime asset and interface
@@ -2287,15 +2321,15 @@ no invented user owner
 
 ### Ambiguous attachment
 
-When one MAC is learned on two equal-depth non-uplink ports, the API must return `ambiguous`, both candidates and an open finding. It must not choose one port.
+When one MAC is learned on two equal-depth non-uplink ports, the API returns `ambiguous`, both candidates and an open finding. It does not choose one port.
 
 ### Collector failure
 
-After a successful topology/attachment run, an SNMP timeout and a failed correlation attempt must leave the previous current topology and attachment unchanged.
+After a successful topology/attachment run, an SNMP timeout and a failed correlation attempt leave the previous current topology and attachment unchanged.
 
 ### Path explanation
 
-A path request must identify the selected routing table/route and return `unknown` when an unsupported firewall matcher could alter the result.
+A path request identifies the selected routing table/route and returns `unknown` when an unsupported firewall matcher could alter the result.
 
 ### Internet deny
 
@@ -2315,12 +2349,16 @@ a later DHCP address change is reconciled without changing the stable policy sub
 
 ## 7. Verification commands for every PR
 
-Focused tests for the delivery must pass before full regression:
+```bash
+python -m compileall -q netctl app
+python -m pytest -q
+git diff --check
+```
+
+After `netopsctl` is introduced:
 
 ```bash
 python -m compileall -q netctl netopsctl app
-python -m pytest -q
-git diff --check
 ```
 
 For migrations:
