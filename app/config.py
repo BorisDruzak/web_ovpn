@@ -25,6 +25,9 @@ class Settings:
     admin_password: str
     api_token_hash: str
     api_actor: str
+    network_change_trusted_https: bool
+    network_change_trust_proxy: bool
+    network_change_tokens_json: str
     vpnctl_path: str
     vpnctl_use_sudo: bool
     netctl_path: str
@@ -59,6 +62,9 @@ def get_settings() -> Settings:
         admin_password=os.environ.get("ADMIN_PASSWORD", ""),
         api_token_hash=os.environ.get("OPENVPN_WEB_API_TOKEN_HASH", ""),
         api_actor=os.environ.get("OPENVPN_WEB_API_ACTOR", "api:codex-local"),
+        network_change_trusted_https=_bool_env("NETWORK_CHANGE_TRUSTED_HTTPS", False),
+        network_change_trust_proxy=_bool_env("NETWORK_CHANGE_TRUST_PROXY", False),
+        network_change_tokens_json=os.environ.get("NETWORK_CHANGE_TOKENS_JSON", "[]"),
         vpnctl_path=os.environ.get("VPNCTL_PATH", "/usr/local/sbin/vpnctl"),
         vpnctl_use_sudo=_bool_env("VPNCTL_USE_SUDO", False),
         netctl_path=os.environ.get("NETCTL_PATH", "/usr/local/sbin/netctl"),

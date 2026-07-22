@@ -1786,7 +1786,7 @@ git commit -m "feat: expose network path explanation"
 - Produces API scopes `network:read`, `network:plan`, `network:apply`, `network:rollback`.
 - Blocks all control-plane endpoints until HTTPS/trusted proxy and scoped tokens are configured.
 
-- [ ] **Step 1: Write failing authorization tests**
+- [x] **Step 1: Write failing authorization tests**
 
 Tests assert:
 
@@ -1799,11 +1799,11 @@ all denied attempts are audited;
 control endpoints refuse operation when trusted HTTPS mode is false.
 ```
 
-- [ ] **Step 2: Implement the gate**
+- [x] **Step 2: Implement the gate**
 
 Do not reuse one unrestricted bearer token for read and change operations.
 
-- [ ] **Step 3: Run tests and commit**
+- [x] **Step 3: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_network_change_authorization.py -q
