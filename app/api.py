@@ -882,12 +882,13 @@ def api_context_search(
 
 
 @router.get("/context/assets/{asset_key}")
-def api_context_asset(asset_key: str, actor: str = Depends(require_api_actor)):
-    return api_response(call_netctl(["context-view", "asset", "--asset-key", asset_key]))
+def api_context_asset(asset_key: str, request: Request, actor: str = Depends(require_api_actor)):
+    return context_response(request, call_netctl(["context-view", "asset", "--asset-key", asset_key]))
 
 
 @router.get("/context/topology")
 def api_context_topology(
+    request: Request,
     site: str = Query(default="", max_length=128),
     state: str = Query(default=""),
     depth: int = Query(default=4, ge=1, le=32),
@@ -901,22 +902,23 @@ def api_context_topology(
     if state:
         args.extend(["--state", state])
     args.extend(["--depth", str(depth)])
-    return api_response(call_netctl(args))
+    return context_response(request, call_netctl(args))
 
 
 @router.get("/context/findings")
 def api_context_findings(
+    request: Request,
     status: str = Query(default="open"),
     actor: str = Depends(require_api_actor),
 ):
     if status not in {"open", "acknowledged", "resolved"}:
         raise HTTPException(status_code=422, detail="invalid finding status")
-    return api_response(call_netctl(["context-view", "findings", "--status", status]))
+    return context_response(request, call_netctl(["context-view", "findings", "--status", status]))
 
 
 @router.get("/context/source-readiness")
-def api_context_source_readiness(actor: str = Depends(require_api_actor)):
-    return api_response(call_netctl(["context-view", "source-readiness"]))
+def api_context_source_readiness(request: Request, actor: str = Depends(require_api_actor)):
+    return context_response(request, call_netctl(["context-view", "source-readiness"]))
 
 
 @router.get("/context/path")
