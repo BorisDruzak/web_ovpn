@@ -46,6 +46,11 @@ def _context_db(tmp_path: Path) -> sqlite3.Connection:
            VALUES ('10:uplink|11:core', 10, 'uplink', 11, 'core', 'confirmed', 100, ?, ?, ?)""",
         (now, now, topology_run),
     )
+    conn.execute(
+        """INSERT INTO asset_intent_bindings (asset_id, context_id, intent_stable_id, binding_source, confidence, status, first_seen_at, last_seen_at)
+           VALUES (1, 'central', 'device:workstation-01', 'manual', 100, 'confirmed', ?, ?)""",
+        (now, now),
+    )
     conn.commit()
     return conn
 
@@ -63,6 +68,8 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
         assert result["network"]["ip_observations"][0]["ip"] == "192.0.2.10"
         assert result["attachment"]["selected_port_key"] == "physical:48"
         assert result["topology_path"] == {"nodes": [10, 11], "complete": True, "reason": ""}
+        assert result["intent"]["intent_stable_id"] == "device:workstation-01"
+        assert [item["source"] for item in result["source_health"]] == ["access", "core"]
     finally:
         conn.close()
 

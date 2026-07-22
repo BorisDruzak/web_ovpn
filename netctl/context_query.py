@@ -34,6 +34,25 @@ def _attachment(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any] | Non
     return dict(row) if row is not None else None
 
 
+def _intent(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        """SELECT context_id, intent_stable_id, binding_source, confidence, status, last_seen_at
+           FROM asset_intent_bindings WHERE asset_id = ?
+           ORDER BY confidence DESC, last_seen_at DESC, id DESC LIMIT 1""",
+        (asset_id,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _source_health(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT name AS source, last_collect_at, last_status FROM network_sources ORDER BY name, id LIMIT 64"
+        )
+    ]
+
+
 def _topology_path(conn: sqlite3.Connection, attachment: dict[str, Any] | None) -> dict[str, Any]:
     if attachment is None or attachment.get("status") != "confirmed" or attachment.get("selected_source_id") is None:
         return {"nodes": [], "complete": False, "reason": "no_attachment"}
@@ -71,7 +90,7 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
     asset_id = int(asset["id"])
     return {
         "asset": _asset_public(asset),
-        "intent": None,
+        "intent": _intent(conn, asset_id),
         "owner": None,
         "interfaces": [
             {key: item[key] for key in ("interface_key", "mac", "interface_type", "interface_name", "lifecycle") if key in item}
@@ -83,7 +102,7 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
             "hostname_observations": list_current_hostname_observations(conn, asset_id)[:64],
         },
         "topology_path": _topology_path(conn, _attachment(conn, asset_id)),
-        "source_health": [],
+        "source_health": _source_health(conn),
         "findings": findings_for_asset(conn, asset_id),
         "evidence": {},
     }
