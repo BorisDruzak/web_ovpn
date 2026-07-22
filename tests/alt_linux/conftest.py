@@ -24,9 +24,16 @@ BACKUP_ROOT = (
     / "alt-linux"
     / "backup"
 )
+API_ROOT = (
+    Path(__file__).resolve().parents[2]
+    / "deploy"
+    / "alt-linux"
+    / "api"
+)
 
 sys.path.insert(0, str(CONTROL_ROOT))
 sys.path.insert(0, str(BACKUP_ROOT))
+sys.path.insert(0, str(API_ROOT))
 
 
 @pytest.fixture(autouse=True)

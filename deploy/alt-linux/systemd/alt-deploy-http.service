@@ -1,13 +1,37 @@
 [Unit]
-Description=ALT deployment HTTP server
+Description=ALT deployment allowlisted static server
 After=network-online.target
+After=alt-deploy-guard.service
 Wants=network-online.target
+Requires=alt-deploy-guard.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 -m http.server 8087 --bind 0.0.0.0 --directory /srv/alt-deploy
+User=altserver
+Group=altserver
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/alt-deploy-api/static_server.py
 Restart=on-failure
 RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+InaccessiblePaths=-/srv/alt-deploy/registration -/srv/alt-deploy/logs -/var/lib/alt-deploy
 
 [Install]
 WantedBy=multi-user.target

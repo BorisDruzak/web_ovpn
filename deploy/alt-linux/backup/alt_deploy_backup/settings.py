@@ -86,6 +86,10 @@ class BackupSettings:
     bootstrap_root: Path
     metadata_root: Path
     fingerprint_key: Path
+    rollout_marker: Path
+    guard_runtime_root: Path
+    rollout_permit: Path
+    restore_permit: Path
     ssh_keygen_path: Path
     ansible_playbook_path: Path
     systemctl_path: Path
@@ -174,6 +178,18 @@ class BackupSettings:
             metadata_root=rooted("/srv/alt-deploy/metadata"),
             fingerprint_key=rooted(
                 "/var/lib/alt-deploy-backup/fingerprint.key"
+            ),
+            rollout_marker=rooted(
+                "/var/lib/alt-deploy-backup/rollout.json"
+            ),
+            guard_runtime_root=rooted(
+                "/run/alt-deploy-backup"
+            ),
+            rollout_permit=rooted(
+                "/run/alt-deploy-backup/rollout.permit"
+            ),
+            restore_permit=rooted(
+                "/run/alt-deploy-backup/restore.permit"
             ),
             ssh_keygen_path=Path(
                 env.get(

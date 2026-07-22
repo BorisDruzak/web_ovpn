@@ -10,6 +10,7 @@ Authoritative documentation:
 - [Remaining work and acceptance roadmap](../../docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md)
 - [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)
 - [OR-3P1 pilot rollout](../../docs/ALT_OR3P1_PILOT_ROLLOUT.md)
+- [OR-3P3 coordinated backup and restore](../../docs/ALT_OR3P3_COORDINATED_BACKUP_RESTORE.md)
 
 ## Architecture
 
@@ -44,27 +45,44 @@ queue and processor inactivity.
 
 ## Install or update the controller
 
+Install the independent OR-3P3 utility first:
+
 ```bash
-sudo bash deploy/alt-linux/install-control-plane.sh
+sudo bash deploy/alt-linux/install-backup-tool.sh
+```
+
+Create, verify and rehearse one exact rollback bundle as described in the
+[OR-3P3 runbook](../../docs/ALT_OR3P3_COORDINATED_BACKUP_RESTORE.md). Then pass
+that exact ID to the control-plane installer:
+
+```bash
+sudo bash deploy/alt-linux/install-control-plane.sh \
+  --rollback-backup-id backup-YYYYMMDDTHHMMSSZ-xxxxxxxx
 ```
 
 The installer:
 
-- blocks before mutation when a provision job is active, a real job is malformed,
-  the pending registration queue is non-empty, Vault or permissions are
-  unhealthy, SSH/static prerequisites are unsafe, or the processor is active;
-- installs `workstationctl`, the provision worker, the stage helper, both API
-  programs, all four systemd units, the served bootstrap script and the Ansible
-  project;
+- makes exactly one read-only `rehearse-status` call before repository tests or
+  runtime mutation;
+- blocks before mutation when the bundle/evidence is stale, a provision job is
+  active, a real job is malformed, the pending registration queue is non-empty,
+  Vault or permissions are unhealthy, SSH/static prerequisites are unsafe, or
+  the processor is active;
+- creates a durable rollout marker and uses an ephemeral guard permit for service
+  activation;
+- installs `workstationctl`, the provision worker, the stage helper, the
+  allowlisted static server, both API programs, all four systemd units, the
+  served bootstrap scripts and the Ansible project;
 - preserves active Vault files, SSH identity, the active authorized key, ISO
-  metadata archives, jobs, assignments and registration records;
-- stops only the path watcher, registration API and static HTTP service during
-  the maintenance window;
-- performs `daemon-reload`, enables the three long-lived units and prints success
-  only after `controller readiness` passes.
+  metadata archives, jobs, assignments, registrations and every backup-tool
+  path;
+- stops only the path watcher, registration API and allowlisted static service
+  during the maintenance window;
+- performs `daemon-reload`, enables the three long-lived units and removes the
+  rollout marker only after `controller readiness` passes.
 
-OR-3P1 has no automatic rollback. Complete and verify OR-3P3 backup/restore before
-running this installer on `192.168.100.17`.
+A failed rollout revokes activation, leaves the durable marker and keeps the
+maintenance services stopped for emergency full restore.
 
 ## Vault setup and validation
 
@@ -438,11 +456,17 @@ require `/etc/openvpn/vpnctl.env`.
 
 python3 -m py_compile \
   deploy/alt-linux/control/alt_deploy/*.py \
+  deploy/alt-linux/api/static_server.py \
   deploy/alt-linux/api/register_api.py \
   deploy/alt-linux/api/process_pending.py \
+  deploy/alt-linux/backup/alt_deploy_backup/*.py \
+  deploy/alt-linux/backup/alt-deploy-backup \
   deploy/alt-linux/control/alt-job-stage
 
+bash -n deploy/alt-linux/install-backup-tool.sh
+bash -n deploy/alt-linux/install-backup-tool-lib.sh
 bash -n deploy/alt-linux/install-control-plane.sh
+bash -n deploy/alt-linux/install-control-plane-args.sh
 bash -n deploy/alt-linux/install-control-plane-lib.sh
 bash -n deploy/alt-linux/bootstrap/bootstrap.sh
 
@@ -476,5 +500,9 @@ lifecycle admission checks, stale pending-result suppression and the local
 [the OR-3P2 operator runbook](../../docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md).
 
 OR-3P2 is repository-verified but not installed on `192.168.100.17`.
-Complete and restore-test OR-3P3 before running the updated installer.
-Do not use reference workstation `192.168.101.111` for acceptance.
+OR-3P3 repository implementation is complete only after PR #24 final verification
+and merge. The live operational gate still requires installing the backup tool
+and successfully running `create`, `verify` and `rehearse` on the controller.
+OR-3P4 remains blocked until the exact successful backup ID is supplied to
+`install-control-plane.sh`. Do not use reference workstation
+`192.168.101.111` for acceptance.

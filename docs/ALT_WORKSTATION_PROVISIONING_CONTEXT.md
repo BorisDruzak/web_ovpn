@@ -31,6 +31,31 @@ OR-3P3 backup/restore is mandatory before live rollout. OR-3P2 machine archive a
 re-registration remains a separate workflow. See
 `docs/ALT_OR3P1_PILOT_ROLLOUT.md`.
 
+## OR-3P3 coordinated backup/restore — repository and operational state
+
+OR-3P3 provides an independent root-only backup utility, six-component atomic
+bundle publication, byte-bound verification and isolated rehearsal evidence,
+durable restore journals, same-filesystem staging, automatic rollback proof,
+manual-recovery fail-closed handling and an `alt-deploy-guard.service` boot
+boundary.
+
+Repository implementation is complete only after PR #24 final verification and
+merge. Repository completion does not mean the live gate is complete. On
+controller `192.168.100.17`, operators must install the dedicated backup tool and
+successfully run `create`, `verify` and `rehearse` for one exact backup ID.
+
+OR-3P4 is blocked until that ID is supplied explicitly:
+
+```bash
+sudo bash deploy/alt-linux/install-control-plane.sh \
+  --rollback-backup-id <backup-id>
+```
+
+The installer never selects the newest bundle. It uses a read-only
+`rehearse-status` check before mutation and preserves all backup-tool paths.
+Operational details are authoritative in
+`docs/ALT_OR3P3_COORDINATED_BACKUP_RESTORE.md`.
+
 ## 1. Purpose and verified result
 
 The control plane takes an ALT Workstation K 11.2 computer through:
@@ -94,7 +119,7 @@ Important runtime paths:
 /srv/alt-deploy/registration/
 ```
 
-Static deployment HTTP service: port `8087`.
+Allowlisted unprivileged deployment HTTP service: port `8087`; only `/bootstrap/*`, `/metadata/*` and `/health` are served.
 
 Registration API: port `8088`.
 
@@ -663,7 +688,8 @@ sudo -u altserver workstationctl --json jobs cleanup
 Install or update controller runtime only with explicit approval:
 
 ```bash
-sudo bash deploy/alt-linux/install-control-plane.sh
+sudo bash deploy/alt-linux/install-control-plane.sh \
+  --rollback-backup-id <backup-id>
 ```
 
 Do not rerun `provision start` for the assigned reference machine.
@@ -719,7 +745,10 @@ generation-aware re-registration, shared API lifecycle admission,
 pending-processor race protection and the register-only workstation helper.
 
 The implementation has not been installed on controller `192.168.100.17`.
-OR-3P3 backup/restore remains the mandatory next operational stage.
-Reference workstation `192.168.101.111` remains immutable.
+OR-3P3 is the mandatory next operational stage: repository completion requires
+PR #24 verification and merge, while the live gate additionally requires the
+dedicated installer plus successful create/verify/rehearse for one exact backup
+ID. OR-3P4 remains blocked until that ID is passed to the guarded control-plane
+installer. Reference workstation `192.168.101.111` remains immutable.
 
 Operational details: `docs/ALT_OR3P2_MACHINE_REGISTRY_LIFECYCLE.md`.

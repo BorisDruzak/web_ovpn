@@ -46,8 +46,9 @@ def test_cli_accepts_root_list_with_synthetic_settings(
     assert result.returncode == 0
     assert json.loads(result.stdout) == {
         "status": "ok",
-        "command": "list",
-        "backup_id": None,
+        "result": "backups_listed",
+        "count": 0,
+        "backups": [],
     }
 
 
@@ -94,3 +95,75 @@ def test_production_mode_rejects_identity_override() -> None:
 
     with pytest.raises(ValueError):
         BackupSettings.from_env(environment)
+
+
+def test_cli_writes_bounded_start_and_success_audit_records(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+
+    result = sandbox.run_cli("list", effective_uid=0)
+
+    assert result.returncode == 0
+    records = [
+        json.loads(line)
+        for line in sandbox.settings.log_file.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [record["event"] for record in records] == [
+        "command_started",
+        "command_completed",
+    ]
+    assert records[0]["operation_id"] == records[1]["operation_id"]
+    assert records[0]["command"] == "list"
+    assert records[0]["backup_id"] is None
+    assert records[0]["status"] == "started"
+    assert records[1]["status"] == "ok"
+    assert records[1]["result"] == "backups_listed"
+
+
+def test_cli_writes_terminal_failure_audit_record(tmp_path: Path) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = "backup-20260722T120000Z-11111111"
+
+    result = sandbox.run_cli("verify", backup_id, effective_uid=0)
+
+    payload = json.loads(result.stdout)
+    assert result.returncode != 0
+    records = [
+        json.loads(line)
+        for line in sandbox.settings.log_file.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    assert [record["event"] for record in records] == [
+        "command_started",
+        "command_failed",
+    ]
+    assert records[0]["operation_id"] == records[1]["operation_id"]
+    assert records[1]["backup_id"] == backup_id
+    assert records[1]["error_code"] == payload["error"]["code"]
+
+
+def test_install_check_creates_or_validates_fingerprint_key(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    key = sandbox.settings.fingerprint_key
+
+    result = sandbox.run_cli("install-check", effective_uid=0)
+
+    assert result.returncode == 0, result.stdout
+    assert json.loads(result.stdout) == {
+        "status": "ok",
+        "result": "backup_tool_ready",
+    }
+    assert key.is_file()
+    assert key.stat().st_size == 32
+    before = key.read_bytes()
+
+    repeated = sandbox.run_cli("install-check", effective_uid=0)
+
+    assert repeated.returncode == 0
+    assert key.read_bytes() == before

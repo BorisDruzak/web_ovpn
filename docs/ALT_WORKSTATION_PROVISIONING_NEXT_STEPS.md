@@ -30,8 +30,9 @@ Approved order:
 ```text
 OR-3P1 installer completeness and local readiness — implemented in PR #21
 OR-3P2 machine archive/removal preview and register-only re-registration
-OR-3P3 coordinated backup/restore runbook
-OR-3P4 controlled rollout on 192.168.100.17
+OR-3P3 coordinated backup/restore — repository completion in PR #24,
+then live install/create/verify/rehearse gate
+OR-3P4 controlled rollout on 192.168.100.17 with the exact rollback backup ID
 OR-3P5 second disposable VM acceptance
 OR-3P6 limited one-machine-at-a-time pilot
 OR-3A transactional installer and automatic rollback
@@ -287,19 +288,21 @@ blocked by OR-3P3 backup/restore and remains an explicitly approved operation.
 
 Required sequence:
 
-1. finish the clean repository gate;
-2. stop creating new jobs;
-3. inspect active jobs through `workstationctl`;
-4. back up `/var/lib/alt-deploy/jobs/` without printing private content;
-5. reconcile or resolve active legacy jobs before schema replacement;
-6. explicitly remove obsolete test job directories after approval;
-7. install with `install-control-plane.sh`;
-8. verify helper installation and executable mode;
+1. finish and merge the clean OR-3P3 repository gate in PR #24;
+2. stop creating new jobs and resolve any active or malformed state;
+3. install the independent backup utility with `install-backup-tool.sh`;
+4. create, verify and rehearse one coordinated six-component backup;
+5. record the exact successful backup ID;
+6. explicitly remove obsolete incompatible test jobs only after review;
+7. run `install-control-plane.sh --rollback-backup-id <backup-id>`;
+8. verify guard, helper installation, readiness and preserved state;
 9. create a new job only for a disposable, non-assigned machine;
-10. verify full `stage_history` and recovery behavior.
+10. verify full `stage_history`, recovery behavior and reboot persistence.
 
-Rollback must restore the controller package and job-store backup together.
-Never try to downgrade while keeping newly structured jobs under an old runtime.
+Rollback restores the matching controller runtime and state generation together.
+Never downgrade while keeping newly structured jobs under an old runtime. See
+`docs/ALT_OR3P3_COORDINATED_BACKUP_RESTORE.md` for emergency restore and manual
+recovery handling.
 
 ### 2.4 Failure injection tests
 
@@ -605,11 +608,11 @@ Recommended merge gate:
 
 Continue in this order:
 
-1. run the full clean Phase 2.3 repository gate;
-2. review the complete diff and commit history;
-3. obtain explicit approval for runtime rollout;
-4. back up and retire incompatible legacy test jobs;
-5. install and smoke-test Phase 2.3 on a disposable non-assigned machine;
+1. complete PR #24 documentation, whole-branch review and final CI;
+2. merge OR-3P3 only after explicit approval;
+3. execute the live backup-tool install/create/verify/rehearse gate;
+4. run OR-3P4 with the exact recorded rollback backup ID;
+5. smoke-test the guarded runtime on a disposable non-assigned machine;
 6. implement Phase 2.4 failure-injection coverage;
 7. provision a second clean disposable machine for Phase 3.1 acceptance;
 8. verify partial-state idempotency and conflict safety;
@@ -639,12 +642,13 @@ The system is ready for a controlled multi-machine rollout only when:
 ```text
 OR-3P1 merged: installer completeness and local readiness
 OR-3P2 repository-verified: archive/removal and register-only re-registration
-OR-3P3 next mandatory step: controller backup/restore and restore test
-OR-3P4 blocked: controlled rollout on 192.168.100.17
+OR-3P3 repository gate: complete only after PR #24 verification and merge
+OR-3P3 live gate: install backup tool, create, verify and rehearse exact bundle
+OR-3P4 blocked: requires that exact backup ID on 192.168.100.17
 OR-3P5 blocked: second disposable VM acceptance
 OR-3P6 blocked: limited pilot
 ```
 
-Do not install OR-3P2 before OR-3P3. Do not use `192.168.101.111` for
+Do not install OR-3P2 before the OR-3P3 live gate. Do not use `192.168.101.111` for
 destructive or repeat acceptance. The next target must be new, disposable
 and unassigned.

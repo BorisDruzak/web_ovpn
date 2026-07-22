@@ -1,7 +1,9 @@
 # ALT OR-3P1 Pilot Controller Rollout
 
-Status: repository implementation complete; live rollout is blocked until the
-separate OR-3P3 backup/restore procedure is approved and executed.
+Status: OR-3P1 repository implementation is complete. OR-3P3 repository
+implementation is complete only after PR #24 final verification and merge. Live
+rollout remains blocked until the OR-3P3 operational gate is executed on
+`192.168.100.17` with one exact rehearsed backup ID.
 
 This runbook covers only the current pilot layout on controller
 `192.168.100.17`. It does not provide transactional releases or automatic
@@ -67,32 +69,38 @@ The SSH private key must remain `altserver:altserver` mode `0600`.
 
 ## Mandatory backup gate
 
-Do not run the installer on the live controller until OR-3P3 has created and
-verified a coordinated backup of:
+Follow `docs/ALT_OR3P3_COORDINATED_BACKUP_RESTORE.md`. On the live controller:
 
-```text
-/opt/alt-deploy-control
-/opt/alt-deploy-api
-/usr/local/sbin/workstationctl
-/usr/local/libexec/alt-provision-worker
-/usr/local/libexec/alt-job-stage
-/etc/systemd/system/alt-deploy-*
-/home/altserver/ansible excluding group_vars/vault.yml
-/var/lib/alt-deploy/jobs
-/var/lib/alt-deploy/assignments
-/srv/alt-deploy/registration
+```bash
+sudo bash deploy/alt-linux/install-backup-tool.sh
+
+create_json=$(sudo /usr/local/sbin/alt-deploy-backup create)
+backup_id=$(
+  printf '%s' "$create_json" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+if payload.get("status") != "ok" or payload.get("result") != "backup_created":
+    raise SystemExit(1)
+print(payload["backup_id"])
+'
+)
+sudo /usr/local/sbin/alt-deploy-backup verify "$backup_id"
+sudo /usr/local/sbin/alt-deploy-backup rehearse "$backup_id"
+sudo /usr/local/sbin/alt-deploy-backup rehearse-status "$backup_id"
 ```
 
-Vault, its password file and SSH private identity remain in place and are not
-duplicated by the OR-3P1 installer. The OR-3P3 procedure must define their
-verification and the coordinated restore of package files and job state.
+Record the exact `backup_id`. The bundle contains all six compatibility
+components; Vault, its password and the SSH private key remain in place and are
+verified by identity rather than archived. An isolated rehearsal is mandatory.
+A real restore is not performed merely to approve OR-3P3 before OR-3P4.
 
 ## Installation
 
 From the reviewed repository checkout:
 
 ```bash
-sudo bash deploy/alt-linux/install-control-plane.sh
+sudo bash deploy/alt-linux/install-control-plane.sh \
+  --rollback-backup-id "$backup_id"
 ```
 
 Before the first runtime mutation the installer:
