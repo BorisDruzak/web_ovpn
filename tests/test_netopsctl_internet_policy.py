@@ -70,3 +70,25 @@ def test_asset_policy_rejects_unknown_desired_state_and_provisional_identity(tmp
             )
     finally:
         netops.close()
+
+
+def test_approved_plan_applies_idempotently_and_verifies(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan, verify_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        def ensure_address_list_entry(self, target, address, plan_key):
+            assert (target, address, plan_key) == ("router-a", "192.0.2.10", "plan-apply")
+            return {"status": "added"}
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(conn, plan_key="plan-apply", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="c" * 64, precheck={}, rollback={})
+        add_plan_step(conn, "plan-apply", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10"})
+        transition_plan(conn, "plan-apply", "validated")
+        transition_plan(conn, "plan-apply", "approved")
+        assert apply_plan(conn, "plan-apply", Adapter())["status"] == "applied"
+        assert apply_plan(conn, "plan-apply", Adapter())["status"] == "already_applied"
+        assert verify_plan(conn, "plan-apply")["status"] == "verified"
+    finally:
+        conn.close()
