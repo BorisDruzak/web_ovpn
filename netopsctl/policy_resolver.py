@@ -38,8 +38,8 @@ def resolve_asset_targets(
     source_sla_seconds: int,
     anchor_check: Callable[[str], bool],
 ) -> list[dict[str, str]]:
-    asset = conn.execute("SELECT id, provisional FROM assets WHERE asset_key = ?", (asset_key,)).fetchone()
-    if asset is None or bool(asset["provisional"]):
+    asset = conn.execute("SELECT id, provisional, status FROM assets WHERE asset_key = ?", (asset_key,)).fetchone()
+    if asset is None or bool(asset["provisional"]) or str(asset["status"] or "").lower() == "retired":
         raise ValueError("asset is absent or provisional")
     collision = conn.execute(
         """SELECT 1 FROM runtime_identity_findings
