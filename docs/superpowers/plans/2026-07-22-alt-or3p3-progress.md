@@ -1,10 +1,11 @@
 # ALT OR-3P3 Execution Ledger
 
-- Branch: `feat/alt-or3p3-backup-restore-20260722`
+- Active branch: `feat/alt-or3p3-completion-20260722`
+- Merged checkpoint: PR `#23`, merge commit `d73de9387e0d95d27f7fdb7846f205426514c59b`
+- Completion pull request: `#24` (draft; do not merge without explicit confirmation)
 - Specification: `docs/superpowers/specs/2026-07-22-alt-or3p3-coordinated-backup-restore-design.md`
 - Plan: `docs/superpowers/plans/2026-07-22-alt-or3p3-coordinated-backup-restore.md`
 - Amendment: `docs/superpowers/plans/2026-07-22-alt-or3p3-coordinated-backup-restore-amendment.md`
-- Pull request: `#23` (draft; do not merge without explicit confirmation)
 
 ## Tasks
 
@@ -14,7 +15,7 @@
 - Task 4: complete (`246f781..f07685b`); RED had nine missing maintenance/quiescence-interface failures, exact unit restoration and all blockers passed; review clean.
 - Task 5: complete (`141f7a6..c7f116b`); RED confirmed by missing component/manifest modules, exact component order and strict manifest/evidence parsing passed; canonical synthetic-to-controller path finding fixed; review clean.
 - Task 6: complete (`20fc7df..409b216`); RED had ten archive-interface failures, capture/inspection/rehearsal extraction passed; regular-file inventory, subprocess reaping and failed-publication cleanup findings fixed; temporary workflow removed; review clean.
-- Task 7: pending.
+- Task 7: complete (`d73de93..2f0a606`); coordinated create, lifecycle-lock capture, atomic publication, systemd recovery and CLI JSON passed both full-regression workflows; frozen sandbox and standard `/var/log` parent findings fixed; review clean.
 - Task 8: pending.
 - Task 9: pending.
 - Task 10: pending.
