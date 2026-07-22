@@ -144,3 +144,26 @@ def test_cli_writes_terminal_failure_audit_record(tmp_path: Path) -> None:
     assert records[0]["operation_id"] == records[1]["operation_id"]
     assert records[1]["backup_id"] == backup_id
     assert records[1]["error_code"] == payload["error"]["code"]
+
+
+def test_install_check_creates_or_validates_fingerprint_key(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    key = sandbox.settings.fingerprint_key
+
+    result = sandbox.run_cli("install-check", effective_uid=0)
+
+    assert result.returncode == 0, result.stdout
+    assert json.loads(result.stdout) == {
+        "status": "ok",
+        "result": "backup_tool_ready",
+    }
+    assert key.is_file()
+    assert key.stat().st_size == 32
+    before = key.read_bytes()
+
+    repeated = sandbox.run_cli("install-check", effective_uid=0)
+
+    assert repeated.returncode == 0
+    assert key.read_bytes() == before

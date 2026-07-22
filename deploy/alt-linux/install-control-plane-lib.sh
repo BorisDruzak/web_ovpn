@@ -38,6 +38,104 @@ installer_python() {
     fi
 }
 
+rollback_backup_id_valid() {
+    local backup_id=$1
+    [[ ${backup_id} =~ ^backup-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]]
+}
+
+installed_backup_tool() {
+    local root_prefix=$1
+    install_destination "${root_prefix}" /usr/local/sbin/alt-deploy-backup
+}
+
+run_installed_backup_tool() {
+    local root_prefix=$1
+    shift
+    local executable
+    executable=$(installed_backup_tool "${root_prefix}")
+    if [[ ! -f "${executable}" || -L "${executable}" || ! -x "${executable}" ]]; then
+        echo "Installed OR-3P3 backup utility is unavailable" >&2
+        return 1
+    fi
+    local expected_uid=0
+    local expected_gid=0
+    if [[ -n "${root_prefix}" ]]; then
+        expected_uid=${ALT_DEPLOY_BACKUP_EXPECTED_ROOT_UID:?}
+        expected_gid=${ALT_DEPLOY_BACKUP_EXPECTED_ROOT_GID:?}
+    fi
+    local metadata
+    metadata=$(stat -c '%u %g %a' "${executable}") || {
+        echo "Installed OR-3P3 backup utility metadata is unavailable" >&2
+        return 1
+    }
+    if [[ "${metadata}" != "${expected_uid} ${expected_gid} 750" ]]; then
+        echo "Installed OR-3P3 backup utility metadata is unsafe" >&2
+        return 1
+    fi
+    "${executable}" "$@"
+}
+
+validate_rollback_backup() {
+    local root_prefix=$1
+    local backup_id=$2
+    if [[ -z "${backup_id}" ]]; then
+        echo "An explicit rollback backup ID is required" >&2
+        return 1
+    fi
+    if ! rollback_backup_id_valid "${backup_id}"; then
+        echo "Invalid rollback backup ID" >&2
+        return 1
+    fi
+    local response
+    if ! response=$(run_installed_backup_tool \
+        "${root_prefix}" rehearse-status "${backup_id}"); then
+        echo "Rollback backup is not currently verified and rehearsed" >&2
+        return 1
+    fi
+    if ! printf '%s' "${response}" | python3 -c '
+import json
+import re
+import sys
+backup_id = sys.argv[1]
+payload = json.load(sys.stdin)
+if not isinstance(payload, dict) or set(payload) != {
+    "status",
+    "result",
+    "backup_id",
+    "manifest_sha256",
+    "verification_sha256",
+}:
+    raise SystemExit(1)
+if payload["status"] != "ok":
+    raise SystemExit(1)
+if payload["result"] != "backup_rehearsed":
+    raise SystemExit(1)
+if payload["backup_id"] != backup_id:
+    raise SystemExit(1)
+for key in ("manifest_sha256", "verification_sha256"):
+    value = payload[key]
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise SystemExit(1)
+' "${backup_id}"; then
+        echo "Rollback backup eligibility response is invalid" >&2
+        return 1
+    fi
+}
+
+stop_control_plane_after_failed_rollout() {
+    stop_if_loaded alt-deploy-process.path || true
+    stop_if_loaded alt-deploy-register.service || true
+    stop_if_loaded alt-deploy-http.service || true
+}
+
+revoke_failed_rollout() {
+    local root_prefix=$1
+    local backup_id=$2
+    run_installed_backup_tool \
+        "${root_prefix}" rollout-revoke "${backup_id}" >/dev/null || true
+    stop_control_plane_after_failed_rollout
+}
+
 validate_source_layout() {
     require_directory "${ALT_ROOT}/control/alt_deploy"
     require_directory "${ALT_ROOT}/ansible/playbooks"
@@ -60,6 +158,7 @@ validate_source_layout() {
         "${ALT_ROOT}/bootstrap/bootstrap.sh"
         "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
         "${ALT_ROOT}/install-control-plane.sh"
+        "${ALT_ROOT}/install-control-plane-args.sh"
         "${ALT_ROOT}/install-control-plane-lib.sh"
     )
 
@@ -142,6 +241,7 @@ validate_external_prerequisites() {
 
     local required_files=(
         "${private_key}"
+        "$(install_destination "${root_prefix}" /etc/systemd/system/alt-deploy-guard.service)"
         "$(install_destination "${root_prefix}" /srv/alt-deploy/bootstrap/ansible_authorized_keys)"
         "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata/autoinstall.scm)"
         "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata/vm-profile.scm)"
@@ -198,6 +298,7 @@ run_repository_verification() {
         "${ALT_ROOT}/control/alt-job-stage"
 
     bash -n "${ALT_ROOT}/install-control-plane.sh"
+    bash -n "${ALT_ROOT}/install-control-plane-args.sh"
     bash -n "${ALT_ROOT}/install-control-plane-lib.sh"
     bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
     bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
@@ -210,6 +311,7 @@ run_repository_verification() {
 
 install_control_plane_prechecks() {
     local root_prefix=$1
+    local rollback_backup_id=${2:-}
     local required_commands=(
         python3
         ansible-playbook
@@ -237,6 +339,7 @@ install_control_plane_prechecks() {
         return 1
     fi
 
+    validate_rollback_backup "${root_prefix}" "${rollback_backup_id}"
     validate_source_layout
     run_repository_verification
     validate_active_jobs "${root_prefix}"
@@ -467,16 +570,68 @@ run_post_maintenance_step() {
 
 install_control_plane_main() {
     local root_prefix=$1
+    local rollback_backup_id=${2:-}
 
-    install_control_plane_prechecks "${root_prefix}"
-    run_post_maintenance_step maintenance enter_control_plane_maintenance
-    run_post_maintenance_step controller_package install_controller_package "${root_prefix}"
-    run_post_maintenance_step private_state ensure_private_state_directories "${root_prefix}"
-    run_post_maintenance_step ansible_project install_ansible_project "${root_prefix}"
-    run_post_maintenance_step registration_runtime install_registration_runtime "${root_prefix}"
-    run_post_maintenance_step systemd_units install_systemd_units "${root_prefix}"
-    run_post_maintenance_step activation activate_control_plane
-    run_post_maintenance_step readiness run_installed_readiness "${root_prefix}"
+    install_control_plane_prechecks "${root_prefix}" "${rollback_backup_id}"
+    if ! run_installed_backup_tool \
+        "${root_prefix}" \
+        rollout-begin \
+        "${rollback_backup_id}" >/dev/null; then
+        echo "Unable to start the guarded OR-3P4 rollout" >&2
+        return 1
+    fi
+
+    if ! run_post_maintenance_step \
+        maintenance \
+        enter_control_plane_maintenance \
+        || ! run_post_maintenance_step \
+            controller_package \
+            install_controller_package \
+            "${root_prefix}" \
+        || ! run_post_maintenance_step \
+            private_state \
+            ensure_private_state_directories \
+            "${root_prefix}" \
+        || ! run_post_maintenance_step \
+            ansible_project \
+            install_ansible_project \
+            "${root_prefix}" \
+        || ! run_post_maintenance_step \
+            registration_runtime \
+            install_registration_runtime \
+            "${root_prefix}" \
+        || ! run_post_maintenance_step \
+            systemd_units \
+            install_systemd_units \
+            "${root_prefix}"; then
+        revoke_failed_rollout "${root_prefix}" "${rollback_backup_id}"
+        return 1
+    fi
+
+    if ! run_installed_backup_tool \
+        "${root_prefix}" \
+        rollout-authorize \
+        "${rollback_backup_id}" >/dev/null; then
+        echo "Unable to authorize the guarded OR-3P4 activation" >&2
+        revoke_failed_rollout "${root_prefix}" "${rollback_backup_id}"
+        return 1
+    fi
+    if ! run_post_maintenance_step activation activate_control_plane \
+        || ! run_post_maintenance_step \
+            readiness \
+            run_installed_readiness \
+            "${root_prefix}"; then
+        revoke_failed_rollout "${root_prefix}" "${rollback_backup_id}"
+        return 1
+    fi
+    if ! run_installed_backup_tool \
+        "${root_prefix}" \
+        rollout-complete \
+        "${rollback_backup_id}" >/dev/null; then
+        echo "Unable to complete guarded OR-3P4 rollout state" >&2
+        revoke_failed_rollout "${root_prefix}" "${rollback_backup_id}"
+        return 1
+    fi
 
     echo "ALT deployment control plane installed successfully"
 }

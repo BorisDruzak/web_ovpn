@@ -13,10 +13,11 @@ from .guard import GuardState
 from .rehearsal import RehearsalService
 from .repository import BackupRepository
 from .restore import RestoreService
+from .secrets import FingerprintKeyStore
 from .settings import BackupSettings
 
 
-COMMANDS_WITHOUT_ID = {"create", "list", "guard"}
+COMMANDS_WITHOUT_ID = {"create", "list", "guard", "install-check"}
 COMMANDS_WITH_ID = {
     "verify",
     "rehearse",
@@ -83,6 +84,9 @@ def _dispatch(
     backup_id: str | None,
     settings: BackupSettings,
 ) -> dict[str, object]:
+    if command == "install-check":
+        FingerprintKeyStore(settings).ensure()
+        return {"status": "ok", "result": "backup_tool_ready"}
     guard = GuardState(settings)
     if command == "guard":
         guard.assert_control_plane_allowed()
@@ -228,6 +232,10 @@ def main(
             )
         command, backup_id = _parse(args)
         settings = _settings(env)
+        if command == "install-check":
+            payload = _dispatch(command, backup_id, settings)
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
         audit = AuditLog(
             settings,
             operation_id=f"op-{secrets.token_hex(8)}",
