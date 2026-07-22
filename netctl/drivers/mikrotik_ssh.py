@@ -115,11 +115,17 @@ class MikroTikSshDriver(NetworkDriver):
 
     def collect(self, include_connections: bool = False) -> dict[str, Any]:
         raw: dict[str, Any] = {}
+        failed_path_fact_keys: set[str] = set()
         for key, path in self.COLLECT_PATHS.items():
-            raw[key] = self._run_print(
-                path,
-                terse=key not in {"system_resource", "identity", "system_package_update", "routerboard"},
-            )
+            try:
+                raw[key] = self._run_print(
+                    path,
+                    terse=key not in {"system_resource", "identity", "system_package_update", "routerboard"},
+                )
+            except Exception:
+                if key not in MikroTikApiDriver.PATH_FACT_KEYS:
+                    raise
+                failed_path_fact_keys.add(key)
         snapshot = {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),
@@ -141,7 +147,7 @@ class MikroTikSshDriver(NetworkDriver):
             "router_routing_rules": MikroTikApiDriver.normalize_routing_rule_rows(raw.get("routing_rules", [])),
             "ipsec_policies": MikroTikApiDriver.normalize_path_ipsec_policy_rows(raw.get("ipsec_policies", [])),
         }
-        snapshot["path_fact_outcomes"] = MikroTikApiDriver.path_fact_outcomes(snapshot)
+        snapshot["path_fact_outcomes"] = MikroTikApiDriver.path_fact_outcomes(snapshot, failed_keys=failed_path_fact_keys)
         return snapshot
 
     def ipsec_status(self) -> dict[str, Any]:

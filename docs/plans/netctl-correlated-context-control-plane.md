@@ -1649,7 +1649,7 @@ git commit -m "feat: collect RouterOS path facts"
 - Consumes one asset context plus current RouterOS path facts.
 - Produces `PathExplanation` without device I/O.
 
-- [ ] **Step 1: Write failing evaluator tests**
+- [x] **Step 1: Write failing evaluator tests**
 
 Use these public models:
 
@@ -1698,13 +1698,13 @@ stale path facts -> unknown;
 reverse-path analysis absent -> forward-only flag, not a false verified bidirectional result.
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_path_engine.py -q
 ```
 
-- [ ] **Step 3: Implement pure stages**
+- [x] **Step 3: Implement pure stages**
 
 ```python
 def select_source_context(...): ...
@@ -1718,7 +1718,7 @@ def explain_path(...): ...
 
 All functions are deterministic and accept normalized records. No function opens SQLite or contacts a device.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_path_engine.py -q

@@ -33,6 +33,46 @@ class PathExplanation:
     evidence: tuple[dict[str, Any], ...]
 
 
+def select_source_context(source_ips: tuple[str, ...]) -> tuple[str | None, str | None]:
+    """Return the sole current source address, or a conservative ambiguity reason."""
+    if len(source_ips) != 1:
+        return None, "ambiguous_source_ips"
+    try:
+        ipaddress.ip_address(source_ips[0])
+    except ValueError:
+        return None, "invalid_source_ip"
+    return source_ips[0], None
+
+
+def _matches_cidr(value: str, cidr: object) -> bool | None:
+    if not cidr:
+        return True
+    try:
+        return ipaddress.ip_address(value) in ipaddress.ip_network(str(cidr), strict=False)
+    except ValueError:
+        return None
+
+
+def _rule_value(rule: dict[str, Any], canonical: str, normalized: str) -> object:
+    return rule.get(canonical) or rule.get(normalized) or ""
+
+
+def _matches_address_list(entries: Iterable[dict[str, Any]], list_name: object, address: str) -> bool | None:
+    if not list_name:
+        return True
+    found = False
+    for entry in entries:
+        if entry.get("disabled") or str(entry.get("list") or "") != str(list_name):
+            continue
+        found = True
+        matched = _matches_cidr(address, entry.get("address"))
+        if matched is None:
+            return None
+        if matched:
+            return True
+    return False if found else None
+
+
 def select_route(routes: Iterable[dict[str, Any]], destination_ip: str, routing_table: str) -> dict[str, Any] | None:
     destination = ipaddress.ip_address(destination_ip)
     matches: list[tuple[int, dict[str, Any]]] = []
@@ -65,22 +105,69 @@ def select_routing_table(rules: Iterable[dict[str, Any]], source_ip: str) -> str
     return "main"
 
 
-def evaluate_filter(rules: Iterable[dict[str, Any]], request: PathRequest) -> tuple[PathVerdict | None, str | None]:
+def evaluate_filter(
+    rules: Iterable[dict[str, Any]],
+    request: PathRequest,
+    *,
+    source_ip: str,
+    address_lists: Iterable[dict[str, Any]] = (),
+) -> tuple[PathVerdict | None, str | None]:
     for rule in rules:
         if rule.get("disabled"):
             continue
-        if rule.get("unsupported_matchers"):
-            return PathVerdict.UNKNOWN, "unsupported_filter_matcher"
+        chain = str(rule.get("chain") or "forward").lower()
+        if chain != "forward":
+            continue
+        source_match = _matches_cidr(source_ip, _rule_value(rule, "src_cidr", "src_address"))
+        destination_match = _matches_cidr(request.destination_ip, _rule_value(rule, "dst_cidr", "dst_address"))
+        destination_list_match = _matches_address_list(address_lists, rule.get("dst_address_list"), request.destination_ip)
+        source_list_match = _matches_address_list(address_lists, rule.get("src_address_list"), source_ip)
+        if False in (source_match, destination_match, destination_list_match, source_list_match):
+            continue
+        if None in (source_match, destination_match, destination_list_match, source_list_match):
+            return PathVerdict.UNKNOWN, "unresolved_filter_address_matcher"
         if rule.get("protocol") and str(rule["protocol"]).lower() != request.protocol.lower():
             continue
-        if rule.get("dst_port") and request.destination_port is not None and str(rule["dst_port"]) != str(request.destination_port):
+        if rule.get("dst_port") and request.destination_port is None:
+            return PathVerdict.UNKNOWN, "missing_destination_port"
+        if rule.get("dst_port") and str(rule["dst_port"]) != str(request.destination_port):
             continue
+        if any(rule.get(field) for field in ("in_interface", "out_interface", "routing_mark", "connection_state")):
+            return PathVerdict.UNKNOWN, "unresolved_filter_matcher"
+        if rule.get("unsupported_matchers"):
+            return PathVerdict.UNKNOWN, "unsupported_filter_matcher"
         action = str(rule.get("action") or "").lower()
         if action in {"drop", "reject"}:
             return PathVerdict.BLOCKED, None
         if action == "accept":
             return PathVerdict.ALLOWED, None
+        if action:
+            return PathVerdict.UNKNOWN, "unsupported_filter_action"
     return None, None
+
+
+def explain_nat(
+    rules: Iterable[dict[str, Any]],
+    request: PathRequest,
+    *,
+    source_ip: str,
+) -> dict[str, Any] | None:
+    """Return the first deterministically matching NAT rule without rewriting the flow."""
+    for rule in rules:
+        if rule.get("disabled"):
+            continue
+        source_match = _matches_cidr(source_ip, _rule_value(rule, "src_cidr", "src_address"))
+        destination_match = _matches_cidr(request.destination_ip, _rule_value(rule, "dst_cidr", "dst_address"))
+        if source_match is not True or destination_match is not True:
+            continue
+        if rule.get("protocol") and str(rule["protocol"]).lower() != request.protocol.lower():
+            continue
+        if rule.get("dst_port") and str(rule["dst_port"]) != str(request.destination_port):
+            continue
+        action = str(rule.get("action") or "").lower()
+        if action in {"src-nat", "masquerade", "dst-nat", "netmap", "redirect"}:
+            return {"stage": "nat", "rule": rule, "translation_verified": False}
+    return None
 
 
 def match_ipsec_policy(policies: Iterable[dict[str, Any]], source_ip: str, destination_ip: str) -> dict[str, Any] | None:
@@ -106,26 +193,35 @@ def explain_path(
     routing_table: str = "main",
     routing_rules: Iterable[dict[str, Any]] = (),
     ipsec_policies: Iterable[dict[str, Any]] = (),
+    nat_rules: Iterable[dict[str, Any]] = (),
+    address_lists: Iterable[dict[str, Any]] = (),
     facts_fresh: bool = True,
 ) -> PathExplanation:
+    evidence = ({"scope": "forward_only", "reverse_path_analyzed": False},)
     if not facts_fresh:
-        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "", routing_table, None, (), ("stale_path_facts",), ())
-    if len(source_ips) != 1:
-        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "", routing_table, None, (), ("ambiguous_source_ips",), ())
-    if source_ips:
-        routing_table = select_routing_table(routing_rules, source_ips[0]) if tuple(routing_rules) else routing_table
-    route = select_route(routes, request.destination_ip, routing_table)
+        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "routeros_path_facts", routing_table, None, (), ("stale_path_facts",), evidence)
+    source_ip, source_reason = select_source_context(source_ips)
+    if source_reason:
+        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "routeros_path_facts", routing_table, None, (), (source_reason,), evidence)
+    routing_rule_records = tuple(routing_rules)
+    route_records = tuple(routes)
+    filter_records = tuple(filter_rules)
+    address_list_records = tuple(address_lists)
+    routing_table = select_routing_table(routing_rule_records, source_ip) if routing_rule_records else routing_table
+    route = select_route(route_records, request.destination_ip, routing_table)
     stages: list[dict[str, Any]] = []
     if route is None:
-        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "", routing_table, None, (), ("no_matching_route",), ())
+        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "routeros_path_facts", routing_table, None, (), ("no_matching_route",), evidence)
     stages.append({"stage": "route", "route": route})
-    if str(route.get("type") or "").lower() in {"blackhole", "unreachable", "prohibit"}:
-        return PathExplanation(PathVerdict.BLOCKED, request.asset_key, source_ips, "", routing_table, route, tuple(stages), (), ())
-    if source_ips and (policy := match_ipsec_policy(ipsec_policies, source_ips[0], request.destination_ip)) is not None:
+    if str(route.get("route_type") or route.get("type") or "").lower() in {"blackhole", "unreachable", "prohibit"}:
+        return PathExplanation(PathVerdict.BLOCKED, request.asset_key, source_ips, "routeros_path_facts", routing_table, route, tuple(stages), (), evidence)
+    if (policy := match_ipsec_policy(ipsec_policies, source_ip, request.destination_ip)) is not None:
         stages.append({"stage": "ipsec", "policy": policy})
-    verdict, reason = evaluate_filter(filter_rules, request)
+    verdict, reason = evaluate_filter(filter_records, request, source_ip=source_ip, address_lists=address_list_records)
     if reason:
-        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "", routing_table, route, tuple(stages), (reason,), ())
+        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "routeros_path_facts", routing_table, route, tuple(stages), (reason,), evidence)
+    if (nat_stage := explain_nat(nat_rules, request, source_ip=source_ip)) is not None:
+        stages.append(nat_stage)
     if verdict is None:
         verdict = PathVerdict.ALLOWED
-    return PathExplanation(verdict, request.asset_key, source_ips, "", routing_table, route, tuple(stages), (), ())
+    return PathExplanation(verdict, request.asset_key, source_ips, "routeros_path_facts", routing_table, route, tuple(stages), (), evidence)

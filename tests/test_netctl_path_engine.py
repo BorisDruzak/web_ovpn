@@ -129,3 +129,59 @@ def test_path_engine_blocks_ordered_matching_filter_drop() -> None:
     )
 
     assert result.verdict is PathVerdict.BLOCKED
+
+
+def test_path_engine_ignores_unsupported_rule_when_known_matchers_do_not_match() -> None:
+    from netctl.path_engine import PathRequest, PathVerdict, explain_path
+
+    result = explain_path(
+        PathRequest("mac:AA:BB:CC:DD:EE:FF", "198.51.100.25", "tcp", 443),
+        source_ips=("192.0.2.10",),
+        routes=({"routing_table": "main", "dst_address": "0.0.0.0/0", "active": True},),
+        filter_rules=(
+            {"action": "drop", "protocol": "udp", "unsupported_matchers": ["layer7"]},
+            {"action": "drop", "protocol": "tcp", "dst_port": "443"},
+        ),
+    )
+
+    assert result.verdict is PathVerdict.BLOCKED
+
+
+def test_path_engine_matches_destination_address_list_without_blocking_internal_destination() -> None:
+    from netctl.path_engine import PathRequest, PathVerdict, explain_path
+
+    shared = {
+        "source_ips": ("192.0.2.10",),
+        "routes": ({"routing_table": "main", "dst_address": "0.0.0.0/0", "active": True},),
+        "filter_rules": ({"action": "drop", "dst_address_list": "wan-deny"},),
+        "address_lists": ({"list": "wan-deny", "address": "198.51.100.0/24"},),
+    }
+
+    internet = explain_path(PathRequest("mac:AA:BB:CC:DD:EE:FF", "198.51.100.25", "tcp", 443), **shared)
+    internal = explain_path(PathRequest("mac:AA:BB:CC:DD:EE:FF", "10.0.0.25", "tcp", 443), **shared)
+
+    assert internet.verdict is PathVerdict.BLOCKED
+    assert internal.verdict is PathVerdict.ALLOWED
+
+
+def test_path_engine_records_nat_as_a_forward_only_stage() -> None:
+    from netctl.path_engine import PathRequest, explain_path
+
+    result = explain_path(
+        PathRequest("mac:AA:BB:CC:DD:EE:FF", "198.51.100.25", "tcp", 443),
+        source_ips=("192.0.2.10",),
+        routes=({"routing_table": "main", "dst_address": "0.0.0.0/0", "active": True},),
+        filter_rules=(),
+        nat_rules=({"action": "dst-nat", "dst_address": "198.51.100.0/24", "protocol": "tcp", "dst_port": "443"},),
+    )
+
+    assert result.stages[-1]["stage"] == "nat"
+    assert result.evidence == ({"scope": "forward_only", "reverse_path_analyzed": False},)
+
+
+def test_select_source_context_requires_exactly_one_current_address() -> None:
+    from netctl.path_engine import select_source_context
+
+    assert select_source_context(("192.0.2.10",)) == ("192.0.2.10", None)
+    assert select_source_context(()) == (None, "ambiguous_source_ips")
+    assert select_source_context(("192.0.2.10", "192.0.3.10")) == (None, "ambiguous_source_ips")

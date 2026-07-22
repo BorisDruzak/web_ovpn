@@ -1649,6 +1649,10 @@ def _migration_12(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_13(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE network_routes ADD COLUMN route_type TEXT NOT NULL DEFAULT 'unicast'")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1662,6 +1666,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (10, _migration_10),
     (11, _migration_11),
     (12, _migration_12),
+    (13, _migration_13),
 )
 
 

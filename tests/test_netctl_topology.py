@@ -59,7 +59,7 @@ def test_migration_9_creates_correlation_schema(
     try:
         migrations.apply_migrations(conn)
 
-        assert _migration_versions(conn) == list(range(1, 13))
+        assert _migration_versions(conn) == list(range(1, 14))
         assert CORRELATION_TABLES <= _table_names(conn)
         assert {
             row[1]

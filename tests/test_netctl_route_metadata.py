@@ -18,16 +18,17 @@ def test_route_metadata_survives_driver_normalization_and_sqlite_storage(tmp_pat
         ).lastrowid
         route = MikroTikApiDriver.normalize_route_rows([{
             "dst-address": "192.0.2.0/24", "gateway": "10.0.0.1", "distance": "1", "active": "true",
-            "routing-table": "vpn", "scope": "30", "target-scope": "10", "immediate-gw": "10.0.0.1%ether1",
+            "routing-table": "vpn", "scope": "30", "target-scope": "10", "immediate-gw": "10.0.0.1%ether1", "type": "blackhole",
         }])[0]
         assert route["routing_table"] == "vpn"
         assert route["scope"] == 30
         assert route["target_scope"] == 10
         assert route["immediate_gateway"] == "10.0.0.1%ether1"
+        assert route["route_type"] == "blackhole"
         save_collection(conn, {"id": source_id, "name": "router"}, {"routes": [route]}, now)
         stored = conn.execute(
-            "SELECT routing_table, scope, target_scope, immediate_gateway FROM network_routes"
+            "SELECT routing_table, scope, target_scope, immediate_gateway, route_type FROM network_routes"
         ).fetchone()
-        assert tuple(stored) == ("vpn", 30, 10, "10.0.0.1%ether1")
+        assert tuple(stored) == ("vpn", 30, 10, "10.0.0.1%ether1", "blackhole")
     finally:
         conn.close()

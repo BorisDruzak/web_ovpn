@@ -127,6 +127,22 @@ class RouterOSApiClient:
 
 
 class MikroTikApiDriver(NetworkDriver):
+    PATH_FACT_KEYS = frozenset({
+        "routing_rules",
+        "firewall_address_lists",
+        "firewall_filter_rules",
+        "firewall_nat_rules",
+        "firewall_mangle_rules",
+        "ipsec_policies",
+    })
+    PATH_FACT_OUTCOME_KEYS = {
+        "routing_rules": "router_routing_rules",
+        "firewall_address_lists": "firewall_address_lists",
+        "firewall_filter_rules": "firewall_filter_rules",
+        "firewall_nat_rules": "firewall_nat_rules",
+        "firewall_mangle_rules": "firewall_mangle_rules",
+        "ipsec_policies": "ipsec_policies",
+    }
     COLLECT_PATHS: dict[str, tuple[str, list[str]]] = {
         "system_resource": ("/system/resource/print", ["version", "board-name", "cpu-load", "free-memory", "uptime"]),
         "identity": ("/system/identity/print", ["name"]),
@@ -136,7 +152,7 @@ class MikroTikApiDriver(NetworkDriver):
         ),
         "addresses": ("/ip/address/print", ["address", "network", "interface", "disabled", "dynamic", "comment"]),
         "routing_rules": ("/routing/rule/print", [".id", "action", "disabled", "src-address", "dst-address", "routing-mark", "table", "comment", "priority"]),
-        "routes": ("/ip/route/print", ["dst-address", "gateway", "distance", "active", "disabled", "dynamic", "comment", "routing-table", "scope", "target-scope", "immediate-gw"]),
+        "routes": ("/ip/route/print", ["dst-address", "gateway", "distance", "active", "disabled", "dynamic", "comment", "routing-table", "scope", "target-scope", "immediate-gw", "type"]),
         "arp": ("/ip/arp/print", ["address", "mac-address", "interface", "published", "complete", "dynamic", "comment"]),
         "dhcp_leases": (
             "/ip/dhcp-server/lease/print",
@@ -283,6 +299,7 @@ class MikroTikApiDriver(NetworkDriver):
                 "scope": parse_int(row.get("scope")),
                 "target_scope": parse_int(row.get("target-scope")),
                 "immediate_gateway": row.get("immediate-gw") or "",
+                "route_type": row.get("type") or "unicast",
             }
             for row in rows
         ]
@@ -391,11 +408,12 @@ class MikroTikApiDriver(NetworkDriver):
         ]
 
     @staticmethod
-    def path_fact_outcomes(snapshot: dict[str, Any]) -> dict[str, str]:
+    def path_fact_outcomes(snapshot: dict[str, Any], *, failed_keys: Iterable[str] = ()) -> dict[str, str]:
+        failed = set(failed_keys)
         return {
-            key: "success"
-            for key in ("router_routing_rules", "firewall_address_lists", "firewall_filter_rules", "firewall_nat_rules", "firewall_mangle_rules", "ipsec_policies")
-            if key in snapshot
+            outcome_key: "failed" if raw_key in failed else "success"
+            for raw_key, outcome_key in MikroTikApiDriver.PATH_FACT_OUTCOME_KEYS.items()
+            if raw_key in snapshot or raw_key in failed
         }
 
     @staticmethod
@@ -525,9 +543,15 @@ class MikroTikApiDriver(NetworkDriver):
 
     def collect(self, include_connections: bool = False) -> dict[str, Any]:
         raw: dict[str, Any] = {}
+        failed_path_fact_keys: set[str] = set()
         with self._client() as api:
             for key, (path, props) in self.COLLECT_PATHS.items():
-                raw[key] = self._query(api, path, props)
+                try:
+                    raw[key] = self._query(api, path, props)
+                except Exception:
+                    if key not in self.PATH_FACT_KEYS:
+                        raise
+                    failed_path_fact_keys.add(key)
         snapshot = {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),
@@ -549,7 +573,7 @@ class MikroTikApiDriver(NetworkDriver):
             "router_routing_rules": self.normalize_routing_rule_rows(raw.get("routing_rules", [])),
             "ipsec_policies": self.normalize_path_ipsec_policy_rows(raw.get("ipsec_policies", [])),
         }
-        snapshot["path_fact_outcomes"] = self.path_fact_outcomes(snapshot)
+        snapshot["path_fact_outcomes"] = self.path_fact_outcomes(snapshot, failed_keys=failed_path_fact_keys)
         return snapshot
 
     def ipsec_status(self) -> dict[str, Any]:

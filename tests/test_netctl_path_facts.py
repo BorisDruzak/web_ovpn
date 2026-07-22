@@ -21,7 +21,7 @@ def test_migration_12_creates_read_only_path_fact_schema(tmp_path: Path) -> None
     try:
         tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert PATH_FACT_TABLES <= tables
-        assert [int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 13))
+        assert [int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 14))
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(router_filter_rules)")}
         assert {"source_id", "rule_key", "chain", "position", "disabled", "action", "src_cidr", "dst_cidr", "comment", "observed_at", "collector_run_id", "unsupported_matchers_json"} <= columns
     finally:
@@ -106,6 +106,48 @@ def test_driver_marks_only_collected_path_fact_families_as_successful() -> None:
     assert MikroTikApiDriver.path_fact_outcomes({"firewall_filter_rules": []}) == {
         "firewall_filter_rules": "success"
     }
+
+
+def test_api_collection_marks_failed_path_family_without_aborting_other_facts(monkeypatch) -> None:
+    from netctl.drivers.mikrotik_api import MikroTikApiDriver
+
+    class FakeApi:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    driver = MikroTikApiDriver({"name": "router", "host": "127.0.0.1", "username": "admin"}, {})
+    monkeypatch.setattr(driver, "_client", lambda: FakeApi())
+
+    def query(_api, path, _props):
+        if path == "/ip/firewall/filter/print":
+            raise RuntimeError("permission denied")
+        return []
+
+    monkeypatch.setattr(driver, "_query", query)
+    snapshot = driver.collect()
+
+    assert snapshot["path_fact_outcomes"]["firewall_filter_rules"] == "failed"
+    assert snapshot["path_fact_outcomes"]["firewall_nat_rules"] == "success"
+
+
+def test_ssh_collection_marks_failed_path_family_without_aborting_other_facts(monkeypatch) -> None:
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    driver = MikroTikSshDriver({"name": "router", "host": "127.0.0.1", "username": "admin"}, {})
+
+    def run_print(path, *, terse=True):
+        if path == "/ip firewall filter":
+            raise RuntimeError("permission denied")
+        return []
+
+    monkeypatch.setattr(driver, "_run_print", run_print)
+    snapshot = driver.collect()
+
+    assert snapshot["path_fact_outcomes"]["firewall_filter_rules"] == "failed"
+    assert snapshot["path_fact_outcomes"]["firewall_nat_rules"] == "success"
 
 
 def test_path_facts_store_routing_address_list_and_ipsec_without_raw_fields(tmp_path: Path) -> None:
