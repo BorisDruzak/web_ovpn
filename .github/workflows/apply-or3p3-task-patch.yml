@@ -5,7 +5,7 @@ on:
     branches:
       - feat/alt-or3p3-completion-20260722
     paths:
-      - .github/patches/or3p3-*.patch
+      - .github/patches/or3p3-*.trigger
 
 permissions:
   contents: write
@@ -34,16 +34,21 @@ jobs:
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet -r requirements.txt
 
-      - name: Apply patch and verify ALT suite
-        id: apply
+      - name: Apply patch set and verify ALT suite
         shell: bash
         run: |
           set -Eeuo pipefail
-          patch=$(find .github/patches -maxdepth 1 -type f -name 'or3p3-*.patch' | sort | tail -n 1)
-          test -n "${patch}"
-          git apply --check "${patch}"
-          git apply "${patch}"
-          rm -f "${patch}"
+          trigger=$(find .github/patches -maxdepth 1 -type f -name 'or3p3-*.trigger' | sort | tail -n 1)
+          test -n "${trigger}"
+          task=$(basename "${trigger}" .trigger)
+          mapfile -t patches < <(find .github/patches -maxdepth 1 -type f -name "${task}-*.patch" | sort)
+          test "${#patches[@]}" -gt 0
+
+          for patch in "${patches[@]}"; do
+            git apply --check "${patch}"
+            git apply "${patch}"
+          done
+          rm -f "${patches[@]}" "${trigger}"
 
           python -m pytest -q tests/alt_linux
           python -m py_compile \
@@ -53,7 +58,7 @@ jobs:
             deploy/alt-linux/api/*.py
           git diff --check
 
-          case "${patch}" in
+          case "${task}" in
             *task1*) message='fix: make OR-3P3 restore recovery durable' ;;
             *task2*) message='feat: gate restore capacity and audit backup commands' ;;
             *task3*) message='feat: guard ALT services during restore and rollout' ;;
