@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from netctl.util import utc_now
 
 import pytest
@@ -461,6 +463,92 @@ def test_approved_plan_applies_idempotently_and_verifies(tmp_path) -> None:
         assert verify_plan(conn, "plan-apply", Adapter())["status"] == "verified"
     finally:
         conn.close()
+
+
+def test_partial_apply_records_completed_steps_and_keeps_rollback_available(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        def ensure_address_list_entry(self, _target, address, *_args):
+            if address == "192.0.2.11":
+                raise ValueError("RouterOS write failed")
+            return {"status": "added", "address": address}
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(
+            conn, plan_key="plan-partial", actor="api", reason="approved", subject_type="asset",
+            subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[],
+            context_evidence_hash="c" * 64, precheck={},
+            rollback={"steps": [{"operation": "remove_address_list_entry", "target_key": "router-a", "request": {"address": "192.0.2.10", "asset_key": "mac:AA"}}]},
+        )
+        first = add_plan_step(conn, "plan-partial", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        add_plan_step(conn, "plan-partial", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.11", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-partial", "validated")
+        transition_plan(conn, "plan-partial", "approved")
+
+        assert apply_plan(conn, "plan-partial", Adapter()) == {
+            "status": "failed", "plan_key": "plan-partial", "applied_step_ids": [first["id"]],
+        }
+        assert conn.execute("SELECT status FROM change_plans WHERE plan_key = 'plan-partial'").fetchone()[0] == "failed"
+        assert json.loads(conn.execute("SELECT rollback_json FROM change_plans WHERE plan_key = 'plan-partial'").fetchone()[0])["steps"]
+    finally:
+        conn.close()
+
+
+def test_reconciler_retains_existing_deny_and_opens_stale_identity_finding(tmp_path) -> None:
+    from netctl.db import connect as connect_netctl
+    from netopsctl.reconcile import reconcile_desired_policies
+    from netopsctl.store import connect as connect_netops
+    from netopsctl.store import create_change_plan, transition_plan, upsert_desired_policy
+
+    class Adapter:
+        calls = 0
+
+        def __getattr__(self, _name):
+            self.calls += 1
+            raise AssertionError("stale identity must not mutate or inspect device entries")
+
+    netctl_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    now = utc_now()
+    context = connect_netctl(netctl_url)
+    try:
+        source = context.execute(
+            """INSERT INTO network_sources (name, driver, host, port, username, secret_ref, tls, verify_tls, site, enabled, created_at, updated_at, last_collect_at, last_status)
+               VALUES ('edge-a', 'mock', '127.0.0.1', 1, '', '', 0, 0, 'site-a', 1, ?, ?, ?, 'failed')""",
+            (now, now, now),
+        ).lastrowid
+        asset = context.execute(
+            """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        ).lastrowid
+        context.execute(
+            """INSERT INTO ip_observations (asset_id, site, source_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+               VALUES (?, 'site-a', ?, 'edge-a', '192.0.2.20', ?, ?, 1, 'manual')""",
+            (asset, source, now, now),
+        )
+        context.commit()
+    finally:
+        context.close()
+    netops = connect_netops(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(netops, plan_key="stale-source", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={"internet_access": "deny"}, resolved_targets=[], context_evidence_hash="a" * 64, precheck={}, rollback={})
+        for status in ("validated", "approved", "applying", "applied", "verified"):
+            transition_plan(netops, "stale-source", status)
+        upsert_desired_policy(netops, "stale-source", subject_type="asset", subject_key="mac:AA", desired_state="deny", reason="approved", enforcement_scope="all-sites")
+        adapter = Adapter()
+
+        assert reconcile_desired_policies(
+            netops, netctl_url, adapter, enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300, anchor_check=lambda _: True,
+        ) == {"reconciled": 0, "stale_identity": 1, "skipped": 0}
+        assert adapter.calls == 0
+        finding = netops.execute("SELECT finding_type, status FROM network_policy_findings").fetchone()
+        assert tuple(finding) == ("policy_stale_identity", "open")
+    finally:
+        netops.close()
 
 
 def test_verify_mismatch_marks_plan_failed_without_another_device_mutation(tmp_path) -> None:
