@@ -7,8 +7,9 @@ does not authorize arbitrary RouterOS changes.
 
 1. Confirm the web service uses trusted HTTPS and scoped `network:*` bearer
    credentials. Keep the legacy API token out of these endpoints.
-2. Confirm the socket is owned by `netopsctl:openvpn-web`, mode `0660`, and
-   that `netopsctl` accepts only the configured `openvpn-web` service UID.
+2. Confirm the socket is owned by `netopsctl:netopsctl`, mode `0660`, and
+   that its two allow-listed peer UIDs are separate: `openvpn-web` for web
+   plan actions and `netopsctl-reconcile` for `policy.reconcile` only.
 3. Confirm the web signing key, RouterOS password reference, audit signing
    key and audit-sink SSH identity are readable only by their service users.
    Do not put key material in the repository or environment JSON.
@@ -20,6 +21,12 @@ does not authorize arbitrary RouterOS changes.
 6. Verify exactly one RouterOS firewall anchor has the fixed comment
    `web_ovpn:internet-policy-anchor:v1`, `forward/drop`,
    `WEBOVPN-INTERNET-DENY`, WAN egress and logging disabled.
+7. Set and record bounded runtime values: `NETOPSCTL_PLAN_TTL_SECONDS` is at
+   most 900 (normally 300), and
+   `NETOPSCTL_IDENTITY_OBSERVATION_MAX_AGE_SECONDS` is at most 900.
+8. Before enabling the timer, provision a distinct reconcile signing key and
+   configure its public key under the `netopsctl-reconcile` UID with only
+   `policy.reconcile`; do not reuse the web signing key.
 
 ## Dry run and controlled test
 
@@ -45,13 +52,15 @@ does not authorize arbitrary RouterOS changes.
   stale identity, changed anchor, ambiguous attachment, duplicate or changed
   IP observations and expired plans must require a newly approved plan.
 - A device-scoped mutex prevents concurrent apply or rollback operations.
-- The five-minute reconciler is installed only after the controlled rollback
-  succeeds. It may reconcile fresh active policies but never create policy.
+- The five-minute `netopsctl-reconcile.timer` is enabled only after the
+  controlled rollback succeeds. It may reconcile fresh active policies but
+  never create policy, and adds a newly confirmed deny entry before removing
+  the superseded address.
 - The rollback path removes only the exact policy-and-asset ownership marker.
 
 ## Rollback
 
-1. Disable the reconciler timer and production writes.
+1. Disable `netopsctl-reconcile.timer` and production writes.
 2. Roll back each affected plan through the signed endpoint; do not delete
    RouterOS entries by address alone.
 3. Stop the web service and broker only if application rollback is required.

@@ -576,6 +576,37 @@ def test_apply_rejects_when_enforcement_device_is_locked(tmp_path) -> None:
         conn.close()
 
 
+def test_apply_recovers_a_lock_left_by_a_dead_broker_process(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        calls = 0
+
+        def ensure_address_list_entry(self, *_args):
+            self.calls += 1
+            return {"status": "added"}
+
+    adapter = Adapter()
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(conn, plan_key="plan-recover-lock", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="f" * 64, precheck={}, rollback={})
+        add_plan_step(conn, "plan-recover-lock", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-recover-lock", "validated")
+        transition_plan(conn, "plan-recover-lock", "approved")
+        conn.execute(
+            """INSERT INTO device_operation_locks (device_key, holder, acquired_at, owner_pid)
+               VALUES ('router-a', 'crashed', datetime('now'), 999999)"""
+        )
+        conn.commit()
+
+        assert apply_plan(conn, "plan-recover-lock", adapter)["status"] == "applied"
+        assert adapter.calls == 1
+        assert conn.execute("SELECT count(*) FROM device_operation_locks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_preflight_rejects_expired_plan_without_reading_or_mutating_devices(tmp_path) -> None:
     from netopsctl.policy_resolver import changed_plan_preconditions
     from netopsctl.store import connect, create_change_plan

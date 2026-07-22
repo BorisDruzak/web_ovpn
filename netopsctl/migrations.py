@@ -122,6 +122,11 @@ def _migration_7(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_8(conn: sqlite3.Connection) -> None:
+    """Allow a new broker process to identify locks abandoned by a crashed PID."""
+    conn.execute("ALTER TABLE device_operation_locks ADD COLUMN owner_pid INTEGER NOT NULL DEFAULT 0")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -130,6 +135,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (5, _migration_5),
     (6, _migration_6),
     (7, _migration_7),
+    (8, _migration_8),
 )
 
 

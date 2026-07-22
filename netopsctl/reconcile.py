@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -21,13 +22,45 @@ def _device_lock_for_target(conn: sqlite3.Connection, device_key: str) -> tuple[
     holder = str(uuid.uuid4())
     try:
         conn.execute(
-            "INSERT INTO device_operation_locks (device_key, holder, acquired_at) VALUES (?, ?, datetime('now'))",
-            (device_key, holder),
+            "INSERT INTO device_operation_locks (device_key, holder, acquired_at, owner_pid) VALUES (?, ?, datetime('now'), ?)",
+            (device_key, holder, os.getpid()),
         )
         conn.commit()
     except sqlite3.IntegrityError as exc:
-        raise ValueError("device operation is already in progress") from exc
+        conn.rollback()
+        existing = conn.execute(
+            "SELECT holder, owner_pid FROM device_operation_locks WHERE device_key = ?", (device_key,)
+        ).fetchone()
+        owner_pid = int(existing["owner_pid"]) if existing is not None else 0
+        if existing is None or owner_pid <= 0 or _process_is_alive(owner_pid):
+            raise ValueError("device operation is already in progress") from exc
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            deleted = conn.execute(
+                "DELETE FROM device_operation_locks WHERE device_key = ? AND holder = ? AND owner_pid = ?",
+                (device_key, str(existing["holder"]), owner_pid),
+            )
+            if deleted.rowcount != 1:
+                raise ValueError("device operation is already in progress")
+            conn.execute(
+                "INSERT INTO device_operation_locks (device_key, holder, acquired_at, owner_pid) VALUES (?, ?, datetime('now'), ?)",
+                (device_key, holder, os.getpid()),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     return device_key, holder
+
+
+def _process_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _device_lock(conn: sqlite3.Connection, steps: list[sqlite3.Row]) -> tuple[str, str]:
