@@ -2012,7 +2012,7 @@ git commit -m "feat: add isolated network control broker"
 - Produces only address-list and bootstrap-audit operations.
 - Consumes enforcement-point configuration from `/etc/netopsctl/netopsctl.env` and protected secret references.
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 Allowed operations:
 
@@ -2034,7 +2034,7 @@ allowed target: configured MikroTik enforcement source only
 
 Tests assert idempotency, safe redaction, exact-list enforcement and rejection of arbitrary RouterOS menu paths/actions.
 
-- [ ] **Step 2: Implement pre-check and post-check**
+- [x] **Step 2: Implement pre-check and post-check**
 
 The adapter verifies that the dedicated firewall anchor exists and matches the approved signature before any membership change:
 
@@ -2048,7 +2048,7 @@ disabled=no
 
 The adapter does not create or reorder this rule in normal `internet_access_set` plans.
 
-- [ ] **Step 3: Run tests and commit**
+- [x] **Step 3: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netopsctl_mikrotik.py -q
