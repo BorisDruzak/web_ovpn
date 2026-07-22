@@ -15,20 +15,24 @@ from typing import Any
 class ContextCursorError(ValueError):
     """A client-facing cursor validation error without secret detail."""
 
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
 
 def _credential_key() -> bytes:
     directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
     if not directory:
-        raise ContextCursorError("context pagination is unavailable")
+        raise ContextCursorError("context_pagination_unavailable")
     path = Path(directory) / "context-api-cursor-signing-key"
     try:
         if path.is_symlink() or not path.is_file():
             raise OSError("invalid credential")
         key = path.read_bytes()
     except OSError as exc:
-        raise ContextCursorError("context pagination is unavailable") from exc
+        raise ContextCursorError("context_pagination_unavailable") from exc
     if len(key) < 32:
-        raise ContextCursorError("context pagination is unavailable")
+        raise ContextCursorError("context_pagination_unavailable")
     return key
 
 
@@ -40,7 +44,7 @@ def _b64decode(value: str) -> bytes:
     try:
         return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     except (ValueError, UnicodeEncodeError) as exc:
-        raise ContextCursorError("invalid context cursor") from exc
+        raise ContextCursorError("cursor_invalid") from exc
 
 
 def encode_search_cursor(*, snapshot: dict[str, Any], query: str, limit: int, after: dict[str, Any]) -> str:
@@ -62,21 +66,22 @@ def decode_search_cursor(token: str, *, query: str, limit: int) -> dict[str, Any
         encoded, supplied_signature = token.split(".", 1)
         expected_signature = _b64encode(hmac.new(_credential_key(), encoded.encode("ascii"), hashlib.sha256).digest())
         if not hmac.compare_digest(supplied_signature, expected_signature):
-            raise ContextCursorError("invalid context cursor")
+            raise ContextCursorError("cursor_invalid")
         payload = json.loads(_b64decode(encoded))
         after = payload["after"]
         if (
             payload.get("v") != 1
             or payload.get("query") != query.strip().lower()
             or payload.get("limit") != limit
-            or int(payload.get("exp", 0)) < int(time.time())
             or after.get("kind") not in {"asset", "user"}
             or int(after.get("id", 0)) <= 0
             or not isinstance(payload.get("snapshot"), dict)
         ):
-            raise ContextCursorError("invalid context cursor")
+            raise ContextCursorError("cursor_filter_mismatch")
+        if int(payload.get("exp", 0)) < int(time.time()):
+            raise ContextCursorError("cursor_expired")
         return payload
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         if isinstance(exc, ContextCursorError):
             raise
-        raise ContextCursorError("invalid context cursor") from exc
+        raise ContextCursorError("cursor_invalid") from exc

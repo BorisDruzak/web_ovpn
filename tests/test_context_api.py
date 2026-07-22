@@ -120,6 +120,7 @@ def test_context_search_returns_signed_snapshot_bound_cursor(tmp_path, monkeypat
     assert response.status_code == 200
     pagination = response.json()["pagination"]
     assert pagination["limit"] == 1
+    assert pagination["has_more"] is True
     assert pagination["next_cursor"]
     assert response.headers["etag"]
     next_page = client.get(
@@ -133,6 +134,15 @@ def test_context_search_returns_signed_snapshot_bound_cursor(tmp_path, monkeypat
         params={"q": "workstation", "limit": 1, "cursor": tampered}, headers=headers,
     )
     assert rejected.status_code == 400
+    assert rejected.json()["detail"] == "cursor_invalid"
+
+
+def test_context_search_rejects_limit_above_v1_bound(tmp_path, monkeypatch):
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/v1/context/search", params={"q": "workstation", "limit": 51}, headers=headers)
+
+    assert response.status_code == 422
 
 
 def test_context_response_honours_matching_etag(tmp_path, monkeypatch):

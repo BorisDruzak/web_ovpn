@@ -6,6 +6,13 @@
 
 **Scope:** This document adds acceptance gates and implementation details. It does not change the plan's separation of observations, correlations, desired state, and executed changes.
 
+## Stabilization implementation record
+
+The S1--S3 implementation and its release boundary are recorded in
+[`../verification/current-model-stabilization.md`](../verification/current-model-stabilization.md).
+That record distinguishes local implementation evidence from deployment,
+production data quality, and the independently controlled write-gate state.
+
 ## 1. Broker trust boundary
 
 `netopsctld` must treat every field in its JSON payload as untrusted, including `actor`, user name, scope, plan ID, and RouterOS target. A Unix socket alone proves only the local process identity; it cannot establish which human initiated a web request.

@@ -892,7 +892,7 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 def api_context_search(
     request: Request,
     q: str = Query(min_length=1),
-    limit: int = Query(default=25, ge=1, le=100),
+    limit: int = Query(default=25, ge=1, le=50),
     cursor: str = Query(default="", max_length=4096),
     actor: str = Depends(require_api_actor),
 ):
@@ -916,6 +916,7 @@ def api_context_search(
         try:
             pagination = {
                 "limit": limit,
+                "has_more": True,
                 "next_cursor": encode_search_cursor(
                     snapshot=snapshot or {}, query=q, limit=limit, after=next_state,
                 ),
