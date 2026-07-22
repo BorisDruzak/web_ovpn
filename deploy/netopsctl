@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+require_credential_source() {
+  local path="$1"
+  [[ -f "$path" && ! -L "$path" ]] || {
+    echo "required systemd credential source is unavailable" >&2
+    exit 1
+  }
+  [[ "$(stat -c '%a' "$path")" =~ ^[0-7]{3,4}$ ]] || {
+    echo "required systemd credential source has invalid mode" >&2
+    exit 1
+  }
+}
+
 install -d -o netctl -g netctl -m 0750 /var/lib/netctl
 find /var/lib/netctl -maxdepth 1 -type f \( -name 'netctl.sqlite' -o -name 'netctl.sqlite-wal' -o -name 'netctl.sqlite-shm' \) -exec chown netctl:netctl {} + -exec chmod 0640 {} +
 getent group netopsctl >/dev/null || groupadd --system netopsctl
@@ -9,6 +21,10 @@ id -u netopsctl-reconcile >/dev/null 2>&1 || useradd --system --gid netopsctl --
 usermod -aG netctl netopsctl
 usermod -aG netopsctl openvpn-web
 install -d -o netopsctl -g netopsctl -m 0750 /var/lib/netopsctl
+install -d -o root -g root -m 0700 /etc/netopsctl/credentials /etc/openvpn-web/credentials
+require_credential_source /etc/netopsctl/credentials/netopsctl_audit_signing_ed25519.raw
+require_credential_source /etc/netopsctl/credentials/netopsctl_reconcile_signing_ed25519.raw
+require_credential_source /etc/openvpn-web/credentials/netops_web_signing_ed25519.raw
 install -m 0644 deploy/netopsctl.socket /etc/systemd/system/netopsctl.socket
 install -m 0644 deploy/netopsctl.service /etc/systemd/system/netopsctl.service
 install -m 0644 deploy/netopsctl-reconcile.service /etc/systemd/system/netopsctl-reconcile.service

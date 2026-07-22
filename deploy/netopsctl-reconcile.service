@@ -8,6 +8,7 @@ Type=oneshot
 User=netopsctl-reconcile
 Group=netopsctl
 EnvironmentFile=/etc/netopsctl/netopsctl.env
+LoadCredential=netopsctl-reconcile-signing-key:/etc/netopsctl/credentials/netopsctl_reconcile_signing_ed25519.raw
 WorkingDirectory=/opt/openvpn-web
 ExecStart=/opt/openvpn-web/.venv/bin/python -m netopsctl.reconcile_runner
 NoNewPrivileges=true

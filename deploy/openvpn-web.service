@@ -9,6 +9,7 @@ Group=openvpn-web
 SupplementaryGroups=netopsctl
 WorkingDirectory=/opt/openvpn-web
 EnvironmentFile=/etc/openvpn-web/openvpn-web.env
+LoadCredential=web-netopsctl-signing-key:/etc/openvpn-web/credentials/netops_web_signing_ed25519.raw
 ExecStart=/opt/openvpn-web/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8088
 Restart=on-failure
 RestartSec=3

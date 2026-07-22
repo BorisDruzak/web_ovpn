@@ -3,12 +3,12 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .authorization import sign_envelope
 from .client import request
+from .credentials import read_ed25519_private_key
 
 
 def build_reconcile_request(
@@ -40,7 +40,9 @@ def build_reconcile_request(
 
 def main() -> None:
     try:
-        key_bytes = Path(os.environ["NETOPSCTL_RECONCILE_SIGNING_KEY_FILE"]).read_bytes()
+        key_bytes = read_ed25519_private_key(
+            "netopsctl-reconcile-signing-key", role="reconcile signing"
+        )
         private_key = Ed25519PrivateKey.from_private_bytes(key_bytes)
         principal_id = os.environ.get("NETOPSCTL_RECONCILE_PRINCIPAL_ID", "netopsctl-reconcile")
         limit = int(os.environ.get("NETOPSCTL_RECONCILE_LIMIT", "64"))

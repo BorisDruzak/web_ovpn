@@ -11,6 +11,7 @@ from typing import Any
 from .authorization import VerifiedAuthorization, verify_envelope
 from .adapters.mikrotik import MikroTikPolicyAdapter
 from .audit import AuditSigner
+from .credentials import read_ed25519_private_key
 from .protocol import BrokerRequest, ProtocolError, decode_request, encode_response
 from .runtime import PerCallRouterOSClient, load_routeros_config, production_writes_allowed
 from .service import ControlService
@@ -137,7 +138,9 @@ def _build_service(conn: Any) -> ControlService:
         source_map = json.loads(os.environ["NETOPSCTL_ENFORCEMENT_SOURCES_JSON"])
         if not isinstance(source_map, dict) or not source_map or any(not isinstance(key, str) or not isinstance(value, str) for key, value in source_map.items()):
             raise ValueError
-        signer_key = Ed25519PrivateKey.from_private_bytes(open(os.environ["NETOPSCTL_AUDIT_SIGNING_KEY_FILE"], "rb").read())
+        signer_key = Ed25519PrivateKey.from_private_bytes(
+            read_ed25519_private_key("netopsctl-audit-signing-key", role="audit signing")
+        )
         signer = AuditSigner(os.environ["NETOPSCTL_AUDIT_SIGNING_KEY_ID"], signer_key)
         source_name = os.environ.get("NETOPSCTL_ENFORCEMENT_SOURCE", "mikrotik-main")
         config = load_routeros_config()

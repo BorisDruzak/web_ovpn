@@ -9,6 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from netopsctl.authorization import ACTION_SCOPES, request_digest, sign_envelope
 from netopsctl.client import request as broker_request
+from netopsctl.credentials import read_ed25519_private_key
 from netopsctl.protocol import ProtocolError
 
 from .config import get_settings
@@ -20,13 +21,10 @@ class NetworkControlError(Exception):
 
 
 def _private_key() -> Ed25519PrivateKey:
-    path = get_settings().network_control_signing_key_path
     try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise NetworkControlError("network-control signing key is unavailable") from exc
-    if len(raw) != 32:
-        raise NetworkControlError("network-control signing key is invalid")
+        raw = read_ed25519_private_key("web-netopsctl-signing-key", role="web network-control signing")
+    except ValueError as exc:
+        raise NetworkControlError("network-control signing credential is unavailable") from exc
     return Ed25519PrivateKey.from_private_bytes(raw)
 
 
