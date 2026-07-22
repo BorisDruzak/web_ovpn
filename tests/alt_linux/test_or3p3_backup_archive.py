@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from alt_deploy_backup.errors import BackupError
-from support.backup_sandbox import BackupSandbox
+from support.backup_archive_sandbox import BackupSandbox
 
 
 @pytest.mark.parametrize(
