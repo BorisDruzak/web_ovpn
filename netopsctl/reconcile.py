@@ -117,7 +117,7 @@ def verify_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[s
 
 
 def rollback_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[str, Any]:
-    plan, _ = _steps(conn, plan_key)
+    plan, plan_steps = _steps(conn, plan_key)
     if plan["status"] == "rolled_back":
         return {"status": "already_rolled_back", "plan_key": plan_key}
     if plan["status"] not in {"applied", "verified", "failed"}:
@@ -126,37 +126,41 @@ def rollback_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict
     steps = rollback.get("steps")
     if not isinstance(steps, list):
         raise ValueError("invalid rollback payload")
-    transition_plan(conn, plan_key, "rolling_back")
-    completed: list[int] = []
+    lock = _device_lock(conn, plan_steps)
     try:
-        for index, step in enumerate(steps):
-            if not isinstance(step, dict) or step.get("adapter") not in {None, "mikrotik"}:
-                raise ValueError("unsupported rollback adapter")
-            request = step.get("request")
-            target_key = step.get("target_key")
-            if not isinstance(request, dict) or not isinstance(target_key, str):
-                raise ValueError("invalid rollback step")
-            if step.get("operation") == "remove_address_list_entry":
-                result = adapter.remove_address_list_entry(target_key, request["address"], plan_key, request["asset_key"])
-            elif step.get("operation") == "ensure_address_list_entry":
-                result = adapter.ensure_address_list_entry(target_key, request["address"], plan_key, request["asset_key"])
-            else:
-                raise ValueError("unsupported rollback operation")
-            completed.append(index)
+        transition_plan(conn, plan_key, "rolling_back")
+        completed: list[int] = []
+        try:
+            for index, step in enumerate(steps):
+                if not isinstance(step, dict) or step.get("adapter") not in {None, "mikrotik"}:
+                    raise ValueError("unsupported rollback adapter")
+                request = step.get("request")
+                target_key = step.get("target_key")
+                if not isinstance(request, dict) or not isinstance(target_key, str):
+                    raise ValueError("invalid rollback step")
+                if step.get("operation") == "remove_address_list_entry":
+                    result = adapter.remove_address_list_entry(target_key, request["address"], plan_key, request["asset_key"])
+                elif step.get("operation") == "ensure_address_list_entry":
+                    result = adapter.ensure_address_list_entry(target_key, request["address"], plan_key, request["asset_key"])
+                else:
+                    raise ValueError("unsupported rollback operation")
+                completed.append(index)
+                conn.execute(
+                    "INSERT INTO change_executions (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json) VALUES (?, 'rollback', datetime('now'), datetime('now'), 'success', ?)",
+                    (plan["id"], json.dumps(result, sort_keys=True)),
+                )
+                conn.commit()
+        except Exception:
             conn.execute(
-                "INSERT INTO change_executions (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json) VALUES (?, 'rollback', datetime('now'), datetime('now'), 'success', ?)",
-                (plan["id"], json.dumps(result, sort_keys=True)),
+                "INSERT INTO change_executions (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json) VALUES (?, 'rollback', datetime('now'), datetime('now'), 'failed', ?)",
+                (plan["id"], json.dumps({"completed_steps": completed}, sort_keys=True)),
             )
             conn.commit()
-    except Exception:
-        conn.execute(
-            "INSERT INTO change_executions (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json) VALUES (?, 'rollback', datetime('now'), datetime('now'), 'failed', ?)",
-            (plan["id"], json.dumps({"completed_steps": completed}, sort_keys=True)),
-        )
+            transition_plan(conn, plan_key, "failed")
+            return {"status": "failed", "plan_key": plan_key, "completed_rollback_steps": completed}
+        conn.execute("UPDATE change_plan_steps SET status = 'rolled_back' WHERE change_plan_id = ?", (plan["id"],))
         conn.commit()
-        transition_plan(conn, plan_key, "failed")
-        return {"status": "failed", "plan_key": plan_key, "completed_rollback_steps": completed}
-    conn.execute("UPDATE change_plan_steps SET status = 'rolled_back' WHERE change_plan_id = ?", (plan["id"],))
-    conn.commit()
-    transition_plan(conn, plan_key, "rolled_back")
-    return {"status": "rolled_back", "plan_key": plan_key, "completed_rollback_steps": completed}
+        transition_plan(conn, plan_key, "rolled_back")
+        return {"status": "rolled_back", "plan_key": plan_key, "completed_rollback_steps": completed}
+    finally:
+        _release_device_lock(conn, lock)
