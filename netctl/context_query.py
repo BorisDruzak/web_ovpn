@@ -13,6 +13,7 @@ from .runtime_assets import (
     list_current_hostname_observations,
     list_current_ip_observations,
 )
+from .util import utc_now
 
 
 def _asset_public(asset: dict[str, Any]) -> dict[str, Any]:
@@ -23,31 +24,62 @@ def _asset_public(asset: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _attachment(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any] | None:
+def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int | None = None) -> dict[str, Any] | None:
+    conditions = ["asset_id = ?"]
+    params: list[object] = [asset_id]
+    if asset_interface_id is not None:
+        conditions.append("asset_interface_id = ?")
+        params.append(asset_interface_id)
     row = conn.execute(
-        """SELECT status, selected_source_id, selected_port_key, selected_vlan_key,
+        f"""SELECT status, selected_source_id, selected_port_key, selected_vlan_key,
                   selected_vlan_id, confidence, last_seen_at
            FROM asset_attachment_resolutions
-           WHERE asset_id = ? ORDER BY confidence DESC, asset_interface_id LIMIT 1""",
-        (asset_id,),
+           WHERE {' AND '.join(conditions)} ORDER BY confidence DESC, asset_interface_id LIMIT 1""",
+        params,
     ).fetchone()
     if row is None:
         return None
     attachment = dict(row)
     alternatives = conn.execute(
-        """SELECT sources.name AS source, candidates.port_key, candidates.vlan_key,
+        f"""SELECT sources.name AS source, candidates.port_key, candidates.vlan_key,
                   candidates.vlan_id, candidates.candidate_class,
                   candidates.topology_depth, candidates.score, candidates.observed_at
            FROM asset_attachment_candidates AS candidates
            JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
-           WHERE candidates.asset_id = ?
+           WHERE candidates.asset_id = ? {"AND candidates.asset_interface_id = ?" if asset_interface_id is not None else ""}
            ORDER BY candidates.score DESC, candidates.observed_at DESC,
                     sources.name, candidates.port_key, candidates.vlan_key
            LIMIT 32""",
-        (asset_id,),
+        (asset_id, asset_interface_id) if asset_interface_id is not None else (asset_id,),
     ).fetchall()
     attachment["alternatives"] = [dict(item) for item in alternatives]
     return attachment
+
+
+def _owner(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any]:
+    timestamp = utc_now()
+    rows = [dict(row) for row in conn.execute(
+        """SELECT users.user_key, users.display_name, bindings.relation, bindings.status,
+                  bindings.confidence, bindings.valid_from, bindings.valid_until, bindings.binding_source
+           FROM user_asset_bindings AS bindings
+           JOIN users ON users.id = bindings.user_id
+           WHERE bindings.asset_id = ? AND users.status = 'active' AND bindings.status = 'confirmed'
+             AND bindings.relation IN ('owner', 'primary_user', 'shared_user')
+             AND bindings.valid_from <= ? AND (bindings.valid_until IS NULL OR bindings.valid_until > ?)
+           ORDER BY users.user_key, bindings.id LIMIT 32""",
+        (asset_id, timestamp, timestamp),
+    )]
+    shared = [row for row in rows if row["relation"] == "shared_user"]
+    exclusive = [row for row in rows if row["relation"] in {"owner", "primary_user"}]
+    if shared:
+        status = "shared"
+    elif len(exclusive) == 1:
+        status = "confirmed"
+    elif len(exclusive) > 1:
+        status = "ambiguous"
+    else:
+        status = "none"
+    return {"status": status, "bindings": rows}
 
 
 def _intent(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any] | None:
@@ -107,9 +139,12 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
     return {
         "asset": _asset_public(asset),
         "intent": _intent(conn, asset_id),
-        "owner": None,
+        "owner": _owner(conn, asset_id),
         "interfaces": [
-            {key: item[key] for key in ("interface_key", "mac", "interface_type", "interface_name", "lifecycle") if key in item}
+            {
+                **{key: item[key] for key in ("interface_key", "mac", "interface_type", "interface_name", "lifecycle") if key in item},
+                "attachment": _attachment(conn, asset_id, int(item["id"])),
+            }
             for item in list_asset_interfaces(conn, asset_id)[:32]
         ],
         "attachment": _attachment(conn, asset_id),

@@ -83,7 +83,7 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
         result = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
         assert result is not None
         assert set(result) == {"asset", "intent", "owner", "interfaces", "attachment", "network", "topology_path", "source_health", "findings", "evidence"}
-        assert result["owner"] is None
+        assert result["owner"] == {"status": "none", "bindings": []}
         assert result["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"
         assert result["network"]["ip_observations"][0]["ip"] == "192.0.2.10"
         assert result["attachment"]["selected_port_key"] == "physical:48"
@@ -106,6 +106,44 @@ def test_search_context_returns_all_explicit_matches_for_safe_identity_keys(tmp_
         assert [item["asset_key"] for item in search_context(conn, "WORKSTATION")] == ["mac:AA:BB:CC:DD:EE:01"]
         assert [item["asset_key"] for item in search_context(conn, "192.0.2.10")] == ["mac:AA:BB:CC:DD:EE:01", "mac:AA:BB:CC:DD:EE:02"]
         assert [item["asset_key"] for item in search_context(conn, "device:workstation-01")] == ["mac:AA:BB:CC:DD:EE:01"]
+    finally:
+        conn.close()
+
+
+def test_asset_context_keeps_attachments_per_interface_and_resolves_owner(tmp_path: Path) -> None:
+    from netctl.context_query import inspect_asset_context
+    from netctl.user_context import bind_user_asset, create_user
+
+    conn = _context_db(tmp_path)
+    try:
+        create_user(conn, "employee:owner", "Owner", now="2026-07-22T12:00:00Z")
+        bind_user_asset(
+            conn, "employee:owner", "mac:AA:BB:CC:DD:EE:01", relation="owner",
+            confidence=100, reason="assigned", now="2026-07-22T12:00:00Z",
+        )
+        result = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+        assert result is not None
+        assert result["owner"] == {
+            "status": "confirmed",
+            "bindings": [{
+                "user_key": "employee:owner", "display_name": "Owner", "relation": "owner",
+                "status": "confirmed", "confidence": 100, "valid_from": "2026-07-22T12:00:00Z",
+                "valid_until": None, "binding_source": "manual",
+            }],
+        }
+        assert result["interfaces"] == [{
+            "interface_key": "eth0", "mac": "aa-bb-cc-dd-ee-01", "interface_type": "",
+            "interface_name": "", "lifecycle": "active",
+            "attachment": {
+                "status": "confirmed", "selected_source_id": 10, "selected_port_key": "physical:48",
+                "selected_vlan_key": "20", "selected_vlan_id": None, "confidence": 85,
+                "last_seen_at": "2026-07-22T12:00:00Z", "alternatives": [{
+                    "source": "access", "port_key": "physical:47", "vlan_key": "20", "vlan_id": None,
+                    "candidate_class": "direct", "topology_depth": None, "score": 80,
+                    "observed_at": "2026-07-22T12:00:00Z",
+                }],
+            },
+        }]
     finally:
         conn.close()
 
