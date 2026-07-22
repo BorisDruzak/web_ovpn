@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .errors import BackupError
+from .rehearsal import RehearsalService
 from .repository import BackupRepository
 from .settings import BackupSettings
 
@@ -107,6 +108,16 @@ def _dispatch(
             "component_count": result.component_count,
             "manifest_sha256": result.manifest_sha256,
             "evidence_written": result.evidence_written,
+        }
+    if command == "rehearse":
+        result = RehearsalService(repository).rehearse(backup_id)
+        return {
+            "status": "ok",
+            "result": "backup_rehearsed",
+            "backup_id": result.backup_id,
+            "manifest_sha256": result.manifest_sha256,
+            "check_count": result.check_count,
+            "rehearsal_passed": result.rehearsal_passed,
         }
     if command == "delete":
         result = repository.delete(backup_id)
