@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from alt_deploy_backup import secrets as secret_module
 from alt_deploy_backup.errors import BackupError
 from support.backup_sandbox import BackupSandbox
 
@@ -68,6 +69,25 @@ def test_new_fingerprint_key_is_private_and_exact_length(
     assert stat.S_IMODE(
         sandbox.settings.fingerprint_key.stat().st_mode
     ) == 0o600
+
+
+def test_failed_fingerprint_key_fsync_removes_created_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    key_path = sandbox.settings.fingerprint_key
+
+    def fail_fsync(descriptor: int) -> None:
+        raise OSError("injected fsync failure")
+
+    monkeypatch.setattr(secret_module.os, "fsync", fail_fsync)
+
+    with pytest.raises(BackupError) as error:
+        sandbox.fingerprint_store().ensure()
+
+    assert error.value.code == "backup_secret_invalid"
+    assert not key_path.exists()
 
 
 def test_invalid_vault_header_fails_closed(tmp_path: Path) -> None:
