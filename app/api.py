@@ -901,6 +901,11 @@ def api_context_findings(
     return api_response(call_netctl(["context-view", "findings", "--status", status]))
 
 
+@router.get("/context/source-readiness")
+def api_context_source_readiness(actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["context-view", "source-readiness"]))
+
+
 @router.get("/context/path")
 def api_context_path(
     asset_key: str = Query(min_length=1, max_length=255),

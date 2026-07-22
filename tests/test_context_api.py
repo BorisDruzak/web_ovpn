@@ -27,6 +27,8 @@ elif args[1:3] == ["context-view", "topology"]:
     print(json.dumps({"status": "ok", "links": [{"link_key": "access|core", "state": "confirmed"}]}))
 elif args[1:3] == ["context-view", "findings"]:
     print(json.dumps({"status": "ok", "findings": [{"finding_key": "runtime:one", "status": "open"}]}))
+elif args[1:3] == ["context-view", "source-readiness"]:
+    print(json.dumps({"status": "ok", "sources": [{"source": "access", "blocking_reasons": ["ready"]}]}))
 elif args[1:3] == ["path", "explain"]:
     print(json.dumps({"status": "ok", "explanation": {"verdict": "allowed"}}))
 elif args[1:3] == ["users", "add"]:
@@ -148,6 +150,18 @@ def test_context_findings_api_delegates_status_to_netctl(tmp_path, monkeypatch):
         "findings",
         "--status",
         "open",
+    ]
+
+
+def test_context_source_readiness_api_delegates_to_netctl(tmp_path, monkeypatch):
+    client, headers, log_path = make_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/v1/context/source-readiness", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["sources"] == [{"source": "access", "blocking_reasons": ["ready"]}]
+    assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
+        "--json", "context-view", "source-readiness",
     ]
 
 
