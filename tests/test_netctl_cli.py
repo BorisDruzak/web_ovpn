@@ -1268,6 +1268,28 @@ def test_collect_lock_reclaims_absent_owner(tmp_path, monkeypatch):
         assert lock_path.read_text(encoding="ascii") == f"{os.getpid()} 200\n"
 
 
+def test_collect_lock_uses_windows_start_time_when_proc_is_unavailable(monkeypatch):
+    import importlib
+    import netctl.collect_lock as collect_lock
+
+    collect_lock = importlib.reload(collect_lock)
+
+    def missing_proc_stat(*_args, **_kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(collect_lock.Path, "read_text", missing_proc_stat)
+    monkeypatch.setattr(collect_lock.os, "name", "nt")
+    monkeypatch.setattr(collect_lock.os, "kill", lambda *_args: None)
+    monkeypatch.setattr(
+        collect_lock,
+        "_windows_process_start_time",
+        lambda pid: "windows-start" if pid == 2468 else None,
+        raising=False,
+    )
+
+    assert collect_lock._process_start_time(2468) == "windows-start"
+
+
 def test_collect_lock_rejects_owner_when_proc_stat_is_missing_but_pid_exists(tmp_path, monkeypatch):
     from netctl.collect_lock import CollectLock, collect_lock_path
 

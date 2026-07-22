@@ -26,6 +26,40 @@ class _OwnerEvidenceUnknown(RuntimeError):
     pass
 
 
+def _windows_process_start_time(pid: int) -> str | None:
+    """Return a stable Windows process creation timestamp or fail closed."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(
+        process_query_limited_information, False, pid
+    )
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == 87:  # ERROR_INVALID_PARAMETER: process no longer exists.
+            return None
+        raise _ProcessEvidenceUnknown
+    try:
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not ctypes.windll.kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            raise _ProcessEvidenceUnknown
+        return str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
 def collect_lock_path(db_url: str) -> Path:
     return db_path_from_url(db_url).with_suffix(".lock")
 
@@ -34,6 +68,8 @@ def _process_start_time(pid: int) -> str | None:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
     except FileNotFoundError:
+        if os.name == "nt":
+            return _windows_process_start_time(pid)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
