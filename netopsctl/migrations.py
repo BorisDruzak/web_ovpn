@@ -83,10 +83,21 @@ def _migration_3(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE audit_events ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
 
 
+def _migration_4(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE device_operation_locks (
+            device_key TEXT PRIMARY KEY,
+            holder TEXT NOT NULL,
+            acquired_at TEXT NOT NULL
+        )"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
+    (4, _migration_4),
 )
 
 

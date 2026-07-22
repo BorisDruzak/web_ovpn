@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -16,6 +17,28 @@ def _steps(conn: sqlite3.Connection, plan_key: str) -> tuple[sqlite3.Row, list[s
     return plan, rows
 
 
+def _device_lock(conn: sqlite3.Connection, steps: list[sqlite3.Row]) -> tuple[str, str]:
+    targets = {str(step["target_key"]) for step in steps}
+    if len(targets) != 1:
+        raise ValueError("plan must target exactly one enforcement device")
+    device_key = targets.pop()
+    holder = str(uuid.uuid4())
+    try:
+        conn.execute(
+            "INSERT INTO device_operation_locks (device_key, holder, acquired_at) VALUES (?, ?, datetime('now'))",
+            (device_key, holder),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("device operation is already in progress") from exc
+    return device_key, holder
+
+
+def _release_device_lock(conn: sqlite3.Connection, lock: tuple[str, str]) -> None:
+    conn.execute("DELETE FROM device_operation_locks WHERE device_key = ? AND holder = ?", lock)
+    conn.commit()
+
+
 def apply_plan(
     conn: sqlite3.Connection,
     plan_key: str,
@@ -28,16 +51,17 @@ def apply_plan(
         return {"status": "already_applied", "plan_key": plan_key}
     if plan["status"] != "approved":
         raise ValueError("only approved plans can be applied")
-    changed_preconditions = preflight(plan) if preflight is not None else []
-    if changed_preconditions:
-        transition_plan(conn, plan_key, "failed")
-        return {
-            "status": "stale_precondition", "plan_key": plan_key,
-            "replan_required": True, "changed_preconditions": sorted(set(changed_preconditions)),
-        }
-    transition_plan(conn, plan_key, "applying")
-    applied: list[int] = []
+    lock = _device_lock(conn, steps)
     try:
+        changed_preconditions = preflight(plan) if preflight is not None else []
+        if changed_preconditions:
+            transition_plan(conn, plan_key, "failed")
+            return {
+                "status": "stale_precondition", "plan_key": plan_key,
+                "replan_required": True, "changed_preconditions": sorted(set(changed_preconditions)),
+            }
+        transition_plan(conn, plan_key, "applying")
+        applied: list[int] = []
         for step in steps:
             request = json.loads(step["request_json"])
             if step["operation"] == "ensure_address_list_entry":
@@ -54,6 +78,8 @@ def apply_plan(
         conn.commit()
         transition_plan(conn, plan_key, "failed")
         return {"status": "failed", "plan_key": plan_key, "applied_step_ids": applied}
+    finally:
+        _release_device_lock(conn, lock)
     transition_plan(conn, plan_key, "applied")
     return {"status": "applied", "plan_key": plan_key, "applied_step_ids": applied}
 

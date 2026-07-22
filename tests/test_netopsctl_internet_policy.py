@@ -187,3 +187,32 @@ def test_apply_rejects_changed_preconditions_before_device_mutation(tmp_path) ->
         assert adapter.calls == 0
     finally:
         conn.close()
+
+
+def test_apply_rejects_when_enforcement_device_is_locked(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        calls = 0
+
+        def ensure_address_list_entry(self, *_args):
+            self.calls += 1
+            return {"status": "added"}
+
+    adapter = Adapter()
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(conn, plan_key="plan-locked", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="e" * 64, precheck={}, rollback={})
+        add_plan_step(conn, "plan-locked", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-locked", "validated")
+        transition_plan(conn, "plan-locked", "approved")
+        conn.execute("INSERT INTO device_operation_locks (device_key, holder, acquired_at) VALUES ('router-a', 'other', datetime('now'))")
+        conn.commit()
+
+        with pytest.raises(ValueError, match="device operation is already in progress"):
+            apply_plan(conn, "plan-locked", adapter)
+
+        assert adapter.calls == 0
+    finally:
+        conn.close()
