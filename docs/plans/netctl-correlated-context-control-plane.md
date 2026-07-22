@@ -422,7 +422,7 @@ docs/verification/netopsctl-internet-policy-readiness.md
 - Produces migration `9` and the tables used by all PR 4 correlation code.
 - Consumes existing `assets`, `asset_interfaces`, `network_sources`, `context_revisions`, `switch_ports` and `current_switch_fdb`.
 
-- [ ] **Step 1: Write failing migration tests**
+- [x] **Step 1: Write failing migration tests**
 
 Add a test that opens a database at migration `8`, applies migrations and asserts ledger `1..9`, all tables and constraints.
 
@@ -458,7 +458,7 @@ def test_migration_9_creates_correlation_schema(tmp_path: Path) -> None:
 
 Add an injected migration failure test and assert that no migration-9 table or ledger row remains.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_topology.py::test_migration_9_creates_correlation_schema -q
@@ -466,7 +466,7 @@ python -m pytest tests/test_netctl_topology.py::test_migration_9_creates_correla
 
 Expected: FAIL because migration 9 is absent.
 
-- [ ] **Step 3: Implement migration 9 with individual `conn.execute()` calls**
+- [x] **Step 3: Implement migration 9 with individual `conn.execute()` calls**
 
 Do not use `executescript()` and do not call `commit()` inside the migration.
 
@@ -595,7 +595,7 @@ CREATE INDEX topology_findings_status_type_idx
 ON topology_findings(status, finding_type, last_seen_at DESC);
 ```
 
-- [ ] **Step 4: Run migration tests**
+- [x] **Step 4: Run migration tests**
 
 ```bash
 python -m pytest tests/test_netctl_topology.py -k migration -q
@@ -603,7 +603,7 @@ python -m pytest tests/test_netctl_topology.py -k migration -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add netctl/migrations.py tests/test_netctl_topology.py
@@ -622,7 +622,7 @@ git commit -m "feat: add topology correlation schema"
 - Produces `SourceIdentity` and `list_source_identities()`.
 - Later topology tasks consume management MACs, runtime asset binding, intent binding and topology role.
 
-- [ ] **Step 1: Write failing identity tests**
+- [x] **Step 1: Write failing identity tests**
 
 Use this public contract:
 
@@ -657,7 +657,7 @@ Allowed topology roles are core, distribution, access, edge and unknown.
 Secrets never enter the public identity object.
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_source_identity.py -q
@@ -665,7 +665,7 @@ python -m pytest tests/test_netctl_source_identity.py -q
 
 Expected: FAIL because `netctl.source_identity` is absent.
 
-- [ ] **Step 3: Extend generic source options**
+- [x] **Step 3: Extend generic source options**
 
 Permit these source YAML scalars for all drivers and store them in `driver_options_json`:
 
@@ -684,7 +684,7 @@ TOPOLOGY_ROLES = frozenset({"core", "distribution", "access", "edge", "unknown"}
 
 Empty identity fields are valid; invalid role or whitespace-only stable identifiers are rejected.
 
-- [ ] **Step 4: Implement the resolver**
+- [x] **Step 4: Implement the resolver**
 
 Resolution order:
 
@@ -697,7 +697,7 @@ Resolution order:
 6. Do not insert, update or confirm any binding.
 ```
 
-- [ ] **Step 5: Run tests and regression subset**
+- [x] **Step 5: Run tests and regression subset**
 
 ```bash
 python -m pytest tests/test_netctl_source_identity.py tests/test_netctl_snmp_config.py tests/test_netctl_context_import.py -q
@@ -705,7 +705,7 @@ python -m pytest tests/test_netctl_source_identity.py tests/test_netctl_snmp_con
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add netctl/source_identity.py netctl/config.py netctl/db.py tests/test_netctl_source_identity.py
