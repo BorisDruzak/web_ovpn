@@ -11,7 +11,7 @@ def test_private_signing_credentials_are_named_regular_32_byte_files(tmp_path: P
 
     # Windows does not expose POSIX credential modes; systemd production still
     # executes the real mode check on Linux.
-    monkeypatch.setattr(credentials.stat, "S_IMODE", lambda _mode: 0o600)
+    monkeypatch.setattr(credentials.stat, "S_IMODE", lambda _mode: 0o440)
 
     with pytest.raises(ValueError, match="invalid audit signing credential"):
         read_ed25519_private_key("netopsctl-audit-signing-key", role="audit signing", credentials_directory=tmp_path)

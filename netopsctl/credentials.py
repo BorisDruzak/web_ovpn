@@ -23,7 +23,10 @@ def read_ed25519_private_key(
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise ValueError
-        if stat.S_IMODE(metadata.st_mode) & 0o077:
+        # systemd 255 delivers LoadCredential files as root:root 0440 while
+        # granting the service process access through the credential mount.
+        # Group read is therefore accepted, but no write/execute or world bit.
+        if stat.S_IMODE(metadata.st_mode) & 0o037:
             raise ValueError
         value = path.read_bytes()
     except (OSError, ValueError) as exc:
