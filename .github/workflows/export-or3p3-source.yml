@@ -24,14 +24,13 @@ jobs:
           set -Eeuo pipefail
           tar \
             --exclude=.git \
-            --exclude=web_ovpn-source.tar.gz \
-            -czf web_ovpn-source.tar.gz \
+            -czf "${RUNNER_TEMP}/web_ovpn-source.tar.gz" \
             .
 
       - name: Upload source artifact
         uses: actions/upload-artifact@v4
         with:
           name: or3p3-source-export
-          path: web_ovpn-source.tar.gz
+          path: ${{ runner.temp }}/web_ovpn-source.tar.gz
           if-no-files-found: error
           retention-days: 1
