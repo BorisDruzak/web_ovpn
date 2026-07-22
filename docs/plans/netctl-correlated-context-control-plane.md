@@ -1504,7 +1504,7 @@ git commit -m "feat: manage user asset context through API"
 - Produces migration `11` and complete route metadata.
 - Preserves existing route query fields.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Migration 11 adds:
 
@@ -1519,23 +1519,23 @@ ON network_routes(source_id, routing_table, dst_address, active, distance);
 
 Tests prove named tables, scope, target scope and immediate gateway survive driver -> snapshot -> SQLite -> CLI/API.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_route_metadata.py -q
 ```
 
-- [ ] **Step 3: Implement migration and storage**
+- [x] **Step 3: Implement migration and storage**
 
 Do not change route identity to IP-only and do not discard legacy rows.
 
-- [ ] **Step 4: Run tests and close Issue #8 after merge**
+- [x] **Step 4: Run tests and close Issue #8 after merge**
 
 ```bash
 python -m pytest tests/test_netctl_route_metadata.py tests/test_netctl_cli.py -q
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add netctl/migrations.py netctl/store.py netctl/drivers/mikrotik_api.py netctl/drivers/mikrotik_ssh.py tests/test_netctl_route_metadata.py

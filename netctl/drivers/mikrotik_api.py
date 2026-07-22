@@ -135,7 +135,7 @@ class MikroTikApiDriver(NetworkDriver):
             ["name", "type", "running", "disabled", "mtu", "mac-address", "comment", "actual-mtu", "rx-byte", "tx-byte", "rx-packet", "tx-packet"],
         ),
         "addresses": ("/ip/address/print", ["address", "network", "interface", "disabled", "dynamic", "comment"]),
-        "routes": ("/ip/route/print", ["dst-address", "gateway", "distance", "active", "disabled", "dynamic", "comment", "routing-table"]),
+        "routes": ("/ip/route/print", ["dst-address", "gateway", "distance", "active", "disabled", "dynamic", "comment", "routing-table", "scope", "target-scope", "immediate-gw"]),
         "arp": ("/ip/arp/print", ["address", "mac-address", "interface", "published", "complete", "dynamic", "comment"]),
         "dhcp_leases": (
             "/ip/dhcp-server/lease/print",
@@ -278,6 +278,9 @@ class MikroTikApiDriver(NetworkDriver):
                 "dynamic": parse_bool(row.get("dynamic")),
                 "comment": row.get("comment") or "",
                 "routing_table": row.get("routing-table") or "main",
+                "scope": parse_int(row.get("scope")),
+                "target_scope": parse_int(row.get("target-scope")),
+                "immediate_gateway": row.get("immediate-gw") or "",
             }
             for row in rows
         ]

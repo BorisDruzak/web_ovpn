@@ -341,8 +341,8 @@ def _save_collection(
         conn.execute(
             """
             INSERT INTO network_routes
-              (source_id, dst_address, gateway, distance, active, disabled, dynamic, comment, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              (source_id, dst_address, gateway, distance, active, disabled, dynamic, comment, routing_table, scope, target_scope, immediate_gateway, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
@@ -353,6 +353,10 @@ def _save_collection(
                 int(bool(item.get("disabled"))),
                 int(bool(item.get("dynamic"))),
                 item.get("comment"),
+                item.get("routing_table") or "main",
+                item.get("scope"),
+                item.get("target_scope"),
+                item.get("immediate_gateway") or "",
                 observed_at,
             ),
         )

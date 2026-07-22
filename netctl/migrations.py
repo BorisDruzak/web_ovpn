@@ -1581,6 +1581,17 @@ def _migration_10(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_11(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE network_routes ADD COLUMN routing_table TEXT NOT NULL DEFAULT 'main'")
+    conn.execute("ALTER TABLE network_routes ADD COLUMN scope INTEGER")
+    conn.execute("ALTER TABLE network_routes ADD COLUMN target_scope INTEGER")
+    conn.execute("ALTER TABLE network_routes ADD COLUMN immediate_gateway TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """CREATE INDEX network_routes_source_table_dst_idx
+           ON network_routes(source_id, routing_table, dst_address, active, distance)"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1592,6 +1603,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (8, _migration_8),
     (9, _migration_9),
     (10, _migration_10),
+    (11, _migration_11),
 )
 
 
