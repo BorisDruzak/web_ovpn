@@ -124,7 +124,8 @@ class FingerprintKeyStore:
                 "Fingerprint key cannot be created safely"
             ) from exc
 
-        created = True
+        created_metadata = os.fstat(descriptor)
+        completed = False
         try:
             os.fchown(
                 descriptor,
@@ -141,42 +142,41 @@ class FingerprintKeyStore:
                     )
                 offset += written
             os.fsync(descriptor)
+            completed = True
         except BackupError:
             raise
         except OSError as exc:
             raise _secret_invalid("Fingerprint key write failed") from exc
         finally:
             os.close(descriptor)
-            if created and not self._created_key_is_complete(path):
-                self._remove_incomplete_key(path)
+            if not completed:
+                self._remove_created_key(path, created_metadata)
 
         fsync_directory(path.parent)
         return self.load()
 
-    def _created_key_is_complete(self, path: Path) -> bool:
+    def _remove_created_key(
+        self,
+        path: Path,
+        created_metadata: os.stat_result,
+    ) -> None:
         try:
-            metadata = path.lstat()
-        except OSError:
-            return False
-        return (
-            stat.S_ISREG(metadata.st_mode)
-            and metadata.st_uid == self.settings.expected_root_uid
-            and metadata.st_gid == self.settings.expected_root_gid
-            and stat.S_IMODE(metadata.st_mode) == 0o600
-            and metadata.st_size == 32
-        )
-
-    def _remove_incomplete_key(self, path: Path) -> None:
-        try:
-            metadata = path.lstat()
+            current = path.lstat()
         except OSError:
             return
-        if not stat.S_ISREG(metadata.st_mode):
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_dev != created_metadata.st_dev
+            or current.st_ino != created_metadata.st_ino
+        ):
             return
         try:
             path.unlink()
+        except OSError:
+            return
+        try:
             fsync_directory(path.parent)
-        except (BackupError, OSError):
+        except BackupError:
             return
 
 
