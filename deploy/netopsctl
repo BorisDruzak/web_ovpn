@@ -22,7 +22,7 @@ usermod -aG netctl netopsctl
 usermod -aG netopsctl openvpn-web
 install -d -o netopsctl -g netopsctl -m 0750 /var/lib/netopsctl
 install -d -o root -g root -m 0700 /etc/netopsctl/credentials /etc/openvpn-web/credentials
-require_credential_source /etc/netopsctl/credentials/netopsctl_audit_signing_ed25519.raw
+require_credential_source /etc/netopsctl/credentials/audit_signing_ed25519.raw
 require_credential_source /etc/netopsctl/credentials/netopsctl_reconcile_signing_ed25519.raw
 require_credential_source /etc/openvpn-web/credentials/netops_web_signing_ed25519.raw
 require_credential_source /etc/openvpn-web/credentials/context_api_cursor_signing.raw

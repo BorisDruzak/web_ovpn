@@ -11,7 +11,7 @@ not authorize a RouterOS write and does not change either production write gate.
   `NETOPSCTL_PRODUCTION_WRITES_ENABLED` and
   `NETOPSCTL_AUDIT_CHECKPOINT_HEALTHY`.
 - The four root-owned, regular, non-symlink credential sources exist:
-  `/etc/netopsctl/credentials/netopsctl_audit_signing_ed25519.raw`,
+  `/etc/netopsctl/credentials/audit_signing_ed25519.raw`,
   `/etc/netopsctl/credentials/netopsctl_reconcile_signing_ed25519.raw`, and
   `/etc/openvpn-web/credentials/netops_web_signing_ed25519.raw`, plus the
   32-byte-or-longer HMAC key
