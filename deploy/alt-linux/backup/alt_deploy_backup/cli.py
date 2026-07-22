@@ -9,6 +9,7 @@ from pathlib import Path
 from .errors import BackupError
 from .rehearsal import RehearsalService
 from .repository import BackupRepository
+from .restore import RestoreService
 from .settings import BackupSettings
 
 
@@ -119,6 +120,16 @@ def _dispatch(
             "check_count": result.check_count,
             "rehearsal_passed": result.rehearsal_passed,
         }
+    if command == "restore":
+        result = RestoreService(repository).restore(backup_id)
+        return {
+            "status": "ok",
+            "result": "backup_restored",
+            "backup_id": result.backup_id,
+            "phase": result.phase,
+            "services_restored": result.services_restored,
+            "rollback_performed": result.rollback_performed,
+        }
     if command == "delete":
         result = repository.delete(backup_id)
         return {
@@ -138,7 +149,7 @@ def _dispatch(
         }
     raise BackupError(
         code="backup_preflight_failed",
-        message="Backup command is not implemented yet",
+        message="Backup command is not implemented",
         exit_code=4,
     )
 
