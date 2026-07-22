@@ -116,3 +116,16 @@ def test_path_engine_rejects_stale_facts() -> None:
 
     assert result.verdict is PathVerdict.UNKNOWN
     assert result.unknown_reasons == ("stale_path_facts",)
+
+
+def test_path_engine_blocks_ordered_matching_filter_drop() -> None:
+    from netctl.path_engine import PathRequest, PathVerdict, explain_path
+
+    result = explain_path(
+        PathRequest("mac:AA:BB:CC:DD:EE:FF", "198.51.100.25", "tcp", 443),
+        source_ips=("192.0.2.10",),
+        routes=({"routing_table": "main", "dst_address": "0.0.0.0/0", "gateway": "10.0.0.1", "active": True},),
+        filter_rules=({"action": "drop", "protocol": "tcp", "dst_port": "443"},),
+    )
+
+    assert result.verdict is PathVerdict.BLOCKED
