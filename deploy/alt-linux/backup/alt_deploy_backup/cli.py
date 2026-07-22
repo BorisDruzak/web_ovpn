@@ -50,6 +50,17 @@ def _test_uid_override(environ: Mapping[str, str]) -> int | None:
     return int(value)
 
 
+def _settings(environ: Mapping[str, str]) -> BackupSettings:
+    try:
+        return BackupSettings.from_env(environ)
+    except (KeyError, ValueError) as exc:
+        raise BackupError(
+            code="backup_preflight_failed",
+            message="Backup configuration is invalid",
+            exit_code=6,
+        ) from exc
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -68,7 +79,7 @@ def main(
                 exit_code=6,
             )
         command, backup_id = _parse(args)
-        BackupSettings.from_env(env)
+        _settings(env)
         payload: dict[str, object] = {
             "status": "ok",
             "command": command,
