@@ -2071,7 +2071,7 @@ git commit -m "feat: add bounded MikroTik policy adapter"
 - Reads netctl context through `connect_read_only()` and the same bounded query functions used by the public context API.
 - Produces deterministic `internet_access_set` plans.
 
-- [ ] **Step 1: Write failing resolver tests**
+- [x] **Step 1: Write failing resolver tests**
 
 Eligibility rules:
 
@@ -2095,7 +2095,7 @@ asset with no current IP;
 unknown desired state.
 ```
 
-- [ ] **Step 2: Implement target resolution**
+- [x] **Step 2: Implement target resolution**
 
 A deny plan contains one `ensure_address_list_entry` step per current IPv4 and one rollback `remove_address_list_entry` step. An allow plan contains one remove step per managed entry belonging to the asset.
 
@@ -2107,7 +2107,7 @@ web_ovpn:asset=<asset_key>;plan=<plan_key>
 
 The angle-bracket tokens above describe serialized fields, not operator-supplied command text. The implementation uses validated values from the immutable plan.
 
-- [ ] **Step 3: Run tests and commit**
+- [x] **Step 3: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netopsctl_internet_policy.py -k plan -q
