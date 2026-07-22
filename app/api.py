@@ -891,7 +891,7 @@ def api_context_topology(
     request: Request,
     site: str = Query(default="", max_length=128),
     state: str = Query(default=""),
-    depth: int = Query(default=4, ge=1, le=32),
+    depth: int = Query(default=3, ge=1, le=8),
     actor: str = Depends(require_api_actor),
 ):
     if state not in {"", "confirmed", "inferred", "ambiguous", "conflicting"}:
