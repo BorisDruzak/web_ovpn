@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .normalizer import normalize_mac
+from .switch_eligibility import authoritative_fdb_run
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ def attachment_candidates(
         """
         SELECT f.source_id, f.vlan_key, f.vlan_id, f.mac, f.port_key, f.status,
                f.last_seen_at, f.collector_run_id, p.oper_status,
-               runs.status AS collector_status
+               runs.status AS collector_status, runs.outcomes_json
         FROM current_switch_fdb AS f
         LEFT JOIN switch_ports AS p
           ON p.source_id = f.source_id AND p.port_key = f.port_key
@@ -120,7 +121,7 @@ def attachment_candidates(
         )
         topology_depth = depths.get(source_id)
         vlan_id = int(row["vlan_id"]) if row["vlan_id"] is not None else None
-        successful_run = str(row["collector_status"] or "") == "success"
+        successful_run = authoritative_fdb_run(row)
         for asset_id, interface_id in interfaces:
             if asset_id == runtime_asset_id:
                 continue

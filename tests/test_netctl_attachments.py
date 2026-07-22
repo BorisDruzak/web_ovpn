@@ -56,8 +56,8 @@ def _attachment_db(tmp_path: Path) -> sqlite3.Connection:
     )
     conn.executemany(
         """
-        INSERT INTO switch_collection_runs (id, source_id, started_at, finished_at, status)
-        VALUES (?, ?, ?, ?, 'success')
+        INSERT INTO switch_collection_runs (id, source_id, started_at, finished_at, status, outcomes_json)
+        VALUES (?, ?, ?, ?, 'success', '{"fdb":"success_with_rows"}')
         """,
         [(100, 10, now, now), (101, 11, now, now)],
     )
@@ -174,6 +174,25 @@ def test_attachment_candidates_keep_last_successful_fdb_after_a_failed_run(tmp_p
         candidates = attachment_candidates(conn, {})
 
         assert [(item.port_key, item.score) for item in candidates] == [("physical:48", 75)]
+    finally:
+        conn.close()
+
+
+def test_attachment_candidates_accept_authoritative_partial_fdb_with_optional_failure(tmp_path: Path) -> None:
+    from netctl.attachment_candidates import attachment_candidates
+
+    conn = _attachment_db(tmp_path)
+    try:
+        conn.execute(
+            """UPDATE switch_collection_runs
+               SET status = 'partial', outcomes_json = '{"fdb":"success_with_rows","vlan":"timeout"}'
+               WHERE id = 100"""
+        )
+        _insert_fdb(conn)
+
+        candidates = attachment_candidates(conn, {10: 2})
+
+        assert [(item.port_key, item.score) for item in candidates] == [("physical:48", 85)]
     finally:
         conn.close()
 
