@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .errors import BackupError
+from .repository import BackupRepository
 from .settings import BackupSettings
 
 
@@ -61,6 +62,29 @@ def _settings(environ: Mapping[str, str]) -> BackupSettings:
         ) from exc
 
 
+def _dispatch(
+    command: str,
+    backup_id: str | None,
+    settings: BackupSettings,
+) -> dict[str, object]:
+    repository = BackupRepository(settings)
+    if command == "create":
+        result = repository.create()
+        return {
+            "status": "ok",
+            "result": "backup_created",
+            "backup_id": result.backup_id,
+            "component_count": result.component_count,
+            "manifest_sha256": result.manifest_sha256,
+            "services_restored": result.services_restored,
+        }
+    return {
+        "status": "ok",
+        "command": command,
+        "backup_id": backup_id,
+    }
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -79,12 +103,7 @@ def main(
                 exit_code=6,
             )
         command, backup_id = _parse(args)
-        _settings(env)
-        payload: dict[str, object] = {
-            "status": "ok",
-            "command": command,
-            "backup_id": backup_id,
-        }
+        payload = _dispatch(command, backup_id, _settings(env))
         print(json.dumps(payload, ensure_ascii=False))
         return 0
     except BackupError as exc:
