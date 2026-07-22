@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .collect_lock import CollectLock
+from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
@@ -613,6 +614,39 @@ def cmd_topology(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_attachments(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.attachments_command == "reconcile":
+        conn = prepare_conn(args)
+        try:
+            return 0, ok(**reconcile_attachments(conn, utc_now()))
+        finally:
+            conn.close()
+    conn = connect_read_only(args.db)
+    try:
+        if args.attachments_command == "status":
+            counts = {state: 0 for state in ("confirmed", "ambiguous", "uplink_only", "unresolved")}
+            counts.update({str(row["status"]): int(row["count"]) for row in conn.execute("SELECT status, count(*) AS count FROM asset_attachment_resolutions GROUP BY status")})
+            return 0, ok(resolutions=counts)
+        asset = conn.execute("SELECT id, asset_key FROM assets WHERE asset_key = ?", (args.asset_key,)).fetchone()
+        if asset is None:
+            return 1, err("asset not found", asset_key=args.asset_key)
+        if args.attachments_command == "inspect":
+            rows = conn.execute(
+                """SELECT resolutions.*, interfaces.interface_key FROM asset_attachment_resolutions AS resolutions
+                   JOIN asset_interfaces AS interfaces ON interfaces.id = resolutions.asset_interface_id
+                   WHERE resolutions.asset_id = ? ORDER BY resolutions.asset_interface_id""", (asset["id"],)
+            ).fetchall()
+            return 0, ok(asset_key=str(asset["asset_key"]), attachments=[dict(row) for row in rows])
+        if args.attachments_command == "events":
+            rows = conn.execute(
+                "SELECT * FROM asset_attachment_events WHERE asset_id = ? ORDER BY id DESC", (asset["id"],)
+            ).fetchall()
+            return 0, ok(asset_key=str(asset["asset_key"]), events=[dict(row) for row in rows])
+        return 2, err("unsupported attachments command")
+    finally:
+        conn.close()
+
+
 def _parse_utc(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
@@ -1186,6 +1220,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
     )
 
+    attachments = sub.add_parser("attachments")
+    attachments_sub = attachments.add_subparsers(dest="attachments_command", required=True)
+    attachments_sub.add_parser("reconcile")
+    attachments_sub.add_parser("status")
+    for name in ("inspect", "events"):
+        query = attachments_sub.add_parser(name)
+        query.add_argument("--asset-key", required=True)
+
     ipsec = sub.add_parser("ipsec")
     ipsec_sub = ipsec.add_subparsers(dest="ipsec_command", required=True)
     ipsec_status = ipsec_sub.add_parser("status")
@@ -1264,6 +1306,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_switches(args)
     if args.command == "topology":
         return cmd_topology(args)
+    if args.command == "attachments":
+        return cmd_attachments(args)
     if args.command == "ipsec":
         return cmd_ipsec(args)
     if args.command == "dashboard":

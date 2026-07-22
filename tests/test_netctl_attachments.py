@@ -176,3 +176,74 @@ def test_attachment_candidates_keep_last_successful_fdb_after_a_failed_run(tmp_p
         assert [(item.port_key, item.score) for item in candidates] == [("physical:48", 75)]
     finally:
         conn.close()
+
+
+def _candidate(
+    *,
+    source_id: int = 10,
+    port_key: str = "physical:48",
+    candidate_class: str = "direct",
+    depth: int | None = 2,
+    score: int = 85,
+):
+    from netctl.attachment_candidates import AttachmentCandidate
+
+    return AttachmentCandidate(
+        asset_id=1,
+        asset_interface_id=1,
+        switch_source_id=source_id,
+        port_key=port_key,
+        vlan_key="20",
+        vlan_id=20,
+        candidate_class=candidate_class,
+        topology_depth=depth,
+        score=score,
+        observed_at="2026-07-22T08:00:00Z",
+        evidence=(),
+    )
+
+
+def test_attachment_resolution_uses_confirmed_ambiguous_uplink_and_unresolved_rules() -> None:
+    from netctl.attachment_reconcile import resolve_attachment
+
+    confirmed = resolve_attachment((_candidate(score=85), _candidate(source_id=11, score=65)))
+    assert (confirmed.status, confirmed.confidence, confirmed.selected.port_key) == ("confirmed", 85, "physical:48")
+
+    ambiguous = resolve_attachment((_candidate(score=85), _candidate(source_id=11, score=74)))
+    assert (ambiguous.status, ambiguous.confidence, ambiguous.selected) == ("ambiguous", 60, None)
+
+    same_depth = resolve_attachment((_candidate(score=85), _candidate(source_id=11, score=84, depth=2)))
+    assert same_depth.status == "ambiguous"
+
+    uplink_only = resolve_attachment((_candidate(candidate_class="uplink", score=45),))
+    assert (uplink_only.status, uplink_only.confidence, uplink_only.selected) == ("uplink_only", 45, None)
+
+    unresolved = resolve_attachment(())
+    assert (unresolved.status, unresolved.confidence, unresolved.selected) == ("unresolved", 0, None)
+
+
+def test_reconcile_attachments_persists_candidates_and_a_move(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from netctl import attachment_reconcile
+
+    conn = _attachment_db(tmp_path)
+    try:
+        first = (_candidate(port_key="physical:48", score=85),)
+        monkeypatch.setattr(attachment_reconcile, "attachment_candidates", lambda _conn, _depths: first)
+        monkeypatch.setattr(attachment_reconcile, "list_source_identities", lambda _conn: ())
+        created = attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:00:00Z")
+        assert created["counts"]["confirmed"] == 1
+        assert conn.execute(
+            "SELECT selected_port_key FROM asset_attachment_resolutions WHERE asset_interface_id = 1"
+        ).fetchone()[0] == "physical:48"
+        assert conn.execute("SELECT event_type FROM asset_attachment_events").fetchone()[0] == "attached"
+
+        moved = (_candidate(port_key="physical:47", score=85),)
+        monkeypatch.setattr(attachment_reconcile, "attachment_candidates", lambda _conn, _depths: moved)
+        attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:01:00Z")
+        assert conn.execute(
+            "SELECT event_type FROM asset_attachment_events ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0] == "moved"
+    finally:
+        conn.close()
