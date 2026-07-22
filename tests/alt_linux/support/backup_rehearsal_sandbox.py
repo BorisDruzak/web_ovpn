@@ -50,7 +50,13 @@ class BackupSandbox(ManagementSandbox):
                 continue
             if any(path == root or root in path.parents for root in excluded):
                 continue
-            result[str(path.relative_to(self.root))] = path.read_bytes()
+            relative = path.relative_to(self.root)
+            if any(
+                part.startswith(".alt-deploy-restore-")
+                for part in relative.parts
+            ):
+                continue
+            result[str(relative)] = path.read_bytes()
         return result
 
     def malformed_rehearsal_tree(self) -> Path:
