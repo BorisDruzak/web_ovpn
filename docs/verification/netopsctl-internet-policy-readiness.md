@@ -13,7 +13,7 @@ sanitized and excludes device addresses, RouterOS exports, and credentials.
 - `netopsctl.socket`, `netopsctl.service`, and `openvpn-web.service` are
   active. A signed web-to-broker `status` smoke test returned
   `writes_enabled: false`.
-- The local audit chain verified successfully with 15 signed events.
+- The local audit chain verified successfully with 16 signed events.
 - An independently signed checkpoint for that chain was successfully delivered
   to the configured audit sink. The audit checkpoint health gate is now true.
 - The broker has separate principals: the web service can use plan/read
