@@ -30,6 +30,7 @@ _FORWARD = {
 }
 _AFTER_MUTATION = frozenset(
     {
+        "services_stopped",
         "originals_moved",
         "installed",
         "daemon_reloaded",
@@ -132,7 +133,9 @@ class RestoreJournal:
         try:
             metadata = transactions.lstat()
         except OSError as exc:
-            raise _error("Restore transaction root cannot be inspected") from exc
+            raise _error(
+                "Restore transaction root cannot be inspected"
+            ) from exc
         if (
             not stat.S_ISDIR(metadata.st_mode)
             or stat.S_ISLNK(metadata.st_mode)
@@ -215,7 +218,9 @@ class RestoreJournal:
         if (
             payload.get("schema_version") != 1
             or payload.get("restore_id") != restore_id
-            or not BACKUP_ID_RE.fullmatch(str(payload.get("backup_id") or ""))
+            or not BACKUP_ID_RE.fullmatch(
+                str(payload.get("backup_id") or "")
+            )
             or payload.get("phase")
             not in (set(_FORWARD) | set(_FORWARD.values()) | _TERMINAL)
             or not isinstance(payload.get("evidence"), dict)
@@ -254,7 +259,9 @@ class RestoreJournal:
             os.chmod(self.path, 0o600)
             fsync_directory(self.directory)
         except (OSError, BackupError) as exc:
-            raise _error("Restore journal cannot be synchronized") from exc
+            raise _error(
+                "Restore journal cannot be synchronized"
+            ) from exc
 
     def transition(
         self,
