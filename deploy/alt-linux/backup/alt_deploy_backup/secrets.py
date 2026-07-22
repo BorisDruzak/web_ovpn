@@ -59,7 +59,7 @@ class FingerprintKeyStore:
     def __init__(self, settings: BackupSettings):
         self.settings = settings
 
-    def _read_existing(self) -> bytes:
+    def load(self) -> bytes:
         path = self.settings.fingerprint_key
         try:
             metadata = path.lstat()
@@ -83,7 +83,7 @@ class FingerprintKeyStore:
     def ensure(self) -> bytes:
         path = self.settings.fingerprint_key
         if path.exists() or path.is_symlink():
-            return self._read_existing()
+            return self.load()
 
         assert_safe_parents(path.parent)
         if not path.parent.exists() and not path.parent.is_symlink():
@@ -118,11 +118,13 @@ class FingerprintKeyStore:
         try:
             descriptor = os.open(path, flags, 0o600)
         except FileExistsError:
-            return self._read_existing()
+            return self.load()
         except OSError as exc:
             raise _secret_invalid(
                 "Fingerprint key cannot be created safely"
             ) from exc
+
+        created = True
         try:
             os.fchown(
                 descriptor,
@@ -139,12 +141,43 @@ class FingerprintKeyStore:
                     )
                 offset += written
             os.fsync(descriptor)
+        except BackupError:
+            raise
         except OSError as exc:
             raise _secret_invalid("Fingerprint key write failed") from exc
         finally:
             os.close(descriptor)
+            if created and not self._created_key_is_complete(path):
+                self._remove_incomplete_key(path)
+
         fsync_directory(path.parent)
-        return self._read_existing()
+        return self.load()
+
+    def _created_key_is_complete(self, path: Path) -> bool:
+        try:
+            metadata = path.lstat()
+        except OSError:
+            return False
+        return (
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_uid == self.settings.expected_root_uid
+            and metadata.st_gid == self.settings.expected_root_gid
+            and stat.S_IMODE(metadata.st_mode) == 0o600
+            and metadata.st_size == 32
+        )
+
+    def _remove_incomplete_key(self, path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError:
+            return
+        if not stat.S_ISREG(metadata.st_mode):
+            return
+        try:
+            path.unlink()
+            fsync_directory(path.parent)
+        except (BackupError, OSError):
+            return
 
 
 class SecretIdentityProvider:
@@ -263,8 +296,12 @@ class SecretIdentityProvider:
             raise _secret_invalid("SSH fingerprint output is invalid")
         return "ssh-public-fingerprint:" + fingerprint
 
-    def capture(self) -> tuple[SecretIdentity, ...]:
-        key = self.key_store.ensure()
+    def _capture(
+        self,
+        *,
+        create_key: bool,
+    ) -> tuple[SecretIdentity, ...]:
+        key = self.key_store.ensure() if create_key else self.key_store.load()
         vault_raw, vault_metadata = self._read_service_secret(
             self.settings.vault_file,
             kind="vault",
@@ -301,11 +338,20 @@ class SecretIdentityProvider:
             ),
         )
 
+    def capture(self) -> tuple[SecretIdentity, ...]:
+        return self._capture(create_key=True)
+
     def assert_matches(
         self,
         expected: Sequence[SecretIdentity],
     ) -> None:
-        current = self.capture()
+        try:
+            current = self._capture(create_key=False)
+        except BackupError as exc:
+            raise _secret_mismatch(
+                "Current secret identity cannot be verified"
+            ) from exc
+
         expected_by_kind = {item.kind: item for item in expected}
         current_by_kind = {item.kind: item for item in current}
         if (
