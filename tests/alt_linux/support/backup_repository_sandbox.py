@@ -35,7 +35,7 @@ class ObservedArchiveEngine(ArchiveEngine):
         return super().capture(spec, destination)
 
 
-@dataclass
+@dataclass(frozen=True)
 class BackupSandbox(ArchiveSandbox):
     capture_order: list[str] = field(default_factory=list)
     lifecycle_lock_observations: list[str] = field(default_factory=list)
@@ -185,7 +185,7 @@ class BackupSandbox(ArchiveSandbox):
         )
 
     def fail_component(self, name: str) -> None:
-        self.failed_component = name
+        object.__setattr__(self, "failed_component", name)
 
     def managed_unit_snapshot(self) -> dict[str, tuple[str, str]]:
         return {
