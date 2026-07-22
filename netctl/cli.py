@@ -17,7 +17,7 @@ from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
-from .context_query import context_snapshot, inspect_asset_context, list_topology_context, search_context_page
+from .context_query import context_snapshot, inspect_asset_context, topology_context, search_context_page
 from .source_identity import source_readiness
 from .path_engine import PathRequest
 from .path_query import DEFAULT_PATH_FACT_MAX_AGE_SECONDS, explain_asset_path
@@ -674,9 +674,10 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             )
             return 0, ok(results=results, next_cursor=next_cursor, snapshot=snapshot)
         if args.context_view_command == "topology":
+            topology = topology_context(conn, args.site, args.state, args.depth, args.max_nodes)
             return 0, ok(
                 depth=args.depth,
-                links=list_topology_context(conn, args.site, args.state, args.depth),
+                **topology,
                 snapshot=snapshot,
             )
         if args.context_view_command == "findings":
@@ -1339,7 +1340,8 @@ def build_parser() -> argparse.ArgumentParser:
     context_view_topology.add_argument(
         "--state", choices=("confirmed", "inferred", "ambiguous", "conflicting"), default=""
     )
-    context_view_topology.add_argument("--depth", type=int, default=4, choices=range(1, 33))
+    context_view_topology.add_argument("--depth", type=int, default=3, choices=range(1, 9))
+    context_view_topology.add_argument("--max-nodes", type=int, default=250, choices=range(1, 1001))
     context_view_findings = context_view_sub.add_parser("findings")
     context_view_findings.add_argument(
         "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"

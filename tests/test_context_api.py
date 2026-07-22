@@ -185,6 +185,8 @@ def test_context_topology_api_delegates_bounded_filters_to_netctl(tmp_path, monk
         "confirmed",
         "--depth",
         "4",
+        "--max-nodes",
+        "250",
     ]
 
 
@@ -192,6 +194,14 @@ def test_context_topology_rejects_depth_above_v1_bound(tmp_path, monkeypatch):
     client, headers, _ = make_client(tmp_path, monkeypatch)
 
     response = client.get("/api/v1/context/topology", params={"depth": 9}, headers=headers)
+
+    assert response.status_code == 422
+
+
+def test_context_topology_rejects_max_nodes_above_v1_bound(tmp_path, monkeypatch):
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/v1/context/topology", params={"max_nodes": 1001}, headers=headers)
 
     assert response.status_code == 422
 

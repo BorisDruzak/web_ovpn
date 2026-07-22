@@ -936,6 +936,7 @@ def api_context_topology(
     site: str = Query(default="", max_length=128),
     state: str = Query(default=""),
     depth: int = Query(default=3, ge=1, le=8),
+    max_nodes: int = Query(default=250, ge=1, le=1000),
     actor: str = Depends(require_api_actor),
 ):
     if state not in {"", "confirmed", "inferred", "ambiguous", "conflicting"}:
@@ -945,7 +946,7 @@ def api_context_topology(
         args.extend(["--site", site])
     if state:
         args.extend(["--state", state])
-    args.extend(["--depth", str(depth)])
+    args.extend(["--depth", str(depth), "--max-nodes", str(max_nodes)])
     return context_response(request, call_netctl(args))
 
 

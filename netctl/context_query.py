@@ -299,10 +299,22 @@ def list_topology_context(
     conn: sqlite3.Connection,
     site: str = "",
     state: str = "",
-    depth: int = 4,
+    depth: int = 3,
 ) -> list[dict[str, Any]]:
-    if not 1 <= depth <= 32:
-        raise ValueError("depth must be between 1 and 32")
+    return topology_context(conn, site, state, depth)["links"]
+
+
+def topology_context(
+    conn: sqlite3.Connection,
+    site: str = "",
+    state: str = "",
+    depth: int = 3,
+    max_nodes: int = 250,
+) -> dict[str, Any]:
+    if not 1 <= depth <= 8:
+        raise ValueError("depth must be between 1 and 8")
+    if not 1 <= max_nodes <= 1000:
+        raise ValueError("max_nodes must be between 1 and 1000")
     if state not in {"", "confirmed", "inferred", "ambiguous", "conflicting"}:
         raise ValueError("invalid topology state")
     conditions: list[str] = []
@@ -324,8 +336,27 @@ def list_topology_context(
         JOIN network_sources AS source_b ON source_b.id = links.source_b_id
         {where}
         ORDER BY links.link_key
-        LIMIT 256
+        LIMIT 2048
         """,
         params,
     ).fetchall()
-    return [dict(row) for row in rows]
+    links: list[dict[str, Any]] = []
+    nodes: set[str] = set()
+    truncated = False
+    for row in rows:
+        link = dict(row)
+        proposed = nodes | {str(link["source_a"]), str(link["source_b"])}
+        if len(proposed) > max_nodes:
+            truncated = True
+            break
+        links.append(link)
+        nodes = proposed
+    if len(rows) == 2048:
+        truncated = True
+    return {
+        "links": links,
+        "max_nodes": max_nodes,
+        "node_count": len(nodes),
+        "truncated": truncated,
+        "truncation_reason": "max_nodes" if truncated else "",
+    }

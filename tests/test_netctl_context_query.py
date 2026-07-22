@@ -173,6 +173,22 @@ def test_context_view_cli_lists_topology_with_bounded_filters(tmp_path: Path, ca
     result = json.loads(capsys.readouterr().out)
     assert result["links"][0]["link_key"] == "10:uplink|11:core"
     assert result["depth"] == 4
+    assert result["max_nodes"] == 250
+    assert result["truncated"] is False
+
+
+def test_context_topology_declares_node_bound_truncation(tmp_path: Path) -> None:
+    from netctl.context_query import topology_context
+
+    conn = _context_db(tmp_path)
+    try:
+        result = topology_context(conn, max_nodes=1)
+        assert result == {
+            "links": [], "max_nodes": 1, "node_count": 0,
+            "truncated": True, "truncation_reason": "max_nodes",
+        }
+    finally:
+        conn.close()
 
 
 def test_context_view_cli_lists_aggregated_findings(tmp_path: Path, capsys) -> None:
