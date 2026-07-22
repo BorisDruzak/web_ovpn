@@ -150,7 +150,11 @@ def _contained(target: Path, root: Path) -> bool:
         return False
 
 
-def _inventory_entry(path: Path, kind: str, metadata: os.stat_result) -> InventoryEntry:
+def _inventory_entry(
+    path: Path,
+    kind: str,
+    metadata: os.stat_result,
+) -> InventoryEntry:
     return InventoryEntry(
         path=str(path.absolute()),
         kind=kind,
@@ -165,7 +169,7 @@ def _inventory_entry(path: Path, kind: str, metadata: os.stat_result) -> Invento
 def source_inventory(paths: Sequence[Path]) -> tuple[InventoryEntry, ...]:
     entries: dict[str, InventoryEntry] = {}
 
-    def walk(path: Path, root: Path, resolved_root: Path) -> None:
+    def walk(path: Path, resolved_root: Path) -> None:
         assert_safe_parents(path)
         try:
             metadata = path.lstat()
@@ -203,16 +207,23 @@ def source_inventory(paths: Sequence[Path]) -> tuple[InventoryEntry, ...]:
         except OSError as exc:
             raise _unsafe("Backup directory cannot be enumerated") from exc
         for child in children:
-            walk(child, root, resolved_root)
+            walk(child, resolved_root)
 
     for source in sorted(paths, key=lambda item: str(item.absolute())):
         absolute = source.absolute()
+        assert_safe_parents(absolute)
         try:
-            resolved_root = absolute.resolve(strict=True)
+            metadata = absolute.lstat()
         except OSError as exc:
-            raise _unsafe("Backup source root cannot be resolved") from exc
-        if absolute.is_symlink() or not resolved_root.is_dir():
+            raise _unsafe("Backup source root cannot be inspected") from exc
+        if stat.S_ISLNK(metadata.st_mode):
             raise _unsafe("Backup source root is unsafe")
-        walk(absolute, absolute, resolved_root)
+        if stat.S_ISREG(metadata.st_mode):
+            resolved_root = absolute.parent.resolve(strict=True)
+        elif stat.S_ISDIR(metadata.st_mode):
+            resolved_root = absolute.resolve(strict=True)
+        else:
+            raise _unsafe("Backup source root is unsafe")
+        walk(absolute, resolved_root)
 
     return tuple(entries[key] for key in sorted(entries))
