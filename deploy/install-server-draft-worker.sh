@@ -182,7 +182,7 @@ validate_draft_parent() {
     exit 2
   fi
   case "$metadata" in
-    openvpn-web:openvpn-web:755|root:openvpn-web:1770) ;;
+    openvpn-web:openvpn-web:755|openvpn-web:openvpn-web:1770|root:openvpn-web:1770) ;;
     *)
       echo "unexpected draft parent ownership or mode: $path" >&2
       exit 2
@@ -267,6 +267,12 @@ if [[ "$draft_parent_metadata" == "openvpn-web:openvpn-web:755" ]]; then
   # Removing owner write locks the legacy web-owned parent before migration.
   # /var/lib is root-owned and already validated, so the parent cannot be
   # replaced while this ownership change is made.
+  sudo_cmd chown root:openvpn-web "$DRAFT_PARENT"
+  sudo_cmd chmod 1750 "$DRAFT_PARENT"
+  draft_root_action=legacy_locked
+elif [[ "$draft_parent_metadata" == "openvpn-web:openvpn-web:1770" ]]; then
+  # Older deployments made the parent sticky before transferring ownership.
+  # Lock it identically before trusting or migrating its web-owned children.
   sudo_cmd chown root:openvpn-web "$DRAFT_PARENT"
   sudo_cmd chmod 1750 "$DRAFT_PARENT"
   draft_root_action=legacy_locked

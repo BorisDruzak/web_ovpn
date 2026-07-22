@@ -87,7 +87,7 @@ elif sudo_cmd test -L /var/lib/openvpn-web || ! sudo_cmd test -d /var/lib/openvp
 else
   state_dir_metadata="$(sudo_cmd stat -c '%U:%G:%a' -- /var/lib/openvpn-web)"
   case "$state_dir_metadata" in
-    openvpn-web:openvpn-web:755|root:openvpn-web:1770) ;;
+    openvpn-web:openvpn-web:755|openvpn-web:openvpn-web:1770|root:openvpn-web:1770) ;;
     *)
       echo "refusing unsafe /var/lib/openvpn-web metadata" >&2
       exit 2

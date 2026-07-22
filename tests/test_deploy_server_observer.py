@@ -168,6 +168,7 @@ def test_scoped_installer_safely_migrates_the_legacy_web_owned_snapshot_director
     installer = Path(OBSERVER_INSTALLER).read_text(encoding="utf-8")
 
     legacy_metadata = "openvpn-web:openvpn-web:750"
+    legacy_sticky_parent = "openvpn-web:openvpn-web:1770"
     legacy_allowance = installer.index(legacy_metadata)
     timer_stop = installer.index("systemctl stop server-observer.timer")
     parent_lock = installer.index("sudo_cmd chmod 1750 \"$STATE_PARENT\"")
@@ -175,6 +176,7 @@ def test_scoped_installer_safely_migrates_the_legacy_web_owned_snapshot_director
     final_parent_hardening = installer.index("sudo_cmd chmod 1770 \"$STATE_PARENT\"")
 
     assert legacy_allowance < timer_stop < parent_lock < state_hardening < final_parent_hardening
+    assert installer.index(legacy_sticky_parent) < timer_stop
     assert installer.count("validate_state_dir") >= 3
 
 

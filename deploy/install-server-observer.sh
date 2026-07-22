@@ -156,7 +156,7 @@ validate_state_parent() {
     exit 2
   fi
   case "$metadata" in
-    openvpn-web:openvpn-web:755|root:openvpn-web:1770) ;;
+    openvpn-web:openvpn-web:755|openvpn-web:openvpn-web:1770|root:openvpn-web:1770) ;;
     *)
       echo "observer state parent has unsafe metadata" >&2
       exit 2

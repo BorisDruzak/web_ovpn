@@ -97,7 +97,7 @@ def test_generic_installer_does_not_provision_or_enable_draft_worker():
     ):
         assert forbidden not in installer
     assert 'chown -R openvpn-web:openvpn-web "$APP" /var/lib/openvpn-web' not in installer
-    assert "openvpn-web:openvpn-web:755|root:openvpn-web:1770" in installer
+    assert "openvpn-web:openvpn-web:755|openvpn-web:openvpn-web:1770|root:openvpn-web:1770" in installer
     assert "refusing unsafe /var/lib/openvpn-web metadata" in installer
 
 
@@ -228,6 +228,7 @@ def test_scoped_installer_locks_and_validates_the_draft_namespace_before_mutatio
         'draft_root_action=legacy_locked',
         '[[ "$draft_root_metadata" == "root:openvpn-web:750" ]]',
         'case "$draft_root_action" in',
+        '"$draft_parent_metadata" == "openvpn-web:openvpn-web:1770"',
     ):
         assert required in installer
 
@@ -258,7 +259,7 @@ def test_scoped_installer_legacy_parent_lock_executes_chmod_immediately_after_ch
     branch = installer.split(
         'if [[ "$draft_parent_metadata" == "openvpn-web:openvpn-web:755" ]]; then',
         1,
-    )[1].split("# Recheck after the parent is locked.", 1)[0]
+    )[1].split("elif", 1)[0]
     trace = tmp_path / "legacy-lock.trace"
     script = f'''set -euo pipefail
 TRACE="$1"
