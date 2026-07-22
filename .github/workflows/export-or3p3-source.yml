@@ -21,6 +21,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      - name: Record branch metadata
+        run: |
+          set -Eeuo pipefail
+          {
+            printf 'commit=%s\n' "$(git rev-parse HEAD)"
+            printf 'tree=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          } > .or3p3-export-metadata
+
       - name: Pack source tree
         run: |
           set -Eeuo pipefail
