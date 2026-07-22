@@ -8,11 +8,18 @@ import pytest
 
 def _request(**extra):
     value = {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "request_id": str(uuid.uuid4()),
-        "actor": "api:network-admin",
         "action": "plan.apply",
         "payload": {"plan_key": "plan-20260722-0001"},
+        "authorization": {
+            "authorization_version": 1, "action": "plan.apply", "principal_type": "web_user",
+            "principal_id": "42", "principal_name": "admin-2", "session_id": "session-1",
+            "authorization_id": "authorization-1", "scopes": ["network.plan.apply"],
+            "plan_id": "plan-20260722-0001", "plan_digest": "sha256:" + "a" * 64,
+            "issued_at": "2026-07-22T08:00:00Z", "expires_at": "2026-07-22T08:02:00Z", "nonce": "nonce-1",
+        },
+        "signature": "dGVzdC1zaWduYXR1cmU",
     }
     value.update(extra)
     return value
@@ -32,6 +39,7 @@ def test_broker_protocol_accepts_only_registered_bounded_envelopes() -> None:
 
 @pytest.mark.parametrize("mutate", [
     lambda value: value.update({"command": "rm -rf /"}),
+    lambda value: value.update({"actor": "forged-admin"}),
     lambda value: value.update({"action": "shell.exec"}),
     lambda value: value.update({"payload": {"plan_key": "../../etc/passwd"}}),
     lambda value: value.update({"payload": {"plan_key": "plan-1\nrun"}}),

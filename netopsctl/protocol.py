@@ -7,11 +7,10 @@ from dataclasses import dataclass
 from typing import Any
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_REQUEST_BYTES = 16_384
 MAX_RESPONSE_BYTES = 16_384
 ACTIONS = frozenset({"plan.create", "plan.approve", "plan.apply", "plan.verify", "plan.rollback", "policy.reconcile", "status"})
-_ACTOR_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 _PLAN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -22,9 +21,10 @@ class ProtocolError(ValueError):
 @dataclass(frozen=True)
 class BrokerRequest:
     request_id: str
-    actor: str
     action: str
     payload: dict[str, Any]
+    authorization: dict[str, Any]
+    signature: str
 
 
 def _validate_payload(action: str, payload: object) -> dict[str, Any]:
@@ -60,7 +60,7 @@ def decode_request(data: bytes) -> BrokerRequest:
         value = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProtocolError("invalid request JSON") from exc
-    if not isinstance(value, dict) or set(value) != {"protocol_version", "request_id", "actor", "action", "payload"}:
+    if not isinstance(value, dict) or set(value) != {"protocol_version", "request_id", "action", "payload", "authorization", "signature"}:
         raise ProtocolError("unknown or missing request fields")
     if value["protocol_version"] != PROTOCOL_VERSION or not isinstance(value["request_id"], str):
         raise ProtocolError("unsupported protocol")
@@ -68,10 +68,13 @@ def decode_request(data: bytes) -> BrokerRequest:
         uuid.UUID(value["request_id"])
     except ValueError as exc:
         raise ProtocolError("invalid request id") from exc
-    actor, action = value["actor"], value["action"]
-    if not isinstance(actor, str) or not _ACTOR_RE.fullmatch(actor) or action not in ACTIONS:
-        raise ProtocolError("invalid actor or action")
-    return BrokerRequest(value["request_id"], actor, action, _validate_payload(action, value["payload"]))
+    action = value["action"]
+    if action not in ACTIONS:
+        raise ProtocolError("invalid action")
+    authorization, signature = value["authorization"], value["signature"]
+    if not isinstance(authorization, dict) or not isinstance(signature, str) or not re.fullmatch(r"[A-Za-z0-9_-]{16,256}", signature):
+        raise ProtocolError("invalid authorization envelope")
+    return BrokerRequest(value["request_id"], action, _validate_payload(action, value["payload"]), authorization, signature)
 
 
 def encode_response(value: dict[str, Any]) -> bytes:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,25 @@ def _plan(conn: sqlite3.Connection, plan_key: str) -> sqlite3.Row:
     if row is None:
         raise ValueError("change plan not found")
     return row
+
+
+def plan_digest(conn: sqlite3.Connection, plan_key: str) -> str:
+    """Hash the persisted immutable plan and ordered steps for authorization binding."""
+    plan = _plan(conn, plan_key)
+    steps = conn.execute(
+        "SELECT step_order, adapter, operation, target_key, request_json FROM change_plan_steps WHERE change_plan_id = ? ORDER BY step_order",
+        (plan["id"],),
+    ).fetchall()
+    body = {
+        "plan_key": str(plan["plan_key"]), "reason": str(plan["reason"]),
+        "subject_type": str(plan["subject_type"]), "subject_key": str(plan["subject_key"]),
+        "operation_type": str(plan["operation_type"]), "desired_state_json": str(plan["desired_state_json"]),
+        "resolved_targets_json": str(plan["resolved_targets_json"]), "context_evidence_hash": str(plan["context_evidence_hash"]),
+        "precheck_json": str(plan["precheck_json"]), "rollback_json": str(plan["rollback_json"]),
+        "steps": [dict(step) for step in steps],
+    }
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
 def _public_plan(row: sqlite3.Row) -> dict[str, Any]:

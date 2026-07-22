@@ -8,10 +8,18 @@ from typing import Any
 from .protocol import MAX_RESPONSE_BYTES, PROTOCOL_VERSION, ProtocolError, encode_response
 
 
-def request(socket_path: str, *, actor: str, action: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+def request(
+    socket_path: str,
+    *,
+    action: str,
+    payload: dict[str, Any],
+    authorization: dict[str, Any],
+    signature: str,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
     envelope = {
         "protocol_version": PROTOCOL_VERSION, "request_id": str(uuid.uuid4()),
-        "actor": actor, "action": action, "payload": payload,
+        "action": action, "payload": payload, "authorization": authorization, "signature": signature,
     }
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(timeout)

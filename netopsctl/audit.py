@@ -61,11 +61,12 @@ def append_event(conn: sqlite3.Connection, signer: AuditSigner, event_type: str,
     )
     signature = signer.private_key.sign(event_hash.encode("ascii"))
     event_id = str(uuid.uuid4())
+    payload_json = canonical_json(dict(payload)).decode("utf-8")
     conn.execute(
         """INSERT INTO audit_events
-           (sequence, event_id, event_type, created_at, payload_hash, previous_hash, event_hash, signer_key_id, signature)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (sequence, event_id, event_type, created_at, payload_hash, previous_hash, event_hash, signer.key_id, signature),
+           (sequence, event_id, event_type, created_at, payload_hash, previous_hash, event_hash, signer_key_id, signature, payload_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (sequence, event_id, event_type, created_at, payload_hash, previous_hash, event_hash, signer.key_id, signature, payload_json),
     )
     conn.commit()
     return {"sequence": sequence, "event_id": event_id, "event_hash": event_hash}
@@ -78,6 +79,12 @@ def verify_chain(conn: sqlite3.Connection, public_keys: Mapping[str, bytes]) -> 
     for row in rows:
         if int(row["sequence"]) != expected_sequence or str(row["previous_hash"]) != previous_hash:
             raise ValueError("audit chain sequence or previous hash mismatch")
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid audit payload") from exc
+        if not isinstance(payload, dict) or _hash(canonical_json(payload)) != str(row["payload_hash"]):
+            raise ValueError("audit payload hash mismatch")
         actual_hash = _event_hash(
             sequence=int(row["sequence"]), previous_hash=previous_hash, payload_hash=str(row["payload_hash"]),
             event_type=str(row["event_type"]), created_at=str(row["created_at"]),
