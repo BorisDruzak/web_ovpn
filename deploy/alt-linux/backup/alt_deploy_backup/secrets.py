@@ -15,6 +15,13 @@ from .fs import assert_safe_parents, fsync_directory, read_regular_bytes
 from .settings import BackupSettings
 
 
+_LOGICAL_SECRET_PATHS = {
+    "vault": "/home/altserver/ansible/group_vars/vault.yml",
+    "vault_password": "/home/altserver/.ansible-vault-pass",
+    "ssh_private_key": "/home/altserver/.ssh/id_ed25519",
+}
+
+
 @dataclass(frozen=True)
 class SecretIdentity:
     path: str
@@ -51,8 +58,11 @@ def vault_identity(raw: bytes) -> str:
 
 
 def password_identity(raw: bytes, key: bytes) -> str:
-    digest = hmac.new(key, raw, hashlib.sha256).hexdigest()
-    return "hmac-sha256:" + digest
+    return "hmac-sha256:" + hmac.new(
+        key,
+        raw,
+        hashlib.sha256,
+    ).hexdigest()
 
 
 class FingerprintKeyStore:
@@ -80,11 +90,7 @@ class FingerprintKeyStore:
             raise _secret_invalid("Fingerprint key length is invalid")
         return raw
 
-    def ensure(self) -> bytes:
-        path = self.settings.fingerprint_key
-        if path.exists() or path.is_symlink():
-            return self.load()
-
+    def _validate_parent(self, path: Path) -> None:
         assert_safe_parents(path.parent)
         if not path.parent.exists() and not path.parent.is_symlink():
             if not self.settings.test_mode:
@@ -94,66 +100,31 @@ class FingerprintKeyStore:
             path.parent.mkdir(parents=True, mode=0o700)
         assert_safe_parents(path)
         try:
-            parent_metadata = path.parent.lstat()
+            metadata = path.parent.lstat()
         except OSError as exc:
             raise _secret_invalid(
                 "Fingerprint key parent cannot be inspected"
             ) from exc
         if (
-            not stat.S_ISDIR(parent_metadata.st_mode)
-            or parent_metadata.st_uid
-            != self.settings.expected_root_uid
-            or parent_metadata.st_gid
-            != self.settings.expected_root_gid
-            or stat.S_IMODE(parent_metadata.st_mode) != 0o700
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != self.settings.expected_root_uid
+            or metadata.st_gid != self.settings.expected_root_gid
+            or stat.S_IMODE(metadata.st_mode) != 0o700
         ):
             raise _secret_invalid(
                 "Fingerprint key parent metadata is invalid"
             )
 
-        raw = secrets_module.token_bytes(32)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        try:
-            descriptor = os.open(path, flags, 0o600)
-        except FileExistsError:
-            return self.load()
-        except OSError as exc:
-            raise _secret_invalid(
-                "Fingerprint key cannot be created safely"
-            ) from exc
-
-        created_metadata = os.fstat(descriptor)
-        completed = False
-        try:
-            os.fchown(
-                descriptor,
-                self.settings.expected_root_uid,
-                self.settings.expected_root_gid,
-            )
-            os.fchmod(descriptor, 0o600)
-            offset = 0
-            while offset < len(raw):
-                written = os.write(descriptor, raw[offset:])
-                if written < 1:
-                    raise _secret_invalid(
-                        "Fingerprint key write made no progress"
-                    )
-                offset += written
-            os.fsync(descriptor)
-            completed = True
-        except BackupError:
-            raise
-        except OSError as exc:
-            raise _secret_invalid("Fingerprint key write failed") from exc
-        finally:
-            os.close(descriptor)
-            if not completed:
-                self._remove_created_key(path, created_metadata)
-
-        fsync_directory(path.parent)
-        return self.load()
+    @staticmethod
+    def _write_all(descriptor: int, raw: bytes) -> None:
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written < 1:
+                raise _secret_invalid(
+                    "Fingerprint key write made no progress"
+                )
+            offset += written
 
     def _remove_created_key(
         self,
@@ -178,6 +149,53 @@ class FingerprintKeyStore:
             fsync_directory(path.parent)
         except BackupError:
             return
+
+    def ensure(self) -> bytes:
+        path = self.settings.fingerprint_key
+        if path.exists() or path.is_symlink():
+            return self.load()
+
+        self._validate_parent(path)
+        raw = secrets_module.token_bytes(32)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except FileExistsError:
+            return self.load()
+        except OSError as exc:
+            raise _secret_invalid(
+                "Fingerprint key cannot be created safely"
+            ) from exc
+
+        created_metadata = os.fstat(descriptor)
+        file_synced = False
+        try:
+            os.fchown(
+                descriptor,
+                self.settings.expected_root_uid,
+                self.settings.expected_root_gid,
+            )
+            os.fchmod(descriptor, 0o600)
+            self._write_all(descriptor, raw)
+            os.fsync(descriptor)
+            file_synced = True
+        except BackupError:
+            raise
+        except OSError as exc:
+            raise _secret_invalid("Fingerprint key write failed") from exc
+        finally:
+            os.close(descriptor)
+            if not file_synced:
+                self._remove_created_key(path, created_metadata)
+
+        try:
+            fsync_directory(path.parent)
+        except BackupError:
+            self._remove_created_key(path, created_metadata)
+            raise
+        return self.load()
 
 
 class SecretIdentityProvider:
@@ -234,13 +252,12 @@ class SecretIdentityProvider:
     def _identity_record(
         self,
         *,
-        path: Path,
         kind: str,
         metadata: os.stat_result,
         identity: str,
     ) -> SecretIdentity:
         return SecretIdentity(
-            path=str(path),
+            path=_LOGICAL_SECRET_PATHS[kind],
             kind=kind,
             uid=metadata.st_uid,
             gid=metadata.st_gid,
@@ -289,7 +306,11 @@ class SecretIdentityProvider:
         except UnicodeDecodeError as exc:
             raise _secret_invalid("SSH fingerprint output is invalid") from exc
         fingerprint = next(
-            (token for token in tokens if token.startswith("SHA256:")),
+            (
+                token
+                for token in tokens
+                if token.startswith("SHA256:")
+            ),
             None,
         )
         if fingerprint is None or len(fingerprint) > 500:
@@ -319,19 +340,16 @@ class SecretIdentityProvider:
         )
         return (
             self._identity_record(
-                path=self.settings.vault_file,
                 kind="vault",
                 metadata=vault_metadata,
                 identity=vault_identity(vault_raw),
             ),
             self._identity_record(
-                path=self.settings.vault_password_file,
                 kind="vault_password",
                 metadata=password_metadata,
                 identity=password_identity(password_raw, key),
             ),
             self._identity_record(
-                path=self.settings.ssh_private_key,
                 kind="ssh_private_key",
                 metadata=ssh_metadata,
                 identity=self._ssh_fingerprint(),
