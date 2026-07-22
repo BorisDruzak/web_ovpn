@@ -207,3 +207,18 @@ def test_asset_findings_include_selected_switch_collection_failure_without_error
         assert failure["details"] == {"source": "access", "error_class": "TimeoutError"}
     finally:
         conn.close()
+
+
+def test_context_snapshot_declares_active_revision_and_successful_correlation_runs(tmp_path: Path) -> None:
+    from netctl.context_query import context_snapshot
+
+    conn = _context_db(tmp_path)
+    try:
+        assert context_snapshot(conn) == {
+            "context_revision_id": None,
+            "topology_correlation_run_id": 2,
+            "attachment_correlation_run_id": 1,
+            "observation_cutoff": "2026-07-22T12:00:00Z",
+        }
+    finally:
+        conn.close()

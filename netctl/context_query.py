@@ -24,6 +24,36 @@ def _asset_public(asset: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def context_snapshot(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return the bounded revision/run markers used by one context response."""
+    head = conn.execute(
+        "SELECT context_revision_id FROM context_heads ORDER BY context_id LIMIT 1"
+    ).fetchone()
+    runs = {
+        str(row["run_type"]): int(row["id"])
+        for row in conn.execute(
+            """SELECT runs.id, runs.run_type FROM network_correlation_runs AS runs
+               JOIN (
+                   SELECT run_type, max(id) AS id FROM network_correlation_runs
+                   WHERE status = 'success' GROUP BY run_type
+               ) AS latest ON latest.id = runs.id"""
+        )
+    }
+    cutoff = conn.execute(
+        """SELECT max(value) FROM (
+               SELECT max(last_seen_at) AS value FROM ip_observations WHERE is_current = 1
+               UNION ALL
+               SELECT max(last_seen_at) AS value FROM hostname_observations WHERE is_current = 1
+           )"""
+    ).fetchone()[0]
+    return {
+        "context_revision_id": int(head["context_revision_id"]) if head is not None else None,
+        "topology_correlation_run_id": runs.get("topology"),
+        "attachment_correlation_run_id": runs.get("attachments"),
+        "observation_cutoff": str(cutoff or ""),
+    }
+
+
 def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int | None = None) -> dict[str, Any] | None:
     conditions = ["asset_id = ?"]
     params: list[object] = [asset_id]
