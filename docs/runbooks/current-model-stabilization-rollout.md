@@ -10,10 +10,12 @@ not authorize a RouterOS write and does not change either production write gate.
 - `/etc/netopsctl/netopsctl.env` contains both existing gate settings:
   `NETOPSCTL_PRODUCTION_WRITES_ENABLED` and
   `NETOPSCTL_AUDIT_CHECKPOINT_HEALTHY`.
-- The three root-owned, regular, non-symlink 32-byte credential sources exist:
+- The four root-owned, regular, non-symlink credential sources exist:
   `/etc/netopsctl/credentials/netopsctl_audit_signing_ed25519.raw`,
   `/etc/netopsctl/credentials/netopsctl_reconcile_signing_ed25519.raw`, and
-  `/etc/openvpn-web/credentials/netops_web_signing_ed25519.raw`.
+  `/etc/openvpn-web/credentials/netops_web_signing_ed25519.raw`, plus the
+  32-byte-or-longer HMAC key
+  `/etc/openvpn-web/credentials/context_api_cursor_signing.raw`.
 
 ## Atomic update
 

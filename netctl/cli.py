@@ -17,7 +17,7 @@ from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
-from .context_query import context_snapshot, inspect_asset_context, list_topology_context, search_context
+from .context_query import context_snapshot, inspect_asset_context, list_topology_context, search_context_page
 from .source_identity import source_readiness
 from .path_engine import PathRequest
 from .path_query import DEFAULT_PATH_FACT_MAX_AGE_SECONDS, explain_asset_path
@@ -669,7 +669,10 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             context = inspect_asset_context(conn, args.asset_key)
             return (0, ok(context=context, snapshot=snapshot)) if context is not None else (1, err("asset not found", asset_key=args.asset_key))
         if args.context_view_command == "search":
-            return 0, ok(results=search_context(conn, args.query, args.limit), snapshot=snapshot)
+            results, next_cursor = search_context_page(
+                conn, args.query, args.limit, args.after_kind, args.after_id,
+            )
+            return 0, ok(results=results, next_cursor=next_cursor, snapshot=snapshot)
         if args.context_view_command == "topology":
             return 0, ok(
                 depth=args.depth,
@@ -1327,6 +1330,8 @@ def build_parser() -> argparse.ArgumentParser:
     context_view_search = context_view_sub.add_parser("search")
     context_view_search.add_argument("--query", required=True)
     context_view_search.add_argument("--limit", type=int, default=25)
+    context_view_search.add_argument("--after-kind", choices=("", "asset", "user"), default="")
+    context_view_search.add_argument("--after-id", type=int, default=0)
     context_view_asset = context_view_sub.add_parser("asset")
     context_view_asset.add_argument("--asset-key", required=True)
     context_view_topology = context_view_sub.add_parser("topology")

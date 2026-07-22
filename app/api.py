@@ -8,6 +8,7 @@ import re
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -16,6 +17,7 @@ from .audit import write_audit
 from .auth import authorize_network_change
 from .auto_sync import force_client_sync
 from .config import get_settings
+from .context_contract import ContextCursorError, decode_search_cursor, encode_search_cursor
 from .db import get_db
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
@@ -147,16 +149,31 @@ def api_response(data: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "data": data}
 
 
-def context_response(request: Request, data: dict[str, Any]) -> dict[str, Any]:
+def context_response(
+    request: Request,
+    data: dict[str, Any],
+    *,
+    pagination: dict[str, Any] | None = None,
+) -> Response:
     """Return the additive v1 contract for correlated-context endpoints."""
     body = dict(data)
     snapshot = body.pop("snapshot", None)
-    return {
+    payload = {
         "status": "ok", "api_version": "1.0",
         "request_id": str(getattr(request.state, "request_id", "")),
         "generated_at": utcnow().isoformat(), "snapshot": snapshot,
-        "data": body, "pagination": None, "errors": [],
+        "data": body, "pagination": pagination, "errors": [],
     }
+    etag_input = {
+        "api_version": payload["api_version"], "path": request.url.path,
+        "snapshot": snapshot, "data": body, "pagination": pagination,
+    }
+    etag = '"' + hashlib.sha256(
+        json.dumps(etag_input, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest() + '"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return JSONResponse(content=payload, headers={"ETag": etag})
 
 
 def error_detail(exc: VpnctlError) -> str:
@@ -873,12 +890,39 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
 
 @router.get("/context/search")
 def api_context_search(
+    request: Request,
     q: str = Query(min_length=1),
     limit: int = Query(default=25, ge=1, le=100),
-    request: Request = None,
+    cursor: str = Query(default="", max_length=4096),
     actor: str = Depends(require_api_actor),
 ):
-    return context_response(request, call_netctl(["context-view", "search", "--query", q, "--limit", str(limit)]))
+    cursor_payload: dict[str, Any] | None = None
+    if cursor:
+        try:
+            cursor_payload = decode_search_cursor(cursor, query=q, limit=limit)
+        except ContextCursorError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    args = ["context-view", "search", "--query", q, "--limit", str(limit)]
+    if cursor_payload is not None:
+        after = cursor_payload["after"]
+        args.extend(["--after-kind", str(after["kind"]), "--after-id", str(after["id"])])
+    result = call_netctl(args)
+    snapshot = result.get("snapshot")
+    if cursor_payload is not None and cursor_payload["snapshot"] != snapshot:
+        raise HTTPException(status_code=409, detail="context cursor snapshot is no longer current")
+    next_state = result.pop("next_cursor", None)
+    pagination = None
+    if isinstance(next_state, dict):
+        try:
+            pagination = {
+                "limit": limit,
+                "next_cursor": encode_search_cursor(
+                    snapshot=snapshot or {}, query=q, limit=limit, after=next_state,
+                ),
+            }
+        except ContextCursorError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return context_response(request, result, pagination=pagination)
 
 
 @router.get("/context/assets/{asset_key}")

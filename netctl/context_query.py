@@ -189,44 +189,66 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
     }
 
 
-def search_context(conn: sqlite3.Connection, query: str, limit: int = 25) -> list[dict[str, Any]]:
+def search_context_page(
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 25,
+    after_kind: str = "",
+    after_id: int = 0,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
+    if after_kind not in {"", "asset", "user"} or after_id < 0:
+        raise ValueError("invalid search cursor")
     value = query.strip()
     if not value:
-        return []
+        return [], None
     normalized_mac = normalize_mac(value)
     params: list[object] = [value.lower(), value.lower(), value.lower(), value.lower()]
     conditions = ["lower(assets.asset_key) = ?", "lower(hostnames.hostname) = ?", "ips.ip = ?", "lower(intent_bindings.intent_stable_id) = ?"]
     if normalized_mac is not None:
         conditions.append("lower(replace(replace(interfaces.mac, ':', ''), '-', '')) = ?")
         params.append(normalized_mac.replace(":", "").lower())
-    rows = conn.execute(
+    asset_cursor = " AND 1 = 0" if after_kind == "user" else " AND assets.id > ?" if after_kind == "asset" else ""
+    asset_params: list[object] = [*params]
+    if after_kind == "asset":
+        asset_params.append(after_id)
+    asset_params.append(limit + 1)
+    asset_rows = conn.execute(
         f"""
-        SELECT DISTINCT assets.asset_key, assets.display_name, assets.kind, assets.site
+        SELECT DISTINCT assets.id AS _cursor_id, assets.asset_key, assets.display_name, assets.kind, assets.site
         FROM assets
         LEFT JOIN asset_interfaces AS interfaces ON interfaces.asset_id = assets.id
         LEFT JOIN ip_observations AS ips ON ips.asset_id = assets.id AND ips.is_current = 1
         LEFT JOIN hostname_observations AS hostnames ON hostnames.asset_id = assets.id AND hostnames.is_current = 1
         LEFT JOIN asset_intent_bindings AS intent_bindings ON intent_bindings.asset_id = assets.id
-        WHERE {' OR '.join(conditions)}
-        ORDER BY assets.asset_key
+        WHERE ({' OR '.join(conditions)}) {asset_cursor}
+        ORDER BY assets.id
         LIMIT ?
         """,
-        (*params, limit),
+        asset_params,
     ).fetchall()
-    results = [dict(row) for row in rows]
+    results = [dict(row) for row in asset_rows[:limit]]
     for item in results:
         item["bindings"] = _confirmed_asset_bindings(conn, str(item["asset_key"]))
-    if len(results) >= limit:
-        return results
+        item.pop("_cursor_id", None)
+    if len(asset_rows) > limit:
+        return results, {"kind": "asset", "id": int(asset_rows[limit - 1]["_cursor_id"])}
+    remaining = limit - len(results)
+    if remaining == 0:
+        return results, ({"kind": "asset", "id": int(asset_rows[-1]["_cursor_id"])} if asset_rows else None)
+    user_cursor = " AND users.id > ?" if after_kind == "user" else ""
+    user_params: list[object] = [value.lower(), value.lower()]
+    if after_kind == "user":
+        user_params.append(after_id)
+    user_params.append(remaining + 1)
     users = conn.execute(
-        """SELECT user_key, display_name, status
+        """SELECT users.id AS _cursor_id, user_key, display_name, status
            FROM users
-           WHERE lower(user_key) = ? OR lower(display_name) = ?
-           ORDER BY user_key
+           WHERE (lower(user_key) = ? OR lower(display_name) = ?)""" + user_cursor + """
+           ORDER BY users.id
            LIMIT ?""",
-        (value.lower(), value.lower(), limit - len(results)),
+        user_params,
     ).fetchall()
     results.extend(
         {
@@ -236,9 +258,15 @@ def search_context(conn: sqlite3.Connection, query: str, limit: int = 25) -> lis
             "status": row["status"],
             "bindings": _confirmed_user_bindings(conn, str(row["user_key"])),
         }
-        for row in users
+        for row in users[:remaining]
     )
-    return results
+    if len(users) > remaining:
+        return results, {"kind": "user", "id": int(users[remaining - 1]["_cursor_id"])}
+    return results, None
+
+
+def search_context(conn: sqlite3.Connection, query: str, limit: int = 25) -> list[dict[str, Any]]:
+    return search_context_page(conn, query, limit)[0]
 
 
 def _confirmed_asset_bindings(conn: sqlite3.Connection, asset_key: str) -> list[dict[str, Any]]:

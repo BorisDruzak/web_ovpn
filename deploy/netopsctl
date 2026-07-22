@@ -25,6 +25,7 @@ install -d -o root -g root -m 0700 /etc/netopsctl/credentials /etc/openvpn-web/c
 require_credential_source /etc/netopsctl/credentials/netopsctl_audit_signing_ed25519.raw
 require_credential_source /etc/netopsctl/credentials/netopsctl_reconcile_signing_ed25519.raw
 require_credential_source /etc/openvpn-web/credentials/netops_web_signing_ed25519.raw
+require_credential_source /etc/openvpn-web/credentials/context_api_cursor_signing.raw
 install -m 0644 deploy/netopsctl.socket /etc/systemd/system/netopsctl.socket
 install -m 0644 deploy/netopsctl.service /etc/systemd/system/netopsctl.service
 install -m 0644 deploy/netopsctl-reconcile.service /etc/systemd/system/netopsctl-reconcile.service

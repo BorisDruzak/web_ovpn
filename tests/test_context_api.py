@@ -20,7 +20,10 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_NETCTL_LOG"], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(args) + "\\n")
 if args[1:3] == ["context-view", "search"]:
-    print(json.dumps({"status": "ok", "snapshot": {"context_revision_id": 1, "topology_correlation_run_id": 2, "attachment_correlation_run_id": 3, "observation_cutoff": "2026-07-22T12:00:00Z"}, "results": [{"asset_key": "mac:aa:bb:cc:dd:ee:ff"}]}))
+    response = {"status": "ok", "snapshot": {"context_revision_id": 1, "topology_correlation_run_id": 2, "attachment_correlation_run_id": 3, "observation_cutoff": "2026-07-22T12:00:00Z"}, "results": [{"asset_key": "mac:aa:bb:cc:dd:ee:ff"}]}
+    if args[args.index("--limit") + 1] == "1":
+        response["next_cursor"] = {"kind": "asset", "id": 1}
+    print(json.dumps(response))
 elif args[1:3] == ["context-view", "asset"]:
     print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": args[-1]}}}))
 elif args[1:3] == ["context-view", "topology"]:
@@ -103,6 +106,46 @@ def test_context_search_api_delegates_to_netctl(tmp_path, monkeypatch):
         "--limit",
         "7",
     ]
+
+
+def test_context_search_returns_signed_snapshot_bound_cursor(tmp_path, monkeypatch):
+    credential_dir = tmp_path / "credentials"
+    credential_dir.mkdir()
+    (credential_dir / "context-api-cursor-signing-key").write_bytes(b"k" * 32)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credential_dir))
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/v1/context/search", params={"q": "workstation", "limit": 1}, headers=headers)
+
+    assert response.status_code == 200
+    pagination = response.json()["pagination"]
+    assert pagination["limit"] == 1
+    assert pagination["next_cursor"]
+    assert response.headers["etag"]
+    next_page = client.get(
+        "/api/v1/context/search",
+        params={"q": "workstation", "limit": 1, "cursor": pagination["next_cursor"]}, headers=headers,
+    )
+    assert next_page.status_code == 200
+    tampered = pagination["next_cursor"][:-1] + ("a" if pagination["next_cursor"][-1] != "a" else "b")
+    rejected = client.get(
+        "/api/v1/context/search",
+        params={"q": "workstation", "limit": 1, "cursor": tampered}, headers=headers,
+    )
+    assert rejected.status_code == 400
+
+
+def test_context_response_honours_matching_etag(tmp_path, monkeypatch):
+    client, headers, _ = make_client(tmp_path, monkeypatch)
+
+    first = client.get("/api/v1/context/search", params={"q": "workstation"}, headers=headers)
+    cached = client.get(
+        "/api/v1/context/search", params={"q": "workstation"},
+        headers={**headers, "If-None-Match": first.headers["etag"]},
+    )
+
+    assert cached.status_code == 304
+    assert cached.headers["etag"] == first.headers["etag"]
 
 
 def test_context_asset_api_delegates_to_netctl(tmp_path, monkeypatch):
