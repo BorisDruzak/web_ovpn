@@ -18,8 +18,15 @@ CONTROL_ROOT = (
     / "alt-linux"
     / "control"
 )
+BACKUP_ROOT = (
+    Path(__file__).resolve().parents[2]
+    / "deploy"
+    / "alt-linux"
+    / "backup"
+)
 
 sys.path.insert(0, str(CONTROL_ROOT))
+sys.path.insert(0, str(BACKUP_ROOT))
 
 
 @pytest.fixture(autouse=True)
