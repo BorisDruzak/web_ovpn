@@ -31,28 +31,45 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Apply staged task patch and verify
+      - name: Apply staged task patch
+        id: patch
         shell: bash
         run: |
           set -Eeuo pipefail
           trigger=$(find .github/patches -maxdepth 1 -type f -name 'or3p3-*.trigger' | sort | tail -n 1 || true)
           if [[ -z "${trigger}" ]]; then
+            echo 'active=false' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           task=$(basename "${trigger}" .trigger)
           mapfile -t patches < <(find .github/patches -maxdepth 1 -type f -name "${task}-*.patch" | sort)
           test "${#patches[@]}" -gt 0
-
           for patch in "${patches[@]}"; do
             git apply --check "${patch}"
             git apply "${patch}"
           done
           rm -f "${patches[@]}" "${trigger}"
+          echo 'active=true' >> "${GITHUB_OUTPUT}"
+          echo "task=${task}" >> "${GITHUB_OUTPUT}"
 
+      - name: Install verification dependencies
+        if: ${{ steps.patch.outputs.active == 'true' }}
+        run: |
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet -r requirements.txt
-          python -m pytest -q tests/alt_linux
+
+      - name: Run complete ALT Linux suite
+        if: ${{ steps.patch.outputs.active == 'true' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pytest -q tests/alt_linux 2>&1 \
+            | tee "${RUNNER_TEMP}/or3p3-pytest.log"
+
+      - name: Run static verification
+        if: ${{ steps.patch.outputs.active == 'true' }}
+        run: |
           python -m py_compile \
             deploy/alt-linux/backup/alt_deploy_backup/*.py \
             deploy/alt-linux/backup/alt-deploy-backup \
@@ -60,6 +77,34 @@ jobs:
             deploy/alt-linux/api/*.py
           git diff --check
 
+      - name: Capture failed patch diagnostics
+        if: ${{ failure() && steps.patch.outputs.active == 'true' }}
+        shell: bash
+        run: |
+          {
+            echo '=== git status ==='
+            git status --short
+            echo '=== diff stat ==='
+            git diff --stat
+          } > "${RUNNER_TEMP}/or3p3-git-state.log"
+
+      - name: Upload failed patch diagnostics
+        if: ${{ failure() && steps.patch.outputs.active == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: or3p3-patch-failure-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/or3p3-pytest.log
+            ${{ runner.temp }}/or3p3-git-state.log
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Commit verified patch
+        if: ${{ steps.patch.outputs.active == 'true' && success() }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          task='${{ steps.patch.outputs.task }}'
           case "${task}" in
             *task1*) message='fix: make OR-3P3 restore recovery durable' ;;
             *task2*) message='feat: gate restore capacity and audit backup commands' ;;
@@ -69,7 +114,6 @@ jobs:
             *task6*) message='docs: finalize OR-3P3 backup and restore evidence' ;;
             *) message='chore: apply OR-3P3 task patch' ;;
           esac
-
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
@@ -77,6 +121,7 @@ jobs:
           git push origin HEAD:feat/alt-or3p3-completion-20260722
 
       - name: Record branch metadata
+        if: ${{ success() }}
         run: |
           set -Eeuo pipefail
           {
@@ -85,6 +130,7 @@ jobs:
           } > .or3p3-export-metadata
 
       - name: Pack source tree
+        if: ${{ success() }}
         run: |
           set -Eeuo pipefail
           tar \
@@ -93,6 +139,7 @@ jobs:
             .
 
       - name: Upload source artifact
+        if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: or3p3-source-export
