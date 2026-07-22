@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections import deque
 from typing import Any
 
 from .normalizer import normalize_mac
@@ -32,6 +34,36 @@ def _attachment(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any] | Non
     return dict(row) if row is not None else None
 
 
+def _topology_path(conn: sqlite3.Connection, attachment: dict[str, Any] | None) -> dict[str, Any]:
+    if attachment is None or attachment.get("status") != "confirmed" or attachment.get("selected_source_id") is None:
+        return {"nodes": [], "complete": False, "reason": "no_attachment"}
+    roots: set[int] = set()
+    for row in conn.execute("SELECT id, driver_options_json FROM network_sources"):
+        try:
+            options = json.loads(str(row["driver_options_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            options = {}
+        if isinstance(options, dict) and options.get("topology_role") == "core":
+            roots.add(int(row["id"]))
+    start = int(attachment["selected_source_id"])
+    adjacency: dict[int, set[int]] = {}
+    for row in conn.execute("SELECT source_a_id, source_b_id FROM current_switch_links WHERE state != 'conflicting'"):
+        first, second = int(row["source_a_id"]), int(row["source_b_id"])
+        adjacency.setdefault(first, set()).add(second)
+        adjacency.setdefault(second, set()).add(first)
+    queue: deque[tuple[int, list[int]]] = deque([(start, [start])])
+    seen = {start}
+    while queue:
+        source_id, path = queue.popleft()
+        if source_id in roots:
+            return {"nodes": path[:32], "complete": True, "reason": ""}
+        for peer in sorted(adjacency.get(source_id, set())):
+            if peer not in seen:
+                seen.add(peer)
+                queue.append((peer, path + [peer]))
+    return {"nodes": [start], "complete": False, "reason": "no_core_path"}
+
+
 def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str, Any] | None:
     asset = get_runtime_asset_by_key(conn, asset_key)
     if asset is None:
@@ -50,7 +82,7 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
             "ip_observations": list_current_ip_observations(conn, asset_id)[:64],
             "hostname_observations": list_current_hostname_observations(conn, asset_id)[:64],
         },
-        "topology_path": {"nodes": [], "complete": False, "reason": "no_attachment"},
+        "topology_path": _topology_path(conn, _attachment(conn, asset_id)),
         "source_health": [],
         "findings": findings_for_asset(conn, asset_id),
         "evidence": {},

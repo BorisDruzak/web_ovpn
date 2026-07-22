@@ -28,16 +28,23 @@ def _context_db(tmp_path: Path) -> sqlite3.Connection:
         "INSERT INTO hostname_observations (asset_id, hostname, source_key, source_type, first_seen_at, last_seen_at, is_current) VALUES (1, 'Workstation', 'one', 'collector_host', ?, ?, 1)",
         (now, now),
     )
-    conn.execute(
+    conn.executemany(
         """INSERT INTO network_sources (id, name, driver, host, port, username, secret_ref, tls, verify_tls, enabled, created_at, updated_at)
-           VALUES (10, 'access', 'snmp_switch', '127.0.0.1', 161, '', 'env:TEST', 0, 0, 1, ?, ?)""",
-        (now, now),
+           VALUES (?, ?, 'snmp_switch', '127.0.0.1', 161, '', 'env:TEST', 0, 0, 1, ?, ?)""",
+        [(10, 'access', now, now), (11, 'core', now, now)],
     )
+    conn.execute("UPDATE network_sources SET driver_options_json = '{\"topology_role\": \"core\"}' WHERE id = 11")
     run_id = conn.execute("INSERT INTO network_correlation_runs (run_type, started_at, finished_at, status) VALUES ('attachments', ?, ?, 'success')", (now, now)).lastrowid
     conn.execute(
         """INSERT INTO asset_attachment_resolutions (asset_interface_id, asset_id, status, selected_source_id, selected_port_key, selected_vlan_key, confidence, first_seen_at, last_seen_at, correlation_run_id)
            VALUES (1, 1, 'confirmed', 10, 'physical:48', '20', 85, ?, ?, ?)""",
         (now, now, run_id),
+    )
+    topology_run = conn.execute("INSERT INTO network_correlation_runs (run_type, started_at, finished_at, status) VALUES ('topology', ?, ?, 'success')", (now, now)).lastrowid
+    conn.execute(
+        """INSERT INTO current_switch_links (link_key, source_a_id, port_a_key, source_b_id, port_b_key, state, confidence, first_seen_at, last_seen_at, correlation_run_id)
+           VALUES ('10:uplink|11:core', 10, 'uplink', 11, 'core', 'confirmed', 100, ?, ?, ?)""",
+        (now, now, topology_run),
     )
     conn.commit()
     return conn
@@ -55,6 +62,7 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
         assert result["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"
         assert result["network"]["ip_observations"][0]["ip"] == "192.0.2.10"
         assert result["attachment"]["selected_port_key"] == "physical:48"
+        assert result["topology_path"] == {"nodes": [10, 11], "complete": True, "reason": ""}
     finally:
         conn.close()
 
