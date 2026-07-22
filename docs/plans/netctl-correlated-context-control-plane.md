@@ -723,7 +723,7 @@ git commit -m "feat: resolve source runtime and intent identity"
 - Consumes `SourceIdentity`, active `intent_links`, `current_switch_fdb`, `current_switch_lldp_neighbors` and `switch_ports`.
 - Produces `LinkEvidence` rows without writing the database.
 
-- [ ] **Step 1: Define failing evidence tests**
+- [x] **Step 1: Define failing evidence tests**
 
 Use these contracts:
 
@@ -773,7 +773,7 @@ SNR ge22 <-> CSS326 SRV-1 port24
 SNR ge23 <-> TP-Link ITO port47
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_topology.py -k evidence -q
@@ -781,7 +781,7 @@ python -m pytest tests/test_netctl_topology.py -k evidence -q
 
 Expected: FAIL because evidence modules are absent.
 
-- [ ] **Step 3: Implement deterministic endpoint normalization**
+- [x] **Step 3: Implement deterministic endpoint normalization**
 
 Canonicalize a pair so the lower `source_id` is endpoint A. Normalize port matching in this order:
 
@@ -794,7 +794,7 @@ otherwise empty port_key
 
 Never use substring matching for a confirmed port.
 
-- [ ] **Step 4: Implement the evidence adapters**
+- [x] **Step 4: Implement the evidence adapters**
 
 ```python
 def intent_link_evidence(...): ...
@@ -804,7 +804,7 @@ def lldp_link_evidence(...): ...
 
 Each adapter returns evidence rows. It does not merge evidence or write current links.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 ```bash
 python -m pytest tests/test_netctl_topology.py -k evidence -q
@@ -812,7 +812,7 @@ python -m pytest tests/test_netctl_topology.py -k evidence -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add netctl/topology_models.py netctl/topology_evidence.py tests/test_netctl_topology.py
