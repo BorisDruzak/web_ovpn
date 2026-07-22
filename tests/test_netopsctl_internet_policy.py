@@ -85,7 +85,7 @@ def test_approved_plan_applies_idempotently_and_verifies(tmp_path) -> None:
 
         def ensure_address_list_entry(self, target, address, plan_key, asset_key):
             assert (target, address, plan_key, asset_key) == ("router-a", "192.0.2.10", "plan-apply", "mac:AA")
-            self.entries.append({"address": address, "comment": self.ownership_comment(plan_key, asset_key)})
+            self.entries.append({"address": address, "comment": self.ownership_comment(plan_key, asset_key), "disabled": "false"})
             return {"status": "added"}
 
         def list_managed_address_list_entries(self, target):

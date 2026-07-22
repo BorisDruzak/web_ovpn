@@ -59,7 +59,11 @@ def verify_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[s
         request = json.loads(step["request_json"])
         expected = _expected_entry(adapter, plan_key, request)
         entries = adapter.list_managed_address_list_entries(step["target_key"])
-        present = expected in entries
+        present = any(
+            str(entry.get("address") or "") == expected["address"]
+            and str(entry.get("comment") or "") == expected["comment"]
+            for entry in entries
+        )
         should_be_present = step["operation"] == "ensure_address_list_entry"
         if present != should_be_present:
             conn.execute("UPDATE change_plan_steps SET status = 'failed' WHERE id = ?", (step["id"],))
