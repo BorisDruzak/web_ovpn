@@ -15,13 +15,36 @@ class BackupSandbox(RehearsalSandbox):
     @classmethod
     def create(cls, tmp_path: Path) -> "BackupSandbox":
         base = RehearsalSandbox.create(tmp_path)
-        return cls(
+        sandbox = cls(
             root=base.root,
             fake_bin=base.fake_bin,
             command_log_path=base.command_log_path,
             systemd_state_path=base.systemd_state_path,
             settings=base.settings,
         )
+        sandbox._enable_daemon_reload()
+        return sandbox
+
+    def _enable_daemon_reload(self) -> None:
+        script = self.fake_bin / "systemctl"
+        text = script.read_text(encoding="utf-8")
+        anchor = (
+            "command = args[0]\n"
+            "if command == 'show':\n"
+        )
+        replacement = (
+            "command = args[0]\n"
+            "if command == 'daemon-reload':\n"
+            "    raise SystemExit(0)\n"
+            "if command == 'show':\n"
+        )
+        if anchor not in text:
+            raise AssertionError("fake systemctl patch anchor is missing")
+        script.write_text(
+            text.replace(anchor, replacement, 1),
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
 
     def restore_service(
         self,
