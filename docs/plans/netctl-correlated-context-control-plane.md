@@ -1088,7 +1088,7 @@ netctl --json attachments inspect --asset-key mac:C0:9B:F4:61:4B:CD
 netctl --json attachments events --asset-key mac:C0:9B:F4:61:4B:CD
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 python -m pytest tests/test_netctl_attachments.py tests/test_netctl_topology.py -q
@@ -1117,7 +1117,7 @@ git commit -m "feat: reconcile endpoint network attachments"
 - Collection remains network I/O.
 - Reconciliation is a separate local SQLite operation and acquires the existing `CollectLock`.
 
-- [ ] **Step 1: Write failing deployment tests**
+- [x] **Step 1: Write failing deployment tests**
 
 Tests assert:
 
@@ -1130,13 +1130,13 @@ installer installs and enables the timer;
 OpenVPN and WireGuard units are not restarted by reconciliation deployment.
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_reconcile_units.py tests/test_installer_security.py -q
 ```
 
-- [ ] **Step 3: Add units**
+- [x] **Step 3: Add units**
 
 ```ini
 # deploy/netctl-reconcile.service
@@ -1167,11 +1167,11 @@ Unit=netctl-reconcile.service
 WantedBy=timers.target
 ```
 
-- [ ] **Step 4: Write rollout and rollback commands**
+- [x] **Step 4: Write rollout and rollback commands**
 
 The runbook creates a SQLite `.backup`, verifies integrity, applies migration 9 with the timer disabled, runs one manual topology/attachment reconciliation, inspects aggregate counts only, then enables the timer. Rollback restores the database and prior application tree.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_reconcile_units.py tests/test_installer_security.py -q

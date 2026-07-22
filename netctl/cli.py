@@ -563,7 +563,10 @@ def cmd_topology(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.topology_command == "reconcile":
         conn = prepare_conn(args)
         try:
-            return 0, ok(**reconcile_topology(conn, utc_now()))
+            with CollectLock(args.db):
+                return 0, ok(**reconcile_topology(conn, utc_now()))
+        except RuntimeError as exc:
+            return 1, err(str(exc))
         finally:
             conn.close()
 
@@ -618,7 +621,10 @@ def cmd_attachments(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.attachments_command == "reconcile":
         conn = prepare_conn(args)
         try:
-            return 0, ok(**reconcile_attachments(conn, utc_now()))
+            with CollectLock(args.db):
+                return 0, ok(**reconcile_attachments(conn, utc_now()))
+        except RuntimeError as exc:
+            return 1, err(str(exc))
         finally:
             conn.close()
     conn = connect_read_only(args.db)

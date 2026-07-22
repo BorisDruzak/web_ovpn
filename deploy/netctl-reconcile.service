@@ -1,0 +1,13 @@
+[Unit]
+Description=Reconcile netctl topology and asset attachments
+After=netctl-collect.service
+
+[Service]
+Type=oneshot
+User=netctl
+Group=netctl
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ExecStart=/usr/local/sbin/netctl --json topology reconcile
+ExecStart=/usr/local/sbin/netctl --json attachments reconcile
