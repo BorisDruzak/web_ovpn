@@ -216,3 +216,18 @@ def test_apply_rejects_when_enforcement_device_is_locked(tmp_path) -> None:
         assert adapter.calls == 0
     finally:
         conn.close()
+
+
+def test_preflight_rejects_expired_plan_without_reading_or_mutating_devices(tmp_path) -> None:
+    from netopsctl.policy_resolver import changed_plan_preconditions
+    from netopsctl.store import connect, create_change_plan
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(conn, plan_key="plan-expired", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="f" * 64, precheck={}, rollback={})
+        conn.execute("UPDATE change_plans SET created_at = '2000-01-01T00:00:00Z' WHERE plan_key = 'plan-expired'")
+        conn.commit()
+        plan = conn.execute("SELECT * FROM change_plans WHERE plan_key = 'plan-expired'").fetchone()
+        assert changed_plan_preconditions(plan, "sqlite:///missing.sqlite", enforcement_sources_by_site={}, source_sla_seconds=300, anchor_check=lambda _: True) == ["plan_expired"]
+    finally:
+        conn.close()

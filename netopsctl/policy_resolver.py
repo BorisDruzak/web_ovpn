@@ -130,6 +130,14 @@ def changed_plan_preconditions(
     anchor_check: Callable[[str], bool],
 ) -> list[str]:
     """Re-resolve the immutable asset target set immediately before writes."""
+    try:
+        created_at = datetime.fromisoformat(str(plan["created_at"]).replace("Z", "+00:00"))
+        if created_at.tzinfo is None:
+            return ["plan_created_at"]
+        if (datetime.now(UTC) - created_at.astimezone(UTC)).total_seconds() > 300:
+            return ["plan_expired"]
+    except ValueError:
+        return ["plan_created_at"]
     desired = json.loads(str(plan["desired_state_json"]))
     asset_key = str(desired.get("resolved_enforcement_asset_key") or plan["subject_key"])
     context = _open_context_immutable(netctl_db_url)
