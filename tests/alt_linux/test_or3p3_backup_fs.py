@@ -79,6 +79,25 @@ def test_operation_lock_is_non_blocking(tmp_path: Path) -> None:
     assert error.value.code == "backup_lock_busy"
 
 
+def test_operation_lock_symlink_ancestor_does_not_mutate_outside(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (sandbox.root / "run").symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(BackupError) as error:
+        with exclusive_operation_lock(sandbox.settings):
+            pass
+
+    assert error.value.code == "backup_source_unsafe"
+    assert not (outside / "lock").exists()
+
+
 def test_lifecycle_lock_is_never_created_implicitly(
     tmp_path: Path,
 ) -> None:
