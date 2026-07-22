@@ -42,6 +42,10 @@ class ControlService:
         try:
             if action == "status":
                 result = {"status": "ok", "service": "netopsctl", "writes_enabled": self.writes_enabled}
+            elif action == "policy.list":
+                result = {"policies": [dict(row) for row in self.conn.execute(
+                    "SELECT * FROM desired_network_policies ORDER BY updated_at DESC, id DESC LIMIT 100"
+                ).fetchall()]}
             elif action == "plan.create":
                 plan = payload["plan"]
                 common = {

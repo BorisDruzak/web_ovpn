@@ -50,7 +50,7 @@ def authorize_broker_request(
         request.authorization, request.signature, peer.public_key,
         action=request.action, payload=request.payload, now=now,
     )
-    if request.action not in {"plan.create", "status", "policy.reconcile"}:
+    if request.action not in {"plan.create", "status", "policy.list", "policy.reconcile"}:
         if request.authorization.get("plan_digest") != plan_digest(conn, str(request.payload["plan_key"])):
             raise ValueError("authorization plan digest mismatch")
     timestamp = datetime.now(UTC) if now is None else now.astimezone(UTC)

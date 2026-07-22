@@ -19,6 +19,7 @@ ACTION_SCOPES = {
     "plan.apply": "network.plan.apply",
     "plan.verify": "network.plan.verify",
     "plan.rollback": "network.plan.rollback",
+    "policy.list": "network.policy.read",
     "policy.reconcile": "network.policy.reconcile",
     "status": "network.status.read",
 }
@@ -26,7 +27,7 @@ _BASE_FIELDS = {
     "authorization_version", "action", "principal_type", "principal_id", "principal_name",
     "session_id", "authorization_id", "scopes", "issued_at", "expires_at", "nonce",
 }
-_NO_PLAN_ACTIONS = frozenset({"status", "policy.reconcile", "plan.inspect"})
+_NO_PLAN_ACTIONS = frozenset({"status", "policy.list", "policy.reconcile", "plan.inspect"})
 
 
 def canonical_envelope(envelope: Mapping[str, Any]) -> bytes:

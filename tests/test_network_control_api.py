@@ -87,6 +87,17 @@ def test_network_change_apply_requires_apply_scope(tmp_path, monkeypatch) -> Non
     assert response.status_code == 200
 
 
+def test_network_change_policy_list_uses_read_scope(tmp_path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    import app.api
+
+    monkeypatch.setattr(app.api, "call_network_control", lambda *args, **kwargs: {"policies": [{"subject_key": "mac:aa"}]}, raising=False)
+    response = client.get("/api/v1/network-changes/policies", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["policies"] == [{"subject_key": "mac:aa"}]
+
+
 def test_network_change_rejects_mutations_without_an_idempotency_key(tmp_path, monkeypatch) -> None:
     client, headers = _client(tmp_path, monkeypatch)
     headers.pop("Idempotency-Key")

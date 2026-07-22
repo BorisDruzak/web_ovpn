@@ -296,6 +296,18 @@ def api_network_change_plan_inspect(
     ))
 
 
+@router.get("/network-changes/policies")
+def api_network_change_policies(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    return api_response(_network_change(
+        "policy.list", {}, required_scope="network:read",
+        request=request, authorization=authorization, db=db,
+    ))
+
+
 def _network_change_plan_action(
     action: Literal["plan.approve", "plan.apply", "plan.verify", "plan.rollback"],
     plan_key: str,

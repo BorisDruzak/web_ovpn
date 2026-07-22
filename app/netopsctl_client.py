@@ -58,7 +58,7 @@ def _authorization(
     }
     if action == "plan.create":
         envelope["request_digest"] = request_digest(payload)
-    elif action not in {"status", "policy.reconcile", "plan.inspect"}:
+    elif action not in {"status", "policy.list", "policy.reconcile", "plan.inspect"}:
         plan_key = payload.get("plan_key")
         if not isinstance(plan_key, str) or not plan_digest:
             raise NetworkControlError("network-control plan digest is unavailable")
@@ -105,7 +105,7 @@ def run_network_control(
 ) -> dict[str, Any]:
     """Call the broker with a fresh signed, actor-bound authorization envelope."""
     plan_digest: str | None = None
-    if action not in {"status", "policy.reconcile", "plan.create", "plan.inspect"}:
+    if action not in {"status", "policy.list", "policy.reconcile", "plan.create", "plan.inspect"}:
         plan_key = payload.get("plan_key")
         if not isinstance(plan_key, str):
             raise NetworkControlError("network-control action requires a plan key")

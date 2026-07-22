@@ -10,7 +10,7 @@ from typing import Any
 PROTOCOL_VERSION = 2
 MAX_REQUEST_BYTES = 16_384
 MAX_RESPONSE_BYTES = 16_384
-ACTIONS = frozenset({"plan.create", "plan.inspect", "plan.approve", "plan.apply", "plan.verify", "plan.rollback", "policy.reconcile", "status"})
+ACTIONS = frozenset({"plan.create", "plan.inspect", "plan.approve", "plan.apply", "plan.verify", "plan.rollback", "policy.list", "policy.reconcile", "status"})
 _PLAN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -30,9 +30,9 @@ class BrokerRequest:
 def _validate_payload(action: str, payload: object) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ProtocolError("payload must be an object")
-    if action == "status":
+    if action in {"status", "policy.list"}:
         if payload:
-            raise ProtocolError("status does not accept payload")
+            raise ProtocolError(f"{action} does not accept payload")
         return {}
     if action in {"plan.inspect", "plan.approve", "plan.apply", "plan.verify", "plan.rollback"}:
         if set(payload) != {"plan_key"} or not isinstance(payload.get("plan_key"), str) or not _PLAN_KEY_RE.fullmatch(str(payload["plan_key"])):
