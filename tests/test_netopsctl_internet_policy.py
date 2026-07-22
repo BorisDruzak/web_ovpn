@@ -160,3 +160,30 @@ def test_rollback_removes_only_the_original_plan_asset_entry(tmp_path) -> None:
         assert adapter.removals == [("router-a", "192.0.2.10", "plan-rollback", "mac:AA")]
     finally:
         conn.close()
+
+
+def test_apply_rejects_changed_preconditions_before_device_mutation(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        calls = 0
+
+        def ensure_address_list_entry(self, *_args):
+            self.calls += 1
+            return {"status": "added"}
+
+    adapter = Adapter()
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(conn, plan_key="plan-stale", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="d" * 64, precheck={}, rollback={})
+        add_plan_step(conn, "plan-stale", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-stale", "validated")
+        transition_plan(conn, "plan-stale", "approved")
+
+        result = apply_plan(conn, "plan-stale", adapter, preflight=lambda _plan: ["ip_observations"])
+
+        assert result == {"status": "stale_precondition", "plan_key": "plan-stale", "replan_required": True, "changed_preconditions": ["ip_observations"]}
+        assert adapter.calls == 0
+    finally:
+        conn.close()

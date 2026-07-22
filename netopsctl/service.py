@@ -8,7 +8,7 @@ from typing import Any
 
 from .audit import AuditSigner, append_event
 from .checkpoint import build_checkpoint, deliver_checkpoint
-from .policy_resolver import create_asset_internet_access_plan
+from .policy_resolver import changed_plan_preconditions, create_asset_internet_access_plan
 from .reconcile import apply_plan, rollback_plan, verify_plan
 from .store import get_change_plan, plan_digest, transition_plan, upsert_desired_policy
 
@@ -69,7 +69,16 @@ class ControlService:
                 result["plan_digest"] = plan_digest(self.conn, plan_key)
             elif action == "plan.apply":
                 self._checkpoint()
-                result = apply_plan(self.conn, payload["plan_key"], self.adapter)
+                result = apply_plan(
+                    self.conn, payload["plan_key"], self.adapter,
+                    preflight=lambda plan: changed_plan_preconditions(
+                        plan, self.netctl_db_url,
+                        enforcement_sources_by_site=self.enforcement_sources_by_site,
+                        source_sla_seconds=self.source_sla_seconds,
+                        anchor_check=lambda target: bool(self.adapter.inspect_internet_policy_anchor()["valid"])
+                        and target == next(iter(self.enforcement_sources_by_site.values())),
+                    ),
+                )
             elif action == "plan.verify":
                 result = verify_plan(self.conn, payload["plan_key"], self.adapter)
                 if result["status"] == "verified":

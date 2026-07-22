@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -111,6 +112,33 @@ def create_asset_internet_access_plan(
     for item in targets:
         add_plan_step(netops_conn, plan_key, adapter="mikrotik", operation=action, target_key=item["source"], request={"address": item["address"], "asset_key": asset_key})
     return plan
+
+
+def changed_plan_preconditions(
+    plan: sqlite3.Row,
+    netctl_db_url: str,
+    *,
+    enforcement_sources_by_site: dict[str, str],
+    source_sla_seconds: int,
+    anchor_check: Callable[[str], bool],
+) -> list[str]:
+    """Re-resolve the immutable asset target set immediately before writes."""
+    desired = json.loads(str(plan["desired_state_json"]))
+    asset_key = str(desired.get("resolved_enforcement_asset_key") or plan["subject_key"])
+    context = _open_context_immutable(netctl_db_url)
+    try:
+        current = resolve_asset_targets(
+            context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
+            source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
+        )
+    except ValueError as exc:
+        return [str(exc)]
+    finally:
+        context.close()
+    planned = json.loads(str(plan["resolved_targets_json"]))
+    if current != planned:
+        return ["ip_observations"]
+    return []
 
 
 def create_user_internet_access_plan(

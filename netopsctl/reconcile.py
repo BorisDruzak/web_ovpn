@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from typing import Any
 
 from .store import transition_plan
@@ -15,12 +16,25 @@ def _steps(conn: sqlite3.Connection, plan_key: str) -> tuple[sqlite3.Row, list[s
     return plan, rows
 
 
-def apply_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[str, Any]:
+def apply_plan(
+    conn: sqlite3.Connection,
+    plan_key: str,
+    adapter: Any,
+    *,
+    preflight: Callable[[sqlite3.Row], list[str]] | None = None,
+) -> dict[str, Any]:
     plan, steps = _steps(conn, plan_key)
     if plan["status"] == "applied":
         return {"status": "already_applied", "plan_key": plan_key}
     if plan["status"] != "approved":
         raise ValueError("only approved plans can be applied")
+    changed_preconditions = preflight(plan) if preflight is not None else []
+    if changed_preconditions:
+        transition_plan(conn, plan_key, "failed")
+        return {
+            "status": "stale_precondition", "plan_key": plan_key,
+            "replan_required": True, "changed_preconditions": sorted(set(changed_preconditions)),
+        }
     transition_plan(conn, plan_key, "applying")
     applied: list[int] = []
     try:

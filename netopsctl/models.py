@@ -17,7 +17,7 @@ PLAN_STATUSES: Final = frozenset({
 PLAN_TRANSITIONS: Final = {
     "draft": frozenset({"validated", "cancelled"}),
     "validated": frozenset({"approved", "cancelled"}),
-    "approved": frozenset({"applying", "cancelled"}),
+    "approved": frozenset({"applying", "failed", "cancelled"}),
     "applying": frozenset({"applied", "failed", "rolling_back"}),
     "applied": frozenset({"verified", "failed", "rolling_back"}),
     "verified": frozenset({"rolling_back"}),
