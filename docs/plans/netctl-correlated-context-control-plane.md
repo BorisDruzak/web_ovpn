@@ -1928,7 +1928,7 @@ git commit -m "feat: add immutable network change plans"
 - Web uses the unprivileged client.
 - The dedicated `netopsctl` service performs only registered operations.
 
-- [ ] **Step 1: Write failing protocol tests**
+- [x] **Step 1: Write failing protocol tests**
 
 Request envelope:
 
@@ -1956,11 +1956,11 @@ status
 
 Tests reject unknown fields, unknown actions, oversized payloads, newline injection, path traversal and arbitrary command strings.
 
-- [ ] **Step 2: Implement system users and read-only netctl access**
+- [x] **Step 2: Implement system users and read-only netctl access**
 
 Create system user `netopsctl`. Add it to the existing `netctl` group so it can open `/var/lib/netctl/netctl.sqlite` read-only. Set the netctl data directory to `0750 netctl:netctl`, the database/WAL/SHM files to `0640 netctl:netctl`, and keep netopsctl's own database under `0750 netopsctl:netopsctl`. The daemon never writes the netctl database.
 
-- [ ] **Step 3: Implement systemd socket activation**
+- [x] **Step 3: Implement systemd socket activation**
 
 ```ini
 # deploy/netopsctl.socket
@@ -1993,7 +1993,7 @@ ReadWritePaths=/var/lib/netopsctl /run/netopsctl
 
 RouterOS API access requires no Linux root privilege or Linux capabilities.
 
-- [ ] **Step 4: Run tests and commit**
+- [x] **Step 4: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netopsctl_protocol.py -q

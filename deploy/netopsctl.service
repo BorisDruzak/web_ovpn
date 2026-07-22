@@ -1,0 +1,17 @@
+[Unit]
+Description=Netops control broker
+Requires=netopsctl.socket
+After=netopsctl.socket
+
+[Service]
+Type=simple
+User=netopsctl
+Group=netopsctl
+SupplementaryGroups=netctl
+ExecStart=/opt/openvpn-web/.venv/bin/python -m netopsctl.server
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/netctl
+ReadWritePaths=/var/lib/netopsctl /run/netopsctl

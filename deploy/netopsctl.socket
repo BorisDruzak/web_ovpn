@@ -1,0 +1,12 @@
+[Unit]
+Description=Netops control broker socket
+
+[Socket]
+ListenStream=/run/netopsctl/netopsctl.sock
+SocketUser=netopsctl
+SocketGroup=openvpn-web
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target
