@@ -166,3 +166,20 @@ def test_context_search_includes_user_match_and_confirmed_asset_binding(tmp_path
         ]
     finally:
         conn.close()
+
+
+def test_network_session_ingestion_never_confirms_a_primary_binding(tmp_path: Path) -> None:
+    from netctl.user_context import create_user, ingest_network_session, close_network_session
+
+    conn = _db(tmp_path)
+    try:
+        create_user(conn, "employee:session", "Session Person", now="2026-07-22T12:00:00Z")
+        session = ingest_network_session(
+            conn, "employee:session", session_key="radius:one", source_type="radius",
+            asset_key="mac:AA:BB:CC:DD:EE:FF", started_at="2026-07-22T12:01:00Z", evidence={"ip": "192.0.2.10"},
+        )
+        assert session["asset_key"] == "mac:AA:BB:CC:DD:EE:FF"
+        assert conn.execute("SELECT count(*) FROM user_asset_bindings").fetchone()[0] == 0
+        assert close_network_session(conn, "radius:one", ended_at="2026-07-22T12:02:00Z")["ended_at"] == "2026-07-22T12:02:00Z"
+    finally:
+        conn.close()

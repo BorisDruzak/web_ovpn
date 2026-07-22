@@ -11,6 +11,7 @@ _USER_STATUSES = frozenset({"active", "disabled", "retired"})
 _USER_SOURCES = frozenset({"manual", "directory", "helpdesk"})
 _BINDING_RELATIONS = frozenset({"primary_user", "shared_user", "temporary_user", "owner"})
 _BINDING_SOURCES = frozenset({"manual", "directory", "helpdesk", "session_inference"})
+_SESSION_SOURCES = frozenset({"captive_portal", "radius", "directory_agent", "manual"})
 
 
 def create_user(
@@ -94,6 +95,44 @@ def retire_user_asset_binding(
     )
     conn.commit()
     return _binding_public(_binding_row(conn, binding_id))
+
+
+def ingest_network_session(
+    conn: sqlite3.Connection,
+    user_key: str,
+    *,
+    session_key: str,
+    source_type: str,
+    started_at: str,
+    asset_key: str | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if source_type not in _SESSION_SOURCES or not session_key.strip() or len(session_key) > 255 or len(started_at) > 64:
+        raise ValueError("invalid network session")
+    user = _user_row(conn, user_key)
+    asset_id: int | None = None
+    if asset_key:
+        asset = conn.execute("SELECT id FROM assets WHERE asset_key = ?", (asset_key,)).fetchone()
+        if asset is None:
+            raise ValueError("asset not found")
+        asset_id = int(asset["id"])
+    cursor = conn.execute(
+        """INSERT INTO network_sessions
+           (user_id, asset_id, source_type, session_key, started_at, evidence_json)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (user["id"], asset_id, source_type, session_key.strip(), started_at, json.dumps(evidence or {}, sort_keys=True)),
+    )
+    conn.commit()
+    return _session_public(conn.execute("SELECT sessions.*, assets.asset_key FROM network_sessions AS sessions LEFT JOIN assets ON assets.id = sessions.asset_id WHERE sessions.id = ?", (cursor.lastrowid,)).fetchone())
+
+
+def close_network_session(conn: sqlite3.Connection, session_key: str, *, ended_at: str) -> dict[str, Any]:
+    row = conn.execute("SELECT id FROM network_sessions WHERE session_key = ?", (session_key,)).fetchone()
+    if row is None:
+        raise ValueError("network session not found")
+    conn.execute("UPDATE network_sessions SET ended_at = ? WHERE id = ?", (ended_at, row["id"]))
+    conn.commit()
+    return _session_public(conn.execute("SELECT sessions.*, assets.asset_key FROM network_sessions AS sessions LEFT JOIN assets ON assets.id = sessions.asset_id WHERE sessions.id = ?", (row["id"],)).fetchone())
 
 
 def inspect_user_context(conn: sqlite3.Connection, user_key: str) -> dict[str, Any] | None:
@@ -191,3 +230,7 @@ def _binding_public(row: sqlite3.Row) -> dict[str, Any]:
         key: row[key]
         for key in ("id", "asset_key", "relation", "status", "binding_source", "confidence", "valid_from", "valid_until")
     }
+
+
+def _session_public(row: sqlite3.Row) -> dict[str, Any]:
+    return {key: row[key] for key in ("session_key", "source_type", "asset_key", "started_at", "ended_at", "accepted_policy_version")}
