@@ -1,0 +1,13 @@
+diff --git a/deploy/alt-linux/systemd/alt-deploy-http.service b/deploy/alt-linux/systemd/alt-deploy-http.service
+index cdf3e41..f981997 100644
+--- a/deploy/alt-linux/systemd/alt-deploy-http.service
++++ b/deploy/alt-linux/systemd/alt-deploy-http.service
+@@ -1,6 +1,7 @@
+ [Unit]
+ Description=ALT deployment allowlisted static server
+-After=network-online.target alt-deploy-guard.service
++After=network-online.target
++After=alt-deploy-guard.service
+ Wants=network-online.target
+ Requires=alt-deploy-guard.service
+ 
