@@ -12,7 +12,9 @@ except ImportError:  # pragma: no cover - collection fails closed without /proc 
     fcntl = None
 
 
-_RECOVERY_GUARD = threading.Lock()
+_RECOVERY_GUARDS_LOCK = threading.Lock()
+_RECOVERY_GUARDS: dict[Path, threading.Lock] = {}
+_RECOVERY_FD_GUARDS: dict[int, threading.Lock] = {}
 
 
 class _ProcessEvidenceUnknown(RuntimeError):
@@ -31,7 +33,13 @@ def _process_start_time(pid: int) -> str | None:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
     except FileNotFoundError:
-        return None
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return None
+        except (PermissionError, OSError) as exc:
+            raise _ProcessEvidenceUnknown from exc
+        raise _ProcessEvidenceUnknown
     except (PermissionError, OSError, UnicodeDecodeError) as exc:
         raise _ProcessEvidenceUnknown from exc
     closing_parenthesis = stat.rfind(")")
@@ -50,7 +58,10 @@ def _read_owner(path: Path) -> tuple[int, str | None] | None:
         raise _OwnerEvidenceUnknown from exc
     if len(fields) not in (1, 2) or not all(field.isdigit() for field in fields):
         return None
-    pid = int(fields[0])
+    try:
+        pid = int(fields[0])
+    except ValueError:
+        return None
     if pid <= 0:
         return None
     return pid, fields[1] if len(fields) == 2 else None
@@ -62,28 +73,35 @@ def _is_live_owner(pid: int, start_time: str | None) -> bool:
 
 
 def _acquire_recovery_guard(path: Path) -> int:
-    if not _RECOVERY_GUARD.acquire(blocking=False):
+    normalized_path = path.resolve()
+    with _RECOVERY_GUARDS_LOCK:
+        guard = _RECOVERY_GUARDS.setdefault(normalized_path, threading.Lock())
+    if not guard.acquire(blocking=False):
         raise BlockingIOError
     fd: int | None = None
     try:
         fd = os.open(path, os.O_CREAT | os.O_RDWR)
         if fcntl is not None:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with _RECOVERY_GUARDS_LOCK:
+            _RECOVERY_FD_GUARDS[fd] = guard
         return fd
     except Exception:
         if fd is not None:
             os.close(fd)
-        _RECOVERY_GUARD.release()
+        guard.release()
         raise
 
 
 def _release_recovery_guard(fd: int) -> None:
+    with _RECOVERY_GUARDS_LOCK:
+        guard = _RECOVERY_FD_GUARDS.pop(fd)
     try:
         if fcntl is not None:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
-        _RECOVERY_GUARD.release()
+        guard.release()
 
 
 class CollectLock:

@@ -9,7 +9,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def mock_collect_lock_process_evidence(request, monkeypatch):
-    if request.node.name != "test_process_start_time_parses_after_final_comm_parenthesis":
+    if request.node.name not in {
+        "test_process_start_time_parses_after_final_comm_parenthesis",
+        "test_collect_lock_rejects_owner_when_proc_stat_is_missing_but_pid_exists",
+    }:
         monkeypatch.setattr("netctl.collect_lock._process_start_time", lambda pid: "100")
 
 
@@ -818,6 +821,45 @@ def test_collect_lock_reclaims_absent_owner(tmp_path, monkeypatch):
         assert lock_path.read_text(encoding="ascii") == f"{os.getpid()} 200\n"
 
 
+def test_collect_lock_rejects_owner_when_proc_stat_is_missing_but_pid_exists(tmp_path, monkeypatch):
+    from netctl.collect_lock import CollectLock, collect_lock_path
+
+    db_url = f"sqlite:///{tmp_path / 'netctl.sqlite'}"
+    lock_path = collect_lock_path(db_url)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("123 10", encoding="ascii")
+    original_read_text = Path.read_text
+    stat = "456 (collector) " + " ".join(["S", *(["1"] * 18), "200"])
+
+    def missing_owner_stat(path, *args, **kwargs):
+        normalized = str(path).replace("\\", "/")
+        if normalized.endswith("/proc/123/stat"):
+            raise FileNotFoundError
+        if normalized.endswith("/stat") and "/proc/" in normalized:
+            return stat
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", missing_owner_stat)
+    monkeypatch.setattr("netctl.collect_lock.os.kill", lambda pid, signal: None)
+
+    with pytest.raises(RuntimeError, match="collection already running"):
+        CollectLock(db_url).__enter__()
+    assert lock_path.read_text(encoding="ascii") == "123 10"
+
+
+def test_collect_lock_reclaims_oversized_pid_record(tmp_path, monkeypatch):
+    from netctl.collect_lock import CollectLock, collect_lock_path
+
+    db_url = f"sqlite:///{tmp_path / 'netctl.sqlite'}"
+    lock_path = collect_lock_path(db_url)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("9" * 5000, encoding="ascii")
+    monkeypatch.setattr("netctl.collect_lock._process_start_time", lambda pid: "200")
+
+    with CollectLock(db_url):
+        assert lock_path.read_text(encoding="ascii") == f"{os.getpid()} 200\n"
+
+
 def test_collect_lock_fails_closed_without_local_start_time(tmp_path, monkeypatch):
     from netctl.collect_lock import CollectLock, collect_lock_path
 
@@ -1084,6 +1126,22 @@ def test_collect_lock_guard_rejects_separate_linux_process(tmp_path):
         _release_recovery_guard(guard_fd)
 
     assert result.returncode == 0
+
+
+def test_collect_lock_recovery_guards_are_isolated_by_path(tmp_path):
+    from netctl.collect_lock import _acquire_recovery_guard, _release_recovery_guard
+
+    first_path = tmp_path / "first.lock.recovery"
+    second_path = tmp_path / "second.lock.recovery"
+    first_fd = _acquire_recovery_guard(first_path)
+    try:
+        second_fd = _acquire_recovery_guard(second_path)
+        try:
+            assert second_fd >= 0
+        finally:
+            _release_recovery_guard(second_fd)
+    finally:
+        _release_recovery_guard(first_fd)
 
 
 def test_collect_lock_rejects_retry_collision(tmp_path, monkeypatch):
