@@ -12,6 +12,7 @@ def mock_collect_lock_process_evidence(request, monkeypatch):
     if request.node.name not in {
         "test_process_start_time_parses_after_final_comm_parenthesis",
         "test_collect_lock_rejects_owner_when_proc_stat_is_missing_but_pid_exists",
+        "test_collect_lock_reclaims_pid_outside_safe_range",
     }:
         monkeypatch.setattr("netctl.collect_lock._process_start_time", lambda pid: "100")
 
@@ -855,6 +856,35 @@ def test_collect_lock_reclaims_oversized_pid_record(tmp_path, monkeypatch):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text("9" * 5000, encoding="ascii")
     monkeypatch.setattr("netctl.collect_lock._process_start_time", lambda pid: "200")
+
+    with CollectLock(db_url):
+        assert lock_path.read_text(encoding="ascii") == f"{os.getpid()} 200\n"
+
+
+def test_collect_lock_reclaims_pid_outside_safe_range(tmp_path, monkeypatch):
+    from netctl.collect_lock import CollectLock, collect_lock_path
+
+    oversized_pid = "99999999999999999999"
+    db_url = f"sqlite:///{tmp_path / 'netctl.sqlite'}"
+    lock_path = collect_lock_path(db_url)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(f"{oversized_pid} 10", encoding="ascii")
+    original_read_text = Path.read_text
+    stat = "456 (collector) " + " ".join(["S", *(["1"] * 18), "200"])
+
+    def missing_oversized_owner_stat(path, *args, **kwargs):
+        normalized = str(path).replace("\\", "/")
+        if normalized.endswith(f"/proc/{oversized_pid}/stat"):
+            raise FileNotFoundError
+        if normalized.endswith("/stat") and "/proc/" in normalized:
+            return stat
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", missing_oversized_owner_stat)
+    monkeypatch.setattr(
+        "netctl.collect_lock.os.kill",
+        lambda pid, signal: (_ for _ in ()).throw(OverflowError("out of range")),
+    )
 
     with CollectLock(db_url):
         assert lock_path.read_text(encoding="ascii") == f"{os.getpid()} 200\n"

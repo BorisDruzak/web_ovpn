@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - collection fails closed without /proc 
 _RECOVERY_GUARDS_LOCK = threading.Lock()
 _RECOVERY_GUARDS: dict[Path, threading.Lock] = {}
 _RECOVERY_FD_GUARDS: dict[int, threading.Lock] = {}
+_MAX_PID = 2**31 - 1
 
 
 class _ProcessEvidenceUnknown(RuntimeError):
@@ -62,7 +63,7 @@ def _read_owner(path: Path) -> tuple[int, str | None] | None:
         pid = int(fields[0])
     except ValueError:
         return None
-    if pid <= 0:
+    if not 0 < pid <= _MAX_PID:
         return None
     return pid, fields[1] if len(fields) == 2 else None
 
