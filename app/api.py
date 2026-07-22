@@ -24,6 +24,7 @@ from .routeros_backups import list_routeros_backups
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 router = APIRouter(prefix="/api/v1", tags=["api"])
 
@@ -216,13 +217,14 @@ def _network_change(
     request: Request,
     authorization: str | None,
     db: Session,
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
     actor = authorize_network_change(request, authorization, db, required_scope)
     request_id = str(getattr(request.state, "request_id", "")) or "api-request"
     try:
         result = call_network_control(
             action, payload, actor=actor, session_id=request_id,
-            authorization_id=f"{request_id}:{action}",
+            authorization_id=f"{idempotency_key or request_id}:{action}",
         )
     except HTTPException as exc:
         write_audit(db, request, actor, f"api-network-change-{action}", "error", str(exc.detail), target_client=str(payload.get("plan_key") or ""))
@@ -231,16 +233,23 @@ def _network_change(
     return result
 
 
+def _require_idempotency_key(value: str | None) -> str:
+    if not value or not IDEMPOTENCY_KEY_RE.fullmatch(value):
+        raise HTTPException(status_code=400, detail="Idempotency-Key is required")
+    return value
+
+
 @router.post("/network-changes/plans")
 def api_network_change_plan_create(
     payload: NetworkChangePlanCreateRequest,
     request: Request,
     authorization: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
 ):
     return api_response(_network_change(
         "plan.create", {"plan": payload.model_dump()}, required_scope="network:plan",
-        request=request, authorization=authorization, db=db,
+        request=request, authorization=authorization, db=db, idempotency_key=_require_idempotency_key(idempotency_key),
     ))
 
 
@@ -264,31 +273,32 @@ def _network_change_plan_action(
     request: Request,
     authorization: str | None,
     db: Session,
+    idempotency_key: str | None,
 ):
     return api_response(_network_change(
         action, {"plan_key": plan_key}, required_scope=required_scope,
-        request=request, authorization=authorization, db=db,
+        request=request, authorization=authorization, db=db, idempotency_key=_require_idempotency_key(idempotency_key),
     ))
 
 
 @router.post("/network-changes/plans/{plan_key}/approve")
-def api_network_change_plan_approve(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    return _network_change_plan_action("plan.approve", plan_key, "network:plan", request, authorization, db)
+def api_network_change_plan_approve(plan_key: str, request: Request, authorization: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.approve", plan_key, "network:plan", request, authorization, db, idempotency_key)
 
 
 @router.post("/network-changes/plans/{plan_key}/apply")
-def api_network_change_plan_apply(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    return _network_change_plan_action("plan.apply", plan_key, "network:apply", request, authorization, db)
+def api_network_change_plan_apply(plan_key: str, request: Request, authorization: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.apply", plan_key, "network:apply", request, authorization, db, idempotency_key)
 
 
 @router.post("/network-changes/plans/{plan_key}/verify")
-def api_network_change_plan_verify(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    return _network_change_plan_action("plan.verify", plan_key, "network:apply", request, authorization, db)
+def api_network_change_plan_verify(plan_key: str, request: Request, authorization: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.verify", plan_key, "network:apply", request, authorization, db, idempotency_key)
 
 
 @router.post("/network-changes/plans/{plan_key}/rollback")
-def api_network_change_plan_rollback(plan_key: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    return _network_change_plan_action("plan.rollback", plan_key, "network:rollback", request, authorization, db)
+def api_network_change_plan_rollback(plan_key: str, request: Request, authorization: str | None = Header(default=None), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"), db: Session = Depends(get_db)):
+    return _network_change_plan_action("plan.rollback", plan_key, "network:rollback", request, authorization, db, idempotency_key)
 
 
 def profile_command_args(command: str, client: str, payload: ClientProfileRequest) -> list[str]:

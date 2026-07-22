@@ -35,7 +35,9 @@ def _client(tmp_path, monkeypatch):
     importlib.reload(app.api)
     importlib.reload(app.main)
     app.db.init_db()
-    return TestClient(app.main.app), {"Authorization": f"Bearer {token}", "X-Forwarded-Proto": "https"}
+    return TestClient(app.main.app), {
+        "Authorization": f"Bearer {token}", "X-Forwarded-Proto": "https", "Idempotency-Key": "test-request-1",
+    }
 
 
 def test_network_change_create_authorizes_scope_and_relays_to_broker(tmp_path, monkeypatch) -> None:
@@ -75,6 +77,21 @@ def test_network_change_apply_requires_apply_scope(tmp_path, monkeypatch) -> Non
     response = client.post("/api/v1/network-changes/plans/plan-1/apply", headers=headers)
 
     assert response.status_code == 200
+
+
+def test_network_change_rejects_mutations_without_an_idempotency_key(tmp_path, monkeypatch) -> None:
+    client, headers = _client(tmp_path, monkeypatch)
+    headers.pop("Idempotency-Key")
+    import app.api
+
+    monkeypatch.setattr(app.api, "call_network_control", lambda *args, **kwargs: {"plan_key": "plan-1"}, raising=False)
+    response = client.post(
+        "/api/v1/network-changes/plans", headers=headers,
+        json={"subject_type": "asset", "subject_key": "mac:aa", "desired_state": "deny", "reason": "test"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Idempotency-Key is required"
 
 
 def test_network_control_client_inspects_a_plan_before_signing_apply(monkeypatch) -> None:
