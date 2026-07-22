@@ -17,11 +17,7 @@ def _steps(conn: sqlite3.Connection, plan_key: str) -> tuple[sqlite3.Row, list[s
     return plan, rows
 
 
-def _device_lock(conn: sqlite3.Connection, steps: list[sqlite3.Row]) -> tuple[str, str]:
-    targets = {str(step["target_key"]) for step in steps}
-    if len(targets) != 1:
-        raise ValueError("plan must target exactly one enforcement device")
-    device_key = targets.pop()
+def _device_lock_for_target(conn: sqlite3.Connection, device_key: str) -> tuple[str, str]:
     holder = str(uuid.uuid4())
     try:
         conn.execute(
@@ -32,6 +28,13 @@ def _device_lock(conn: sqlite3.Connection, steps: list[sqlite3.Row]) -> tuple[st
     except sqlite3.IntegrityError as exc:
         raise ValueError("device operation is already in progress") from exc
     return device_key, holder
+
+
+def _device_lock(conn: sqlite3.Connection, steps: list[sqlite3.Row]) -> tuple[str, str]:
+    targets = {str(step["target_key"]) for step in steps}
+    if len(targets) != 1:
+        raise ValueError("plan must target exactly one enforcement device")
+    return _device_lock_for_target(conn, targets.pop())
 
 
 def _release_device_lock(conn: sqlite3.Connection, lock: tuple[str, str]) -> None:
@@ -164,3 +167,116 @@ def rollback_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict
         return {"status": "rolled_back", "plan_key": plan_key, "completed_rollback_steps": completed}
     finally:
         _release_device_lock(conn, lock)
+
+
+def _record_policy_stale_identity(conn: sqlite3.Connection, policy_id: int, reason: str) -> None:
+    conn.execute(
+        """INSERT INTO network_policy_findings
+           (desired_policy_id, finding_type, status, first_seen_at, last_seen_at, details_json)
+           VALUES (?, 'policy_stale_identity', 'open', datetime('now'), datetime('now'), ?)
+           ON CONFLICT(desired_policy_id, finding_type) DO UPDATE SET
+             status = 'open', last_seen_at = excluded.last_seen_at, details_json = excluded.details_json""",
+        (policy_id, json.dumps({"reason": reason}, sort_keys=True)),
+    )
+    conn.commit()
+
+
+def _resolve_reconcile_asset(context: sqlite3.Connection, policy: sqlite3.Row) -> str:
+    if str(policy["subject_type"]) == "asset":
+        return str(policy["subject_key"])
+    if str(policy["subject_type"]) == "user":
+        from netctl.user_context import resolve_policy_asset_for_user
+
+        resolved = resolve_policy_asset_for_user(context, str(policy["subject_key"]))
+        if resolved is None:
+            raise ValueError("user policy no longer has an eligible confirmed primary asset")
+        return str(resolved["asset_key"])
+    raise ValueError("unsupported desired policy subject")
+
+
+def reconcile_desired_policies(
+    conn: sqlite3.Connection,
+    netctl_db_url: str,
+    adapter: Any,
+    *,
+    enforcement_sources_by_site: dict[str, str],
+    source_sla_seconds: int,
+    anchor_check: Callable[[str], bool],
+    limit: int = 64,
+) -> dict[str, int]:
+    """Reconcile only existing deny intent; identity failures retain the old deny entries."""
+    if not 1 <= limit <= 256:
+        raise ValueError("invalid reconcile limit")
+    from .policy_resolver import _open_context_immutable, resolve_asset_targets
+
+    policies = conn.execute(
+        """SELECT policies.*, plans.plan_key AS source_plan_key
+           FROM desired_network_policies AS policies
+           JOIN change_plans AS plans ON plans.id = policies.source_plan_id
+           WHERE policies.status = 'active' AND policies.policy_type = 'internet_access'
+           ORDER BY policies.id LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    reconciled = stale = skipped = 0
+    for policy in policies:
+        if str(policy["desired_state"]) != "deny":
+            skipped += 1
+            continue
+        context = _open_context_immutable(netctl_db_url)
+        try:
+            asset_key = _resolve_reconcile_asset(context, policy)
+            targets = resolve_asset_targets(
+                context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site,
+                source_sla_seconds=source_sla_seconds, anchor_check=anchor_check,
+            )
+        except ValueError as exc:
+            _record_policy_stale_identity(conn, int(policy["id"]), str(exc))
+            stale += 1
+            continue
+        finally:
+            context.close()
+        devices = {str(target["source"]) for target in targets}
+        if len(devices) != 1:
+            _record_policy_stale_identity(conn, int(policy["id"]), "policy spans multiple enforcement devices")
+            stale += 1
+            continue
+        device_key = devices.pop()
+        plan_key = str(policy["source_plan_key"])
+        expected_addresses = {str(target["address"]) for target in targets}
+        lock = _device_lock_for_target(conn, device_key)
+        try:
+            comment = str(adapter.ownership_comment(plan_key, asset_key))
+            existing = {
+                str(entry.get("address") or "")
+                for entry in adapter.list_managed_address_list_entries(device_key)
+                if str(entry.get("comment") or "") == comment
+            }
+            for address in sorted(expected_addresses - existing):
+                adapter.ensure_address_list_entry(device_key, address, plan_key, asset_key)
+            verified = {
+                str(entry.get("address") or "")
+                for entry in adapter.list_managed_address_list_entries(device_key)
+                if str(entry.get("comment") or "") == comment
+            }
+            if not expected_addresses <= verified:
+                raise ValueError("new deny entry did not verify")
+            for address in sorted(existing - expected_addresses):
+                adapter.remove_address_list_entry(device_key, address, plan_key, asset_key)
+            conn.execute(
+                """INSERT INTO change_executions
+                   (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json)
+                   VALUES (?, 'reconcile', datetime('now'), datetime('now'), 'success', ?)""",
+                (policy["source_plan_id"], json.dumps({"addresses": sorted(expected_addresses)}, sort_keys=True)),
+            )
+            conn.execute(
+                "UPDATE network_policy_findings SET status = 'resolved', last_seen_at = datetime('now') WHERE desired_policy_id = ? AND finding_type = 'policy_stale_identity'",
+                (policy["id"],),
+            )
+            conn.commit()
+            reconciled += 1
+        except Exception as exc:
+            _record_policy_stale_identity(conn, int(policy["id"]), str(exc))
+            stale += 1
+        finally:
+            _release_device_lock(conn, lock)
+    return {"reconciled": reconciled, "stale_identity": stale, "skipped": skipped}

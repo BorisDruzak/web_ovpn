@@ -4,7 +4,7 @@ Description=Netops control broker socket
 [Socket]
 ListenStream=/run/netopsctl/netopsctl.sock
 SocketUser=netopsctl
-SocketGroup=openvpn-web
+SocketGroup=netopsctl
 SocketMode=0660
 RemoveOnStop=true
 

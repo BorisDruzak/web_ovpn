@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 User=openvpn-web
 Group=openvpn-web
+SupplementaryGroups=netopsctl
 WorkingDirectory=/opt/openvpn-web
 EnvironmentFile=/etc/openvpn-web/openvpn-web.env
 ExecStart=/opt/openvpn-web/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8088

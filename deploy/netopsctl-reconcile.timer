@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Netops desired policy reconciliation after context correlation
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=5m
+Persistent=true
+Unit=netopsctl-reconcile.service
+
+[Install]
+WantedBy=timers.target

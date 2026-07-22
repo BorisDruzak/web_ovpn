@@ -5,9 +5,14 @@ install -d -o netctl -g netctl -m 0750 /var/lib/netctl
 find /var/lib/netctl -maxdepth 1 -type f \( -name 'netctl.sqlite' -o -name 'netctl.sqlite-wal' -o -name 'netctl.sqlite-shm' \) -exec chown netctl:netctl {} + -exec chmod 0640 {} +
 getent group netopsctl >/dev/null || groupadd --system netopsctl
 id -u netopsctl >/dev/null 2>&1 || useradd --system --gid netopsctl --home-dir /var/lib/netopsctl --shell /usr/sbin/nologin netopsctl
+id -u netopsctl-reconcile >/dev/null 2>&1 || useradd --system --gid netopsctl --home-dir /var/lib/netopsctl-reconcile --shell /usr/sbin/nologin netopsctl-reconcile
 usermod -aG netctl netopsctl
+usermod -aG netopsctl openvpn-web
 install -d -o netopsctl -g netopsctl -m 0750 /var/lib/netopsctl
 install -m 0644 deploy/netopsctl.socket /etc/systemd/system/netopsctl.socket
 install -m 0644 deploy/netopsctl.service /etc/systemd/system/netopsctl.service
+install -m 0644 deploy/netopsctl-reconcile.service /etc/systemd/system/netopsctl-reconcile.service
+install -m 0644 deploy/netopsctl-reconcile.timer /etc/systemd/system/netopsctl-reconcile.timer
 systemctl daemon-reload
 systemctl enable --now netopsctl.socket
+systemctl enable --now netopsctl-reconcile.timer

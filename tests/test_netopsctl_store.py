@@ -99,3 +99,30 @@ def test_control_service_inspection_returns_persisted_plan_and_digest(tmp_path) 
         assert result["plan_digest"].startswith("sha256:")
     finally:
         conn.close()
+
+
+def test_control_service_routes_the_dedicated_reconcile_action(tmp_path, monkeypatch) -> None:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from netopsctl.audit import AuditSigner
+    from netopsctl.service import ControlService
+    from netopsctl.store import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netopsctl.sqlite').as_posix()}")
+    try:
+        service = ControlService(
+            conn=conn, netctl_db_url="sqlite:///context.sqlite", adapter=object(), enforcement_sources_by_site={},
+            source_sla_seconds=300, audit_signer=AuditSigner("test", Ed25519PrivateKey.generate()),
+            writes_enabled=True, audit_sink={},
+        )
+        monkeypatch.setattr(service, "_checkpoint", lambda: None)
+        monkeypatch.setattr(
+            "netopsctl.reconcile.reconcile_desired_policies",
+            lambda *_args, **kwargs: {"reconciled": 1, "stale_identity": 0, "skipped": 0},
+        )
+        assert service.dispatch(
+            "policy.reconcile", {"limit": 4}, peer="netopsctl-reconcile",
+            subject={"principal_type": "service", "principal_id": "reconciler", "principal_name": "reconciler", "session_id": "timer", "authorization_id": "reconcile-1"},
+        ) == {"reconciled": 1, "stale_identity": 0, "skipped": 0}
+    finally:
+        conn.close()

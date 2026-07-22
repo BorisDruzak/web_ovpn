@@ -106,6 +106,22 @@ def _migration_6(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE change_plans ADD COLUMN operation_version INTEGER NOT NULL DEFAULT 1 CHECK (operation_version = 1)")
 
 
+def _migration_7(conn: sqlite3.Connection) -> None:
+    """Keep stale desired-policy identity visible without changing device state."""
+    conn.execute(
+        """CREATE TABLE network_policy_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            desired_policy_id INTEGER NOT NULL REFERENCES desired_network_policies(id) ON DELETE RESTRICT,
+            finding_type TEXT NOT NULL CHECK (finding_type = 'policy_stale_identity'),
+            status TEXT NOT NULL CHECK (status IN ('open', 'resolved')),
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE(desired_policy_id, finding_type)
+        )"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -113,6 +129,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (4, _migration_4),
     (5, _migration_5),
     (6, _migration_6),
+    (7, _migration_7),
 )
 
 

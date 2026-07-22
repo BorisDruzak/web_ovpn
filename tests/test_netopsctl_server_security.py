@@ -101,3 +101,28 @@ def test_broker_error_keeps_decoded_request_correlation_id(tmp_path, monkeypatch
         assert json.loads(connection.sent)["request_id"] == request.request_id
     finally:
         conn.close()
+
+
+def test_reconciler_peer_cannot_use_web_plan_apply_scope(tmp_path) -> None:
+    from netopsctl.server import AuthenticatedPeer, authorize_broker_request
+    from netopsctl.store import connect, create_change_plan, plan_digest
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    private_key = Ed25519PrivateKey.generate()
+    try:
+        create_change_plan(
+            conn, plan_key="plan-1", actor="web:42", reason="approved", subject_type="asset",
+            subject_key="mac:AA", operation_type="internet_access_set", desired_state={},
+            resolved_targets=[], context_evidence_hash="a" * 64, precheck={}, rollback={},
+        )
+        reconcile_peer = AuthenticatedPeer(
+            uid=1002, gid=1002, pid=234, service_principal="netopsctl-reconcile",
+            public_key=private_key.public_key().public_bytes_raw(), allowed_actions=frozenset({"policy.reconcile"}),
+        )
+        with pytest.raises(ValueError, match="not allowed"):
+            authorize_broker_request(
+                conn, _request(private_key, plan_key="plan-1", plan_digest=plan_digest(conn, "plan-1")),
+                reconcile_peer,
+            )
+    finally:
+        conn.close()

@@ -1,0 +1,18 @@
+[Unit]
+Description=Netops desired Internet policy reconciler
+After=netctl-reconcile.service netopsctl.socket
+Requires=netopsctl.socket
+
+[Service]
+Type=oneshot
+User=netopsctl-reconcile
+Group=netopsctl
+EnvironmentFile=/etc/netopsctl/netopsctl.env
+WorkingDirectory=/opt/openvpn-web
+ExecStart=/opt/openvpn-web/.venv/bin/python -m netopsctl.reconcile_runner
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/openvpn-web
+ReadWritePaths=/run/netopsctl

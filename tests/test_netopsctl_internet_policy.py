@@ -265,6 +265,83 @@ def test_user_plan_becomes_stale_when_its_primary_binding_is_retired(tmp_path) -
         netops.close()
 
 
+def test_reconciler_adds_new_deny_before_removing_a_superseded_dhcp_address(tmp_path) -> None:
+    from netctl.db import connect as connect_netctl
+    from netopsctl.reconcile import reconcile_desired_policies
+    from netopsctl.store import connect as connect_netops
+    from netopsctl.store import create_change_plan, transition_plan, upsert_desired_policy
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+            self.entries = [{"address": "192.0.2.20", "comment": self.ownership_comment("policy-source", "mac:AA")}]
+
+        @staticmethod
+        def ownership_comment(plan_key, asset_key):
+            return f"web_ovpn:policy:{plan_key}:asset:{asset_key}"
+
+        def list_managed_address_list_entries(self, _target):
+            self.calls.append(("list", ""))
+            return list(self.entries)
+
+        def ensure_address_list_entry(self, _target, address, plan_key, asset_key):
+            self.calls.append(("ensure", address))
+            self.entries.append({"address": address, "comment": self.ownership_comment(plan_key, asset_key)})
+            return {"status": "added", "address": address}
+
+        def remove_address_list_entry(self, _target, address, plan_key, asset_key):
+            self.calls.append(("remove", address))
+            comment = self.ownership_comment(plan_key, asset_key)
+            self.entries = [entry for entry in self.entries if (entry["address"], entry["comment"]) != (address, comment)]
+            return {"status": "removed", "address": address}
+
+    netctl_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    now = utc_now()
+    context = connect_netctl(netctl_url)
+    try:
+        source = context.execute(
+            """INSERT INTO network_sources (name, driver, host, port, username, secret_ref, tls, verify_tls, site, enabled, created_at, updated_at, last_collect_at, last_status)
+               VALUES ('edge-a', 'mock', '127.0.0.1', 1, '', '', 0, 0, 'site-a', 1, ?, ?, ?, 'success')""",
+            (now, now, now),
+        ).lastrowid
+        asset = context.execute(
+            """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        ).lastrowid
+        context.execute(
+            """INSERT INTO ip_observations (asset_id, site, source_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+               VALUES (?, 'site-a', ?, 'edge-a', '192.0.2.21', ?, ?, 1, 'manual')""",
+            (asset, source, now, now),
+        )
+        context.commit()
+    finally:
+        context.close()
+    netops = connect_netops(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(
+            netops, plan_key="policy-source", actor="api", reason="approved", subject_type="asset",
+            subject_key="mac:AA", operation_type="internet_access_set", desired_state={"internet_access": "deny"},
+            resolved_targets=[], context_evidence_hash="a" * 64, precheck={}, rollback={},
+        )
+        for status in ("validated", "approved", "applying", "applied", "verified"):
+            transition_plan(netops, "policy-source", status)
+        upsert_desired_policy(
+            netops, "policy-source", subject_type="asset", subject_key="mac:AA", desired_state="deny",
+            reason="approved", enforcement_scope="all-sites",
+        )
+        adapter = Adapter()
+        result = reconcile_desired_policies(
+            netops, netctl_url, adapter, enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300, anchor_check=lambda _: {"valid": True, "fingerprint": "anchor-one"},
+        )
+        assert result["reconciled"] == 1
+        assert adapter.calls.index(("ensure", "192.0.2.21")) < adapter.calls.index(("remove", "192.0.2.20"))
+        assert adapter.entries == [{"address": "192.0.2.21", "comment": "web_ovpn:policy:policy-source:asset:mac:AA"}]
+    finally:
+        netops.close()
+
+
 def test_asset_policy_rejects_unknown_desired_state_and_provisional_identity(tmp_path) -> None:
     from netctl.db import connect as connect_netctl
     from netopsctl.policy_resolver import create_asset_internet_access_plan, resolve_asset_targets

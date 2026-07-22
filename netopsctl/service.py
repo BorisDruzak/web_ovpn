@@ -106,6 +106,20 @@ class ControlService:
             elif action == "plan.rollback":
                 self._checkpoint()
                 result = rollback_plan(self.conn, payload["plan_key"], self.adapter)
+            elif action == "policy.reconcile":
+                # This action is assigned only to the dedicated reconciler peer.
+                # It may change entries, so it remains behind the same checkpoint gate.
+                self._checkpoint()
+                from . import reconcile as reconciliation
+
+                result = reconciliation.reconcile_desired_policies(
+                    self.conn, self.netctl_db_url, self.adapter,
+                    enforcement_sources_by_site=self.enforcement_sources_by_site,
+                    source_sla_seconds=self.source_sla_seconds,
+                    anchor_check=lambda target: self.adapter.inspect_internet_policy_anchor()
+                    if target == next(iter(self.enforcement_sources_by_site.values())) else False,
+                    limit=int(payload["limit"]),
+                )
             else:
                 raise ValueError("unsupported control action")
         except Exception:
