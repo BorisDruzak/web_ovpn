@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import stat
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -59,6 +61,50 @@ def test_archive_inspection_rejects_duplicate_member_names(
     assert error.value.code == "backup_integrity_failed"
 
 
+def test_inspection_reaps_decompressor_after_unsafe_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    engine = sandbox.archive_engine()
+    raw_tar = io.BytesIO()
+    with tarfile.open(fileobj=raw_tar, mode="w") as archive:
+        info = tarfile.TarInfo("/absolute")
+        info.size = len(b"fixture\n")
+        archive.addfile(info, io.BytesIO(b"fixture\n"))
+
+    class FakeProcess:
+        def __init__(self, raw: bytes) -> None:
+            self.stdout = io.BytesIO(raw)
+            self.waited = False
+            self.killed = False
+
+        def wait(self) -> int:
+            self.waited = True
+            return 0
+
+        def poll(self) -> int | None:
+            return None if not self.waited else 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    process = FakeProcess(raw_tar.getvalue())
+    monkeypatch.setattr(
+        engine,
+        "_open_decompressor",
+        lambda archive_path: (archive_path.stat().st_size, process),
+    )
+    archive_path = sandbox.make_tar_zst(
+        member_name="runtime/placeholder",
+    )
+
+    with pytest.raises(BackupError):
+        engine.inspect(sandbox.runtime_spec(), archive_path)
+
+    assert process.waited is True
+
+
 def test_ansible_archive_excludes_vault(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     vault_bytes = b"$ANSIBLE_VAULT;1.1;AES256\nnever-archive-this\n"
@@ -102,6 +148,30 @@ def test_capture_records_canonical_paths_and_absence(
         not item.absolute_path.startswith(str(sandbox.root))
         for item in record.paths
     )
+
+
+def test_capture_failure_after_rename_removes_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_runtime_tree()
+    destination = sandbox.tmp_bundle / "runtime.tar.zst"
+    engine = sandbox.archive_engine()
+
+    def fail_digest(path: Path) -> tuple[int, str]:
+        raise BackupError(
+            code="backup_component_failed",
+            message="Injected digest failure",
+            exit_code=4,
+        )
+
+    monkeypatch.setattr(engine, "_file_digest", fail_digest)
+
+    with pytest.raises(BackupError):
+        engine.capture(sandbox.runtime_spec(), destination)
+
+    assert not destination.exists()
 
 
 def test_rehearsal_extraction_clears_setuid_and_preserves_safe_link(
