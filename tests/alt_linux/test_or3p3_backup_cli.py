@@ -51,6 +51,28 @@ def test_cli_accepts_root_list_with_synthetic_settings(
     }
 
 
+def test_cli_renders_invalid_settings_as_one_safe_json_object(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+
+    result = sandbox.run_cli(
+        "list",
+        effective_uid=0,
+        ALT_DEPLOY_BACKUP_EXPECTED_ROOT_UID="not-a-number",
+    )
+
+    assert result.returncode == 6
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "status": "error",
+        "error": {
+            "code": "backup_preflight_failed",
+            "message": "Backup configuration is invalid",
+        },
+    }
+
+
 def test_identity_override_is_rejected_for_production_root() -> None:
     environment = {
         "ALT_DEPLOY_BACKUP_TEST_MODE": "1",
