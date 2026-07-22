@@ -164,6 +164,20 @@ def test_scoped_installer_validates_but_never_rewrites_observer_secrets():
         assert forbidden not in installer
 
 
+def test_scoped_installer_safely_migrates_the_legacy_web_owned_snapshot_directory():
+    installer = Path(OBSERVER_INSTALLER).read_text(encoding="utf-8")
+
+    legacy_metadata = "openvpn-web:openvpn-web:750"
+    legacy_allowance = installer.index(legacy_metadata)
+    timer_stop = installer.index("systemctl stop server-observer.timer")
+    parent_lock = installer.index("sudo_cmd chmod 1750 \"$STATE_PARENT\"")
+    state_hardening = installer.index("sudo_cmd chown openvpm:openvpn-web \"$STATE_DIR\"")
+    final_parent_hardening = installer.index("sudo_cmd chmod 1770 \"$STATE_PARENT\"")
+
+    assert legacy_allowance < timer_stop < parent_lock < state_hardening < final_parent_hardening
+    assert installer.count("validate_state_dir") >= 3
+
+
 def test_scoped_observer_backup_and_rollback_cover_every_mutated_asset():
     backup = Path(OBSERVER_BACKUP).read_text(encoding="utf-8")
     rollback = Path(OBSERVER_ROLLBACK).read_text(encoding="utf-8")

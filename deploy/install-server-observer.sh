@@ -175,7 +175,14 @@ validate_state_dir() {
   fi
   resolved="$(sudo_cmd readlink -e -- "$STATE_DIR")"
   metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$STATE_DIR")"
-  if [[ "$resolved" != "$STATE_DIR" ]] || [[ "$metadata" != openvpm:openvpn-web:750 ]]; then
+  case "$metadata" in
+    openvpm:openvpn-web:750|openvpn-web:openvpn-web:750) ;;
+    *)
+      echo "observer state directory has unsafe metadata" >&2
+      exit 2
+      ;;
+  esac
+  if [[ "$resolved" != "$STATE_DIR" ]]; then
     echo "observer state directory has unsafe metadata" >&2
     exit 2
   fi
@@ -246,10 +253,19 @@ if [[ -n "$timer_load_state" && "$timer_load_state" != not-found ]]; then
 fi
 wait_for_observer
 
-# Harden the shared state parent before creating or using the observer entry.
-# Sticky-directory ownership prevents the web account from replacing the
-# openvpm-owned observer directory after validation.
+# Freeze the parent before migrating a legacy web-owned observer entry. This
+# prevents the web account from replacing the validated entry during the
+# ownership transition below.
 sudo_cmd chown root:openvpn-web "$STATE_PARENT"
+sudo_cmd chmod 1750 "$STATE_PARENT"
+validate_state_dir
+state_dir_metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$STATE_DIR" 2>/dev/null || true)"
+if [[ "$state_dir_metadata" == "openvpn-web:openvpn-web:750" ]]; then
+  sudo_cmd chown openvpm:openvpn-web "$STATE_DIR"
+  sudo_cmd chmod 0750 "$STATE_DIR"
+fi
+# Sticky-directory ownership prevents the web account from replacing the
+# openvpm-owned observer directory after validation or migration.
 sudo_cmd chmod 1770 "$STATE_PARENT"
 validate_state_dir
 sudo_cmd install -d -m 0750 -o openvpm -g openvpn-web "$STATE_DIR"
