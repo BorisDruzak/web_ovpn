@@ -15,6 +15,7 @@ from .archive import ArchiveEngine
 from .components import ComponentSpec, component_specs
 from .errors import BackupError
 from .fs import (
+    assert_safe_parents,
     fsync_directory,
     read_regular_bytes,
     source_inventory,
@@ -32,7 +33,7 @@ from .manifest import (
 from .quiescence import QuiescenceChecker
 from .secrets import SecretIdentityProvider
 from .settings import BackupSettings
-from .systemd import SystemdManager, UnitState
+from .systemd import SystemdManager
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,6 @@ class BackupRepository:
         for path in (
             self.settings.backup_root,
             self.settings.private_state_root,
-            self.settings.log_file.parent,
         ):
             validate_private_directory(
                 path,
@@ -110,6 +110,20 @@ class BackupRepository:
                 gid=self.settings.expected_root_gid,
                 mode=0o700,
             )
+
+        log_parent = self.settings.log_file.parent
+        assert_safe_parents(self.settings.log_file)
+        try:
+            metadata = log_parent.lstat()
+        except OSError as exc:
+            raise _preflight("Backup log parent cannot be inspected") from exc
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != self.settings.expected_root_uid
+            or metadata.st_gid != self.settings.expected_root_gid
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise _preflight("Backup log parent metadata is unsafe")
 
     def _validate_commands(self) -> None:
         commands = (
@@ -314,7 +328,11 @@ class BackupRepository:
                 continue
             key, value = line.split("=", 1)
             value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            if (
+                len(value) >= 2
+                and value[0] == value[-1]
+                and value[0] in {"'", '"'}
+            ):
                 value = value[1:-1]
             values[key] = value
         os_id = values.get("ID", "")
