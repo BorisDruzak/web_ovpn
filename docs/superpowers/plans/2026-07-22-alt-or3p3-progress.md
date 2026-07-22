@@ -8,6 +8,7 @@
 - Amendment: `docs/superpowers/plans/2026-07-22-alt-or3p3-coordinated-backup-restore-amendment.md`
 - Completion hardening design: `docs/superpowers/specs/2026-07-22-alt-or3p3-completion-hardening-design.md`
 - Completion hardening plan: `docs/superpowers/plans/2026-07-22-alt-or3p3-completion-hardening.md`
+- Final verification: `docs/superpowers/plans/2026-07-22-alt-or3p3-verification.md`
 
 ## Tasks
 
@@ -23,10 +24,11 @@
 - Task 10: complete through the durable-recovery hardening series; strict journal phases, same-filesystem staging, complete pre-restore generation, per-path rename evidence, explicit `recover`, terminal `aborted` and pre-mutation capacity checks passed focused and complete ALT regressions.
 - Task 11: complete through the guarded restore series; all six components restore together, post-install syntax/state/loopback checks run before commit, failed health reverses with digest proof, incomplete proof leaves maintenance stopped, and committed recovery completes guard cleanup.
 - Task 12: complete through the installer/static-service series; independent backup-tool installer, exact read-only `rehearse-status` gate, mandatory `--rollback-backup-id`, durable rollout marker, ephemeral permits, boot guard, destination hardening and allowlisted unprivileged HTTP service passed focused and complete ALT regressions.
-- Task 13: implementation complete; operator runbook and context synchronization are present. Final fresh repository verification, evidence synchronization, temporary workflow cleanup and PR review gate are recorded in `docs/superpowers/plans/2026-07-22-alt-or3p3-verification.md`.
+- Task 13: complete. Final run `29943063330` passed `152` focused OR-3P3 tests, `550` ALT Linux tests, the `1492 passed, 2 skipped` repository suite, Python/Bash compilation, all five systemd units, both Ansible syntax checks and repository hygiene. Independent context run `29943063289` also passed. Operator documentation and verification evidence are synchronized; temporary verification workflow removal and final clean-head PR checks remain the branch-finishing step.
 
 ## Safety
 
 - Live controller `192.168.100.17` has not been accessed or modified.
 - Accepted workstation `192.168.101.111` has not been accessed or modified.
 - Production Vault, Vault password, SSH private key, jobs, registrations, and archives have not been accessed.
+- No real restore and no OR-3P4 live rollout have been executed.
