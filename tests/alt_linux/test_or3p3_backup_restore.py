@@ -24,6 +24,46 @@ def test_restore_journal_rejects_skipped_phase(tmp_path: Path) -> None:
     assert journal.phase == "prepared"
 
 
+def test_restore_journal_accepts_durable_move_progress(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    journal = RestoreJournal.create(
+        sandbox.settings,
+        "backup-20260722T120000Z-11111111",
+    )
+    journal.transition("prepared", "staged", {"paths": []})
+    journal.transition("staged", "services_stopped", {})
+    journal.transition(
+        "services_stopped",
+        "originals_moving",
+        {"paths": []},
+    )
+    journal.record_phase({"paths": [{"processed": True}]})
+    journal.transition(
+        "originals_moving",
+        "rolled_back",
+        {"proof": "content_digests_match"},
+    )
+
+    assert journal.phase == "rolled_back"
+
+
+def test_restore_journal_accepts_pre_mutation_abort(tmp_path: Path) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    journal = RestoreJournal.create(
+        sandbox.settings,
+        "backup-20260722T120000Z-11111111",
+    )
+    journal.transition("prepared", "staged", {"paths": []})
+
+    journal.transition("staged", "aborted", {"production_changed": False})
+
+    assert journal.phase == "aborted"
+
+
 def test_staging_failure_does_not_change_production(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     backup_id = sandbox.create_rehearsed_backup()
@@ -131,7 +171,7 @@ def test_partial_original_move_failure_self_reverses(
 
     assert error.value.code == "restore_staging_failed"
     assert sandbox.production_snapshot() == before
-    assert sandbox.latest_restore_phase() == "services_stopped"
+    assert sandbox.latest_restore_phase() == "rolled_back"
 
 
 def test_restore_replaces_all_components_and_uses_backup_unit_state(
@@ -225,3 +265,85 @@ def test_restore_removes_path_recorded_absent(tmp_path: Path) -> None:
 
     assert result.phase == "committed"
     assert not sandbox.settings.runtime_api_root.exists()
+
+
+def test_restore_staging_failure_records_terminal_aborted(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_rehearsed_backup()
+    before = sandbox.production_snapshot()
+    before_units = sandbox.managed_unit_snapshot()
+
+    with pytest.raises(BackupError) as error:
+        sandbox.restore_service(
+            fail_stage_component="registration_state"
+        ).restore(backup_id)
+
+    assert error.value.code == "restore_staging_failed"
+    assert sandbox.production_snapshot() == before
+    assert sandbox.managed_unit_snapshot() == before_units
+    assert sandbox.latest_restore_phase() == "aborted"
+
+
+def test_partial_move_rollback_failure_requires_manual_recovery(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_rehearsed_backup()
+    sandbox.mutate_every_production_component()
+
+    with pytest.raises(BackupError) as error:
+        sandbox.restore_service(
+            fail_move_after=2,
+            fail_rollback=True,
+        ).restore(backup_id)
+
+    assert error.value.code == "restore_manual_recovery_required"
+    assert sandbox.latest_restore_phase() == "manual_recovery_required"
+    assert sandbox.maintenance_units_are_stopped()
+
+
+def test_recover_rolls_back_interrupted_original_moves(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_rehearsed_backup()
+    sandbox.mutate_every_production_component()
+    before = sandbox.production_snapshot()
+
+    with pytest.raises(RuntimeError, match="simulated restore interruption"):
+        sandbox.restore_service(
+            interrupt_move_after=2
+        ).restore(backup_id)
+
+    restore_id = sandbox.latest_restore_id()
+    assert restore_id is not None
+    assert sandbox.latest_restore_phase() == "originals_moving"
+
+    result = sandbox.restore_service().recover(restore_id)
+
+    assert result.phase == "rolled_back"
+    assert result.rollback_performed is True
+    assert sandbox.production_snapshot() == before
+    assert sandbox.latest_restore_phase() == "rolled_back"
+
+
+def test_recover_is_idempotent_after_rollback(tmp_path: Path) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_rehearsed_backup()
+    sandbox.mutate_every_production_component()
+
+    with pytest.raises(RuntimeError, match="simulated restore interruption"):
+        sandbox.restore_service(
+            interrupt_move_after=1
+        ).restore(backup_id)
+
+    restore_id = sandbox.latest_restore_id()
+    assert restore_id is not None
+    first = sandbox.restore_service().recover(restore_id)
+    second = sandbox.restore_service().recover(restore_id)
+
+    assert first.phase == "rolled_back"
+    assert second.phase == "rolled_back"
+    assert second.rollback_performed is True

@@ -22,15 +22,19 @@ RESTORE_ID_RE = __import__("re").compile(
 _FORWARD = {
     "prepared": "staged",
     "staged": "services_stopped",
-    "services_stopped": "originals_moved",
+    "services_stopped": "originals_moving",
+    "originals_moving": "originals_moved",
     "originals_moved": "installed",
     "installed": "daemon_reloaded",
     "daemon_reloaded": "health_checked",
     "health_checked": "committed",
 }
+_PRE_MUTATION = frozenset(
+    {"prepared", "staged", "services_stopped"}
+)
 _AFTER_MUTATION = frozenset(
     {
-        "services_stopped",
+        "originals_moving",
         "originals_moved",
         "installed",
         "daemon_reloaded",
@@ -38,8 +42,17 @@ _AFTER_MUTATION = frozenset(
     }
 )
 _TERMINAL = frozenset(
-    {"committed", "rolled_back", "manual_recovery_required"}
+    {
+        "aborted",
+        "committed",
+        "rolled_back",
+        "manual_recovery_required",
+    }
 )
+
+
+def terminal_phases() -> frozenset[str]:
+    return _TERMINAL
 
 
 def _error(message: str) -> BackupError:
@@ -272,8 +285,12 @@ class RestoreJournal:
         if self.phase != expected:
             raise _error("Restore journal phase changed unexpectedly")
         allowed = _FORWARD.get(expected) == target
-        if target in {"rolled_back", "manual_recovery_required"}:
+        if target == "aborted":
+            allowed = expected in _PRE_MUTATION
+        elif target == "rolled_back":
             allowed = expected in _AFTER_MUTATION
+        elif target == "manual_recovery_required":
+            allowed = expected not in _TERMINAL
         if not allowed:
             raise _error("Restore journal phase transition is invalid")
         safe = _safe_evidence(evidence)
@@ -282,4 +299,14 @@ class RestoreJournal:
         self.phase = target
         self.updated_at = _utc_now()
         self.evidence[target] = safe
+        self._write()
+
+    def record_phase(self, evidence: Mapping[str, object]) -> None:
+        if self.phase in _TERMINAL:
+            raise _error("Restore terminal journal cannot be updated")
+        safe = _safe_evidence(evidence)
+        if not isinstance(safe, dict):
+            raise _error("Restore journal phase evidence is invalid")
+        self.updated_at = _utc_now()
+        self.evidence[self.phase] = safe
         self._write()

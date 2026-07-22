@@ -19,6 +19,7 @@ COMMANDS_WITH_ID = {
     "rehearse",
     "rehearse-status",
     "restore",
+    "recover",
     "delete",
 }
 
@@ -125,6 +126,18 @@ def _dispatch(
         return {
             "status": "ok",
             "result": "backup_restored",
+            "backup_id": result.backup_id,
+            "phase": result.phase,
+            "services_restored": result.services_restored,
+            "rollback_performed": result.rollback_performed,
+            "cleanup_complete": result.cleanup_complete,
+        }
+    if command == "recover":
+        result = RestoreService(repository).recover(backup_id)
+        return {
+            "status": "ok",
+            "result": "backup_recovered",
+            "restore_id": backup_id,
             "backup_id": result.backup_id,
             "phase": result.phase,
             "services_restored": result.services_restored,

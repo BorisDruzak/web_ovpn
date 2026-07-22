@@ -61,6 +61,7 @@ class BackupSandbox(RehearsalSandbox):
         fail_health_check: str | None = None,
         fail_rollback: bool = False,
         fail_move_after: int | None = None,
+        interrupt_move_after: int | None = None,
         fail_cleanup: bool = False,
     ) -> RestoreService:
         return RestoreService(
@@ -69,6 +70,7 @@ class BackupSandbox(RehearsalSandbox):
             fail_health_check=fail_health_check,
             fail_rollback=fail_rollback,
             fail_move_after=fail_move_after,
+            interrupt_move_after=interrupt_move_after,
             fail_cleanup=fail_cleanup,
             health_probe=self._health_probe,
         )
@@ -94,6 +96,15 @@ class BackupSandbox(RehearsalSandbox):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
             path.chmod(0o644)
+
+    def latest_restore_id(self) -> str | None:
+        root = self.settings.backup_root / ".restore-transactions"
+        if not root.exists():
+            return None
+        journals = sorted(root.glob("restore-*/journal.json"))
+        if not journals:
+            return None
+        return journals[-1].parent.name
 
     def latest_restore_phase(self) -> str | None:
         root = self.settings.backup_root / ".restore-transactions"

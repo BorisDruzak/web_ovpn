@@ -428,6 +428,7 @@ class BundleManager:
             if not isinstance(payload, dict):
                 return True
             if payload.get("backup_id") == backup_id and payload.get("phase") not in {
+                "aborted",
                 "committed",
                 "rolled_back",
             }:
