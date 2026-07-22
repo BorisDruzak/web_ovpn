@@ -13,6 +13,9 @@ from alt_deploy_backup.repository import BackupRepository
 from support.backup_archive_sandbox import BackupSandbox as ArchiveSandbox
 
 
+MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
+
+
 class ObservedArchiveEngine(ArchiveEngine):
     def __init__(self, sandbox: "BackupSandbox") -> None:
         super().__init__(sandbox.settings)
@@ -103,11 +106,25 @@ class BackupSandbox(ArchiveSandbox):
                 0o644,
             )
 
+        job_root = (
+            "/var/lib/alt-deploy/jobs/"
+            "job-20260722T000000Z-00000001"
+        )
         self._write(
-            "/var/lib/alt-deploy/jobs/job-20260722T000000Z-00000001/status.json",
+            f"{job_root}/request.json",
+            json.dumps(
+                {"machine_uuid": MACHINE_UUID},
+                indent=2,
+            ).encode()
+            + b"\n",
+            0o600,
+        )
+        self._write(
+            f"{job_root}/status.json",
             json.dumps(
                 {
                     "job_id": "job-20260722T000000Z-00000001",
+                    "machine_uuid": MACHINE_UUID,
                     "state": "successful",
                     "stage": "complete",
                 },
@@ -117,8 +134,12 @@ class BackupSandbox(ArchiveSandbox):
             0o600,
         )
         self._write(
-            "/var/lib/alt-deploy/assignments/fixture.json",
-            b"{}\n",
+            f"/var/lib/alt-deploy/assignments/{MACHINE_UUID}.json",
+            json.dumps(
+                {"machine_uuid": MACHINE_UUID, "profile": "office"},
+                indent=2,
+            ).encode()
+            + b"\n",
             0o600,
         )
         for state in ("pending", "ready", "failed"):
@@ -126,8 +147,21 @@ class BackupSandbox(ArchiveSandbox):
             directory.mkdir(parents=True, exist_ok=True)
             directory.chmod(0o700)
         self._write(
-            "/srv/alt-deploy/registration/ready/fixture.json",
-            b"{}\n",
+            f"/srv/alt-deploy/registration/ready/{MACHINE_UUID}.json",
+            json.dumps(
+                {
+                    "machine_key": MACHINE_UUID,
+                    "uuid": MACHINE_UUID,
+                    "hostname": "alt-fixture",
+                    "ip": "192.0.2.10",
+                    "mac": "02:00:00:00:00:10",
+                    "registered_at": "2026-07-22T00:00:00+00:00",
+                    "status": "ready",
+                    "registration_id": "reg-" + "1" * 32,
+                },
+                indent=2,
+            ).encode()
+            + b"\n",
             0o600,
         )
         self._write(
