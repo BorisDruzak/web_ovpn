@@ -82,5 +82,6 @@ def test_search_context_returns_all_explicit_matches_for_safe_identity_keys(tmp_
         assert [item["asset_key"] for item in search_context(conn, "aa:bb:cc:dd:ee:01")] == ["mac:AA:BB:CC:DD:EE:01"]
         assert [item["asset_key"] for item in search_context(conn, "WORKSTATION")] == ["mac:AA:BB:CC:DD:EE:01"]
         assert [item["asset_key"] for item in search_context(conn, "192.0.2.10")] == ["mac:AA:BB:CC:DD:EE:01", "mac:AA:BB:CC:DD:EE:02"]
+        assert [item["asset_key"] for item in search_context(conn, "device:workstation-01")] == ["mac:AA:BB:CC:DD:EE:01"]
     finally:
         conn.close()

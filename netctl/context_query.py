@@ -115,8 +115,8 @@ def search_context(conn: sqlite3.Connection, query: str, limit: int = 25) -> lis
     if not value:
         return []
     normalized_mac = normalize_mac(value)
-    params: list[object] = [value.lower(), value.lower(), value.lower()]
-    conditions = ["lower(assets.asset_key) = ?", "lower(hostnames.hostname) = ?", "ips.ip = ?"]
+    params: list[object] = [value.lower(), value.lower(), value.lower(), value.lower()]
+    conditions = ["lower(assets.asset_key) = ?", "lower(hostnames.hostname) = ?", "ips.ip = ?", "lower(intent_bindings.intent_stable_id) = ?"]
     if normalized_mac is not None:
         conditions.append("lower(replace(replace(interfaces.mac, ':', ''), '-', '')) = ?")
         params.append(normalized_mac.replace(":", "").lower())
@@ -127,6 +127,7 @@ def search_context(conn: sqlite3.Connection, query: str, limit: int = 25) -> lis
         LEFT JOIN asset_interfaces AS interfaces ON interfaces.asset_id = assets.id
         LEFT JOIN ip_observations AS ips ON ips.asset_id = assets.id AND ips.is_current = 1
         LEFT JOIN hostname_observations AS hostnames ON hostnames.asset_id = assets.id AND hostnames.is_current = 1
+        LEFT JOIN asset_intent_bindings AS intent_bindings ON intent_bindings.asset_id = assets.id
         WHERE {' OR '.join(conditions)}
         ORDER BY assets.asset_key
         LIMIT ?
