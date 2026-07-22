@@ -9,7 +9,7 @@
 ## Tasks
 
 - Task 1: complete (`992facf..75287bf`); RED confirmed by missing `alt_deploy_backup`, GREEN standard full regression passed, invalid-settings JSON finding fixed, review clean.
-- Task 2: pending.
+- Task 2: complete (`2dd274d..83cef61`); RED confirmed by missing safe-FS modules, no-follow reads, durable JSON, operation/lifecycle locks and bounded audit passed; pre-create symlink mutation finding fixed; review clean.
 - Task 3: pending.
 - Task 4: pending.
 - Task 5: pending.
