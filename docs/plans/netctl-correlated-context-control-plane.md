@@ -1557,7 +1557,7 @@ git commit -m "feat: persist RouterOS route table metadata"
 - Produces normalized current RouterOS path facts.
 - Collectors remain read-only.
 
-- [ ] **Step 1: Write failing schema and driver tests**
+- [x] **Step 1: Write failing schema and driver tests**
 
 Migration 12 creates current tables:
 
@@ -1589,7 +1589,7 @@ unsupported_matchers_json
 
 Do not store raw command output, passwords, secrets, IPsec installed-SA keys or arbitrary RouterOS properties.
 
-- [ ] **Step 2: Define dataclasses**
+- [x] **Step 2: Define dataclasses**
 
 ```python
 @dataclass(frozen=True)
@@ -1616,11 +1616,11 @@ class RouterRule:
 
 Add equivalent bounded models for routing rules, address-list entries and IPsec policies.
 
-- [ ] **Step 3: Implement capability-specific replacement**
+- [x] **Step 3: Implement capability-specific replacement**
 
 Each fact family is replaced only after its own successful collection. A failed firewall query preserves the previous filter/NAT/mangle facts and marks the source path-fact run partial or failed.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 python -m pytest tests/test_netctl_path_facts.py tests/test_netctl_route_metadata.py -q
@@ -1628,7 +1628,7 @@ python -m pytest tests/test_netctl_path_facts.py tests/test_netctl_route_metadat
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add netctl/migrations.py netctl/path_models.py netctl/path_facts.py netctl/store.py netctl/drivers/mikrotik_api.py netctl/drivers/mikrotik_ssh.py tests/test_netctl_path_facts.py

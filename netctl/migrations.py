@@ -1592,6 +1592,63 @@ def _migration_11(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_12(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE router_path_fact_runs (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+           started_at TEXT NOT NULL, finished_at TEXT, status TEXT NOT NULL,
+           capabilities_json TEXT NOT NULL DEFAULT '{}', error_class TEXT NOT NULL DEFAULT ''
+        )"""
+    )
+    for table in ("router_filter_rules", "router_nat_rules", "router_mangle_rules"):
+        conn.execute(
+            f"""CREATE TABLE {table} (
+               source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+               rule_key TEXT NOT NULL, chain TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL,
+               disabled INTEGER NOT NULL DEFAULT 0, action TEXT NOT NULL DEFAULT '',
+               src_cidr TEXT NOT NULL DEFAULT '', dst_cidr TEXT NOT NULL DEFAULT '',
+               protocol TEXT NOT NULL DEFAULT '', dst_port TEXT NOT NULL DEFAULT '',
+               in_interface TEXT NOT NULL DEFAULT '', out_interface TEXT NOT NULL DEFAULT '',
+               src_address_list TEXT NOT NULL DEFAULT '', dst_address_list TEXT NOT NULL DEFAULT '',
+               routing_mark TEXT NOT NULL DEFAULT '', connection_state TEXT NOT NULL DEFAULT '',
+               comment TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL,
+               collector_run_id INTEGER NOT NULL REFERENCES router_path_fact_runs(id) ON DELETE RESTRICT,
+               unsupported_matchers_json TEXT NOT NULL DEFAULT '[]',
+               PRIMARY KEY(source_id, rule_key)
+            )"""
+        )
+    conn.execute(
+        """CREATE TABLE router_routing_rules (
+           source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+           rule_key TEXT NOT NULL, position INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0,
+           action TEXT NOT NULL DEFAULT '', src_cidr TEXT NOT NULL DEFAULT '', dst_cidr TEXT NOT NULL DEFAULT '',
+           routing_mark TEXT NOT NULL DEFAULT '', table_name TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '',
+           observed_at TEXT NOT NULL, collector_run_id INTEGER NOT NULL REFERENCES router_path_fact_runs(id) ON DELETE RESTRICT,
+           unsupported_matchers_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(source_id, rule_key)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE router_address_list_entries (
+           source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+           rule_key TEXT NOT NULL, list_name TEXT NOT NULL, address TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0,
+           comment TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL,
+           collector_run_id INTEGER NOT NULL REFERENCES router_path_fact_runs(id) ON DELETE RESTRICT,
+           unsupported_matchers_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(source_id, rule_key)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE router_ipsec_policies (
+           source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+           rule_key TEXT NOT NULL, position INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0,
+           action TEXT NOT NULL DEFAULT '', src_cidr TEXT NOT NULL DEFAULT '', dst_cidr TEXT NOT NULL DEFAULT '',
+           protocol TEXT NOT NULL DEFAULT '', comment TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL,
+           collector_run_id INTEGER NOT NULL REFERENCES router_path_fact_runs(id) ON DELETE RESTRICT,
+           unsupported_matchers_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(source_id, rule_key)
+        )"""
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1604,6 +1661,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (9, _migration_9),
     (10, _migration_10),
     (11, _migration_11),
+    (12, _migration_12),
 )
 
 

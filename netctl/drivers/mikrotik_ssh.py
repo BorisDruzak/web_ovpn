@@ -38,6 +38,7 @@ class MikroTikSshDriver(NetworkDriver):
         "identity": "/system identity",
         "interfaces": "/interface",
         "addresses": "/ip address",
+        "routing_rules": "/routing rule",
         "routes": "/ip route",
         "arp": "/ip arp",
         "dhcp_leases": "/ip dhcp-server lease",
@@ -48,6 +49,7 @@ class MikroTikSshDriver(NetworkDriver):
         "firewall_filter_rules": "/ip firewall filter",
         "firewall_nat_rules": "/ip firewall nat",
         "firewall_mangle_rules": "/ip firewall mangle",
+        "ipsec_policies": "/ip ipsec policy",
         "system_package_update": "/system package update",
         "routerboard": "/system routerboard",
     }
@@ -118,7 +120,7 @@ class MikroTikSshDriver(NetworkDriver):
                 path,
                 terse=key not in {"system_resource", "identity", "system_package_update", "routerboard"},
             )
-        return {
+        snapshot = {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),
             "interfaces": MikroTikApiDriver.normalize_interface_rows(raw.get("interfaces", [])),
@@ -136,7 +138,11 @@ class MikroTikSshDriver(NetworkDriver):
                 raw.get("system_resource", []), raw.get("system_package_update", []), [], raw.get("routerboard", [])
             ),
             "addresses": raw.get("addresses", []),
+            "router_routing_rules": MikroTikApiDriver.normalize_routing_rule_rows(raw.get("routing_rules", [])),
+            "ipsec_policies": MikroTikApiDriver.normalize_path_ipsec_policy_rows(raw.get("ipsec_policies", [])),
         }
+        snapshot["path_fact_outcomes"] = MikroTikApiDriver.path_fact_outcomes(snapshot)
+        return snapshot
 
     def ipsec_status(self) -> dict[str, Any]:
         raw: dict[str, Any] = {}

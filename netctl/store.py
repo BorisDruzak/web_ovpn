@@ -8,6 +8,7 @@ from typing import Any
 from .db import get_source
 from .context_classifier import SegmentRule, legacy_segment_rules, load_active_segment_rules
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
+from .path_facts import save_path_facts
 from .runtime_writer import (
     recompute_runtime_identity_findings,
     sync_runtime_hosts,
@@ -553,6 +554,15 @@ def _save_collection(
         finding_counts = recompute_runtime_identity_findings(
             conn,
             observed_at=observed_at,
+        )
+    if snapshot.get("path_fact_outcomes"):
+        save_path_facts(
+            conn,
+            source_id,
+            snapshot,
+            dict(snapshot["path_fact_outcomes"]),
+            observed_at,
+            commit=False,
         )
     counts.update(
         {

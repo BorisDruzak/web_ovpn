@@ -135,6 +135,7 @@ class MikroTikApiDriver(NetworkDriver):
             ["name", "type", "running", "disabled", "mtu", "mac-address", "comment", "actual-mtu", "rx-byte", "tx-byte", "rx-packet", "tx-packet"],
         ),
         "addresses": ("/ip/address/print", ["address", "network", "interface", "disabled", "dynamic", "comment"]),
+        "routing_rules": ("/routing/rule/print", [".id", "action", "disabled", "src-address", "dst-address", "routing-mark", "table", "comment", "priority"]),
         "routes": ("/ip/route/print", ["dst-address", "gateway", "distance", "active", "disabled", "dynamic", "comment", "routing-table", "scope", "target-scope", "immediate-gw"]),
         "arp": ("/ip/arp/print", ["address", "mac-address", "interface", "published", "complete", "dynamic", "comment"]),
         "dhcp_leases": (
@@ -147,16 +148,17 @@ class MikroTikApiDriver(NetworkDriver):
         "firewall_address_lists": ("/ip/firewall/address-list/print", ["list", "address", "comment", "dynamic", "disabled", "creation-time"]),
         "firewall_filter_rules": (
             "/ip/firewall/filter/print",
-            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "comment", "packets", "bytes"],
+            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "dst-port", "in-interface", "out-interface", "connection-state", "routing-mark", "comment", "packets", "bytes"],
         ),
         "firewall_nat_rules": (
             "/ip/firewall/nat/print",
-            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "comment", "packets", "bytes"],
+            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "dst-port", "in-interface", "out-interface", "connection-state", "routing-mark", "comment", "packets", "bytes"],
         ),
         "firewall_mangle_rules": (
             "/ip/firewall/mangle/print",
-            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "comment", "packets", "bytes"],
+            [".id", "chain", "action", "disabled", "src-address", "dst-address", "src-address-list", "dst-address-list", "protocol", "dst-port", "in-interface", "out-interface", "connection-state", "routing-mark", "comment", "packets", "bytes"],
         ),
+        "ipsec_policies": ("/ip/ipsec/policy/print", [".id", "src-address", "dst-address", "protocol", "action", "disabled", "comment"]),
         "system_package_update": ("/system/package/update/print", ["channel", "installed-version", "latest-version"]),
         "system_schedulers": ("/system/scheduler/print", ["name", "disabled", "next-run", "interval", "start-date", "start-time"]),
         "routerboard": ("/system/routerboard/print", ["current-firmware", "upgrade-firmware"]),
@@ -343,12 +345,58 @@ class MikroTikApiDriver(NetworkDriver):
                 "src_address_list": row.get("src-address-list") or "",
                 "dst_address_list": row.get("dst-address-list") or "",
                 "protocol": row.get("protocol") or "",
+                "dst_port": row.get("dst-port") or "",
+                "in_interface": row.get("in-interface") or "",
+                "out_interface": row.get("out-interface") or "",
+                "routing_mark": row.get("routing-mark") or "",
+                "connection_state": row.get("connection-state") or "",
                 "comment": row.get("comment") or "",
                 "packets": parse_int(row.get("packets")),
                 "bytes": parse_int(row.get("bytes")),
             }
             for row in rows
         ]
+
+    @staticmethod
+    def normalize_routing_rule_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": row.get(".id") or row.get("id") or "",
+                "position": parse_int(row.get("priority")),
+                "disabled": parse_bool(row.get("disabled")),
+                "action": row.get("action") or "",
+                "src_address": row.get("src-address") or "",
+                "dst_address": row.get("dst-address") or "",
+                "routing_mark": row.get("routing-mark") or "",
+                "table_name": row.get("table") or "",
+                "comment": row.get("comment") or "",
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def normalize_path_ipsec_policy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": row.get(".id") or row.get("id") or "",
+                "position": index,
+                "disabled": parse_bool(row.get("disabled")),
+                "action": row.get("action") or "",
+                "src_address": row.get("src-address") or "",
+                "dst_address": row.get("dst-address") or "",
+                "protocol": row.get("protocol") or "",
+                "comment": row.get("comment") or "",
+            }
+            for index, row in enumerate(rows)
+        ]
+
+    @staticmethod
+    def path_fact_outcomes(snapshot: dict[str, Any]) -> dict[str, str]:
+        return {
+            key: "success"
+            for key in ("router_routing_rules", "firewall_address_lists", "firewall_filter_rules", "firewall_nat_rules", "firewall_mangle_rules", "ipsec_policies")
+            if key in snapshot
+        }
 
     @staticmethod
     def normalize_update_posture(
@@ -480,7 +528,7 @@ class MikroTikApiDriver(NetworkDriver):
         with self._client() as api:
             for key, (path, props) in self.COLLECT_PATHS.items():
                 raw[key] = self._query(api, path, props)
-        return {
+        snapshot = {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),
             "interfaces": self.normalize_interface_rows(raw.get("interfaces", [])),
@@ -498,7 +546,11 @@ class MikroTikApiDriver(NetworkDriver):
                 raw.get("system_resource", []), raw.get("system_package_update", []), raw.get("system_schedulers", []), raw.get("routerboard", [])
             ),
             "addresses": raw.get("addresses", []),
+            "router_routing_rules": self.normalize_routing_rule_rows(raw.get("routing_rules", [])),
+            "ipsec_policies": self.normalize_path_ipsec_policy_rows(raw.get("ipsec_policies", [])),
         }
+        snapshot["path_fact_outcomes"] = self.path_fact_outcomes(snapshot)
+        return snapshot
 
     def ipsec_status(self) -> dict[str, Any]:
         raw: dict[str, Any] = {}
