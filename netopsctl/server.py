@@ -9,8 +9,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .authorization import VerifiedAuthorization, verify_envelope
+from .adapters.mikrotik import MikroTikPolicyAdapter
+from .audit import AuditSigner
 from .protocol import BrokerRequest, ProtocolError, decode_request, encode_response
+from .runtime import PerCallRouterOSClient, load_routeros_config, production_writes_allowed
+from .service import ControlService
 from .store import connect, plan_digest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 @dataclass(frozen=True)
@@ -60,14 +65,21 @@ def authorize_broker_request(
     return verified
 
 
-def handle(request: BrokerRequest) -> dict[str, Any]:
-    """Dispatch only registered control-plane verbs; adapters are wired in later tasks."""
-    if request.action == "status":
-        return {"status": "ok", "request_id": request.request_id, "service": "netopsctl"}
-    return {"status": "error", "request_id": request.request_id, "error": "action not yet enabled"}
+def handle(request: BrokerRequest, service: ControlService, peer: AuthenticatedPeer, authorization: VerifiedAuthorization) -> dict[str, Any]:
+    result = service.dispatch(
+        request.action, request.payload, peer=peer.service_principal,
+        subject={
+            "principal_type": authorization.principal_type,
+            "principal_id": authorization.principal_id,
+            "principal_name": authorization.principal_name,
+            "session_id": authorization.session_id,
+            "authorization_id": authorization.authorization_id,
+        },
+    )
+    return {"status": "ok", "request_id": request.request_id, "data": result}
 
 
-def serve(listener: socket.socket, *, peers_by_uid: dict[int, AuthenticatedPeer], conn: Any) -> None:
+def serve(listener: socket.socket, *, peers_by_uid: dict[int, AuthenticatedPeer], conn: Any, service: ControlService) -> None:
     while True:
         connection, _ = listener.accept()
         with connection:
@@ -78,8 +90,8 @@ def serve(listener: socket.socket, *, peers_by_uid: dict[int, AuthenticatedPeer]
                     raise ProtocolError("untrusted local caller")
                 data = connection.recv(16_385)
                 request = decode_request(data)
-                authorize_broker_request(conn, request, peer)
-                response = handle(request)
+                authorization = authorize_broker_request(conn, request, peer)
+                response = handle(request, service, peer, authorization)
             except (ProtocolError, ValueError, RuntimeError) as exc:
                 response = {"status": "error", "request_id": "", "error": str(exc)}
             connection.sendall(encode_response(response))
@@ -118,11 +130,36 @@ def _load_peers() -> dict[int, AuthenticatedPeer]:
     return result
 
 
+def _build_service(conn: Any) -> ControlService:
+    try:
+        source_map = json.loads(os.environ["NETOPSCTL_ENFORCEMENT_SOURCES_JSON"])
+        if not isinstance(source_map, dict) or not source_map or any(not isinstance(key, str) or not isinstance(value, str) for key, value in source_map.items()):
+            raise ValueError
+        signer_key = Ed25519PrivateKey.from_private_bytes(open(os.environ["NETOPSCTL_AUDIT_SIGNING_KEY_FILE"], "rb").read())
+        signer = AuditSigner(os.environ["NETOPSCTL_AUDIT_SIGNING_KEY_ID"], signer_key)
+        source_name = os.environ.get("NETOPSCTL_ENFORCEMENT_SOURCE", "mikrotik-main")
+        config = load_routeros_config()
+        sink = {
+            "instance_id": os.environ.get("NETOPSCTL_INSTANCE_ID", "sosn-netopsctl"),
+            "host": os.environ["NETOPSCTL_AUDIT_SINK_HOST"],
+            "identity_file": os.environ["NETOPSCTL_AUDIT_SSH_IDENTITY_FILE"],
+            "known_hosts": os.environ["NETOPSCTL_AUDIT_KNOWN_HOSTS"],
+        }
+    except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("invalid netopsctl runtime configuration") from exc
+    return ControlService(
+        conn=conn, netctl_db_url=os.environ.get("NETOPSCTL_NETCTL_DB_URL", "sqlite:////var/lib/netctl/netctl.sqlite"),
+        adapter=MikroTikPolicyAdapter(source_name, PerCallRouterOSClient(config)),
+        enforcement_sources_by_site=dict(source_map), source_sla_seconds=int(os.environ.get("NETOPSCTL_SOURCE_SLA_SECONDS", "300")),
+        audit_signer=signer, writes_enabled=production_writes_allowed(os.environ), audit_sink=sink,
+    )
+
+
 def main() -> None:
     db_url = os.environ.get("NETOPSCTL_DB_URL", "sqlite:////var/lib/netopsctl/netopsctl.sqlite")
     conn = connect(db_url)
     try:
-        serve(_socket_from_activation(), peers_by_uid=_load_peers(), conn=conn)
+        serve(_socket_from_activation(), peers_by_uid=_load_peers(), conn=conn, service=_build_service(conn))
     finally:
         conn.close()
 

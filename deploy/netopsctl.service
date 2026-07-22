@@ -8,6 +8,7 @@ Type=simple
 User=netopsctl
 Group=netopsctl
 SupplementaryGroups=netctl
+EnvironmentFile=/etc/netopsctl/netopsctl.env
 ExecStart=/opt/openvpn-web/.venv/bin/python -m netopsctl.server
 NoNewPrivileges=true
 PrivateTmp=true

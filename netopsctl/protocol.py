@@ -46,10 +46,15 @@ def _validate_payload(action: str, payload: object) -> dict[str, Any]:
         if set(payload) != {"plan"} or not isinstance(payload.get("plan"), dict):
             raise ProtocolError("invalid plan-create payload")
         plan = payload["plan"]
-        forbidden = {"command", "path", "shell", "argv"}
-        if forbidden & set(plan) or len(json.dumps(plan, separators=(",", ":"))) > 8_192:
+        if (
+            set(plan) != {"subject_type", "subject_key", "desired_state", "reason"}
+            or plan.get("subject_type") not in {"asset", "user"}
+            or not isinstance(plan.get("subject_key"), str) or not 1 <= len(str(plan["subject_key"])) <= 240
+            or plan.get("desired_state") not in {"allow", "deny"}
+            or not isinstance(plan.get("reason"), str) or not 1 <= len(str(plan["reason"])) <= 1000
+        ):
             raise ProtocolError("unsafe plan-create payload")
-        return {"plan": plan}
+        return {"plan": {key: str(value) for key, value in plan.items()}}
     raise ProtocolError("unsupported action")
 
 
