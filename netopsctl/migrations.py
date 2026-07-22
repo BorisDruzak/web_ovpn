@@ -99,12 +99,20 @@ def _migration_5(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE change_plans ADD COLUMN plan_basis_hash TEXT NOT NULL DEFAULT ''")
 
 
+def _migration_6(conn: sqlite3.Connection) -> None:
+    """Make the versioned control contract an immutable part of every plan."""
+    conn.execute("ALTER TABLE change_plans ADD COLUMN plan_schema_version INTEGER NOT NULL DEFAULT 1 CHECK (plan_schema_version = 1)")
+    conn.execute("ALTER TABLE change_plans ADD COLUMN authorization_version INTEGER NOT NULL DEFAULT 1 CHECK (authorization_version = 1)")
+    conn.execute("ALTER TABLE change_plans ADD COLUMN operation_version INTEGER NOT NULL DEFAULT 1 CHECK (operation_version = 1)")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
     (4, _migration_4),
     (5, _migration_5),
+    (6, _migration_6),
 )
 
 

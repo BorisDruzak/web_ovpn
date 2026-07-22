@@ -22,6 +22,11 @@ def test_change_plans_use_a_separate_database_and_freeze_after_approval(tmp_path
             precheck={"status": "ok"},
             rollback={"operation": "remove"},
         )
+        assert {
+            "plan_schema_version": 1,
+            "authorization_version": 1,
+            "operation_version": 1,
+        }.items() <= plan.items()
         add_plan_step(conn, plan["plan_key"], adapter="mikrotik", operation="address_list.add", target_key="router-a", request={"list": "blocked"})
         update_draft_plan(conn, plan["plan_key"], reason="approved access request #42")
         transition_plan(conn, plan["plan_key"], "validated")

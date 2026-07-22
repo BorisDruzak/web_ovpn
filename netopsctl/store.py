@@ -69,6 +69,9 @@ def plan_digest(conn: sqlite3.Connection, plan_key: str) -> str:
         "resolved_targets_json": str(plan["resolved_targets_json"]), "context_evidence_hash": str(plan["context_evidence_hash"]),
         "precheck_json": str(plan["precheck_json"]), "rollback_json": str(plan["rollback_json"]),
         "plan_basis_json": str(plan["plan_basis_json"]), "plan_basis_hash": str(plan["plan_basis_hash"]),
+        "plan_schema_version": int(plan["plan_schema_version"]),
+        "authorization_version": int(plan["authorization_version"]),
+        "operation_version": int(plan["operation_version"]),
         "steps": [dict(step) for step in steps],
     }
     raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
