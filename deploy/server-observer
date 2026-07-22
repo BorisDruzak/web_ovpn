@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+
+exec /usr/bin/python3 -I /usr/local/lib/openvpn-web-server-observer/observer_main.py \
+  --config /etc/openvpn-web/server-observer.json \
+  --snapshot /var/lib/openvpn-web/server-observer/latest.json \
+  "$@"

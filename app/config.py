@@ -31,10 +31,17 @@ class Settings:
     netctl_use_sudo: bool
     netctl_sudo_user: str
     network_observer_enabled: bool
+    network_paths_config_path: Path
+    server_role_registry_path: Path
+    server_observer_snapshot_path: Path
     out_dir: Path
     share_out_dir: Path
     archive_dir: Path
     routeros_backup_dir: Path
+    server_draft_queue_dir: Path
+    server_draft_results_dir: Path
+    server_draft_private_dir: Path
+    observer_public_key_path: Path
     download_ttl_minutes: int
     session_cookie_name: str
 
@@ -58,10 +65,29 @@ def get_settings() -> Settings:
         netctl_use_sudo=_bool_env("NETCTL_USE_SUDO", True),
         netctl_sudo_user=os.environ.get("NETCTL_SUDO_USER", "netctl"),
         network_observer_enabled=_bool_env("NETWORK_OBSERVER_ENABLED", True),
+        network_paths_config_path=_path_env("NETWORK_PATHS_CONFIG_PATH", "/etc/openvpn-web/network-paths.json"),
+        server_role_registry_path=_path_env(
+            "SERVER_ROLE_REGISTRY_PATH", "/etc/openvpn-web/server-roles.json"
+        ),
+        server_observer_snapshot_path=_path_env(
+            "SERVER_OBSERVER_SNAPSHOT_PATH", "/var/lib/openvpn-web/server-observer/latest.json"
+        ),
         out_dir=_path_env("OUT_DIR", "/etc/openvpn/client-generator/output"),
         share_out_dir=_path_env("SHARE_OUT_DIR", "/mnt/antares_soft/vpn_config"),
         archive_dir=_path_env("ARCHIVE_DIR", "/etc/openvpn/client-generator/archive"),
         routeros_backup_dir=_path_env("ROUTEROS_BACKUP_DIR", "/var/backups/routeros"),
+        server_draft_queue_dir=_path_env(
+            "SERVER_DRAFT_QUEUE_DIR", "/var/lib/openvpn-web/server-drafts/queue"
+        ),
+        server_draft_results_dir=_path_env(
+            "SERVER_DRAFT_RESULTS_DIR", "/var/lib/openvpn-web/server-drafts/results"
+        ),
+        server_draft_private_dir=_path_env(
+            "SERVER_DRAFT_PRIVATE_DIR", "/var/lib/openvpn-web/server-drafts/private"
+        ),
+        observer_public_key_path=_path_env(
+            "OBSERVER_PUBLIC_KEY_PATH", "/etc/openvpn-web/server-observer.pub"
+        ),
         download_ttl_minutes=int(os.environ.get("DOWNLOAD_TOKEN_TTL_MINUTES", "15")),
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
     )

@@ -16,6 +16,7 @@ from .config import get_settings
 from .db import get_db
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts
+from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .vpnctl_client import VpnctlError, run_vpnctl
 
@@ -664,6 +665,19 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
     connected = call_vpnctl(["connected", "--source", "auto"])
     dashboard.setdefault("summary", {})["vpn_connected"] = len(network_list_from(connected, "connected"))
     return api_response(dashboard)
+
+
+@router.get("/network/paths")
+def api_network_paths(actor: str = Depends(require_api_actor)):
+    return api_response({"paths": list_network_paths()})
+
+
+@router.get("/network/paths/{role}")
+def api_network_path_detail(role: str, actor: str = Depends(require_api_actor)):
+    path = get_network_path(role)
+    if path is None:
+        raise HTTPException(status_code=404, detail="network path not found")
+    return api_response({"path": path})
 
 
 @router.get("/network/hosts")

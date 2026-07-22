@@ -1,0 +1,42 @@
+{
+  "ssh_key": "/etc/openvpn-web/server-observer.key",
+  "tunnel_source": "REPLACE_WITH_VPN_SOURCE_ADDRESS",
+  "targets": [
+    {
+      "role": "file_server",
+      "host": "REPLACE_WITH_RUNTIME_HOST",
+      "user": "REPLACE_WITH_RUNTIME_USER",
+      "checks": [{"name": "file_server_probe", "source": "gateway"}]
+    },
+    {
+      "role": "directum",
+      "host": "REPLACE_WITH_RUNTIME_HOST",
+      "user": "REPLACE_WITH_RUNTIME_USER",
+      "checks": [{"name": "directum_probe", "source": "gateway"}]
+    },
+    {
+      "role": "active_directory",
+      "host": "REPLACE_WITH_RUNTIME_HOST",
+      "user": "REPLACE_WITH_RUNTIME_USER",
+      "checks": [{"name": "active_directory_probe", "source": "gateway"}]
+    },
+    {
+      "role": "nextcloud",
+      "host": "REPLACE_WITH_RUNTIME_HOST",
+      "user": "REPLACE_WITH_RUNTIME_USER",
+      "checks": [{"name": "nextcloud_probe", "source": "vpn_path"}]
+    },
+    {
+      "role": "onlyoffice",
+      "host": "REPLACE_WITH_RUNTIME_HOST",
+      "user": "REPLACE_WITH_RUNTIME_USER",
+      "checks": [{"name": "onlyoffice_probe", "source": "gateway"}]
+    },
+    {
+      "role": "opnsense_dns",
+      "host": "REPLACE_WITH_RUNTIME_HOST",
+      "user": "REPLACE_WITH_RUNTIME_USER",
+      "checks": [{"name": "opnsense_dns_probe", "source": "gateway"}]
+    }
+  ]
+}

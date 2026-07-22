@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Test servers{% endblock %}
+{% block page_title %}Test servers{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="section-header"><div><h2>SSH access check</h2><p class="muted">Compare the fingerprint out of band before confirmation.</p></div><div><a class="button secondary" href="/network/server-drafts/public-key">Download public key</a> <a class="button" href="/network/server-drafts/new">Add server</a></div></div>
+  <label>Observer public key<textarea class="textarea-code" data-observer-public-key readonly aria-label="Observer public key"></textarea></label>
+  <div><button class="button secondary" type="button" data-copy-observer-key disabled>Copy public key</button> <span class="muted" data-observer-key-status aria-live="polite">Loading public key…</span></div>
+</section>
+<section class="card">
+  <h2>Test servers</h2>
+  {% if drafts %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Name</th><th>Host</th><th>User</th><th>Port</th><th>State</th><th>Fingerprint</th><th>Last safe result</th><th>Actions</th></tr></thead>
+    <tbody>{% for row in drafts %}{% set draft = row.draft %}{% set result = row.result %}
+      <tr><td>{{ draft.name }}</td><td>{{ draft.host }}</td><td>{{ draft.ssh_user }}</td><td>{{ draft.port }}</td><td>{% if row.confirmed %}confirmed{% else %}awaiting confirmation{% endif %}</td><td>{{ result.get('fingerprint', '—') }}</td><td>{{ result.get('status', 'pending') }}</td><td>
+        {% if row.can_scan %}<form method="post" action="/network/server-drafts/{{ draft.id }}/scan"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Scan</button></form>{% endif %}
+        {% if row.can_confirm %}<form method="post" action="/network/server-drafts/{{ draft.id }}/confirm"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button" type="submit">Confirm fingerprint</button></form>{% endif %}
+        {% if row.can_check %}<form method="post" action="/network/server-drafts/{{ draft.id }}/check"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button" type="submit">Check SSH</button></form>{% endif %}
+        <form method="post" action="/network/server-drafts/{{ draft.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Delete</button></form>
+      </td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% else %}<p class="muted">No test servers have been added.</p>{% endif %}
+</section>
+{% if confirm_outbox %}
+<section class="card">
+  <h2>Fingerprint confirmation publication pending</h2>
+  <p class="muted">{{ confirm_outbox|length }} durable, audited confirmation(s) are waiting for queue publication.</p>
+  <form method="post" action="/network/server-drafts/confirm-retry"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Retry confirmation publication</button></form>
+</section>
+{% endif %}
+{% if check_outbox %}
+<section class="card">
+  <h2>SSH check publication pending</h2>
+  <p class="muted">{{ check_outbox|length }} durable check request(s) are waiting for queue publication.</p>
+  <form method="post" action="/network/server-drafts/check-retry"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Retry SSH check publication</button></form>
+</section>
+{% endif %}
+{% if cleanup_outbox %}
+<section class="card">
+  <h2>Pending cleanup</h2>
+  <p class="muted">{{ cleanup_outbox|length }} cleanup intent(s): retry required.</p>
+  <ul>{% for intent in cleanup_outbox %}<li>{{ intent.draft_id }} ({{ intent.attempts }} attempt(s))</li>{% endfor %}</ul>
+  <form method="post" action="/network/server-drafts/cleanup-retry"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button secondary" type="submit">Retry cleanup</button></form>
+</section>
+{% endif %}
+{% endblock %}

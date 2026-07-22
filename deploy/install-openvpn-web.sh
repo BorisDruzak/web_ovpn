@@ -10,6 +10,24 @@ sudo_cmd() {
   printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' "$@"
 }
 
+validate_netctl_directory() {
+  local path="$1" expected_metadata="$2" legacy_metadata="${3:-}" resolved metadata
+  if sudo_cmd test -L "$path" || ! sudo_cmd test -d "$path"; then
+    echo "unsafe netctl directory: $path" >&2
+    exit 2
+  fi
+  resolved="$(sudo_cmd readlink -e -- "$path")"
+  metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$path")"
+  if [[ "$resolved" != "$path" ]] || {
+    [[ "$metadata" != "$expected_metadata" ]] &&
+    { [[ -z "$legacy_metadata" ]] || [[ "$metadata" != "$legacy_metadata" ]]; }
+  }; then
+    echo "unexpected netctl directory metadata: $path" >&2
+    exit 2
+  fi
+  validated_netctl_metadata="$metadata"
+}
+
 SRC="${SRC:-/tmp/openvpn-web-src}"
 APP="${APP:-/opt/openvpn-web}"
 
@@ -28,8 +46,55 @@ if ! id netctl >/dev/null 2>&1; then
   sudo_cmd useradd --system --home /var/lib/netctl --shell /usr/sbin/nologin --gid netctl netctl
 fi
 
-sudo_cmd mkdir -p "$APP" /etc/openvpn-web /var/lib/openvpn-web /etc/openvpn
-sudo_cmd chown -R openvpn-web:openvpn-web "$APP" /var/lib/openvpn-web
+if ! sudo_cmd test -e /var/lib/netctl && ! sudo_cmd test -L /var/lib/netctl; then
+  sudo_cmd install -d -m 0750 -o netctl -g netctl /var/lib/netctl
+else
+  validate_netctl_directory /var/lib/netctl netctl:netctl:750
+fi
+if ! sudo_cmd test -e /etc/netctl && ! sudo_cmd test -L /etc/netctl && \
+   ! sudo_cmd test -e /etc/netctl/sources.d && ! sudo_cmd test -L /etc/netctl/sources.d; then
+  sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl /etc/netctl/sources.d
+else
+  if ! sudo_cmd test -e /etc/netctl && ! sudo_cmd test -L /etc/netctl; then
+    sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl
+  fi
+  validate_netctl_directory /etc/netctl root:netctl:750 root:root:755
+  netctl_config_metadata="$validated_netctl_metadata"
+  if ! sudo_cmd test -e /etc/netctl/sources.d && ! sudo_cmd test -L /etc/netctl/sources.d; then
+    sudo_cmd install -d -m 0750 -o root -g netctl /etc/netctl/sources.d
+  fi
+  validate_netctl_directory /etc/netctl/sources.d root:netctl:750 root:root:755
+  netctl_sources_metadata="$validated_netctl_metadata"
+
+  if [[ "$netctl_config_metadata" == root:root:755 ]]; then
+    sudo_cmd chown root:netctl /etc/netctl
+    sudo_cmd chmod 0750 /etc/netctl
+  fi
+  if [[ "$netctl_sources_metadata" == root:root:755 ]]; then
+    sudo_cmd chown root:netctl /etc/netctl/sources.d
+    sudo_cmd chmod 0750 /etc/netctl/sources.d
+  fi
+  validate_netctl_directory /etc/netctl root:netctl:750
+  validate_netctl_directory /etc/netctl/sources.d root:netctl:750
+fi
+
+sudo_cmd mkdir -p "$APP" /etc/openvpn-web /etc/openvpn
+if ! sudo_cmd test -e /var/lib/openvpn-web; then
+  sudo_cmd install -d -m 0755 -o openvpn-web -g openvpn-web /var/lib/openvpn-web
+elif sudo_cmd test -L /var/lib/openvpn-web || ! sudo_cmd test -d /var/lib/openvpn-web; then
+  echo "refusing unsafe /var/lib/openvpn-web metadata" >&2
+  exit 2
+else
+  state_dir_metadata="$(sudo_cmd stat -c '%U:%G:%a' -- /var/lib/openvpn-web)"
+  case "$state_dir_metadata" in
+    openvpn-web:openvpn-web:755|root:openvpn-web:1770) ;;
+    *)
+      echo "refusing unsafe /var/lib/openvpn-web metadata" >&2
+      exit 2
+      ;;
+  esac
+fi
+sudo_cmd chown -R openvpn-web:openvpn-web "$APP"
 sudo_cmd rm -rf \
   "$APP/app" \
   "$APP/netctl" \
@@ -52,59 +117,6 @@ sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
 sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
-sudo_cmd mkdir -p /etc/netctl/sources.d /var/lib/netctl
-sudo_cmd chmod 0755 /etc/netctl /etc/netctl/sources.d
-sudo_cmd chown -R netctl:netctl /var/lib/netctl
-sudo_cmd chmod 0750 /var/lib/netctl
-if [[ ! -f /etc/netctl/sources.d/mikrotik-main.yaml ]]; then
-  TMP_SOURCE="$(mktemp)"
-  cat > "$TMP_SOURCE" <<'SOURCE_FILE'
-name: mikrotik-main
-driver: mikrotik_api
-host: 192.168.100.250
-port: 8729
-tls: true
-verify_tls: false
-username: netobserver
-secret_ref: mikrotik-main
-site: main
-role: core-router
-enabled: true
-SOURCE_FILE
-  sudo_cmd install -m 0644 -o root -g root "$TMP_SOURCE" /etc/netctl/sources.d/mikrotik-main.yaml
-  rm -f "$TMP_SOURCE"
-fi
-if [[ ! -f /etc/netctl/sources.d/mikrotik-hex.yaml ]]; then
-  TMP_SOURCE="$(mktemp)"
-  cat > "$TMP_SOURCE" <<'SOURCE_FILE'
-name: mikrotik-hex
-driver: mikrotik_ssh
-host: 192.168.99.1
-port: 22
-tls: false
-verify_tls: false
-username: asmr_admin
-secret_ref: mikrotik-hex
-site: m-arhiv
-role: edge-router
-ssh_identity_file: /var/lib/netctl/.ssh/m_arhiv_hex_rsa
-ssh_connect_timeout: 12
-enabled: true
-SOURCE_FILE
-  sudo_cmd install -m 0644 -o root -g root "$TMP_SOURCE" /etc/netctl/sources.d/mikrotik-hex.yaml
-  rm -f "$TMP_SOURCE"
-fi
-if [[ ! -f /etc/netctl/secrets.env ]]; then
-  TMP_SECRETS="$(mktemp)"
-  cat > "$TMP_SECRETS" <<'SECRETS_FILE'
-# Add the MikroTik read-only API password here:
-# NETCTL_SECRET_MIKROTIK_MAIN_PASSWORD='strong-password'
-SECRETS_FILE
-  sudo_cmd install -m 0640 -o root -g netctl "$TMP_SECRETS" /etc/netctl/secrets.env
-  rm -f "$TMP_SECRETS"
-fi
-sudo_cmd chown root:netctl /etc/netctl/secrets.env
-sudo_cmd chmod 0640 /etc/netctl/secrets.env
 sudo_cmd mkdir -p /etc/openvpn/client-generator/output
 sudo_cmd chgrp openvpn-web /etc/openvpn/client-generator/output
 sudo_cmd chmod 0750 /etc/openvpn/client-generator/output
@@ -216,6 +228,20 @@ fi
 sudo_cmd install -m 0440 "$SRC/deploy/sudoers-openvpn-web" /etc/sudoers.d/openvpn-web
 sudo_cmd visudo -cf /etc/sudoers.d/openvpn-web
 
+# Keep locally approved topology out of the repository. A first install gets
+# only the role-only sample; existing operator configuration, including a
+# dangling symlink, is never replaced by this installer.
+if ! sudo_cmd test -e /etc/openvpn-web/network-paths.json \
+  && ! sudo_cmd test -L /etc/openvpn-web/network-paths.json; then
+  sudo_cmd install -m 0640 -o root -g openvpn-web \
+    "$SRC/deploy/network-paths.json.sample" /etc/openvpn-web/network-paths.json
+fi
+if ! sudo_cmd test -e /etc/openvpn-web/server-roles.json \
+  && ! sudo_cmd test -L /etc/openvpn-web/server-roles.json; then
+  sudo_cmd install -m 0640 -o root -g openvpn-web \
+    "$SRC/deploy/server-roles.json.sample" /etc/openvpn-web/server-roles.json
+fi
+
 if [[ ! -x "$APP/.venv/bin/python" ]]; then
   sudo_cmd -u openvpn-web python3 -m venv "$APP/.venv"
 fi
@@ -234,7 +260,6 @@ sudo_cmd systemctl daemon-reload
 sudo_cmd systemctl enable openvpn-web.service
 sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
-sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer
 sudo_cmd systemctl restart openvpn-web.service
 sudo_cmd systemctl --no-pager --full status openvpn-web.service | sed -n '1,25p'

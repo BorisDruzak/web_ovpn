@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,11 @@ from .switch_discovery_store import (
 from .snmp.models import SwitchDiscoveryCapability
 from .snmp.profiles import detect_profile
 from .util import utc_now, validate_source_name
+
+
+ROUTER_EVIDENCE_STALE_AFTER = timedelta(minutes=15)
+# Permit minor NTP skew, but never accept materially future evidence as fresh.
+ROUTER_EVIDENCE_FUTURE_TOLERANCE = timedelta(minutes=2)
 
 
 def emit(data: dict[str, Any]) -> None:
@@ -532,6 +539,136 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def _parse_utc(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except (AttributeError, ValueError):
+        return None
+
+
+def collector_status() -> tuple[int, dict[str, Any]]:
+    try:
+        completed = subprocess.run(
+            ["systemctl", "show", "netctl-collect.timer"],
+            shell=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError:
+        return 1, {"status": "error", "enabled": False, "active": False, "next_run": ""}
+    if completed.returncode != 0:
+        return 1, {"status": "error", "enabled": False, "active": False, "next_run": ""}
+    fields = dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+    enabled = fields.get("UnitFileState") == "enabled"
+    active = fields.get("ActiveState") == "active"
+    status = "ok" if enabled and active else "error"
+    return (0 if status == "ok" else 1), {
+        "status": status,
+        "enabled": enabled,
+        "active": active,
+        "next_run": _normalise_systemctl_time(fields.get("NextElapseUSecRealtime", "")),
+    }
+
+
+def router_evidence_health(conn, source_name: str = "") -> tuple[int, dict[str, Any]]:
+    collector_rc, collector = collector_status()
+    if collector_rc:
+        return 1, {"status": "error", "collector": collector, "sources": []}
+    sources = [source for source in list_sources(conn) if source.get("enabled")]
+    if source_name:
+        sources = [source for source in sources if source["name"] == source_name]
+    now = _parse_utc(utc_now())
+    source_states = []
+    stale = not sources
+    errored = False
+    for source in sources:
+        collected_at = str(source.get("last_collect_at") or "")
+        source_status = str(source.get("last_status") or "")
+        collected = _parse_utc(collected_at)
+        is_stale = (
+            collected is None
+            or now is None
+            or now - collected > ROUTER_EVIDENCE_STALE_AFTER
+            or collected - now > ROUTER_EVIDENCE_FUTURE_TOLERANCE
+        )
+        if source_status == "error":
+            errored = True
+        stale = stale or is_stale
+        source_states.append({"source": source["name"], "status": "error" if source_status == "error" else "stale" if is_stale else "ok", "collected_at": collected_at})
+    status = "error" if errored else "stale" if stale else "ok"
+    return (0 if status == "ok" else 1), {"status": status, "collector": collector, "sources": source_states}
+
+
+def router_evidence_result(conn, source_name: str, **payload: Any) -> tuple[int, dict[str, Any]]:
+    rc, health = router_evidence_health(conn, source_name)
+    return rc, {**health, **payload}
+
+
+def cmd_firewall_rules(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        rows = _rows(conn, "firewall_rules", args.source or "")
+        return router_evidence_result(
+            conn,
+            args.source or "",
+            firewall_rules=[{**row, "table": row.pop("table_name")} for row in rows if row["table_name"] == args.table],
+        )
+    finally:
+        conn.close()
+
+
+def cmd_update_posture(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        params: list[Any] = []
+        where = ""
+        if args.source:
+            where = " WHERE s.name = ?"
+            params.append(args.source)
+        rows = conn.execute(
+            """
+            SELECT p.*, s.name AS source
+            FROM update_posture p JOIN network_sources s ON s.id = p.source_id
+            """ + where + " ORDER BY s.name",
+            params,
+        ).fetchall()
+        posture = []
+        for row in rows:
+            value = dict(row)
+            source_id = value.pop("source_id")
+            value["schedulers"] = [
+                {
+                    "name": scheduler["name"] or "",
+                    "disabled": bool(scheduler["disabled"]),
+                    "next_run": scheduler["next_run"] or "",
+                }
+                for scheduler in conn.execute(
+                    "SELECT name, disabled, next_run FROM update_posture_schedulers WHERE source_id = ? ORDER BY id", (source_id,)
+                ).fetchall()
+            ]
+            posture.append(value)
+        return router_evidence_result(conn, args.source or "", update_posture=posture)
+    finally:
+        conn.close()
+
+
+def _normalise_systemctl_time(value: str) -> str:
+    raw = value.strip()
+    if not raw or raw.lower() in {"n/a", "infinity"}:
+        return ""
+    try:
+        parsed = datetime.strptime(raw, "%a %Y-%m-%d %H:%M:%S %Z").replace(tzinfo=UTC)
+        return parsed.isoformat().replace("+00:00", "Z")
+    except ValueError:
+        return raw
+
+
+def cmd_collector_status(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    return collector_status()
+
+
 def _ipsec_source_status(source: dict[str, Any]) -> dict[str, Any]:
     snapshot = legacy_driver_for(source, load_secrets()).ipsec_status()
     policies = list(snapshot.get("policies", []))
@@ -902,6 +1039,25 @@ def build_parser() -> argparse.ArgumentParser:
         list_parser.add_argument("--source", default="")
         list_parser.set_defaults(table=table, table_key=key)
 
+    address_lists = sub.add_parser("address-lists")
+    address_lists_sub = address_lists.add_subparsers(dest="address_lists_command", required=True)
+    address_lists_list = address_lists_sub.add_parser("list")
+    address_lists_list.add_argument("--source", default="")
+    address_lists_list.set_defaults(table="firewall_address_lists", table_key="address_lists", router_evidence=True)
+
+    firewall_rules = sub.add_parser("firewall-rules")
+    firewall_rules_sub = firewall_rules.add_subparsers(dest="firewall_rules_command", required=True)
+    firewall_rules_list = firewall_rules_sub.add_parser("list")
+    firewall_rules_list.add_argument("--table", required=True, choices=("filter", "nat", "mangle"))
+    firewall_rules_list.add_argument("--source", default="")
+
+    update_posture = sub.add_parser("update-posture")
+    update_posture_sub = update_posture.add_subparsers(dest="update_posture_command", required=True)
+    update_posture_list = update_posture_sub.add_parser("list")
+    update_posture_list.add_argument("--source", default="")
+
+    sub.add_parser("collector-status")
+
     observations = sub.add_parser("observations")
     observations_sub = observations.add_subparsers(dest="observations_command", required=True)
     observations_list = observations_sub.add_parser("list")
@@ -1001,7 +1157,19 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_hosts(args)
     if args.command == "tags":
         return cmd_tags(args)
+    if args.command == "firewall-rules":
+        return cmd_firewall_rules(args)
+    if args.command == "update-posture":
+        return cmd_update_posture(args)
+    if args.command == "collector-status":
+        return cmd_collector_status(args)
     if hasattr(args, "table"):
+        if getattr(args, "router_evidence", False):
+            conn = prepare_conn(args)
+            try:
+                return router_evidence_result(conn, getattr(args, "source", "") or "", **{args.table_key: _rows(conn, args.table, getattr(args, "source", "") or "")})
+            finally:
+                conn.close()
         return cmd_table(args, args.table, args.table_key)
     if args.command == "observations":
         return cmd_table(args, "host_observations", "observations")

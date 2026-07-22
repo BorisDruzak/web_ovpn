@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -20,10 +22,20 @@ from .auto_sync import force_client_sync, maybe_client_sync
 from .config import get_settings
 from .db import get_db, init_db
 from .download_tokens import assert_allowed_file, consume_download_token
-from .models import WebUser
+from .models import (
+    ServerDraft,
+    ServerDraftCheckOutbox,
+    ServerDraftCleanupOutbox,
+    ServerDraftConfirmOutbox,
+    WebAuditLog,
+    WebUser,
+    utcnow,
+)
 from .netctl_client import NetctlError, run_netctl
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
+from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
+from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -48,9 +60,9 @@ def status_class(value: Any) -> str:
     raw = str(value or "").lower()
     if raw in {"active", "connected", "valid", "ok", "true"}:
         return "ok"
-    if raw in {"disabled", "warning"}:
+    if raw in {"disabled", "warning", "warn", "stale"}:
         return "warn"
-    if raw in {"deleted", "revoked", "error", "failed", "inactive"}:
+    if raw in {"deleted", "revoked", "error", "failed", "inactive", "critical"}:
         return "bad"
     return "muted"
 
@@ -123,6 +135,259 @@ def redirect(path: str) -> RedirectResponse:
     return RedirectResponse(path, status_code=303)
 
 
+def server_draft_or_404(db: Session, draft_id: str) -> ServerDraft:
+    try:
+        draft = db.get(ServerDraft, str(uuid.UUID(draft_id)))
+    except ValueError as exc:
+        raise HTTPException(status_code=404) from exc
+    if draft is None:
+        raise HTTPException(status_code=404)
+    return draft
+
+
+def queue_server_draft(
+    draft: ServerDraft,
+    action: str,
+    expected_fingerprint: str | None = None,
+    pin_generation: str | None = None,
+) -> Path:
+    request = make_draft_request(
+        draft.id, draft.host, draft.ssh_user, draft.port, action, expected_fingerprint, pin_generation
+    )
+    return create_draft_request(get_settings().server_draft_queue_dir, request)
+
+
+def publish_cleanup_outbox(db: Session) -> list[ServerDraftCleanupOutbox]:
+    """Publish committed cleanup intents and leave failed attempts retryable.
+
+    The only worker-visible operation happens here, after the deletion and
+    outbox record have committed.  Re-publishing is safe because cleanup queue
+    publication is exclusive and returns the existing terminal reservation.
+    """
+    pending = list(
+        db.scalars(
+            select(ServerDraftCleanupOutbox)
+            .where(ServerDraftCleanupOutbox.status == "pending")
+            .order_by(ServerDraftCleanupOutbox.id)
+        )
+    )
+    for intent in pending:
+        intent.attempts += 1
+        try:
+            request = make_draft_request(intent.draft_id, "cleanup", "cleanup", 22, "cleanup")
+            create_draft_request(get_settings().server_draft_queue_dir, request)
+        except (OSError, ValueError):
+            intent.last_error = "queue unavailable"
+        else:
+            intent.status = "published"
+            intent.last_error = ""
+            intent.published_at = utcnow()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            # The existing durable intent remains pending if this status update
+            # cannot commit.  Its idempotent queue publication can be retried.
+            db.rollback()
+    return pending
+
+
+def publish_check_outbox(db: Session) -> list[ServerDraftCheckOutbox]:
+    """Publish committed check intents and keep failed attempts retryable."""
+    pending = list(
+        db.scalars(
+            select(ServerDraftCheckOutbox)
+            .where(ServerDraftCheckOutbox.status == "pending")
+            .order_by(ServerDraftCheckOutbox.id)
+        )
+    )
+    for intent in pending:
+        intent.attempts += 1
+        draft = db.get(ServerDraft, intent.draft_id)
+        if draft is None:
+            intent.status = "cancelled"
+            intent.last_error = "draft unavailable"
+        else:
+            try:
+                queue_server_draft(draft, "check", pin_generation=intent.pin_generation)
+            except (OSError, ValueError):
+                intent.last_error = "queue unavailable"
+            else:
+                intent.status = "published"
+                intent.last_error = ""
+                intent.published_at = utcnow()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            # The durable queued audit/intent stays pending. Re-publication is
+            # safe because the worker consumes each pin generation at most once.
+            db.rollback()
+    return pending
+
+
+def publish_confirm_outbox(db: Session) -> list[ServerDraftConfirmOutbox]:
+    """Publish only confirmations whose audit intent is already committed."""
+    pending = list(
+        db.scalars(
+            select(ServerDraftConfirmOutbox)
+            .where(ServerDraftConfirmOutbox.status == "pending")
+            .order_by(ServerDraftConfirmOutbox.id)
+        )
+    )
+    for intent in pending:
+        intent.attempts += 1
+        draft = db.get(ServerDraft, intent.draft_id)
+        if draft is None:
+            intent.status = "cancelled"
+            intent.last_error = "draft unavailable"
+        else:
+            try:
+                queue_server_draft(
+                    draft, "confirm", intent.fingerprint, intent.pin_generation
+                )
+            except (OSError, ValueError):
+                intent.last_error = "queue unavailable"
+            else:
+                intent.status = "published"
+                intent.last_error = ""
+                intent.published_at = utcnow()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+    return pending
+
+
+def add_server_draft_confirm_intent(
+    db: Session,
+    request: Request,
+    user: WebUser,
+    draft_id: str,
+    fingerprint: str,
+    pin_generation: str,
+) -> None:
+    """Stage confirmation outbox and audit intent in one transaction."""
+    db.add(
+        ServerDraftConfirmOutbox(
+            draft_id=draft_id,
+            fingerprint=fingerprint,
+            pin_generation=pin_generation,
+        )
+    )
+    db.add(
+        WebAuditLog(
+            actor=user.username,
+            action="server-draft-confirm",
+            target_client=draft_id,
+            result="queued",
+            message=f"pin-generation:{pin_generation}",
+            request_id=str(getattr(request.state, "request_id", "")),
+            ip_address=request.client.host if request.client else "",
+        )
+    )
+
+
+def add_server_draft_check_intent(
+    db: Session,
+    request: Request,
+    user: WebUser,
+    draft_id: str,
+    pin_generation: str,
+) -> None:
+    """Stage the durable outbox row and queued audit in one DB transaction."""
+    db.add(ServerDraftCheckOutbox(draft_id=draft_id, pin_generation=pin_generation))
+    db.add(
+        WebAuditLog(
+            actor=user.username,
+            action="server-draft-check",
+            target_client=draft_id,
+            result="queued",
+            message=f"pin-generation:{pin_generation}",
+            request_id=str(getattr(request.state, "request_id", "")),
+            ip_address=request.client.host if request.client else "",
+        )
+    )
+
+
+def has_server_draft_audit(
+    db: Session, draft_id: str, action: str, pin_generation: str
+) -> bool:
+    statement = select(WebAuditLog.id).where(
+        WebAuditLog.action == action,
+        WebAuditLog.result == "ok",
+        WebAuditLog.target_client == draft_id,
+        WebAuditLog.message == f"pin-generation:{pin_generation}",
+    )
+    return db.scalar(statement) is not None
+
+
+def has_server_draft_confirmation(
+    db: Session, draft_id: str, pin_generation: str
+) -> bool:
+    legacy_ok = db.scalar(
+        select(WebAuditLog.id).where(
+            WebAuditLog.action == "server-draft-confirm",
+            WebAuditLog.result == "ok",
+            WebAuditLog.target_client == draft_id,
+            WebAuditLog.message == f"pin-generation:{pin_generation}",
+        )
+    )
+    if legacy_ok is not None:
+        return True
+    published_intent = db.scalar(
+        select(ServerDraftConfirmOutbox.id).where(
+            ServerDraftConfirmOutbox.draft_id == draft_id,
+            ServerDraftConfirmOutbox.pin_generation == pin_generation,
+            ServerDraftConfirmOutbox.status == "published",
+        )
+    )
+    queued_audit = db.scalar(
+        select(WebAuditLog.id).where(
+            WebAuditLog.action == "server-draft-confirm",
+            WebAuditLog.result == "queued",
+            WebAuditLog.target_client == draft_id,
+            WebAuditLog.message == f"pin-generation:{pin_generation}",
+        )
+    )
+    return published_intent is not None and queued_audit is not None
+
+
+def has_server_draft_check_intent(
+    db: Session, draft_id: str, pin_generation: str
+) -> bool:
+    statement = select(ServerDraftCheckOutbox.id).where(
+        ServerDraftCheckOutbox.draft_id == draft_id,
+        ServerDraftCheckOutbox.pin_generation == pin_generation,
+    )
+    return db.scalar(statement) is not None
+
+
+def is_server_draft_queued(draft_id: str) -> bool:
+    queue_dir = get_settings().server_draft_queue_dir
+    return any(
+        (queue_dir / name).is_file()
+        for name in (
+            f"{draft_id}.json",
+            f".{draft_id}.json.claim",
+            f"{draft_id}.cleanup.json",
+            f".{draft_id}.cleanup.json.claim",
+            f"{draft_id}.deleted",
+        )
+    )
+
+
+def is_confirmed_server_draft(
+    db: Session, draft_id: str, result: dict[str, str]
+) -> tuple[bool, str | None]:
+    pin_generation = result.get("pin_generation") if result.get("status") == "ok" else None
+    confirmed = bool(
+        pin_generation
+        and result.get("fingerprint")
+        and result.get("checked_at")
+        and has_server_draft_confirmation(db, draft_id, pin_generation)
+    )
+    return confirmed, pin_generation
+
+
 def require_client_name(client: str) -> str:
     if not CLIENT_RE.match(client or ""):
         raise HTTPException(status_code=400, detail="Недопустимое имя клиента")
@@ -133,6 +398,296 @@ def require_source_name(source: str) -> str:
     if not SOURCE_RE.match(source or ""):
         raise HTTPException(status_code=400, detail="Недопустимое имя источника")
     return source
+
+
+@app.get("/network/server-drafts", response_class=HTMLResponse)
+def server_drafts_page(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    rows = []
+    for draft in db.scalars(select(ServerDraft).order_by(ServerDraft.created_at.desc())):
+        result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+        confirmed, pin_generation = is_confirmed_server_draft(db, draft.id, result)
+        queued = is_server_draft_queued(draft.id)
+        check_queued = bool(
+            pin_generation
+            and has_server_draft_check_intent(db, draft.id, pin_generation)
+        )
+        rows.append(
+            {
+                "draft": draft,
+                "result": result,
+                "confirmed": confirmed,
+                "can_confirm": (
+                    result.get("status") == "pending" and bool(result.get("fingerprint")) and not queued
+                ),
+                "can_check": confirmed and not queued and not check_queued,
+                "can_scan": not result.get("fingerprint") and not confirmed and not queued,
+            }
+        )
+    cleanup_outbox = list(
+        db.scalars(
+            select(ServerDraftCleanupOutbox)
+            .where(ServerDraftCleanupOutbox.status == "pending")
+            .order_by(ServerDraftCleanupOutbox.created_at)
+        )
+    )
+    check_outbox = list(
+        db.scalars(
+            select(ServerDraftCheckOutbox)
+            .where(ServerDraftCheckOutbox.status == "pending")
+            .order_by(ServerDraftCheckOutbox.created_at)
+        )
+    )
+    confirm_outbox = list(
+        db.scalars(
+            select(ServerDraftConfirmOutbox)
+            .where(ServerDraftConfirmOutbox.status == "pending")
+            .order_by(ServerDraftConfirmOutbox.created_at)
+        )
+    )
+    return render(
+        request,
+        "server_drafts.html",
+        {
+            "drafts": rows,
+            "cleanup_outbox": cleanup_outbox,
+            "check_outbox": check_outbox,
+            "confirm_outbox": confirm_outbox,
+        },
+        db,
+    )
+
+
+@app.get("/network/server-drafts/new", response_class=HTMLResponse)
+def server_draft_new_page(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return render(request, "server_draft_new.html", {}, db)
+
+
+@app.get("/network/server-drafts/public-key")
+def server_draft_public_key(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    try:
+        key = observer_public_key(get_settings().observer_public_key_path)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Observer public key is unavailable") from None
+    return PlainTextResponse(key, headers={"Content-Disposition": 'attachment; filename="openvpm-observer.pub"'})
+
+
+@app.post("/network/server-drafts/new")
+async def server_draft_create(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    host = str(form.get("host") or "").strip()
+    ssh_user = str(form.get("ssh_user") or "").strip()
+    try:
+        port = int(str(form.get("port") or "22"))
+        if not 1 <= len(name) <= 120 or "\n" in name or "\r" in name:
+            raise ValueError("name is invalid")
+        draft = ServerDraft(id=str(uuid.uuid4()), name=name, host=host, ssh_user=ssh_user, port=port)
+        make_draft_request(draft.id, draft.host, draft.ssh_user, draft.port, "scan")
+    except (TypeError, ValueError):
+        write_audit(db, request, user, "server-draft-create", "error", "invalid request")
+        add_flash(request, "bad", "Проверьте параметры тестового сервера")
+        return redirect("/network/server-drafts/new")
+    db.add(draft)
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        try:
+            write_audit(db, request, user, "server-draft-create", "error", "persistence unavailable")
+        except SQLAlchemyError:
+            db.rollback()
+        add_flash(request, "bad", "Не удалось сохранить тестовый сервер")
+        return redirect("/network/server-drafts/new")
+    try:
+        queue_server_draft(draft, "scan")
+    except (OSError, ValueError):
+        write_audit(db, request, user, "server-draft-create", "error", "queue unavailable", target_client=draft.id)
+        add_flash(request, "bad", "Сервер сохранен, но проверка не поставлена в очередь")
+        return redirect("/network/server-drafts")
+    write_audit(db, request, user, "server-draft-create", "ok", "queued", target_client=draft.id)
+    add_flash(request, "ok", "Проверка сервера поставлена в очередь")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/scan")
+async def server_draft_scan(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+    if result.get("fingerprint"):
+        write_audit(db, request, user, "server-draft-scan", "error", "invalid state", target_client=draft.id)
+        add_flash(request, "bad", "Сначала завершите текущую проверку отпечатка")
+        return redirect("/network/server-drafts")
+    try:
+        queue_server_draft(draft, "scan")
+    except (OSError, ValueError):
+        write_audit(db, request, user, "server-draft-scan", "error", "invalid request", target_client=draft.id)
+        add_flash(request, "bad", "Не удалось поставить проверку в очередь")
+    else:
+        write_audit(db, request, user, "server-draft-scan", "ok", "queued", target_client=draft.id)
+        add_flash(request, "ok", "Проверка сервера поставлена в очередь")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/confirm")
+async def server_draft_confirm_transactional(
+    draft_id: str, request: Request, db: Session = Depends(get_db)
+):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+    fingerprint = result.get("fingerprint") if result.get("status") == "pending" else None
+    if not fingerprint:
+        write_audit(
+            db, request, user, "server-draft-confirm", "error", "not confirmable",
+            target_client=draft.id,
+        )
+        add_flash(request, "bad", "Нет подтверждаемого отпечатка")
+        return redirect("/network/server-drafts")
+    pin_generation = str(uuid.uuid4())
+    try:
+        add_server_draft_confirm_intent(
+            db, request, user, draft.id, fingerprint, pin_generation
+        )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        add_flash(request, "bad", "Не удалось надежно зафиксировать подтверждение")
+        return redirect("/network/server-drafts")
+    published = publish_confirm_outbox(db)
+    intent = next(
+        (
+            item
+            for item in published
+            if item.draft_id == draft.id and item.pin_generation == pin_generation
+        ),
+        None,
+    )
+    if intent is not None and intent.status == "published":
+        add_flash(request, "ok", "Подтверждение отпечатка поставлено в очередь")
+    else:
+        add_flash(request, "bad", "Подтверждение зафиксировано, публикацию нужно повторить")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/confirm-retry")
+async def server_draft_confirm_retry(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    pending = publish_confirm_outbox(db)
+    if any(intent.status == "pending" for intent in pending):
+        write_audit(db, request, user, "server-draft-confirm-retry", "error", "confirm pending")
+        add_flash(request, "bad", "Не удалось повторно опубликовать подтверждение")
+    else:
+        write_audit(db, request, user, "server-draft-confirm-retry", "ok", "confirm published")
+        add_flash(request, "ok", "Подтверждение повторно опубликовано")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/check")
+async def server_draft_check(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    result = read_public_result(get_settings().server_draft_results_dir, draft.id)
+    confirmed, pin_generation = is_confirmed_server_draft(db, draft.id, result)
+    already_checked = bool(
+        pin_generation
+        and has_server_draft_check_intent(db, draft.id, pin_generation)
+    )
+    if not confirmed or not pin_generation or already_checked:
+        write_audit(db, request, user, "server-draft-check", "error", "not confirmed", target_client=draft.id)
+        add_flash(request, "bad", "Сначала подтвердите найденный отпечаток")
+        return redirect("/network/server-drafts")
+    try:
+        add_server_draft_check_intent(db, request, user, draft.id, pin_generation)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        add_flash(request, "bad", "Не удалось надежно зафиксировать SSH-проверку")
+        return redirect("/network/server-drafts")
+    published = publish_check_outbox(db)
+    intent = next(
+        (
+            item
+            for item in published
+            if item.draft_id == draft.id and item.pin_generation == pin_generation
+        ),
+        None,
+    )
+    if intent is not None and intent.status == "published":
+        add_flash(request, "ok", "SSH-проверка поставлена в очередь")
+    else:
+        add_flash(request, "bad", "SSH-проверка зафиксирована, но публикация ожидает повтора")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/{draft_id}/delete")
+async def server_draft_delete(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    draft = server_draft_or_404(db, draft_id)
+    draft_id = draft.id
+    for check_intent in db.scalars(
+        select(ServerDraftCheckOutbox).where(
+            ServerDraftCheckOutbox.draft_id == draft_id,
+            ServerDraftCheckOutbox.status == "pending",
+        )
+    ):
+        check_intent.status = "cancelled"
+        check_intent.last_error = "draft deleted"
+    db.delete(draft)
+    db.add(ServerDraftCleanupOutbox(draft_id=draft_id))
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        write_audit(db, request, user, "server-draft-delete", "error", "persistence unavailable", target_client=draft_id)
+        add_flash(request, "bad", "Не удалось удалить тестовый сервер")
+        return redirect("/network/server-drafts")
+    published = publish_cleanup_outbox(db)
+    if any(intent.draft_id == draft_id and intent.status == "published" for intent in published):
+        write_audit(db, request, user, "server-draft-delete", "ok", "cleanup published", target_client=draft_id)
+        add_flash(request, "ok", "Тестовый сервер удален")
+    else:
+        write_audit(db, request, user, "server-draft-delete", "error", "cleanup pending", target_client=draft_id)
+        add_flash(request, "bad", "Тестовый сервер удален, очистка ожидает повторной отправки")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/check-retry")
+async def server_draft_check_retry(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    pending = publish_check_outbox(db)
+    if any(intent.status == "pending" for intent in pending):
+        write_audit(db, request, user, "server-draft-check-retry", "error", "check pending")
+        add_flash(request, "bad", "Не удалось повторно опубликовать SSH-проверку")
+    else:
+        write_audit(db, request, user, "server-draft-check-retry", "ok", "check published")
+        add_flash(request, "ok", "SSH-проверка повторно опубликована")
+    return redirect("/network/server-drafts")
+
+
+@app.post("/network/server-drafts/cleanup-retry")
+async def server_draft_cleanup_retry(request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    pending = publish_cleanup_outbox(db)
+    if any(intent.status == "pending" for intent in pending):
+        write_audit(db, request, user, "server-draft-cleanup-retry", "error", "cleanup pending")
+        add_flash(request, "bad", "Не удалось повторно отправить очистку")
+    else:
+        write_audit(db, request, user, "server-draft-cleanup-retry", "ok", "cleanup published")
+        add_flash(request, "ok", "Очистка повторно отправлена")
+    return redirect("/network/server-drafts")
 
 
 def cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
@@ -944,6 +1499,21 @@ def network_dashboard(request: Request, db: Session = Depends(get_db)):
         {"summary": summary, "sources": dashboard_data.get("sources", []), "error": dashboard_error or connected_error},
         db,
     )
+
+
+@app.get("/network/paths", response_class=HTMLResponse)
+def network_paths(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    return render(request, "network_paths.html", {"paths": list_network_paths()}, db)
+
+
+@app.get("/network/paths/{role}", response_class=HTMLResponse)
+def network_path_detail(role: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    path = get_network_path(role)
+    if path is None:
+        raise HTTPException(status_code=404)
+    return render(request, "network_path_detail.html", {"path": path}, db)
 
 
 def unified_network_rows(request: Request) -> tuple[list[dict[str, Any]], str | None]:

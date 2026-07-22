@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import os
-import pwd
 import sys
 import types
 from pathlib import Path
 
 import pytest
+
+if os.name == "nt":
+    pytest.skip("ALT Linux test suite requires POSIX account modules", allow_module_level=True)
+
+import pwd
 
 CONTROL_ROOT = (
     Path(__file__).resolve().parents[2]

@@ -99,6 +99,35 @@ async function loadVpnRuntimeHealth() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  const copyButton = document.querySelector("[data-copy-observer-key]");
+  const publicKey = document.querySelector("[data-observer-public-key]");
+  const copyStatus = document.querySelector("[data-observer-key-status]");
+
+  if (copyButton && publicKey && copyStatus) {
+    void fetch("/network/server-drafts/public-key", {credentials: "same-origin"})
+      .then((response) => {
+        if (!response.ok) throw new Error("public key unavailable");
+        return response.text();
+      })
+      .then((key) => {
+        publicKey.value = key;
+        copyButton.disabled = false;
+        copyStatus.textContent = "";
+      })
+      .catch(() => {
+        copyStatus.textContent = "Public key unavailable.";
+      });
+
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(publicKey.value);
+        copyStatus.textContent = "Public key copied.";
+      } catch (_) {
+        copyStatus.textContent = "Unable to copy public key.";
+      }
+    });
+  }
+
   if (!document.querySelector("#vpn-runtime-card")) return;
   void loadVpnRuntimeHealth();
   window.setInterval(loadVpnRuntimeHealth, 30000);

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -60,3 +60,75 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(160), unique=True, index=True, nullable=False)
     value: Mapped[str] = mapped_column(Text, default="", nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class ServerDraft(Base):
+    """Public metadata for an SSH access-check draft.
+
+    Private key material and raw host keys are deliberately owned by the
+    separate worker and are never represented in the web database.
+    """
+
+    __tablename__ = "server_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    host: Mapped[str] = mapped_column(String(253), nullable=False)
+    ssh_user: Mapped[str] = mapped_column(String(64), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, default=22, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class ServerDraftCleanupOutbox(Base):
+    """Durable, public-only cleanup intent for a deleted server draft.
+
+    This intentionally has no foreign key: the draft row and its cleanup
+    intent are committed atomically, and the draft must then be removable.
+    """
+
+    __tablename__ = "server_draft_cleanup_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ServerDraftCheckOutbox(Base):
+    """Durable, audited consumption of one confirmed pin generation."""
+
+    __tablename__ = "server_draft_check_outbox"
+    __table_args__ = (
+        UniqueConstraint("draft_id", "pin_generation", name="uq_server_draft_check_generation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    pin_generation: Mapped[str] = mapped_column(String(36), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ServerDraftConfirmOutbox(Base):
+    """Durable, audited intent to publish one host-key confirmation."""
+
+    __tablename__ = "server_draft_confirm_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    draft_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(80), nullable=False)
+    pin_generation: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

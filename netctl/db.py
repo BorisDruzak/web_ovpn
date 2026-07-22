@@ -200,6 +200,55 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             uptime TEXT,
             last_seen_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS firewall_address_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            list TEXT,
+            address TEXT,
+            comment TEXT,
+            dynamic INTEGER,
+            disabled INTEGER,
+            creation_time TEXT,
+            last_seen_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS firewall_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            identity TEXT,
+            table_name TEXT NOT NULL,
+            chain TEXT,
+            action TEXT,
+            disabled INTEGER,
+            src_address TEXT,
+            dst_address TEXT,
+            src_address_list TEXT,
+            dst_address_list TEXT,
+            protocol TEXT,
+            comment TEXT,
+            packets INTEGER,
+            bytes INTEGER,
+            last_seen_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS update_posture (
+            source_id INTEGER PRIMARY KEY,
+            channel TEXT,
+            installed_version TEXT,
+            latest_version TEXT,
+            routerboot_current_version TEXT,
+            routerboot_upgrade_version TEXT,
+            last_seen_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS update_posture_schedulers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL,
+            name TEXT,
+            disabled INTEGER,
+            next_run TEXT,
+            interval TEXT,
+            start_date TEXT,
+            start_time TEXT,
+            last_seen_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS network_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL,
@@ -233,6 +282,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "network_sources", "ssh_identity_file", "TEXT")
     _ensure_column(conn, "network_sources", "ssh_proxy_jump", "TEXT")
     _ensure_column(conn, "network_sources", "ssh_connect_timeout", "INTEGER NOT NULL DEFAULT 8")
+    _ensure_column(conn, "update_posture", "routerboot_current_version", "TEXT")
+    _ensure_column(conn, "update_posture", "routerboot_upgrade_version", "TEXT")
     _ensure_column(conn, "context_revisions", "counts_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(conn, "context_revisions", "validation_order", "INTEGER NOT NULL DEFAULT 0")
     apply_migrations(conn)

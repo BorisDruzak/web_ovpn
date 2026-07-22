@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}VPN path{% endblock %}
+{% block page_title %}VPN path: {{ path.role }}{% endblock %}
+{% block content %}
+<section class="table-wrap">
+  <p>Status: <span class="badge {{ path.status|status_class }}">{{ path.status }}</span></p>
+  <p class="muted">Evidence time: {{ path.collected_at or "-" }}</p>
+  <h2>RouterOS update posture</h2>
+  <dl class="details-grid">
+    <dt>Status</dt><dd><span class="badge {{ path.update_posture.status|status_class }}">{{ path.update_posture.status }}</span></dd>
+    <dt>Freshness</dt><dd>{{ path.update_posture.freshness }}</dd>
+    <dt>Installed version</dt><dd>{{ path.update_posture.installed_version or "-" }}</dd>
+    <dt>Channel</dt><dd>{{ path.update_posture.channel or "-" }}</dd>
+    <dt>RouterBOOT current</dt><dd>{{ path.update_posture.routerboot_current_version or "-" }}</dd>
+    <dt>RouterBOOT upgrade</dt><dd>{{ path.update_posture.routerboot_upgrade_version or "-" }}</dd>
+    <dt>Schedulers</dt><dd>{{ path.update_posture.scheduler_count }}</dd>
+    <dt>Collected</dt><dd>{{ path.update_posture.collected_at or "-" }}</dd>
+  </dl>
+  <table>
+    <thead><tr><th>Check</th><th>Status</th><th>Result</th></tr></thead>
+    <tbody>
+      {% for check in path.checks %}
+      <tr>
+        <td>{{ check.name }}</td>
+        <td><span class="badge {{ check.status|status_class }}">{{ check.status }}</span></td>
+        <td>{{ check.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
