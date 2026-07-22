@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from netctl.db import connect_read_only
-from netctl.user_context import resolve_policy_asset_for_user
 
 from .store import add_plan_step, create_change_plan
 
@@ -123,6 +122,8 @@ def create_user_internet_access_plan(
         raise ValueError("unknown desired state")
     context = connect_read_only(netctl_db_url)
     try:
+        from netctl.user_context import resolve_policy_asset_for_user
+
         resolved = resolve_policy_asset_for_user(context, user_key)
         if resolved is None:
             raise ValueError("user has no eligible confirmed primary asset")

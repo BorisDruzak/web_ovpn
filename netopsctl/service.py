@@ -8,7 +8,7 @@ from typing import Any
 
 from .audit import AuditSigner, append_event
 from .checkpoint import build_checkpoint, deliver_checkpoint
-from .policy_resolver import create_asset_internet_access_plan, create_user_internet_access_plan
+from .policy_resolver import create_asset_internet_access_plan
 from .reconcile import apply_plan, rollback_plan, verify_plan
 from .store import transition_plan, upsert_desired_policy
 
@@ -55,6 +55,8 @@ class ControlService:
                 if plan["subject_type"] == "asset":
                     result = create_asset_internet_access_plan(self.conn, self.netctl_db_url, asset_key=plan["subject_key"], **common)
                 else:
+                    from .policy_resolver import create_user_internet_access_plan
+
                     result = create_user_internet_access_plan(self.conn, self.netctl_db_url, user_key=plan["subject_key"], **common)
             elif action == "plan.approve":
                 plan_key = payload["plan_key"]
