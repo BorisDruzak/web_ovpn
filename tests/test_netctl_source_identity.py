@@ -62,6 +62,21 @@ def test_source_readiness_reports_stable_blocking_reason_without_secret_data(tmp
         conn.close()
 
 
+def test_context_view_cli_exposes_source_readiness(tmp_path: Path, capsys) -> None:
+    import netctl.cli as cli
+    from netctl.db import connect
+
+    db_url = _db_url(tmp_path / "readiness-cli.sqlite")
+    conn = connect(db_url)
+    try:
+        _insert_source(conn, name="unbound-switch", driver="snmp_switch", options={})
+        conn.commit()
+    finally:
+        conn.close()
+    assert cli.main(["--json", "--db", db_url, "context-view", "source-readiness"]) == 0
+    assert json.loads(capsys.readouterr().out)["sources"][0]["blocking_reasons"] == ["missing_topology_role"]
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [

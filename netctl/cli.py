@@ -18,6 +18,7 @@ from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_sour
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
 from .context_query import inspect_asset_context, list_topology_context, search_context
+from .source_identity import source_readiness
 from .path_engine import PathRequest
 from .path_query import DEFAULT_PATH_FACT_MAX_AGE_SECONDS, explain_asset_path
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
@@ -675,6 +676,8 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             )
         if args.context_view_command == "findings":
             return 0, ok(findings=list_context_findings(conn, args.finding_status))
+        if args.context_view_command == "source-readiness":
+            return 0, ok(sources=source_readiness(conn))
         return 2, err("unsupported context-view command")
     finally:
         conn.close()
@@ -1334,6 +1337,7 @@ def build_parser() -> argparse.ArgumentParser:
     context_view_findings.add_argument(
         "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
     )
+    context_view_sub.add_parser("source-readiness")
 
     path = sub.add_parser("path")
     path_sub = path.add_subparsers(dest="path_command", required=True)
