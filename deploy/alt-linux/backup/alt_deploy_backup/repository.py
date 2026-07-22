@@ -465,3 +465,26 @@ class BackupRepository:
             if result is None:
                 raise _component_failure("Backup creation did not complete")
             return result
+
+    def verify(self, backup_id: str, *, write_evidence: bool):
+        from .bundle_management import BundleManager
+
+        return BundleManager(self).verify(
+            backup_id,
+            write_evidence=write_evidence,
+        )
+
+    def list(self):
+        from .bundle_management import BundleManager
+
+        return BundleManager(self).list()
+
+    def delete(self, backup_id: str):
+        from .bundle_management import BundleManager
+
+        return BundleManager(self).delete(backup_id)
+
+    def assert_rehearsed_eligibility(self, backup_id: str):
+        from .bundle_management import BundleManager
+
+        return BundleManager(self).assert_rehearsed_eligibility(backup_id)
