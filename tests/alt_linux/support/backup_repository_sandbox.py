@@ -14,6 +14,18 @@ from support.backup_archive_sandbox import BackupSandbox as ArchiveSandbox
 
 
 MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
+CANONICAL_STAGES = (
+    "created",
+    "launching",
+    "validating",
+    "connecting",
+    "identity",
+    "employee",
+    "login_screen",
+    "verifying",
+    "recording",
+    "complete",
+)
 
 
 class ObservedArchiveEngine(ArchiveEngine):
@@ -127,6 +139,13 @@ class BackupSandbox(ArchiveSandbox):
                     "machine_uuid": MACHINE_UUID,
                     "state": "successful",
                     "stage": "complete",
+                    "stage_history": [
+                        {
+                            "stage": stage,
+                            "entered_at": "2026-07-22T00:00:00+00:00",
+                        }
+                        for stage in CANONICAL_STAGES
+                    ],
                 },
                 indent=2,
             ).encode()
