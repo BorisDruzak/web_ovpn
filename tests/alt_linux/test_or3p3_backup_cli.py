@@ -46,8 +46,9 @@ def test_cli_accepts_root_list_with_synthetic_settings(
     assert result.returncode == 0
     assert json.loads(result.stdout) == {
         "status": "ok",
-        "command": "list",
-        "backup_id": None,
+        "result": "backups_listed",
+        "count": 0,
+        "backups": [],
     }
 
 
