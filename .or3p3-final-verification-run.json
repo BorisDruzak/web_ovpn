@@ -1,6 +1,6 @@
 {
-  "run_id": 29941545107,
-  "status": "failure",
-  "verified_commit": "f7cb05623cc762f07baec55c5ec38bd42d24055a",
-  "workflow": "Verify final ALT OR-3P3 gate"
+  "run_id": 29942267254,
+  "status": "success",
+  "verified_commit": "a928180fcacdff70381f2279c309847250e4f898",
+  "workflow": "Verify netctl runtime identity / final-or3p3-gate"
 }
