@@ -22,6 +22,7 @@ _ALLOWED_FIELDS = frozenset(
         "result",
     }
 )
+_MAX_RECORD_BYTES = 8192
 
 
 def _invalid(message: str) -> BackupError:
@@ -38,7 +39,10 @@ def _bounded(value: object) -> bool:
     if isinstance(value, str):
         return len(value) <= 500
     if isinstance(value, (list, tuple)):
-        return all(isinstance(item, str) and len(item) <= 500 for item in value)
+        return len(value) <= 50 and all(
+            isinstance(item, str) and len(item) <= 500
+            for item in value
+        )
     return False
 
 
@@ -58,6 +62,7 @@ class AuditLog:
 
     def _ensure_parent(self) -> None:
         parent = self.settings.log_file.parent
+        assert_safe_parents(parent)
         if not parent.exists() and not parent.is_symlink():
             if not self.settings.test_mode:
                 raise _invalid("Backup audit parent is missing")
@@ -82,6 +87,13 @@ class AuditLog:
             raise _invalid("Backup audit field is not allowed")
         if not all(_bounded(value) for value in safe_fields.values()):
             raise _invalid("Backup audit value is invalid")
+        for value in (
+            self.operation_id,
+            self.command,
+            self.backup_id,
+        ):
+            if value is not None and len(value) > 500:
+                raise _invalid("Backup audit identity is invalid")
 
         payload: dict[str, object] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -95,6 +107,8 @@ class AuditLog:
             json.dumps(payload, ensure_ascii=False, sort_keys=True)
             + "\n"
         ).encode("utf-8")
+        if len(data) > _MAX_RECORD_BYTES:
+            raise _invalid("Backup audit record is too large")
 
         self._ensure_parent()
         flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
