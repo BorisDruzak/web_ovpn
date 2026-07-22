@@ -831,7 +831,7 @@ git commit -m "feat: derive backbone topology evidence"
 - Consumes `collect_link_evidence()`.
 - Produces `reconcile_topology(conn, observed_at) -> dict[str, Any]` and read-only topology CLI commands.
 
-- [ ] **Step 1: Write failing reconciliation tests**
+- [x] **Step 1: Write failing reconciliation tests**
 
 Required behavior:
 
@@ -847,13 +847,13 @@ no core source -> topology depths are unknown, not fabricated;
 cycle in graph -> traversal terminates deterministically.
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_topology.py -k reconcile -q
 ```
 
-- [ ] **Step 3: Implement evidence aggregation**
+- [x] **Step 3: Implement evidence aggregation**
 
 Aggregation rules:
 
@@ -868,7 +868,7 @@ incompatible high-confidence evidence: conflicting, confidence 0
 
 Persist the complete sorted evidence list in `evidence_json`.
 
-- [ ] **Step 4: Implement topology depth**
+- [x] **Step 4: Implement topology depth**
 
 Build an undirected graph from non-conflicting current links. Start BFS from sources with `topology_role = core`.
 
@@ -881,11 +881,11 @@ def topology_depths(
 
 Unreachable sources have no depth.
 
-- [ ] **Step 5: Implement atomic current-state replacement and events**
+- [x] **Step 5: Implement atomic current-state replacement and events**
 
 Create and commit a `network_correlation_runs` row with `run_type = 'topology'` and status `running` before reconciliation. Replace current links, events, findings and final run status in one `BEGIN IMMEDIATE` transaction. On failure, rollback all replacement changes and finalize the durable run as `failed` in a recovery transaction.
 
-- [ ] **Step 6: Add CLI**
+- [x] **Step 6: Add CLI**
 
 ```bash
 netctl --json topology reconcile
@@ -905,7 +905,7 @@ python -m pytest -q
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add netctl/topology_reconcile.py netctl/cli.py tests/test_netctl_topology.py .github/workflows/verify-netctl-runtime.yml
@@ -926,7 +926,7 @@ git commit -m "feat: reconcile current network backbone"
 - Consumes normalized `asset_interfaces.mac`, `current_switch_fdb`, `switch_ports` and current backbone links.
 - Produces `AttachmentCandidate` without writing the database.
 
-- [ ] **Step 1: Write failing candidate tests**
+- [x] **Step 1: Write failing candidate tests**
 
 Use this contract:
 
@@ -965,13 +965,13 @@ invalid MAC observations are ignored without changing assets;
 failed/old switch run is not interpreted as a new disappearance.
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_attachments.py -k candidates -q
 ```
 
-- [ ] **Step 3: Implement candidate scoring**
+- [x] **Step 3: Implement candidate scoring**
 
 Use this deterministic score:
 
@@ -988,7 +988,7 @@ port is a verified backbone port                            -20
 
 Clamp the final score to `0..100`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 ```bash
 python -m pytest tests/test_netctl_attachments.py -k candidates -q
@@ -996,7 +996,7 @@ python -m pytest tests/test_netctl_attachments.py -k candidates -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add netctl/attachment_candidates.py tests/test_netctl_attachments.py
@@ -1014,7 +1014,7 @@ git commit -m "feat: derive endpoint attachment candidates"
 - Consumes `attachment_candidates()` and current topology depths.
 - Produces `reconcile_attachments(conn, observed_at) -> dict[str, Any]`.
 
-- [ ] **Step 1: Write failing resolution tests**
+- [x] **Step 1: Write failing resolution tests**
 
 Resolution contract:
 
@@ -1051,13 +1051,13 @@ no candidate does not delete runtime asset or interface;
 different MAC interfaces remain different attachment resolutions.
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_attachments.py -k resolution -q
 ```
 
-- [ ] **Step 3: Implement pure resolution**
+- [x] **Step 3: Implement pure resolution**
 
 ```python
 def resolve_attachment(
@@ -1067,7 +1067,7 @@ def resolve_attachment(
 
 `AttachmentResolution` contains status, selected candidate, confidence and all alternatives. Confidence is the selected score for confirmed, the highest candidate score capped at 60 for ambiguous/uplink-only, and `0` for unresolved.
 
-- [ ] **Step 4: Implement persistence and event comparison**
+- [x] **Step 4: Implement persistence and event comparison**
 
 Create a durable `network_correlation_runs` row with `run_type = 'attachments'`. Candidate replacement, resolution replacement, event insertions, finding reconciliation and run completion occur in one transaction. A collector failure does not invoke attachment reconciliation; a correlation process failure preserves the previous state.
 
@@ -1079,7 +1079,7 @@ attachment-uplink-only:<asset_interface_id>
 attachment-unresolved:<asset_interface_id>
 ```
 
-- [ ] **Step 5: Add CLI**
+- [x] **Step 5: Add CLI**
 
 ```bash
 netctl --json attachments reconcile
@@ -1096,7 +1096,7 @@ python -m pytest tests/test_netctl_attachments.py tests/test_netctl_topology.py 
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add netctl/attachment_reconcile.py netctl/cli.py tests/test_netctl_attachments.py
