@@ -14,6 +14,8 @@ sanitized and excludes device addresses, RouterOS exports, and credentials.
   active. A signed web-to-broker `status` smoke test returned
   `writes_enabled: false`.
 - The local audit chain verified successfully with 15 signed events.
+- An independently signed checkpoint for that chain was successfully delivered
+  to the configured audit sink. The audit checkpoint health gate is now true.
 - The broker has separate principals: the web service can use plan/read
   actions, while `netopsctl-reconcile` has only `policy.reconcile`.
 
@@ -22,13 +24,14 @@ sanitized and excludes device addresses, RouterOS exports, and credentials.
 Two prior controlled test plans have final status `rolled_back`; the desired
 policy ledger contains one policy record. The current release preserved this
 evidence and did not issue a RouterOS write. The reconciler timer is installed
-but deliberately disabled until the independent checkpoint gate is healthy and
-a fresh controlled deny/verify/rollback window is approved.
+but deliberately disabled until a fresh controlled deny/verify/rollback window
+is approved.
 
 ## Production gate
 
-`NETOPSCTL_AUDIT_CHECKPOINT_HEALTHY` and
-`NETOPSCTL_PRODUCTION_WRITES_ENABLED` are both not true. Therefore apply,
-rollback, and reconciler writes remain fail-closed. Enabling them requires the
-runbook in `docs/runbooks/netopsctl-internet-policy-rollout.md`; this document
-does not authorize that change.
+`NETOPSCTL_AUDIT_CHECKPOINT_HEALTHY` is true, while
+`NETOPSCTL_PRODUCTION_WRITES_ENABLED` is false. Therefore apply, rollback, and
+reconciler writes remain fail-closed. Enabling production writes still requires
+the approved controlled deny/verify/rollback window in
+`docs/runbooks/netopsctl-internet-policy-rollout.md`; this document does not
+authorize that change.
