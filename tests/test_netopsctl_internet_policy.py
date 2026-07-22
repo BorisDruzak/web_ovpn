@@ -72,6 +72,36 @@ def test_asset_policy_rejects_unknown_desired_state_and_provisional_identity(tmp
         netops.close()
 
 
+def test_asset_policy_rejects_duplicate_current_ip_on_another_asset(tmp_path) -> None:
+    from netctl.db import connect as connect_netctl
+    from netopsctl.policy_resolver import resolve_asset_targets
+
+    netctl_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    now = utc_now()
+    context = connect_netctl(netctl_url)
+    try:
+        source = context.execute(
+            """INSERT INTO network_sources (name, driver, host, port, username, secret_ref, tls, verify_tls, site, enabled, created_at, updated_at, last_collect_at, last_status)
+               VALUES ('edge-a', 'mock', '127.0.0.1', 1, '', '', 0, 0, 'site-a', 1, ?, ?, ?, 'success')""", (now, now, now)
+        ).lastrowid
+        asset_ids = []
+        for key in ("mac:AA", "mac:BB"):
+            asset_ids.append(context.execute(
+                """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+                   VALUES (?, 'manual', 100, 0, ?, ?, ?, ?)""", (key, now, now, now, now)
+            ).lastrowid)
+        for asset_id in asset_ids:
+            context.execute(
+                """INSERT INTO ip_observations (asset_id, site, source_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+                   VALUES (?, 'site-a', ?, 'edge-a', '192.0.2.10', ?, ?, 1, 'manual')""", (asset_id, source, now, now)
+            )
+        context.commit()
+        with pytest.raises(ValueError, match="duplicate current IP"):
+            resolve_asset_targets(context, "mac:AA", enforcement_sources_by_site={"site-a": "router-a"}, source_sla_seconds=300, anchor_check=lambda _: True)
+    finally:
+        context.close()
+
+
 def test_approved_plan_applies_idempotently_and_verifies(tmp_path) -> None:
     from netopsctl.reconcile import apply_plan, verify_plan
     from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan

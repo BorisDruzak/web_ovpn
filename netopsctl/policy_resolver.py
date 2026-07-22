@@ -66,6 +66,13 @@ def resolve_asset_targets(
             continue
         if address.version != 4:
             continue
+        duplicate = conn.execute(
+            """SELECT 1 FROM ip_observations
+               WHERE ip = ? AND is_current = 1 AND asset_id <> ? LIMIT 1""",
+            (str(address), asset["id"]),
+        ).fetchone()
+        if duplicate is not None:
+            raise ValueError("duplicate current IP is bound to another asset")
         site = str(row["site"] or row["source_site"] or "")
         enforcement_source = enforcement_sources_by_site.get(site)
         if not site or not enforcement_source:
