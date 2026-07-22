@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
+import json
 import re
 from typing import Any, Literal
 
@@ -115,6 +116,19 @@ class ContextUserAssetBindingRequest(BaseModel):
 
 class ContextBindingRetireRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class NetworkSessionCreateRequest(BaseModel):
+    user_key: str = Field(min_length=1, max_length=160)
+    session_key: str = Field(min_length=1, max_length=255)
+    source_type: Literal["captive_portal", "radius", "directory_agent", "manual"]
+    started_at: str = Field(min_length=1, max_length=64)
+    asset_key: str = Field(default="", max_length=240)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class NetworkSessionCloseRequest(BaseModel):
+    ended_at: str = Field(min_length=1, max_length=64)
 
 
 def api_response(data: dict[str, Any]) -> dict[str, Any]:
@@ -778,6 +792,35 @@ def api_context_user_bind_asset(
 @router.get("/context/users/{user_key}")
 def api_context_user_inspect(user_key: str, actor: str = Depends(require_api_actor)):
     return api_response(call_netctl(["users", "inspect", "--user-key", user_key]))
+
+
+@router.post("/context/network-sessions")
+def api_context_network_session_create(
+    payload: NetworkSessionCreateRequest,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    data = call_netctl([
+        "network-sessions", "open", "--user-key", payload.user_key, "--session-key", payload.session_key,
+        "--source-type", payload.source_type, "--started-at", payload.started_at,
+        "--asset-key", payload.asset_key, "--evidence", json.dumps(payload.evidence, sort_keys=True),
+    ])
+    write_audit(db, request, actor, "api-context-network-session-create", "ok", payload.session_key)
+    return api_response(data)
+
+
+@router.post("/context/network-sessions/{session_key}/close")
+def api_context_network_session_close(
+    session_key: str,
+    payload: NetworkSessionCloseRequest,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    data = call_netctl(["network-sessions", "close", "--session-key", session_key, "--ended-at", payload.ended_at])
+    write_audit(db, request, actor, "api-context-network-session-close", "ok", session_key)
+    return api_response(data)
 
 
 @router.delete("/context/user-asset-bindings/{binding_id}")

@@ -46,7 +46,7 @@ from .switch_queries import (
 )
 from .switch_store import collect_and_save_switch
 from .topology_reconcile import reconcile_topology
-from .user_context import bind_user_asset, create_user, inspect_user_context, retire_user_asset_binding
+from .user_context import bind_user_asset, close_network_session, create_user, ingest_network_session, inspect_user_context, retire_user_asset_binding
 from .switch_discovery_store import (
     UnknownSwitchFingerprint,
     list_unknown_fingerprints,
@@ -729,6 +729,21 @@ def cmd_users(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_network_sessions(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        if args.network_sessions_command == "open":
+            evidence = json.loads(args.evidence) if args.evidence else {}
+            return 0, ok(session=ingest_network_session(conn, args.user_key, session_key=args.session_key, source_type=args.source_type, asset_key=args.asset_key or None, started_at=args.started_at, evidence=evidence))
+        if args.network_sessions_command == "close":
+            return 0, ok(session=close_network_session(conn, args.session_key, ended_at=args.ended_at))
+        return 2, err("unsupported network sessions command")
+    except (ValueError, json.JSONDecodeError) as exc:
+        return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
 def _parse_utc(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
@@ -1347,6 +1362,19 @@ def build_parser() -> argparse.ArgumentParser:
     users_retire.add_argument("--binding-id", required=True, type=int)
     users_retire.add_argument("--reason", required=True)
 
+    network_sessions = sub.add_parser("network-sessions")
+    network_sessions_sub = network_sessions.add_subparsers(dest="network_sessions_command", required=True)
+    network_sessions_open = network_sessions_sub.add_parser("open")
+    network_sessions_open.add_argument("--user-key", required=True)
+    network_sessions_open.add_argument("--session-key", required=True)
+    network_sessions_open.add_argument("--source-type", required=True, choices=("captive_portal", "radius", "directory_agent", "manual"))
+    network_sessions_open.add_argument("--asset-key", default="")
+    network_sessions_open.add_argument("--started-at", required=True)
+    network_sessions_open.add_argument("--evidence", default="")
+    network_sessions_close = network_sessions_sub.add_parser("close")
+    network_sessions_close.add_argument("--session-key", required=True)
+    network_sessions_close.add_argument("--ended-at", required=True)
+
     attachments = sub.add_parser("attachments")
     attachments_sub = attachments.add_subparsers(dest="attachments_command", required=True)
     attachments_sub.add_parser("reconcile")
@@ -1441,6 +1469,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_path(args)
     if args.command == "users":
         return cmd_users(args)
+    if args.command == "network-sessions":
+        return cmd_network_sessions(args)
     if args.command == "ipsec":
         return cmd_ipsec(args)
     if args.command == "dashboard":
