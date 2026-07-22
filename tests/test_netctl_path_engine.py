@@ -101,3 +101,18 @@ def test_path_engine_rejects_ambiguous_source_ip_context() -> None:
 
     assert result.verdict is PathVerdict.UNKNOWN
     assert result.unknown_reasons == ("ambiguous_source_ips",)
+
+
+def test_path_engine_rejects_stale_facts() -> None:
+    from netctl.path_engine import PathRequest, PathVerdict, explain_path
+
+    result = explain_path(
+        PathRequest("mac:AA:BB:CC:DD:EE:FF", "198.51.100.25", "tcp", 443),
+        source_ips=("192.0.2.10",),
+        routes=(),
+        filter_rules=(),
+        facts_fresh=False,
+    )
+
+    assert result.verdict is PathVerdict.UNKNOWN
+    assert result.unknown_reasons == ("stale_path_facts",)

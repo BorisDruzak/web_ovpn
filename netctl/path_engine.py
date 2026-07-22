@@ -106,7 +106,10 @@ def explain_path(
     routing_table: str = "main",
     routing_rules: Iterable[dict[str, Any]] = (),
     ipsec_policies: Iterable[dict[str, Any]] = (),
+    facts_fresh: bool = True,
 ) -> PathExplanation:
+    if not facts_fresh:
+        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "", routing_table, None, (), ("stale_path_facts",), ())
     if len(source_ips) != 1:
         return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "", routing_table, None, (), ("ambiguous_source_ips",), ())
     if source_ips:
