@@ -1337,6 +1337,183 @@ def _migration_8(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_9(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE network_correlation_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_type TEXT NOT NULL CHECK (run_type IN ('topology', 'attachments')),
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            status TEXT NOT NULL CHECK (status IN ('running', 'success', 'partial', 'failed')),
+            context_revision_id INTEGER REFERENCES context_revisions(id) ON DELETE RESTRICT,
+            source_watermark_json TEXT NOT NULL DEFAULT '{}',
+            counts_json TEXT NOT NULL DEFAULT '{}',
+            error_class TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX network_correlation_runs_type_started_idx
+        ON network_correlation_runs(run_type, started_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE current_switch_links (
+            link_key TEXT PRIMARY KEY,
+            source_a_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            port_a_key TEXT NOT NULL DEFAULT '',
+            source_b_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            port_b_key TEXT NOT NULL DEFAULT '',
+            state TEXT NOT NULL CHECK (state IN ('confirmed', 'inferred', 'ambiguous', 'conflicting')),
+            confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+            intent_link_stable_id TEXT NOT NULL DEFAULT '',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            correlation_run_id INTEGER NOT NULL
+                REFERENCES network_correlation_runs(id) ON DELETE RESTRICT,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            CHECK (source_a_id < source_b_id),
+            UNIQUE(source_a_id, port_a_key, source_b_id, port_b_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_links_source_a_idx
+        ON current_switch_links(source_a_id, port_a_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_links_source_b_idx
+        ON current_switch_links(source_b_id, port_b_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE switch_link_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            link_key TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK (event_type IN ('appeared', 'changed', 'disappeared')),
+            before_json TEXT NOT NULL DEFAULT '{}',
+            after_json TEXT NOT NULL DEFAULT '{}',
+            observed_at TEXT NOT NULL,
+            correlation_run_id INTEGER NOT NULL
+                REFERENCES network_correlation_runs(id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_link_events_key_time_idx
+        ON switch_link_events(link_key, observed_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX asset_interfaces_id_asset_idx
+        ON asset_interfaces(id, asset_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE asset_attachment_resolutions (
+            asset_interface_id INTEGER PRIMARY KEY,
+            asset_id INTEGER NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('confirmed', 'ambiguous', 'uplink_only', 'unresolved')),
+            selected_source_id INTEGER REFERENCES network_sources(id) ON DELETE RESTRICT,
+            selected_port_key TEXT NOT NULL DEFAULT '',
+            selected_vlan_key TEXT NOT NULL DEFAULT '',
+            selected_vlan_id INTEGER,
+            confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            correlation_run_id INTEGER NOT NULL
+                REFERENCES network_correlation_runs(id) ON DELETE RESTRICT,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            FOREIGN KEY(asset_interface_id, asset_id)
+                REFERENCES asset_interfaces(id, asset_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE asset_attachment_candidates (
+            asset_interface_id INTEGER NOT NULL,
+            asset_id INTEGER NOT NULL,
+            switch_source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            port_key TEXT NOT NULL,
+            vlan_key TEXT NOT NULL,
+            vlan_id INTEGER,
+            candidate_class TEXT NOT NULL CHECK (candidate_class IN ('direct', 'uplink', 'unknown')),
+            topology_depth INTEGER,
+            score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
+            observed_at TEXT NOT NULL,
+            correlation_run_id INTEGER NOT NULL
+                REFERENCES network_correlation_runs(id) ON DELETE RESTRICT,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY(asset_interface_id, switch_source_id, port_key, vlan_key),
+            FOREIGN KEY(asset_interface_id, asset_id)
+                REFERENCES asset_interfaces(id, asset_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX asset_attachment_candidates_switch_port_idx
+        ON asset_attachment_candidates(switch_source_id, port_key, vlan_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE asset_attachment_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_interface_id INTEGER NOT NULL REFERENCES asset_interfaces(id) ON DELETE RESTRICT,
+            asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
+            event_type TEXT NOT NULL CHECK (event_type IN (
+                'attached', 'moved', 'detached', 'became_ambiguous', 'resolved_ambiguity'
+            )),
+            before_json TEXT NOT NULL DEFAULT '{}',
+            after_json TEXT NOT NULL DEFAULT '{}',
+            observed_at TEXT NOT NULL,
+            correlation_run_id INTEGER NOT NULL
+                REFERENCES network_correlation_runs(id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX asset_attachment_events_asset_time_idx
+        ON asset_attachment_events(asset_id, observed_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE topology_findings (
+            finding_key TEXT PRIMARY KEY,
+            finding_type TEXT NOT NULL,
+            severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
+            status TEXT NOT NULL CHECK (status IN ('open', 'acknowledged', 'resolved')),
+            asset_id INTEGER REFERENCES assets(id) ON DELETE RESTRICT,
+            source_id INTEGER REFERENCES network_sources(id) ON DELETE RESTRICT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX topology_findings_status_type_idx
+        ON topology_findings(status, finding_type, last_seen_at DESC)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1346,6 +1523,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (6, _migration_6),
     (7, _migration_7),
     (8, _migration_8),
+    (9, _migration_9),
 )
 
 
