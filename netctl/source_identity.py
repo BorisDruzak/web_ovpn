@@ -7,6 +7,7 @@ from typing import Any
 
 from .config import TOPOLOGY_ROLES, normalize_generic_driver_options, normalize_snmp_driver_options
 from .normalizer import normalize_mac
+from .switch_eligibility import has_authoritative_fdb
 
 
 @dataclass(frozen=True)
@@ -145,3 +146,49 @@ def list_source_identities(conn: sqlite3.Connection) -> tuple[SourceIdentity, ..
             )
         )
     return tuple(identities)
+
+
+def source_readiness(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Summarize why a configured source can or cannot contribute topology evidence."""
+    records: list[dict[str, Any]] = []
+    for identity in list_source_identities(conn):
+        source = conn.execute(
+            "SELECT site FROM network_sources WHERE id = ?", (identity.source_id,)
+        ).fetchone()
+        run = conn.execute(
+            """SELECT id, status, outcomes_json FROM switch_collection_runs
+               WHERE source_id = ? ORDER BY id DESC LIMIT 1""",
+            (identity.source_id,),
+        ).fetchone()
+        latest_fdb_run_id = (
+            int(run["id"]) if run is not None and has_authoritative_fdb(run["status"], run["outcomes_json"]) else None
+        )
+        port_count = int(conn.execute(
+            "SELECT count(*) FROM switch_ports WHERE source_id = ?", (identity.source_id,)
+        ).fetchone()[0])
+        reason = ""
+        if identity.topology_role == "unknown":
+            reason = "missing_topology_role"
+        elif identity.runtime_asset_id is None:
+            reason = "missing_runtime_asset_binding"
+        elif not identity.intent_context_id or not identity.intent_stable_id:
+            reason = "missing_intent_binding"
+        elif not identity.management_macs:
+            reason = "missing_management_mac"
+        elif identity.driver == "snmp_switch" and latest_fdb_run_id is None:
+            reason = "no_authoritative_fdb"
+        elif identity.driver == "snmp_switch" and port_count == 0:
+            reason = "no_port_inventory"
+        records.append({
+            "source": identity.source_name, "driver": identity.driver,
+            "site": str(source["site"] or "") if source is not None else "",
+            "topology_role": identity.topology_role,
+            "runtime_asset_status": "ready" if identity.runtime_asset_id is not None else "missing",
+            "intent_binding_status": "ready" if identity.intent_context_id and identity.intent_stable_id else "missing",
+            "management_mac_count": len(identity.management_macs),
+            "latest_authoritative_fdb_run_id": latest_fdb_run_id,
+            "known_switch_port_count": port_count,
+            "eligible_for_topology": not reason,
+            "blocking_reasons": [reason] if reason else ["ready"],
+        })
+    return records

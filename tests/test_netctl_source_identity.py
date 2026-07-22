@@ -43,6 +43,25 @@ def test_generic_source_identity_options_are_normalized_and_persistable() -> Non
     )
 
 
+def test_source_readiness_reports_stable_blocking_reason_without_secret_data(tmp_path: Path) -> None:
+    from netctl.db import connect
+    from netctl.source_identity import source_readiness
+
+    conn = connect(_db_url(tmp_path / "readiness.sqlite"))
+    try:
+        _insert_source(conn, name="unbound-switch", driver="snmp_switch", options={})
+        conn.commit()
+        assert source_readiness(conn) == [{
+            "source": "unbound-switch", "driver": "snmp_switch", "site": "",
+            "topology_role": "unknown", "runtime_asset_status": "missing",
+            "intent_binding_status": "missing", "management_mac_count": 0,
+            "latest_authoritative_fdb_run_id": None, "known_switch_port_count": 0,
+            "eligible_for_topology": False, "blocking_reasons": ["missing_topology_role"],
+        }]
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     ("override", "message"),
     [
