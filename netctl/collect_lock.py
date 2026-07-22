@@ -15,23 +15,39 @@ except ImportError:  # pragma: no cover - collection fails closed without /proc 
 _RECOVERY_GUARD = threading.Lock()
 
 
+class _ProcessEvidenceUnknown(RuntimeError):
+    pass
+
+
+class _OwnerEvidenceUnknown(RuntimeError):
+    pass
+
+
 def collect_lock_path(db_url: str) -> Path:
     return db_path_from_url(db_url).with_suffix(".lock")
 
 
 def _process_start_time(pid: int) -> str | None:
     try:
-        fields = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").split()
-    except (FileNotFoundError, PermissionError, OSError, UnicodeDecodeError):
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    except FileNotFoundError:
         return None
-    return fields[21] if len(fields) > 21 and fields[21].isdigit() else None
+    except (PermissionError, OSError, UnicodeDecodeError) as exc:
+        raise _ProcessEvidenceUnknown from exc
+    closing_parenthesis = stat.rfind(")")
+    fields = stat[closing_parenthesis + 1 :].split()
+    if closing_parenthesis < 0 or len(fields) <= 19 or not fields[19].isdigit():
+        raise _ProcessEvidenceUnknown
+    return fields[19]
 
 
 def _read_owner(path: Path) -> tuple[int, str | None] | None:
     try:
         fields = path.read_text(encoding="ascii").split()
-    except (FileNotFoundError, OSError, UnicodeDecodeError):
+    except FileNotFoundError:
         return None
+    except (PermissionError, OSError, UnicodeDecodeError) as exc:
+        raise _OwnerEvidenceUnknown from exc
     if len(fields) not in (1, 2) or not all(field.isdigit() for field in fields):
         return None
     pid = int(fields[0])
@@ -84,15 +100,22 @@ class CollectLock:
         except (BlockingIOError, OSError) as exc:
             raise RuntimeError("collection already running") from exc
         try:
-            start_time = _process_start_time(os.getpid())
+            try:
+                start_time = _process_start_time(os.getpid())
+            except (_ProcessEvidenceUnknown, OSError) as evidence_exc:
+                raise RuntimeError("collection already running") from evidence_exc
             if start_time is None:
                 raise RuntimeError("collection already running")
 
             try:
                 self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             except FileExistsError as exc:
-                owner = _read_owner(self.path)
-                if owner is not None and _is_live_owner(*owner):
+                try:
+                    owner = _read_owner(self.path)
+                    is_live_owner = owner is not None and _is_live_owner(*owner)
+                except (_OwnerEvidenceUnknown, _ProcessEvidenceUnknown, OSError) as evidence_exc:
+                    raise RuntimeError("collection already running") from evidence_exc
+                if is_live_owner:
                     raise RuntimeError("collection already running") from exc
                 try:
                     self.path.unlink()
@@ -102,19 +125,31 @@ class CollectLock:
                     self.fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 except FileExistsError as retry_exc:
                     raise RuntimeError("collection already running") from retry_exc
-            os.write(self.fd, f"{os.getpid()} {start_time}\n".encode("ascii"))
+            record = f"{os.getpid()} {start_time}\n".encode("ascii")
+            try:
+                if os.write(self.fd, record) != len(record):
+                    raise OSError("failed to write collection lock")
+            except Exception:
+                self._close_and_remove_owned_lock()
+                raise
             return self
         finally:
             _release_recovery_guard(guard_fd)
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def _close_and_remove_owned_lock(self) -> None:
         own_stat = None
         if self.fd is not None:
-            own_stat = os.fstat(self.fd)
-            os.close(self.fd)
+            fd = self.fd
             self.fd = None
+            try:
+                own_stat = os.fstat(fd)
+            finally:
+                os.close(fd)
         try:
             if own_stat is not None and os.path.samestat(own_stat, self.path.stat()):
                 self.path.unlink()
         except FileNotFoundError:
             pass
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._close_and_remove_owned_lock()
