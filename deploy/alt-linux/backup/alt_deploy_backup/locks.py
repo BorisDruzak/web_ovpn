@@ -19,6 +19,7 @@ def _lock_error(code: str, message: str) -> BackupError:
 
 def _ensure_operation_parent(settings: BackupSettings) -> None:
     parent = settings.operation_lock.parent
+    assert_safe_parents(parent)
     if not parent.exists() and not parent.is_symlink():
         if not settings.test_mode:
             raise _lock_error(
