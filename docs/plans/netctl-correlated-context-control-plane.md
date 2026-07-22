@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12, SQLite migrations, existing `netctl` collectors and runtime asset model, FastAPI HTTP API, pytest, systemd socket activation, RouterOS API-SSL and GitHub Actions.
 
+**Mandatory amendment:** [`netctl-correlated-context-control-plane-security-amendment.md`](netctl-correlated-context-control-plane-security-amendment.md) is part of this plan. It defines the required broker trust boundary, stale-precondition checks, tamper-evident audit, API contract and migration rollout gates. Where it is more restrictive, the amendment takes precedence. No PR in this plan may enable a device write without meeting its applicable acceptance criteria.
+
 ## Global Constraints
 
 - Start from `web_ovpn/main` commit `bc50c0ce1494ef48282f50a7d0df624235540cb0` or a later fast-forward `main` containing it.
