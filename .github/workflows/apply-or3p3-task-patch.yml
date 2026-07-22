@@ -1,0 +1,70 @@
+name: Apply OR-3P3 task patch
+
+on:
+  push:
+    branches:
+      - feat/alt-or3p3-completion-20260722
+    paths:
+      - .github/patches/or3p3-*.patch
+
+permissions:
+  contents: write
+
+concurrency:
+  group: or3p3-task-patch
+  cancel-in-progress: false
+
+jobs:
+  apply-patch:
+    if: ${{ !contains(github.event.head_commit.message, '[or3p3-applied]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt
+
+      - name: Apply patch and verify ALT suite
+        id: apply
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          patch=$(find .github/patches -maxdepth 1 -type f -name 'or3p3-*.patch' | sort | tail -n 1)
+          test -n "${patch}"
+          git apply --check "${patch}"
+          git apply "${patch}"
+          rm -f "${patch}"
+
+          python -m pytest -q tests/alt_linux
+          python -m py_compile \
+            deploy/alt-linux/backup/alt_deploy_backup/*.py \
+            deploy/alt-linux/backup/alt-deploy-backup \
+            deploy/alt-linux/control/alt_deploy/*.py \
+            deploy/alt-linux/api/*.py
+          git diff --check
+
+          case "${patch}" in
+            *task1*) message='fix: make OR-3P3 restore recovery durable' ;;
+            *task2*) message='feat: gate restore capacity and audit backup commands' ;;
+            *task3*) message='feat: guard ALT services during restore and rollout' ;;
+            *task4*) message='feat: gate ALT rollout on rehearsed OR-3P3 backup' ;;
+            *task5*) message='fix: restrict ALT deployment static assets' ;;
+            *task6*) message='docs: finalize OR-3P3 backup and restore evidence' ;;
+            *) message='chore: apply OR-3P3 task patch' ;;
+          esac
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m "${message} [or3p3-applied]"
+          git push
