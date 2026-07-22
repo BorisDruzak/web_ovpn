@@ -12,7 +12,13 @@ from .settings import BackupSettings
 
 
 COMMANDS_WITHOUT_ID = {"create", "list"}
-COMMANDS_WITH_ID = {"verify", "rehearse", "restore", "delete"}
+COMMANDS_WITH_ID = {
+    "verify",
+    "rehearse",
+    "rehearse-status",
+    "restore",
+    "delete",
+}
 
 
 def _parse(argv: Sequence[str]) -> tuple[str, str | None]:
@@ -78,11 +84,52 @@ def _dispatch(
             "manifest_sha256": result.manifest_sha256,
             "services_restored": result.services_restored,
         }
-    return {
-        "status": "ok",
-        "command": command,
-        "backup_id": backup_id,
-    }
+    if command == "list":
+        backups = repository.list()
+        return {
+            "status": "ok",
+            "result": "backups_listed",
+            "count": len(backups),
+            "backups": [backup.to_dict() for backup in backups],
+        }
+    if backup_id is None:
+        raise BackupError(
+            code="backup_usage",
+            message="Backup identifier is required",
+            exit_code=2,
+        )
+    if command == "verify":
+        result = repository.verify(backup_id, write_evidence=True)
+        return {
+            "status": "ok",
+            "result": "backup_verified",
+            "backup_id": result.backup_id,
+            "component_count": result.component_count,
+            "manifest_sha256": result.manifest_sha256,
+            "evidence_written": result.evidence_written,
+        }
+    if command == "delete":
+        result = repository.delete(backup_id)
+        return {
+            "status": "ok",
+            "result": "backup_deleted",
+            "backup_id": result.backup_id,
+            "deleted_bytes": result.deleted_bytes,
+        }
+    if command == "rehearse-status":
+        result = repository.assert_rehearsed_eligibility(backup_id)
+        return {
+            "status": "ok",
+            "result": "backup_rehearsed",
+            "backup_id": result.backup_id,
+            "manifest_sha256": result.manifest_sha256,
+            "verification_sha256": result.verification_sha256,
+        }
+    raise BackupError(
+        code="backup_preflight_failed",
+        message="Backup command is not implemented yet",
+        exit_code=4,
+    )
 
 
 def main(
