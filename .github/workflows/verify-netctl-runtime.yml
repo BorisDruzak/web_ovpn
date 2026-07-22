@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   focused-runtime-identity:
@@ -206,22 +206,3 @@ jobs:
             ${{ runner.temp }}/or3p3-ansible-provision.log
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Publish run locator
-        if: ${{ always() }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cat > .or3p3-final-verification-run.json <<JSON
-          {
-            "run_id": ${GITHUB_RUN_ID},
-            "status": "${{ job.status }}",
-            "verified_commit": "${GITHUB_SHA}",
-            "workflow": "Verify netctl runtime identity / final-or3p3-gate"
-          }
-          JSON
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .or3p3-final-verification-run.json
-          git commit -m 'ci: record final OR-3P3 verification outcome [skip ci]'
-          git push origin HEAD:feat/alt-or3p3-completion-20260722
