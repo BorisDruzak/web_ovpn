@@ -107,6 +107,8 @@ def explain_path(
     routing_rules: Iterable[dict[str, Any]] = (),
     ipsec_policies: Iterable[dict[str, Any]] = (),
 ) -> PathExplanation:
+    if len(source_ips) != 1:
+        return PathExplanation(PathVerdict.UNKNOWN, request.asset_key, source_ips, "", routing_table, None, (), ("ambiguous_source_ips",), ())
     if source_ips:
         routing_table = select_routing_table(routing_rules, source_ips[0]) if tuple(routing_rules) else routing_table
     route = select_route(routes, request.destination_ip, routing_table)

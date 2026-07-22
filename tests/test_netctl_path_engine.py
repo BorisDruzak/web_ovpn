@@ -87,3 +87,17 @@ def test_path_engine_records_matching_ipsec_policy_as_tunnel_stage() -> None:
     )
 
     assert result.stages[-1]["stage"] == "ipsec"
+
+
+def test_path_engine_rejects_ambiguous_source_ip_context() -> None:
+    from netctl.path_engine import PathRequest, PathVerdict, explain_path
+
+    result = explain_path(
+        PathRequest("mac:AA:BB:CC:DD:EE:FF", "198.51.100.25", "tcp", 443),
+        source_ips=("192.0.2.10", "192.0.3.10"),
+        routes=(),
+        filter_rules=(),
+    )
+
+    assert result.verdict is PathVerdict.UNKNOWN
+    assert result.unknown_reasons == ("ambiguous_source_ips",)
