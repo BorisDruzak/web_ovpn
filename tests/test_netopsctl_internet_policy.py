@@ -77,18 +77,86 @@ def test_approved_plan_applies_idempotently_and_verifies(tmp_path) -> None:
     from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
 
     class Adapter:
-        def ensure_address_list_entry(self, target, address, plan_key):
-            assert (target, address, plan_key) == ("router-a", "192.0.2.10", "plan-apply")
+        entries = []
+
+        @staticmethod
+        def ownership_comment(plan_key, asset_key):
+            return f"web_ovpn:policy:{plan_key}:asset:{asset_key}"
+
+        def ensure_address_list_entry(self, target, address, plan_key, asset_key):
+            assert (target, address, plan_key, asset_key) == ("router-a", "192.0.2.10", "plan-apply", "mac:AA")
+            self.entries.append({"address": address, "comment": self.ownership_comment(plan_key, asset_key)})
             return {"status": "added"}
+
+        def list_managed_address_list_entries(self, target):
+            assert target == "router-a"
+            return self.entries
 
     conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
     try:
         create_change_plan(conn, plan_key="plan-apply", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="c" * 64, precheck={}, rollback={})
-        add_plan_step(conn, "plan-apply", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10"})
+        add_plan_step(conn, "plan-apply", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
         transition_plan(conn, "plan-apply", "validated")
         transition_plan(conn, "plan-apply", "approved")
         assert apply_plan(conn, "plan-apply", Adapter())["status"] == "applied"
         assert apply_plan(conn, "plan-apply", Adapter())["status"] == "already_applied"
-        assert verify_plan(conn, "plan-apply")["status"] == "verified"
+        assert verify_plan(conn, "plan-apply", Adapter())["status"] == "verified"
+    finally:
+        conn.close()
+
+
+def test_verify_mismatch_marks_plan_failed_without_another_device_mutation(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan, verify_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        @staticmethod
+        def ownership_comment(plan_key, asset_key):
+            return f"web_ovpn:policy:{plan_key}:asset:{asset_key}"
+
+        def ensure_address_list_entry(self, *_args):
+            return {"status": "added"}
+
+        def list_managed_address_list_entries(self, _target):
+            return []
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(conn, plan_key="plan-mismatch", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="c" * 64, precheck={}, rollback={})
+        add_plan_step(conn, "plan-mismatch", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-mismatch", "validated")
+        transition_plan(conn, "plan-mismatch", "approved")
+        apply_plan(conn, "plan-mismatch", Adapter())
+        assert verify_plan(conn, "plan-mismatch", Adapter())["status"] == "failed"
+        assert conn.execute("SELECT status FROM change_plans WHERE plan_key = 'plan-mismatch'").fetchone()[0] == "failed"
+    finally:
+        conn.close()
+
+
+def test_rollback_removes_only_the_original_plan_asset_entry(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan, rollback_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        def __init__(self):
+            self.removals = []
+
+        def ensure_address_list_entry(self, *_args):
+            return {"status": "added"}
+
+        def remove_address_list_entry(self, target, address, plan_key, asset_key):
+            self.removals.append((target, address, plan_key, asset_key))
+            return {"status": "removed"}
+
+    adapter = Adapter()
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(conn, plan_key="plan-rollback", actor="api", reason="approved", subject_type="asset", subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[], context_evidence_hash="c" * 64, precheck={}, rollback={"steps": [{"operation": "remove_address_list_entry", "target_key": "router-a", "request": {"address": "192.0.2.10", "asset_key": "mac:AA"}}]})
+        add_plan_step(conn, "plan-rollback", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-rollback", "validated")
+        transition_plan(conn, "plan-rollback", "approved")
+        apply_plan(conn, "plan-rollback", adapter)
+        assert rollback_plan(conn, "plan-rollback", adapter)["status"] == "rolled_back"
+        assert adapter.removals == [("router-a", "192.0.2.10", "plan-rollback", "mac:AA")]
     finally:
         conn.close()

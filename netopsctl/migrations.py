@@ -50,7 +50,39 @@ def _migration_1(conn: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = ((1, _migration_1),)
+def _migration_2(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE audit_events (
+            sequence INTEGER PRIMARY KEY,
+            event_id TEXT NOT NULL UNIQUE,
+            event_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            previous_hash TEXT NOT NULL,
+            event_hash TEXT NOT NULL UNIQUE,
+            signer_key_id TEXT NOT NULL,
+            signature BLOB NOT NULL
+        );
+        CREATE TRIGGER audit_events_no_update
+        BEFORE UPDATE ON audit_events
+        BEGIN SELECT RAISE(ABORT, 'audit_events are append-only'); END;
+        CREATE TRIGGER audit_events_no_delete
+        BEFORE DELETE ON audit_events
+        BEGIN SELECT RAISE(ABORT, 'audit_events are append-only'); END;
+        CREATE TABLE used_authorization_nonces (
+            nonce TEXT PRIMARY KEY,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT NOT NULL
+        );
+        """
+    )
+
+
+MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
+    (1, _migration_1),
+    (2, _migration_2),
+)
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
