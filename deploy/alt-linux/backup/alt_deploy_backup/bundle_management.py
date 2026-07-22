@@ -18,7 +18,6 @@ from .manifest import (
     BACKUP_ID_RE,
     SCHEMA_VERSION,
     BackupManifest,
-    RehearsalEvidence,
     VerificationEvidence,
     parse_manifest,
     parse_rehearsal_evidence,
@@ -334,9 +333,18 @@ class BundleManager:
 
     def list(self) -> tuple[BackupSummary, ...]:
         with exclusive_operation_lock(self.settings):
+            root = self.settings.backup_root
+            if not root.exists() and not root.is_symlink():
+                return ()
+            try:
+                metadata = root.lstat()
+            except OSError as exc:
+                raise _integrity("Backup root cannot be inspected") from exc
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise _integrity("Backup root is unsafe")
             try:
                 children = sorted(
-                    self.settings.backup_root.iterdir(),
+                    root.iterdir(),
                     key=lambda item: item.name,
                 )
             except OSError as exc:
