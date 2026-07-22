@@ -31,7 +31,23 @@ def _attachment(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any] | Non
            WHERE asset_id = ? ORDER BY confidence DESC, asset_interface_id LIMIT 1""",
         (asset_id,),
     ).fetchone()
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    attachment = dict(row)
+    alternatives = conn.execute(
+        """SELECT sources.name AS source, candidates.port_key, candidates.vlan_key,
+                  candidates.vlan_id, candidates.candidate_class,
+                  candidates.topology_depth, candidates.score, candidates.observed_at
+           FROM asset_attachment_candidates AS candidates
+           JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
+           WHERE candidates.asset_id = ?
+           ORDER BY candidates.score DESC, candidates.observed_at DESC,
+                    sources.name, candidates.port_key, candidates.vlan_key
+           LIMIT 32""",
+        (asset_id,),
+    ).fetchall()
+    attachment["alternatives"] = [dict(item) for item in alternatives]
+    return attachment
 
 
 def _intent(conn: sqlite3.Connection, asset_id: int) -> dict[str, Any] | None:
@@ -133,5 +149,41 @@ def search_context(conn: sqlite3.Connection, query: str, limit: int = 25) -> lis
         LIMIT ?
         """,
         (*params, limit),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_topology_context(
+    conn: sqlite3.Connection,
+    site: str = "",
+    state: str = "",
+    depth: int = 4,
+) -> list[dict[str, Any]]:
+    if not 1 <= depth <= 32:
+        raise ValueError("depth must be between 1 and 32")
+    if state not in {"", "confirmed", "inferred", "ambiguous", "conflicting"}:
+        raise ValueError("invalid topology state")
+    conditions: list[str] = []
+    params: list[object] = []
+    if site:
+        conditions.append("(source_a.site = ? OR source_b.site = ?)")
+        params.extend([site, site])
+    if state:
+        conditions.append("links.state = ?")
+        params.append(state)
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    rows = conn.execute(
+        f"""
+        SELECT links.link_key, links.port_a_key, links.port_b_key, links.state,
+               links.confidence, links.first_seen_at, links.last_seen_at,
+               source_a.name AS source_a, source_b.name AS source_b
+        FROM current_switch_links AS links
+        JOIN network_sources AS source_a ON source_a.id = links.source_a_id
+        JOIN network_sources AS source_b ON source_b.id = links.source_b_id
+        {where}
+        ORDER BY links.link_key
+        LIMIT 256
+        """,
+        params,
     ).fetchall()
     return [dict(row) for row in rows]

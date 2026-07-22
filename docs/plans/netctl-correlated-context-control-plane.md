@@ -1195,7 +1195,7 @@ git commit -m "ops: schedule local network correlation"
 - Consumes runtime asset, intent binding, current observations, attachment, switch, topology, source health and findings.
 - Produces `inspect_asset_context()` and `search_context()`.
 
-- [ ] **Step 1: Write failing context tests**
+- [x] **Step 1: Write failing context tests**
 
 Use this contract:
 
@@ -1242,13 +1242,13 @@ intent stable ID
 
 An IP or hostname matching multiple assets returns multiple explicit search results; it never selects the newest row silently.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```bash
 python -m pytest tests/test_netctl_context_query.py -q
 ```
 
-- [ ] **Step 3: Implement bounded composition**
+- [x] **Step 3: Implement bounded composition**
 
 Limits:
 
@@ -1264,11 +1264,11 @@ evidence records per section: 64
 
 Do not return secret refs, raw source configuration, raw SNMP values, firewall credentials or database internal error strings.
 
-- [ ] **Step 4: Build topology path**
+- [x] **Step 4: Build topology path**
 
 For a confirmed attachment, traverse current non-conflicting links from the selected switch toward the nearest `core` source. Return the shortest deterministic path. If no core is reachable, return the attachment switch alone with `complete: false` and reason `no_core_path`.
 
-- [ ] **Step 5: Aggregate findings without rewriting them**
+- [x] **Step 5: Aggregate findings without rewriting them**
 
 `netctl/findings.py` reads and normalizes:
 
@@ -1280,7 +1280,7 @@ switch source/run failures
 
 It returns the original finding source and key. It does not copy or change lifecycle state in the source tables.
 
-- [ ] **Step 6: Run tests and commit**
+- [x] **Step 6: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_context_query.py tests/test_netctl_attachments.py -q
@@ -1300,7 +1300,7 @@ git commit -m "feat: compose unified asset network context"
 - Produces CLI and HTTP read contracts.
 - Does not add a new web page.
 
-- [ ] **Step 1: Write failing API tests**
+- [x] **Step 1: Write failing API tests**
 
 Endpoints:
 
@@ -1313,7 +1313,7 @@ GET /api/v1/context/findings?status=open
 
 Tests assert authentication, pagination bounds, safe keys and no write side effects.
 
-- [ ] **Step 2: Add CLI**
+- [x] **Step 2: Add CLI**
 
 ```bash
 netctl --json context-view search --query 192.168.100.75
@@ -1322,18 +1322,18 @@ netctl --json context-view topology --site central --state confirmed --depth 4
 netctl --json context-view findings --status open
 ```
 
-- [ ] **Step 3: Implement HTTP adapters**
+- [x] **Step 3: Implement HTTP adapters**
 
 HTTP handlers call only the new CLI contracts through `call_netctl()`. They do not read `netctl.sqlite` directly from the web process.
 
-- [ ] **Step 4: Run tests and full regression**
+- [x] **Step 4: Run tests and full regression**
 
 ```bash
 python -m pytest tests/test_context_api.py tests/test_web_network_observer.py -q
 python -m pytest -q
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add netctl/cli.py app/api.py app/netctl_client.py tests/test_context_api.py

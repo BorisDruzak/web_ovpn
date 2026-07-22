@@ -34,12 +34,25 @@ def _context_db(tmp_path: Path) -> sqlite3.Connection:
            VALUES (?, ?, 'snmp_switch', '127.0.0.1', 161, '', 'env:TEST', 0, 0, 1, ?, ?)""",
         [(10, 'access', now, now), (11, 'core', now, now)],
     )
+    conn.execute("UPDATE network_sources SET site = 'central' WHERE id IN (10, 11)")
+    conn.execute(
+        """INSERT INTO switch_collection_runs
+           (source_id, started_at, finished_at, status, error_class, error_message, outcomes_json)
+           VALUES (10, ?, ?, 'failed', 'TimeoutError', 'private transport detail', '{}')""",
+        (now, now),
+    )
     conn.execute("UPDATE network_sources SET driver_options_json = '{\"topology_role\": \"core\"}' WHERE id = 11")
     run_id = conn.execute("INSERT INTO network_correlation_runs (run_type, started_at, finished_at, status) VALUES ('attachments', ?, ?, 'success')", (now, now)).lastrowid
     conn.execute(
         """INSERT INTO asset_attachment_resolutions (asset_interface_id, asset_id, status, selected_source_id, selected_port_key, selected_vlan_key, confidence, first_seen_at, last_seen_at, correlation_run_id)
            VALUES (1, 1, 'confirmed', 10, 'physical:48', '20', 85, ?, ?, ?)""",
         (now, now, run_id),
+    )
+    conn.execute(
+        """INSERT INTO asset_attachment_candidates
+           (asset_interface_id, asset_id, switch_source_id, port_key, vlan_key, candidate_class, score, observed_at, correlation_run_id, evidence_json)
+           VALUES (1, 1, 10, 'physical:47', '20', 'direct', 80, ?, ?, '[{"collector_run_id": 4}]')""",
+        (now, run_id),
     )
     topology_run = conn.execute("INSERT INTO network_correlation_runs (run_type, started_at, finished_at, status) VALUES ('topology', ?, ?, 'success')", (now, now)).lastrowid
     conn.execute(
@@ -50,6 +63,12 @@ def _context_db(tmp_path: Path) -> sqlite3.Connection:
     conn.execute(
         """INSERT INTO asset_intent_bindings (asset_id, context_id, intent_stable_id, binding_source, confidence, status, first_seen_at, last_seen_at)
            VALUES (1, 'central', 'device:workstation-01', 'manual', 100, 'confirmed', ?, ?)""",
+        (now, now),
+    )
+    conn.execute(
+        """INSERT INTO topology_findings
+           (finding_key, finding_type, severity, status, asset_id, source_id, first_seen_at, last_seen_at, details_json)
+           VALUES ('topology:asset-one', 'attachment_ambiguous', 'warning', 'open', 1, 10, ?, ?, '{}')""",
         (now, now),
     )
     conn.commit()
@@ -68,6 +87,9 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
         assert result["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"
         assert result["network"]["ip_observations"][0]["ip"] == "192.0.2.10"
         assert result["attachment"]["selected_port_key"] == "physical:48"
+        assert result["attachment"]["alternatives"] == [
+            {"source": "access", "port_key": "physical:47", "vlan_key": "20", "vlan_id": None, "candidate_class": "direct", "topology_depth": None, "score": 80, "observed_at": "2026-07-22T12:00:00Z"}
+        ]
         assert result["topology_path"] == {"nodes": [10, 11], "complete": True, "reason": ""}
         assert result["intent"]["intent_stable_id"] == "device:workstation-01"
         assert [item["source"] for item in result["source_health"]] == ["access", "core"]
@@ -97,3 +119,53 @@ def test_context_view_cli_reads_asset_context(tmp_path: Path, capsys) -> None:
     assert cli.main(["--json", "--db", db_url, "context-view", "asset", "--asset-key", "mac:AA:BB:CC:DD:EE:01"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["context"]["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"
+
+
+def test_context_view_cli_lists_topology_with_bounded_filters(tmp_path: Path, capsys) -> None:
+    import netctl.cli as cli
+
+    conn = _context_db(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'context.sqlite').as_posix()}"
+    conn.close()
+
+    assert cli.main([
+        "--json", "--db", db_url, "context-view", "topology",
+        "--site", "central", "--state", "confirmed", "--depth", "4",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["links"][0]["link_key"] == "10:uplink|11:core"
+    assert result["depth"] == 4
+
+
+def test_context_view_cli_lists_aggregated_findings(tmp_path: Path, capsys) -> None:
+    import netctl.cli as cli
+
+    conn = _context_db(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'context.sqlite').as_posix()}"
+    conn.close()
+
+    assert cli.main(["--json", "--db", db_url, "context-view", "findings", "--status", "open"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["findings"][0] == {
+        "finding_key": "topology:asset-one",
+        "finding_type": "attachment_ambiguous",
+        "severity": "warning",
+        "status": "open",
+        "first_seen_at": "2026-07-22T12:00:00Z",
+        "last_seen_at": "2026-07-22T12:00:00Z",
+        "details": {},
+        "source": "topology",
+    }
+
+
+def test_asset_findings_include_selected_switch_collection_failure_without_error_text(tmp_path: Path) -> None:
+    from netctl.findings import findings_for_asset
+
+    conn = _context_db(tmp_path)
+    try:
+        failure = next(item for item in findings_for_asset(conn, 1) if item["source"] == "switch_collection")
+        assert failure["finding_key"] == "switch_collection_run:1"
+        assert failure["finding_type"] == "switch_collection_failed"
+        assert failure["details"] == {"source": "access", "error_class": "TimeoutError"}
+    finally:
+        conn.close()

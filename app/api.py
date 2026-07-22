@@ -667,6 +667,48 @@ def api_network_dashboard(actor: str = Depends(require_api_actor)):
     return api_response(dashboard)
 
 
+@router.get("/context/search")
+def api_context_search(
+    q: str = Query(min_length=1),
+    limit: int = Query(default=25, ge=1, le=100),
+    actor: str = Depends(require_api_actor),
+):
+    return api_response(call_netctl(["context-view", "search", "--query", q, "--limit", str(limit)]))
+
+
+@router.get("/context/assets/{asset_key}")
+def api_context_asset(asset_key: str, actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["context-view", "asset", "--asset-key", asset_key]))
+
+
+@router.get("/context/topology")
+def api_context_topology(
+    site: str = Query(default="", max_length=128),
+    state: str = Query(default=""),
+    depth: int = Query(default=4, ge=1, le=32),
+    actor: str = Depends(require_api_actor),
+):
+    if state not in {"", "confirmed", "inferred", "ambiguous", "conflicting"}:
+        raise HTTPException(status_code=422, detail="invalid topology state")
+    args = ["context-view", "topology"]
+    if site:
+        args.extend(["--site", site])
+    if state:
+        args.extend(["--state", state])
+    args.extend(["--depth", str(depth)])
+    return api_response(call_netctl(args))
+
+
+@router.get("/context/findings")
+def api_context_findings(
+    status: str = Query(default="open"),
+    actor: str = Depends(require_api_actor),
+):
+    if status not in {"open", "acknowledged", "resolved"}:
+        raise HTTPException(status_code=422, detail="invalid finding status")
+    return api_response(call_netctl(["context-view", "findings", "--status", status]))
+
+
 @router.get("/network/paths")
 def api_network_paths(actor: str = Depends(require_api_actor)):
     return api_response({"paths": list_network_paths()})

@@ -15,8 +15,9 @@ from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
-from .context_query import inspect_asset_context, search_context
+from .context_query import inspect_asset_context, list_topology_context, search_context
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
+from .findings import list_context_findings
 from .db import context_revision_public, connect, connect_read_only, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for, legacy_driver_for, snmp_driver_for
 from .runtime_assets import (
@@ -662,6 +663,13 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             return (0, ok(context=context)) if context is not None else (1, err("asset not found", asset_key=args.asset_key))
         if args.context_view_command == "search":
             return 0, ok(results=search_context(conn, args.query, args.limit))
+        if args.context_view_command == "topology":
+            return 0, ok(
+                depth=args.depth,
+                links=list_topology_context(conn, args.site, args.state, args.depth),
+            )
+        if args.context_view_command == "findings":
+            return 0, ok(findings=list_context_findings(conn, args.finding_status))
         return 2, err("unsupported context-view command")
     finally:
         conn.close()
@@ -1247,6 +1255,16 @@ def build_parser() -> argparse.ArgumentParser:
     context_view_search.add_argument("--limit", type=int, default=25)
     context_view_asset = context_view_sub.add_parser("asset")
     context_view_asset.add_argument("--asset-key", required=True)
+    context_view_topology = context_view_sub.add_parser("topology")
+    context_view_topology.add_argument("--site", default="")
+    context_view_topology.add_argument(
+        "--state", choices=("confirmed", "inferred", "ambiguous", "conflicting"), default=""
+    )
+    context_view_topology.add_argument("--depth", type=int, default=4, choices=range(1, 33))
+    context_view_findings = context_view_sub.add_parser("findings")
+    context_view_findings.add_argument(
+        "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
+    )
 
     attachments = sub.add_parser("attachments")
     attachments_sub = attachments.add_subparsers(dest="attachments_command", required=True)
