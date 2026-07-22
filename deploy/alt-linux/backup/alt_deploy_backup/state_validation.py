@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import stat
+from datetime import datetime
 from pathlib import Path
 
 from .errors import BackupError
@@ -15,10 +16,20 @@ _MACHINE_ID = re.compile(r"^[0-9a-f-]{8,64}$")
 _REGISTRATION_ID = re.compile(r"^reg-[0-9a-f]{32}$")
 _ARCHIVE_ID = re.compile(r"^archive-\d{8}T\d{6}Z-[0-9a-f]{8}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_SAFE_STAGE = re.compile(r"^[a-z][a-z0-9_]{0,99}$")
-_JOB_STATES = frozenset(
-    {"queued", "running", "successful", "failed", "cancelled"}
+_CANONICAL_STAGES = (
+    "created",
+    "launching",
+    "validating",
+    "connecting",
+    "identity",
+    "employee",
+    "login_screen",
+    "verifying",
+    "recording",
+    "complete",
 )
+_STAGE_INDEX = {stage: index for index, stage in enumerate(_CANONICAL_STAGES)}
+_JOB_STATES = frozenset({"queued", "running", "successful", "failed"})
 _REGISTRATION_STATES = ("pending", "ready", "failed")
 _ARCHIVE_PHASES = frozenset(
     {"prepared", "copied", "committed", "cleaned", "aborted"}
@@ -43,14 +54,23 @@ def _pairs_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _read_object(path: Path, *, maximum: int = _MAX_JSON) -> tuple[dict[str, object], bytes]:
+def _read_object(
+    path: Path,
+    *,
+    maximum: int = _MAX_JSON,
+) -> tuple[dict[str, object], bytes]:
     try:
         raw = read_regular_bytes(path, max_bytes=maximum)
         payload = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_pairs_object,
         )
-    except (BackupError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+    except (
+        BackupError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
         raise _failure("Rehearsal state JSON is invalid") from exc
     if not isinstance(payload, dict):
         raise _failure("Rehearsal state JSON must be an object")
@@ -65,8 +85,12 @@ def _safe_directory(path: Path, *, optional: bool = False) -> bool:
     try:
         metadata = path.lstat()
     except OSError as exc:
-        raise _failure("Rehearsal state directory cannot be inspected") from exc
-    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise _failure(
+            "Rehearsal state directory cannot be inspected"
+        ) from exc
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(
+        metadata.st_mode
+    ):
         raise _failure("Rehearsal state directory is unsafe")
     return True
 
@@ -75,7 +99,21 @@ def _children(path: Path) -> list[Path]:
     try:
         return sorted(path.iterdir(), key=lambda item: item.name)
     except OSError as exc:
-        raise _failure("Rehearsal state directory cannot be enumerated") from exc
+        raise _failure(
+            "Rehearsal state directory cannot be enumerated"
+        ) from exc
+
+
+def _validate_timestamp(value: object) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise _failure("State timestamp is invalid")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise _failure("State timestamp is invalid") from exc
+    if parsed.tzinfo is None:
+        raise _failure("State timestamp has no timezone")
+    return parsed
 
 
 def _validate_optional_json(path: Path) -> None:
@@ -85,6 +123,51 @@ def _validate_optional_json(path: Path) -> None:
 
 
 class StateValidator:
+    def _validate_job_history(
+        self,
+        status: dict[str, object],
+        *,
+        state: str,
+        stage: str,
+    ) -> None:
+        history = status.get("stage_history")
+        if not isinstance(history, list) or not history:
+            raise _failure("Job stage history is missing or empty")
+        previous_time: datetime | None = None
+        observed: list[str] = []
+        for index, entry in enumerate(history):
+            if not isinstance(entry, dict) or set(entry) != {
+                "stage",
+                "entered_at",
+            }:
+                raise _failure("Job stage history entry is invalid")
+            entry_stage = entry.get("stage")
+            if (
+                not isinstance(entry_stage, str)
+                or index >= len(_CANONICAL_STAGES)
+                or entry_stage != _CANONICAL_STAGES[index]
+            ):
+                raise _failure("Job stage history is not contiguous")
+            entered_at = _validate_timestamp(entry.get("entered_at"))
+            if previous_time is not None and entered_at < previous_time:
+                raise _failure("Job stage timestamps move backwards")
+            previous_time = entered_at
+            observed.append(entry_stage)
+        if observed[-1] != stage:
+            raise _failure("Job stage does not match stage history")
+        if state == "queued" and stage not in {"created", "launching"}:
+            raise _failure("Queued job has an invalid stage")
+        if state == "running" and not (
+            _STAGE_INDEX["validating"]
+            <= _STAGE_INDEX[stage]
+            <= _STAGE_INDEX["recording"]
+        ):
+            raise _failure("Running job has an invalid stage")
+        if state == "successful" and stage != "complete":
+            raise _failure("Successful job is not complete")
+        if state == "failed" and stage == "complete":
+            raise _failure("Failed job cannot be complete")
+
     def _validate_jobs(self, root: Path) -> str:
         if not _safe_directory(root, optional=True):
             return "jobs"
@@ -100,34 +183,29 @@ class StateValidator:
             ):
                 raise _failure("Job store contains an invalid entry")
             status, _ = _read_object(job_dir / "status.json")
+            request, _ = _read_object(job_dir / "request.json")
             job_id = status.get("job_id", job_dir.name)
             state = status.get("state")
             stage = status.get("stage")
+            machine_uuid = str(
+                status.get("machine_uuid")
+                or request.get("machine_uuid")
+                or ""
+            ).strip().lower()
             if (
                 job_id != job_dir.name
                 or not isinstance(state, str)
                 or state not in _JOB_STATES
                 or not isinstance(stage, str)
-                or not _SAFE_STAGE.fullmatch(stage)
+                or stage not in _STAGE_INDEX
+                or not _MACHINE_ID.fullmatch(machine_uuid)
             ):
                 raise _failure("Job status identity is invalid")
-            history = status.get("stage_history")
-            if history is not None:
-                if not isinstance(history, list) or len(history) > 10_000:
-                    raise _failure("Job stage history is invalid")
-                for entry in history:
-                    if not isinstance(entry, dict):
-                        raise _failure("Job stage history entry is invalid")
-                    entry_stage = entry.get("stage")
-                    timestamp = entry.get("timestamp") or entry.get("at")
-                    if (
-                        not isinstance(entry_stage, str)
-                        or not _SAFE_STAGE.fullmatch(entry_stage)
-                        or not isinstance(timestamp, str)
-                        or not timestamp
-                    ):
-                        raise _failure("Job stage history values are invalid")
-            _validate_optional_json(job_dir / "request.json")
+            self._validate_job_history(
+                status,
+                state=state,
+                stage=stage,
+            )
             _validate_optional_json(job_dir / "result.json")
             for child in _children(job_dir):
                 if child.name not in {
@@ -136,7 +214,9 @@ class StateValidator:
                     "result.json",
                     "ansible.log",
                 }:
-                    raise _failure("Job directory contains an unexpected object")
+                    raise _failure(
+                        "Job directory contains an unexpected object"
+                    )
                 child_metadata = child.lstat()
                 if not stat.S_ISREG(child_metadata.st_mode):
                     raise _failure("Job file is not regular")
@@ -149,7 +229,9 @@ class StateValidator:
             try:
                 metadata = path.lstat()
             except OSError as exc:
-                raise _failure("Assignment entry cannot be inspected") from exc
+                raise _failure(
+                    "Assignment entry cannot be inspected"
+                ) from exc
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or not path.name.endswith(".json")
@@ -157,9 +239,13 @@ class StateValidator:
             ):
                 raise _failure("Assignment entry is invalid")
             payload, _ = _read_object(path)
-            machine_uuid = str(payload.get("machine_uuid") or "").strip().lower()
+            machine_uuid = str(
+                payload.get("machine_uuid") or ""
+            ).strip().lower()
             if machine_uuid != path.stem:
-                raise _failure("Assignment identity does not match filename")
+                raise _failure(
+                    "Assignment identity does not match filename"
+                )
         return "assignments"
 
     def _validate_registrations(self, root: Path) -> str:
@@ -169,7 +255,9 @@ class StateValidator:
             child.name for child in _children(root)
         } - set(_REGISTRATION_STATES)
         if unexpected:
-            raise _failure("Registration root contains an unexpected object")
+            raise _failure(
+                "Registration root contains an unexpected object"
+            )
         for state in _REGISTRATION_STATES:
             state_root = root / state
             if not _safe_directory(state_root, optional=True):
@@ -181,21 +269,35 @@ class StateValidator:
                     or not path.name.endswith(".json")
                 ):
                     raise _failure("Registration entry is unsafe")
-                payload, _ = _read_object(path, maximum=1024 * 1024)
-                machine_key = str(payload.get("machine_key") or "").strip().lower()
+                payload, _ = _read_object(
+                    path,
+                    maximum=1024 * 1024,
+                )
+                machine_key = str(
+                    payload.get("machine_key") or ""
+                ).strip().lower()
                 machine_uuid = str(
                     payload.get("uuid") or machine_key
                 ).strip().lower()
-                status = str(payload.get("status") or state).strip().lower()
-                generation = str(payload.get("registration_id") or "").strip().lower()
+                status = str(
+                    payload.get("status") or state
+                ).strip().lower()
+                generation = str(
+                    payload.get("registration_id") or ""
+                ).strip().lower()
                 if (
                     not machine_key
                     or not machine_uuid
                     or status != state
                     or path.stem not in {machine_key, machine_uuid}
-                    or (generation and not _REGISTRATION_ID.fullmatch(generation))
+                    or (
+                        generation
+                        and not _REGISTRATION_ID.fullmatch(generation)
+                    )
                 ):
-                    raise _failure("Registration identity or generation is invalid")
+                    raise _failure(
+                        "Registration identity or generation is invalid"
+                    )
         return "registrations"
 
     def _validate_archive_transaction(
@@ -207,10 +309,19 @@ class StateValidator:
         archive_id = directory.name
         if not _ARCHIVE_ID.fullmatch(archive_id):
             raise _failure("Machine archive identifier is invalid")
-        allowed = {"transaction.json", "manifest.json", "commit.json", "records"}
+        allowed = {
+            "transaction.json",
+            "manifest.json",
+            "commit.json",
+            "records",
+        }
         if {child.name for child in _children(directory)} - allowed:
-            raise _failure("Machine archive contains an unexpected object")
-        transaction, _ = _read_object(directory / "transaction.json")
+            raise _failure(
+                "Machine archive contains an unexpected object"
+            )
+        transaction, _ = _read_object(
+            directory / "transaction.json"
+        )
         if (
             transaction.get("schema_version") != 1
             or transaction.get("archive_id") != archive_id
@@ -227,7 +338,9 @@ class StateValidator:
         planned_states: set[str] = set()
         for plan in plans:
             if not isinstance(plan, dict):
-                raise _failure("Machine archive source plan entry is invalid")
+                raise _failure(
+                    "Machine archive source plan entry is invalid"
+                )
             state = plan.get("state")
             if (
                 state not in _REGISTRATION_STATES
@@ -240,7 +353,9 @@ class StateValidator:
                 or not isinstance(plan.get("sha256"), str)
                 or not _SHA256.fullmatch(str(plan.get("sha256")))
             ):
-                raise _failure("Machine archive source plan values are invalid")
+                raise _failure(
+                    "Machine archive source plan values are invalid"
+                )
             planned_states.add(str(state))
 
         manifest_path = directory / "manifest.json"
@@ -251,26 +366,36 @@ class StateValidator:
             if (
                 manifest.get("schema_version") != 1
                 or manifest.get("archive_id") != archive_id
-                or manifest.get("machine_key") != transaction.get("machine_key")
-                or manifest.get("machine_uuid") != transaction.get("machine_uuid")
+                or manifest.get("machine_key")
+                != transaction.get("machine_key")
+                or manifest.get("machine_uuid")
+                != transaction.get("machine_uuid")
                 or manifest.get("commit_phase") != "committed"
                 or commit.get("schema_version") != 1
                 or commit.get("archive_id") != archive_id
-                or commit.get("machine_key") != transaction.get("machine_key")
-                or commit.get("machine_uuid") != transaction.get("machine_uuid")
+                or commit.get("machine_key")
+                != transaction.get("machine_key")
+                or commit.get("machine_uuid")
+                != transaction.get("machine_uuid")
                 or commit.get("manifest_sha256")
                 != hashlib.sha256(manifest_raw).hexdigest()
             ):
-                raise _failure("Machine archive commit binding is invalid")
+                raise _failure(
+                    "Machine archive commit binding is invalid"
+                )
             records = manifest.get("records")
             records_root = directory / "records"
             if not isinstance(records, list) or not records:
-                raise _failure("Machine archive manifest records are invalid")
+                raise _failure(
+                    "Machine archive manifest records are invalid"
+                )
             _safe_directory(records_root)
             seen: set[str] = set()
             for record in records:
                 if not isinstance(record, dict):
-                    raise _failure("Machine archive record entry is invalid")
+                    raise _failure(
+                        "Machine archive record entry is invalid"
+                    )
                 state = record.get("state")
                 filename = record.get("filename")
                 size = record.get("size")
@@ -284,13 +409,20 @@ class StateValidator:
                     or not isinstance(digest, str)
                     or not _SHA256.fullmatch(digest)
                 ):
-                    raise _failure("Machine archive record metadata is invalid")
+                    raise _failure(
+                        "Machine archive record metadata is invalid"
+                    )
                 raw = read_regular_bytes(
                     records_root / str(filename),
                     max_bytes=1024 * 1024,
                 )
-                if len(raw) != size or hashlib.sha256(raw).hexdigest() != digest:
-                    raise _failure("Machine archive record hash is invalid")
+                if (
+                    len(raw) != size
+                    or hashlib.sha256(raw).hexdigest() != digest
+                ):
+                    raise _failure(
+                        "Machine archive record hash is invalid"
+                    )
                 seen.add(str(state))
 
     def _validate_machine_archives(self, root: Path) -> str:
@@ -309,9 +441,14 @@ class StateValidator:
                 continue
             _safe_directory(child)
             if child.name in completed_ids:
-                raise _failure("Duplicate completed machine archive exists")
+                raise _failure(
+                    "Duplicate completed machine archive exists"
+                )
             completed_ids.add(child.name)
-            self._validate_archive_transaction(child, completed=True)
+            self._validate_archive_transaction(
+                child,
+                completed=True,
+            )
         return "machine_archives"
 
     def validate_tree(
@@ -336,7 +473,9 @@ class StateValidator:
         )
         checks = (
             self._validate_jobs(controller_state / "jobs"),
-            self._validate_assignments(controller_state / "assignments"),
+            self._validate_assignments(
+                controller_state / "assignments"
+            ),
             self._validate_registrations(registration_state),
             self._validate_machine_archives(
                 controller_state / "machine-archives"
