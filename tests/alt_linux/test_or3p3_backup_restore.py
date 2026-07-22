@@ -40,6 +40,28 @@ def test_staging_failure_does_not_change_production(tmp_path: Path) -> None:
     assert not list(sandbox.root.rglob(".alt-deploy-*-stage-*"))
 
 
+def test_copy_path_streams_regular_file_without_bulk_reader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    source = sandbox.root / "large-source.bin"
+    destination = sandbox.root / "large-copy.bin"
+    source.write_bytes(b"streaming-block" * 400_000)
+
+    def reject_bulk_read(*args: object, **kwargs: object) -> bytes:
+        del args, kwargs
+        raise AssertionError("bulk read is forbidden for restore copy")
+
+    monkeypatch.setattr(
+        "alt_deploy_backup.restore.read_regular_bytes",
+        reject_bulk_read,
+    )
+    sandbox.restore_service()._copy_path(source, destination)
+
+    assert destination.read_bytes() == source.read_bytes()
+
+
 def test_pre_restore_generation_covers_all_six_components(
     tmp_path: Path,
 ) -> None:
@@ -63,6 +85,22 @@ def test_pre_restore_generation_covers_all_six_components(
     assert snapshot.root.is_dir()
 
 
+def test_pre_restore_snapshot_allocation_retries_collision(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_rehearsed_backup()
+    transaction = sandbox.prepare_restore(backup_id)
+    service = sandbox.restore_service()
+
+    first = service.create_pre_restore_snapshot(transaction)
+    second = service.create_pre_restore_snapshot(transaction)
+
+    assert first.root != second.root
+    assert first.root.is_dir()
+    assert second.root.is_dir()
+
+
 def test_staging_uses_same_filesystem_siblings(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     backup_id = sandbox.create_rehearsed_backup()
@@ -80,6 +118,22 @@ def test_staging_uses_same_filesystem_siblings(tmp_path: Path) -> None:
             )
 
 
+def test_partial_original_move_failure_self_reverses(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_rehearsed_backup()
+    sandbox.mutate_every_production_component()
+    before = sandbox.production_snapshot()
+
+    with pytest.raises(BackupError) as error:
+        sandbox.restore_service(fail_move_after=2).restore(backup_id)
+
+    assert error.value.code == "restore_staging_failed"
+    assert sandbox.production_snapshot() == before
+    assert sandbox.latest_restore_phase() == "services_stopped"
+
+
 def test_restore_replaces_all_components_and_uses_backup_unit_state(
     tmp_path: Path,
 ) -> None:
@@ -93,8 +147,30 @@ def test_restore_replaces_all_components_and_uses_backup_unit_state(
 
     assert result.phase == "committed"
     assert result.rollback_performed is False
+    assert result.cleanup_complete is True
     assert sandbox.production_snapshot() == expected
     assert sandbox.managed_unit_snapshot() == expected_units
+    assert sandbox.latest_restore_phase() == "committed"
+    assert set(sandbox.health_probe_urls) == {
+        "http://127.0.0.1:8087/",
+        "http://127.0.0.1:8088/health",
+    }
+
+
+def test_post_commit_cleanup_failure_never_rolls_back(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    backup_id = sandbox.create_rehearsed_backup()
+    expected = sandbox.production_snapshot()
+    sandbox.mutate_every_production_component()
+
+    result = sandbox.restore_service(fail_cleanup=True).restore(backup_id)
+
+    assert result.phase == "committed"
+    assert result.cleanup_complete is False
+    assert result.rollback_performed is False
+    assert sandbox.production_snapshot() == expected
     assert sandbox.latest_restore_phase() == "committed"
 
 
