@@ -351,6 +351,8 @@ class ArchiveEngine:
         temporary = destination.parent / (
             f".{destination.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
         )
+        published = False
+        completed = False
         try:
             self._run_capture_pipeline(spec, list_path, temporary)
             after = source_inventory(present_paths)
@@ -359,10 +361,11 @@ class ArchiveEngine:
                     "Component sources changed during capture"
                 )
             os.replace(temporary, destination)
+            published = True
             os.chmod(destination, 0o600)
             fsync_directory(destination.parent)
             size, digest = self._file_digest(destination)
-            return ComponentRecord(
+            record = ComponentRecord(
                 name=spec.name,
                 filename=spec.filename,
                 namespace=spec.namespace,
@@ -374,6 +377,8 @@ class ArchiveEngine:
                 ),
                 archive_format="tar.zst",
             )
+            completed = True
+            return record
         except BackupError:
             raise
         except OSError as exc:
@@ -381,11 +386,22 @@ class ArchiveEngine:
                 "Component archive publication failed"
             ) from exc
         finally:
-            for path in (list_path, temporary):
+            for cleanup_path in (list_path, temporary):
                 try:
-                    path.unlink(missing_ok=True)
+                    cleanup_path.unlink(missing_ok=True)
                 except OSError:
                     pass
+            if published and not completed:
+                try:
+                    metadata = destination.lstat()
+                except OSError:
+                    metadata = None
+                if metadata is not None and stat.S_ISREG(metadata.st_mode):
+                    try:
+                        destination.unlink()
+                        fsync_directory(destination.parent)
+                    except (BackupError, OSError):
+                        pass
 
     def _open_decompressor(
         self,
@@ -427,6 +443,20 @@ class ArchiveEngine:
                 "Component decompression pipe is unavailable"
             )
         return metadata.st_size, process
+
+    @staticmethod
+    def _finish_decompressor(process: subprocess.Popen[bytes]) -> int:
+        try:
+            process.stdout.close()
+        finally:
+            if process.poll() is None:
+                try:
+                    return process.wait(timeout=5)
+                except TypeError:
+                    return process.wait()
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            return process.wait()
 
     @staticmethod
     def _canonical_member_name(member: tarfile.TarInfo) -> str:
@@ -494,6 +524,8 @@ class ArchiveEngine:
         kind = self._member_kind(member)
         if member.size < 0 or member.size > _MAX_MEMBER_SIZE:
             raise _integrity_error("Archive member size is unsafe")
+        if member.uid < 0 or member.gid < 0:
+            raise _integrity_error("Archive numeric ownership is unsafe")
         if kind != "regular" and member.size != 0:
             raise _integrity_error(
                 "Archive non-regular member has an invalid size"
@@ -555,9 +587,10 @@ class ArchiveEngine:
                 raise _integrity_error(
                     "Component tar stream is invalid"
                 ) from exc
-        finally:
-            process.stdout.close()
-        return_code = process.wait()
+        except BaseException:
+            self._finish_decompressor(process)
+            raise
+        return_code = self._finish_decompressor(process)
         if return_code != 0:
             raise _integrity_error(
                 "Component zstd stream is invalid"
@@ -773,9 +806,10 @@ class ArchiveEngine:
                 raise _integrity_error(
                     "Component extraction stream is invalid"
                 ) from exc
-        finally:
-            process.stdout.close()
-        if process.wait() != 0:
+        except BaseException:
+            self._finish_decompressor(process)
+            raise
+        if self._finish_decompressor(process) != 0:
             raise _integrity_error(
                 "Component extraction zstd stream is invalid"
             )
