@@ -150,6 +150,55 @@ def search_context(conn: sqlite3.Connection, query: str, limit: int = 25) -> lis
         """,
         (*params, limit),
     ).fetchall()
+    results = [dict(row) for row in rows]
+    for item in results:
+        item["bindings"] = _confirmed_asset_bindings(conn, str(item["asset_key"]))
+    if len(results) >= limit:
+        return results
+    users = conn.execute(
+        """SELECT user_key, display_name, status
+           FROM users
+           WHERE lower(user_key) = ? OR lower(display_name) = ?
+           ORDER BY user_key
+           LIMIT ?""",
+        (value.lower(), value.lower(), limit - len(results)),
+    ).fetchall()
+    results.extend(
+        {
+            "result_type": "user",
+            "user_key": row["user_key"],
+            "display_name": row["display_name"],
+            "status": row["status"],
+            "bindings": _confirmed_user_bindings(conn, str(row["user_key"])),
+        }
+        for row in users
+    )
+    return results
+
+
+def _confirmed_asset_bindings(conn: sqlite3.Connection, asset_key: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT users.user_key, users.display_name, bindings.relation, bindings.confidence
+           FROM user_asset_bindings AS bindings
+           JOIN users ON users.id = bindings.user_id
+           JOIN assets ON assets.id = bindings.asset_id
+           WHERE assets.asset_key = ? AND bindings.status = 'confirmed'
+           ORDER BY users.user_key, bindings.id LIMIT 32""",
+        (asset_key,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _confirmed_user_bindings(conn: sqlite3.Connection, user_key: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT assets.asset_key, bindings.relation
+           FROM user_asset_bindings AS bindings
+           JOIN users ON users.id = bindings.user_id
+           JOIN assets ON assets.id = bindings.asset_id
+           WHERE users.user_key = ? AND bindings.status = 'confirmed'
+           ORDER BY assets.asset_key, bindings.id LIMIT 32""",
+        (user_key,),
+    ).fetchall()
     return [dict(row) for row in rows]
 
 

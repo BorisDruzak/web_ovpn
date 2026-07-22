@@ -1453,7 +1453,7 @@ git commit -m "feat: add user and asset context bindings"
 - Produces manual context-management commands and HTTP endpoints.
 - No directory or captive-portal integration is included.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 CLI:
 
@@ -1475,11 +1475,11 @@ GET /api/v1/context/users/{user_key}
 
 Tests assert CSRF/session or bearer authorization, audit records, validation and no device calls.
 
-- [ ] **Step 2: Implement and integrate search**
+- [x] **Step 2: Implement and integrate search**
 
 `search_context()` returns user matches alongside asset matches and includes confirmed asset bindings without inventing an active session.
 
-- [ ] **Step 3: Run tests and commit**
+- [x] **Step 3: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_user_context.py tests/test_context_api.py -q

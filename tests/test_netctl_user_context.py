@@ -109,3 +109,60 @@ def test_retired_binding_is_not_current_and_inspection_uses_safe_public_fields(t
         }
     finally:
         conn.close()
+
+
+def test_users_cli_manages_manual_asset_binding(tmp_path: Path, capsys) -> None:
+    import json
+    import netctl.cli as cli
+
+    conn = _db(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'users.sqlite').as_posix()}"
+    conn.close()
+
+    assert cli.main([
+        "--json", "--db", db_url, "users", "add", "--user-key", "employee:cli",
+        "--display-name", "CLI User",
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["user"]["user_key"] == "employee:cli"
+    assert cli.main([
+        "--json", "--db", db_url, "users", "bind-asset", "--user-key", "employee:cli",
+        "--asset-key", "mac:AA:BB:CC:DD:EE:FF", "--relation", "primary_user",
+        "--confidence", "100", "--reason", "approved",
+    ]) == 0
+    binding = json.loads(capsys.readouterr().out)["binding"]
+    assert cli.main(["--json", "--db", db_url, "users", "inspect", "--user-key", "employee:cli"]) == 0
+    assert json.loads(capsys.readouterr().out)["context"]["bindings"][0]["id"] == binding["id"]
+    assert cli.main([
+        "--json", "--db", db_url, "users", "retire-binding", "--binding-id", str(binding["id"]),
+        "--reason", "reassigned",
+    ]) == 0
+    assert json.loads(capsys.readouterr().out)["binding"]["status"] == "retired"
+
+
+def test_context_search_includes_user_match_and_confirmed_asset_binding(tmp_path: Path) -> None:
+    from netctl.context_query import search_context
+    from netctl.user_context import bind_user_asset, create_user
+
+    conn = _db(tmp_path)
+    try:
+        create_user(conn, "employee:search", "Search Person", now="2026-07-22T12:00:00Z")
+        bind_user_asset(
+            conn,
+            "employee:search",
+            "mac:AA:BB:CC:DD:EE:FF",
+            relation="primary_user",
+            confidence=100,
+            reason="assigned",
+            now="2026-07-22T12:00:00Z",
+        )
+        assert search_context(conn, "SEARCH PERSON") == [
+            {
+                "result_type": "user",
+                "user_key": "employee:search",
+                "display_name": "Search Person",
+                "status": "active",
+                "bindings": [{"asset_key": "mac:AA:BB:CC:DD:EE:FF", "relation": "primary_user"}],
+            }
+        ]
+    finally:
+        conn.close()

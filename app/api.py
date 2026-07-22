@@ -100,6 +100,23 @@ class SiteRouteRequest(BaseModel):
     restart: bool = False
 
 
+class ContextUserCreateRequest(BaseModel):
+    user_key: str = Field(min_length=1, max_length=160)
+    display_name: str = Field(min_length=1, max_length=240)
+    department: str = Field(default="", max_length=160)
+
+
+class ContextUserAssetBindingRequest(BaseModel):
+    asset_key: str = Field(min_length=1, max_length=240)
+    relation: Literal["primary_user", "shared_user", "temporary_user", "owner"]
+    confidence: int = Field(ge=0, le=100)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ContextBindingRetireRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 def api_response(data: dict[str, Any]) -> dict[str, Any]:
     return {"status": "ok", "data": data}
 
@@ -707,6 +724,58 @@ def api_context_findings(
     if status not in {"open", "acknowledged", "resolved"}:
         raise HTTPException(status_code=422, detail="invalid finding status")
     return api_response(call_netctl(["context-view", "findings", "--status", status]))
+
+
+@router.post("/context/users")
+def api_context_user_create(
+    payload: ContextUserCreateRequest,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    data = call_netctl([
+        "users", "add", "--user-key", payload.user_key,
+        "--display-name", payload.display_name, "--department", payload.department,
+    ])
+    write_audit(db, request, actor, "api-context-user-create", "ok", payload.user_key)
+    return api_response(data)
+
+
+@router.post("/context/users/{user_key}/asset-bindings")
+def api_context_user_bind_asset(
+    user_key: str,
+    payload: ContextUserAssetBindingRequest,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    data = call_netctl([
+        "users", "bind-asset", "--user-key", user_key,
+        "--asset-key", payload.asset_key, "--relation", payload.relation,
+        "--confidence", str(payload.confidence), "--reason", payload.reason,
+    ])
+    write_audit(db, request, actor, "api-context-user-bind-asset", "ok", user_key)
+    return api_response(data)
+
+
+@router.get("/context/users/{user_key}")
+def api_context_user_inspect(user_key: str, actor: str = Depends(require_api_actor)):
+    return api_response(call_netctl(["users", "inspect", "--user-key", user_key]))
+
+
+@router.delete("/context/user-asset-bindings/{binding_id}")
+def api_context_user_retire_binding(
+    binding_id: int,
+    payload: ContextBindingRetireRequest,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    data = call_netctl([
+        "users", "retire-binding", "--binding-id", str(binding_id), "--reason", payload.reason,
+    ])
+    write_audit(db, request, actor, "api-context-user-retire-binding", "ok", str(binding_id))
+    return api_response(data)
 
 
 @router.get("/network/paths")

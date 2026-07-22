@@ -42,6 +42,7 @@ from .switch_queries import (
 )
 from .switch_store import collect_and_save_switch
 from .topology_reconcile import reconcile_topology
+from .user_context import bind_user_asset, create_user, inspect_user_context, retire_user_asset_binding
 from .switch_discovery_store import (
     UnknownSwitchFingerprint,
     list_unknown_fingerprints,
@@ -675,6 +676,34 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_users(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        if args.users_command == "add":
+            return 0, ok(user=create_user(conn, args.user_key, args.display_name, department=args.department))
+        if args.users_command == "bind-asset":
+            return 0, ok(
+                binding=bind_user_asset(
+                    conn,
+                    args.user_key,
+                    args.asset_key,
+                    relation=args.relation,
+                    confidence=args.confidence,
+                    reason=args.reason,
+                )
+            )
+        if args.users_command == "retire-binding":
+            return 0, ok(binding=retire_user_asset_binding(conn, args.binding_id, args.reason))
+        if args.users_command == "inspect":
+            context = inspect_user_context(conn, args.user_key)
+            return (0, ok(context=context)) if context is not None else (1, err("user not found", user_key=args.user_key))
+        return 2, err("unsupported users command")
+    except ValueError as exc:
+        return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
 def _parse_utc(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
@@ -1266,6 +1295,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
     )
 
+    users = sub.add_parser("users")
+    users_sub = users.add_subparsers(dest="users_command", required=True)
+    users_add = users_sub.add_parser("add")
+    users_add.add_argument("--user-key", required=True)
+    users_add.add_argument("--display-name", required=True)
+    users_add.add_argument("--department", default="")
+    users_bind = users_sub.add_parser("bind-asset")
+    users_bind.add_argument("--user-key", required=True)
+    users_bind.add_argument("--asset-key", required=True)
+    users_bind.add_argument("--relation", required=True, choices=("primary_user", "shared_user", "temporary_user", "owner"))
+    users_bind.add_argument("--confidence", required=True, type=int, choices=range(0, 101))
+    users_bind.add_argument("--reason", required=True)
+    users_inspect = users_sub.add_parser("inspect")
+    users_inspect.add_argument("--user-key", required=True)
+    users_retire = users_sub.add_parser("retire-binding")
+    users_retire.add_argument("--binding-id", required=True, type=int)
+    users_retire.add_argument("--reason", required=True)
+
     attachments = sub.add_parser("attachments")
     attachments_sub = attachments.add_subparsers(dest="attachments_command", required=True)
     attachments_sub.add_parser("reconcile")
@@ -1356,6 +1403,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_attachments(args)
     if args.command == "context-view":
         return cmd_context_view(args)
+    if args.command == "users":
+        return cmd_users(args)
     if args.command == "ipsec":
         return cmd_ipsec(args)
     if args.command == "dashboard":

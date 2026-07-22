@@ -27,6 +27,14 @@ elif args[1:3] == ["context-view", "topology"]:
     print(json.dumps({"status": "ok", "links": [{"link_key": "access|core", "state": "confirmed"}]}))
 elif args[1:3] == ["context-view", "findings"]:
     print(json.dumps({"status": "ok", "findings": [{"finding_key": "runtime:one", "status": "open"}]}))
+elif args[1:3] == ["users", "add"]:
+    print(json.dumps({"status": "ok", "user": {"user_key": args[args.index("--user-key") + 1]}}))
+elif args[1:3] == ["users", "bind-asset"]:
+    print(json.dumps({"status": "ok", "binding": {"id": 42, "status": "confirmed"}}))
+elif args[1:3] == ["users", "inspect"]:
+    print(json.dumps({"status": "ok", "context": {"user": {"user_key": args[-1]}}}))
+elif args[1:3] == ["users", "retire-binding"]:
+    print(json.dumps({"status": "ok", "binding": {"id": int(args[args.index("--binding-id") + 1]), "status": "retired"}}))
 else:
     print(json.dumps({"status": "ok"}))
 """,
@@ -134,4 +142,41 @@ def test_context_findings_api_delegates_status_to_netctl(tmp_path, monkeypatch):
         "findings",
         "--status",
         "open",
+    ]
+
+
+def test_context_user_creation_api_is_authenticated_and_delegates_to_netctl(tmp_path, monkeypatch):
+    client, headers, log_path = make_client(tmp_path, monkeypatch)
+
+    denied = client.post("/api/v1/context/users", json={"user_key": "employee:api", "display_name": "API User"})
+    response = client.post(
+        "/api/v1/context/users",
+        json={"user_key": "employee:api", "display_name": "API User", "department": "IT"},
+        headers=headers,
+    )
+
+    assert denied.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["data"]["user"] == {"user_key": "employee:api"}
+    assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
+        "--json", "users", "add", "--user-key", "employee:api", "--display-name", "API User", "--department", "IT"
+    ]
+
+
+def test_context_user_binding_inspection_and_retirement_api_delegate_to_netctl(tmp_path, monkeypatch):
+    client, headers, log_path = make_client(tmp_path, monkeypatch)
+
+    binding = client.post(
+        "/api/v1/context/users/employee:api/asset-bindings",
+        json={"asset_key": "mac:AA:BB:CC:DD:EE:FF", "relation": "primary_user", "confidence": 100, "reason": "approved"},
+        headers=headers,
+    )
+    inspect = client.get("/api/v1/context/users/employee:api", headers=headers)
+    retired = client.request("DELETE", "/api/v1/context/user-asset-bindings/42", json={"reason": "reassigned"}, headers=headers)
+
+    assert binding.json()["data"]["binding"]["id"] == 42
+    assert inspect.json()["data"]["context"]["user"]["user_key"] == "employee:api"
+    assert retired.json()["data"]["binding"]["status"] == "retired"
+    assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
+        "--json", "users", "retire-binding", "--binding-id", "42", "--reason", "reassigned"
     ]
