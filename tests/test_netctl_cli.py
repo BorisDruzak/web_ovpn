@@ -1364,3 +1364,26 @@ def test_mikrotik_ssh_driver_tests_routeros6_scalar_sections(monkeypatch):
     assert result["resource"]["version"] == "6.49.7 (stable)"
     assert result["resource"]["board-name"] == "hEX"
     assert not any("print terse" in " ".join(command) for command in calls)
+
+
+def test_mikrotik_ssh_collection_uses_scalar_routerboard_print_for_routeros6(monkeypatch):
+    import subprocess
+
+    from netctl.drivers.mikrotik_ssh import MikroTikSshDriver
+
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    driver = MikroTikSshDriver(
+        {"name": "mikrotik-hex", "host": "192.168.99.1", "port": 22, "username": "netobserver"},
+        {},
+    )
+
+    driver.collect()
+
+    routerboard_commands = [command[-1] for command in calls if "/system routerboard print" in command[-1]]
+    assert routerboard_commands == ["/system routerboard print"]

@@ -114,7 +114,10 @@ class MikroTikSshDriver(NetworkDriver):
     def collect(self, include_connections: bool = False) -> dict[str, Any]:
         raw: dict[str, Any] = {}
         for key, path in self.COLLECT_PATHS.items():
-            raw[key] = self._run_print(path, terse=key not in {"system_resource", "identity", "system_package_update"})
+            raw[key] = self._run_print(
+                path,
+                terse=key not in {"system_resource", "identity", "system_package_update", "routerboard"},
+            )
         return {
             "system_resource": raw.get("system_resource", []),
             "identity": raw.get("identity", []),
