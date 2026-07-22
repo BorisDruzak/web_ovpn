@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -7,7 +8,9 @@ import os
 import secrets
 import stat
 import subprocess
-from collections.abc import Iterator
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -57,6 +60,7 @@ class RestoreResult:
     phase: str
     services_restored: bool
     rollback_performed: bool
+    cleanup_complete: bool
 
 
 def _staging(message: str) -> BackupError:
@@ -84,6 +88,14 @@ def _manual(restore_id: str) -> BackupError:
     )
 
 
+def _is_unsupported_metadata_error(exc: OSError) -> bool:
+    return exc.errno in {
+        errno.ENOTSUP,
+        getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+        errno.ENOSYS,
+    }
+
+
 class RestoreService:
     def __init__(
         self,
@@ -93,6 +105,9 @@ class RestoreService:
         fail_stage_component: str | None = None,
         fail_health_check: str | None = None,
         fail_rollback: bool = False,
+        fail_move_after: int | None = None,
+        fail_cleanup: bool = False,
+        health_probe: Callable[[str], bytes] | None = None,
     ) -> None:
         self.repository = repository
         self.settings = repository.settings
@@ -100,6 +115,9 @@ class RestoreService:
         self.fail_stage_component = fail_stage_component
         self.fail_health_check = fail_health_check
         self.fail_rollback = fail_rollback
+        self.fail_move_after = fail_move_after
+        self.fail_cleanup = fail_cleanup
+        self.health_probe = health_probe or self._default_health_probe
 
     def _manager(self) -> BundleManager:
         return BundleManager(self.repository)
@@ -133,10 +151,157 @@ class RestoreService:
         while offset < len(raw):
             written = os.write(descriptor, raw[offset:])
             if written < 1:
-                raise _staging("Restore copy made no progress")
+                raise _staging("Restore write made no progress")
             offset += written
 
-    def _copy_path(self, source: Path, destination: Path) -> None:
+    @staticmethod
+    def _list_xattrs(path: Path) -> tuple[str, ...]:
+        if not hasattr(os, "listxattr"):
+            return ()
+        try:
+            return tuple(
+                sorted(os.listxattr(path, follow_symlinks=False))
+            )
+        except OSError as exc:
+            if _is_unsupported_metadata_error(exc):
+                return ()
+            raise _staging("Restore xattrs cannot be inspected") from exc
+
+    def _copy_xattrs(self, source: Path, destination: Path) -> None:
+        if not hasattr(os, "getxattr") or not hasattr(os, "setxattr"):
+            return
+        for name in self._list_xattrs(source):
+            try:
+                value = os.getxattr(
+                    source,
+                    name,
+                    follow_symlinks=False,
+                )
+                os.setxattr(
+                    destination,
+                    name,
+                    value,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                if _is_unsupported_metadata_error(exc):
+                    raise _staging(
+                        "Restore filesystem cannot preserve source xattrs"
+                    ) from exc
+                raise _staging("Restore xattr copy failed") from exc
+
+    @staticmethod
+    def _open_source_regular(path: Path) -> tuple[int, os.stat_result]:
+        assert_safe_parents(path)
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise _staging("Restore source cannot be inspected") from exc
+        if not stat.S_ISREG(before.st_mode):
+            raise _staging("Restore source is not a regular file")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise _staging("Restore source cannot be opened safely") from exc
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+        ):
+            os.close(descriptor)
+            raise _staging("Restore source changed during safe open")
+        return descriptor, opened
+
+    @staticmethod
+    def _assert_stable_source(
+        descriptor: int,
+        before: os.stat_result,
+        transferred: int,
+    ) -> None:
+        after = os.fstat(descriptor)
+        if (
+            after.st_dev != before.st_dev
+            or after.st_ino != before.st_ino
+            or after.st_size != before.st_size
+            or after.st_mtime_ns != before.st_mtime_ns
+            or after.st_ctime_ns != before.st_ctime_ns
+            or transferred != after.st_size
+        ):
+            raise _staging("Restore source changed while being read")
+
+    def _copy_regular(self, source: Path, destination: Path) -> None:
+        source_fd, metadata = self._open_source_regular(source)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            destination_fd = os.open(destination, flags, 0o600)
+        except OSError as exc:
+            os.close(source_fd)
+            raise _staging("Restore destination cannot be created") from exc
+        completed = False
+        transferred = 0
+        try:
+            os.fchown(
+                destination_fd,
+                metadata.st_uid,
+                metadata.st_gid,
+            )
+            os.fchmod(
+                destination_fd,
+                stat.S_IMODE(metadata.st_mode) & 0o1777,
+            )
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                transferred += len(chunk)
+                self._write_all(destination_fd, chunk)
+            self._assert_stable_source(
+                source_fd,
+                metadata,
+                transferred,
+            )
+            os.fsync(destination_fd)
+            completed = True
+        except OSError as exc:
+            raise _staging("Restore file streaming copy failed") from exc
+        finally:
+            os.close(source_fd)
+            os.close(destination_fd)
+            if not completed:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        try:
+            self._copy_xattrs(source, destination)
+            os.utime(
+                destination,
+                ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                follow_symlinks=False,
+            )
+            fsync_directory(destination.parent)
+        except (OSError, BackupError) as exc:
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise _staging(
+                "Restore file metadata synchronization failed"
+            ) from exc
+
+    def _copy_path(
+        self,
+        source: Path,
+        destination: Path,
+        *,
+        hardlinks: dict[tuple[int, int], Path] | None = None,
+    ) -> None:
         assert_safe_parents(destination)
         if destination.exists() or destination.is_symlink():
             raise _staging("Restore staging destination already exists")
@@ -144,7 +309,9 @@ class RestoreService:
             metadata = source.lstat()
         except OSError as exc:
             raise _staging("Restore staging source cannot be inspected") from exc
+        links = {} if hardlinks is None else hardlinks
         if stat.S_ISDIR(metadata.st_mode):
+            completed = False
             try:
                 destination.mkdir(mode=0o700)
                 os.chown(
@@ -153,8 +320,16 @@ class RestoreService:
                     metadata.st_gid,
                     follow_symlinks=False,
                 )
-                for child in sorted(source.iterdir(), key=lambda item: item.name):
-                    self._copy_path(child, destination / child.name)
+                for child in sorted(
+                    source.iterdir(),
+                    key=lambda item: item.name,
+                ):
+                    self._copy_path(
+                        child,
+                        destination / child.name,
+                        hardlinks=links,
+                    )
+                self._copy_xattrs(source, destination)
                 os.chmod(
                     destination,
                     stat.S_IMODE(metadata.st_mode) & 0o1777,
@@ -166,36 +341,40 @@ class RestoreService:
                     follow_symlinks=False,
                 )
                 fsync_directory(destination)
+                completed = True
             except (OSError, BackupError) as exc:
                 raise _staging("Restore directory staging failed") from exc
+            finally:
+                if not completed and (
+                    destination.exists() or destination.is_symlink()
+                ):
+                    try:
+                        self._remove_path(
+                            destination,
+                            boundary=destination.parent,
+                        )
+                    except BackupError:
+                        pass
             return
         if stat.S_ISREG(metadata.st_mode):
-            raw = read_regular_bytes(source, max_bytes=64 * 1024 * 1024 * 1024)
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            try:
-                descriptor = os.open(destination, flags, 0o600)
-            except OSError as exc:
-                raise _staging("Restore file staging failed") from exc
-            try:
-                os.fchown(descriptor, metadata.st_uid, metadata.st_gid)
-                os.fchmod(descriptor, stat.S_IMODE(metadata.st_mode) & 0o1777)
-                self._write_all(descriptor, raw)
-                os.fsync(descriptor)
-            except OSError as exc:
-                raise _staging("Restore file metadata staging failed") from exc
-            finally:
-                os.close(descriptor)
-            try:
-                os.utime(
-                    destination,
-                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
-                    follow_symlinks=False,
-                )
-                fsync_directory(destination.parent)
-            except (OSError, BackupError) as exc:
-                raise _staging("Restore file staging synchronization failed") from exc
+            key = (metadata.st_dev, metadata.st_ino)
+            existing = links.get(key)
+            if existing is not None:
+                try:
+                    os.link(
+                        existing,
+                        destination,
+                        follow_symlinks=False,
+                    )
+                    fsync_directory(destination.parent)
+                    return
+                except OSError as exc:
+                    if exc.errno != errno.EXDEV:
+                        raise _staging(
+                            "Restore hardlink copy failed"
+                        ) from exc
+            self._copy_regular(source, destination)
+            links[key] = destination
             return
         if stat.S_ISLNK(metadata.st_mode):
             try:
@@ -207,23 +386,68 @@ class RestoreService:
                     metadata.st_gid,
                     follow_symlinks=False,
                 )
+                self._copy_xattrs(source, destination)
+                os.utime(
+                    destination,
+                    ns=(metadata.st_atime_ns, metadata.st_mtime_ns),
+                    follow_symlinks=False,
+                )
                 fsync_directory(destination.parent)
             except (OSError, BackupError) as exc:
+                try:
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 raise _staging("Restore link staging failed") from exc
             return
         raise _staging("Restore staging source contains a special file")
 
-    def _remove_path(self, path: Path) -> None:
+    def _remove_path(
+        self,
+        path: Path,
+        *,
+        boundary: Path | None = None,
+        expected_device: int | None = None,
+    ) -> None:
+        absolute = path.absolute()
+        root = (boundary or path.parent).absolute()
+        try:
+            absolute.relative_to(root)
+        except ValueError as exc:
+            raise _staging("Restore cleanup target escapes its boundary") from exc
         try:
             metadata = path.lstat()
-        except OSError:
+        except FileNotFoundError:
             return
-        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
-            for child in list(path.iterdir()):
-                self._remove_path(child)
-            path.rmdir()
+        except OSError as exc:
+            raise _staging("Restore cleanup target cannot be inspected") from exc
+        device = metadata.st_dev if expected_device is None else expected_device
+        if metadata.st_dev != device:
+            raise _staging("Restore cleanup crossed a filesystem boundary")
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(
+            metadata.st_mode
+        ):
+            try:
+                children = list(path.iterdir())
+            except OSError as exc:
+                raise _staging(
+                    "Restore cleanup directory cannot be enumerated"
+                ) from exc
+            for child in children:
+                self._remove_path(
+                    child,
+                    boundary=root,
+                    expected_device=device,
+                )
+            try:
+                path.rmdir()
+            except OSError as exc:
+                raise _staging("Restore cleanup directory cannot be removed") from exc
         else:
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise _staging("Restore cleanup file cannot be removed") from exc
         fsync_directory(path.parent)
 
     def _extract_generation(
@@ -242,12 +466,14 @@ class RestoreService:
                 self.settings.expected_root_uid,
                 self.settings.expected_root_gid,
             )
-        except OSError as exc:
+            os.chmod(extracted_root, 0o700)
+            fsync_directory(extracted_root.parent)
+        except (OSError, BackupError) as exc:
             raise _staging("Restore extraction root cannot be created") from exc
-        for spec in component_specs(self.settings):
-            temporary = extracted_root / f".extract-{spec.name}"
-            archive_path = verified.path / spec.filename
-            try:
+        try:
+            for spec in component_specs(self.settings):
+                temporary = extracted_root / f".extract-{spec.name}"
+                archive_path = verified.path / spec.filename
                 temporary.mkdir(mode=0o700)
                 self.repository.archive_engine.extract_for_rehearsal(
                     spec,
@@ -265,24 +491,40 @@ class RestoreService:
                     extracted_root / spec.namespace,
                 )
                 temporary.rmdir()
-            except (OSError, BackupError) as exc:
-                raise _staging("Restore component extraction failed") from exc
-        return extracted_root, verified.manifest
+                fsync_directory(extracted_root)
+            self.state_validator.validate_tree(
+                extracted_root,
+                verified.manifest,
+            )
+            return extracted_root, verified.manifest
+        except (OSError, BackupError) as exc:
+            try:
+                self._remove_path(
+                    extracted_root,
+                    boundary=transaction.directory,
+                )
+            except BackupError:
+                pass
+            if isinstance(exc, BackupError) and exc.code == "restore_staging_failed":
+                raise
+            raise _staging("Restore component extraction failed") from exc
 
-    def _stage_path_name(self, restore_id: str, final_path: Path) -> str:
+    @staticmethod
+    def _stage_path_name(restore_id: str, final_path: Path) -> str:
         suffix = final_path.name or "root"
         return f".alt-deploy-{restore_id}-stage-{suffix}"
 
-    def _rollback_path_name(self, restore_id: str, final_path: Path) -> str:
+    @staticmethod
+    def _rollback_path_name(restore_id: str, final_path: Path) -> str:
         suffix = final_path.name or "root"
         return f".alt-deploy-{restore_id}-rollback-{suffix}"
 
-    def _insert_live_vault(self, staged_ansible: Path) -> None:
-        self.repository.secrets.assert_matches(
-            self._assert_eligibility_unlocked(
-                self._current_backup_id
-            ).manifest.secret_identities
-        )
+    def _insert_live_vault(
+        self,
+        staged_ansible: Path,
+        expected_identities: Sequence[object],
+    ) -> None:
+        self.repository.secrets.assert_matches(expected_identities)
         destination = staged_ansible / "group_vars" / "vault.yml"
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._copy_path(self.settings.vault_file, destination)
@@ -292,9 +534,11 @@ class RestoreService:
         backup_id: str,
         transaction: RestoreJournal,
     ) -> StagedGeneration:
-        if transaction.phase != "prepared" or transaction.backup_id != backup_id:
+        if (
+            transaction.phase != "prepared"
+            or transaction.backup_id != backup_id
+        ):
             raise _staging("Restore transaction is not prepared")
-        self._current_backup_id = backup_id
         created: list[Path] = []
         extracted_root: Path | None = None
         try:
@@ -303,6 +547,7 @@ class RestoreService:
                 transaction,
             )
             staged_paths: list[StagedPath] = []
+            hardlinks: dict[tuple[int, int], Path] = {}
             for component in manifest.components:
                 if self.fail_stage_component == component.name:
                     raise _staging("Injected restore staging failure")
@@ -318,7 +563,10 @@ class RestoreService:
                         raise _staging(
                             "Restore production parent cannot be inspected"
                         ) from exc
-                    if not stat.S_ISDIR(parent_metadata.st_mode):
+                    if (
+                        not stat.S_ISDIR(parent_metadata.st_mode)
+                        or stat.S_ISLNK(parent_metadata.st_mode)
+                    ):
                         raise _staging("Restore production parent is unsafe")
                     staged = parent / self._stage_path_name(
                         transaction.restore_id,
@@ -329,8 +577,8 @@ class RestoreService:
                         production,
                     )
                     if any(
-                        path.exists() or path.is_symlink()
-                        for path in (staged, rollback)
+                        candidate.exists() or candidate.is_symlink()
+                        for candidate in (staged, rollback)
                     ):
                         raise _staging("Restore sibling path already exists")
                     staged_value: Path | None = None
@@ -340,11 +588,18 @@ class RestoreService:
                             / component.namespace
                             / record.absolute_path.lstrip("/")
                         )
-                        self._copy_path(source, staged)
+                        self._copy_path(
+                            source,
+                            staged,
+                            hardlinks=hardlinks,
+                        )
                         created.append(staged)
                         staged_value = staged
                         if component.name == "ansible":
-                            self._insert_live_vault(staged)
+                            self._insert_live_vault(
+                                staged,
+                                manifest.secret_identities,
+                            )
                     staged_paths.append(
                         StagedPath(
                             component=component.name,
@@ -376,17 +631,22 @@ class RestoreService:
                 paths=tuple(staged_paths),
                 manifest=manifest,
             )
-        except BackupError:
+        except (BackupError, OSError) as exc:
             for path in reversed(created):
-                self._remove_path(path)
+                try:
+                    self._remove_path(path, boundary=path.parent)
+                except BackupError:
+                    pass
             if extracted_root is not None:
-                self._remove_path(extracted_root)
-            raise
-        except OSError as exc:
-            for path in reversed(created):
-                self._remove_path(path)
-            if extracted_root is not None:
-                self._remove_path(extracted_root)
+                try:
+                    self._remove_path(
+                        extracted_root,
+                        boundary=transaction.directory,
+                    )
+                except BackupError:
+                    pass
+            if isinstance(exc, BackupError):
+                raise
             raise _staging("Restore staging failed") from exc
 
     def create_pre_restore_snapshot(
@@ -394,26 +654,44 @@ class RestoreService:
         transaction: RestoreJournal,
     ) -> PreRestoreGeneration:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        parent = self.settings.backup_root / f"pre-restore-{timestamp}"
+        parent: Path | None = None
+        for _ in range(20):
+            candidate = self.settings.backup_root / (
+                f"pre-restore-{timestamp}-{secrets.token_hex(4)}"
+            )
+            try:
+                (candidate / transaction.restore_id).mkdir(
+                    parents=True,
+                    mode=0o700,
+                )
+                parent = candidate
+                break
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                raise _staging(
+                    "Pre-restore snapshot root cannot be created"
+                ) from exc
+        if parent is None:
+            raise _staging("Pre-restore snapshot allocation failed")
         root = parent / transaction.restore_id
-        if parent.exists() or parent.is_symlink():
-            raise _staging("Pre-restore snapshot identifier collided")
         try:
-            root.mkdir(parents=True, mode=0o700)
-            os.chown(
-                parent,
-                self.settings.expected_root_uid,
-                self.settings.expected_root_gid,
-            )
-            os.chmod(parent, 0o700)
-            os.chown(
-                root,
-                self.settings.expected_root_uid,
-                self.settings.expected_root_gid,
-            )
-            os.chmod(root, 0o700)
-        except OSError as exc:
-            raise _staging("Pre-restore snapshot root cannot be created") from exc
+            for path in (parent, root):
+                os.chown(
+                    path,
+                    self.settings.expected_root_uid,
+                    self.settings.expected_root_gid,
+                )
+                os.chmod(path, 0o700)
+            fsync_directory(parent.parent)
+        except (OSError, BackupError) as exc:
+            try:
+                self._remove_path(parent, boundary=parent.parent)
+            except BackupError:
+                pass
+            raise _staging(
+                "Pre-restore snapshot metadata cannot be established"
+            ) from exc
         records: list[dict[str, object]] = []
         try:
             for spec in component_specs(self.settings):
@@ -429,8 +707,6 @@ class RestoreService:
                         "sha256": record.sha256,
                     }
                 )
-            secret_identities = self.repository.secrets.capture()
-            unit_states = self.repository.systemd.capture()
             payload = {
                 "schema_version": 1,
                 "restore_id": transaction.restore_id,
@@ -438,11 +714,12 @@ class RestoreService:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "components": records,
                 "systemd_units": [
-                    asdict(state) for state in unit_states
+                    asdict(state)
+                    for state in self.repository.systemd.capture()
                 ],
                 "secret_identities": [
                     asdict(identity)
-                    for identity in secret_identities
+                    for identity in self.repository.secrets.capture()
                 ],
             }
             raw = (
@@ -461,13 +738,38 @@ class RestoreService:
             return PreRestoreGeneration(
                 root=root,
                 components=tuple(
-                    str(record["name"]) for record in records
+                    str(record["name"])
+                    for record in records
                 ),
                 manifest_sha256=hashlib.sha256(raw).hexdigest(),
             )
         except (BackupError, OSError):
-            self._remove_path(parent)
+            try:
+                self._remove_path(parent, boundary=parent.parent)
+            except BackupError:
+                pass
             raise
+
+    @staticmethod
+    def _hash_regular(path: Path) -> bytes:
+        descriptor, metadata = RestoreService._open_source_regular(path)
+        digest = hashlib.sha256()
+        transferred = 0
+        try:
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                transferred += len(chunk)
+                digest.update(chunk)
+            RestoreService._assert_stable_source(
+                descriptor,
+                metadata,
+                transferred,
+            )
+            return digest.digest()
+        finally:
+            os.close(descriptor)
 
     def _tree_digest(self, path: Path) -> str:
         digest = hashlib.sha256()
@@ -476,29 +778,51 @@ class RestoreService:
             if not current.exists() and not current.is_symlink():
                 digest.update(f"absent:{relative}\n".encode())
                 return
-            metadata = current.lstat()
+            try:
+                metadata = current.lstat()
+            except OSError as exc:
+                raise _staging(
+                    "Production path cannot be inspected for proof"
+                ) from exc
             mode = stat.S_IMODE(metadata.st_mode)
             digest.update(
-                f"{relative}:{metadata.st_uid}:{metadata.st_gid}:{mode}:".encode()
+                (
+                    f"{relative}:{metadata.st_uid}:"
+                    f"{metadata.st_gid}:{mode}:"
+                ).encode()
             )
             if stat.S_ISDIR(metadata.st_mode):
                 digest.update(b"directory\n")
-                for child in sorted(current.iterdir(), key=lambda item: item.name):
+                for child in sorted(
+                    current.iterdir(),
+                    key=lambda item: item.name,
+                ):
                     add(child, f"{relative}/{child.name}")
             elif stat.S_ISREG(metadata.st_mode):
                 digest.update(b"regular:")
-                raw = read_regular_bytes(
-                    current,
-                    max_bytes=64 * 1024 * 1024 * 1024,
-                )
-                digest.update(hashlib.sha256(raw).digest())
+                digest.update(self._hash_regular(current))
                 digest.update(b"\n")
             elif stat.S_ISLNK(metadata.st_mode):
                 digest.update(b"symlink:")
                 digest.update(os.readlink(current).encode("utf-8"))
                 digest.update(b"\n")
             else:
-                raise _staging("Production path contains a special file")
+                raise _staging(
+                    "Production path contains a special file"
+                )
+            for name in self._list_xattrs(current):
+                try:
+                    value = os.getxattr(
+                        current,
+                        name,
+                        follow_symlinks=False,
+                    )
+                except OSError as exc:
+                    raise _staging(
+                        "Production xattr proof cannot be read"
+                    ) from exc
+                digest.update(name.encode("utf-8"))
+                digest.update(hashlib.sha256(value).digest())
 
         add(path, path.name or "/")
         return digest.hexdigest()
@@ -517,7 +841,9 @@ class RestoreService:
             None,
         )
         if state is None or state.staged_path is None:
-            raise _staging("Staged controller lifecycle lock is unavailable")
+            raise _staging(
+                "Staged controller lifecycle lock is unavailable"
+            )
         lock_path = state.staged_path / "workstationctl.lock"
         flags = os.O_RDWR
         if hasattr(os, "O_NOFOLLOW"):
@@ -525,7 +851,9 @@ class RestoreService:
         try:
             descriptor = os.open(lock_path, flags)
         except OSError as exc:
-            raise _staging("Staged lifecycle lock cannot be opened") from exc
+            raise _staging(
+                "Staged lifecycle lock cannot be opened"
+            ) from exc
         try:
             metadata = os.fstat(descriptor)
             if not stat.S_ISREG(metadata.st_mode):
@@ -555,11 +883,16 @@ class RestoreService:
         if not root.exists():
             return
         for path in sorted(root.rglob("*.py")):
-            raw = read_regular_bytes(path, max_bytes=64 * 1024 * 1024)
+            raw = read_regular_bytes(
+                path,
+                max_bytes=64 * 1024 * 1024,
+            )
             try:
                 compile(raw.decode("utf-8"), str(path), "exec")
             except (UnicodeDecodeError, SyntaxError) as exc:
-                raise _health("Restored runtime Python syntax is invalid") from exc
+                raise _health(
+                    "Restored runtime Python syntax is invalid"
+                ) from exc
 
     def _run_health_command(
         self,
@@ -581,13 +914,24 @@ class RestoreService:
                 timeout=120,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise _health(f"Restore health check failed: {name}") from exc
-        if result.returncode != 0:
+            raise _health(
+                f"Restore health check failed: {name}"
+            ) from exc
+        if (
+            result.returncode != 0
+            or len(result.stdout) > 1024 * 1024
+            or len(result.stderr) > 1024 * 1024
+        ):
             raise _health(f"Restore health check failed: {name}")
 
-    def _health_checks(self, manifest: BackupManifest) -> tuple[str, ...]:
+    def _pre_activation_health(
+        self,
+        manifest: BackupManifest,
+    ) -> tuple[str, ...]:
         if self.fail_health_check == "runtime_syntax":
-            raise _health("Injected restore health failure: runtime_syntax")
+            raise _health(
+                "Injected restore health failure: runtime_syntax"
+            )
         self._compile_python_root(self.settings.runtime_control_root)
         self._compile_python_root(self.settings.runtime_api_root)
 
@@ -600,7 +944,10 @@ class RestoreService:
         ):
             if not path.exists():
                 continue
-            raw = read_regular_bytes(path, max_bytes=16 * 1024 * 1024)
+            raw = read_regular_bytes(
+                path,
+                max_bytes=16 * 1024 * 1024,
+            )
             lines = raw.splitlines()
             if lines and b"sh" in lines[0]:
                 self._run_health_command(
@@ -623,10 +970,9 @@ class RestoreService:
                 name="systemd_units",
             )
 
-        ansible_playbooks = sorted(
+        for playbook in sorted(
             (self.settings.ansible_root / "playbooks").glob("*.yml")
-        )
-        for playbook in ansible_playbooks:
+        ):
             environment = os.environ.copy()
             environment["ANSIBLE_CONFIG"] = str(
                 self.settings.ansible_root / "ansible.cfg"
@@ -649,7 +995,9 @@ class RestoreService:
             )
 
         if self.fail_health_check == "state_validation":
-            raise _health("Injected restore health failure: state_validation")
+            raise _health(
+                "Injected restore health failure: state_validation"
+            )
         self.state_validator._validate_jobs(
             self.settings.controller_state_root / "jobs"
         )
@@ -662,7 +1010,9 @@ class RestoreService:
         self.state_validator._validate_machine_archives(
             self.settings.controller_state_root / "machine-archives"
         )
-        self.repository.secrets.assert_matches(manifest.secret_identities)
+        self.repository.secrets.assert_matches(
+            manifest.secret_identities
+        )
         self.repository.quiescence.assert_quiescent()
         return (
             "runtime_syntax",
@@ -674,102 +1024,256 @@ class RestoreService:
             "quiescence",
         )
 
+    @staticmethod
+    def _default_health_probe(url: str) -> bytes:
+        request = urllib.request.Request(url, method="GET")
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=5,
+            ) as response:
+                if response.status != 200:
+                    raise _health("Loopback health endpoint returned an error")
+                body = response.read(64 * 1024 + 1)
+        except (
+            OSError,
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+        ) as exc:
+            if isinstance(exc, BackupError):
+                raise
+            raise _health("Loopback health endpoint is unavailable") from exc
+        if len(body) > 64 * 1024:
+            raise _health("Loopback health response is too large")
+        return body
+
+    def _loopback_health(
+        self,
+        manifest: BackupManifest,
+    ) -> tuple[str, ...]:
+        by_name = {state.name: state for state in manifest.systemd_units}
+        checks: list[str] = []
+        http = by_name["alt-deploy-http.service"]
+        if http.load_state != "not-found" and http.active_state == "active":
+            if self.fail_health_check == "http_loopback":
+                raise _health(
+                    "Injected restore health failure: http_loopback"
+                )
+            self.health_probe("http://127.0.0.1:8087/")
+            checks.append("http_loopback")
+        registration = by_name["alt-deploy-register.service"]
+        if (
+            registration.load_state != "not-found"
+            and registration.active_state == "active"
+        ):
+            if self.fail_health_check == "registration_loopback":
+                raise _health(
+                    "Injected restore health failure: registration_loopback"
+                )
+            raw = self.health_probe(
+                "http://127.0.0.1:8088/health"
+            )
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise _health(
+                    "Registration health response is invalid"
+                ) from exc
+            if payload != {"status": "ok"}:
+                raise _health(
+                    "Registration health response is unhealthy"
+                )
+            checks.append("registration_loopback")
+        return tuple(checks)
+
+    def _reverse_moved_subset(
+        self,
+        moved: Sequence[StagedPath],
+    ) -> None:
+        for path in reversed(moved):
+            if path.production_path.exists() or path.production_path.is_symlink():
+                raise _manual(path.rollback_path.name)
+            if not (
+                path.rollback_path.exists()
+                or path.rollback_path.is_symlink()
+            ):
+                raise _manual(path.rollback_path.name)
+            try:
+                os.replace(
+                    path.rollback_path,
+                    path.production_path,
+                )
+                fsync_directory(path.production_path.parent)
+            except (OSError, BackupError) as exc:
+                raise _manual(path.rollback_path.name) from exc
+
     def _move_originals(
         self,
         staged: StagedGeneration,
-    ) -> tuple[dict[str, str], ...]:
-        evidence: list[dict[str, str]] = []
-        for path in staged.paths:
-            production_exists = (
-                path.production_path.exists()
-                or path.production_path.is_symlink()
-            )
-            if production_exists:
-                try:
-                    os.replace(path.production_path, path.rollback_path)
+    ) -> tuple[dict[str, object], ...]:
+        evidence: list[dict[str, object]] = []
+        moved: list[StagedPath] = []
+        try:
+            for path in staged.paths:
+                production_exists = (
+                    path.production_path.exists()
+                    or path.production_path.is_symlink()
+                )
+                if production_exists:
+                    os.replace(
+                        path.production_path,
+                        path.rollback_path,
+                    )
                     fsync_directory(path.production_path.parent)
-                except (OSError, BackupError) as exc:
-                    raise _staging("Current production path cannot be moved") from exc
-            evidence.append(
-                {
-                    "absolute_path": path.absolute_path,
-                    "rollback": str(path.rollback_path),
-                    "previously_present": str(production_exists).lower(),
-                }
-            )
-        return tuple(evidence)
+                    moved.append(path)
+                    if (
+                        self.fail_move_after is not None
+                        and len(moved) >= self.fail_move_after
+                    ):
+                        raise _staging(
+                            "Injected partial original move failure"
+                        )
+                evidence.append(
+                    {
+                        "absolute_path": path.absolute_path,
+                        "previously_present": production_exists,
+                    }
+                )
+            return tuple(evidence)
+        except (OSError, BackupError) as exc:
+            try:
+                self._reverse_moved_subset(moved)
+            except BackupError:
+                raise _manual(staged.restore_id)
+            if isinstance(exc, BackupError):
+                raise
+            raise _staging(
+                "Current production path cannot be moved"
+            ) from exc
 
     def _install_staged(self, staged: StagedGeneration) -> None:
         for path in staged.paths:
-            if path.present:
-                if path.staged_path is None:
-                    raise _staging("Expected staged path is missing")
-                try:
-                    os.replace(path.staged_path, path.production_path)
-                    fsync_directory(path.production_path.parent)
-                except (OSError, BackupError) as exc:
-                    raise _staging("Staged path cannot be installed") from exc
+            if not path.present:
+                continue
+            if path.staged_path is None:
+                raise _staging("Expected staged path is missing")
+            try:
+                os.replace(
+                    path.staged_path,
+                    path.production_path,
+                )
+                fsync_directory(path.production_path.parent)
+            except (OSError, BackupError) as exc:
+                raise _staging("Staged path cannot be installed") from exc
 
     def _rollback(
         self,
         staged: StagedGeneration,
         journal: RestoreJournal,
-        pre_states,
+        pre_states: Sequence[object],
         pre_digests: dict[str, str],
     ) -> None:
         self.repository.systemd.stop_maintenance()
         if self.fail_rollback:
             raise _manual(journal.restore_id)
-        for path in reversed(staged.paths):
-            if path.production_path.exists() or path.production_path.is_symlink():
-                self._remove_path(path.production_path)
-            if path.rollback_path.exists() or path.rollback_path.is_symlink():
-                try:
-                    os.replace(path.rollback_path, path.production_path)
+        try:
+            for path in reversed(staged.paths):
+                if (
+                    path.production_path.exists()
+                    or path.production_path.is_symlink()
+                ):
+                    self._remove_path(
+                        path.production_path,
+                        boundary=path.production_path.parent,
+                    )
+                if (
+                    path.rollback_path.exists()
+                    or path.rollback_path.is_symlink()
+                ):
+                    os.replace(
+                        path.rollback_path,
+                        path.production_path,
+                    )
                     fsync_directory(path.production_path.parent)
-                except (OSError, BackupError) as exc:
-                    raise _manual(journal.restore_id) from exc
-        self._daemon_reload()
-        self.repository.systemd.restore(
-            pre_states,
-            activate_health_services=True,
-        )
-        for path in staged.paths:
-            if self._tree_digest(path.production_path) != pre_digests[
-                path.absolute_path
-            ]:
-                raise _manual(journal.restore_id)
-        journal.transition(
-            journal.phase,
-            "rolled_back",
-            {"proof": "content_digests_match"},
-        )
+            self._daemon_reload()
+            self.repository.systemd.restore(
+                pre_states,
+                activate_health_services=True,
+            )
+            for path in staged.paths:
+                if self._tree_digest(
+                    path.production_path
+                ) != pre_digests[path.absolute_path]:
+                    raise _manual(journal.restore_id)
+            journal.transition(
+                journal.phase,
+                "rolled_back",
+                {"proof": "content_digests_match"},
+            )
+        except (OSError, BackupError) as exc:
+            if isinstance(exc, BackupError) and exc.code == (
+                "restore_manual_recovery_required"
+            ):
+                raise
+            raise _manual(journal.restore_id) from exc
 
-    def _cleanup_success(self, staged: StagedGeneration) -> None:
+    def _cleanup_after_commit(self, staged: StagedGeneration) -> bool:
+        if self.fail_cleanup:
+            return False
+        try:
+            for path in staged.paths:
+                for candidate in (
+                    path.rollback_path,
+                    path.staged_path,
+                ):
+                    if candidate is not None and (
+                        candidate.exists() or candidate.is_symlink()
+                    ):
+                        self._remove_path(
+                            candidate,
+                            boundary=candidate.parent,
+                        )
+            if staged.extracted_root.exists():
+                self._remove_path(
+                    staged.extracted_root,
+                    boundary=staged.extracted_root.parent,
+                )
+            return True
+        except BackupError:
+            return False
+
+    def _cleanup_before_mutation(self, staged: StagedGeneration) -> None:
         for path in staged.paths:
-            if path.rollback_path.exists() or path.rollback_path.is_symlink():
-                self._remove_path(path.rollback_path)
             if path.staged_path is not None and (
                 path.staged_path.exists() or path.staged_path.is_symlink()
             ):
-                self._remove_path(path.staged_path)
+                self._remove_path(
+                    path.staged_path,
+                    boundary=path.staged_path.parent,
+                )
         if staged.extracted_root.exists():
-            self._remove_path(staged.extracted_root)
+            self._remove_path(
+                staged.extracted_root,
+                boundary=staged.extracted_root.parent,
+            )
 
     def restore(self, backup_id: str) -> RestoreResult:
         self.repository.assert_rehearsed_eligibility(backup_id)
         self.repository.quiescence.assert_quiescent()
         with exclusive_operation_lock(self.settings):
-            verified = self._assert_eligibility_unlocked(backup_id)
+            self._assert_eligibility_unlocked(backup_id)
             pre_states = self.repository.systemd.capture()
             journal = RestoreJournal.create(self.settings, backup_id)
             staged: StagedGeneration | None = None
             mutation_started = False
+            committed = False
             pre_digests: dict[str, str] = {}
             try:
                 self.repository.systemd.stop_maintenance()
                 with exclusive_lifecycle_lock(self.settings):
-                    verified = self._assert_eligibility_unlocked(backup_id)
+                    verified = self._assert_eligibility_unlocked(
+                        backup_id
+                    )
                     self.repository.secrets.assert_matches(
                         verified.manifest.secret_identities
                     )
@@ -811,29 +1315,48 @@ class RestoreService:
                             "daemon_reloaded",
                             {},
                         )
-                        checks = self._health_checks(staged.manifest)
+                        pre_checks = self._pre_activation_health(
+                            staged.manifest
+                        )
                         self.repository.systemd.restore(
                             staged.manifest.systemd_units,
                             activate_health_services=True,
                         )
+                        loopback_checks = self._loopback_health(
+                            staged.manifest
+                        )
                         journal.transition(
                             "daemon_reloaded",
                             "health_checked",
-                            {"checks": list(checks)},
+                            {
+                                "checks": list(
+                                    (*pre_checks, *loopback_checks)
+                                )
+                            },
                         )
                         journal.transition(
                             "health_checked",
                             "committed",
                             {"services_restored": True},
                         )
-                self._cleanup_success(staged)
+                        committed = True
+                cleanup_complete = self._cleanup_after_commit(staged)
                 return RestoreResult(
                     backup_id=backup_id,
                     phase="committed",
                     services_restored=True,
                     rollback_performed=False,
+                    cleanup_complete=cleanup_complete,
                 )
             except BackupError as original:
+                if committed:
+                    return RestoreResult(
+                        backup_id=backup_id,
+                        phase="committed",
+                        services_restored=True,
+                        rollback_performed=False,
+                        cleanup_complete=False,
+                    )
                 if mutation_started and staged is not None:
                     try:
                         self._rollback(
@@ -855,7 +1378,10 @@ class RestoreService:
                         raise _manual(journal.restore_id)
                     raise original
                 if staged is not None:
-                    self._cleanup_success(staged)
+                    try:
+                        self._cleanup_before_mutation(staged)
+                    except BackupError:
+                        pass
                 self.repository.systemd.restore(
                     pre_states,
                     activate_health_services=True,
