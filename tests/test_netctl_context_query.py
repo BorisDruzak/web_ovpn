@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
 
 
@@ -85,3 +86,14 @@ def test_search_context_returns_all_explicit_matches_for_safe_identity_keys(tmp_
         assert [item["asset_key"] for item in search_context(conn, "device:workstation-01")] == ["mac:AA:BB:CC:DD:EE:01"]
     finally:
         conn.close()
+
+
+def test_context_view_cli_reads_asset_context(tmp_path: Path, capsys) -> None:
+    import netctl.cli as cli
+
+    conn = _context_db(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'context.sqlite').as_posix()}"
+    conn.close()
+    assert cli.main(["--json", "--db", db_url, "context-view", "asset", "--asset-key", "mac:AA:BB:CC:DD:EE:01"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["context"]["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"

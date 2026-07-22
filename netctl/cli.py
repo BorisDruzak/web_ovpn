@@ -15,6 +15,7 @@ from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
+from .context_query import inspect_asset_context, search_context
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
 from .db import context_revision_public, connect, connect_read_only, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
 from .drivers import driver_for, legacy_driver_for, snmp_driver_for
@@ -653,6 +654,19 @@ def cmd_attachments(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = connect_read_only(args.db)
+    try:
+        if args.context_view_command == "asset":
+            context = inspect_asset_context(conn, args.asset_key)
+            return (0, ok(context=context)) if context is not None else (1, err("asset not found", asset_key=args.asset_key))
+        if args.context_view_command == "search":
+            return 0, ok(results=search_context(conn, args.query, args.limit))
+        return 2, err("unsupported context-view command")
+    finally:
+        conn.close()
+
+
 def _parse_utc(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
@@ -1226,6 +1240,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
     )
 
+    context_view = sub.add_parser("context-view")
+    context_view_sub = context_view.add_subparsers(dest="context_view_command", required=True)
+    context_view_search = context_view_sub.add_parser("search")
+    context_view_search.add_argument("--query", required=True)
+    context_view_search.add_argument("--limit", type=int, default=25)
+    context_view_asset = context_view_sub.add_parser("asset")
+    context_view_asset.add_argument("--asset-key", required=True)
+
     attachments = sub.add_parser("attachments")
     attachments_sub = attachments.add_subparsers(dest="attachments_command", required=True)
     attachments_sub.add_parser("reconcile")
@@ -1314,6 +1336,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_topology(args)
     if args.command == "attachments":
         return cmd_attachments(args)
+    if args.command == "context-view":
+        return cmd_context_view(args)
     if args.command == "ipsec":
         return cmd_ipsec(args)
     if args.command == "dashboard":
