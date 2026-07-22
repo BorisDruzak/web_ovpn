@@ -8,6 +8,7 @@ from typing import Any, Sequence
 from .attachment_candidates import AttachmentCandidate, attachment_candidates
 from .normalizer import normalize_mac
 from .source_identity import list_source_identities
+from .switch_eligibility import has_authoritative_fdb
 from .topology_models import CurrentSwitchLink
 from .topology_reconcile import topology_depths
 
@@ -116,17 +117,17 @@ def _eligible_interfaces(conn: sqlite3.Connection) -> dict[int, int]:
             """,
             (asset_id, asset_id),
         ).fetchone()
-        successful_switch = conn.execute(
+        switch_runs = conn.execute(
             """
-            SELECT 1
+            SELECT runs.status, runs.outcomes_json
             FROM network_sources AS sources
             JOIN switch_collection_runs AS runs ON runs.source_id = sources.id
-            WHERE sources.site = ? AND runs.status = 'success'
-            LIMIT 1
+            WHERE sources.site = ?
+            ORDER BY runs.id DESC
             """,
             (str(row["site"]),),
-        ).fetchone()
-        if observed is not None and successful_switch is not None:
+        ).fetchall()
+        if observed is not None and any(has_authoritative_fdb(run["status"], run["outcomes_json"]) for run in switch_runs):
             eligible[int(row["interface_id"])] = asset_id
     return eligible
 

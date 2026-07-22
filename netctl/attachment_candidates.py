@@ -122,6 +122,8 @@ def attachment_candidates(
         topology_depth = depths.get(source_id)
         vlan_id = int(row["vlan_id"]) if row["vlan_id"] is not None else None
         successful_run = authoritative_fdb_run(row)
+        if not successful_run:
+            continue
         for asset_id, interface_id in interfaces:
             if asset_id == runtime_asset_id:
                 continue
