@@ -3,11 +3,20 @@ from __future__ import annotations
 import ipaddress
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Callable
 
-from netctl.db import connect_read_only
-
 from .store import add_plan_step, create_change_plan
+
+
+def _open_context_immutable(db_url: str) -> sqlite3.Connection:
+    """Read a stable SQLite snapshot without creating WAL/SHM side files."""
+    if not db_url.startswith("sqlite:///"):
+        raise ValueError("only sqlite netctl DB URLs are supported")
+    path = Path(db_url.removeprefix("sqlite:///")).resolve()
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _is_fresh(value: str, max_age_seconds: int) -> bool:
@@ -86,7 +95,7 @@ def create_asset_internet_access_plan(
 ) -> dict[str, Any]:
     if desired_state not in {"allow", "deny"}:
         raise ValueError("unknown desired state")
-    context = connect_read_only(netctl_db_url)
+    context = _open_context_immutable(netctl_db_url)
     try:
         targets = resolve_asset_targets(context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site, source_sla_seconds=source_sla_seconds, anchor_check=anchor_check)
     finally:
@@ -120,7 +129,7 @@ def create_user_internet_access_plan(
     """Resolve only one confirmed primary asset, retaining user and asset provenance."""
     if desired_state not in {"allow", "deny"}:
         raise ValueError("unknown desired state")
-    context = connect_read_only(netctl_db_url)
+    context = _open_context_immutable(netctl_db_url)
     try:
         from netctl.user_context import resolve_policy_asset_for_user
 
