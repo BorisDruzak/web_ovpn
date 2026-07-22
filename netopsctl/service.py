@@ -53,8 +53,8 @@ class ControlService:
                     "desired_state": plan["desired_state"], "reason": plan["reason"],
                     "enforcement_sources_by_site": self.enforcement_sources_by_site,
                     "source_sla_seconds": self.source_sla_seconds,
-                    "anchor_check": lambda target: bool(self.adapter.inspect_internet_policy_anchor()["valid"])
-                    and target == next(iter(self.enforcement_sources_by_site.values())),
+                    "anchor_check": lambda target: self.adapter.inspect_internet_policy_anchor()
+                    if target == next(iter(self.enforcement_sources_by_site.values())) else False,
                 }
                 if plan["subject_type"] == "asset":
                     result = create_asset_internet_access_plan(self.conn, self.netctl_db_url, asset_key=plan["subject_key"], **common)
@@ -79,8 +79,8 @@ class ControlService:
                         plan, self.netctl_db_url,
                         enforcement_sources_by_site=self.enforcement_sources_by_site,
                         source_sla_seconds=self.source_sla_seconds,
-                        anchor_check=lambda target: bool(self.adapter.inspect_internet_policy_anchor()["valid"])
-                        and target == next(iter(self.enforcement_sources_by_site.values())),
+                        anchor_check=lambda target: self.adapter.inspect_internet_policy_anchor()
+                        if target == next(iter(self.enforcement_sources_by_site.values())) else False,
                     ),
                 )
             elif action == "plan.verify":

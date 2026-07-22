@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
+import json
 import re
 from typing import Any, Protocol
 
@@ -45,11 +47,18 @@ class MikroTikPolicyAdapter:
             "=.proplist=.id,chain,action,src-address-list,out-interface-list,disabled,log,comment",
         ])
         matches = [row for row in rows if self._is_anchor(row)]
+        fingerprint = ""
+        if len(matches) == 1:
+            body = {key: str(matches[0].get(key) or "") for key in (
+                "chain", "action", "src-address-list", "out-interface-list", "disabled", "log", "comment",
+            )}
+            fingerprint = "sha256:" + hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return {
             "valid": len(matches) == 1,
             "anchor": ADDRESS_LIST_NAME,
             "match_count": len(matches),
             "anchor_id": str(matches[0].get(".id") or "") if len(matches) == 1 else "",
+            "fingerprint": fingerprint,
         }
 
     def _require_anchor(self) -> None:

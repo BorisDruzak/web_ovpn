@@ -31,7 +31,9 @@ def test_bounded_adapter_requires_exact_anchor_and_is_idempotent() -> None:
     router = FakeRouter({"anchors": [_anchor()], "entries": [{".id": "*1", "list": "WEBOVPN-INTERNET-DENY", "address": "192.0.2.10", "comment": "web_ovpn:policy:plan-1:asset:mac:AA:BB"}]})
     adapter = MikroTikPolicyAdapter("router-a", router)
 
-    assert adapter.inspect_internet_policy_anchor()["valid"] is True
+    inspection = adapter.inspect_internet_policy_anchor()
+    assert inspection["valid"] is True
+    assert inspection["fingerprint"].startswith("sha256:")
     result = adapter.ensure_address_list_entry("router-a", "192.0.2.10", "plan-1", "mac:AA:BB")
     assert result["status"] == "already_present"
     assert all(call[0] in {"/ip/firewall/filter/print", "/ip/firewall/address-list/print"} for call in router.calls)

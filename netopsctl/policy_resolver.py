@@ -72,9 +72,16 @@ def resolve_asset_targets(
             raise ValueError("current IP has unresolved enforcement point")
         if str(row["last_status"] or "") not in {"ok", "success"} or not _is_fresh(str(row["last_collect_at"] or ""), source_sla_seconds):
             raise ValueError("source collection is stale or failed")
-        if not anchor_check(enforcement_source):
+        anchor = anchor_check(enforcement_source)
+        if isinstance(anchor, dict):
+            anchor_valid = bool(anchor.get("valid"))
+            fingerprint = str(anchor.get("fingerprint") or "")
+        else:
+            anchor_valid = bool(anchor)
+            fingerprint = ""
+        if not anchor_valid:
             raise ValueError("Internet policy anchor pre-check failed")
-        targets.append({"source": enforcement_source, "address": str(address), "site": site})
+        targets.append({"source": enforcement_source, "address": str(address), "site": site, "anchor_fingerprint": fingerprint})
     unique = {(item["source"], item["address"], item["site"]): item for item in targets}
     if not unique:
         raise ValueError("asset has no current IPv4 observation")
