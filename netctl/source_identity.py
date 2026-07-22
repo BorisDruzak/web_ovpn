@@ -3,11 +3,28 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .config import TOPOLOGY_ROLES, normalize_generic_driver_options, normalize_snmp_driver_options
 from .normalizer import normalize_mac
 from .switch_eligibility import has_authoritative_fdb
+
+
+_AUTHORITATIVE_FDB_MAX_AGE = timedelta(hours=24)
+
+
+def _run_is_stale(row: sqlite3.Row | None) -> bool:
+    if row is None:
+        return False
+    raw = str(row["finished_at"] or row["started_at"] or "")
+    try:
+        observed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return observed < datetime.now(UTC) - _AUTHORITATIVE_FDB_MAX_AGE
 
 
 @dataclass(frozen=True)
@@ -151,12 +168,17 @@ def list_source_identities(conn: sqlite3.Connection) -> tuple[SourceIdentity, ..
 def source_readiness(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Summarize why a configured source can or cannot contribute topology evidence."""
     records: list[dict[str, Any]] = []
-    for identity in list_source_identities(conn):
+    identities = list_source_identities(conn)
+    management_mac_owners: dict[str, int] = {}
+    for identity in identities:
+        for mac in identity.management_macs:
+            management_mac_owners[mac] = management_mac_owners.get(mac, 0) + 1
+    for identity in identities:
         source = conn.execute(
             "SELECT site FROM network_sources WHERE id = ?", (identity.source_id,)
         ).fetchone()
         run = conn.execute(
-            """SELECT id, status, outcomes_json FROM switch_collection_runs
+            """SELECT id, started_at, finished_at, status, outcomes_json FROM switch_collection_runs
                WHERE source_id = ? ORDER BY id DESC LIMIT 1""",
             (identity.source_id,),
         ).fetchone()
@@ -166,19 +188,23 @@ def source_readiness(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         port_count = int(conn.execute(
             "SELECT count(*) FROM switch_ports WHERE source_id = ?", (identity.source_id,)
         ).fetchone()[0])
-        reason = ""
+        reasons: list[str] = []
         if identity.topology_role == "unknown":
-            reason = "missing_topology_role"
-        elif identity.runtime_asset_id is None:
-            reason = "missing_runtime_asset_binding"
-        elif not identity.intent_context_id or not identity.intent_stable_id:
-            reason = "missing_intent_binding"
-        elif not identity.management_macs:
-            reason = "missing_management_mac"
-        elif identity.driver == "snmp_switch" and latest_fdb_run_id is None:
-            reason = "no_authoritative_fdb"
-        elif identity.driver == "snmp_switch" and port_count == 0:
-            reason = "no_port_inventory"
+            reasons.append("missing_topology_role")
+        if identity.runtime_asset_id is None:
+            reasons.append("missing_runtime_asset_binding")
+        if not identity.intent_context_id or not identity.intent_stable_id:
+            reasons.append("missing_intent_binding")
+        if not identity.management_macs:
+            reasons.append("missing_management_mac")
+        if any(management_mac_owners.get(mac, 0) > 1 for mac in identity.management_macs):
+            reasons.append("ambiguous_management_mac")
+        if identity.driver == "snmp_switch" and latest_fdb_run_id is None:
+            reasons.append("no_authoritative_fdb")
+        elif identity.driver == "snmp_switch" and _run_is_stale(run):
+            reasons.append("stale_authoritative_fdb")
+        if identity.driver == "snmp_switch" and port_count == 0:
+            reasons.append("no_port_inventory")
         records.append({
             "source": identity.source_name, "driver": identity.driver,
             "site": str(source["site"] or "") if source is not None else "",
@@ -188,7 +214,7 @@ def source_readiness(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "management_mac_count": len(identity.management_macs),
             "latest_authoritative_fdb_run_id": latest_fdb_run_id,
             "known_switch_port_count": port_count,
-            "eligible_for_topology": not reason,
-            "blocking_reasons": [reason] if reason else ["ready"],
+            "eligible_for_topology": not reasons,
+            "blocking_reasons": reasons or ["ready"],
         })
     return records

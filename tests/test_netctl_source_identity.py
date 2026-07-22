@@ -56,7 +56,10 @@ def test_source_readiness_reports_stable_blocking_reason_without_secret_data(tmp
             "topology_role": "unknown", "runtime_asset_status": "missing",
             "intent_binding_status": "missing", "management_mac_count": 0,
             "latest_authoritative_fdb_run_id": None, "known_switch_port_count": 0,
-            "eligible_for_topology": False, "blocking_reasons": ["missing_topology_role"],
+            "eligible_for_topology": False, "blocking_reasons": [
+                "missing_topology_role", "missing_runtime_asset_binding", "missing_intent_binding",
+                "missing_management_mac", "no_authoritative_fdb", "no_port_inventory",
+            ],
         }]
     finally:
         conn.close()
@@ -74,7 +77,10 @@ def test_context_view_cli_exposes_source_readiness(tmp_path: Path, capsys) -> No
     finally:
         conn.close()
     assert cli.main(["--json", "--db", db_url, "context-view", "source-readiness"]) == 0
-    assert json.loads(capsys.readouterr().out)["sources"][0]["blocking_reasons"] == ["missing_topology_role"]
+    assert json.loads(capsys.readouterr().out)["sources"][0]["blocking_reasons"] == [
+        "missing_topology_role", "missing_runtime_asset_binding", "missing_intent_binding",
+        "missing_management_mac", "no_authoritative_fdb", "no_port_inventory",
+    ]
 
 
 @pytest.mark.parametrize(

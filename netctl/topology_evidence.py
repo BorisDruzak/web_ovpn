@@ -9,6 +9,49 @@ from .source_identity import SourceIdentity
 from .topology_models import LinkEndpoint, LinkEvidence
 
 
+def backbone_evidence(
+    conn: sqlite3.Connection, *, site: str = "", limit: int = 100,
+) -> list[dict[str, object]]:
+    """Expose bounded, redacted evidence summaries for current source pairs."""
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    conditions: list[str] = []
+    params: list[object] = []
+    if site:
+        conditions.append("(source_a.site = ? OR source_b.site = ?)")
+        params.extend((site, site))
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = conn.execute(
+        """
+        SELECT links.link_key, links.state, links.confidence, links.port_a_key, links.port_b_key,
+               links.evidence_json, source_a.name AS source_a, source_b.name AS source_b
+        FROM current_switch_links AS links
+        JOIN network_sources AS source_a ON source_a.id = links.source_a_id
+        JOIN network_sources AS source_b ON source_b.id = links.source_b_id
+        """ + where + " ORDER BY links.link_key LIMIT ?",
+        (*params, limit),
+    ).fetchall()
+    result: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            evidence = json.loads(str(row["evidence_json"] or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            evidence = []
+        evidence_types = {
+            str(item.get("evidence_type") or "") for item in evidence if isinstance(item, dict)
+        }
+        result.append({
+            "source_a": str(row["source_a"]), "source_b": str(row["source_b"]),
+            "state": str(row["state"]), "confidence": int(row["confidence"]),
+            "intent": "intent" in evidence_types,
+            "management_mac": "fdb_management_mac" in evidence_types,
+            "lldp": "lldp_chassis_mac" in evidence_types,
+            "ports_resolved": bool(row["port_a_key"] and row["port_b_key"]),
+            "conflicting": str(row["state"]) == "conflicting",
+        })
+    return result
+
+
 def _normalized_pair(
     first: LinkEndpoint, second: LinkEndpoint
 ) -> tuple[LinkEndpoint, LinkEndpoint] | None:

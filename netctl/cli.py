@@ -19,6 +19,7 @@ from .context import context_summary, load_context_bytes, load_schema, normalise
 from .context_diff import diff_snapshots
 from .context_query import context_snapshot, inspect_asset_context, topology_context, search_context_page
 from .source_identity import source_readiness
+from .topology_evidence import backbone_evidence
 from .path_engine import PathRequest
 from .path_query import DEFAULT_PATH_FACT_MAX_AGE_SECONDS, explain_asset_path
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
@@ -684,6 +685,10 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             return 0, ok(findings=list_context_findings(conn, args.finding_status), snapshot=snapshot)
         if args.context_view_command == "source-readiness":
             return 0, ok(sources=source_readiness(conn), snapshot=snapshot)
+        if args.context_view_command == "backbone-evidence":
+            return 0, ok(
+                evidence=backbone_evidence(conn, site=args.site, limit=args.limit), snapshot=snapshot,
+            )
         return 2, err("unsupported context-view command")
     finally:
         conn.close()
@@ -1347,6 +1352,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
     )
     context_view_sub.add_parser("source-readiness")
+    context_view_backbone_evidence = context_view_sub.add_parser("backbone-evidence")
+    context_view_backbone_evidence.add_argument("--site", default="")
+    context_view_backbone_evidence.add_argument("--limit", type=int, default=100, choices=range(1, 101))
 
     path = sub.add_parser("path")
     path_sub = path.add_subparsers(dest="path_command", required=True)
