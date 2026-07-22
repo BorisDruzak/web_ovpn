@@ -5,6 +5,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from alt_deploy_backup.guard import GuardState
 from alt_deploy_backup.restore import RestoreService
 from alt_deploy_backup.restore_journal import RestoreJournal
 from support.backup_rehearsal_sandbox import BackupSandbox as RehearsalSandbox
@@ -63,6 +64,7 @@ class BackupSandbox(RehearsalSandbox):
         fail_move_after: int | None = None,
         interrupt_move_after: int | None = None,
         fail_cleanup: bool = False,
+        guard_state: GuardState | None = None,
     ) -> RestoreService:
         return RestoreService(
             self.repository(),
@@ -73,6 +75,7 @@ class BackupSandbox(RehearsalSandbox):
             interrupt_move_after=interrupt_move_after,
             fail_cleanup=fail_cleanup,
             health_probe=self._health_probe,
+            guard_state=guard_state,
         )
 
     def prepare_restore(self, backup_id: str) -> RestoreJournal:

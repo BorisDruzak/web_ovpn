@@ -13,6 +13,9 @@ from alt_deploy_backup.restore_journal import RestoreJournal
 from support.backup_restore_sandbox import BackupSandbox
 
 
+RESTORE_BACKUP_ID = "backup-20260722T120000Z-11111111"
+
+
 def test_restore_journal_rejects_skipped_phase(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     sandbox.seed_complete_controller()
@@ -495,3 +498,299 @@ def test_restore_capacity_groups_one_probe_per_filesystem(
 
     assert error.value.code == "restore_staging_failed"
     assert len(probes) == 1
+
+
+class _RecordingGuard:
+    def __init__(
+        self,
+        *,
+        failed_rollout: bool = False,
+        fail_complete: bool = False,
+    ) -> None:
+        self.failed_rollout = failed_rollout
+        self.fail_complete = fail_complete
+        self.events: list[str] = []
+
+    def authorize_restore_unlocked(self, journal: RestoreJournal) -> None:
+        self.events.append(f"authorize:{journal.phase}")
+
+    def complete_restore_unlocked(self, journal: RestoreJournal) -> None:
+        self.events.append(f"complete:{journal.phase}")
+        if self.fail_complete:
+            raise BackupError(
+                code="backup_rollout_state_invalid",
+                message="Injected guard cleanup failure",
+                exit_code=6,
+            )
+
+    def revoke_restore_unlocked(self, journal: RestoreJournal) -> None:
+        self.events.append(f"revoke:{journal.phase}")
+
+    def has_matching_rollout_marker_unlocked(
+        self,
+        journal: RestoreJournal,
+    ) -> bool:
+        self.events.append(f"marker:{journal.phase}")
+        return self.failed_rollout
+
+
+def _lightweight_restore_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    guard: _RecordingGuard,
+    *,
+    fail_activation: bool = False,
+):
+    from contextlib import nullcontext
+
+    from alt_deploy_backup.restore import (
+        PreRestoreGeneration,
+        StagedGeneration,
+    )
+    from alt_deploy_backup.systemd import UnitState
+
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.settings.backup_root.mkdir(parents=True, mode=0o700)
+    sandbox.settings.private_state_root.mkdir(parents=True, mode=0o700)
+    sandbox.settings.lifecycle_lock.parent.mkdir(parents=True, exist_ok=True)
+    sandbox.settings.lifecycle_lock.write_bytes(b"")
+    sandbox.settings.lifecycle_lock.chmod(0o600)
+    states = tuple(
+        UnitState(
+            name=name,
+            load_state="loaded",
+            enabled_state="enabled" if not name.endswith(".service") else "static",
+            active_state=(
+                "inactive"
+                if name == "alt-deploy-process.service"
+                else "active"
+            ),
+            sub_state=("dead" if name == "alt-deploy-process.service" else "running"),
+            failed=False,
+        )
+        for name in (
+            "alt-deploy-http.service",
+            "alt-deploy-register.service",
+            "alt-deploy-process.path",
+            "alt-deploy-process.service",
+        )
+    )
+    manifest = SimpleNamespace(
+        secret_identities=(),
+        systemd_units=states,
+    )
+    verified = SimpleNamespace(manifest=manifest)
+    service = sandbox.restore_service(guard_state=guard)
+
+    monkeypatch.setattr(
+        service.repository,
+        "assert_rehearsed_eligibility",
+        lambda backup_id: None,
+    )
+    monkeypatch.setattr(
+        service.repository.quiescence,
+        "assert_quiescent",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        service.repository.secrets,
+        "assert_matches",
+        lambda expected: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_assert_eligibility_unlocked",
+        lambda backup_id: verified,
+    )
+    monkeypatch.setattr(
+        service,
+        "_assert_restore_capacity",
+        lambda selected: None,
+    )
+    monkeypatch.setattr(service.repository.systemd, "capture", lambda: states)
+    monkeypatch.setattr(
+        service.repository.systemd,
+        "stop_maintenance",
+        lambda: None,
+    )
+    activations: list[bool] = []
+
+    def restore_units(
+        selected: object,
+        *,
+        activate_health_services: bool,
+    ) -> None:
+        activations.append(activate_health_services)
+        if fail_activation and len(activations) == 1:
+            raise BackupError(
+                code="restore_health_check_failed",
+                message="Injected activation failure",
+                exit_code=4,
+            )
+
+    monkeypatch.setattr(
+        service.repository.systemd,
+        "restore",
+        restore_units,
+    )
+
+    def snapshot(journal: RestoreJournal) -> PreRestoreGeneration:
+        root = (
+            sandbox.settings.backup_root
+            / "pre-restore-test"
+            / journal.restore_id
+        )
+        root.mkdir(parents=True)
+        return PreRestoreGeneration(
+            root=root,
+            components=(),
+            manifest_sha256="1" * 64,
+        )
+
+    def stage(
+        backup_id: str,
+        journal: RestoreJournal,
+    ) -> StagedGeneration:
+        extracted = journal.directory / "extracted"
+        extracted.mkdir()
+        journal.transition("prepared", "staged", {"paths": []})
+        return StagedGeneration(
+            backup_id=backup_id,
+            restore_id=journal.restore_id,
+            extracted_root=extracted,
+            paths=(),
+            manifest=manifest,
+        )
+
+    monkeypatch.setattr(service, "create_pre_restore_snapshot", snapshot)
+    monkeypatch.setattr(service, "stage", stage)
+    monkeypatch.setattr(
+        service,
+        "_staged_lifecycle_lock",
+        lambda staged: nullcontext(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_move_originals",
+        lambda staged, journal, moving: (),
+    )
+    monkeypatch.setattr(service, "_install_staged", lambda staged: None)
+    monkeypatch.setattr(service, "_daemon_reload", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_pre_activation_health",
+        lambda selected: (),
+    )
+    monkeypatch.setattr(service, "_loopback_health", lambda selected: ())
+    monkeypatch.setattr(service, "_cleanup_after_commit", lambda staged: True)
+    monkeypatch.setattr(
+        service,
+        "_cleanup_recovery_paths",
+        lambda paths, journal: True,
+    )
+    return sandbox, service, activations
+
+
+def test_restore_commits_before_guard_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _RecordingGuard()
+    _, service, activations = _lightweight_restore_service(
+        tmp_path,
+        monkeypatch,
+        guard,
+    )
+
+    result = service.restore(RESTORE_BACKUP_ID)
+
+    assert result.phase == "committed"
+    assert guard.events == [
+        "authorize:daemon_reloaded",
+        "complete:committed",
+    ]
+    assert activations == [True]
+
+
+def test_committed_restore_guard_cleanup_failure_stops_services(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _RecordingGuard(fail_complete=True)
+    sandbox, service, _ = _lightweight_restore_service(
+        tmp_path,
+        monkeypatch,
+        guard,
+    )
+    stops: list[str] = []
+    monkeypatch.setattr(
+        service.repository.systemd,
+        "stop_maintenance",
+        lambda: stops.append("stopped"),
+    )
+
+    with pytest.raises(BackupError) as error:
+        service.restore(RESTORE_BACKUP_ID)
+
+    assert error.value.code == "backup_rollout_state_invalid"
+    assert stops == ["stopped", "stopped"]
+    assert sandbox.latest_restore_phase() == "committed"
+
+
+def test_restore_rollback_preserves_failed_rollout_guard_and_stops_units(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _RecordingGuard(failed_rollout=True)
+    sandbox, service, activations = _lightweight_restore_service(
+        tmp_path,
+        monkeypatch,
+        guard,
+        fail_activation=True,
+    )
+
+    with pytest.raises(BackupError) as error:
+        service.restore(RESTORE_BACKUP_ID)
+
+    assert error.value.code == "restore_health_check_failed"
+    assert activations == [True, False]
+    assert guard.events == [
+        "authorize:daemon_reloaded",
+        "marker:daemon_reloaded",
+        "revoke:daemon_reloaded",
+    ]
+    assert sandbox.latest_restore_phase() == "rolled_back"
+
+
+def test_recover_committed_finishes_guard_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = _RecordingGuard()
+    sandbox, service, _ = _lightweight_restore_service(
+        tmp_path,
+        monkeypatch,
+        guard,
+    )
+    journal = RestoreJournal.create(
+        sandbox.settings,
+        RESTORE_BACKUP_ID,
+    )
+    journal.transition("prepared", "staged", {"paths": []})
+    journal.transition("staged", "services_stopped", {})
+    journal.transition("services_stopped", "originals_moving", {})
+    journal.transition("originals_moving", "originals_moved", {})
+    journal.transition("originals_moved", "installed", {})
+    journal.transition("installed", "daemon_reloaded", {})
+    journal.transition("daemon_reloaded", "health_checked", {})
+    journal.transition("health_checked", "committed", {})
+    monkeypatch.setattr(
+        service,
+        "_staged_paths_from_journal",
+        lambda selected: (),
+    )
+
+    result = service.recover(journal.restore_id)
+
+    assert result.phase == "committed"
+    assert guard.events == ["complete:committed"]

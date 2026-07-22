@@ -3,6 +3,8 @@ Description=Process pending ALT registrations
 After=network-online.target alt-deploy-register.service
 Wants=network-online.target
 
+Requires=alt-deploy-guard.service
+After=alt-deploy-guard.service
 [Service]
 Type=oneshot
 User=altserver

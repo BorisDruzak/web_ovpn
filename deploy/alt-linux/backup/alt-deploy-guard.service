@@ -1,0 +1,20 @@
+[Unit]
+Description=Authorize ALT deployment control-plane startup
+Before=alt-deploy-http.service
+Before=alt-deploy-register.service
+Before=alt-deploy-process.path
+Before=alt-deploy-process.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/alt-deploy-backup guard
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=-/var/backups/alt-deploy
+ReadOnlyPaths=-/var/lib/alt-deploy-backup
+ReadOnlyPaths=-/run/alt-deploy-backup
+ReadWritePaths=/var/log/alt-deploy-backup.log

@@ -9,13 +9,14 @@ from pathlib import Path
 
 from .audit import AuditLog
 from .errors import BackupError
+from .guard import GuardState
 from .rehearsal import RehearsalService
 from .repository import BackupRepository
 from .restore import RestoreService
 from .settings import BackupSettings
 
 
-COMMANDS_WITHOUT_ID = {"create", "list"}
+COMMANDS_WITHOUT_ID = {"create", "list", "guard"}
 COMMANDS_WITH_ID = {
     "verify",
     "rehearse",
@@ -23,6 +24,10 @@ COMMANDS_WITH_ID = {
     "restore",
     "recover",
     "delete",
+    "rollout-begin",
+    "rollout-authorize",
+    "rollout-revoke",
+    "rollout-complete",
 }
 
 
@@ -78,6 +83,38 @@ def _dispatch(
     backup_id: str | None,
     settings: BackupSettings,
 ) -> dict[str, object]:
+    guard = GuardState(settings)
+    if command == "guard":
+        guard.assert_control_plane_allowed()
+        return {"status": "ok", "result": "control_plane_allowed"}
+    if backup_id is not None and command == "rollout-begin":
+        guard.begin_rollout(backup_id)
+        return {
+            "status": "ok",
+            "result": "rollout_started",
+            "backup_id": backup_id,
+        }
+    if backup_id is not None and command == "rollout-authorize":
+        guard.authorize_rollout(backup_id)
+        return {
+            "status": "ok",
+            "result": "rollout_authorized",
+            "backup_id": backup_id,
+        }
+    if backup_id is not None and command == "rollout-revoke":
+        guard.revoke_rollout(backup_id)
+        return {
+            "status": "ok",
+            "result": "rollout_revoked",
+            "backup_id": backup_id,
+        }
+    if backup_id is not None and command == "rollout-complete":
+        guard.complete_rollout(backup_id)
+        return {
+            "status": "ok",
+            "result": "rollout_completed",
+            "backup_id": backup_id,
+        }
     repository = BackupRepository(settings)
     if command == "create":
         result = repository.create()

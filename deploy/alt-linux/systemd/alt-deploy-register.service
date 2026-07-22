@@ -3,6 +3,8 @@ Description=ALT deployment registration API
 After=network-online.target
 Wants=network-online.target
 
+Requires=alt-deploy-guard.service
+After=alt-deploy-guard.service
 [Service]
 Type=simple
 User=altserver

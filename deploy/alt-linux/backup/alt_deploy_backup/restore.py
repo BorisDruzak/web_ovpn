@@ -28,6 +28,7 @@ from .fs import (
     read_regular_bytes,
     source_inventory,
 )
+from .guard import GuardState
 from .locks import exclusive_lifecycle_lock, exclusive_operation_lock
 from .manifest import BackupManifest
 from .repository import BackupRepository
@@ -120,6 +121,7 @@ class RestoreService:
         interrupt_move_after: int | None = None,
         fail_cleanup: bool = False,
         health_probe: Callable[[str], bytes] | None = None,
+        guard_state: GuardState | None = None,
     ) -> None:
         self.repository = repository
         self.settings = repository.settings
@@ -131,6 +133,7 @@ class RestoreService:
         self.interrupt_move_after = interrupt_move_after
         self.fail_cleanup = fail_cleanup
         self.health_probe = health_probe or self._default_health_probe
+        self.guard = guard_state or GuardState(self.settings)
 
     def _manager(self) -> BundleManager:
         return BundleManager(self.repository)
@@ -1529,17 +1532,24 @@ class RestoreService:
                         )
 
             self._daemon_reload()
+            failed_rollout = (
+                self.guard.has_matching_rollout_marker_unlocked(journal)
+            )
             self.repository.systemd.restore(
                 pre_states,
-                activate_health_services=True,
+                activate_health_services=not failed_rollout,
             )
             for path, item in zip(paths, progress, strict=True):
                 if self._tree_digest(path.production_path) != item["pre_digest"]:
                     raise _manual(journal.restore_id)
+            self.guard.revoke_restore_unlocked(journal)
             journal.transition(
                 journal.phase,
                 "rolled_back",
-                {"proof": "content_digests_match"},
+                {
+                    "proof": "content_digests_match",
+                    "services_restored": not failed_rollout,
+                },
             )
         except (OSError, BackupError) as exc:
             if isinstance(exc, BackupError) and exc.code == (
@@ -1617,6 +1627,10 @@ class RestoreService:
         self,
         journal: RestoreJournal,
     ) -> None:
+        try:
+            self.guard.revoke_restore_unlocked(journal)
+        except BackupError:
+            pass
         if journal.phase not in terminal_phases():
             try:
                 journal.transition(
@@ -1722,6 +1736,7 @@ class RestoreService:
                         pre_checks = self._pre_activation_health(
                             staged.manifest
                         )
+                        self.guard.authorize_restore_unlocked(journal)
                         self.repository.systemd.restore(
                             staged.manifest.systemd_units,
                             activate_health_services=True,
@@ -1744,6 +1759,7 @@ class RestoreService:
                             {"services_restored": True},
                         )
                         committed = True
+                        self.guard.complete_restore_unlocked(journal)
                 cleanup_complete = self._cleanup_after_commit(staged)
                 return RestoreResult(
                     backup_id=backup_id,
@@ -1754,13 +1770,8 @@ class RestoreService:
                 )
             except BackupError as original:
                 if committed or journal.phase == "committed":
-                    return RestoreResult(
-                        backup_id=backup_id,
-                        phase="committed",
-                        services_restored=True,
-                        rollback_performed=False,
-                        cleanup_complete=False,
-                    )
+                    self.repository.systemd.stop_maintenance()
+                    raise original
                 if journal.phase in {
                     "originals_moving",
                     "originals_moved",
@@ -1786,10 +1797,14 @@ class RestoreService:
                         self._cleanup_before_mutation(staged)
                     except BackupError:
                         pass
+                failed_rollout = (
+                    self.guard.has_matching_rollout_marker_unlocked(journal)
+                )
                 self.repository.systemd.restore(
                     pre_states,
-                    activate_health_services=True,
+                    activate_health_services=not failed_rollout,
                 )
+                self.guard.revoke_restore_unlocked(journal)
                 journal.transition(
                     journal.phase,
                     "aborted",
@@ -1804,26 +1819,50 @@ class RestoreService:
                 self.repository.systemd.stop_maintenance()
                 raise _manual(journal.restore_id)
             if journal.phase == "committed":
+                try:
+                    self.guard.complete_restore_unlocked(journal)
+                except BackupError:
+                    self.repository.systemd.stop_maintenance()
+                    raise
+                paths: tuple[StagedPath, ...] = ()
+                if "staged" in journal.evidence:
+                    paths = self._staged_paths_from_journal(journal)
+                cleanup_complete = self._cleanup_recovery_paths(
+                    paths,
+                    journal,
+                )
                 return RestoreResult(
                     backup_id=journal.backup_id,
                     phase="committed",
                     services_restored=True,
                     rollback_performed=False,
-                    cleanup_complete=True,
+                    cleanup_complete=cleanup_complete,
                 )
             if journal.phase == "rolled_back":
+                self.guard.revoke_restore_unlocked(journal)
+                failed_rollout = (
+                    self.guard.has_matching_rollout_marker_unlocked(journal)
+                )
+                if failed_rollout:
+                    self.repository.systemd.stop_maintenance()
                 return RestoreResult(
                     backup_id=journal.backup_id,
                     phase="rolled_back",
-                    services_restored=True,
+                    services_restored=not failed_rollout,
                     rollback_performed=True,
                     cleanup_complete=True,
                 )
             if journal.phase == "aborted":
+                self.guard.revoke_restore_unlocked(journal)
+                failed_rollout = (
+                    self.guard.has_matching_rollout_marker_unlocked(journal)
+                )
+                if failed_rollout:
+                    self.repository.systemd.stop_maintenance()
                 return RestoreResult(
                     backup_id=journal.backup_id,
                     phase="aborted",
-                    services_restored=True,
+                    services_restored=not failed_rollout,
                     rollback_performed=False,
                     cleanup_complete=True,
                 )
@@ -1848,10 +1887,16 @@ class RestoreService:
                     journal,
                 )
                 try:
+                    failed_rollout = (
+                        self.guard.has_matching_rollout_marker_unlocked(
+                            journal
+                        )
+                    )
                     self.repository.systemd.restore(
                         pre_states,
-                        activate_health_services=True,
+                        activate_health_services=not failed_rollout,
                     )
+                    self.guard.revoke_restore_unlocked(journal)
                     journal.transition(
                         journal.phase,
                         "aborted",
