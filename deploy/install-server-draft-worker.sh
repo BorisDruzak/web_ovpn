@@ -209,7 +209,9 @@ validate_existing_draft_component() {
     metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$path")"
     case "$path" in
       "$DRAFT_ROOT")
-        [[ "$metadata" == openvpn-web:openvpn-web:770 || "$metadata" == root:openvpn-web:750 ]]
+        [[ "$metadata" == openvpn-web:openvpn-web:770 || \
+           "$metadata" == openvpn-web:openvpn-web:750 || \
+           "$metadata" == root:openvpn-web:750 ]]
         ;;
       "$DRAFT_ROOT/queue"|"$DRAFT_ROOT/results")
         [[ "$metadata" == openvpn-web:openvpn-web:770 ]]
@@ -292,11 +294,16 @@ validate_existing_draft_component "$DRAFT_ROOT/private"
 if [[ "$draft_parent_metadata" == "root:openvpn-web:1770" ]]; then
   if sudo_cmd test -d "$DRAFT_ROOT"; then
     draft_root_metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$DRAFT_ROOT")"
-    if ! [[ "$draft_root_metadata" == "root:openvpn-web:750" ]]; then
+    if [[ "$draft_root_metadata" == "root:openvpn-web:750" ]]; then
+      draft_root_action=existing_hardened
+    elif [[ "$draft_root_metadata" == "openvpn-web:openvpn-web:750" ]]; then
+      # The parent is locked above, so this known legacy entry cannot be
+      # replaced before the legacy_locked branch transfers ownership.
+      draft_root_action=legacy_locked
+    else
       echo "hardened draft parent contains an untrusted draft root" >&2
       exit 2
     fi
-    draft_root_action=existing_hardened
   else
     draft_root_action=create_exclusive
   fi

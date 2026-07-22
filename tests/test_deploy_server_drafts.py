@@ -248,6 +248,17 @@ def test_scoped_installer_locks_and_validates_the_draft_namespace_before_mutatio
         assert installer.index(validation) < first_root_mutation
 
 
+def test_scoped_installer_migrates_a_legacy_web_owned_draft_root_after_locking_parent():
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+
+    parent_lock = installer.index('sudo_cmd chmod 1750 "$DRAFT_PARENT"')
+    legacy_root = installer.index('elif [[ "$draft_root_metadata" == "openvpn-web:openvpn-web:750" ]]; then')
+    migrate_action = installer.index('draft_root_action=legacy_locked', legacy_root)
+    root_hardening = installer.index('sudo_cmd chown root:openvpn-web "$DRAFT_ROOT"')
+
+    assert parent_lock < legacy_root < migrate_action < root_hardening
+
+
 def test_scoped_installer_legacy_parent_lock_executes_chmod_immediately_after_chown(
     tmp_path,
 ):
