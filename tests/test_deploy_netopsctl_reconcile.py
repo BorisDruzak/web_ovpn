@@ -18,4 +18,5 @@ def test_netopsctl_reconciler_uses_a_separate_unprivileged_timer_principal() -> 
     assert "SocketGroup=netopsctl" in (ROOT / "deploy" / "netopsctl.socket").read_text(encoding="utf-8")
     assert "useradd --system --gid netopsctl --home-dir /var/lib/netopsctl-reconcile" in installer
     assert "usermod -aG netopsctl openvpn-web" in installer
+    assert "systemctl enable --now netopsctl-reconcile.timer" not in installer
     assert "SupplementaryGroups=netopsctl" in (ROOT / "deploy" / "openvpn-web.service").read_text(encoding="utf-8")

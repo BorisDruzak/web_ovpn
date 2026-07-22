@@ -15,4 +15,5 @@ install -m 0644 deploy/netopsctl-reconcile.service /etc/systemd/system/netopsctl
 install -m 0644 deploy/netopsctl-reconcile.timer /etc/systemd/system/netopsctl-reconcile.timer
 systemctl daemon-reload
 systemctl enable --now netopsctl.socket
-systemctl enable --now netopsctl-reconcile.timer
+# The timer stays disabled until its independent signing credential is
+# provisioned and a controlled deny/rollback has completed.

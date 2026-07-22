@@ -896,7 +896,7 @@ netctl --json topology findings --status open
 
 All read commands use `connect_read_only()`.
 
-- [ ] **Step 7: Run focused and full tests**
+- [x] **Step 7: Run focused and full tests**
 
 ```bash
 python -m pytest tests/test_netctl_source_identity.py tests/test_netctl_topology.py tests/test_netctl_switch_store.py -q
@@ -2131,7 +2131,7 @@ git commit -m "feat: plan asset Internet access policy"
 **Interfaces:**
 - Produces the first end-to-end network write capability.
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 Tests cover:
 
@@ -2148,7 +2148,7 @@ expired policy is retired and entries are removed only after fresh identity evid
 web read token cannot plan/apply/rollback.
 ```
 
-- [ ] **Step 2: Add HTTP endpoints**
+- [x] **Step 2: Add HTTP endpoints**
 
 ```http
 POST /api/v1/network-control/plans
@@ -2162,11 +2162,11 @@ GET  /api/v1/network-control/policies
 
 The web app talks only to the Unix-socket client and writes an application audit entry for every request and outcome.
 
-- [ ] **Step 3: Add reconciler timer**
+- [x] **Step 3: Add reconciler timer**
 
 The timer runs every five minutes after netctl correlation. It never creates a new desired policy; it only reconciles active policies against fresh current IP observations.
 
-- [ ] **Step 4: Write production runbook**
+- [x] **Step 4: Write production runbook**
 
 The rollout order is:
 
@@ -2183,14 +2183,14 @@ The rollout order is:
 10. Enable the reconciler timer.
 ```
 
-- [ ] **Step 5: Run focused and full regression**
+- [x] **Step 5: Run focused and full regression**
 
 ```bash
 python -m pytest tests/test_netopsctl_store.py tests/test_netopsctl_protocol.py tests/test_netopsctl_mikrotik.py tests/test_netopsctl_internet_policy.py tests/test_network_change_authorization.py tests/test_context_api.py -q
 python -m pytest -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add netopsctl deploy app tests docs/runbooks/netopsctl-internet-policy-rollout.md
@@ -2213,7 +2213,7 @@ git commit -m "feat: apply and reconcile asset Internet policy"
 **Interfaces:**
 - Produces user-level plan resolution without changing the enforcement mechanism.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Accept only:
 
@@ -2227,7 +2227,7 @@ asset passes all asset-level eligibility checks.
 
 Reject multiple primary assets, shared workstations, candidate bindings, expired bindings and session-only evidence.
 
-- [ ] **Step 2: Implement resolution and audit chain**
+- [x] **Step 2: Implement resolution and audit chain**
 
 The resulting plan retains both:
 
@@ -2236,7 +2236,7 @@ requested subject: user:<user_key>
 resolved enforcement subject: asset:<asset_key>
 ```
 
-- [ ] **Step 3: Run tests and commit**
+- [x] **Step 3: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_user_context.py tests/test_netopsctl_internet_policy.py -q
@@ -2258,7 +2258,7 @@ git commit -m "feat: resolve user Internet policy through primary asset"
 - Supports future captive portal, RADIUS and endpoint agents.
 - Does not implement those integrations in this PR.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```http
 POST /api/v1/context/network-sessions
@@ -2268,11 +2268,11 @@ GET  /api/v1/context/users/{user_key}/sessions
 
 Session evidence may suggest a candidate binding but never confirms or replaces a primary binding automatically.
 
-- [ ] **Step 2: Implement safe ingestion**
+- [x] **Step 2: Implement safe ingestion**
 
 Require a stable `session_key`, known user, source type, timestamps and bounded evidence. Asset may be null when only login/IP evidence is available.
 
-- [ ] **Step 3: Run tests and commit**
+- [x] **Step 3: Run tests and commit**
 
 ```bash
 python -m pytest tests/test_netctl_user_context.py tests/test_context_api.py -q
