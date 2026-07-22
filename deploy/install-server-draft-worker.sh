@@ -217,7 +217,7 @@ validate_existing_draft_component() {
         [[ "$metadata" == openvpn-web:openvpn-web:770 ]]
         ;;
       "$DRAFT_ROOT/private")
-        [[ "$metadata" == openvpm:openvpm:700 ]]
+        [[ "$metadata" == openvpm:openvpm:700 || "$metadata" == openvpn-web:openvpn-web:700 ]]
         ;;
       *)
         echo "unexpected draft component ownership or mode: $path" >&2
@@ -335,6 +335,21 @@ sudo_cmd chown root:openvpn-web "$DRAFT_ROOT"
 sudo_cmd chmod 0750 "$DRAFT_ROOT"
 sudo_cmd chown root:openvpn-web "$DRAFT_PARENT"
 sudo_cmd chmod 1770 "$DRAFT_PARENT"
+if sudo_cmd test -d "$DRAFT_ROOT/private"; then
+  private_metadata="$(sudo_cmd stat -c '%U:%G:%a' -- "$DRAFT_ROOT/private")"
+  if [[ "$private_metadata" == "openvpn-web:openvpn-web:700" ]]; then
+    # A web-owned legacy private directory can be accepted only while empty;
+    # otherwise its contents must be handled manually rather than trusted by
+    # the isolated worker after ownership changes.
+    legacy_private_entry="$(sudo_cmd find "$DRAFT_ROOT/private" -mindepth 1 -print -quit)"
+    if [[ -n "$legacy_private_entry" ]]; then
+      echo "legacy draft private directory is not empty" >&2
+      exit 2
+    fi
+    sudo_cmd chown openvpm:openvpm "$DRAFT_ROOT/private"
+    sudo_cmd chmod 0700 "$DRAFT_ROOT/private"
+  fi
+fi
 sudo_cmd install -d -m 0770 -o openvpn-web -g openvpn-web /var/lib/openvpn-web/server-drafts/queue
 sudo_cmd install -d -m 0770 -o openvpn-web -g openvpn-web /var/lib/openvpn-web/server-drafts/results
 sudo_cmd install -d -m 0700 -o openvpm -g openvpm /var/lib/openvpn-web/server-drafts/private

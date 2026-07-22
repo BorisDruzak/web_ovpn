@@ -259,6 +259,17 @@ def test_scoped_installer_migrates_a_legacy_web_owned_draft_root_after_locking_p
     assert parent_lock < legacy_root < migrate_action < root_hardening
 
 
+def test_scoped_installer_migrates_the_legacy_private_draft_directory_after_locking_parent():
+    installer = Path(DRAFT_WORKER_INSTALLER).read_text(encoding="utf-8")
+
+    parent_lock = installer.index('sudo_cmd chmod 1750 "$DRAFT_PARENT"')
+    legacy_private = installer.index('if [[ "$private_metadata" == "openvpn-web:openvpn-web:700" ]]; then')
+    private_hardening = installer.index('sudo_cmd chown openvpm:openvpm "$DRAFT_ROOT/private"')
+    queue_install = installer.index('install -d -m 0770 -o openvpn-web -g openvpn-web')
+
+    assert parent_lock < legacy_private < private_hardening < queue_install
+
+
 def test_scoped_installer_legacy_parent_lock_executes_chmod_immediately_after_chown(
     tmp_path,
 ):
