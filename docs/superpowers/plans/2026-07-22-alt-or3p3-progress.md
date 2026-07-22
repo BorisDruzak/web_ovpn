@@ -17,7 +17,7 @@
 - Task 6: complete (`20fc7df..409b216`); RED had ten archive-interface failures, capture/inspection/rehearsal extraction passed; regular-file inventory, subprocess reaping and failed-publication cleanup findings fixed; temporary workflow removed; review clean.
 - Task 7: complete (`d73de93..2f0a606`); coordinated create, lifecycle-lock capture, atomic publication, systemd recovery and CLI JSON passed both full-regression workflows; frozen sandbox and standard `/var/log` parent findings fixed; review clean.
 - Task 8: complete (`405899a..ca73f9b`); strict verify/list/delete, byte-stable read-only verification, evidence invalidation and rehearsal eligibility foundation passed both full-regression workflows; empty root compatibility, final list contract, root confinement and filesystem-bound deletion findings fixed; review clean.
-- Task 9: pending.
+- Task 9: complete (`a242058..40f29d1`); independent job/assignment/registration/archive validators, isolated extraction, Python/Bash/systemd/Ansible checks, secret scan and exact evidence binding passed both full-regression workflows; canonical stage history and extracted UID/GID/mode findings fixed; review clean.
 - Task 10: pending.
 - Task 11: pending.
 - Task 12: pending.
