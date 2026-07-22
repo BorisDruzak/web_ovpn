@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from netctl.db import connect_read_only
+from netctl.user_context import resolve_policy_asset_for_user
 
 from .store import add_plan_step, create_change_plan
 
@@ -98,6 +99,45 @@ def create_asset_internet_access_plan(
         netops_conn, plan_key=plan_key, actor=actor, reason=reason, subject_type="asset", subject_key=asset_key,
         operation_type="internet_access_set", desired_state={"internet_access": desired_state}, resolved_targets=targets,
         context_evidence_hash="0" * 64, precheck={"anchor": "validated"}, rollback=rollback,
+    )
+    for item in targets:
+        add_plan_step(netops_conn, plan_key, adapter="mikrotik", operation=action, target_key=item["source"], request={"address": item["address"], "asset_key": asset_key})
+    return plan
+
+
+def create_user_internet_access_plan(
+    netops_conn: sqlite3.Connection,
+    netctl_db_url: str,
+    *,
+    plan_key: str,
+    actor: str,
+    user_key: str,
+    desired_state: str,
+    reason: str,
+    enforcement_sources_by_site: dict[str, str],
+    source_sla_seconds: int,
+    anchor_check: Callable[[str], bool],
+) -> dict[str, Any]:
+    """Resolve only one confirmed primary asset, retaining user and asset provenance."""
+    if desired_state not in {"allow", "deny"}:
+        raise ValueError("unknown desired state")
+    context = connect_read_only(netctl_db_url)
+    try:
+        resolved = resolve_policy_asset_for_user(context, user_key)
+        if resolved is None:
+            raise ValueError("user has no eligible confirmed primary asset")
+        asset_key = resolved["asset_key"]
+        targets = resolve_asset_targets(context, asset_key, enforcement_sources_by_site=enforcement_sources_by_site, source_sla_seconds=source_sla_seconds, anchor_check=anchor_check)
+    finally:
+        context.close()
+    action = "ensure_address_list_entry" if desired_state == "deny" else "remove_address_list_entry"
+    rollback_action = "remove_address_list_entry" if desired_state == "deny" else "ensure_address_list_entry"
+    plan = create_change_plan(
+        netops_conn, plan_key=plan_key, actor=actor, reason=reason, subject_type="user", subject_key=user_key,
+        operation_type="internet_access_set",
+        desired_state={"internet_access": desired_state, "resolved_enforcement_asset_key": asset_key},
+        resolved_targets=targets, context_evidence_hash="0" * 64, precheck={"anchor": "validated"},
+        rollback={"steps": [{"adapter": "mikrotik", "operation": rollback_action, "target_key": item["source"], "request": {"address": item["address"], "asset_key": asset_key}} for item in targets]},
     )
     for item in targets:
         add_plan_step(netops_conn, plan_key, adapter="mikrotik", operation=action, target_key=item["source"], request={"address": item["address"], "asset_key": asset_key})
