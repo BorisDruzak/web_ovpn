@@ -5,7 +5,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import load_config_sources, normalize_snmp_driver_options
+from .config import (
+    load_config_sources,
+    normalize_generic_driver_options,
+    normalize_snmp_driver_options,
+)
 from .migrations import apply_migrations
 from .util import utc_now
 
@@ -567,8 +571,13 @@ def _encode_driver_options(driver: str, value: Any) -> str:
             value = normalize_snmp_driver_options(value)
         except ValueError as exc:
             raise ValueError("SNMP driver_options are invalid") from exc
-    elif _contains_private_source_key(value):
-        raise ValueError("driver_options must not contain resolved secret material")
+    else:
+        try:
+            value = normalize_generic_driver_options(value)
+        except ValueError as exc:
+            raise ValueError("driver_options are invalid") from exc
+        if _contains_private_source_key(value):
+            raise ValueError("driver_options must not contain resolved secret material")
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -593,10 +602,15 @@ def _source_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
             source["driver_options"] = normalize_snmp_driver_options(options)
         except ValueError:
             raise ValueError("stored SNMP driver_options are invalid") from None
-    elif not isinstance(options, dict) or _contains_private_source_key(options):
-        raise ValueError("stored driver_options are invalid")
-    elif options:
-        source["driver_options"] = options
+    else:
+        try:
+            options = normalize_generic_driver_options(options)
+        except ValueError:
+            raise ValueError("stored driver_options are invalid") from None
+        if _contains_private_source_key(options):
+            raise ValueError("stored driver_options are invalid")
+        if options:
+            source["driver_options"] = options
     return source
 
 

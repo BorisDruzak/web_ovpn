@@ -638,8 +638,8 @@ def test_explicit_switch_identity_sets_and_clears_without_creating_bindings(
     ).fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("runtime_asset_key", ["missing:asset", 123])
-def test_invalid_or_missing_explicit_runtime_asset_identity_is_rejected(
+@pytest.mark.parametrize("runtime_asset_key", [123])
+def test_invalid_explicit_runtime_asset_identity_is_rejected(
     switch_conn: sqlite3.Connection,
     runtime_asset_key: object,
 ) -> None:
@@ -665,6 +665,29 @@ def test_invalid_or_missing_explicit_runtime_asset_identity_is_rejected(
     assert switch_conn.execute(
         "SELECT COUNT(*) FROM asset_intent_bindings"
     ).fetchone()[0] == 0
+
+
+def test_missing_explicit_runtime_asset_identity_remains_unresolved(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch_identity")
+    source["driver_options"]["runtime_asset_key"] = "missing:asset"
+
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_snapshot((_entry("02:00:00:00:00:01", 1),))),
+        "2026-07-19T10:00:00Z",
+    )
+
+    assert result["status"] == "success"
+    assert _rows(
+        switch_conn,
+        "SELECT runtime_asset_id FROM switch_devices",
+    ) == [{"runtime_asset_id": None}]
+    assert switch_conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0] == 0
 
 
 def test_switch_observations_do_not_create_implicit_identity(

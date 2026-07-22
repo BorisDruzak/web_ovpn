@@ -846,12 +846,11 @@ def _source_identity(
         row = conn.execute(
             "SELECT id FROM assets WHERE asset_key = ?", (runtime_asset_key,)
         ).fetchone()
-        if row is None:
-            raise ValueError("configured runtime asset does not exist")
-        value = row[0]
-        if type(value) is not int or not 1 <= value <= _SQLITE_INTEGER_MAX:
-            raise ValueError("configured runtime asset is invalid")
-        runtime_asset_id = value
+        if row is not None:
+            value = row[0]
+            if type(value) is not int or not 1 <= value <= _SQLITE_INTEGER_MAX:
+                raise ValueError("configured runtime asset is invalid")
+            runtime_asset_id = value
     return runtime_asset_id, intent_context_id, intent_stable_id
 
 

@@ -13,6 +13,10 @@ from .util import parse_bool, validate_source_name
 DEFAULT_CONFIG = Path("/etc/netctl/netctl.yaml")
 DEFAULT_DB_URL = "sqlite:////var/lib/netctl/netctl.sqlite"
 DEFAULT_SECRETS = Path("/etc/netctl/secrets.env")
+TOPOLOGY_ROLES = frozenset({"core", "distribution", "access", "edge", "unknown"})
+SOURCE_IDENTITY_OPTION_KEYS = frozenset(
+    {"runtime_asset_key", "intent_context_id", "intent_stable_id", "topology_role"}
+)
 
 SNMP_OPTION_YAML_KEYS = {
     "snmp_version": "snmp_version",
@@ -30,6 +34,7 @@ SNMP_OPTION_YAML_KEYS = {
     "runtime_asset_key": "runtime_asset_key",
     "intent_context_id": "intent_context_id",
     "intent_stable_id": "intent_stable_id",
+    "topology_role": "topology_role",
 }
 SNMP_DRIVER_OPTION_KEYS = frozenset(SNMP_OPTION_YAML_KEYS)
 SNMP_SECRET_REF_PATTERN = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
@@ -97,6 +102,13 @@ def write_source_yaml(config_path: str | Path, source: dict[str, Any]) -> Path:
                 if option_key in options:
                     values[yaml_key] = options[option_key]
         ordered.extend(SNMP_OPTION_YAML_KEYS.values())
+    else:
+        options = source.get("driver_options")
+        if isinstance(options, dict):
+            for option_key in SOURCE_IDENTITY_OPTION_KEYS:
+                if option_key in options:
+                    values[option_key] = options[option_key]
+        ordered.extend(sorted(SOURCE_IDENTITY_OPTION_KEYS))
     rendered_values = {
         key: _render_source_yaml_scalar(values[key])
         for key in ordered
@@ -170,6 +182,10 @@ def normalize_source(source: dict[str, Any]) -> dict[str, Any]:
     if driver == "snmp_switch":
         snmp_community_env_name(normalized["secret_ref"])
         normalized["driver_options"] = _normalize_snmp_options(source)
+    else:
+        generic_options = _normalize_generic_driver_options(source)
+        if generic_options:
+            normalized["driver_options"] = generic_options
     return normalized
 
 
@@ -227,6 +243,52 @@ def _snmp_string(value: Any, *, field: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a string")
     return value
+
+
+def _identity_string(value: Any, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string")
+    if value and not value.strip():
+        raise ValueError(f"{field} must not be whitespace only")
+    return value.strip()
+
+
+def _topology_role(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("topology_role must be a string")
+    normalized = value.strip().lower()
+    if normalized not in TOPOLOGY_ROLES:
+        raise ValueError("topology_role is invalid")
+    return normalized
+
+
+def _source_option(source: dict[str, Any], option_key: str) -> tuple[bool, Any]:
+    yaml_key = SNMP_OPTION_YAML_KEYS[option_key]
+    if yaml_key in source:
+        return True, source[yaml_key]
+    nested_options = source.get("driver_options")
+    if isinstance(nested_options, dict) and option_key in nested_options:
+        return True, nested_options[option_key]
+    return False, None
+
+
+def _normalize_generic_driver_options(source: dict[str, Any]) -> dict[str, Any]:
+    nested_options = source.get("driver_options", {})
+    if not isinstance(nested_options, dict):
+        raise ValueError("driver_options must be a mapping")
+    normalized = dict(nested_options)
+    for option_key in (
+        "runtime_asset_key",
+        "intent_context_id",
+        "intent_stable_id",
+    ):
+        configured, value = _source_option(source, option_key)
+        if configured:
+            normalized[option_key] = _identity_string(value, field=option_key)
+    configured, topology_role = _source_option(source, "topology_role")
+    if configured:
+        normalized["topology_role"] = _topology_role(topology_role)
+    return normalized
 
 
 def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
@@ -325,16 +387,19 @@ def _normalize_snmp_options(source: dict[str, Any]) -> dict[str, Any]:
             minimum=1,
             maximum=10**15,
         ),
-        "runtime_asset_key": _snmp_string(
+        "runtime_asset_key": _identity_string(
             _snmp_option(source, "runtime_asset_key", ""), field="runtime_asset_key"
         ),
-        "intent_context_id": _snmp_string(
+        "intent_context_id": _identity_string(
             _snmp_option(source, "intent_context_id", ""), field="intent_context_id"
         ),
-        "intent_stable_id": _snmp_string(
+        "intent_stable_id": _identity_string(
             _snmp_option(source, "intent_stable_id", ""), field="intent_stable_id"
         ),
     }
+    topology_role_configured, topology_role = _source_option(source, "topology_role")
+    if topology_role_configured:
+        normalized["topology_role"] = _topology_role(topology_role)
     if profile is not None:
         normalized["profile_hint"] = profile
     return normalized
@@ -346,6 +411,10 @@ def normalize_snmp_driver_options(options: Any) -> dict[str, Any]:
     if set(options) - SNMP_DRIVER_OPTION_KEYS:
         raise ValueError("unsupported SNMP driver option")
     return _normalize_snmp_options({"driver_options": options})
+
+
+def normalize_generic_driver_options(options: Any) -> dict[str, Any]:
+    return _normalize_generic_driver_options({"driver_options": options})
 
 
 def secret_env_name(secret_ref: str) -> str:
