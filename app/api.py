@@ -726,6 +726,23 @@ def api_context_findings(
     return api_response(call_netctl(["context-view", "findings", "--status", status]))
 
 
+@router.get("/context/path")
+def api_context_path(
+    asset_key: str = Query(min_length=1, max_length=255),
+    destination: str = Query(min_length=1, max_length=64),
+    protocol: str = Query(default="tcp", pattern="^(tcp|udp|icmp)$"),
+    port: int | None = Query(default=None, ge=1, le=65535),
+    actor: str = Depends(require_api_actor),
+):
+    args = [
+        "path", "explain", "--asset-key", asset_key,
+        "--destination", destination, "--protocol", protocol,
+    ]
+    if port is not None:
+        args.extend(["--port", str(port)])
+    return api_response(call_netctl(args))
+
+
 @router.post("/context/users")
 def api_context_user_create(
     payload: ContextUserCreateRequest,

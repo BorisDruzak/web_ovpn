@@ -27,6 +27,8 @@ elif args[1:3] == ["context-view", "topology"]:
     print(json.dumps({"status": "ok", "links": [{"link_key": "access|core", "state": "confirmed"}]}))
 elif args[1:3] == ["context-view", "findings"]:
     print(json.dumps({"status": "ok", "findings": [{"finding_key": "runtime:one", "status": "open"}]}))
+elif args[1:3] == ["path", "explain"]:
+    print(json.dumps({"status": "ok", "explanation": {"verdict": "allowed"}}))
 elif args[1:3] == ["users", "add"]:
     print(json.dumps({"status": "ok", "user": {"user_key": args[args.index("--user-key") + 1]}}))
 elif args[1:3] == ["users", "bind-asset"]:
@@ -142,6 +144,23 @@ def test_context_findings_api_delegates_status_to_netctl(tmp_path, monkeypatch):
         "findings",
         "--status",
         "open",
+    ]
+
+
+def test_context_path_api_delegates_a_read_only_explanation_to_netctl(tmp_path, monkeypatch):
+    client, headers, log_path = make_client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/api/v1/context/path",
+        params={"asset_key": "mac:aa:bb:cc:dd:ee:ff", "destination": "198.51.100.25", "protocol": "tcp", "port": 443},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["explanation"]["verdict"] == "allowed"
+    assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
+        "--json", "path", "explain", "--asset-key", "mac:aa:bb:cc:dd:ee:ff",
+        "--destination", "198.51.100.25", "--protocol", "tcp", "--port", "443",
     ]
 
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import subprocess
 import sys
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,8 @@ from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_sour
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
 from .context_query import inspect_asset_context, list_topology_context, search_context
+from .path_engine import PathRequest
+from .path_query import DEFAULT_PATH_FACT_MAX_AGE_SECONDS, explain_asset_path
 from .context_import import import_context, load_active_snapshot, record_context_import_validation_error
 from .findings import list_context_findings
 from .db import context_revision_public, connect, connect_read_only, get_context_head, get_source, latest_context_revision, list_sources, record_context_revision, source_public, sync_config_sources, upsert_source
@@ -676,6 +680,27 @@ def cmd_context_view(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_path(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    try:
+        destination = str(ipaddress.ip_address(args.destination))
+    except ValueError:
+        return 1, err("invalid destination IP", destination=args.destination)
+    conn = connect_read_only(args.db)
+    try:
+        if args.path_command != "explain":
+            return 2, err("unsupported path command")
+        explanation = explain_asset_path(
+            conn,
+            PathRequest(args.asset_key, destination, args.protocol, args.port),
+            max_age_seconds=args.max_age_seconds,
+        )
+        if explanation is None:
+            return 1, err("asset not found", asset_key=args.asset_key)
+        return 0, ok(explanation=asdict(explanation))
+    finally:
+        conn.close()
+
+
 def cmd_users(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = prepare_conn(args)
     try:
@@ -1295,6 +1320,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--status", dest="finding_status", choices=("open", "acknowledged", "resolved"), default="open"
     )
 
+    path = sub.add_parser("path")
+    path_sub = path.add_subparsers(dest="path_command", required=True)
+    path_explain = path_sub.add_parser("explain")
+    path_explain.add_argument("--asset-key", required=True)
+    path_explain.add_argument("--destination", required=True)
+    path_explain.add_argument("--protocol", required=True, choices=("tcp", "udp", "icmp"))
+    path_explain.add_argument("--port", type=int, choices=range(1, 65536))
+    path_explain.add_argument("--max-age-seconds", type=int, default=DEFAULT_PATH_FACT_MAX_AGE_SECONDS, choices=range(1, 86401))
+
     users = sub.add_parser("users")
     users_sub = users.add_subparsers(dest="users_command", required=True)
     users_add = users_sub.add_parser("add")
@@ -1403,6 +1437,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_attachments(args)
     if args.command == "context-view":
         return cmd_context_view(args)
+    if args.command == "path":
+        return cmd_path(args)
     if args.command == "users":
         return cmd_users(args)
     if args.command == "ipsec":

@@ -1738,7 +1738,7 @@ git commit -m "feat: explain network paths conservatively"
 **Interfaces:**
 - Produces read-only path explanation.
 
-- [ ] **Step 1: Write failing API tests**
+- [x] **Step 1: Write failing API tests**
 
 ```bash
 netctl --json path explain \
@@ -1752,18 +1752,18 @@ netctl --json path explain \
 GET /api/v1/context/path?asset_key=mac:AA:BB:CC:DD:EE:FF&destination=172.153.159.10&protocol=tcp&port=443
 ```
 
-- [ ] **Step 2: Implement read-only composition**
+- [x] **Step 2: Implement read-only composition**
 
 The CLI loads context and facts from a read-only connection, validates freshness and calls the pure engine.
 
-- [ ] **Step 3: Run tests and full regression**
+- [x] **Step 3: Run tests and full regression**
 
 ```bash
 python -m pytest tests/test_netctl_path_engine.py tests/test_context_api.py -q
 python -m pytest -q
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add netctl/cli.py app/api.py app/models.py tests/test_context_api.py docs/runbooks/netctl-path-facts-rollout.md
