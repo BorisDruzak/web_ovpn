@@ -21,6 +21,11 @@ def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def canonical_sha256(value: object) -> str:
+    """Return the versioned textual digest used to bind immutable plan evidence."""
+    return "sha256:" + hashlib.sha256(_json(value).encode("utf-8")).hexdigest()
+
+
 def _db_path(db_url: str) -> Path:
     if not db_url.startswith("sqlite:///"):
         raise ValueError("only sqlite:/// DB URLs are supported")
@@ -63,6 +68,7 @@ def plan_digest(conn: sqlite3.Connection, plan_key: str) -> str:
         "operation_type": str(plan["operation_type"]), "desired_state_json": str(plan["desired_state_json"]),
         "resolved_targets_json": str(plan["resolved_targets_json"]), "context_evidence_hash": str(plan["context_evidence_hash"]),
         "precheck_json": str(plan["precheck_json"]), "rollback_json": str(plan["rollback_json"]),
+        "plan_basis_json": str(plan["plan_basis_json"]), "plan_basis_hash": str(plan["plan_basis_hash"]),
         "steps": [dict(step) for step in steps],
     }
     raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -71,7 +77,7 @@ def plan_digest(conn: sqlite3.Connection, plan_key: str) -> str:
 
 def _public_plan(row: sqlite3.Row) -> dict[str, Any]:
     value = dict(row)
-    for key in ("desired_state_json", "resolved_targets_json", "precheck_json", "rollback_json"):
+    for key in ("desired_state_json", "resolved_targets_json", "precheck_json", "rollback_json", "plan_basis_json"):
         value[key.removesuffix("_json")] = json.loads(value.pop(key))
     return value
 
@@ -94,19 +100,23 @@ def create_change_plan(
     context_evidence_hash: str,
     precheck: dict[str, Any],
     rollback: dict[str, Any],
+    plan_basis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if subject_type not in {"asset", "user", "infrastructure"} or operation_type not in {"internet_access_set", "internet_policy_bootstrap"}:
         raise ValueError("unsupported change-plan subject or operation")
     if not plan_key or not actor or not reason or not subject_key or len(context_evidence_hash) != 64:
         raise ValueError("invalid change plan identity or evidence hash")
+    immutable_basis = plan_basis or {}
+    basis_hash = canonical_sha256(immutable_basis)
     now = _utc_now()
     cursor = conn.execute(
         """INSERT INTO change_plans
            (plan_key, actor, reason, subject_type, subject_key, operation_type, desired_state_json,
-            resolved_targets_json, context_evidence_hash, precheck_json, rollback_json, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)""",
+            resolved_targets_json, context_evidence_hash, precheck_json, rollback_json, plan_basis_json, plan_basis_hash,
+            status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)""",
         (plan_key, actor, reason, subject_type, subject_key, operation_type, _json(desired_state), _json(resolved_targets),
-         context_evidence_hash, _json(precheck), _json(rollback), now, now),
+         context_evidence_hash, _json(precheck), _json(rollback), _json(immutable_basis), basis_hash, now, now),
     )
     conn.commit()
     return _public_plan(conn.execute("SELECT * FROM change_plans WHERE id = ?", (cursor.lastrowid,)).fetchone())

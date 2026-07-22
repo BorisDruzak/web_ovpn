@@ -8,7 +8,12 @@ from typing import Any
 
 from .audit import AuditSigner, append_event
 from .checkpoint import build_checkpoint, deliver_checkpoint
-from .policy_resolver import changed_plan_preconditions, create_asset_internet_access_plan
+from .policy_resolver import (
+    DEFAULT_IDENTITY_OBSERVATION_MAX_AGE_SECONDS,
+    DEFAULT_PLAN_TTL_SECONDS,
+    changed_plan_preconditions,
+    create_asset_internet_access_plan,
+)
 from .reconcile import apply_plan, rollback_plan, verify_plan
 from .store import get_change_plan, plan_digest, transition_plan, upsert_desired_policy
 
@@ -23,6 +28,8 @@ class ControlService:
     audit_signer: AuditSigner
     writes_enabled: bool
     audit_sink: dict[str, str]
+    plan_ttl_seconds: int = DEFAULT_PLAN_TTL_SECONDS
+    identity_observation_max_age_seconds: int = DEFAULT_IDENTITY_OBSERVATION_MAX_AGE_SECONDS
 
     def _audit(self, event_type: str, *, action: str, peer: str, subject: dict[str, str], outcome: str) -> None:
         append_event(self.conn, self.audit_signer, event_type, {
@@ -53,6 +60,8 @@ class ControlService:
                     "desired_state": plan["desired_state"], "reason": plan["reason"],
                     "enforcement_sources_by_site": self.enforcement_sources_by_site,
                     "source_sla_seconds": self.source_sla_seconds,
+                    "plan_ttl_seconds": self.plan_ttl_seconds,
+                    "identity_observation_max_age_seconds": self.identity_observation_max_age_seconds,
                     "anchor_check": lambda target: self.adapter.inspect_internet_policy_anchor()
                     if target == next(iter(self.enforcement_sources_by_site.values())) else False,
                 }
@@ -79,6 +88,8 @@ class ControlService:
                         plan, self.netctl_db_url,
                         enforcement_sources_by_site=self.enforcement_sources_by_site,
                         source_sla_seconds=self.source_sla_seconds,
+                        plan_ttl_seconds=self.plan_ttl_seconds,
+                        identity_observation_max_age_seconds=self.identity_observation_max_age_seconds,
                         anchor_check=lambda target: self.adapter.inspect_internet_policy_anchor()
                         if target == next(iter(self.enforcement_sources_by_site.values())) else False,
                     ),

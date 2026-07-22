@@ -147,6 +147,10 @@ def _build_service(conn: Any) -> ControlService:
             "identity_file": os.environ["NETOPSCTL_AUDIT_SSH_IDENTITY_FILE"],
             "known_hosts": os.environ["NETOPSCTL_AUDIT_KNOWN_HOSTS"],
         }
+        plan_ttl_seconds = int(os.environ.get("NETOPSCTL_PLAN_TTL_SECONDS", "300"))
+        identity_observation_max_age_seconds = int(
+            os.environ.get("NETOPSCTL_IDENTITY_OBSERVATION_MAX_AGE_SECONDS", "900")
+        )
     except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("invalid netopsctl runtime configuration") from exc
     return ControlService(
@@ -154,6 +158,8 @@ def _build_service(conn: Any) -> ControlService:
         adapter=MikroTikPolicyAdapter(source_name, PerCallRouterOSClient(config)),
         enforcement_sources_by_site=dict(source_map), source_sla_seconds=int(os.environ.get("NETOPSCTL_SOURCE_SLA_SECONDS", "300")),
         audit_signer=signer, writes_enabled=production_writes_allowed(os.environ), audit_sink=sink,
+        plan_ttl_seconds=plan_ttl_seconds,
+        identity_observation_max_age_seconds=identity_observation_max_age_seconds,
     )
 
 

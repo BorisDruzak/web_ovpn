@@ -43,6 +43,228 @@ def test_asset_deny_plan_resolves_current_ipv4_to_one_bounded_step(tmp_path) -> 
         netops.close()
 
 
+def test_asset_policy_plan_basis_binds_active_context_head_before_apply(tmp_path) -> None:
+    """A changed intent head invalidates an approved plan before any device call."""
+    from netctl.db import connect as connect_netctl
+    from netopsctl.policy_resolver import (
+        changed_plan_preconditions,
+        create_asset_internet_access_plan,
+    )
+    from netopsctl.store import connect as connect_netops
+
+    netctl_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    now = utc_now()
+    context = connect_netctl(netctl_url)
+    try:
+        revision_one = context.execute(
+            """INSERT INTO context_revisions
+               (context_id, schema_version, sha256, source_path, validated_at, status)
+               VALUES ('site-a', '1.0', 'a' || printf('%063d', 0), 'fixture', ?, 'ok')""",
+            (now,),
+        ).lastrowid
+        import_one = context.execute(
+            """INSERT INTO context_import_runs
+               (context_id, context_revision_id, input_sha256, git_sha, source_path, started_at, status)
+               VALUES ('site-a', ?, 'a', 'fixture', 'fixture', ?, 'success_imported')""",
+            (revision_one, now),
+        ).lastrowid
+        context.execute(
+            """INSERT INTO context_heads
+               (context_id, context_revision_id, activated_by_import_run_id, activated_at)
+               VALUES ('site-a', ?, ?, ?)""",
+            (revision_one, import_one, now),
+        )
+        source = context.execute(
+            """INSERT INTO network_sources (name, driver, host, port, username, secret_ref, tls, verify_tls, site, enabled, created_at, updated_at, last_collect_at, last_status)
+               VALUES ('edge-a', 'mock', '127.0.0.1', 1, '', '', 0, 0, 'site-a', 1, ?, ?, ?, 'success')""",
+            (now, now, now),
+        ).lastrowid
+        asset = context.execute(
+            """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA:BB:CC:DD:EE:FF', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        ).lastrowid
+        context.execute(
+            """INSERT INTO ip_observations (asset_id, site, source_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+               VALUES (?, 'site-a', ?, 'edge-a', '192.0.2.10', ?, ?, 1, 'manual')""",
+            (asset, source, now, now),
+        )
+        context.commit()
+    finally:
+        context.close()
+
+    netops = connect_netops(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        plan = create_asset_internet_access_plan(
+            netops, netctl_url, plan_key="plan-basis", actor="api:network-admin",
+            asset_key="mac:AA:BB:CC:DD:EE:FF", desired_state="deny", reason="approved",
+            enforcement_sources_by_site={"site-a": "router-a"}, source_sla_seconds=300,
+            anchor_check=lambda source: {"valid": source == "router-a", "fingerprint": "anchor-one"},
+        )
+        assert plan["plan_basis_hash"].startswith("sha256:")
+        assert plan["plan_basis"]["context_heads"] == [{
+            "context_id": "site-a", "context_revision_id": revision_one,
+            "sha256": "a" + "0" * 63,
+        }]
+
+        context = connect_netctl(netctl_url)
+        try:
+            revision_two = context.execute(
+                """INSERT INTO context_revisions
+                   (context_id, schema_version, sha256, source_path, validated_at, status)
+                   VALUES ('site-a', '1.0', 'b' || printf('%063d', 0), 'fixture', ?, 'ok')""",
+                (now,),
+            ).lastrowid
+            import_two = context.execute(
+                """INSERT INTO context_import_runs
+                   (context_id, context_revision_id, input_sha256, git_sha, source_path, started_at, status)
+                   VALUES ('site-a', ?, 'b', 'fixture', 'fixture', ?, 'success_imported')""",
+                (revision_two, now),
+            ).lastrowid
+            context.execute(
+                "UPDATE context_heads SET context_revision_id = ?, activated_by_import_run_id = ? WHERE context_id = 'site-a'",
+                (revision_two, import_two),
+            )
+            context.commit()
+        finally:
+            context.close()
+
+        stored = netops.execute("SELECT * FROM change_plans WHERE plan_key = 'plan-basis'").fetchone()
+        assert changed_plan_preconditions(
+            stored, netctl_url, enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300,
+            anchor_check=lambda source: {"valid": source == "router-a", "fingerprint": "anchor-one"},
+        ) == ["context_head"]
+    finally:
+        netops.close()
+
+
+def test_policy_plan_ttl_cannot_exceed_the_fifteen_minute_security_bound(tmp_path) -> None:
+    from netopsctl.policy_resolver import create_asset_internet_access_plan
+    from netopsctl.store import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        with pytest.raises(ValueError, match="fifteen minutes"):
+            create_asset_internet_access_plan(
+                conn, "sqlite:///missing.sqlite", plan_key="invalid-ttl", actor="api",
+                asset_key="mac:AA", desired_state="deny", reason="test",
+                enforcement_sources_by_site={}, source_sla_seconds=300, anchor_check=lambda _: True,
+                plan_ttl_seconds=901,
+            )
+    finally:
+        conn.close()
+
+
+def test_plan_preflight_names_a_changed_firewall_anchor_fingerprint(tmp_path) -> None:
+    from netctl.db import connect as connect_netctl
+    from netopsctl.policy_resolver import (
+        changed_plan_preconditions,
+        create_asset_internet_access_plan,
+    )
+    from netopsctl.store import connect as connect_netops
+
+    netctl_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    now = utc_now()
+    context = connect_netctl(netctl_url)
+    try:
+        source = context.execute(
+            """INSERT INTO network_sources (name, driver, host, port, username, secret_ref, tls, verify_tls, site, enabled, created_at, updated_at, last_collect_at, last_status)
+               VALUES ('edge-a', 'mock', '127.0.0.1', 1, '', '', 0, 0, 'site-a', 1, ?, ?, ?, 'success')""",
+            (now, now, now),
+        ).lastrowid
+        asset = context.execute(
+            """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        ).lastrowid
+        context.execute(
+            """INSERT INTO ip_observations (asset_id, site, source_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+               VALUES (?, 'site-a', ?, 'edge-a', '192.0.2.11', ?, ?, 1, 'manual')""",
+            (asset, source, now, now),
+        )
+        context.commit()
+    finally:
+        context.close()
+    netops = connect_netops(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_asset_internet_access_plan(
+            netops, netctl_url, plan_key="plan-anchor", actor="api", asset_key="mac:AA",
+            desired_state="deny", reason="approved", enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300,
+            anchor_check=lambda _: {"valid": True, "anchor": "WEBOVPN-INTERNET-DENY", "fingerprint": "before"},
+        )
+        stored = netops.execute("SELECT * FROM change_plans WHERE plan_key = 'plan-anchor'").fetchone()
+        assert changed_plan_preconditions(
+            stored, netctl_url, enforcement_sources_by_site={"site-a": "router-a"}, source_sla_seconds=300,
+            anchor_check=lambda _: {"valid": True, "anchor": "WEBOVPN-INTERNET-DENY", "fingerprint": "after"},
+        ) == ["firewall_anchor_fingerprint"]
+    finally:
+        netops.close()
+
+
+def test_user_plan_becomes_stale_when_its_primary_binding_is_retired(tmp_path) -> None:
+    from netctl.db import connect as connect_netctl
+    from netctl.user_context import bind_user_asset, create_user, retire_user_asset_binding
+    from netopsctl.policy_resolver import (
+        changed_plan_preconditions,
+        create_user_internet_access_plan,
+    )
+    from netopsctl.store import connect as connect_netops
+
+    netctl_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    now = utc_now()
+    context = connect_netctl(netctl_url)
+    try:
+        source = context.execute(
+            """INSERT INTO network_sources (name, driver, host, port, username, secret_ref, tls, verify_tls, site, enabled, created_at, updated_at, last_collect_at, last_status)
+               VALUES ('edge-a', 'mock', '127.0.0.1', 1, '', '', 0, 0, 'site-a', 1, ?, ?, ?, 'success')""",
+            (now, now, now),
+        ).lastrowid
+        asset = context.execute(
+            """INSERT INTO assets (asset_key, identity_method, identity_confidence, provisional, first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        ).lastrowid
+        context.execute(
+            """INSERT INTO ip_observations (asset_id, site, source_id, source_key, ip, first_seen_at, last_seen_at, is_current, observation_source)
+               VALUES (?, 'site-a', ?, 'edge-a', '192.0.2.12', ?, ?, 1, 'manual')""",
+            (asset, source, now, now),
+        )
+        context.commit()
+        create_user(context, "employee:one", "Employee One")
+        binding = bind_user_asset(
+            context, "employee:one", "mac:AA", relation="primary_user", confidence=100,
+            reason="assigned workstation",
+        )
+    finally:
+        context.close()
+
+    netops = connect_netops(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        plan = create_user_internet_access_plan(
+            netops, netctl_url, plan_key="plan-user-binding", actor="api", user_key="employee:one",
+            desired_state="deny", reason="approved", enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300, anchor_check=lambda _: {"valid": True, "fingerprint": "anchor-one"},
+        )
+        assert plan["subject_key"] == "employee:one"
+        assert plan["desired_state"]["resolved_enforcement_asset_key"] == "mac:AA"
+
+        context = connect_netctl(netctl_url)
+        try:
+            retire_user_asset_binding(context, int(binding["id"]), "reassigned")
+        finally:
+            context.close()
+
+        stored = netops.execute("SELECT * FROM change_plans WHERE plan_key = 'plan-user-binding'").fetchone()
+        assert changed_plan_preconditions(
+            stored, netctl_url, enforcement_sources_by_site={"site-a": "router-a"},
+            source_sla_seconds=300, anchor_check=lambda _: {"valid": True, "fingerprint": "anchor-one"},
+        ) == ["user_policy_binding"]
+    finally:
+        netops.close()
+
+
 def test_asset_policy_rejects_unknown_desired_state_and_provisional_identity(tmp_path) -> None:
     from netctl.db import connect as connect_netctl
     from netopsctl.policy_resolver import create_asset_internet_access_plan, resolve_asset_targets

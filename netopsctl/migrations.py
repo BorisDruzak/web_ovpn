@@ -93,11 +93,18 @@ def _migration_4(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_5(conn: sqlite3.Connection) -> None:
+    """Persist the exact immutable context evidence behind a change plan."""
+    conn.execute("ALTER TABLE change_plans ADD COLUMN plan_basis_json TEXT NOT NULL DEFAULT '{}'")
+    conn.execute("ALTER TABLE change_plans ADD COLUMN plan_basis_hash TEXT NOT NULL DEFAULT ''")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
     (3, _migration_3),
     (4, _migration_4),
+    (5, _migration_5),
 )
 
 
