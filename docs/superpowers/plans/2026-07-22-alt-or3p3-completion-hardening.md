@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3 standard library, Bash, systemd, GNU tar, zstd and pytest.
 
+**Execution status:** Tasks 1-5 are implemented and repository-verified through PR #24 head `6768b8a`; Task 6 final documentation, whole-branch verification and temporary workflow cleanup are in progress. The live controller gate has not been executed.
+
 ## Tasks
 
 1. Durable restore journal, per-path progress, `aborted`, common rollback and `recover <restore-id>`.

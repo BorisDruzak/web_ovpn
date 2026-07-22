@@ -76,7 +76,7 @@ The IP remained the same after reinstall because DHCP saw the same MAC and reuse
 
 ## systemd units
 
-- `alt-deploy-http.service`: Python static HTTP server on port 8087.
+- `alt-deploy-http.service`: unprivileged allowlisted HTTP server on port 8087; it serves only `/bootstrap/*`, `/metadata/*` and `/health`.
 - `alt-deploy-register.service`: registration API on port 8088.
 - `alt-deploy-process.path`: watches `registration/pending`.
 - `alt-deploy-process.service`: one-shot SSH and Ansible verification.
@@ -89,6 +89,7 @@ systemctl is-active \
   alt-deploy-register \
   alt-deploy-process.path
 
+curl -fsS http://127.0.0.1:8087/health
 curl -fsS http://127.0.0.1:8088/health
 journalctl -u alt-deploy-http -f
 journalctl -u alt-deploy-process.service -f
@@ -244,8 +245,8 @@ The current registration API is restricted by source network but has no authenti
 1. `autoinstall.scm` currently names `enp3s0`; this is model-specific.
 2. The installer clears the first disk.
 3. The stock USB still requires manual `ai curl=...` entry.
-4. Static file delivery uses Python `http.server`, not nginx.
-5. The API uses plain HTTP on the trusted LAN.
+4. Static delivery remains plain HTTP on the trusted provisioning LAN, although it is now namespace-allowlisted and no longer exposes registration state or directory listings.
+5. The registration API also uses plain HTTP on the trusted LAN.
 6. Ready registrations are not yet exposed as a dynamic Ansible inventory.
 7. No Ansible workstation roles have been migrated to ALT K 11.2 yet.
 8. No web UI is connected to this deployment subsystem.
@@ -261,7 +262,7 @@ The current registration API is restricted by source network but has no authenti
 7. Add network-share roles without `0777` and without choosing an arbitrary home directory.
 8. Make NIC selection independent of `enp3s0`.
 9. Add a custom USB boot entry, then consider PXE/iPXE.
-10. Replace Python static HTTP with nginx and harden registration transport.
+10. Add authenticated encrypted bootstrap/registration transport, then decide whether nginx is required for operational scale.
 
 ## Quick recovery commands
 

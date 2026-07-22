@@ -1,7 +1,7 @@
 # ALT OR-3P3 Completion Hardening Design
 
-**Date:** 2026-07-22  
-**Status:** approved continuation design for draft PR #24
+**Date:** 2026-07-22
+**Status:** implemented in draft PR #24; final verification and merge approval pending
 
 This amendment completes OR-3P3 Tasks 10-13 and overrides conflicting restore and rollout details in the earlier design and plan.
 
@@ -41,6 +41,6 @@ Terminal phases are `aborted`, `rolled_back`, and `manual_recovery_required`.
 
 The journal never stores secret contents and accepts only bounded exact-schema evidence.
 
-## Remaining completion work
+## Completion boundary
 
-After durable recovery, add capacity/audit, the boot and rollout guard, dedicated backup installer, explicit rollback gate, restricted static server, operator documentation and final verification. Repository work must not contact `192.168.100.17` or `192.168.101.111`, and PR #24 remains draft until explicit user approval.
+Capacity/audit, the boot and rollout guard, dedicated backup installer, explicit rollback gate and restricted static server are implemented. Repository completion still requires fresh full verification, synchronized operator documentation, removal of temporary patch/export workflows and explicit user approval before merge. Repository work has not contacted `192.168.100.17` or `192.168.101.111`.

@@ -6,6 +6,8 @@
 - Specification: `docs/superpowers/specs/2026-07-22-alt-or3p3-coordinated-backup-restore-design.md`
 - Plan: `docs/superpowers/plans/2026-07-22-alt-or3p3-coordinated-backup-restore.md`
 - Amendment: `docs/superpowers/plans/2026-07-22-alt-or3p3-coordinated-backup-restore-amendment.md`
+- Completion hardening design: `docs/superpowers/specs/2026-07-22-alt-or3p3-completion-hardening-design.md`
+- Completion hardening plan: `docs/superpowers/plans/2026-07-22-alt-or3p3-completion-hardening.md`
 
 ## Tasks
 
@@ -18,10 +20,10 @@
 - Task 7: complete (`d73de93..2f0a606`); coordinated create, lifecycle-lock capture, atomic publication, systemd recovery and CLI JSON passed both full-regression workflows; frozen sandbox and standard `/var/log` parent findings fixed; review clean.
 - Task 8: complete (`405899a..ca73f9b`); strict verify/list/delete, byte-stable read-only verification, evidence invalidation and rehearsal eligibility foundation passed both full-regression workflows; empty root compatibility, final list contract, root confinement and filesystem-bound deletion findings fixed; review clean.
 - Task 9: complete (`a242058..40f29d1`); independent job/assignment/registration/archive validators, isolated extraction, Python/Bash/systemd/Ansible checks, secret scan and exact evidence binding passed both full-regression workflows; canonical stage history and extracted UID/GID/mode findings fixed; review clean.
-- Task 10: pending.
-- Task 11: pending.
-- Task 12: pending.
-- Task 13: pending.
+- Task 10: complete through the durable-recovery hardening series; strict journal phases, same-filesystem staging, complete pre-restore generation, per-path rename evidence, explicit `recover`, terminal `aborted` and pre-mutation capacity checks passed focused and complete ALT regressions.
+- Task 11: complete through the guarded restore series; all six components restore together, post-install syntax/state/loopback checks run before commit, failed health reverses with digest proof, incomplete proof leaves maintenance stopped, and committed recovery completes guard cleanup.
+- Task 12: complete through the installer/static-service series; independent backup-tool installer, exact read-only `rehearse-status` gate, mandatory `--rollback-backup-id`, durable rollout marker, ephemeral permits, boot guard, destination hardening and allowlisted unprivileged HTTP service passed focused and complete ALT regressions.
+- Task 13: implementation complete; operator runbook and context synchronization are present. Final fresh repository verification, evidence synchronization, temporary workflow cleanup and PR review gate are recorded in `docs/superpowers/plans/2026-07-22-alt-or3p3-verification.md`.
 
 ## Safety
 

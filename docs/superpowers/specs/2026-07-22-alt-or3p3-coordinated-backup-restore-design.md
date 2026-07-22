@@ -1,8 +1,8 @@
 # ALT OR-3P3 Coordinated Backup and Restore Design
 
-**Date:** 2026-07-22  
-**Status:** approved design, self-reviewed, implementation not started  
-**Repository:** `BorisDruzak/web_ovpn`  
+**Date:** 2026-07-22
+**Status:** implemented in draft PR #24; final repository verification and explicit merge approval pending
+**Repository:** `BorisDruzak/web_ovpn`
 **Controller:** `192.168.100.17`
 
 ## 1. Purpose and recovery level
