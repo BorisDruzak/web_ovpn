@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .authorization import VerifiedAuthorization, verify_envelope
+from .connectivity_probe import SSHConnectivityProbe
 from .adapters.mikrotik import MikroTikPolicyAdapter
 from .audit import AuditSigner
 from .credentials import read_ed25519_private_key
@@ -160,6 +161,17 @@ def _build_service(conn: Any) -> ControlService:
         identity_observation_max_age_seconds = int(
             os.environ.get("NETOPSCTL_IDENTITY_OBSERVATION_MAX_AGE_SECONDS", "900")
         )
+        active_probe_config = os.environ.get("NETOPSCTL_ACTIVE_PROBES_JSON", "{}")
+        if active_probe_config == "{}":
+            connectivity_probe = None
+        else:
+            credentials_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+            if not credentials_directory:
+                raise ValueError
+            connectivity_probe = SSHConnectivityProbe.from_json(
+                active_probe_config,
+                f"{credentials_directory.rstrip('/')}/netopsctl-active-probe-ssh-key",
+            )
     except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("invalid netopsctl runtime configuration") from exc
     return ControlService(
@@ -169,6 +181,7 @@ def _build_service(conn: Any) -> ControlService:
         audit_signer=signer, writes_enabled=production_writes_allowed(os.environ), audit_sink=sink,
         plan_ttl_seconds=plan_ttl_seconds,
         identity_observation_max_age_seconds=identity_observation_max_age_seconds,
+        connectivity_probe=connectivity_probe,
     )
 
 

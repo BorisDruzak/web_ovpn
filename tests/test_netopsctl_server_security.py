@@ -26,6 +26,78 @@ def _request(private_key, *, plan_key: str, plan_digest: str, nonce: str = "nonc
     return BrokerRequest(str(uuid.uuid4()), "plan.apply", {"plan_key": plan_key}, envelope, sign_envelope(private_key, envelope))
 
 
+def test_broker_rejects_invalid_active_connectivity_probe_runtime_configuration(tmp_path, monkeypatch) -> None:
+    import netopsctl.server as server_module
+    from netopsctl.store import connect
+
+    monkeypatch.setenv("NETOPSCTL_ENFORCEMENT_SOURCES_JSON", '{"site-a":"router-a"}')
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SIGNING_KEY_ID", "test-key")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SINK_HOST", "audit.example.test")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SSH_IDENTITY_FILE", "/run/audit-key")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_KNOWN_HOSTS", "/run/known-hosts")
+    monkeypatch.setenv("NETOPSCTL_ACTIVE_PROBES_JSON", '{"mac:AA":{"password":"x"}}')
+    monkeypatch.setattr(server_module, "read_ed25519_private_key", lambda *_args, **_kwargs: b"x" * 32)
+    monkeypatch.setattr(server_module, "load_routeros_config", lambda: object())
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        with pytest.raises(RuntimeError, match="invalid netopsctl runtime configuration"):
+            server_module._build_service(conn)
+    finally:
+        conn.close()
+
+
+def test_broker_requires_systemd_credential_directory_for_active_connectivity_probe(tmp_path, monkeypatch) -> None:
+    import netopsctl.server as server_module
+    from netopsctl.store import connect
+
+    monkeypatch.setenv("NETOPSCTL_ENFORCEMENT_SOURCES_JSON", '{"site-a":"router-a"}')
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SIGNING_KEY_ID", "test-key")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SINK_HOST", "audit.example.test")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SSH_IDENTITY_FILE", "/run/audit-key")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_KNOWN_HOSTS", "/run/known-hosts")
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+    monkeypatch.setenv(
+        "NETOPSCTL_ACTIVE_PROBES_JSON",
+        '{"mac:AA":{"host":"192.0.2.56","user":"test-user","internet":{"host":"1.1.1.1","port":443},"internal":{"host":"192.0.2.30","port":22}}}',
+    )
+    monkeypatch.setattr(server_module, "read_ed25519_private_key", lambda *_args, **_kwargs: b"x" * 32)
+    monkeypatch.setattr(server_module, "load_routeros_config", lambda: object())
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        with pytest.raises(RuntimeError, match="invalid netopsctl runtime configuration"):
+            server_module._build_service(conn)
+    finally:
+        conn.close()
+
+
+def test_broker_loads_active_connectivity_probe_only_from_systemd_credentials(tmp_path, monkeypatch) -> None:
+    import netopsctl.server as server_module
+    from netopsctl.store import connect
+
+    monkeypatch.setenv("NETOPSCTL_ENFORCEMENT_SOURCES_JSON", '{"site-a":"router-a"}')
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SIGNING_KEY_ID", "test-key")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SINK_HOST", "audit.example.test")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_SSH_IDENTITY_FILE", "/run/audit-key")
+    monkeypatch.setenv("NETOPSCTL_AUDIT_KNOWN_HOSTS", "/run/known-hosts")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", "/run/credentials")
+    monkeypatch.setenv(
+        "NETOPSCTL_ACTIVE_PROBES_JSON",
+        '{"mac:AA":{"host":"192.0.2.56","user":"test-user","internet":{"host":"1.1.1.1","port":443},"internal":{"host":"192.0.2.30","port":22}}}',
+    )
+    monkeypatch.setattr(server_module, "read_ed25519_private_key", lambda *_args, **_kwargs: b"x" * 32)
+    monkeypatch.setattr(server_module, "load_routeros_config", lambda: object())
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        service = server_module._build_service(conn)
+        assert service.connectivity_probe is not None
+        assert service.connectivity_probe._identity_file == "/run/credentials/netopsctl-active-probe-ssh-key"
+    finally:
+        conn.close()
+
+
 def test_broker_authorization_binds_peer_key_plan_digest_and_single_use_nonce(tmp_path) -> None:
     from netopsctl.server import AuthenticatedPeer, authorize_broker_request
     from netopsctl.store import connect, create_change_plan, plan_digest

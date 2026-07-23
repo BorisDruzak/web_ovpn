@@ -36,8 +36,16 @@ def test_control_plane_units_load_named_signing_credentials() -> None:
     reconciler = (root / "deploy" / "netopsctl-reconcile.service").read_text(encoding="utf-8")
 
     assert "LoadCredential=netopsctl-audit-signing-key:" in broker
+    assert "LoadCredential=netopsctl-active-probe-ssh-key:/etc/netopsctl/credentials/active_probe_ssh_ed25519" in broker
     assert "LoadCredential=web-netopsctl-signing-key:" in web
     assert "LoadCredential=netopsctl-reconcile-signing-key:" in reconciler
     assert "NETOPSCTL_AUDIT_SIGNING_KEY_FILE" not in broker
     assert "NETWORK_CONTROL_SIGNING_KEY_PATH" not in web
     assert "NETOPSCTL_RECONCILE_SIGNING_KEY_FILE" not in reconciler
+
+
+def test_broker_installer_requires_the_active_connectivity_probe_credential() -> None:
+    root = Path(__file__).resolve().parents[1]
+    installer = (root / "deploy" / "netopsctl").read_text(encoding="utf-8")
+
+    assert "require_credential_source /etc/netopsctl/credentials/active_probe_ssh_ed25519" in installer

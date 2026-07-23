@@ -10,6 +10,7 @@ Group=netopsctl
 SupplementaryGroups=netctl
 EnvironmentFile=/etc/netopsctl/netopsctl.env
 LoadCredential=netopsctl-audit-signing-key:/etc/netopsctl/credentials/audit_signing_ed25519.raw
+LoadCredential=netopsctl-active-probe-ssh-key:/etc/netopsctl/credentials/active_probe_ssh_ed25519
 WorkingDirectory=/opt/openvpn-web
 ExecStart=/opt/openvpn-web/.venv/bin/python -m netopsctl.server
 NoNewPrivileges=true
