@@ -207,12 +207,15 @@ class StateValidator:
                 stage=stage,
             )
             _validate_optional_json(job_dir / "result.json")
+            _validate_optional_json(job_dir / "provision-result.json")
             for child in _children(job_dir):
                 if child.name not in {
                     "status.json",
                     "request.json",
                     "result.json",
+                    "provision-result.json",
                     "ansible.log",
+                    "ansible.log.gz",
                 }:
                     raise _failure(
                         "Job directory contains an unexpected object"
