@@ -49,3 +49,11 @@ def test_broker_installer_requires_the_active_connectivity_probe_credential() ->
     installer = (root / "deploy" / "netopsctl").read_text(encoding="utf-8")
 
     assert "require_credential_source /etc/netopsctl/credentials/active_probe_ssh_ed25519" in installer
+
+
+def test_broker_credential_directory_permits_only_peer_public_key_reads() -> None:
+    root = Path(__file__).resolve().parents[1]
+    installer = (root / "deploy" / "netopsctl").read_text(encoding="utf-8")
+
+    assert "install -d -o root -g netopsctl -m 0750 /etc/netopsctl/credentials" in installer
+    assert "install -d -o root -g root -m 0700 /etc/openvpn-web/credentials" in installer
