@@ -429,7 +429,12 @@ def test_reconciler_adds_new_deny_before_removing_a_superseded_dhcp_address(tmp_
         transition_plan(netops, "allow-after-dhcp", "validated")
         transition_plan(netops, "allow-after-dhcp", "approved")
         assert apply_plan(netops, "allow-after-dhcp", adapter)["status"] == "applied"
-        assert verify_plan(netops, "allow-after-dhcp", adapter)["status"] == "verified"
+        class Probe:
+            def verify(self, asset_key, *, expected_internet):
+                assert (asset_key, expected_internet) == ("mac:AA", True)
+                return {"asset_key": asset_key, "internet": "reachable", "internal": "reachable"}
+
+        assert verify_plan(netops, "allow-after-dhcp", adapter, connectivity_probe=Probe())["status"] == "verified"
         assert adapter.entries == []
     finally:
         netops.close()
@@ -584,6 +589,15 @@ def test_allow_plan_removes_a_prior_deny_with_the_same_stable_policy_ownership(t
         def list_managed_address_list_entries(self, _target):
             return list(self.entries)
 
+    class Probe:
+        def verify(self, asset_key, *, expected_internet):
+            assert asset_key == "mac:AA"
+            return {
+                "asset_key": asset_key,
+                "internet": "reachable" if expected_internet else "blocked",
+                "internal": "reachable",
+            }
+
     conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
     adapter = Adapter()
     policy_key = "policy-asset-mac-aa-all-sites"
@@ -602,7 +616,7 @@ def test_allow_plan_removes_a_prior_deny_with_the_same_stable_policy_ownership(t
             transition_plan(conn, plan_key, "validated")
             transition_plan(conn, plan_key, "approved")
             assert apply_plan(conn, plan_key, adapter)["status"] == "applied"
-            assert verify_plan(conn, plan_key, adapter)["status"] == "verified"
+            assert verify_plan(conn, plan_key, adapter, connectivity_probe=Probe())["status"] == "verified"
 
         assert adapter.entries == []
     finally:
@@ -762,6 +776,46 @@ def test_verify_rejects_an_anchor_that_no_longer_satisfies_its_firewall_contract
         conn.close()
 
 
+def test_verify_requires_active_probe_for_an_internet_policy_and_records_result(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan, verify_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        @staticmethod
+        def ownership_comment(policy_key, asset_key):
+            return f"web_ovpn:policy:{policy_key}:asset:{asset_key}"
+
+        def ensure_address_list_entry(self, *_args):
+            return {"status": "added"}
+
+        def list_managed_address_list_entries(self, _target):
+            return [{"address": "192.0.2.10", "comment": self.ownership_comment("plan-active", "mac:AA")}]
+
+    class Probe:
+        def verify(self, asset_key, *, expected_internet):
+            assert (asset_key, expected_internet) == ("mac:AA", False)
+            return {"asset_key": asset_key, "internet": "blocked", "internal": "reachable"}
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(
+            conn, plan_key="plan-active", actor="api", reason="approved", subject_type="asset",
+            subject_key="mac:AA", operation_type="internet_access_set", desired_state={"internet_access": "deny"},
+            resolved_targets=[], context_evidence_hash="c" * 64, precheck={}, rollback={},
+        )
+        add_plan_step(conn, "plan-active", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-active", "validated")
+        transition_plan(conn, "plan-active", "approved")
+        assert apply_plan(conn, "plan-active", Adapter())["status"] == "applied"
+        with pytest.raises(ValueError, match="active connectivity probe"):
+            verify_plan(conn, "plan-active", Adapter())
+        assert verify_plan(conn, "plan-active", Adapter(), connectivity_probe=Probe())["status"] == "verified"
+        result = json.loads(conn.execute("SELECT result_json FROM change_plan_steps").fetchone()[0])
+        assert result["active_connectivity"] == {"asset_key": "mac:AA", "internet": "blocked", "internal": "reachable"}
+    finally:
+        conn.close()
+
+
 def test_rollback_removes_only_the_original_plan_asset_entry(tmp_path) -> None:
     from netopsctl.reconcile import apply_plan, rollback_plan
     from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
@@ -787,6 +841,41 @@ def test_rollback_removes_only_the_original_plan_asset_entry(tmp_path) -> None:
         apply_plan(conn, "plan-rollback", adapter)
         assert rollback_plan(conn, "plan-rollback", adapter)["status"] == "rolled_back"
         assert adapter.removals == [("router-a", "192.0.2.10", "plan-rollback", "mac:AA")]
+    finally:
+        conn.close()
+
+
+def test_rollback_requires_active_probe_to_restore_internet(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan, rollback_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        def ensure_address_list_entry(self, *_args):
+            return {"status": "added"}
+
+        def remove_address_list_entry(self, *_args):
+            return {"status": "removed"}
+
+    class Probe:
+        def verify(self, asset_key, *, expected_internet):
+            assert (asset_key, expected_internet) == ("mac:AA", True)
+            return {"asset_key": asset_key, "internet": "reachable", "internal": "reachable"}
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(
+            conn, plan_key="rollback-active", actor="api", reason="approved", subject_type="asset",
+            subject_key="mac:AA", operation_type="internet_access_set", desired_state={"internet_access": "deny"},
+            resolved_targets=[], context_evidence_hash="c" * 64, precheck={},
+            rollback={"steps": [{"operation": "remove_address_list_entry", "target_key": "router-a", "request": {"address": "192.0.2.10", "asset_key": "mac:AA"}}]},
+        )
+        add_plan_step(conn, "rollback-active", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "rollback-active", "validated")
+        transition_plan(conn, "rollback-active", "approved")
+        assert apply_plan(conn, "rollback-active", Adapter())["status"] == "applied"
+        assert rollback_plan(conn, "rollback-active", Adapter(), connectivity_probe=Probe())["status"] == "rolled_back"
+        execution = json.loads(conn.execute("SELECT sanitized_result_json FROM change_executions ORDER BY id DESC LIMIT 1").fetchone()[0])
+        assert execution["active_connectivity"]["internet"] == "reachable"
     finally:
         conn.close()
 

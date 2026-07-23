@@ -30,6 +30,7 @@ class ControlService:
     audit_sink: dict[str, str]
     plan_ttl_seconds: int = DEFAULT_PLAN_TTL_SECONDS
     identity_observation_max_age_seconds: int = DEFAULT_IDENTITY_OBSERVATION_MAX_AGE_SECONDS
+    connectivity_probe: Any | None = None
 
     def _audit(self, event_type: str, *, action: str, peer: Any, subject: dict[str, str], outcome: str) -> None:
         try:
@@ -106,7 +107,10 @@ class ControlService:
                     ),
                 )
             elif action == "plan.verify":
-                result = verify_plan(self.conn, payload["plan_key"], self.adapter)
+                result = verify_plan(
+                    self.conn, payload["plan_key"], self.adapter,
+                    connectivity_probe=self.connectivity_probe,
+                )
                 if result["status"] == "verified":
                     plan = self.conn.execute("SELECT * FROM change_plans WHERE plan_key = ?", (payload["plan_key"],)).fetchone()
                     desired = json.loads(plan["desired_state_json"])
@@ -115,7 +119,10 @@ class ControlService:
                         desired_state=str(desired["internet_access"]), reason=str(plan["reason"]), enforcement_scope="all-sites",
                     )
             elif action == "plan.rollback":
-                result = rollback_plan(self.conn, payload["plan_key"], self.adapter)
+                result = rollback_plan(
+                    self.conn, payload["plan_key"], self.adapter,
+                    connectivity_probe=self.connectivity_probe,
+                )
             elif action == "policy.reconcile":
                 # This action is assigned only to the dedicated reconciler peer.
                 # It may change entries, so it remains behind the same checkpoint gate.

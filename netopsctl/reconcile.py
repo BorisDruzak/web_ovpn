@@ -135,7 +135,38 @@ def _expected_entry(adapter: Any, plan_key: str, request: dict[str, Any]) -> dic
     }
 
 
-def verify_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[str, Any]:
+def _active_connectivity_result(
+    plan: sqlite3.Row,
+    connectivity_probe: Any | None,
+    *,
+    expected_internet: bool | None = None,
+) -> dict[str, Any] | None:
+    try:
+        desired = json.loads(str(plan["desired_state_json"] or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid Internet-policy desired state") from exc
+    desired_state = desired.get("internet_access")
+    if desired_state not in {"allow", "deny"}:
+        return None
+    if connectivity_probe is None:
+        raise ValueError("active connectivity probe is required for Internet-policy verification")
+    asset_key = str(desired.get("resolved_enforcement_asset_key") or plan["subject_key"])
+    result = connectivity_probe.verify(
+        asset_key,
+        expected_internet=desired_state == "allow" if expected_internet is None else expected_internet,
+    )
+    if not isinstance(result, dict):
+        raise ValueError("active connectivity probe returned invalid result")
+    return result
+
+
+def verify_plan(
+    conn: sqlite3.Connection,
+    plan_key: str,
+    adapter: Any,
+    *,
+    connectivity_probe: Any | None = None,
+) -> dict[str, Any]:
     plan, steps = _steps(conn, plan_key)
     if plan["status"] != "applied" or any(step["status"] != "applied" for step in steps):
         raise ValueError("plan has not applied all steps")
@@ -164,6 +195,7 @@ def verify_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[s
                 "anchor_position": int(inspection.get("anchor_position") or 0),
                 "counters": dict(inspection.get("counters") or {}),
             }
+    active_connectivity = _active_connectivity_result(plan, connectivity_probe)
     for step in steps:
         request = json.loads(step["request_json"])
         expected = _expected_entry(adapter, plan_key, request)
@@ -185,14 +217,27 @@ def verify_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[s
             except (TypeError, ValueError, json.JSONDecodeError):
                 recorded = {}
             recorded["anchor_after"] = anchor_checks[str(step["target_key"])]
-            conn.execute("UPDATE change_plan_steps SET result_json = ? WHERE id = ?", (json.dumps(recorded, sort_keys=True), step["id"]))
+        else:
+            try:
+                recorded = json.loads(str(step["result_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                recorded = {}
+        if active_connectivity is not None:
+            recorded["active_connectivity"] = active_connectivity
+        conn.execute("UPDATE change_plan_steps SET result_json = ? WHERE id = ?", (json.dumps(recorded, sort_keys=True), step["id"]))
     conn.execute("UPDATE change_plan_steps SET status = 'verified' WHERE change_plan_id = ?", (plan["id"],))
     conn.commit()
     transition_plan(conn, plan_key, "verified")
     return {"status": "verified", "plan_key": plan_key}
 
 
-def rollback_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[str, Any]:
+def rollback_plan(
+    conn: sqlite3.Connection,
+    plan_key: str,
+    adapter: Any,
+    *,
+    connectivity_probe: Any | None = None,
+) -> dict[str, Any]:
     plan, plan_steps = _steps(conn, plan_key)
     if plan["status"] == "rolled_back":
         return {"status": "already_rolled_back", "plan_key": plan_key}
@@ -226,6 +271,15 @@ def rollback_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict
                     (plan["id"], json.dumps(result, sort_keys=True)),
                 )
                 conn.commit()
+            active_connectivity = _active_connectivity_result(
+                plan, connectivity_probe, expected_internet=True,
+            )
+            if active_connectivity is not None:
+                conn.execute(
+                    "INSERT INTO change_executions (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json) VALUES (?, 'rollback', datetime('now'), datetime('now'), 'success', ?)",
+                    (plan["id"], json.dumps({"active_connectivity": active_connectivity}, sort_keys=True)),
+                )
+                conn.commit()
         except Exception:
             conn.execute(
                 "INSERT INTO change_executions (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json) VALUES (?, 'rollback', datetime('now'), datetime('now'), 'failed', ?)",
@@ -237,7 +291,10 @@ def rollback_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict
         conn.execute("UPDATE change_plan_steps SET status = 'rolled_back' WHERE change_plan_id = ?", (plan["id"],))
         conn.commit()
         transition_plan(conn, plan_key, "rolled_back")
-        return {"status": "rolled_back", "plan_key": plan_key, "completed_rollback_steps": completed}
+        response = {"status": "rolled_back", "plan_key": plan_key, "completed_rollback_steps": completed}
+        if active_connectivity is not None:
+            response["active_connectivity"] = active_connectivity
+        return response
     finally:
         _release_device_lock(conn, lock)
 
