@@ -3,8 +3,8 @@
 ## Scope and status
 
 This record covers the S1--S3 implementation described by the current-model
-stabilization plan. It is implementation evidence, not evidence that a
-production deployment has occurred.
+stabilization plan and its completed sanitized rollout. It does not authorize
+RouterOS changes.
 
 Implemented locally:
 
@@ -17,12 +17,25 @@ Implemented locally:
 - Additive v1 context envelopes with snapshot metadata, signed search cursors,
   bounded topology responses, and ETags.
 
+## Sanitized deployment record
+
+On 2026-07-22, release `2b08dae` was deployed through the companion rollout
+runbook. The release was verified with the following sanitized evidence:
+
+- Online SQLite backups were created and passed integrity and hash checks.
+- The broker socket/service and the web service returned to active state.
+- A signed status request, audit-chain verification, and independent audit
+  checkpoint verification succeeded.
+- The production-write gate remained disabled; the audit-checkpoint health
+  gate was preserved. No RouterOS policy or address-list mutation was made as
+  part of this rollout.
+
+Later commits require their own rollout record; this entry must not be used as
+evidence that they are deployed.
+
 Not asserted by this record:
 
-- That the application is deployed to a remote host.
 - That every network source has complete, current topology evidence.
-- That either production-write gate is enabled, disabled, or otherwise
-  changed. Deployment preserves both captured values verbatim.
 
 ## Data-quality interpretation
 

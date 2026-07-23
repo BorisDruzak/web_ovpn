@@ -344,12 +344,12 @@ def test_reconciler_adds_new_deny_before_removing_a_superseded_dhcp_address(tmp_
     from netctl.db import connect as connect_netctl
     from netopsctl.reconcile import reconcile_desired_policies
     from netopsctl.store import connect as connect_netops
-    from netopsctl.store import create_change_plan, transition_plan, upsert_desired_policy
+    from netopsctl.store import add_plan_step, create_change_plan, transition_plan, upsert_desired_policy
 
     class Adapter:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str]] = []
-            self.entries = [{"address": "192.0.2.20", "comment": self.ownership_comment("policy-source", "mac:AA")}]
+            self.entries = [{"address": "192.0.2.20", "comment": self.ownership_comment("policy-dhcp", "mac:AA")}]
 
         @staticmethod
         def ownership_comment(plan_key, asset_key):
@@ -396,7 +396,7 @@ def test_reconciler_adds_new_deny_before_removing_a_superseded_dhcp_address(tmp_
     try:
         create_change_plan(
             netops, plan_key="policy-source", actor="api", reason="approved", subject_type="asset",
-            subject_key="mac:AA", operation_type="internet_access_set", desired_state={"internet_access": "deny"},
+            subject_key="mac:AA", operation_type="internet_access_set", desired_state={"internet_access": "deny", "policy_key": "policy-dhcp"},
             resolved_targets=[], context_evidence_hash="a" * 64, precheck={}, rollback={},
         )
         for status in ("validated", "approved", "applying", "applied", "verified"):
@@ -412,7 +412,25 @@ def test_reconciler_adds_new_deny_before_removing_a_superseded_dhcp_address(tmp_
         )
         assert result["reconciled"] == 1
         assert adapter.calls.index(("ensure", "192.0.2.21")) < adapter.calls.index(("remove", "192.0.2.20"))
-        assert adapter.entries == [{"address": "192.0.2.21", "comment": "web_ovpn:policy:policy-source:asset:mac:AA"}]
+        assert adapter.entries == [{"address": "192.0.2.21", "comment": "web_ovpn:policy:policy-dhcp:asset:mac:AA"}]
+
+        from netopsctl.reconcile import apply_plan, verify_plan
+
+        create_change_plan(
+            netops, plan_key="allow-after-dhcp", actor="api", reason="approved", subject_type="asset",
+            subject_key="mac:AA", operation_type="internet_access_set",
+            desired_state={"internet_access": "allow", "policy_key": "policy-dhcp"},
+            resolved_targets=[], context_evidence_hash="b" * 64, precheck={}, rollback={},
+        )
+        add_plan_step(
+            netops, "allow-after-dhcp", adapter="mikrotik", operation="remove_address_list_entry",
+            target_key="router-a", request={"address": "192.0.2.21", "asset_key": "mac:AA", "policy_key": "policy-dhcp"},
+        )
+        transition_plan(netops, "allow-after-dhcp", "validated")
+        transition_plan(netops, "allow-after-dhcp", "approved")
+        assert apply_plan(netops, "allow-after-dhcp", adapter)["status"] == "applied"
+        assert verify_plan(netops, "allow-after-dhcp", adapter)["status"] == "verified"
+        assert adapter.entries == []
     finally:
         netops.close()
 
@@ -538,6 +556,59 @@ def test_approved_plan_applies_idempotently_and_verifies(tmp_path) -> None:
         conn.close()
 
 
+def test_allow_plan_removes_a_prior_deny_with_the_same_stable_policy_ownership(tmp_path) -> None:
+    """A new allow plan must remove a deny entry regardless of the deny plan key."""
+    from netopsctl.reconcile import apply_plan, verify_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        def __init__(self):
+            self.entries = []
+
+        @staticmethod
+        def ownership_comment(policy_key, asset_key):
+            return f"web_ovpn:policy:{policy_key}:asset:{asset_key}"
+
+        def ensure_address_list_entry(self, _target, address, policy_key, asset_key):
+            self.entries.append({"address": address, "comment": self.ownership_comment(policy_key, asset_key)})
+            return {"status": "added", "address": address}
+
+        def remove_address_list_entry(self, _target, address, policy_key, asset_key):
+            comment = self.ownership_comment(policy_key, asset_key)
+            matching = [entry for entry in self.entries if entry["address"] == address]
+            if matching and matching[0]["comment"] != comment:
+                raise ValueError("existing address-list entry does not have this policy ownership")
+            self.entries = [entry for entry in self.entries if (entry["address"], entry["comment"]) != (address, comment)]
+            return {"status": "removed", "address": address}
+
+        def list_managed_address_list_entries(self, _target):
+            return list(self.entries)
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    adapter = Adapter()
+    policy_key = "policy-asset-mac-aa-all-sites"
+    try:
+        for plan_key, operation in (("deny-plan-a", "ensure_address_list_entry"), ("allow-plan-b", "remove_address_list_entry")):
+            create_change_plan(
+                conn, plan_key=plan_key, actor="api", reason="approved", subject_type="asset",
+                subject_key="mac:AA", operation_type="internet_access_set",
+                desired_state={"internet_access": "deny" if operation.startswith("ensure") else "allow"},
+                resolved_targets=[], context_evidence_hash="c" * 64, precheck={}, rollback={},
+            )
+            add_plan_step(
+                conn, plan_key, adapter="mikrotik", operation=operation, target_key="router-a",
+                request={"address": "192.0.2.10", "asset_key": "mac:AA", "policy_key": policy_key},
+            )
+            transition_plan(conn, plan_key, "validated")
+            transition_plan(conn, plan_key, "approved")
+            assert apply_plan(conn, plan_key, adapter)["status"] == "applied"
+            assert verify_plan(conn, plan_key, adapter)["status"] == "verified"
+
+        assert adapter.entries == []
+    finally:
+        conn.close()
+
+
 def test_partial_apply_records_completed_steps_and_keeps_rollback_available(tmp_path) -> None:
     from netopsctl.reconcile import apply_plan
     from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
@@ -648,6 +719,45 @@ def test_verify_mismatch_marks_plan_failed_without_another_device_mutation(tmp_p
         apply_plan(conn, "plan-mismatch", Adapter())
         assert verify_plan(conn, "plan-mismatch", Adapter())["status"] == "failed"
         assert conn.execute("SELECT status FROM change_plans WHERE plan_key = 'plan-mismatch'").fetchone()[0] == "failed"
+    finally:
+        conn.close()
+
+
+def test_verify_rejects_an_anchor_that_no_longer_satisfies_its_firewall_contract(tmp_path) -> None:
+    from netopsctl.reconcile import apply_plan, verify_plan
+    from netopsctl.store import add_plan_step, connect, create_change_plan, transition_plan
+
+    class Adapter:
+        @staticmethod
+        def ownership_comment(policy_key, asset_key):
+            return f"web_ovpn:policy:{policy_key}:asset:{asset_key}"
+
+        def ensure_address_list_entry(self, *_args):
+            return {"status": "added"}
+
+        def list_managed_address_list_entries(self, _target):
+            return [{"address": "192.0.2.10", "comment": self.ownership_comment("plan-anchor-order", "mac:AA")}]
+
+        @staticmethod
+        def inspect_internet_policy_anchor():
+            return {"valid": False, "reason": "enabled_forward_accept_precedes_anchor", "fingerprint": ""}
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    try:
+        create_change_plan(
+            conn, plan_key="plan-anchor-order", actor="api", reason="approved", subject_type="asset",
+            subject_key="mac:AA", operation_type="internet_access_set", desired_state={}, resolved_targets=[],
+            context_evidence_hash="c" * 64, precheck={}, rollback={},
+        )
+        add_plan_step(conn, "plan-anchor-order", adapter="mikrotik", operation="ensure_address_list_entry", target_key="router-a", request={"address": "192.0.2.10", "asset_key": "mac:AA"})
+        transition_plan(conn, "plan-anchor-order", "validated")
+        transition_plan(conn, "plan-anchor-order", "approved")
+        assert apply_plan(conn, "plan-anchor-order", Adapter())["status"] == "applied"
+
+        result = verify_plan(conn, "plan-anchor-order", Adapter())
+
+        assert result["status"] == "failed"
+        assert result["reason"] == "firewall anchor verification failed"
     finally:
         conn.close()
 

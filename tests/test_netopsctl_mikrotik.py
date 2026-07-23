@@ -62,3 +62,32 @@ def test_bounded_adapter_refuses_missing_anchor_and_never_accepts_arbitrary_rout
         adapter.ensure_address_list_entry("router-a", "192.0.2.10", "plan-1", "mac:AA:BB")
     with pytest.raises(AttributeError):
         getattr(adapter, "run_routeros_command")
+
+
+def test_anchor_is_invalid_when_an_enabled_forward_accept_precedes_it() -> None:
+    from netopsctl.adapters.mikrotik import MikroTikPolicyAdapter
+
+    broad_allow = {
+        "chain": "forward", "action": "accept", "out-interface-list": "WAN",
+        "disabled": "false", "log": "false", "comment": "generic-lan-to-wan",
+    }
+    router = FakeRouter({"anchors": [broad_allow, _anchor()], "entries": []})
+
+    inspection = MikroTikPolicyAdapter("router-a", router).inspect_internet_policy_anchor()
+
+    assert inspection["valid"] is False
+    assert inspection["reason"] == "enabled_forward_accept_precedes_anchor"
+
+
+def test_anchor_is_invalid_when_fasttrack_precedes_it() -> None:
+    from netopsctl.adapters.mikrotik import MikroTikPolicyAdapter
+
+    router = FakeRouter({"anchors": [{
+        "chain": "forward", "action": "fasttrack-connection", "disabled": "false",
+        "comment": "fasttrack-established",
+    }, _anchor()], "entries": []})
+
+    inspection = MikroTikPolicyAdapter("router-a", router).inspect_internet_policy_anchor()
+
+    assert inspection["valid"] is False
+    assert inspection["reason"] == "enabled_fasttrack_precedes_anchor"

@@ -20,6 +20,19 @@ class ContextSnapshotUnavailable(ValueError):
     """The live netctl context could not be read as one transaction."""
 
 
+def internet_policy_key(subject_type: str, subject_key: str, enforcement_scope: str = "all-sites") -> str:
+    """Return the stable ownership key shared by every plan for one policy."""
+    if subject_type not in {"asset", "user"} or not subject_key or not enforcement_scope:
+        raise ValueError("invalid Internet policy identity")
+    digest = canonical_sha256({
+        "policy_type": "internet_access",
+        "subject_type": subject_type,
+        "subject_key": subject_key,
+        "enforcement_scope": enforcement_scope,
+    }).removeprefix("sha256:")
+    return f"policy-{digest}"
+
+
 def _is_fresh(value: str, max_age_seconds: int) -> bool:
     try:
         observed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -218,18 +231,19 @@ def create_asset_internet_access_plan(
             )
     except sqlite3.Error as exc:
         raise ContextSnapshotUnavailable("context snapshot is unavailable") from exc
+    policy_key = internet_policy_key("asset", asset_key)
     action = "ensure_address_list_entry" if desired_state == "deny" else "remove_address_list_entry"
     rollback_action = "remove_address_list_entry" if desired_state == "deny" else "ensure_address_list_entry"
-    rollback = {"steps": [{"adapter": "mikrotik", "operation": rollback_action, "target_key": item["source"], "request": {"address": item["address"], "asset_key": asset_key}} for item in targets]}
+    rollback = {"steps": [{"adapter": "mikrotik", "operation": rollback_action, "target_key": item["source"], "request": {"address": item["address"], "asset_key": asset_key, "policy_key": policy_key}} for item in targets]}
     plan = create_change_plan(
         netops_conn, plan_key=plan_key, actor=actor, reason=reason, subject_type="asset", subject_key=asset_key,
-        operation_type="internet_access_set", desired_state={"internet_access": desired_state}, resolved_targets=targets,
+        operation_type="internet_access_set", desired_state={"internet_access": desired_state, "policy_key": policy_key}, resolved_targets=targets,
         context_evidence_hash=canonical_sha256(plan_basis).removeprefix("sha256:"),
         precheck={"anchor": "validated", "plan_ttl_seconds": plan_ttl_seconds}, rollback=rollback,
         plan_basis=plan_basis,
     )
     for item in targets:
-        add_plan_step(netops_conn, plan_key, adapter="mikrotik", operation=action, target_key=item["source"], request={"address": item["address"], "asset_key": asset_key})
+        add_plan_step(netops_conn, plan_key, adapter="mikrotik", operation=action, target_key=item["source"], request={"address": item["address"], "asset_key": asset_key, "policy_key": policy_key})
     return plan
 
 
@@ -335,16 +349,17 @@ def create_user_internet_access_plan(
             plan_basis["user_policy_binding"] = {"user_key": user_key, "asset_key": asset_key}
     except sqlite3.Error as exc:
         raise ContextSnapshotUnavailable("context snapshot is unavailable") from exc
+    policy_key = internet_policy_key("user", user_key)
     action = "ensure_address_list_entry" if desired_state == "deny" else "remove_address_list_entry"
     rollback_action = "remove_address_list_entry" if desired_state == "deny" else "ensure_address_list_entry"
     plan = create_change_plan(
         netops_conn, plan_key=plan_key, actor=actor, reason=reason, subject_type="user", subject_key=user_key,
         operation_type="internet_access_set",
-        desired_state={"internet_access": desired_state, "resolved_enforcement_asset_key": asset_key},
+        desired_state={"internet_access": desired_state, "resolved_enforcement_asset_key": asset_key, "policy_key": policy_key},
         resolved_targets=targets, context_evidence_hash=canonical_sha256(plan_basis).removeprefix("sha256:"),
         precheck={"anchor": "validated", "plan_ttl_seconds": plan_ttl_seconds}, plan_basis=plan_basis,
-        rollback={"steps": [{"adapter": "mikrotik", "operation": rollback_action, "target_key": item["source"], "request": {"address": item["address"], "asset_key": asset_key}} for item in targets]},
+        rollback={"steps": [{"adapter": "mikrotik", "operation": rollback_action, "target_key": item["source"], "request": {"address": item["address"], "asset_key": asset_key, "policy_key": policy_key}} for item in targets]},
     )
     for item in targets:
-        add_plan_step(netops_conn, plan_key, adapter="mikrotik", operation=action, target_key=item["source"], request={"address": item["address"], "asset_key": asset_key})
+        add_plan_step(netops_conn, plan_key, adapter="mikrotik", operation=action, target_key=item["source"], request={"address": item["address"], "asset_key": asset_key, "policy_key": policy_key})
     return plan

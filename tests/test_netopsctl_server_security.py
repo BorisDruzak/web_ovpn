@@ -103,6 +103,74 @@ def test_broker_error_keeps_decoded_request_correlation_id(tmp_path, monkeypatch
         conn.close()
 
 
+def test_broker_passes_the_socket_pid_to_the_service_audit_peer(tmp_path, monkeypatch) -> None:
+    import netopsctl.server as server_module
+    from types import SimpleNamespace
+    from netopsctl.protocol import encode_response
+    from netopsctl.server import AuthenticatedPeer, serve
+    from netopsctl.store import connect
+
+    class Connection:
+        def __init__(self, payload: bytes):
+            self.payload = payload
+            self.sent = b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def recv(self, _size):
+            return self.payload
+
+        def sendall(self, value):
+            self.sent = value
+
+    class Listener:
+        def __init__(self, connection):
+            self.connection = connection
+            self.used = False
+
+        def accept(self):
+            if self.used:
+                raise StopIteration
+            self.used = True
+            return self.connection, None
+
+    class Service:
+        def __init__(self):
+            self.peer = None
+
+        def dispatch(self, _action, _payload, *, peer, subject):
+            self.peer = peer
+            assert subject["principal_id"] == "42"
+            return {"status": "ok"}
+
+    private_key = Ed25519PrivateKey.generate()
+    request = _request(private_key, plan_key="plan-1", plan_digest="sha256:" + "a" * 64)
+    payload = encode_response({
+        "protocol_version": 2, "request_id": request.request_id, "action": request.action,
+        "payload": request.payload, "authorization": request.authorization, "signature": request.signature,
+    })
+    connection = Connection(payload)
+    service = Service()
+    peer = AuthenticatedPeer(1001, 1001, 0, "openvpn-web", private_key.public_key().public_bytes_raw(), frozenset({"plan.apply"}))
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    monkeypatch.setattr(server_module, "peer_credentials", lambda _connection: (1001, 1001, 4321))
+    monkeypatch.setattr(server_module, "authorize_broker_request", lambda *_args: SimpleNamespace(
+        principal_type="web_user", principal_id="42", principal_name="admin-2", session_id="session-1", authorization_id="auth-1",
+    ))
+    try:
+        with pytest.raises(StopIteration):
+            serve(Listener(connection), peers_by_uid={1001: peer}, conn=conn, service=service)
+        assert service.peer.pid == 4321
+        assert service.peer.uid == 1001
+        assert service.peer.gid == 1001
+    finally:
+        conn.close()
+
+
 def test_reconciler_peer_cannot_use_web_plan_apply_scope(tmp_path) -> None:
     from netopsctl.server import AuthenticatedPeer, authorize_broker_request
     from netopsctl.store import connect, create_change_plan, plan_digest
@@ -159,5 +227,38 @@ def test_signed_audit_event_records_the_accepted_socket_peer_not_json_actor(tmp_
             "uid": 1001, "gid": 1002, "pid": 4321, "service_principal": "openvpn-web",
         }
         assert payload["authorized_subject"]["principal_id"] == "forged-json-actor"
+    finally:
+        conn.close()
+
+
+def test_write_audit_checkpoint_brackets_the_routeros_operation(tmp_path, monkeypatch) -> None:
+    import netopsctl.service as service_module
+    from netopsctl.audit import AuditSigner
+    from netopsctl.server import AuthenticatedPeer
+    from netopsctl.service import ControlService
+    from netopsctl.store import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netops.sqlite').as_posix()}")
+    service = ControlService(
+        conn=conn, netctl_db_url="sqlite:///unused.sqlite", adapter=object(),
+        enforcement_sources_by_site={"site-a": "router-a"}, source_sla_seconds=300,
+        audit_signer=AuditSigner("test-key", Ed25519PrivateKey.generate()), writes_enabled=True,
+        audit_sink={"instance_id": "test", "host": "test", "identity_file": "test", "known_hosts": "test"},
+    )
+    peer = AuthenticatedPeer(1001, 1002, 4321, "openvpn-web", b"x" * 32, frozenset({"plan.apply"}))
+    snapshots = []
+    monkeypatch.setattr(service_module, "apply_plan", lambda *_args, **_kwargs: {"status": "applied", "plan_key": "plan-a"})
+    monkeypatch.setattr(service, "_checkpoint", lambda: snapshots.append([
+        row[0] for row in conn.execute("SELECT event_type FROM audit_events ORDER BY sequence")
+    ]))
+    try:
+        assert service.dispatch(
+            "plan.apply", {"plan_key": "plan-a"}, peer=peer,
+            subject={"principal_type": "web_user", "principal_id": "42", "principal_name": "admin", "session_id": "s", "authorization_id": "a"},
+        )["status"] == "applied"
+        assert snapshots == [
+            ["network_control_started"],
+            ["network_control_started", "network_control_succeeded"],
+        ]
     finally:
         conn.close()

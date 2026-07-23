@@ -330,6 +330,7 @@ def topology_context(
         f"""
         SELECT links.link_key, links.port_a_key, links.port_b_key, links.state,
                links.confidence, links.first_seen_at, links.last_seen_at,
+               links.source_a_id, links.source_b_id,
                source_a.name AS source_a, source_b.name AS source_b
         FROM current_switch_links AS links
         JOIN network_sources AS source_a ON source_a.id = links.source_a_id
@@ -340,11 +341,40 @@ def topology_context(
         """,
         params,
     ).fetchall()
+    roots: set[int] = set()
+    for source in conn.execute("SELECT id, driver_options_json FROM network_sources"):
+        try:
+            options = json.loads(str(source["driver_options_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            options = {}
+        if isinstance(options, dict) and options.get("topology_role") == "core":
+            roots.add(int(source["id"]))
+    adjacency: dict[int, set[int]] = {}
+    for row in rows:
+        first, second = int(row["source_a_id"]), int(row["source_b_id"])
+        adjacency.setdefault(first, set()).add(second)
+        adjacency.setdefault(second, set()).add(first)
+    distances: dict[int, int] = {root: 0 for root in roots}
+    queue: deque[int] = deque(sorted(roots))
+    while queue:
+        source_id = queue.popleft()
+        if distances[source_id] >= depth:
+            continue
+        for peer in sorted(adjacency.get(source_id, set())):
+            if peer not in distances:
+                distances[peer] = distances[source_id] + 1
+                queue.append(peer)
     links: list[dict[str, Any]] = []
     nodes: set[str] = set()
     truncated = False
+    depth_truncated = False
     for row in rows:
+        if roots and (distances.get(int(row["source_a_id"]), depth + 1) > depth or distances.get(int(row["source_b_id"]), depth + 1) > depth):
+            depth_truncated = True
+            continue
         link = dict(row)
+        link.pop("source_a_id")
+        link.pop("source_b_id")
         proposed = nodes | {str(link["source_a"]), str(link["source_b"])}
         if len(proposed) > max_nodes:
             truncated = True
@@ -357,6 +387,6 @@ def topology_context(
         "links": links,
         "max_nodes": max_nodes,
         "node_count": len(nodes),
-        "truncated": truncated,
-        "truncation_reason": "max_nodes" if truncated else "",
+        "truncated": truncated or depth_truncated,
+        "truncation_reason": "max_nodes" if truncated else "depth" if depth_truncated else "",
     }

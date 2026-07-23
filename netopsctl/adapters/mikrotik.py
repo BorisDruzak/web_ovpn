@@ -10,7 +10,7 @@ from typing import Any, Protocol
 ADDRESS_LIST_NAME = "WEBOVPN-INTERNET-DENY"
 MANAGED_COMMENT_PREFIX = "web_ovpn:"
 ANCHOR_COMMENT = "web_ovpn:internet-policy-anchor:v1"
-_PLAN_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_POLICY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ASSET_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,180}$")
 
 
@@ -44,26 +44,56 @@ class MikroTikPolicyAdapter:
     def inspect_internet_policy_anchor(self) -> dict[str, Any]:
         rows = self._client.call([
             "/ip/firewall/filter/print",
-            "=.proplist=.id,chain,action,src-address-list,out-interface-list,disabled,log,comment",
+            "=.proplist=.id,chain,action,src-address-list,out-interface-list,connection-state,disabled,log,comment,bytes,packets",
         ])
-        matches = [row for row in rows if self._is_anchor(row)]
+        matches = [(index, row) for index, row in enumerate(rows) if self._is_anchor(row)]
         fingerprint = ""
+        reason = ""
+        anchor_position = -1
+        counters = {"bytes": "", "packets": ""}
         if len(matches) == 1:
-            body = {key: str(matches[0].get(key) or "") for key in (
-                "chain", "action", "src-address-list", "out-interface-list", "disabled", "log", "comment",
-            )}
+            anchor_position, anchor = matches[0]
+            counters = {key: str(anchor.get(key) or "") for key in ("bytes", "packets")}
+            for preceding in rows[:anchor_position]:
+                if str(preceding.get("chain") or "") != "forward":
+                    continue
+                if str(preceding.get("disabled") or "").lower() not in {"false", "no", "0", ""}:
+                    continue
+                action = str(preceding.get("action") or "")
+                if action == "fasttrack-connection":
+                    reason = "enabled_fasttrack_precedes_anchor"
+                    break
+                if action == "accept":
+                    reason = "enabled_forward_accept_precedes_anchor"
+                    break
+            body = {
+                "anchor": {key: str(anchor.get(key) or "") for key in (
+                    "chain", "action", "src-address-list", "out-interface-list", "connection-state", "disabled", "log", "comment",
+                )},
+                "position": anchor_position,
+                "preceding_forward_rules": [
+                    {key: str(row.get(key) or "") for key in ("chain", "action", "connection-state", "src-address-list", "out-interface-list", "disabled", "comment")}
+                    for row in rows[:anchor_position]
+                    if str(row.get("chain") or "") == "forward"
+                ],
+            }
             fingerprint = "sha256:" + hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return {
-            "valid": len(matches) == 1,
+            "valid": len(matches) == 1 and not reason,
             "anchor": ADDRESS_LIST_NAME,
             "match_count": len(matches),
-            "anchor_id": str(matches[0].get(".id") or "") if len(matches) == 1 else "",
+            "anchor_id": str(matches[0][1].get(".id") or "") if len(matches) == 1 else "",
+            "anchor_position": anchor_position,
+            "counters": counters,
+            "reason": reason or ("anchor_count" if len(matches) != 1 else ""),
             "fingerprint": fingerprint,
         }
 
-    def _require_anchor(self) -> None:
-        if not self.inspect_internet_policy_anchor()["valid"]:
+    def _require_anchor(self) -> dict[str, Any]:
+        inspection = self.inspect_internet_policy_anchor()
+        if not inspection["valid"]:
             raise ValueError("required Internet policy anchor is missing or does not match the approved signature")
+        return inspection
 
     @staticmethod
     def _ipv4(address: str) -> str:
@@ -76,10 +106,10 @@ class MikroTikPolicyAdapter:
         return str(value)
 
     @staticmethod
-    def ownership_comment(plan_key: str, asset_key: str) -> str:
-        if not _PLAN_KEY_RE.fullmatch(plan_key) or not _ASSET_KEY_RE.fullmatch(asset_key):
-            raise ValueError("invalid plan or asset key")
-        return f"web_ovpn:policy:{plan_key}:asset:{asset_key}"
+    def ownership_comment(policy_key: str, asset_key: str) -> str:
+        if not _POLICY_KEY_RE.fullmatch(policy_key) or not _ASSET_KEY_RE.fullmatch(asset_key):
+            raise ValueError("invalid policy or asset key")
+        return f"web_ovpn:policy:{policy_key}:asset:{asset_key}"
 
     def _entries(self) -> list[dict[str, str]]:
         return self._client.call([
@@ -96,27 +126,27 @@ class MikroTikPolicyAdapter:
             if str(row.get("list") or "") == ADDRESS_LIST_NAME and str(row.get("comment") or "").startswith(MANAGED_COMMENT_PREFIX)
         ]
 
-    def ensure_address_list_entry(self, target: str, address: str, plan_key: str, asset_key: str) -> dict[str, str]:
+    def ensure_address_list_entry(self, target: str, address: str, policy_key: str, asset_key: str) -> dict[str, Any]:
         self._target(target)
         address = self._ipv4(address)
-        comment = self.ownership_comment(plan_key, asset_key)
-        self._require_anchor()
+        comment = self.ownership_comment(policy_key, asset_key)
+        anchor = self._require_anchor()
         for row in self._entries():
             if str(row.get("list") or "") == ADDRESS_LIST_NAME and str(row.get("address") or "") == address:
                 if str(row.get("comment") or "") != comment:
                     raise ValueError("existing address-list entry does not have this plan ownership")
-                return {"status": "already_present", "address": address}
+                return {"status": "already_present", "address": address, "anchor_before": {"fingerprint": anchor["fingerprint"], "counters": anchor["counters"]}}
         self._client.call([
             "/ip/firewall/address-list/add",
             f"=list={ADDRESS_LIST_NAME}", f"=address={address}", f"=comment={comment}",
         ])
-        return {"status": "added", "address": address}
+        return {"status": "added", "address": address, "anchor_before": {"fingerprint": anchor["fingerprint"], "counters": anchor["counters"]}}
 
-    def remove_address_list_entry(self, target: str, address: str, plan_key: str, asset_key: str) -> dict[str, str]:
+    def remove_address_list_entry(self, target: str, address: str, policy_key: str, asset_key: str) -> dict[str, Any]:
         self._target(target)
         address = self._ipv4(address)
-        comment = self.ownership_comment(plan_key, asset_key)
-        self._require_anchor()
+        comment = self.ownership_comment(policy_key, asset_key)
+        anchor = self._require_anchor()
         for row in self._entries():
             if str(row.get("list") or "") != ADDRESS_LIST_NAME or str(row.get("address") or "") != address:
                 continue
@@ -126,5 +156,5 @@ class MikroTikPolicyAdapter:
             if not entry_id:
                 raise ValueError("managed address-list entry has no identifier")
             self._client.call(["/ip/firewall/address-list/remove", f"=.id={entry_id}"])
-            return {"status": "removed", "address": address}
-        return {"status": "already_absent", "address": address}
+            return {"status": "removed", "address": address, "anchor_before": {"fingerprint": anchor["fingerprint"], "counters": anchor["counters"]}}
+        return {"status": "already_absent", "address": address, "anchor_before": {"fingerprint": anchor["fingerprint"], "counters": anchor["counters"]}}

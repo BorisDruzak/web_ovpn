@@ -10,6 +10,14 @@ from typing import Any
 from .store import transition_plan
 
 
+def _policy_key(plan_key: str, request: dict[str, Any]) -> str:
+    """Use stable policy ownership for new plans while preserving legacy rollback plans."""
+    value = request.get("policy_key", plan_key)
+    if not isinstance(value, str) or not value:
+        raise ValueError("invalid policy ownership key")
+    return value
+
+
 def _steps(conn: sqlite3.Connection, plan_key: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     plan = conn.execute("SELECT * FROM change_plans WHERE plan_key = ?", (plan_key,)).fetchone()
     if plan is None:
@@ -101,9 +109,9 @@ def apply_plan(
         for step in steps:
             request = json.loads(step["request_json"])
             if step["operation"] == "ensure_address_list_entry":
-                result = adapter.ensure_address_list_entry(step["target_key"], request["address"], plan_key, request["asset_key"])
+                result = adapter.ensure_address_list_entry(step["target_key"], request["address"], _policy_key(plan_key, request), request["asset_key"])
             elif step["operation"] == "remove_address_list_entry":
-                result = adapter.remove_address_list_entry(step["target_key"], request["address"], plan_key, request["asset_key"])
+                result = adapter.remove_address_list_entry(step["target_key"], request["address"], _policy_key(plan_key, request), request["asset_key"])
             else:
                 raise ValueError("unsupported plan step")
             conn.execute("UPDATE change_plan_steps SET status = 'applied', result_json = ? WHERE id = ?", (json.dumps(result, sort_keys=True), step["id"]))
@@ -123,7 +131,7 @@ def apply_plan(
 def _expected_entry(adapter: Any, plan_key: str, request: dict[str, Any]) -> dict[str, str]:
     return {
         "address": str(request["address"]),
-        "comment": str(adapter.ownership_comment(plan_key, str(request["asset_key"]))),
+        "comment": str(adapter.ownership_comment(_policy_key(plan_key, request), str(request["asset_key"]))),
     }
 
 
@@ -131,6 +139,31 @@ def verify_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[s
     plan, steps = _steps(conn, plan_key)
     if plan["status"] != "applied" or any(step["status"] != "applied" for step in steps):
         raise ValueError("plan has not applied all steps")
+    anchor_checks: dict[str, dict[str, Any]] = {}
+    inspect_anchor = getattr(adapter, "inspect_internet_policy_anchor", None)
+    if callable(inspect_anchor):
+        try:
+            plan_basis = json.loads(str(plan["plan_basis_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            plan_basis = {}
+        expected_fingerprints = {
+            str(item.get("source")): str(item.get("fingerprint"))
+            for item in plan_basis.get("firewall_anchors", [])
+            if isinstance(item, dict) and item.get("source") and item.get("fingerprint")
+        }
+        for target_key in sorted({str(step["target_key"]) for step in steps}):
+            inspection = inspect_anchor()
+            expected = expected_fingerprints.get(target_key, "")
+            if not isinstance(inspection, dict) or not inspection.get("valid") or (expected and inspection.get("fingerprint") != expected):
+                conn.execute("UPDATE change_plan_steps SET status = 'failed' WHERE change_plan_id = ?", (plan["id"],))
+                conn.commit()
+                transition_plan(conn, plan_key, "failed")
+                return {"status": "failed", "plan_key": plan_key, "reason": "firewall anchor verification failed"}
+            anchor_checks[target_key] = {
+                "fingerprint": str(inspection.get("fingerprint") or ""),
+                "anchor_position": int(inspection.get("anchor_position") or 0),
+                "counters": dict(inspection.get("counters") or {}),
+            }
     for step in steps:
         request = json.loads(step["request_json"])
         expected = _expected_entry(adapter, plan_key, request)
@@ -146,6 +179,13 @@ def verify_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict[s
             conn.commit()
             transition_plan(conn, plan_key, "failed")
             return {"status": "failed", "plan_key": plan_key, "reason": "device verification mismatch"}
+        if str(step["target_key"]) in anchor_checks:
+            try:
+                recorded = json.loads(str(step["result_json"] or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                recorded = {}
+            recorded["anchor_after"] = anchor_checks[str(step["target_key"])]
+            conn.execute("UPDATE change_plan_steps SET result_json = ? WHERE id = ?", (json.dumps(recorded, sort_keys=True), step["id"]))
     conn.execute("UPDATE change_plan_steps SET status = 'verified' WHERE change_plan_id = ?", (plan["id"],))
     conn.commit()
     transition_plan(conn, plan_key, "verified")
@@ -175,9 +215,9 @@ def rollback_plan(conn: sqlite3.Connection, plan_key: str, adapter: Any) -> dict
                 if not isinstance(request, dict) or not isinstance(target_key, str):
                     raise ValueError("invalid rollback step")
                 if step.get("operation") == "remove_address_list_entry":
-                    result = adapter.remove_address_list_entry(target_key, request["address"], plan_key, request["asset_key"])
+                    result = adapter.remove_address_list_entry(target_key, request["address"], _policy_key(plan_key, request), request["asset_key"])
                 elif step.get("operation") == "ensure_address_list_entry":
-                    result = adapter.ensure_address_list_entry(target_key, request["address"], plan_key, request["asset_key"])
+                    result = adapter.ensure_address_list_entry(target_key, request["address"], _policy_key(plan_key, request), request["asset_key"])
                 else:
                     raise ValueError("unsupported rollback operation")
                 completed.append(index)
@@ -245,7 +285,8 @@ def reconcile_desired_policies(
     from .policy_resolver import resolve_asset_targets
 
     policies = conn.execute(
-        """SELECT policies.*, plans.plan_key AS source_plan_key
+        """SELECT policies.*, plans.plan_key AS source_plan_key,
+                  plans.desired_state_json AS source_plan_desired_state_json
            FROM desired_network_policies AS policies
            JOIN change_plans AS plans ON plans.id = policies.source_plan_id
            WHERE policies.status = 'active' AND policies.policy_type = 'internet_access'
@@ -274,18 +315,22 @@ def reconcile_desired_policies(
             stale += 1
             continue
         device_key = devices.pop()
-        plan_key = str(policy["source_plan_key"])
+        try:
+            source_desired = json.loads(str(policy["source_plan_desired_state_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            source_desired = {}
+        policy_key = str(source_desired.get("policy_key") or policy["source_plan_key"])
         expected_addresses = {str(target["address"]) for target in targets}
         lock = _device_lock_for_target(conn, device_key)
         try:
-            comment = str(adapter.ownership_comment(plan_key, asset_key))
+            comment = str(adapter.ownership_comment(policy_key, asset_key))
             existing = {
                 str(entry.get("address") or "")
                 for entry in adapter.list_managed_address_list_entries(device_key)
                 if str(entry.get("comment") or "") == comment
             }
             for address in sorted(expected_addresses - existing):
-                adapter.ensure_address_list_entry(device_key, address, plan_key, asset_key)
+                adapter.ensure_address_list_entry(device_key, address, policy_key, asset_key)
             verified = {
                 str(entry.get("address") or "")
                 for entry in adapter.list_managed_address_list_entries(device_key)
@@ -294,7 +339,7 @@ def reconcile_desired_policies(
             if not expected_addresses <= verified:
                 raise ValueError("new deny entry did not verify")
             for address in sorted(existing - expected_addresses):
-                adapter.remove_address_list_entry(device_key, address, plan_key, asset_key)
+                adapter.remove_address_list_entry(device_key, address, policy_key, asset_key)
             conn.execute(
                 """INSERT INTO change_executions
                    (change_plan_id, execution_type, started_at, finished_at, status, sanitized_result_json)

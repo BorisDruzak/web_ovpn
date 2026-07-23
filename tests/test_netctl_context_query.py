@@ -191,6 +191,40 @@ def test_context_topology_declares_node_bound_truncation(tmp_path: Path) -> None
         conn.close()
 
 
+def test_context_topology_depth_limits_the_graph_to_hops_from_a_core_source(tmp_path: Path) -> None:
+    from netctl.context_query import topology_context
+
+    conn = _context_db(tmp_path)
+    now = "2026-07-22T12:00:00Z"
+    try:
+        conn.executemany(
+            """INSERT INTO network_sources (id, name, driver, host, port, username, secret_ref, tls, verify_tls, enabled, created_at, updated_at, site)
+               VALUES (?, ?, 'snmp_switch', '127.0.0.1', 161, '', 'env:TEST', 0, 0, 1, ?, ?, 'central')""",
+            [(12, "distribution", now, now), (13, "edge", now, now)],
+        )
+        topology_run = conn.execute(
+            "INSERT INTO network_correlation_runs (run_type, started_at, finished_at, status) VALUES ('topology', ?, ?, 'success')",
+            (now, now),
+        ).lastrowid
+        conn.executemany(
+            """INSERT INTO current_switch_links (link_key, source_a_id, port_a_key, source_b_id, port_b_key, state, confidence, first_seen_at, last_seen_at, correlation_run_id)
+               VALUES (?, ?, '', ?, '', 'confirmed', 100, ?, ?, ?)""",
+            [
+                ("11:core|12:distribution", 11, 12, now, now, topology_run),
+                ("12:distribution|13:edge", 12, 13, now, now, topology_run),
+            ],
+        )
+        conn.commit()
+
+        result = topology_context(conn, depth=1)
+
+        assert [link["link_key"] for link in result["links"]] == ["10:uplink|11:core", "11:core|12:distribution"]
+        assert result["truncated"] is True
+        assert result["truncation_reason"] == "depth"
+    finally:
+        conn.close()
+
+
 def test_context_view_cli_lists_aggregated_findings(tmp_path: Path, capsys) -> None:
     import netctl.cli as cli
 

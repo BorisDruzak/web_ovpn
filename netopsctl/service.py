@@ -54,7 +54,11 @@ class ControlService:
         )
 
     def dispatch(self, action: str, payload: dict[str, Any], *, peer: Any, subject: dict[str, str]) -> dict[str, Any]:
+        write_action = action in {"plan.apply", "plan.rollback", "policy.reconcile"}
         try:
+            if write_action:
+                self._audit("network_control_started", action=action, peer=peer, subject=subject, outcome="started")
+                self._checkpoint()
             if action == "status":
                 result = {"status": "ok", "service": "netopsctl", "writes_enabled": self.writes_enabled}
             elif action == "policy.list":
@@ -89,7 +93,6 @@ class ControlService:
                 result = transition_plan(self.conn, plan_key, "approved")
                 result["plan_digest"] = plan_digest(self.conn, plan_key)
             elif action == "plan.apply":
-                self._checkpoint()
                 result = apply_plan(
                     self.conn, payload["plan_key"], self.adapter,
                     preflight=lambda plan: changed_plan_preconditions(
@@ -112,12 +115,10 @@ class ControlService:
                         desired_state=str(desired["internet_access"]), reason=str(plan["reason"]), enforcement_scope="all-sites",
                     )
             elif action == "plan.rollback":
-                self._checkpoint()
                 result = rollback_plan(self.conn, payload["plan_key"], self.adapter)
             elif action == "policy.reconcile":
                 # This action is assigned only to the dedicated reconciler peer.
                 # It may change entries, so it remains behind the same checkpoint gate.
-                self._checkpoint()
                 from . import reconcile as reconciliation
 
                 result = reconciliation.reconcile_desired_policies(
@@ -132,6 +133,10 @@ class ControlService:
                 raise ValueError("unsupported control action")
         except Exception:
             self._audit("network_control_failed", action=action, peer=peer, subject=subject, outcome="failed")
+            if write_action:
+                self._checkpoint()
             raise
         self._audit("network_control_succeeded", action=action, peer=peer, subject=subject, outcome="ok")
+        if write_action:
+            self._checkpoint()
         return result

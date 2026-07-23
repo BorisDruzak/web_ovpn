@@ -90,6 +90,12 @@ def serve(listener: socket.socket, *, peers_by_uid: dict[int, AuthenticatedPeer]
                 peer = peers_by_uid.get(uid)
                 if peer is None or peer.gid != gid:
                     raise ProtocolError("untrusted local caller")
+                peer = AuthenticatedPeer(
+                    uid=uid, gid=gid, pid=pid,
+                    service_principal=peer.service_principal,
+                    public_key=peer.public_key,
+                    allowed_actions=peer.allowed_actions,
+                )
                 data = connection.recv(16_385)
                 request = decode_request(data)
                 request_id = request.request_id
