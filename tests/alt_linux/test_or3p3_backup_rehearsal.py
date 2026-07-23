@@ -47,6 +47,37 @@ def test_failed_rehearsal_preserves_private_tree(tmp_path: Path) -> None:
     assert not (sandbox.bundle(backup_id) / "rehearsal.json").exists()
 
 
+def test_rehearsal_accepts_documented_completed_job_artifacts(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    job = (
+        sandbox.settings.controller_state_root
+        / "jobs"
+        / "job-20260722T000000Z-00000001"
+    )
+    provision_result = job / "provision-result.json"
+    provision_result.write_text(
+        json.dumps({"status": "ok"}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    provision_result.chmod(0o600)
+    archived_log = job / "ansible.log.gz"
+    archived_log.write_bytes(
+        b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\x03"
+        b"\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+    )
+    archived_log.chmod(0o600)
+    backup_id = sandbox.repository().create().backup_id
+    sandbox.repository().verify(backup_id, write_evidence=True)
+
+    result = sandbox.rehearsal_service().rehearse(backup_id)
+
+    assert result.rehearsal_passed is True
+    assert (sandbox.bundle(backup_id) / "rehearsal.json").is_file()
+
+
 def test_state_validator_rejects_malformed_job_state(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     root = sandbox.malformed_rehearsal_tree()
