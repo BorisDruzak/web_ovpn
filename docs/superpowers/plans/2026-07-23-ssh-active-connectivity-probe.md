@@ -170,7 +170,8 @@ Document baseline, deny/apply/verify, rollback, and post-rollback expected state
 
 - [ ] **Step 3: Verify hygiene and local suite**
 
-Run: `rg -n -i '(1\.abcdef|mainadmin)' docs netopsctl deploy && pytest -q && python -m compileall -q app netctl netopsctl && git diff --check`
+Run the credential-literal hygiene scan, then `pytest -q`,
+`python -m compileall -q app netctl netopsctl`, and `git diff --check`.
 
 Expected: no credential literal; tests and compilation pass; diff is clean.
 

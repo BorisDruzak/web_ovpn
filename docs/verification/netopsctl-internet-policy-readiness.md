@@ -27,6 +27,17 @@ evidence and did not issue a RouterOS write. The reconciler timer is installed
 but deliberately disabled until a fresh controlled deny/verify/rollback window
 is approved.
 
+## Active connectivity verification
+
+The local implementation now requires a bounded active probe for every
+Internet-policy verify and rollback: deny must return `internet=blocked` and
+`internal=reachable`; rollback and allow must return both states as
+`reachable`. The SSH identity is designed as a named systemd credential and
+the target allowlist is runtime-only. No deployment or production policy test
+is claimed by this record until the controlled lifecycle in the rollout
+runbook has completed and an independently delivered audit checkpoint has
+been recorded.
+
 ## Production gate
 
 `NETOPSCTL_AUDIT_CHECKPOINT_HEALTHY` is true, while
