@@ -178,7 +178,7 @@ def test_missing_dependency_is_reported_before_runtime_mutation(
     before = sandbox.protected_snapshot()
 
     completed = sandbox.run_library(
-        PATH=f"{sandbox.fake_bin}:/bin",
+        PATH=str(sandbox.fake_bin),
     )
 
     assert completed.returncode != 0

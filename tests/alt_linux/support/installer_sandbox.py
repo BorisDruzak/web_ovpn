@@ -241,7 +241,7 @@ exit 2
             f"{function_name} {rendered}"
         )
         return subprocess.run(
-            ["bash", "-c", command],
+            ["/bin/bash", "-c", command],
             text=True,
             capture_output=True,
             check=False,
