@@ -357,14 +357,14 @@ automatic cleanup service is installed.
 ## Legacy stale registration recovery
 
 For the narrowly defined legacy conflict where an assigned test machine has a
-regular record in `registration/failed/` with JSON status
-`awaiting_assignment`, use the audited recovery workflow:
+regular record in `registration/failed/` or `registration/ready/` with JSON
+status `awaiting_assignment`, use the audited recovery workflow:
 
 ```bash
 sudo -u altserver workstationctl --json machines \
   recover-stale-registration preview <uuid>
 sudo workstationctl --json machines recover-stale-registration apply <uuid> \
-  --reason "Clear approved legacy failed registration"
+  --reason "Clear approved legacy stale registration"
 ```
 
 Apply is root-only, preserves the original record bytes and a SHA-256 manifest

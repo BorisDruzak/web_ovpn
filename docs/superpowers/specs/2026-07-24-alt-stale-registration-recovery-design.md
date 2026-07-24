@@ -5,7 +5,9 @@
 Provide a narrow, auditable recovery path for a legacy registration record
 whose directory state and JSON `status` conflict. The immediate target is the
 assigned test machine `cc6f1a81-54b8-47c9-95de-2ac29ee4fbb7`: its file is in
-`registration/failed/` while its JSON status is `awaiting_assignment`.
+`registration/failed/` while its JSON status is `awaiting_assignment`. A
+second approved legacy form is the same JSON status stored in
+`registration/ready/`.
 
 This inconsistency blocks the OR-3P3 backup rehearsal. The recovery does not
 modify the target workstation, its assignment, provision jobs, Vault, SSH keys,
@@ -22,11 +24,11 @@ two subcommands:
   same validated stale condition as preview and a non-empty, bounded reason.
 
 The command is intentionally not a generic registration editor or machine
-release feature. It accepts only a record in `failed/` whose identity matches
-its filename, whose JSON status is `awaiting_assignment`, and whose machine has
-an existing assignment. Any symlink, malformed JSON, identity mismatch,
-unassigned machine, status without this exact legacy conflict, or active job
-fails closed.
+release feature. It accepts only one record in `failed/` or `ready/` whose
+identity matches its filename, whose JSON status is `awaiting_assignment`, and
+whose machine has an existing assignment. Any duplicate lifecycle record,
+symlink, malformed JSON, identity mismatch, unassigned machine, status without
+this exact legacy conflict, or active job fails closed.
 
 ## Apply transaction
 
