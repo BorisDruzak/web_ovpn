@@ -42,6 +42,13 @@ def _commit_journal(journal: RestoreJournal) -> None:
     journal.transition("health_checked", "committed", {})
 
 
+def _roll_back_journal(journal: RestoreJournal) -> None:
+    journal.transition("prepared", "staged", {})
+    journal.transition("staged", "services_stopped", {})
+    journal.transition("services_stopped", "originals_moving", {})
+    journal.transition("originals_moving", "rolled_back", {})
+
+
 def test_guard_allows_clean_state(tmp_path: Path) -> None:
     _, guard = _guard(tmp_path)
 
@@ -168,6 +175,24 @@ def test_restore_rollback_preserves_rollout_marker_and_revokes_permit(
     assert not sandbox.settings.restore_permit.exists()
     with pytest.raises(BackupError):
         guard.assert_control_plane_allowed()
+
+
+def test_rollout_abort_requires_matching_rolled_back_restore(
+    tmp_path: Path,
+) -> None:
+    sandbox, guard = _guard(tmp_path)
+    guard.begin_rollout(BACKUP_ID)
+    journal = _journal(sandbox)
+    guard.authorize_restore_unlocked(journal)
+    _roll_back_journal(journal)
+    guard.revoke_restore_unlocked(journal)
+
+    guard.abort_rollout(BACKUP_ID)
+
+    assert not sandbox.settings.rollout_marker.exists()
+    assert not sandbox.settings.rollout_permit.exists()
+    assert not sandbox.settings.restore_permit.exists()
+    guard.assert_control_plane_allowed()
 
 
 def test_malformed_or_stale_guard_state_fails_closed(tmp_path: Path) -> None:
