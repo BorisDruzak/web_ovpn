@@ -1189,7 +1189,9 @@ class RestoreService:
                 raise _health(
                     "Injected restore health failure: http_loopback"
                 )
-            self.health_probe("http://127.0.0.1:8087/health")
+            self.health_probe(
+                "http://127.0.0.1:8087/bootstrap/bootstrap.sh"
+            )
             checks.append("http_loopback")
         registration = by_name["alt-deploy-register.service"]
         if (
