@@ -78,3 +78,30 @@ def test_preview_and_apply_archive_exact_legacy_failed_record(
     assert AssignmentRepository(sandbox.settings).get(
         TEST_MACHINE_UUID
     ) is not None
+
+
+def test_apply_archives_legacy_ready_awaiting_record(tmp_path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    source = write_registration(
+        sandbox.settings,
+        "ready",
+        registration_payload(status="awaiting_assignment"),
+    )
+    AssignmentRepository(sandbox.settings).write(
+        TEST_MACHINE_UUID,
+        assignment_payload(),
+    )
+    original = source.read_bytes()
+
+    result = StaleRegistrationRecoveryService(
+        sandbox.settings
+    ).apply(TEST_MACHINE_UUID, "Clear legacy ready registration")
+
+    archive = (
+        sandbox.settings.machine_archives_dir
+        / result.recovery_id
+        / "records"
+        / "ready.json"
+    )
+    assert archive.read_bytes() == original
+    assert not source.exists()

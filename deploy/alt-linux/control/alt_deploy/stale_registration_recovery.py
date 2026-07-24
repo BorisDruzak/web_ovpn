@@ -111,7 +111,19 @@ class StaleRegistrationRecoveryService:
         normalized = identifier.strip().lower()
         if not normalized or "/" in normalized or "\\" in normalized:
             raise self._error("machine_not_found", "Machine not found", exit_code=3)
-        path = self.settings.registration_root / "failed" / f"{normalized}.json"
+        paths = []
+        for state in ("failed", "ready"):
+            path = self.settings.registration_root / state / f"{normalized}.json"
+            if os.path.lexists(path):
+                paths.append(path)
+        if not paths:
+            raise self._error("machine_not_found", "Machine not found", exit_code=3)
+        if len(paths) != 1:
+            raise self._error(
+                "stale_registration_not_recoverable",
+                "Registration identifier exists in multiple lifecycle states",
+            )
+        path = paths[0]
         raw = self._read_regular(path)
         try:
             payload = json.loads(raw.decode("utf-8"))
@@ -137,7 +149,7 @@ class StaleRegistrationRecoveryService:
         ):
             raise self._error(
                 "stale_registration_not_recoverable",
-                "Registration is not the approved legacy failed-state conflict",
+                "Registration is not the approved legacy stale-state conflict",
             )
         return path, payload, raw
 
@@ -235,7 +247,8 @@ class StaleRegistrationRecoveryService:
             directory.mkdir(mode=0o700)
             records = directory / "records"
             records.mkdir(mode=0o700)
-            self._write_new(records / "failed.json", raw)
+            source_state = path.parent.name
+            self._write_new(records / f"{source_state}.json", raw)
             operator_uid, operator_username = resolve_operator_identity(
                 dict(operator_env or os.environ)
             )
@@ -243,7 +256,7 @@ class StaleRegistrationRecoveryService:
                 "kind": "stale_registration_recovery",
                 "machine_uuid": machine_uuid,
                 "machine_key": machine_key,
-                "source_state": "failed",
+                "source_state": source_state,
                 "source_name": path.name,
                 "sha256": hashlib.sha256(raw).hexdigest(),
                 "reason": validated_reason,
@@ -266,4 +279,3 @@ class StaleRegistrationRecoveryService:
                 machine_uuid=machine_uuid,
                 machine_key=machine_key,
             )
-
