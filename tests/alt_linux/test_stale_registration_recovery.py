@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.stale_registration_recovery import (
@@ -12,6 +13,17 @@ from support.lifecycle_fixtures import (
     registration_payload,
     write_registration,
 )
+
+
+def test_recovery_documentation_forbids_direct_json_edit() -> None:
+    readme = (
+        Path(__file__).resolve().parents[2]
+        / "deploy"
+        / "alt-linux"
+        / "README.md"
+    ).read_text(encoding="utf-8")
+    assert "recover-stale-registration" in readme
+    assert "Do not edit registration JSON directly" in readme
 
 
 def assignment_payload() -> dict[str, object]:
@@ -66,4 +78,3 @@ def test_preview_and_apply_archive_exact_legacy_failed_record(
     assert AssignmentRepository(sandbox.settings).get(
         TEST_MACHINE_UUID
     ) is not None
-

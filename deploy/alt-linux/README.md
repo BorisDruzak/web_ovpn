@@ -354,6 +354,23 @@ sudo workstationctl --json jobs cleanup --apply
 `jobs log` transparently reads both `ansible.log` and `ansible.log.gz`. No
 automatic cleanup service is installed.
 
+## Legacy stale registration recovery
+
+For the narrowly defined legacy conflict where an assigned test machine has a
+regular record in `registration/failed/` with JSON status
+`awaiting_assignment`, use the audited recovery workflow:
+
+```bash
+sudo -u altserver workstationctl --json machines \
+  recover-stale-registration preview <uuid>
+sudo workstationctl --json machines recover-stale-registration apply <uuid> \
+  --reason "Clear approved legacy failed registration"
+```
+
+Apply is root-only, preserves the original record bytes and a SHA-256 manifest
+under `machine-archives/`, and leaves assignments and jobs unchanged. It is not
+a release or reassignment operation. Do not edit registration JSON directly.
+
 ## State, diagnostics, and recovery
 
 Controller state:
