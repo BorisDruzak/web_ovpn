@@ -3,11 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import secrets
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .assignments import AssignmentRepository
@@ -18,6 +16,14 @@ from .locks import exclusive_lock
 from .machine_archive import (
     resolve_operator_identity,
     validate_archive_reason,
+)
+from .machine_archive_repository import (
+    MachineArchiveRepository,
+    utc_now,
+)
+from .registration_records import (
+    MachineIdentity,
+    load_registration_candidate,
 )
 
 
@@ -59,6 +65,7 @@ class RecoveryResult:
 class StaleRegistrationRecoveryService:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self.archives = MachineArchiveRepository(settings)
 
     @staticmethod
     def _error(code: str, message: str, *, exit_code: int = 4) -> ControlError:
@@ -180,7 +187,12 @@ class StaleRegistrationRecoveryService:
                 manifest = json.loads(self._read_regular(manifest_path).decode("utf-8"))
             except (ControlError, UnicodeDecodeError, json.JSONDecodeError):
                 continue
-            if not isinstance(manifest, dict) or manifest.get("kind") != "stale_registration_recovery":
+            if (
+                not directory.name.startswith("archive-")
+                or not isinstance(manifest, dict)
+                or manifest.get("archive_context")
+                != "stale_registration_recovery"
+            ):
                 continue
             if normalized not in {
                 str(manifest.get("machine_uuid") or "").lower(),
@@ -194,23 +206,6 @@ class StaleRegistrationRecoveryService:
                 machine_key=str(manifest["machine_key"]),
             )
         return None
-
-    @staticmethod
-    def _write_new(path: Path, content: bytes) -> None:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(descriptor, content)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-
-    @staticmethod
-    def _fsync_directory(path: Path) -> None:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
 
     def preview(self, identifier: str) -> RecoveryPreview:
         path, payload, raw = self._candidate(identifier)
@@ -240,42 +235,35 @@ class StaleRegistrationRecoveryService:
             machine_uuid = str(payload["uuid"]).lower()
             machine_key = str(payload["machine_key"]).lower()
             self._assert_lifecycle(machine_uuid)
-            root = self.settings.machine_archives_dir
-            root.mkdir(parents=True, exist_ok=True)
-            recovery_id = "recovery-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + secrets.token_hex(4)
-            directory = root / recovery_id
-            directory.mkdir(mode=0o700)
-            records = directory / "records"
-            records.mkdir(mode=0o700)
-            source_state = path.parent.name
-            self._write_new(records / f"{source_state}.json", raw)
+            candidate = load_registration_candidate(path, path.parent.name)
             operator_uid, operator_username = resolve_operator_identity(
                 dict(operator_env or os.environ)
             )
-            manifest = {
-                "kind": "stale_registration_recovery",
-                "machine_uuid": machine_uuid,
-                "machine_key": machine_key,
-                "source_state": source_state,
-                "source_name": path.name,
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "reason": validated_reason,
-                "operator_uid": operator_uid,
-                "operator_username": operator_username,
-                "recovered_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self._write_new(
-                directory / "manifest.json",
-                (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+            transaction = self.archives.prepare(
+                MachineIdentity(
+                    machine_key=machine_key,
+                    machine_uuid=machine_uuid,
+                    mac=candidate.mac,
+                ),
+                (candidate,),
+                {
+                    "reason": validated_reason,
+                    "operator_uid": operator_uid,
+                    "operator_username": operator_username,
+                    "archived_at": utc_now(),
+                },
+                archive_context="stale_registration_recovery",
             )
-            self._fsync_directory(records)
-            self._fsync_directory(directory)
-            path.unlink()
-            self._fsync_directory(path.parent)
-            self._fsync_directory(root)
+            copied = self.archives.copy_and_verify(
+                transaction,
+                (candidate,),
+            )
+            committed = self.archives.commit(copied)
+            cleaned = self.archives.cleanup_sources(committed)
+            self.archives.finalize(cleaned)
             return RecoveryResult(
                 result="recovered",
-                recovery_id=recovery_id,
+                recovery_id=cleaned.archive_id,
                 machine_uuid=machine_uuid,
                 machine_key=machine_key,
             )

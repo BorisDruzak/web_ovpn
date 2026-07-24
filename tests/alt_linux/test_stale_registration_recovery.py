@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 from alt_deploy.assignments import AssignmentRepository
@@ -129,3 +130,6 @@ def test_apply_uses_standard_machine_archive_transaction(tmp_path) -> None:
     assert (archive / "transaction.json").is_file()
     assert (archive / "manifest.json").is_file()
     assert (archive / "commit.json").is_file()
+    assert json.loads((archive / "manifest.json").read_text())[
+        "archive_context"
+    ] == "stale_registration_recovery"
