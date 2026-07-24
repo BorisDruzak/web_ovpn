@@ -272,6 +272,32 @@ def test_readiness_failure_revokes_permit_and_leaves_marker(
     )
 
 
+def test_installer_retries_transient_readiness_before_revoking_rollout(
+    tmp_path: Path,
+) -> None:
+    sandbox = InstallerSandbox.create(tmp_path)
+    counter = tmp_path / "readiness-attempts"
+
+    result = sandbox.run_library(
+        INSTALLER_READINESS_FAILS_BEFORE_SUCCESS="1",
+        INSTALLER_READINESS_COUNTER=str(counter),
+    )
+
+    assert result.returncode == 0, result.stderr
+    readiness_commands = [
+        command
+        for command in sandbox.commands()
+        if command
+        and command[0] == "sudo"
+        and command[-2:] == ["controller", "readiness"]
+    ]
+    assert len(readiness_commands) == 2
+    assert not any(
+        command[:2] == ["alt-deploy-backup", "rollout-revoke"]
+        for command in sandbox.commands()
+    )
+
+
 def test_control_plane_installer_never_targets_backup_tool_paths() -> None:
     source = (
         ALT_ROOT / "install-control-plane-lib.sh"

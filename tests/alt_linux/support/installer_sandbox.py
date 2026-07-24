@@ -133,7 +133,16 @@ exit 2
             "  *\" jobs active \"*) printf '%s\\n' \"$INSTALLER_JOBS_JSON\"; exit \"${INSTALLER_JOBS_RC:-0}\" ;;\n"
             "  *\" vault check \"*) exit \"${INSTALLER_VAULT_RC:-0}\" ;;\n"
             "  *\" controller permissions \"*) exit \"${INSTALLER_PERMISSIONS_RC:-0}\" ;;\n"
-            "  *\" controller readiness \"*) exit \"${INSTALLER_READINESS_RC:-0}\" ;;\n"
+            "  *\" controller readiness \"*)\n"
+            "    if [[ -n ${INSTALLER_READINESS_FAILS_BEFORE_SUCCESS:-} ]]; then\n"
+            "      count=0\n"
+            "      [[ -f ${INSTALLER_READINESS_COUNTER:?} ]] && count=$(cat \"$INSTALLER_READINESS_COUNTER\")\n"
+            "      if (( count < INSTALLER_READINESS_FAILS_BEFORE_SUCCESS )); then\n"
+            "        printf '%s\\n' \"$((count + 1))\" > \"$INSTALLER_READINESS_COUNTER\"\n"
+            "        exit 11\n"
+            "      fi\n"
+            "    fi\n"
+            "    exit \"${INSTALLER_READINESS_RC:-0}\" ;;\n"
             "esac\nexit 0\n",
         )
         self._fake_script(
