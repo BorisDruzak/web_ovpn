@@ -157,6 +157,20 @@ def test_unsafe_installed_backup_tool_metadata_blocks_before_mutation(
     assert InstallerSandbox.mutation_commands(sandbox.commands()) == []
 
 
+def test_unreadable_static_asset_blocks_before_maintenance(
+    tmp_path: Path,
+) -> None:
+    sandbox = InstallerSandbox.create(tmp_path)
+    before = sandbox.protected_snapshot()
+
+    result = sandbox.run_library(INSTALLER_STATIC_READABLE_RC="1")
+
+    assert result.returncode != 0
+    assert "Static asset is not readable" in result.stderr
+    assert sandbox.protected_snapshot() == before
+    assert InstallerSandbox.mutation_commands(sandbox.commands()) == []
+
+
 def test_missing_installed_guard_unit_blocks_before_mutation(
     tmp_path: Path,
 ) -> None:
