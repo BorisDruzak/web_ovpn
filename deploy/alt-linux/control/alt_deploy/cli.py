@@ -18,6 +18,9 @@ from .job_retention import JobRetentionManager
 from .jobs import ACTIVE_STATES, JobRepository
 from .jsonio import read_json
 from .machine_archive import MachineArchiveService
+from .stale_registration_recovery import (
+    StaleRegistrationRecoveryService,
+)
 from .provision import (
     ProvisionPlanner,
     ProvisionRequest,
@@ -68,6 +71,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--reason",
         required=True,
     )
+
+    recovery = machine_commands.add_parser(
+        "recover-stale-registration"
+    )
+    recovery_commands = recovery.add_subparsers(
+        dest="machine_recovery_command",
+        required=True,
+    )
+    recovery_preview = recovery_commands.add_parser("preview")
+    recovery_preview.add_argument("machine_identifier")
+    recovery_apply = recovery_commands.add_parser("apply")
+    recovery_apply.add_argument("machine_identifier")
+    recovery_apply.add_argument("--reason", required=True)
 
     preflight = commands.add_parser("preflight")
     preflight.add_argument("machine_uuid")
@@ -246,6 +262,44 @@ def main(
             payload = {
                 "status": "ok",
                 "archive": MachineArchiveService(
+                    active_settings
+                ).apply(
+                    parsed.machine_identifier,
+                    parsed.reason,
+                ).to_public_dict(),
+            }
+
+        elif (
+            parsed.command == "machines"
+            and parsed.machine_command
+            == "recover-stale-registration"
+            and parsed.machine_recovery_command == "preview"
+        ):
+            payload = {
+                "status": "ok",
+                "preview": StaleRegistrationRecoveryService(
+                    active_settings
+                ).preview(parsed.machine_identifier).to_public_dict(),
+            }
+
+        elif (
+            parsed.command == "machines"
+            and parsed.machine_command
+            == "recover-stale-registration"
+            and parsed.machine_recovery_command == "apply"
+        ):
+            if os.geteuid() != 0:
+                raise ControlError(
+                    code="root_required",
+                    message=(
+                        "Stale registration recovery apply must be "
+                        "executed as root"
+                    ),
+                    exit_code=6,
+                )
+            payload = {
+                "status": "ok",
+                "recovery": StaleRegistrationRecoveryService(
                     active_settings
                 ).apply(
                     parsed.machine_identifier,
