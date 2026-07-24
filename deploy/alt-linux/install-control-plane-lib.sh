@@ -545,17 +545,25 @@ activate_control_plane() {
 run_installed_readiness() {
     local root_prefix=$1
     local workstationctl
+    local attempt
     workstationctl=$(install_destination \
         "${root_prefix}" \
         /usr/local/sbin/workstationctl)
 
-    if ! sudo -u altserver \
-        "${workstationctl}" \
-        --json \
-        controller readiness >/dev/null; then
-        echo "Controller readiness failed; restore the OR-3P3 backup before retrying" >&2
-        return 1
-    fi
+    for (( attempt = 1; attempt <= 15; attempt++ )); do
+        if sudo -u altserver \
+            "${workstationctl}" \
+            --json \
+            controller readiness >/dev/null; then
+            return 0
+        fi
+        if (( attempt < 15 )); then
+            sleep 1
+        fi
+    done
+
+    echo "Controller readiness failed; restore the OR-3P3 backup before retrying" >&2
+    return 1
 }
 
 run_post_maintenance_step() {
