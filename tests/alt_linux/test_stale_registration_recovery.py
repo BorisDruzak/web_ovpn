@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.stale_registration_recovery import (
     StaleRegistrationRecoveryService,
 )
+from alt_deploy_backup.state_validation import StateValidator
 from support.controller_sandbox import make_controller_sandbox
 from support.lifecycle_fixtures import (
     TEST_MACHINE_UUID,
@@ -130,6 +132,30 @@ def test_apply_uses_standard_machine_archive_transaction(tmp_path) -> None:
     assert (archive / "transaction.json").is_file()
     assert (archive / "manifest.json").is_file()
     assert (archive / "commit.json").is_file()
-    assert json.loads((archive / "manifest.json").read_text())[
-        "archive_context"
-    ] == "stale_registration_recovery"
+    manifest = json.loads((archive / "manifest.json").read_text())
+    assert manifest["archive_context"] == "stale_registration_recovery"
+
+    rehearsal_root = tmp_path / "rehearsal"
+    restored_archives = (
+        rehearsal_root
+        / "controller-state"
+        / "var"
+        / "lib"
+        / "alt-deploy"
+        / "machine-archives"
+    )
+    restored_archives.parent.mkdir(parents=True)
+    shutil.copytree(sandbox.settings.machine_archives_dir, restored_archives)
+    (
+        rehearsal_root
+        / "registration-state"
+        / "srv"
+        / "alt-deploy"
+        / "registration"
+    ).mkdir(parents=True)
+    assert StateValidator().validate_tree(rehearsal_root, None) == (
+        "jobs",
+        "assignments",
+        "registrations",
+        "machine_archives",
+    )
