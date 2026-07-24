@@ -105,3 +105,27 @@ def test_apply_archives_legacy_ready_awaiting_record(tmp_path) -> None:
     )
     assert archive.read_bytes() == original
     assert not source.exists()
+
+
+def test_apply_uses_standard_machine_archive_transaction(tmp_path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(
+        sandbox.settings,
+        "failed",
+        registration_payload(status="awaiting_assignment"),
+    )
+    AssignmentRepository(sandbox.settings).write(
+        TEST_MACHINE_UUID,
+        assignment_payload(),
+    )
+
+    result = StaleRegistrationRecoveryService(sandbox.settings).apply(
+        TEST_MACHINE_UUID,
+        "Archive stale registration through the standard transaction",
+    )
+
+    archive = sandbox.settings.machine_archives_dir / result.recovery_id
+    assert result.recovery_id.startswith("archive-")
+    assert (archive / "transaction.json").is_file()
+    assert (archive / "manifest.json").is_file()
+    assert (archive / "commit.json").is_file()
