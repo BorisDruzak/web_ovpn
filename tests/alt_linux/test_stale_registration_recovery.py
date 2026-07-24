@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
 from pathlib import Path
 
 from alt_deploy.assignments import AssignmentRepository
 from alt_deploy.stale_registration_recovery import (
     StaleRegistrationRecoveryService,
 )
+from alt_deploy_backup.state_validation import StateValidator
 from support.controller_sandbox import make_controller_sandbox
 from support.lifecycle_fixtures import (
     TEST_MACHINE_UUID,
@@ -105,3 +108,54 @@ def test_apply_archives_legacy_ready_awaiting_record(tmp_path) -> None:
     )
     assert archive.read_bytes() == original
     assert not source.exists()
+
+
+def test_apply_uses_standard_machine_archive_transaction(tmp_path) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(
+        sandbox.settings,
+        "failed",
+        registration_payload(status="awaiting_assignment"),
+    )
+    AssignmentRepository(sandbox.settings).write(
+        TEST_MACHINE_UUID,
+        assignment_payload(),
+    )
+
+    result = StaleRegistrationRecoveryService(sandbox.settings).apply(
+        TEST_MACHINE_UUID,
+        "Archive stale registration through the standard transaction",
+    )
+
+    archive = sandbox.settings.machine_archives_dir / result.recovery_id
+    assert result.recovery_id.startswith("archive-")
+    assert (archive / "transaction.json").is_file()
+    assert (archive / "manifest.json").is_file()
+    assert (archive / "commit.json").is_file()
+    manifest = json.loads((archive / "manifest.json").read_text())
+    assert manifest["archive_context"] == "stale_registration_recovery"
+
+    rehearsal_root = tmp_path / "rehearsal"
+    restored_archives = (
+        rehearsal_root
+        / "controller-state"
+        / "var"
+        / "lib"
+        / "alt-deploy"
+        / "machine-archives"
+    )
+    restored_archives.parent.mkdir(parents=True)
+    shutil.copytree(sandbox.settings.machine_archives_dir, restored_archives)
+    (
+        rehearsal_root
+        / "registration-state"
+        / "srv"
+        / "alt-deploy"
+        / "registration"
+    ).mkdir(parents=True)
+    assert StateValidator().validate_tree(rehearsal_root, None) == (
+        "jobs",
+        "assignments",
+        "registrations",
+        "machine_archives",
+    )
