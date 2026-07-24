@@ -255,6 +255,21 @@ validate_external_prerequisites() {
         require_regular_nonempty "${required_file}"
     done
 
+    local static_assets=(
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/bootstrap/ansible_authorized_keys)"
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata/autoinstall.scm)"
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata/vm-profile.scm)"
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata/pkg-groups.tar)"
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/metadata/install-scripts.tar)"
+    )
+    local static_asset
+    for static_asset in "${static_assets[@]}"; do
+        if ! sudo -u altserver test -r "${static_asset}"; then
+            echo "Static asset is not readable by altserver: ${static_asset}" >&2
+            return 1
+        fi
+    done
+
     local key_metadata
     key_metadata=$(stat -c '%a %U %G' "${private_key}") || {
         echo "Unable to inspect SSH private key" >&2

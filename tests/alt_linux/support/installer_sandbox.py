@@ -133,6 +133,7 @@ exit 2
             "  *\" jobs active \"*) printf '%s\\n' \"$INSTALLER_JOBS_JSON\"; exit \"${INSTALLER_JOBS_RC:-0}\" ;;\n"
             "  *\" vault check \"*) exit \"${INSTALLER_VAULT_RC:-0}\" ;;\n"
             "  *\" controller permissions \"*) exit \"${INSTALLER_PERMISSIONS_RC:-0}\" ;;\n"
+            "  *\" test -r \"*) exit \"${INSTALLER_STATIC_READABLE_RC:-0}\" ;;\n"
             "  *\" controller readiness \"*)\n"
             "    if [[ -n ${INSTALLER_READINESS_FAILS_BEFORE_SUCCESS:-} ]]; then\n"
             "      count=0\n"
