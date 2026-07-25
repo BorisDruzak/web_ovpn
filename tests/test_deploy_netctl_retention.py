@@ -12,6 +12,7 @@ from test_deploy_netctl import _run_installer
 ROOT = Path(__file__).resolve().parents[1]
 VERIFIER = ROOT / "deploy" / "verify_netctl_systemd.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "systemd" / "netctl-retention.properties"
+MULTIPLE_CALENDAR_FIXTURE = ROOT / "tests" / "fixtures" / "systemd" / "netctl-retention-multiple-calendar.properties"
 
 
 def test_installer_installs_and_enables_retention_only_after_systemd_verification(tmp_path: Path) -> None:
@@ -74,3 +75,18 @@ def test_systemd_show_property_parser_reads_retention_hardening_and_schedule() -
         "Unit": "netctl-retention.service",
         "User": "netctl",
     }
+
+
+def test_systemd_verifier_rejects_extra_retention_calendar_entries() -> None:
+    verifier = runpy.run_path(str(VERIFIER))
+    one_calendar = verifier["parse_show_properties"](FIXTURE.read_text(encoding="utf-8"))
+    properties = verifier["parse_show_properties"](
+        MULTIPLE_CALENDAR_FIXTURE.read_text(encoding="utf-8")
+    )
+
+    assert verifier["property_matches"](
+        "OnCalendar", one_calendar["OnCalendar"], "*-*-* 03:17:00"
+    ) is True
+    assert verifier["property_matches"](
+        "OnCalendar", properties["OnCalendar"], "*-*-* 03:17:00"
+    ) is False

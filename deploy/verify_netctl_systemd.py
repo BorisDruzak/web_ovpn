@@ -62,6 +62,7 @@ _ARGV_PATTERN = re.compile(
     r"(?:ExecStart=)?\{\s*path=[^;]*;\s*argv\[\]=(?P<argv>.*?)\s*;\s*ignore_errors=",
     re.DOTALL,
 )
+_ON_CALENDAR_ENTRY_PATTERN = re.compile(r"OnCalendar=(?P<calendar>[^;}]+?)\s*;")
 
 
 def parse_exec_starts(serialized: str) -> list[list[str]]:
@@ -99,6 +100,21 @@ def parse_show_properties(serialized: str) -> dict[str, str]:
     if not properties:
         raise ValueError("systemctl show output has no properties")
     return properties
+
+
+def _on_calendar_entries(serialized: str) -> list[str]:
+    """Return the calendar values from one loaded systemd timer property."""
+
+    entries = [match.group("calendar").strip() for match in _ON_CALENDAR_ENTRY_PATTERN.finditer(serialized)]
+    return entries if entries else [serialized.strip()]
+
+
+def property_matches(property_name: str, actual_value: str, expected_value: str) -> bool:
+    """Match loaded systemd values, requiring one exact retention calendar."""
+
+    if property_name == "OnCalendar":
+        return _on_calendar_entries(actual_value) == [expected_value]
+    return actual_value == expected_value
 
 
 def _has_running_systemd() -> bool:
@@ -151,12 +167,7 @@ def _verify_installed_units(unit_directory: Path) -> None:
             actual_value = actual_properties.get(property_name)
             if actual_value is None:
                 raise RuntimeError(f"{unit} is missing systemd property {property_name}")
-            matches = (
-                expected_value in actual_value
-                if property_name == "OnCalendar"
-                else actual_value == expected_value
-            )
-            if not matches:
+            if not property_matches(property_name, actual_value, expected_value):
                 raise RuntimeError(
                     f"{unit} {property_name} mismatch: expected {expected_value!r}, got {actual_value!r}"
                 )

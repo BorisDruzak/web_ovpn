@@ -18,7 +18,12 @@ the database and lock paths consistently before starting.
 
 Choose a maintenance window. Record each timer's enabled and active state,
 then disable and stop all collection, reconciliation, and retention timers.
-Keep the state file for restoration and rollback.
+Keep the state file for restoration and rollback. Before changing any timer,
+preflight accepts only the exactly restorable states `enabled`,
+`enabled-runtime`, or `disabled` with an `active` or `inactive` runtime state.
+It deliberately aborts for `masked`, `masked-runtime`, `static`, `indirect`,
+`linked`, `generated`, `failed`, transitional, or unknown states. Resolve such
+a state and restart this procedure; do not convert it during maintenance.
 
 ```bash
 set -euo pipefail
@@ -32,6 +37,18 @@ for timer in netctl-collect.timer netctl-reconcile.timer netctl-retention.timer;
     "$(systemctl is-active "$timer" 2>/dev/null || true)"
 done | sudo tee "$timer_state" >/dev/null
 sudo chmod 0640 "$timer_state"
+
+while IFS=$'\t' read -r timer enabled active; do
+  case "$enabled" in enabled|enabled-runtime|disabled) ;; *)
+    printf 'unsupported saved enablement state for %s: %s\n' "$timer" "$enabled" >&2
+    exit 2
+  esac
+  case "$active" in active|inactive) ;; *)
+    printf 'unsupported saved activity state for %s: %s\n' "$timer" "$active" >&2
+    exit 2
+  esac
+done < "$timer_state"
+
 sudo systemctl disable --now netctl-collect.timer netctl-reconcile.timer netctl-retention.timer
 sudo systemctl stop netctl-collect.service netctl-reconcile.service netctl-retention.service
 ```
@@ -118,7 +135,10 @@ Stop immediately unless the final integrity result is `ok`.
 
 Start the web service, execute one read-only source collection and reconciliation,
 then check the device-card context. Restore exactly the saved timer enablement
-and active states; do not force all timers on.
+and active states; do not force all timers on. In particular,
+`enabled-runtime` is restored with `systemctl enable --runtime`, never with a
+persistent enable. The preflight below refuses a changed or unsupported saved
+state before it changes any timer.
 
 ```bash
 sudo systemctl start openvpn-web.service
@@ -127,13 +147,25 @@ sudo /usr/local/sbin/netctl --json hosts list --q '<known-hostname-or-ip>'
 sudo sqlite3 "$db" 'PRAGMA integrity_check;'
 
 while IFS=$'\t' read -r timer enabled active; do
+  case "$enabled" in enabled|enabled-runtime|disabled) ;; *)
+    printf 'unsafe saved enablement state for %s: %s\n' "$timer" "$enabled" >&2
+    exit 2
+  esac
+  case "$active" in active|inactive) ;; *)
+    printf 'unsafe saved activity state for %s: %s\n' "$timer" "$active" >&2
+    exit 2
+  esac
+done < "$timer_state"
+
+while IFS=$'\t' read -r timer enabled active; do
   case "$enabled" in
-    enabled|enabled-runtime) sudo systemctl enable "$timer" ;;
-    *) sudo systemctl disable "$timer" ;;
+    enabled) sudo systemctl enable "$timer" ;;
+    enabled-runtime) sudo systemctl enable --runtime "$timer" ;;
+    disabled) sudo systemctl disable "$timer" ;;
   esac
   case "$active" in
     active) sudo systemctl start "$timer" ;;
-    *) sudo systemctl stop "$timer" ;;
+    inactive) sudo systemctl stop "$timer" ;;
   esac
 done < "$timer_state"
 
@@ -163,8 +195,26 @@ sudo sqlite3 "$db" 'PRAGMA foreign_key_check; PRAGMA integrity_check;'
 sudo systemctl start openvpn-web.service
 
 while IFS=$'\t' read -r timer enabled active; do
-  case "$enabled" in enabled|enabled-runtime) sudo systemctl enable "$timer" ;; *) sudo systemctl disable "$timer" ;; esac
-  case "$active" in active) sudo systemctl start "$timer" ;; *) sudo systemctl stop "$timer" ;; esac
+  case "$enabled" in enabled|enabled-runtime|disabled) ;; *)
+    printf 'unsafe saved enablement state for %s: %s\n' "$timer" "$enabled" >&2
+    exit 2
+  esac
+  case "$active" in active|inactive) ;; *)
+    printf 'unsafe saved activity state for %s: %s\n' "$timer" "$active" >&2
+    exit 2
+  esac
+done < "$timer_state"
+
+while IFS=$'\t' read -r timer enabled active; do
+  case "$enabled" in
+    enabled) sudo systemctl enable "$timer" ;;
+    enabled-runtime) sudo systemctl enable --runtime "$timer" ;;
+    disabled) sudo systemctl disable "$timer" ;;
+  esac
+  case "$active" in
+    active) sudo systemctl start "$timer" ;;
+    inactive) sudo systemctl stop "$timer" ;;
+  esac
 done < "$timer_state"
 ```
 
