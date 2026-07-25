@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import deque
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .normalizer import normalize_mac
@@ -54,28 +55,95 @@ def context_snapshot(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def _port_peers(
+    conn: sqlite3.Connection, asset_id: int, source_id: int, port_key: str, limit: int = 32,
+) -> dict[str, Any]:
+    if not 1 <= limit <= 32:
+        raise ValueError("port peer limit must be between 1 and 32")
+    interfaces_by_mac: dict[str, list[dict[str, Any]]] = {}
+    for row in conn.execute(
+        """SELECT interfaces.asset_id, interfaces.mac, assets.asset_key, assets.display_name
+           FROM asset_interfaces AS interfaces
+           JOIN assets ON assets.id = interfaces.asset_id
+           WHERE interfaces.lifecycle = 'active' AND interfaces.mac IS NOT NULL
+           ORDER BY assets.display_name, assets.asset_key, interfaces.id"""
+    ):
+        mac = normalize_mac(row["mac"])
+        if mac is not None:
+            interfaces_by_mac.setdefault(mac, []).append(dict(row))
+
+    known: list[dict[str, Any]] = []
+    unknown_macs: set[str] = set()
+    for row in conn.execute(
+        """SELECT mac, vlan_key, vlan_id FROM current_switch_fdb
+           WHERE source_id = ? AND port_key = ? AND lower(status) NOT IN ('self', 'mgmt')
+           ORDER BY mac, vlan_key""",
+        (source_id, port_key),
+    ):
+        mac = normalize_mac(row["mac"])
+        if mac is None:
+            continue
+        matched = interfaces_by_mac.get(mac, [])
+        if any(int(item["asset_id"]) == asset_id for item in matched):
+            continue
+        peers = matched
+        if not peers:
+            unknown_macs.add(mac)
+            continue
+        for peer in peers:
+            known.append({
+                "asset": {
+                    "asset_key": str(peer["asset_key"]),
+                    "display_name": str(peer["display_name"] or ""),
+                },
+                "mac": mac,
+                "vlan_key": str(row["vlan_key"]),
+                "vlan_id": int(row["vlan_id"]) if row["vlan_id"] is not None else None,
+            })
+    known.sort(key=lambda item: (
+        str(item["asset"]["display_name"]).lower(), str(item["asset"]["asset_key"]),
+        str(item["mac"]), str(item["vlan_key"]),
+    ))
+    return {
+        "items": known[:limit],
+        "known_asset_count": len({str(item["asset"]["asset_key"]) for item in known}),
+        "unknown_mac_count": len(unknown_macs),
+        "truncated": len(known) > limit,
+    }
+
+
 def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int | None = None) -> dict[str, Any] | None:
-    conditions = ["asset_id = ?"]
+    conditions = ["resolutions.asset_id = ?"]
     params: list[object] = [asset_id]
     if asset_interface_id is not None:
-        conditions.append("asset_interface_id = ?")
+        conditions.append("resolutions.asset_interface_id = ?")
         params.append(asset_interface_id)
     row = conn.execute(
-        f"""SELECT status, selected_source_id, selected_port_key, selected_vlan_key,
-                  selected_vlan_id, confidence, last_seen_at
-           FROM asset_attachment_resolutions
+        f"""SELECT resolutions.status, resolutions.selected_source_id, resolutions.selected_port_key,
+                  resolutions.selected_vlan_key, resolutions.selected_vlan_id, resolutions.confidence,
+                  resolutions.last_seen_at, sources.name AS switch_name, sources.site AS switch_site,
+                  sources.host AS switch_host, ports.name AS port_name, ports.alias AS port_alias,
+                  ports.admin_status AS port_admin_status, ports.oper_status AS port_oper_status
+           FROM asset_attachment_resolutions AS resolutions
+           LEFT JOIN network_sources AS sources ON sources.id = resolutions.selected_source_id
+           LEFT JOIN switch_ports AS ports
+             ON ports.source_id = resolutions.selected_source_id AND ports.port_key = resolutions.selected_port_key
            WHERE {' AND '.join(conditions)} ORDER BY confidence DESC, asset_interface_id LIMIT 1""",
         params,
     ).fetchone()
     if row is None:
         return None
-    attachment = dict(row)
+    attachment = {
+        key: row[key]
+        for key in ("status", "selected_source_id", "selected_port_key", "selected_vlan_key",
+                    "selected_vlan_id", "confidence", "last_seen_at")
+    }
     alternatives = conn.execute(
         f"""SELECT sources.name AS source, candidates.port_key, candidates.vlan_key,
                   candidates.vlan_id, candidates.candidate_class,
                   candidates.topology_depth, candidates.score, candidates.observed_at
            FROM asset_attachment_candidates AS candidates
-           JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
+           LEFT JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
            WHERE candidates.asset_id = ? {"AND candidates.asset_interface_id = ?" if asset_interface_id is not None else ""}
            ORDER BY candidates.score DESC, candidates.observed_at DESC,
                     sources.name, candidates.port_key, candidates.vlan_key
@@ -83,6 +151,44 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
         (asset_id, asset_interface_id) if asset_interface_id is not None else (asset_id,),
     ).fetchall()
     attachment["alternatives"] = [dict(item) for item in alternatives]
+    attachment["switch"] = None
+    attachment["port"] = None
+    attachment["vlan_membership"] = None
+    attachment["port_peers"] = None
+    if attachment["status"] != "confirmed":
+        return attachment
+    source_id = attachment["selected_source_id"]
+    port_key = str(attachment["selected_port_key"] or "")
+    if source_id is None or not port_key:
+        return attachment
+    attachment["switch"] = {
+        "id": int(source_id),
+        "name": str(row["switch_name"] or ""),
+        "site": str(row["switch_site"] or ""),
+        "host": str(row["switch_host"] or ""),
+    }
+    attachment["port"] = {
+        "key": port_key,
+        "name": str(row["port_name"] or ""),
+        "alias": str(row["port_alias"] or ""),
+        "admin_status": str(row["port_admin_status"] or "unknown"),
+        "oper_status": str(row["port_oper_status"] or "unknown"),
+    }
+    vlan_id = attachment["selected_vlan_id"]
+    if vlan_id is not None:
+        membership = conn.execute(
+            """SELECT vlan_id, egress, untagged, pvid FROM current_switch_vlan_memberships
+               WHERE source_id = ? AND port_key = ? AND vlan_id = ?""",
+            (source_id, port_key, vlan_id),
+        ).fetchone()
+        if membership is not None:
+            attachment["vlan_membership"] = {
+                "vlan_id": int(membership["vlan_id"]),
+                "egress": bool(membership["egress"]),
+                "untagged": bool(membership["untagged"]),
+                "pvid": bool(membership["pvid"]),
+            }
+    attachment["port_peers"] = _port_peers(conn, asset_id, int(source_id), port_key)
     return attachment
 
 
@@ -133,7 +239,7 @@ def _source_health(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def _topology_path(conn: sqlite3.Connection, attachment: dict[str, Any] | None) -> dict[str, Any]:
     if attachment is None or attachment.get("status") != "confirmed" or attachment.get("selected_source_id") is None:
-        return {"nodes": [], "complete": False, "reason": "no_attachment"}
+        return {"nodes": [], "hops": [], "complete": False, "reason": "no_attachment"}
     roots: set[int] = set()
     for row in conn.execute("SELECT id, driver_options_json FROM network_sources"):
         try:
@@ -143,22 +249,106 @@ def _topology_path(conn: sqlite3.Connection, attachment: dict[str, Any] | None) 
         if isinstance(options, dict) and options.get("topology_role") == "core":
             roots.add(int(row["id"]))
     start = int(attachment["selected_source_id"])
-    adjacency: dict[int, set[int]] = {}
-    for row in conn.execute("SELECT source_a_id, source_b_id FROM current_switch_links WHERE state != 'conflicting'"):
+    adjacency: dict[int, list[tuple[int, dict[str, Any], bool]]] = {}
+    for raw in conn.execute(
+        """SELECT link_key, source_a_id, port_a_key, source_b_id, port_b_key, state, confidence
+           FROM current_switch_links WHERE state != 'conflicting' ORDER BY link_key"""
+    ):
+        row = dict(raw)
         first, second = int(row["source_a_id"]), int(row["source_b_id"])
-        adjacency.setdefault(first, set()).add(second)
-        adjacency.setdefault(second, set()).add(first)
-    queue: deque[tuple[int, list[int]]] = deque([(start, [start])])
+        adjacency.setdefault(first, []).append((second, row, True))
+        adjacency.setdefault(second, []).append((first, row, False))
+    queue: deque[tuple[int, list[int], list[tuple[dict[str, Any], bool]]]] = deque([(start, [start], [])])
     seen = {start}
     while queue:
-        source_id, path = queue.popleft()
+        source_id, path, edges = queue.popleft()
         if source_id in roots:
-            return {"nodes": path[:32], "complete": True, "reason": ""}
-        for peer in sorted(adjacency.get(source_id, set())):
+            return {"nodes": path[:32], "hops": _path_hops(conn, edges[:31]), "complete": True, "reason": ""}
+        for peer, edge, forward in sorted(adjacency.get(source_id, []), key=lambda item: (item[0], item[1]["link_key"])):
             if peer not in seen:
                 seen.add(peer)
-                queue.append((peer, path + [peer]))
-    return {"nodes": [start], "complete": False, "reason": "no_core_path"}
+                queue.append((peer, path + [peer], edges + [(edge, forward)]))
+    return {"nodes": [start], "hops": [], "complete": False, "reason": "no_core_path"}
+
+
+def _path_hops(conn: sqlite3.Connection, edges: list[tuple[dict[str, Any], bool]]) -> list[dict[str, Any]]:
+    source_rows = conn.execute("SELECT id, name, site FROM network_sources").fetchall()
+    sources = {int(row["id"]): {"id": int(row["id"]), "name": str(row["name"] or ""), "site": str(row["site"] or "")} for row in source_rows}
+    hops: list[dict[str, Any]] = []
+    for edge, forward in edges:
+        from_id = int(edge["source_a_id"] if forward else edge["source_b_id"])
+        to_id = int(edge["source_b_id"] if forward else edge["source_a_id"])
+        from_port_key = str(edge["port_a_key"] if forward else edge["port_b_key"])
+        to_port_key = str(edge["port_b_key"] if forward else edge["port_a_key"])
+        from_port = conn.execute(
+            "SELECT name FROM switch_ports WHERE source_id = ? AND port_key = ?", (from_id, from_port_key)
+        ).fetchone()
+        to_port = conn.execute(
+            "SELECT name FROM switch_ports WHERE source_id = ? AND port_key = ?", (to_id, to_port_key)
+        ).fetchone()
+        hops.append({
+            "from": {**sources.get(from_id, {"id": from_id, "name": "", "site": ""}), "port": {"key": from_port_key, "name": str(from_port["name"] or "") if from_port is not None else ""}},
+            "to": {**sources.get(to_id, {"id": to_id, "name": "", "site": ""}), "port": {"key": to_port_key, "name": str(to_port["name"] or "") if to_port is not None else ""}},
+            "state": str(edge["state"]),
+            "confidence": int(edge["confidence"]),
+        })
+    return hops
+
+
+def _attachment_events(conn: sqlite3.Connection, asset_id: int) -> list[dict[str, Any]]:
+    now = datetime.fromisoformat(utc_now().replace("Z", "+00:00")).astimezone(UTC)
+    cutoff = (now - timedelta(days=30)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    rows = conn.execute(
+        """SELECT event_type, before_json, after_json, observed_at FROM asset_attachment_events
+           WHERE asset_id = ? AND observed_at >= ? ORDER BY observed_at DESC, id DESC LIMIT 30""",
+        (asset_id, cutoff),
+    ).fetchall()
+    return [{
+        "event_type": str(row["event_type"]),
+        "observed_at": str(row["observed_at"]),
+        "before": _attachment_selection_public(row["before_json"]),
+        "after": _attachment_selection_public(row["after_json"]),
+    } for row in rows]
+
+
+def _attachment_selection_public(value: object) -> dict[str, Any]:
+    try:
+        raw = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    source_id = raw.get("selected_source_id")
+    vlan_id = raw.get("selected_vlan_id")
+    confidence = raw.get("confidence")
+    return {
+        "status": str(raw.get("status") or ""),
+        "selected_source_id": int(source_id) if isinstance(source_id, int) and not isinstance(source_id, bool) else None,
+        "selected_port_key": str(raw.get("selected_port_key") or ""),
+        "selected_vlan_key": str(raw.get("selected_vlan_key") or ""),
+        "selected_vlan_id": int(vlan_id) if isinstance(vlan_id, int) and not isinstance(vlan_id, bool) else None,
+        "confidence": int(confidence) if isinstance(confidence, int) and not isinstance(confidence, bool) else None,
+    }
+
+
+def _freshness(conn: sqlite3.Connection) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for run_type, prefix in (("topology", "topology"), ("attachments", "attachment")):
+        row = conn.execute(
+            """SELECT finished_at, source_watermark_json FROM network_correlation_runs
+               WHERE run_type = ? AND status = 'success' ORDER BY finished_at DESC, id DESC LIMIT 1""",
+            (run_type,),
+        ).fetchone()
+        watermark: object = {}
+        if row is not None:
+            try:
+                decoded = json.loads(str(row["source_watermark_json"] or "{}"))
+                watermark = decoded if isinstance(decoded, dict) else {}
+            except (TypeError, ValueError, json.JSONDecodeError):
+                watermark = {}
+        result[f"{prefix}_reconciled_at"] = str(row["finished_at"] or "") if row is not None else ""
+        result[f"{prefix}_source_watermark"] = watermark
+    return result
 
 
 def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str, Any] | None:
@@ -166,6 +356,7 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
     if asset is None:
         return None
     asset_id = int(asset["id"])
+    attachment = _attachment(conn, asset_id)
     return {
         "asset": _asset_public(asset),
         "intent": _intent(conn, asset_id),
@@ -177,12 +368,14 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
             }
             for item in list_asset_interfaces(conn, asset_id)[:32]
         ],
-        "attachment": _attachment(conn, asset_id),
+        "attachment": attachment,
         "network": {
             "ip_observations": list_current_ip_observations(conn, asset_id)[:64],
             "hostname_observations": list_current_hostname_observations(conn, asset_id)[:64],
         },
-        "topology_path": _topology_path(conn, _attachment(conn, asset_id)),
+        "topology_path": _topology_path(conn, attachment),
+        "attachment_events": _attachment_events(conn, asset_id),
+        "freshness": _freshness(conn),
         "source_health": _source_health(conn),
         "findings": findings_for_asset(conn, asset_id),
         "evidence": {},
