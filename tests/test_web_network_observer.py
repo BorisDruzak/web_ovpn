@@ -68,7 +68,7 @@ collected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 if cmd[:2] == ["hosts", "list"]:
     print(json.dumps({"status": "ok", "hosts": [
         {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:01", "hostname": "pc-buh-01", "display_name": "desktop pc-buh-01", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:01", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
-        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "legacy-host:phone-01", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
+        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "legacy-host:desk?old", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
         {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "device_key": "mac:E0:1C:FC:AE:82:9B", "device_type": "server", "device_confidence": 80, "device_evidence": ["category:mgmt"], "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"}
     ]}))
 elif cmd[:2] == ["hosts", "inspect"]:
@@ -472,11 +472,23 @@ def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path,
     page = client.get("/network/hosts?q=desktop")
 
     assert page.status_code == 200
-    assert 'href="/network/assets/mac:AA:BB:CC:DD:EE:01"' in page.text
+    assert 'href="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01"' in page.text
     assert 'href="/network/hosts/192.168.100.55"' not in page.text
     all_hosts = client.get("/network/hosts")
-    assert 'href="/network/assets/legacy-host:phone-01"' in all_hosts.text
+    assert 'href="/network/assets/legacy-host%3Adesk%3Fold"' in all_hosts.text
     assert 'href="/network/hosts/192.168.50.10"' in all_hosts.text
+
+
+def test_network_hosts_url_encodes_reserved_asset_key_and_routes_exact_key(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    hosts_page = client.get("/network/hosts")
+
+    assert 'href="/network/assets/legacy-host%3Adesk%3Fold"' in hosts_page.text
+    asset_page = client.get("/network/assets/legacy-host:desk%3Fold")
+    assert asset_page.status_code == 200
+    assert "legacy-host:desk?old" in asset_page.text
 
 
 def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_path, monkeypatch):

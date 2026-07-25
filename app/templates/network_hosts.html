@@ -68,7 +68,7 @@
         <td>{{ host.site or "-" }}</td>
         <td>{{ host.last_seen_at or "-" }}</td>
         {% if is_runtime_asset_key(host.device_key) and (host.device_key.startswith("mac:") or host.device_key.startswith("legacy-host:")) %}
-        <td class="actions"><a class="button small secondary" href="/network/assets/{{ host.device_key }}">Открыть</a></td>
+        <td class="actions"><a class="button small secondary" href="/network/assets/{{ host.device_key|urlencode }}">Открыть</a></td>
         {% else %}
         <td class="actions"><a class="button small secondary" href="/network/hosts/{{ host.ip }}">Открыть</a></td>
         {% endif %}
