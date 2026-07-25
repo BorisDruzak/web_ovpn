@@ -67,12 +67,26 @@ cmd = args[1:]
 collected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 if cmd[:2] == ["hosts", "list"]:
     print(json.dumps({"status": "ok", "hosts": [
-        {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:FF", "hostname": "pc-buh-01", "display_name": "pc-buh-01", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:FF", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
-        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "mac:84:D8:1B:EF:3C:6F", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
+        {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:01", "hostname": "pc-buh-01", "display_name": "desktop pc-buh-01", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:01", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
+        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "legacy-host:phone-01", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
         {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "device_key": "mac:E0:1C:FC:AE:82:9B", "device_type": "server", "device_confidence": 80, "device_evidence": ["category:mgmt"], "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"}
     ]}))
 elif cmd[:2] == ["hosts", "inspect"]:
     print(json.dumps({"status": "ok", "host": {"ip": cmd[2], "display_name": "pc-buh-01"}, "observations": []}))
+elif cmd[:2] == ["context-view", "search"]:
+    print(json.dumps({"status": "ok", "results": [{"asset_key": "mac:AA:BB:CC:DD:EE:01", "display_name": "desktop pc-buh-01"}]}))
+elif cmd[:2] == ["context-view", "asset"]:
+    asset_key = cmd[cmd.index("--asset-key") + 1]
+    freshness = {"topology_reconciled_at": "2026-07-26T10:05:00Z", "attachment_reconciled_at": "2026-07-26T10:05:00Z", "topology_source_watermark": {}, "attachment_source_watermark": {}}
+    if asset_key == "mac:AA:BB:CC:DD:EE:99":
+        print(json.dumps({"status": "ok", "context": {}}))
+    elif asset_key == "mac:AA:BB:CC:DD:EE:03":
+        freshness["topology_reconciled_at"] = ""
+        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "stale desktop"}, "attachment": {"status": "unresolved", "alternatives": []}, "freshness": freshness}}))
+    elif asset_key == "mac:AA:BB:CC:DD:EE:04":
+        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "ambiguous desktop"}, "attachment": {"status": "ambiguous", "alternatives": [{"source": "access-b", "port_key": "physical:12", "vlan_id": 20, "candidate_class": "fdb", "score": 70}], "switch": {"name": "must-not-render"}, "port": {"alias": "must-not-render"}, "port_peers": {"items": [{"asset": {"asset_key": "AA:BB:CC:DD:EE:02", "display_name": "must-not-render"}}]}}, "freshness": freshness}}))
+    else:
+        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "desktop pc-buh-01", "kind": "device", "status": "active", "site": "main", "location": "Office", "identity_method": "mac", "identity_confidence": 100}, "attachment": {"status": "confirmed", "confidence": 100, "last_seen_at": "2026-07-26T10:00:00Z", "switch": {"name": "access-a", "site": "main", "host": "must-not-render"}, "port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up"}, "vlan_membership": {"vlan_id": 20, "egress": True, "untagged": True, "pvid": True}, "port_peers": {"items": [{"asset": {"asset_key": "mac:AA:BB:CC:DD:EE:02", "display_name": "Printer"}, "mac": "AA:BB:CC:DD:EE:02", "vlan_id": 20}], "known_asset_count": 1, "unknown_mac_count": 0, "truncated": False}, "alternatives": []}, "topology_path": {"nodes": [], "hops": [], "complete": True, "reason": ""}, "attachment_events": [{"event_type": "confirmed", "observed_at": "2026-07-25T10:00:00Z", "before": {"status": "unresolved"}, "after": {"status": "confirmed"}}], "freshness": freshness, "evidence": {"secret": "must-not-render"}}}))
 elif cmd[:1] == ["dashboard"]:
     print(json.dumps({"status": "ok", "summary": {"total_hosts": 3, "local_device": 1, "telephony": 1, "mgmt": 1, "vpn_client": 0, "router": 0, "site_device": 0, "unknown": 0, "online": 2, "seen": 1, "offline": 0}, "sources": [{"name": "mikrotik-main", "last_collect_at": "2026-07-03T12:00:00Z", "last_status": "ok"}]}))
 elif cmd[:2] == ["sources", "list"]:
@@ -449,6 +463,59 @@ def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch
     assert "VPN" in page.text
     assert "192.168.50.10" in page.text
     assert "192.168.100.55" in page.text
+
+
+def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    page = client.get("/network/hosts?q=desktop")
+
+    assert page.status_code == 200
+    assert 'href="/network/assets/mac:AA:BB:CC:DD:EE:01"' in page.text
+    assert 'href="/network/hosts/192.168.100.55"' not in page.text
+    all_hosts = client.get("/network/hosts")
+    assert 'href="/network/assets/legacy-host:phone-01"' in all_hosts.text
+    assert 'href="/network/hosts/192.168.50.10"' in all_hosts.text
+
+
+def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+
+    denied = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01", follow_redirects=False)
+    assert denied.status_code == 303
+
+    login(client)
+    page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
+
+    assert page.status_code == 200
+    assert "access-a" in page.text
+    assert "Office 12" in page.text
+    assert "VLAN 20" in page.text
+    assert "РџРѕРґС‚РІРµСЂР¶РґРµРЅРѕ" in page.text
+    assert "AA:BB:CC:DD:EE:02" in page.text
+    assert "must-not-render" not in page.text
+    assert "Raw JSON" not in page.text
+
+
+def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    unknown = client.get("/network/assets/mac:AA:BB:CC:DD:EE:99")
+    ambiguous = client.get("/network/assets/mac:AA:BB:CC:DD:EE:04")
+    stale = client.get("/network/assets/mac:AA:BB:CC:DD:EE:03")
+
+    assert unknown.status_code == 200
+    assert "РЈСЃС‚СЂРѕР№СЃС‚РІРѕ РЅРµ РЅР°Р№РґРµРЅРѕ" in unknown.text
+    assert ambiguous.status_code == 200
+    assert "РќРµРѕРґРЅРѕР·РЅР°С‡РЅРѕ" in ambiguous.text
+    assert "access-b" in ambiguous.text
+    assert "must-not-render" not in ambiguous.text
+    assert "AA:BB:CC:DD:EE:02" not in ambiguous.text
+    assert stale.status_code == 200
+    assert "РўРѕРїРѕР»РѕРіРёСЏ: РЅСѓР¶РЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ" in stale.text
+    assert "Р’Р»РѕР¶РµРЅРёСЏ: РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅС‹" in stale.text
 
 
 def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):

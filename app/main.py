@@ -1528,6 +1528,18 @@ def unified_network_rows(request: Request) -> tuple[list[dict[str, Any]], str | 
     return rows, hosts_error or connected_error or clients_error
 
 
+def is_runtime_asset_key(value: object) -> bool:
+    asset_key = str(value or "").strip()
+    return bool(asset_key) and len(asset_key) <= 255 and "/" not in asset_key and "\\" not in asset_key
+
+
+def validate_runtime_asset_key(value: object) -> str:
+    asset_key = str(value or "").strip()
+    if not is_runtime_asset_key(asset_key):
+        raise HTTPException(status_code=404)
+    return asset_key
+
+
 @app.get("/network/hosts", response_class=HTMLResponse)
 def network_hosts(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
@@ -1551,7 +1563,26 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
             "filters": filters,
             "sources": sources_data.get("sources", []),
             "network_filters": NETWORK_FILTERS,
+            "is_runtime_asset_key": is_runtime_asset_key,
             "error": error or sources_error,
+        },
+        db,
+    )
+
+
+@app.get("/network/assets/{asset_key}", response_class=HTMLResponse)
+def network_asset_detail(asset_key: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    valid_asset_key = validate_runtime_asset_key(asset_key)
+    data, error = net_cli_call(request, ["context-view", "asset", "--asset-key", valid_asset_key])
+    context = data.get("context")
+    return render(
+        request,
+        "network_asset_detail.html",
+        {
+            "asset_key": valid_asset_key,
+            "context": context if isinstance(context, dict) else {},
+            "error": error,
         },
         db,
     )

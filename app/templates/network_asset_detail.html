@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}{{ context.get("asset", {}).get("display_name") or asset_key }}{% endblock %}
+{% block page_title %}{{ context.get("asset", {}).get("display_name") or asset_key }}{% endblock %}
+{% block content %}
+{% set asset = context.get("asset") or {} %}
+{% set attachment = context.get("attachment") or {} %}
+{% set freshness = context.get("freshness") or {} %}
+{% set confirmed = attachment.get("status") == "confirmed" %}
+<section class="toolbar">
+  <a class="button secondary" href="/network/hosts">Назад к списку</a>
+</section>
+{% if error %}
+<div class="alert bad">Не удалось загрузить карточку устройства.</div>
+{% elif not asset %}
+<section class="panel empty">РЈСЃС‚СЂРѕР№СЃС‚РІРѕ РЅРµ РЅР°Р№РґРµРЅРѕ.</section>
+{% else %}
+<section class="panel">
+  <h2>Идентификация</h2>
+  <dl class="details">
+    <dt>Название</dt><dd>{{ asset.get("display_name") or "-" }}</dd>
+    <dt>Ключ</dt><dd class="mono">{{ asset.get("asset_key") or asset_key }}</dd>
+    <dt>Тип</dt><dd>{{ asset.get("kind") or "-" }}</dd>
+    <dt>Site</dt><dd>{{ asset.get("site") or "-" }}</dd>
+    <dt>Место</dt><dd>{{ asset.get("location") or "-" }}</dd>
+    <dt>Статус</dt><dd>{{ asset.get("status") or "-" }}</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Свежесть данных</h2>
+  <p>{% if freshness.get("topology_reconciled_at") %}РўРѕРїРѕР»РѕРіРёСЏ: Р°РєС‚СѓР°Р»СЊРЅРѕ{% else %}РўРѕРїРѕР»РѕРіРёСЏ: РЅСѓР¶РЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ{% endif %}</p>
+  <p>{% if freshness.get("attachment_reconciled_at") %}Р’Р»РѕР¶РµРЅРёСЏ: РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅС‹{% else %}Р’Р»РѕР¶РµРЅРёСЏ: РЅСѓР¶РЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ{% endif %}</p>
+</section>
+
+{% if confirmed %}
+<section class="panel">
+  <h2>Подключение</h2>
+  <p><span class="badge ok">РџРѕРґС‚РІРµСЂР¶РґРµРЅРѕ</span></p>
+  <dl class="details">
+    <dt>Коммутатор</dt><dd>{{ (attachment.get("switch") or {}).get("name") or "-" }}</dd>
+    <dt>Порт</dt><dd>{{ (attachment.get("port") or {}).get("alias") or (attachment.get("port") or {}).get("name") or "-" }}</dd>
+    {% if (attachment.get("vlan_membership") or {}).get("vlan_id") is not none %}<dt>VLAN</dt><dd>VLAN {{ attachment.get("vlan_membership").get("vlan_id") }}</dd>{% endif %}
+  </dl>
+  {% set peers = attachment.get("port_peers") or {} %}
+  {% if peers.get("items") %}
+  <h3>MAC-Р°РґСЂРµСЃР°, РІС‹СѓС‡РµРЅРЅС‹Рµ РЅР° СЌС‚РѕРј РїРѕСЂС‚Сѓ</h3>
+  <p class="muted">РќРµСЃРєРѕР»СЊРєРѕ MAC РЅР° РѕРґРЅРѕРј РїРѕСЂС‚Сѓ РЅРµ РґРѕРєР°Р·С‹РІР°СЋС‚ С„РёР·РёС‡РµСЃРєРѕРµ РїРѕРґРєР»СЋС‡РµРЅРёРµ РєР°Р¶РґРѕРіРѕ СѓСЃС‚СЂРѕР№СЃС‚РІР°: СЌС‚Рѕ РјРѕР¶РµС‚ Р±С‹С‚СЊ С‚РѕС‡РєР° РґРѕСЃС‚СѓРїР°, IP-С‚РµР»РµС„РѕРЅ, downstream-РєРѕРјРјСѓС‚Р°С‚РѕСЂ РёР»Рё trunk.</p>
+  <ul>
+    {% for peer in peers.get("items") %}
+    <li><span class="mono">{{ peer.get("mac") or "-" }}</span>{% if (peer.get("asset") or {}).get("display_name") %} — {{ peer.get("asset").get("display_name") }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% else %}
+<section class="panel">
+  <h2>Подключение</h2>
+  <p><span class="badge muted">{% if attachment.get("status") == "ambiguous" %}РќРµРѕРґРЅРѕР·РЅР°С‡РЅРѕ{% elif attachment.get("status") == "uplink_only" %}РўРѕР»СЊРєРѕ uplink{% else %}РќРµ РѕРїСЂРµРґРµР»РµРЅРѕ{% endif %}</span></p>
+  {% if attachment.get("reason") %}<p>{{ attachment.get("reason") }}</p>{% endif %}
+</section>
+{% endif %}
+
+{% set alternatives = attachment.get("alternatives") or [] %}
+<section class="panel">
+  <h2>Варианты</h2>
+  {% if alternatives %}<ul>{% for alternative in alternatives %}<li>{{ alternative.get("source") or "-" }}{% if alternative.get("port_key") %}: {{ alternative.get("port_key") }}{% endif %}{% if alternative.get("vlan_id") is not none %}, VLAN {{ alternative.get("vlan_id") }}{% endif %}</li>{% endfor %}</ul>{% else %}<p class="empty">Нет достоверных вариантов.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Путь</h2>
+  {% set path = context.get("topology_path") or {} %}
+  {% if path.get("hops") %}<ul>{% for hop in path.get("hops") %}<li>{{ (hop.get("from") or {}).get("name") or "-" }} → {{ (hop.get("to") or {}).get("name") or "-" }}</li>{% endfor %}</ul>{% elif path.get("complete") %}<p>Путь подтверждён.</p>{% else %}<p class="empty">Путь не подтверждён.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>История подключений за 30 дней</h2>
+  {% set events = context.get("attachment_events") or [] %}
+  {% if events %}<ul>{% for event in events %}<li>{{ event.get("observed_at") or "-" }}: {{ event.get("event_type") or "-" }}</li>{% endfor %}</ul>{% else %}<p class="empty">Событий нет.</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}
