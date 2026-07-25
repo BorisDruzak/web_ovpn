@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from pathlib import Path
 
 
@@ -13,6 +15,9 @@ AGENT_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "install-agent"
 AGENT = AGENT_ROOT / "spike-agent"
 CMDLINE = AGENT_ROOT / "lib" / "cmdline.sh"
 INVENTORY = AGENT_ROOT / "lib" / "inventory.sh"
+SPIKE_SERVER_ROOT = AGENT_ROOT / "spike-server"
+SPIKE_SERVER = SPIKE_SERVER_ROOT / "server.py"
+SPIKE_CTL = SPIKE_SERVER_ROOT / "ctl.py"
 
 
 def test_inspector_pins_all_artifacts_and_uses_read_only_tools() -> None:
@@ -85,3 +90,39 @@ def test_agent_libraries_bound_cmdline_and_inventory_data() -> None:
     assert "max_disks=16" in inventory
     assert "sanitize_json_string" in inventory
     assert "findmnt -n -o SOURCE,FSTYPE,OPTIONS /image" in inventory
+
+
+def test_spike_repository_transitions_are_private_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    sys.path.insert(0, str(SPIKE_SERVER_ROOT))
+    try:
+        from repository import SpikeRepository
+    finally:
+        sys.path.pop(0)
+
+    repository = SpikeRepository(tmp_path)
+    session = repository.create_session({"machine": {"uuid": "test"}}, "192.0.2.1")
+
+    assert session.startswith("spike-")
+    assert repository.decision(session) == "waiting"
+    assert repository.approve(session) == "approved"
+    assert repository.approve(session) == "approved"
+    assert repository.cancel(session) == "approved"
+    if os.name == "nt":
+        assert "os.chmod(temporary, 0o600)" in (
+            SPIKE_SERVER_ROOT / "repository.py"
+        ).read_text(encoding="utf-8")
+    else:
+        assert (tmp_path / session / "session.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_spike_fixture_exposes_only_bounded_plain_text_contract() -> None:
+    server = SPIKE_SERVER.read_text(encoding="utf-8")
+    ctl = SPIKE_CTL.read_text(encoding="utf-8")
+
+    assert "/spike/v1/sessions" in server
+    assert "32768" in server
+    assert "Content-Type" in server
+    assert "text/plain" in server
+    assert "approve" in ctl and "cancel" in ctl and "list" in ctl
