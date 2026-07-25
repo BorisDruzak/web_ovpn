@@ -71,18 +71,22 @@ role names and supply any local path topology through the approved
 configuration process. The installer never replaces an existing file,
 including a dangling symlink.
 
-Installing this sample enables the validated `netctl-collect.timer`,
-`netctl-reconcile.timer`, and `netctl-retention.timer`; it does not create
-RouterOS source configuration, collect during installation, or change any
-network device. On a host that already has enabled Netctl sources, the normal
-timer schedule can collect read-only data after installation. Obtain the
-required deployment and maintenance approval before installing on such a host.
+Copying these sample assets does not enable Netctl timers, create RouterOS
+source configuration, collect data, or change any network device. The generic
+installer later installs and enables `netctl-collect.timer`,
+`netctl-reconcile.timer`, and `netctl-retention.timer`. On a host that already
+has enabled Netctl sources, the normal timer schedule can collect read-only
+data after installation. Obtain the required deployment and maintenance
+approval before running the installer on such a host.
 
 On a clean host, the generic installer creates only `/var/lib/netctl`, owned by
 `netctl`, plus `/etc/netctl` and an empty `/etc/netctl/sources.d`, owned by
 `root:netctl`. It does not create or replace RouterOS source files, secrets,
-keys, or topology. The three Netctl timers are enabled after the installed
-units pass the Linux/systemd verifier, but no collection can succeed until an
+keys, or topology. On a Linux host with a running systemd manager, the three
+Netctl timers are enabled only after the installed units pass the
+Linux/systemd verifier. In a non-systemd staging environment the verifier may
+exit 77 and the installer records that verification was skipped; that path is
+not a production unit verification. No collection can succeed until an
 approved operator provisions source YAML, credentials, and keys. Existing
 directories must have the expected canonical ownership and mode; existing
 operational files are left untouched.
@@ -96,8 +100,12 @@ ssh ui-vpn-deploy "cd /opt/openvpn-web && .venv/bin/python -m pytest -q"
 ssh ui-vpn-deploy "systemctl is-active openvpn-web && systemctl is-active openvpn-server@server"
 ```
 
-The installer verifies the loaded Netctl unit behavior before enabling all
-three timers. Confirm their active and enabled states after deployment:
+On a deployment host with a running systemd manager, the installer verifies
+the loaded Netctl unit behavior before enabling all three timers. If the
+installer reports that verification was skipped (exit 77), treat the units as
+unverified and run `/usr/local/sbin/verify-netctl-systemd` on a host with a
+running systemd manager before relying on the timers. Confirm their active and
+enabled states after deployment:
 
 ```bash
 ssh ui-vpn-deploy "systemctl is-active netctl-collect.timer netctl-reconcile.timer netctl-retention.timer && systemctl is-enabled netctl-collect.timer netctl-reconcile.timer netctl-retention.timer"
@@ -892,10 +900,11 @@ The installer creates:
 - Linux service user `netctl`; any separately approved collection runs as this user, not root.
 
 The generic installer does not generate RouterOS source YAML, secrets, or a
-collector database. It verifies the loaded Netctl services, then enables the
-three Netctl timers. Provision operational source files manually only after the
-required deployment approval; it preserves any existing `/etc/netctl`
-configuration.
+collector database. On a host with a running systemd manager, it verifies the
+loaded Netctl services and then enables the three Netctl timers; an exit-77
+non-systemd verification skip must be remediated before production use.
+Provision operational source files manually only after the required deployment
+approval; it preserves any existing `/etc/netctl` configuration.
 
 Before the first real collection, configure a read-only RouterOS API user and put its password into `/etc/netctl/secrets.env`:
 
