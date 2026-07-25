@@ -32,6 +32,30 @@ EXPECTED_EXEC_STARTS = {
         "--reconcile",
     ],
     "netctl-reconcile.service": ["/usr/local/sbin/netctl", "--json", "reconcile"],
+    "netctl-retention.service": [
+        "/usr/local/sbin/netctl",
+        "--json",
+        "retention",
+        "cleanup",
+        "--days",
+        "30",
+        "--apply",
+    ],
+}
+
+EXPECTED_PROPERTIES = {
+    "netctl-retention.service": {
+        "User": "netctl",
+        "Group": "netctl",
+        "NoNewPrivileges": "yes",
+        "PrivateTmp": "yes",
+        "ProtectHome": "yes",
+    },
+    "netctl-retention.timer": {
+        "OnCalendar": "*-*-* 03:17:00",
+        "Persistent": "yes",
+        "Unit": "netctl-retention.service",
+    },
 }
 
 _ARGV_PATTERN = re.compile(
@@ -61,6 +85,22 @@ def parse_exec_start(serialized: str) -> list[str]:
     return commands[0]
 
 
+def parse_show_properties(serialized: str) -> dict[str, str]:
+    """Parse key/value output returned by ``systemctl show``."""
+
+    properties: dict[str, str] = {}
+    for line in serialized.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or not key:
+            raise ValueError("systemctl show output has an invalid property line")
+        if key in properties:
+            raise ValueError(f"systemctl show output repeated property {key}")
+        properties[key] = value
+    if not properties:
+        raise ValueError("systemctl show output has no properties")
+    return properties
+
+
 def _has_running_systemd() -> bool:
     return sys.platform == "linux" and Path("/run/systemd/system").is_dir()
 
@@ -71,7 +111,8 @@ def _verify_installed_units(unit_directory: Path) -> None:
     if shutil.which("systemd-analyze") is None or shutil.which("systemctl") is None:
         raise RuntimeError("Linux host with systemd-analyze and systemctl is required")
 
-    unit_paths = [unit_directory / unit for unit in EXPECTED_EXEC_STARTS]
+    unit_names = tuple(dict.fromkeys((*EXPECTED_EXEC_STARTS, *EXPECTED_PROPERTIES)))
+    unit_paths = [unit_directory / unit for unit in unit_names]
     missing = [str(path) for path in unit_paths if not path.is_file()]
     if missing:
         raise RuntimeError(f"installed netctl unit files are missing: {', '.join(missing)}")
@@ -91,6 +132,35 @@ def _verify_installed_units(unit_directory: Path) -> None:
         if actual != expected:
             raise RuntimeError(f"{unit} ExecStart mismatch: expected {expected!r}, got {actual!r}")
 
+    for unit, expected_properties in EXPECTED_PROPERTIES.items():
+        result = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                *(f"--property={property_name}" for property_name in expected_properties),
+                unit,
+            ],
+            check=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
+        actual_properties = parse_show_properties(result.stdout)
+        for property_name, expected_value in expected_properties.items():
+            actual_value = actual_properties.get(property_name)
+            if actual_value is None:
+                raise RuntimeError(f"{unit} is missing systemd property {property_name}")
+            matches = (
+                expected_value in actual_value
+                if property_name == "OnCalendar"
+                else actual_value == expected_value
+            )
+            if not matches:
+                raise RuntimeError(
+                    f"{unit} {property_name} mismatch: expected {expected_value!r}, got {actual_value!r}"
+                )
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -105,11 +175,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="parse serialized ExecStart from stdin and print argv JSON",
     )
+    parser.add_argument(
+        "--parse-show-properties",
+        action="store_true",
+        help="parse key/value systemctl show output from stdin and print JSON",
+    )
     args = parser.parse_args(argv)
 
     if args.parse_exec_start:
         try:
             print(json.dumps(parse_exec_start(sys.stdin.read())))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.parse_show_properties:
+        try:
+            print(json.dumps(parse_show_properties(sys.stdin.read()), sort_keys=True))
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -124,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print("verified netctl collection and recovery ExecStart argv through systemd")
+    print("verified netctl collection, reconciliation, and retention units through systemd")
     return 0
 
 
