@@ -121,7 +121,7 @@ def retention_report(conn: sqlite3.Connection, cutoff: str) -> dict[str, dict[st
                 "SELECT COUNT(*) FROM hostname_observations WHERE is_current = 0 AND last_seen_at < ?", (cutoff,)
             ).fetchone()[0]),
             "collection_runs": len(_old_ids(conn, "collection_runs", "COALESCE(finished_at, started_at)", cutoff,
-                                               _latest_run_ids(conn, "collection_runs", "source_id", ("success",)))),
+                                               _latest_run_ids(conn, "collection_runs", "source_id", ("ok",)))),
             "switch_collection_runs": len(_old_ids(conn, "switch_collection_runs", "COALESCE(finished_at, started_at)", cutoff, switch_protected)),
             "network_correlation_runs": len(_old_ids(conn, "network_correlation_runs", "COALESCE(finished_at, started_at)", cutoff, correlation_protected)),
             "router_path_fact_runs": len(_old_ids(conn, "router_path_fact_runs", "COALESCE(finished_at, started_at)", cutoff, path_protected)),
@@ -172,7 +172,7 @@ def apply_retention(conn: sqlite3.Connection, cutoff: str) -> dict[str, object]:
         ).rowcount)
         deleted["collection_runs"] = _delete_ids(conn, "collection_runs", _old_ids(
             conn, "collection_runs", "COALESCE(finished_at, started_at)", cutoff,
-            _latest_run_ids(conn, "collection_runs", "source_id", ("success",)),
+            _latest_run_ids(conn, "collection_runs", "source_id", ("ok",)),
         ))
         deleted["switch_collection_runs"] = _delete_ids(conn, "switch_collection_runs", _old_ids(
             conn, "switch_collection_runs", "COALESCE(finished_at, started_at)", cutoff, protected_switch_run_ids(conn)

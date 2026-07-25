@@ -21,6 +21,10 @@
    failed because `retention` was not an accepted CLI command.
 3. The failure-sanitization test initially propagated a SQLite error; the CLI
    now converts it to the stable `retention_failed` response.
+4. Fix round 1: a fixture with an old successful generic `collection_runs`
+   row (`status='ok'`) and a newer failed row initially reported two deletion
+   candidates and removed the old successful run. Retention now uses the
+   actual `store.py` generic-success status (`ok`) for both preview and apply.
 
 ## Verification
 

@@ -41,7 +41,7 @@ def conn(tmp_path):
     connection.executemany(
         """INSERT INTO collection_runs (id, source_id, started_at, finished_at, status)
            VALUES (?, 1, ?, ?, ?)""",
-        [(1, OLD, OLD, 'success'), (2, OLD, OLD, 'failed'), (3, NEW, NEW, 'success')],
+        [(1, OLD, OLD, 'ok'), (2, OLD, OLD, 'failed'), (3, NEW, NEW, 'failed')],
     )
     connection.executemany(
         """INSERT INTO switch_collection_runs
@@ -151,6 +151,7 @@ def test_retention_dry_run_counts_candidates_without_writes(conn):
     assert report["delete"]["host_observations"] == 2
     assert report["delete"]["switch_fdb_events"] == 1
     assert report["delete"]["asset_attachment_events"] == 1
+    assert report["delete"]["collection_runs"] == 1
     assert report["keep"]["switch_collection_runs_current_reference"] == 1
     assert report["keep"]["switch_collection_runs_last_success"] == 1
     assert conn.execute("SELECT count(*) FROM host_observations").fetchone()[0] == 3
@@ -164,6 +165,7 @@ def test_retention_apply_removes_expired_rows_but_keeps_current_and_last_success
 
     assert result["deleted"]["switch_fdb_events"] == 1
     assert result["deleted"]["asset_attachment_events"] == 1
+    assert ids(conn, "collection_runs") == {1, 3}
     assert ids(conn, "switch_collection_runs") == {10, 12}
     assert ids(conn, "network_correlation_runs") == {22, 23}
     assert ids(conn, "router_path_fact_runs") == {31}
