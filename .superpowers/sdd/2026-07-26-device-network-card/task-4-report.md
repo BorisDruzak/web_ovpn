@@ -73,3 +73,39 @@ Final follow-up: the broader deployment selection (`tests/test_deploy_network_pa
 and `tests/test_deploy_netctl.py`) passed 20 tests. `python -m py_compile
 deploy/verify_netctl_systemd.py`, `bash -n deploy/install-openvpn-web.sh`, and
 `git diff --check` also exited 0.
+
+## Round 2 — reject multiple ExecStart commands and gate timer activation
+
+### RED
+
+`python -m pytest tests/test_deploy_netctl.py -q` failed three new cases: the
+installer did not call the verifier after daemon reload, exit 77 had no explicit
+skip handling, and the parser accepted the first command from a captured
+two-command `ExecStart` serialization. A follow-up parser run exposed that the
+entry matcher considered only the first brace-delimited command.
+
+### GREEN
+
+`parse_exec_starts` now reads every serialized command and `parse_exec_start`
+requires exactly one, rejecting the captured two-command fixture. The installer
+installs the verifier, runs it immediately after `systemctl daemon-reload`, and
+only then enables timers. Exit 77 emits an explicit no-systemd skip and
+continues; any other verifier failure stops installation. Controlled installer
+tests observe this order and the exit-77 path without simulating `systemctl
+show`.
+
+### Verification
+
+```powershell
+python -m pytest tests/test_deploy_network_paths.py tests/test_netctl_deploy_security.py tests/test_netctl_reconcile_units.py tests/test_deploy_netctl.py -q
+python -m py_compile deploy/verify_netctl_systemd.py
+bash -n deploy/install-openvpn-web.sh
+git diff --check
+```
+
+Result: 24 passed; all syntax and whitespace checks exited 0. No deployment
+was performed, and the real Linux/systemd verifier remains explicitly skipped
+on this Windows host.
+
+An additional controlled-double test confirms that a non-77 verifier failure
+returns that failure status and prevents every timer enable command.

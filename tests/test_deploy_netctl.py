@@ -80,6 +80,9 @@ case "$command_name" in
   test)
     command test "$@"
     ;;
+  /usr/local/sbin/verify-netctl-systemd)
+    exit "${NETCTL_VERIFIER_EXIT_CODE:-0}"
+    ;;
   systemctl)
     command systemctl "$@"
     ;;
@@ -95,7 +98,9 @@ def _install_python_double(bin_dir: Path) -> None:
     )
 
 
-def _run_installer(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path, Path, dict[str, str]]:
+def _run_installer(
+    tmp_path: Path, *, verifier_exit_code: int = 0
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, dict[str, str]]:
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash is required to exercise the installer")
@@ -119,6 +124,7 @@ def _run_installer(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Pa
         "SYSTEMCTL_CALLS": str(systemctl_calls),
         "SYSTEMD_ENABLED": str(enabled),
         "SYSTEMD_RELOADED": str(reloaded),
+        "NETCTL_VERIFIER_EXIT_CODE": str(verifier_exit_code),
     }
     result = subprocess.run(
         [bash, str(ROOT / "deploy" / "install-openvpn-web.sh")],
@@ -132,9 +138,9 @@ def _run_installer(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Pa
     return result, bin_dir, systemctl_calls, environment
 
 
-def _parse_exec_start(raw: str) -> list[str]:
-    result = subprocess.run(
-        [sys.executable, str(VERIFIER), "--parse-exec-start"],
+def _run_exec_start_parser(raw: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-B", str(VERIFIER), "--parse-exec-start"],
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -142,6 +148,11 @@ def _parse_exec_start(raw: str) -> list[str]:
         capture_output=True,
         check=False,
     )
+
+
+def _parse_exec_start(raw: str) -> list[str]:
+    result = _run_exec_start_parser(raw)
+
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
@@ -160,6 +171,35 @@ def test_installer_enables_the_collection_and_recovery_timers_after_reload(tmp_p
     assert "restart openvpn-server@server.service" not in calls
 
 
+def test_installer_verifies_units_after_reload_before_enabling_timers(tmp_path: Path) -> None:
+    result, _bin_dir, _systemctl_calls_path, environment = _run_installer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    calls = Path(environment["SUDO_CALLS"]).read_text(encoding="utf-8").splitlines()
+    verification_index = next(
+        index for index, call in enumerate(calls) if call.startswith("/usr/local/sbin/verify-netctl-systemd")
+    )
+    assert calls.index("systemctl daemon-reload") < verification_index
+    assert verification_index < calls.index("systemctl enable --now netctl-collect.timer")
+    assert verification_index < calls.index("systemctl enable --now netctl-reconcile.timer")
+
+
+def test_installer_reports_a_no_systemd_verification_skip_and_enables_timers(tmp_path: Path) -> None:
+    result, _bin_dir, _systemctl_calls_path, environment = _run_installer(tmp_path, verifier_exit_code=77)
+
+    assert result.returncode == 0, result.stderr
+    assert "netctl systemd verification skipped" in result.stdout
+    enabled_timers = Path(environment["SYSTEMD_ENABLED"]).read_text(encoding="utf-8").splitlines()
+    assert enabled_timers.index("netctl-collect.timer") < enabled_timers.index("netctl-reconcile.timer")
+
+
+def test_installer_does_not_enable_timers_after_verification_failure(tmp_path: Path) -> None:
+    result, _bin_dir, _systemctl_calls_path, environment = _run_installer(tmp_path, verifier_exit_code=9)
+
+    assert result.returncode == 9
+    assert not Path(environment["SYSTEMD_ENABLED"]).exists()
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "expected"),
     [
@@ -176,6 +216,15 @@ def test_exec_start_parser_reads_captured_systemctl_show_output(
     raw = (FIXTURES / fixture_name).read_text(encoding="utf-8")
 
     assert _parse_exec_start(raw) == expected
+
+
+def test_exec_start_parser_rejects_multiple_serialized_commands() -> None:
+    raw = (FIXTURES / "netctl-reconcile-multiple.execstart").read_text(encoding="utf-8")
+
+    result = _run_exec_start_parser(raw)
+
+    assert result.returncode == 2
+    assert "exactly one ExecStart command" in result.stderr
 
 
 def test_systemd_verifier_skips_cleanly_without_linux_systemd() -> None:

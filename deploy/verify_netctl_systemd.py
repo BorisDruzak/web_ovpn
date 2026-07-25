@@ -35,21 +35,30 @@ EXPECTED_EXEC_STARTS = {
 }
 
 _ARGV_PATTERN = re.compile(
-    r"(?:^|\n)(?:ExecStart=)?\{\s*path=[^;]*;\s*argv\[\]=(?P<argv>.*?)\s*;\s*ignore_errors=",
+    r"(?:ExecStart=)?\{\s*path=[^;]*;\s*argv\[\]=(?P<argv>.*?)\s*;\s*ignore_errors=",
     re.DOTALL,
 )
 
 
-def parse_exec_start(serialized: str) -> list[str]:
-    """Return argv from real ``systemctl show`` ExecStart serialization."""
+def parse_exec_starts(serialized: str) -> list[list[str]]:
+    """Return every argv serialized in real ``systemctl show`` ExecStart output."""
 
-    match = _ARGV_PATTERN.search(serialized)
-    if match is None:
+    matches = list(_ARGV_PATTERN.finditer(serialized))
+    if not matches:
         raise ValueError("systemctl show output has no serialized ExecStart argv")
     try:
-        return shlex.split(match.group("argv"), posix=True)
+        return [shlex.split(match.group("argv"), posix=True) for match in matches]
     except ValueError as exc:
         raise ValueError("systemctl show returned an invalid ExecStart argv") from exc
+
+
+def parse_exec_start(serialized: str) -> list[str]:
+    """Return the one required ExecStart argv and reject multi-command units."""
+
+    commands = parse_exec_starts(serialized)
+    if len(commands) != 1:
+        raise ValueError(f"expected exactly one ExecStart command, got {len(commands)}")
+    return commands[0]
 
 
 def _has_running_systemd() -> bool:
