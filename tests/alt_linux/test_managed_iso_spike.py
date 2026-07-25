@@ -18,6 +18,8 @@ INVENTORY = AGENT_ROOT / "lib" / "inventory.sh"
 SPIKE_SERVER_ROOT = AGENT_ROOT / "spike-server"
 SPIKE_SERVER = SPIKE_SERVER_ROOT / "server.py"
 SPIKE_CTL = SPIKE_SERVER_ROOT / "ctl.py"
+BUILDER = ISO_ROOT / "build-spike-iso.sh"
+GATE_PATCH = ISO_ROOT / "initrd-patches" / "early-agent-gate.patch"
 
 
 def test_inspector_pins_all_artifacts_and_uses_read_only_tools() -> None:
@@ -126,3 +128,17 @@ def test_spike_fixture_exposes_only_bounded_plain_text_contract() -> None:
     assert "Content-Type" in server
     assert "text/plain" in server
     assert "approve" in ctl and "cancel" in ctl and "list" in ctl
+
+
+def test_initrd_gate_precedes_exact_vendor_handoff_and_builder_is_guarded() -> None:
+    patch = GATE_PATCH.read_text(encoding="utf-8")
+    builder = BUILDER.read_text(encoding="utf-8")
+
+    assert "sosnadmin.mode=spike" in patch
+    assert patch.index("sosnadmin-install-spike") < patch.index(
+        "exec runas /sbin/init"
+    )
+    assert "--force" in builder
+    assert "xorriso" in builder
+    assert "gzip -n" in builder
+    assert "patch --fuzz=0" in builder
