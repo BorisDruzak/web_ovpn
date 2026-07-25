@@ -71,19 +71,21 @@ role names and supply any local path topology through the approved
 configuration process. The installer never replaces an existing file,
 including a dangling symlink.
 
-Installing this sample does not enable `netctl-collect.timer`, collect RouterOS
-data, or change RouterOS. Each of those actions requires separate, explicit
-operator approval and must be performed under the appropriate maintenance and
-network-change procedure.
+Installing this sample enables the validated `netctl-collect.timer`,
+`netctl-reconcile.timer`, and `netctl-retention.timer`; it does not create
+RouterOS source configuration, collect during installation, or change any
+network device. On a host that already has enabled Netctl sources, the normal
+timer schedule can collect read-only data after installation. Obtain the
+required deployment and maintenance approval before installing on such a host.
 
 On a clean host, the generic installer creates only `/var/lib/netctl`, owned by
 `netctl`, plus `/etc/netctl` and an empty `/etc/netctl/sources.d`, owned by
 `root:netctl`. It does not create or replace RouterOS source files, secrets,
-keys, or topology, does not collect, and does not enable
-`netctl-collect.timer`. An approved operator must provision any source YAML,
-credentials, keys, and timer activation manually. Existing directories must
-have the expected canonical ownership and mode; existing operational files are
-left untouched.
+keys, or topology. The three Netctl timers are enabled after the installed
+units pass the Linux/systemd verifier, but no collection can succeed until an
+approved operator provisions source YAML, credentials, and keys. Existing
+directories must have the expected canonical ownership and mode; existing
+operational files are left untouched.
 
 ## Remote Verification
 
@@ -94,12 +96,11 @@ ssh ui-vpn-deploy "cd /opt/openvpn-web && .venv/bin/python -m pytest -q"
 ssh ui-vpn-deploy "systemctl is-active openvpn-web && systemctl is-active openvpn-server@server"
 ```
 
-The default safe installation leaves `netctl-collect.timer` inactive and not
-configured. Do not treat an inactive timer as a deployment failure. Check that
-it is active or enabled only after a separately approved timer activation:
+The installer verifies the loaded Netctl unit behavior before enabling all
+three timers. Confirm their active and enabled states after deployment:
 
 ```bash
-ssh ui-vpn-deploy "systemctl is-active netctl-collect.timer && systemctl is-enabled netctl-collect.timer"
+ssh ui-vpn-deploy "systemctl is-active netctl-collect.timer netctl-reconcile.timer netctl-retention.timer && systemctl is-enabled netctl-collect.timer netctl-reconcile.timer netctl-retention.timer"
 ```
 
 Useful live checks:
@@ -884,11 +885,16 @@ The installer creates:
 - `/usr/local/sbin/netctl`
 - `netctl-collect.service`
 - `netctl-collect.timer`
+- `netctl-reconcile.service`
+- `netctl-reconcile.timer`
+- `netctl-retention.service`
+- `netctl-retention.timer`
 - Linux service user `netctl`; any separately approved collection runs as this user, not root.
 
 The generic installer does not generate RouterOS source YAML, secrets, or a
-collector database. Provision those operational files manually only after the
-required network-change approval; it preserves any existing `/etc/netctl`
+collector database. It verifies the loaded Netctl services, then enables the
+three Netctl timers. Provision operational source files manually only after the
+required deployment approval; it preserves any existing `/etc/netctl`
 configuration.
 
 Before the first real collection, configure a read-only RouterOS API user and put its password into `/etc/netctl/secrets.env`:
