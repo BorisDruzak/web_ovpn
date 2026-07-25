@@ -15,6 +15,7 @@ env/
 
 # Local Git worktrees
 .worktrees/
+worktrees/
 
 # Subagent task and review ledger
 .superpowers/
