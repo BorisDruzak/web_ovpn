@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -75,6 +76,60 @@ def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
     assert payload["reconciliation"]["attachment_run_id"] == 22
     assert watermarks[0] is watermarks[1]
     assert watermarks[0] == payload["reconciliation"]["source_watermark"]
+
+
+def test_retention_cleanup_defaults_to_a_non_destructive_thirty_day_preview(monkeypatch):
+    """Dropping the dry-run default or 30-day restriction could prune history accidentally."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(["retention", "cleanup"])
+    assert args.days == 30
+    assert args.apply is False
+    with pytest.raises(SystemExit):
+        parser.parse_args(["retention", "cleanup", "--days", "29"])
+
+
+def test_retention_cleanup_cli_reports_preview_then_apply_without_secret_data(tmp_path, monkeypatch):
+    """Routing cleanup to a mutating command without --apply would make scheduled previews unsafe."""
+    import netctl.cli as cli
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    config_path = tmp_path / "missing-netctl.yaml"
+    monkeypatch.setattr(cli, "utc_now", lambda: "2026-07-26T12:00:00Z")
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+
+    args = cli.build_parser().parse_args(
+        ["--db", db_url, "--config", str(config_path), "retention", "cleanup"]
+    )
+    rc, preview = cli.dispatch(args)
+    assert rc == 0
+    assert preview["dry_run"] is True
+    assert preview["cutoff"] == "2026-06-26T12:00:00Z"
+    assert "secret" not in json.dumps(preview).lower()
+
+    args = cli.build_parser().parse_args(
+        ["--db", db_url, "--config", str(config_path), "retention", "cleanup", "--apply"]
+    )
+    rc, applied = cli.dispatch(args)
+    assert rc == 0
+    assert applied["dry_run"] is False
+    assert applied["total_deleted"] == 0
+
+
+def test_retention_cleanup_sanitizes_database_failures(tmp_path, monkeypatch):
+    """Returning the underlying database error could disclose paths or protected operational details."""
+    import netctl.cli as cli
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(cli, "apply_retention", lambda *_args: (_ for _ in ()).throw(sqlite3.DatabaseError("secret sqlite detail")))
+    args = cli.build_parser().parse_args(["--db", db_url, "retention", "cleanup", "--apply"])
+
+    rc, payload = cli.dispatch(args)
+
+    assert rc == 1
+    assert payload == {"status": "error", "message": "retention_failed"}
 
 
 def test_collect_all_skips_reconciliation_after_a_failed_source(monkeypatch):

@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from dataclasses import asdict
@@ -48,6 +49,7 @@ from .switch_queries import (
 )
 from .switch_store import collect_and_save_switch
 from .topology_reconcile import reconcile_topology
+from .retention import apply_retention, retention_report
 from .user_context import bind_user_asset, close_network_session, create_user, ingest_network_session, inspect_user_context, retire_user_asset_binding
 from .switch_discovery_store import (
     UnknownSwitchFingerprint,
@@ -476,6 +478,26 @@ def cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             return 0, ok(**reconcile_current_locked(conn, utc_now()))
     except RuntimeError as exc:
         return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
+def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    """Preview or atomically apply the fixed 30-day local-history policy."""
+    conn = prepare_conn(args)
+    try:
+        now = datetime.fromisoformat(utc_now().replace("Z", "+00:00"))
+        cutoff = (now - timedelta(days=args.days)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        with CollectLock(args.db):
+            if not args.apply:
+                return 0, ok(dry_run=True, cutoff=cutoff, **retention_report(conn, cutoff))
+            return 0, ok(dry_run=False, cutoff=cutoff, **apply_retention(conn, cutoff))
+    except (RuntimeError, sqlite3.Error) as exc:
+        if str(exc) == "collection already running":
+            return 1, err("collection already running")
+        return 1, err("retention_failed")
+    except ValueError:
+        return 2, err("retention_failed")
     finally:
         conn.close()
 
@@ -1298,6 +1320,12 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--reconcile", action="store_true")
     sub.add_parser("reconcile")
 
+    retention = sub.add_parser("retention")
+    retention_sub = retention.add_subparsers(dest="retention_command", required=True)
+    cleanup = retention_sub.add_parser("cleanup")
+    cleanup.add_argument("--days", type=int, default=30, choices=(30,))
+    cleanup.add_argument("--apply", action="store_true")
+
     hosts = sub.add_parser("hosts")
     hosts_sub = hosts.add_subparsers(dest="hosts_command", required=True)
     hosts_list = hosts_sub.add_parser("list")
@@ -1536,6 +1564,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_collect(args)
     if args.command == "reconcile":
         return cmd_reconcile(args)
+    if args.command == "retention":
+        return cmd_retention(args)
     if args.command == "hosts":
         return cmd_hosts(args)
     if args.command == "tags":
