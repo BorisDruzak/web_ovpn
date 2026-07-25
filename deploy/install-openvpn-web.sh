@@ -260,6 +260,7 @@ sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.service" /etc/systemd/s
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
 sudo_cmd systemctl daemon-reload
 sudo_cmd systemctl enable openvpn-web.service
+sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now netctl-reconcile.timer
 sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
