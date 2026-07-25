@@ -1,0 +1,14 @@
+{
+  "iso_id": "alt-kworkstation-11.4-install-x86_64",
+  "source_filename": "alt-kworkstation-11.4-install-x86_64.iso",
+  "source_size_bytes": 10710822912,
+  "source_sha256": "2529f98bca03a652709434a6a17cd4aac5df20c0793927abdf784e8f9388243a",
+  "initrd_path": "/boot/initrd.img",
+  "initrd_sha256": "64c8488e355ea340abe609ee0e0bee428fb53e426d993a7d388d657e9cec46d8",
+  "grub_cfg_path": "/boot/grub/grub.cfg",
+  "grub_cfg_sha256": "2b4b2a5ab061d6a37b611a703dfd2dd72ad0663a08a18ff46920fefea364ffcb",
+  "isolinux_cfg_path": "/syslinux/isolinux.cfg",
+  "isolinux_cfg_sha256": "7d06827857b4a83b604d7aa6f510fcc99391c1cc45dcea62cdeebb0280c109ed",
+  "handoff_path": "/etc/rc.d/rc.sysexec",
+  "handoff_sha256": "cc67256bd9ecd1b893db17248c1d931d3ae82f62434f323ea708f0f9794a22ed"
+}
