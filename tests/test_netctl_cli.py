@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,174 @@ def run_cli(args, capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     return rc, json.loads(captured.out)
+
+
+def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
+    """Removing the all-success gate must prevent correlation from running."""
+    import netctl.cli as cli
+
+    calls = []
+    watermarks = []
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(
+        cli,
+        "list_sources",
+        lambda _conn: (
+            {"name": "router", "enabled": True},
+            {"name": "switch", "enabled": True},
+            {"name": "disabled", "enabled": False},
+        ),
+    )
+
+    def collect(_conn, _args, source_name):
+        calls.append(f"collect:{source_name}")
+        return 0, {"source": source_name}
+
+    monkeypatch.setattr(cli, "collect_one", collect)
+    monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {"switch": {"status": "partial"}})
+    monkeypatch.setattr(
+        cli,
+        "reconcile_topology",
+        lambda _conn, _observed_at, watermark: (
+            calls.append("topology"), watermarks.append(watermark), {"run_id": 11}
+        )[-1],
+    )
+    monkeypatch.setattr(
+        cli,
+        "reconcile_attachments",
+        lambda _conn, _observed_at, watermark: (
+            calls.append("attachments"), watermarks.append(watermark), {"run_id": 22}
+        )[-1],
+    )
+
+    rc, payload = cli.dispatch(parser.parse_args(["collect", "all", "--reconcile"]))
+
+    assert rc == 0
+    assert calls == ["collect:router", "collect:switch", "topology", "attachments"]
+    assert payload["reconciliation"]["attachment_run_id"] == 22
+    assert watermarks[0] is watermarks[1]
+    assert watermarks[0] == payload["reconciliation"]["source_watermark"]
+
+
+def test_collect_all_skips_reconciliation_after_a_failed_source(monkeypatch):
+    """A source error must not correlate a mixed pre/post-collection snapshot."""
+    import netctl.cli as cli
+
+    calls = []
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "router", "enabled": True}, {"name": "switch", "enabled": True}))
+
+    def collect(_conn, _args, source_name):
+        calls.append(f"collect:{source_name}")
+        return (1 if source_name == "switch" else 0), {"source": source_name}
+
+    monkeypatch.setattr(cli, "collect_one", collect)
+    monkeypatch.setattr(cli, "reconcile_topology", lambda *_args: calls.append("topology"))
+    monkeypatch.setattr(cli, "reconcile_attachments", lambda *_args: calls.append("attachments"))
+
+    rc, payload = cli.dispatch(parser.parse_args(["collect", "all", "--reconcile"]))
+
+    assert rc == 1
+    assert calls == ["collect:router", "collect:switch"]
+    assert payload["reconciliation_skipped"] == "collection_failed"
+
+
+def test_collect_all_reconciles_after_a_partial_snmp_result(monkeypatch):
+    """Treating a partial SNMP collection as failure would block useful correlation."""
+    import netctl.cli as cli
+
+    calls = []
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "switch", "enabled": True},))
+    monkeypatch.setattr(cli, "collect_one", lambda *_args: (0, {"status": "partial"}))
+    monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {})
+    monkeypatch.setattr(cli, "reconcile_topology", lambda *_args: calls.append("topology") or {"run_id": 1})
+    monkeypatch.setattr(cli, "reconcile_attachments", lambda *_args: calls.append("attachments") or {"run_id": 2})
+
+    rc, payload = cli.dispatch(parser.parse_args(["collect", "all", "--reconcile"]))
+
+    assert rc == 0
+    assert calls == ["topology", "attachments"]
+    assert payload["reconciliation"]["topology_run_id"] == 1
+
+
+def test_reconcile_rejects_a_concurrent_collection_lock(tmp_path):
+    """Dropping the recovery command lock would allow conflicting state replacement."""
+    from netctl.cli import build_parser, dispatch
+    from netctl.collect_lock import CollectLock
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    args = build_parser().parse_args(["--db", db_url, "reconcile"])
+
+    with CollectLock(db_url):
+        rc, payload = dispatch(args)
+
+    assert rc == 1
+    assert payload["message"] == "collection already running"
+
+
+def test_collection_source_watermark_is_ordered_and_sanitized(tmp_path):
+    """Adding credentials/options to the watermark would leak them into correlation history."""
+    from netctl.cli import collection_source_watermark
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        now = "2026-07-26T08:00:00Z"
+        conn.executemany(
+            """INSERT INTO network_sources
+               (id, name, driver, host, port, username, secret_ref, tls, verify_tls,
+                created_at, updated_at, last_collect_at, last_status)
+               VALUES (?, ?, 'snmp_switch', '192.0.2.1', 161, 'observer',
+                       'very-secret', 0, 0, ?, ?, ?, ?)""",
+            [
+                (9, "zulu", now, now, "2026-07-26T07:00:00Z", "success"),
+                (2, "alpha", now, now, "2026-07-26T07:30:00Z", "error"),
+            ],
+        )
+        conn.executemany(
+            """INSERT INTO switch_collection_runs
+               (id, source_id, started_at, finished_at, status)
+               VALUES (?, 2, ?, ?, ?)""",
+            [
+                (20, "2026-07-26T07:10:00Z", "2026-07-26T07:11:00Z", "success"),
+                (21, "2026-07-26T07:20:00Z", "2026-07-26T07:21:00Z", "partial"),
+            ],
+        )
+        conn.commit()
+
+        watermark = collection_source_watermark(conn)
+
+        assert watermark == {
+            "sources": [
+                {
+                    "source_id": 2,
+                    "source_name": "alpha",
+                    "collection_status": "partial",
+                    "collection_at": "2026-07-26T07:21:00Z",
+                    "switch_run_id": 21,
+                },
+                {
+                    "source_id": 9,
+                    "source_name": "zulu",
+                    "collection_status": "success",
+                    "collection_at": "2026-07-26T07:00:00Z",
+                    "switch_run_id": None,
+                },
+            ]
+        }
+        assert "very-secret" not in json.dumps(watermark)
+    finally:
+        conn.close()
 
 
 def write_mock_source(config_path: Path) -> None:

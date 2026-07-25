@@ -202,14 +202,20 @@ def _context_revision_id(conn: sqlite3.Connection) -> int | None:
     return int(row[0]) if row is not None else None
 
 
-def _insert_run(conn: sqlite3.Connection, observed_at: str) -> int:
+def _insert_run(
+    conn: sqlite3.Connection, observed_at: str, source_watermark: dict[str, object]
+) -> int:
     cursor = conn.execute(
         """
         INSERT INTO network_correlation_runs (
             run_type, started_at, status, context_revision_id, source_watermark_json
-        ) VALUES ('topology', ?, 'running', ?, '{}')
+        ) VALUES ('topology', ?, 'running', ?, ?)
         """,
-        (observed_at, _context_revision_id(conn)),
+        (
+            observed_at,
+            _context_revision_id(conn),
+            json.dumps(source_watermark, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        ),
     )
     conn.commit()
     return int(cursor.lastrowid)
@@ -295,8 +301,10 @@ def _replace_findings(
     return len(conflicts)
 
 
-def reconcile_topology(conn: sqlite3.Connection, observed_at: str) -> dict[str, Any]:
-    run_id = _insert_run(conn, observed_at)
+def reconcile_topology(
+    conn: sqlite3.Connection, observed_at: str, source_watermark: dict[str, object]
+) -> dict[str, Any]:
+    run_id = _insert_run(conn, observed_at, source_watermark)
     try:
         identities = list_source_identities(conn)
         links = aggregate_link_evidence(collect_link_evidence(conn, identities), observed_at)
