@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from test_deploy_netctl import _run_installer, _systemctl
+from test_deploy_netctl import _run_installer
 
 
 def test_installer_only_installs_role_only_path_sample_when_absent():
@@ -16,10 +16,11 @@ def test_installer_only_installs_role_only_path_sample_when_absent():
 
 
 def test_installer_enables_network_collection_timer(tmp_path: Path):
-    result, bin_dir, _calls_path, environment = _run_installer(tmp_path)
+    result, _bin_dir, _calls_path, environment = _run_installer(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert _systemctl(bin_dir, environment, "is-enabled", "netctl-collect.timer") == "netctl-collect.timer"
+    enabled_timers = Path(environment["SYSTEMD_ENABLED"]).read_text(encoding="utf-8").splitlines()
+    assert "netctl-collect.timer" in enabled_timers
 
 
 def test_installer_does_not_create_or_enable_routeros_sources():

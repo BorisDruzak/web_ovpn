@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from pathlib import Path
+import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+VERIFIER = ROOT / "deploy" / "verify_netctl_systemd.py"
+FIXTURES = ROOT / "tests" / "fixtures" / "systemd"
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -31,24 +35,8 @@ case "${1:-}" in
   enable)
     shift
     [[ "${1:-}" == "--now" ]] && shift
-    for unit in "$@"; do
-      [[ -f "$SYSTEMD_UNIT_DIR/$unit" ]] || exit 97
-      [[ -f "$SYSTEMD_RELOADED" ]] || exit 98
-      printf '%s\n' "$unit" >> "$SYSTEMD_ENABLED"
-    done
-    ;;
-  show)
-    shift
-    property="${1#--property=}"
-    [[ "$1" == --property=* ]] && shift
-    [[ "${1:-}" == "--value" ]] && shift
-    unit="$1"
-    awk -F= -v property="$property" '$1 == property { print substr($0, index($0, "=") + 1) }' "$SYSTEMD_UNIT_DIR/$unit"
-    ;;
-  is-enabled)
-    grep -Fx "$2" "$SYSTEMD_ENABLED"
-    ;;
-  status)
+    [[ -f "$SYSTEMD_RELOADED" ]] || exit 98
+    printf '%s\n' "$@" >> "$SYSTEMD_ENABLED"
     ;;
 esac
 ''',
@@ -92,13 +80,6 @@ case "$command_name" in
   test)
     command test "$@"
     ;;
-  install)
-    destination="${@: -1}"
-    if [[ "$destination" == /etc/systemd/system/* ]]; then
-      source="${@: -2:1}"
-      cp "$source" "$SYSTEMD_UNIT_DIR/${destination##*/}"
-    fi
-    ;;
   systemctl)
     command systemctl "$@"
     ;;
@@ -114,17 +95,13 @@ def _install_python_double(bin_dir: Path) -> None:
     )
 
 
-def _run_installer(
-    tmp_path: Path,
-) -> tuple[subprocess.CompletedProcess[str], Path, Path, dict[str, str]]:
+def _run_installer(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], Path, Path, dict[str, str]]:
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("bash is required to exercise the installer")
 
     bin_dir = tmp_path / "bin"
-    unit_dir = tmp_path / "systemd-units"
     bin_dir.mkdir()
-    unit_dir.mkdir()
     _install_systemctl_double(bin_dir)
     _install_sudo_double(bin_dir)
     _install_python_double(bin_dir)
@@ -142,7 +119,6 @@ def _run_installer(
         "SYSTEMCTL_CALLS": str(systemctl_calls),
         "SYSTEMD_ENABLED": str(enabled),
         "SYSTEMD_RELOADED": str(reloaded),
-        "SYSTEMD_UNIT_DIR": str(unit_dir),
     }
     result = subprocess.run(
         [bash, str(ROOT / "deploy" / "install-openvpn-web.sh")],
@@ -156,20 +132,18 @@ def _run_installer(
     return result, bin_dir, systemctl_calls, environment
 
 
-def _systemctl(bin_dir: Path, environment: dict[str, str], *args: str) -> str:
-    bash = shutil.which("bash")
-    assert bash is not None
+def _parse_exec_start(raw: str) -> list[str]:
     result = subprocess.run(
-        [bash, str(bin_dir / "systemctl"), *args],
+        [sys.executable, str(VERIFIER), "--parse-exec-start"],
         text=True,
         encoding="utf-8",
         errors="replace",
+        input=raw,
         capture_output=True,
         check=False,
-        env=environment,
     )
     assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
+    return json.loads(result.stdout)
 
 
 def test_installer_enables_the_collection_and_recovery_timers_after_reload(tmp_path: Path) -> None:
@@ -186,15 +160,36 @@ def test_installer_enables_the_collection_and_recovery_timers_after_reload(tmp_p
     assert "restart openvpn-server@server.service" not in calls
 
 
-def test_installed_netctl_services_expose_the_composite_commands(tmp_path: Path) -> None:
-    result, bin_dir, _calls_path, environment = _run_installer(tmp_path)
+@pytest.mark.parametrize(
+    ("fixture_name", "expected"),
+    [
+        (
+            "netctl-collect.execstart",
+            ["/usr/local/sbin/netctl", "--json", "collect", "all", "--reconcile"],
+        ),
+        ("netctl-reconcile.execstart", ["/usr/local/sbin/netctl", "--json", "reconcile"]),
+    ],
+)
+def test_exec_start_parser_reads_captured_systemctl_show_output(
+    fixture_name: str, expected: list[str]
+) -> None:
+    raw = (FIXTURES / fixture_name).read_text(encoding="utf-8")
 
-    assert result.returncode == 0, result.stderr
-    assert _systemctl(
-        bin_dir, environment, "show", "--property=ExecStart", "--value", "netctl-collect.service"
-    ) == "/usr/local/sbin/netctl --json collect all --reconcile"
-    assert _systemctl(
-        bin_dir, environment, "show", "--property=ExecStart", "--value", "netctl-reconcile.service"
-    ) == "/usr/local/sbin/netctl --json reconcile"
-    assert _systemctl(bin_dir, environment, "is-enabled", "netctl-collect.timer") == "netctl-collect.timer"
-    assert _systemctl(bin_dir, environment, "is-enabled", "netctl-reconcile.timer") == "netctl-reconcile.timer"
+    assert _parse_exec_start(raw) == expected
+
+
+def test_systemd_verifier_skips_cleanly_without_linux_systemd() -> None:
+    if sys.platform == "linux" and Path("/run/systemd/system").is_dir():
+        pytest.skip("this host can run the real systemd verifier")
+
+    result = subprocess.run(
+        [sys.executable, str(VERIFIER)],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 77
+    assert "Linux host with a running systemd manager" in result.stderr
