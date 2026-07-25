@@ -140,6 +140,41 @@ def test_reconcile_rejects_a_concurrent_collection_lock(tmp_path):
     assert payload["message"] == "collection already running"
 
 
+def test_reconcile_holds_the_collection_lock_through_both_correlation_steps(
+    tmp_path, monkeypatch
+):
+    """Releasing the lock between steps would permit a concurrent collection mid-correlation."""
+    import netctl.cli as cli
+    from netctl.collect_lock import CollectLock
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    phases = []
+
+    def assert_collection_is_blocked(name):
+        with pytest.raises(RuntimeError, match="collection already running"):
+            CollectLock(db_url).__enter__()
+        phases.append(name)
+
+    monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {})
+    monkeypatch.setattr(
+        cli,
+        "reconcile_topology",
+        lambda _conn, _observed_at, _watermark: assert_collection_is_blocked("topology") or {"run_id": 11},
+    )
+    monkeypatch.setattr(
+        cli,
+        "reconcile_attachments",
+        lambda _conn, _observed_at, _watermark: assert_collection_is_blocked("attachments") or {"run_id": 22},
+    )
+
+    rc, payload = cli.dispatch(cli.build_parser().parse_args(["--db", db_url, "reconcile"]))
+
+    assert rc == 0
+    assert phases == ["topology", "attachments"]
+    assert payload["topology_run_id"] == 11
+    assert payload["attachment_run_id"] == 22
+
+
 def test_collection_source_watermark_is_ordered_and_sanitized(tmp_path):
     """Adding credentials/options to the watermark would leak them into correlation history."""
     from netctl.cli import collection_source_watermark

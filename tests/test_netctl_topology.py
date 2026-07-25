@@ -356,6 +356,46 @@ def test_reconcile_topology_records_conflict_and_preserves_current_on_failure(
         conn.close()
 
 
+def test_reconcile_topology_preserves_current_state_when_depth_calculation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Computing depths after commit would leak a failed correlation's replacement state."""
+    from netctl import topology_reconcile
+
+    conn = _topology_db(tmp_path)
+    stable = (_link_evidence(1, "ifindex:1", 2, "physical:24", "lldp_chassis_mac", 90),)
+    conflicting = (
+        _link_evidence(1, "ifindex:1", 2, "physical:24", "lldp_chassis_mac", 90),
+        _link_evidence(1, "ifindex:2", 2, "physical:24", "lldp_chassis_mac", 90),
+    )
+    try:
+        monkeypatch.setattr(topology_reconcile, "list_source_identities", lambda _conn: _topology_identities())
+        monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: stable)
+        topology_reconcile.reconcile_topology(conn, "2026-07-22T08:00:00Z", {})
+        before_links = [tuple(row) for row in conn.execute("SELECT * FROM current_switch_links ORDER BY link_key")]
+        before_findings = [tuple(row) for row in conn.execute("SELECT * FROM topology_findings ORDER BY finding_key")]
+        before_events = [tuple(row) for row in conn.execute("SELECT * FROM switch_link_events ORDER BY id")]
+
+        monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: conflicting)
+        monkeypatch.setattr(
+            topology_reconcile,
+            "topology_depths",
+            lambda _links, _roots: (_ for _ in ()).throw(RuntimeError("injected depth failure")),
+        )
+
+        with pytest.raises(RuntimeError, match="injected depth failure"):
+            topology_reconcile.reconcile_topology(conn, "2026-07-22T08:01:00Z", {})
+
+        assert [tuple(row) for row in conn.execute("SELECT * FROM current_switch_links ORDER BY link_key")] == before_links
+        assert [tuple(row) for row in conn.execute("SELECT * FROM topology_findings ORDER BY finding_key")] == before_findings
+        assert [tuple(row) for row in conn.execute("SELECT * FROM switch_link_events ORDER BY id")] == before_events
+        assert conn.execute(
+            "SELECT status FROM network_correlation_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0] == "failed"
+    finally:
+        conn.close()
+
+
 def test_aggregate_link_evidence_uses_each_declared_confidence_rule() -> None:
     from netctl.topology_reconcile import aggregate_link_evidence
 

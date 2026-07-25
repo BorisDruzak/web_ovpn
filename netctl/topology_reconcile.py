@@ -308,6 +308,8 @@ def reconcile_topology(
     try:
         identities = list_source_identities(conn)
         links = aggregate_link_evidence(collect_link_evidence(conn, identities), observed_at)
+        roots = {identity.source_id for identity in identities if identity.topology_role == "core"}
+        depths = topology_depths(links, roots)
         conn.execute("BEGIN IMMEDIATE")
         event_count = _replace_current_links(conn, links, run_id, observed_at)
         finding_count = _replace_findings(conn, links, observed_at)
@@ -322,8 +324,7 @@ def reconcile_topology(
             (observed_at, json.dumps(counts, sort_keys=True, separators=(",", ":")), run_id),
         )
         conn.commit()
-        roots = {identity.source_id for identity in identities if identity.topology_role == "core"}
-        return {"run_id": run_id, "counts": counts, "depths": topology_depths(links, roots)}
+        return {"run_id": run_id, "counts": counts, "depths": depths}
     except Exception as exc:
         if conn.in_transaction:
             conn.rollback()
