@@ -214,6 +214,10 @@ def test_boot_menu_patches_default_to_disk_and_keep_spike_safe() -> None:
     assert "console=ttyS0,115200" in grub
     assert "--hotkey 's'" in grub
     assert " ai " not in grub
+    managed_index = grub.index('menuentry "Sosnadmin managed installation [SPIKE]"')
+    efi_start = grub.rfind('+if [ "$grub_platform" = "efi" ]; then', 0, managed_index)
+    efi_end = grub.find('+fi', efi_start)
+    assert efi_start >= 0 and managed_index < efi_end
     assert "default harddisk" in isolinux
     assert "sosnadmin.mode=spike" not in isolinux
     assert "console=ttyS0,115200" not in isolinux

@@ -43,10 +43,11 @@
 @@ -85 +109 @@
 -menuentry $"Install "'ALT Workstation K 11.4' --hotkey 'i' --id 'linux' {
 +menuentry "Normal ALT installation" --hotkey 'i' --id 'linux' {
-@@ -90,6 +114,19 @@
+@@ -90,6 +114,21 @@
    initrd /boot/initrd$KFLAVOUR.img
  }
  
++if [ "$grub_platform" = "efi" ]; then
 +menuentry "Sosnadmin managed installation [SPIKE]" --hotkey 's' --id 'sosnadmin-spike' {
 +  echo "Loading managed spike ..."
 +  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot stagename=live systemd.unit=install2.target ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=spike sosnadmin.controller=http://192.168.100.17:18089 sosnadmin.build=pr1
@@ -59,6 +60,7 @@
 +  sleep 3
 +  configfile ${prefix}/grub.cfg
 +}
++fi
 +
  menuentry $"VNC install (edit to set password)" --id 'vncpasswd' {
    savedefault
