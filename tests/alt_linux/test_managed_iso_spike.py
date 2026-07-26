@@ -20,6 +20,8 @@ SPIKE_SERVER = SPIKE_SERVER_ROOT / "server.py"
 SPIKE_CTL = SPIKE_SERVER_ROOT / "ctl.py"
 BUILDER = ISO_ROOT / "build-spike-iso.sh"
 GATE_PATCH = ISO_ROOT / "initrd-patches" / "early-agent-gate.patch"
+GRUB_PATCH = ISO_ROOT / "boot-menu" / "grub.cfg.patch"
+ISOLINUX_PATCH = ISO_ROOT / "boot-menu" / "isolinux.cfg.patch"
 
 
 def test_inspector_pins_all_artifacts_and_uses_read_only_tools() -> None:
@@ -142,3 +144,18 @@ def test_initrd_gate_precedes_exact_vendor_handoff_and_builder_is_guarded() -> N
     assert "xorriso" in builder
     assert "gzip -n" in builder
     assert "patch --fuzz=0" in builder
+
+
+def test_boot_menu_patches_default_to_disk_and_keep_spike_safe() -> None:
+    grub = GRUB_PATCH.read_text(encoding="utf-8")
+    isolinux = ISOLINUX_PATCH.read_text(encoding="utf-8")
+
+    assert "set timeout=5" in grub
+    assert "/EFI/altlinux/shimx64.efi" in grub
+    assert "/EFI/Microsoft/Boot/bootmgfw.efi" in grub
+    assert "/EFI/BOOT/BOOTX64.EFI" not in grub
+    assert "sosnadmin.mode=spike" in grub
+    assert " ai " not in grub
+    assert "default harddisk" in isolinux
+    assert "sosnadmin.mode=spike" in isolinux
+    assert " ai " not in isolinux

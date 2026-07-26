@@ -1,0 +1,23 @@
+--- a/syslinux/isolinux.cfg
++++ b/syslinux/isolinux.cfg
+@@ -4,7 +4,7 @@
+   menu label ^Boot from hard drive as usual
+   localboot -2
+ 
+-default linux
++default harddisk
+ 
+ label linux
+   menu label ^Install ALT (kworkstation-install)
+@@ -12,6 +12,11 @@
+   kernel /boot/vmlinuz
+   append initrd=/boot/initrd.img fastboot root=bootchain bootchain=fg,altboot automatic=method:disk,uuid:2026-06-11-12-27-22-00 stagename=live systemd.unit=install2.target ramdisk_size=4497433 showopts vga=normal quiet splash lowmem
+ 
++label sosnadmin-spike
++  menu label Sosnadmin managed installation [SPIKE]
++  kernel /boot/vmlinuz
++  append initrd=/boot/initrd.img fastboot root=bootchain bootchain=fg,altboot stagename=live systemd.unit=install2.target ramdisk_size=4497433 showopts vga=normal quiet splash lowmem ip=dhcp sosnadmin.mode=spike sosnadmin.controller=http://192.168.100.17:18089 sosnadmin.build=pr1
++
+ label vncpasswd
+   menu label VNC install (<Tab>, set pass^word and connect here)
+   kernel /boot/vmlinuz

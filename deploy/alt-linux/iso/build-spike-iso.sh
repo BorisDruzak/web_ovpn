@@ -14,6 +14,8 @@ root=$(cd -- "$(dirname -- "$0")" && pwd -P)
 workdir=$(mktemp -d "${TMPDIR:-/var/tmp}/alt-spike-build.XXXXXX")
 trap 'rm -rf -- "$workdir"' EXIT
 xorriso -osirrox on -indev "$source_iso" -extract /boot/initrd.img "$workdir/initrd.img" >/dev/null
+xorriso -osirrox on -indev "$source_iso" -extract /boot/grub/grub.cfg "$workdir/grub.cfg" >/dev/null
+xorriso -osirrox on -indev "$source_iso" -extract /syslinux/isolinux.cfg "$workdir/isolinux.cfg" >/dev/null
 mkdir "$workdir/initrd"
 ( cd "$workdir/initrd"; gzip -dc "$workdir/initrd.img" | cpio -idmu --quiet )
 patch --fuzz=0 -d "$workdir/initrd" -p1 < "$root/initrd-patches/early-agent-gate.patch"
@@ -25,8 +27,17 @@ install -D -m 0644 "$root/../install-agent/lib/protocol.sh" "$workdir/initrd/usr
 install -D -m 0644 "$root/../install-agent/lib/ui.sh" "$workdir/initrd/usr/libexec/sosnadmin/lib/ui.sh"
 sed -i 's#AGENT_ROOT=.*#AGENT_ROOT="/usr/libexec/sosnadmin"#' "$workdir/initrd/usr/libexec/sosnadmin-install-spike"
 ( cd "$workdir/initrd"; find . -print0 | cpio --null -o -H newc --quiet | gzip -n > "$workdir/initrd-spike.img" )
+mkdir -p "$workdir/menu/boot/grub" "$workdir/menu/syslinux"
+mv "$workdir/grub.cfg" "$workdir/menu/boot/grub/grub.cfg"
+mv "$workdir/isolinux.cfg" "$workdir/menu/syslinux/isolinux.cfg"
+patch --fuzz=0 -d "$workdir/menu" -p1 < "$root/boot-menu/grub.cfg.patch"
+patch --fuzz=0 -d "$workdir/menu" -p1 < "$root/boot-menu/isolinux.cfg.patch"
 tmp_output="$output_iso.tmp.$$"
 rm -f -- "$tmp_output"
-xorriso -indev "$source_iso" -outdev "$tmp_output" -boot_image any replay -map "$workdir/initrd-spike.img" /boot/initrd.img -commit >/dev/null
+xorriso -indev "$source_iso" -outdev "$tmp_output" -boot_image any replay \
+    -map "$workdir/initrd-spike.img" /boot/initrd.img \
+    -map "$workdir/menu/boot/grub/grub.cfg" /boot/grub/grub.cfg \
+    -map "$workdir/menu/syslinux/isolinux.cfg" /syslinux/isolinux.cfg \
+    -commit >/dev/null
 mv -f -- "$tmp_output" "$output_iso"
 printf 'spike_iso=%s\n' "$output_iso"
