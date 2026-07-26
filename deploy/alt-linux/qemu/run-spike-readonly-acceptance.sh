@@ -60,7 +60,7 @@ qemu-system-x86_64 \
     -netdev user,id=spike-net,net=192.168.100.0/24,host=192.168.100.17,dhcpstart=192.168.100.50 \
     -device virtio-net-pci,netdev=spike-net \
     -vnc "unix:$vnc_socket" \
-    -boot order=d -serial none \
+    -boot order=d -serial "file:$evidence/guest-console.log" \
     -qmp "unix:$qmp,server=on,wait=off" \
     >"$evidence/qemu.log" 2>&1 &
 qemu_pid=$!
@@ -139,16 +139,16 @@ from pathlib import Path
 records = sorted(Path(sys.argv[1]).glob("spike-*/session.json"))
 if not records:
     raise SystemExit(1)
-record = json.loads(records[0].read_text(encoding="utf-8"))
-print(record["session_id"], record["decision"])
+record = json.loads(records[-1].read_text(encoding="utf-8"))
+print(record["session_id"], record["decision"], record.get("states", []).count("spike_approved"))
 PY
 }
 wait_for_fixture_decision() {
-    local expected="$1" seconds="$2" status session decision
+    local expected="$1" seconds="$2" status session decision approved_count
     for _ in $(seq 1 "$seconds"); do
         status=$(fixture_status 2>/dev/null || true)
         if [[ -n "$status" ]]; then
-            read -r session decision <<< "$status"
+            read -r session decision approved_count <<< "$status"
             if [[ "$decision" == "$expected" ]]; then
                 printf '%s\n' "$session"
                 return 0
@@ -159,7 +159,7 @@ wait_for_fixture_decision() {
     return 1
 }
 
-# The ISO default deliberately returns to the local disk after five seconds. Send
+# The ISO timeout after ten seconds deliberately returns to the local disk. Send
 # the explicit GRUB hotkey throughout the firmware-to-GRUB hand-off; OVMF under
 # TCG can take several minutes before the menu is ready to receive a key.
 (
@@ -176,6 +176,12 @@ hotkey_pid=
 cp -- "$fixture_state/$session/session.json" "$evidence/session.waiting.json"
 printf '%s\n' "Guest session $session is waiting. Approve it, then this harness will require spike_approved." >&2
 wait_for_fixture_decision approved 600 >/dev/null || die 'Fixture session did not become approved'
+for _ in $(seq 1 30); do
+    state_count=$(fixture_status 2>/dev/null | awk '{print $3}')
+    [[ "${state_count:-0}" -ge 2 ]] && break
+    sleep 1
+done
+[[ "${state_count:-0}" -ge 2 ]] || die 'Guest did not report two spike_approved heartbeats'
 cp -- "$fixture_state/$session/session.json" "$evidence/session.approved.json"
 qmp_query "$evidence/after.json"
 sha256sum "$target" > "$evidence/target.after.sha256"
@@ -193,6 +199,8 @@ for filename in sys.argv[1:]:
         except json.JSONDecodeError:
             continue
         for block in message.get("return", []):
+            if block.get("device") != "target":
+                continue
             stats = block.get("stats", {})
             for key, value in stats.items():
                 if key.startswith("wr_") and isinstance(value, int) and value != 0:

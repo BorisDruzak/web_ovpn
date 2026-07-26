@@ -15,25 +15,55 @@ class SpikeHandler(BaseHTTPRequestHandler):
     repository: SpikeRepository
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/spike/v1/sessions":
-            self.send_error(HTTPStatus.NOT_FOUND)
+        if self.path == "/spike/v1/sessions":
+            self._create_session()
             return
-        length = int(self.headers.get("Content-Length", "0"))
+        prefix = "/spike/v1/sessions/"
+        suffix = "/state"
+        if self.path.startswith(prefix) and self.path.endswith(suffix):
+            self._report_state(self.path[len(prefix) : -len(suffix)])
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _payload(self) -> dict[str, object]:
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError as error:
+            raise ValueError("invalid content length") from error
         if length <= 0:
-            self.send_error(HTTPStatus.BAD_REQUEST)
-            return
+            raise ValueError("empty payload")
         if length > MAX_PAYLOAD_BYTES:
+            raise OverflowError
+        payload = json.loads(self.rfile.read(length))
+        if not isinstance(payload, dict):
+            raise ValueError("object required")
+        return payload
+
+    def _create_session(self) -> None:
+        try:
+            payload = self._payload()
+            session = self.repository.create_session(payload, self.client_address[0])
+        except OverflowError:
             self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return
-        try:
-            payload = json.loads(self.rfile.read(length))
-            if not isinstance(payload, dict):
-                raise ValueError
-            session = self.repository.create_session(payload, self.client_address[0])
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
             self.send_error(HTTPStatus.BAD_REQUEST)
             return
         self._plain(HTTPStatus.CREATED, session)
+
+    def _report_state(self, session: str) -> None:
+        try:
+            payload = self._payload()
+            if set(payload) != {"state"} or not isinstance(payload["state"], str):
+                raise ValueError("invalid state payload")
+            self.repository.report_state(session, payload["state"])
+        except OverflowError:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        except (KeyError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.BAD_REQUEST)
+            return
+        self._empty(HTTPStatus.NO_CONTENT)
 
     def do_GET(self) -> None:  # noqa: N802
         prefix = "/spike/v1/sessions/"
@@ -54,6 +84,10 @@ class SpikeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _empty(self, status: HTTPStatus) -> None:
+        self.send_response(status)
+        self.end_headers()
 
     def log_message(self, format: str, *args: object) -> None:
         return

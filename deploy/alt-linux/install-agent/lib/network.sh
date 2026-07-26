@@ -13,7 +13,7 @@ request_dhcp() {
     command -v udhcpc >/dev/null 2>&1 || return 0
     for interface_path in /sys/class/net/*; do
         interface=${interface_path##*/}
-        [[ "$interface" == lo || -d "$interface_path" ]] || continue
+        [[ "$interface" != "lo" && -d "$interface_path" ]] || continue
         ip link set dev "$interface" up >/dev/null 2>&1 || continue
         dhcp_configure "$interface"
         ip -4 route get 192.168.100.17 >/dev/null 2>&1 && return 0
@@ -21,15 +21,15 @@ request_dhcp() {
 }
 
 wait_for_controller_route() {
-    local attempt=0
+    local attempt
 
-    request_dhcp || true
-    while (( attempt < 60 )); do
-        if ip -4 route get 192.168.100.17 >/dev/null 2>&1; then
-            return 0
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
+    while :; do
+        request_dhcp || true
+        for ((attempt = 0; attempt < 60; attempt++)); do
+            if ip -4 route get 192.168.100.17 >/dev/null 2>&1; then
+                return 0
+            fi
+            sleep 1
+        done
     done
-    return 1
 }

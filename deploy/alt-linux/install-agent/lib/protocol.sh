@@ -20,3 +20,10 @@ get_spike_decision() {
         *) return 1 ;;
     esac
 }
+
+report_spike_state() {
+    local session="$1" state="$2"
+    printf '{"state":"%s"}\n' "$state" | curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
+        --request POST --header 'Content-Type: application/json' --data-binary @- \
+        "$SPIKE_CONTROLLER/spike/v1/sessions/$session/state" >/dev/null
+}

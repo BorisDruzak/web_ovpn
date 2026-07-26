@@ -19,7 +19,8 @@ spike_hold() {
     local state="$1"
     ui_show_state "$state"
     while :; do
-        sleep 60
+        [[ -z "${SPIKE_SESSION:-}" ]] || report_spike_state "$SPIKE_SESSION" "$state" || true
+        sleep 5
     done
 }
 
@@ -33,6 +34,9 @@ main() {
     inventory=$(build_inventory) || spike_hold spike_failed
     session=$(create_spike_session "$inventory") || spike_hold controller_unavailable
     export SPIKE_SESSION="$session"
+    report_spike_state "$session" agent_started || spike_hold controller_unavailable
+    report_spike_state "$session" inventory_ready || spike_hold controller_unavailable
+    report_spike_state "$session" waiting_for_approval || spike_hold controller_unavailable
     ui_show_state waiting_for_approval
 
     while :; do

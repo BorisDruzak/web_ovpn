@@ -4,14 +4,14 @@
 
 **Goal:** Build a guarded ALT 11.4 managed-ISO spike that proves DHCP, inventory, fixture-session creation and approval without starting the installer or writing to a target disk.
 
-**Architecture:** The build is tied to the exact upstream ISO by a committed manifest and exact initrd patch anchor. A Bash-only agent executes before `etc/rc.d/rc.sysexec` hands control to the live system, creates a bounded inventory and polls a rootless Python fixture; every spike outcome enters a non-returning hold. UEFI uses an explicit local-loader chainload entry, while runtime safety is proved in a disposable QEMU UEFI VM with a read-only target disk.
+**Architecture:** The build is tied to the exact upstream ISO by a committed manifest and the runlevel dispatcher hash. A Bash-only agent is executed by `lib/initrd/post/network-up/99-sosnadmin-spike` before the following bootchain service, creates a minimal spike inventory and polls a rootless Python fixture; every spike outcome enters a non-returning hold. Managed boot is UEFI-only, while runtime safety is proved in a disposable QEMU UEFI VM with a read-only target disk.
 
 **Tech Stack:** Bash, gzip/newc CPIO, xorriso, GRUB, Syslinux, Python 3 standard library, pytest, QEMU with OVMF/QMP.
 
 ## Global Constraints
 
 - Work from a dedicated feature worktree; do not change the source ISO or production controller runtime.
-- Support only `/var/alt-kworkstation-11.4-install-x86_64.iso` and abort on a source, initrd, GRUB, Syslinux or handoff-hash mismatch.
+- Support only `/var/alt-kworkstation-11.4-install-x86_64.iso` and abort on a source, initrd, GRUB, Syslinux or runlevel-dispatcher-hash mismatch.
 - The managed kernel command line includes `ip=dhcp`, `sosnadmin.mode=spike`, `sosnadmin.controller=http://192.168.100.17:18089` and `sosnadmin.build=<build-id>` only in addition to the stock installer line; it contains no `ai`, `curl=`, or `automatic`.
 - The spike agent uses Bash and initrd-proven commands only: `bash`, `curl`, `ip`, `findmnt`, `udevadm`, `blkid`, `sha256sum`, and `dialog`.
 - The agent must not call `alterator-autoinstall`, `alterator-wizard`, `sfdisk`, `wipefs`, `mkfs`, `fdisk`, `parted`, `dd of=`, `mount -o rw`, `reboot`, `poweroff`, `systemctl`, or any stage-2 handoff.
@@ -56,7 +56,7 @@ docs/ALT_MANAGED_ISO_TECHNICAL_SPIKE.md
 
 **Interfaces:**
 - Consumes: `inspect-upstream-iso.sh --source <ISO> --manifest <JSON>`.
-- Produces: a zero-exit verification only when size and SHA-256 values for the ISO, `/boot/initrd.img`, `/boot/grub/grub.cfg`, `/syslinux/isolinux.cfg`, and decompressed `etc/rc.d/rc.sysexec` equal the manifest.
+- Produces: a zero-exit verification only when size and SHA-256 values for the ISO, `/boot/initrd.img`, `/boot/grub/grub.cfg`, `/syslinux/isolinux.cfg`, and decompressed `etc/rc.d/rc` equal the manifest.
 
 - [ ] **Step 1: Write failing manifest/inspection tests**
 
@@ -65,7 +65,7 @@ def test_inspector_requires_all_pinned_paths_and_hashes() -> None:
     text = INSPECTOR.read_text(encoding="utf-8")
     for token in (
         "boot/initrd.img", "boot/grub/grub.cfg", "syslinux/isolinux.cfg",
-        "etc/rc.d/rc.sysexec", "sha256sum", "xorriso",
+        "etc/rc.d/rc", "sha256sum", "xorriso",
     ):
         assert token in text
 
@@ -83,7 +83,7 @@ Expected: failure because the script and manifest do not exist.
 
 - [ ] **Step 3: Implement the inspector and generate the pinned manifest**
 
-Use `xorriso -osirrox on -indev` to read the three ISO files to a temporary directory, stream `boot/initrd.img` through `gzip -dc | cpio -i --to-stdout etc/rc.d/rc.sysexec`, and calculate SHA-256 with `sha256sum`. Refuse a source basename other than `alt-kworkstation-11.4-install-x86_64.iso`, a missing tool, malformed JSON, a zero size, or any mismatch. Store actual values obtained from the provided source ISO; do not invent a hash.
+Use `xorriso -osirrox on -indev` to read the three ISO files to a temporary directory, stream `boot/initrd.img` through `gzip -dc | cpio -i --to-stdout etc/rc.d/rc`, and calculate SHA-256 with `sha256sum`. Refuse a source basename other than `alt-kworkstation-11.4-install-x86_64.iso`, a missing tool, malformed JSON, a zero size, or any mismatch. Store actual values obtained from the provided source ISO; do not invent a hash.
 
 - [ ] **Step 4: Run the inspector against the real source ISO**
 
@@ -128,10 +128,8 @@ def test_agent_rejects_disallowed_cmdline_and_never_returns_after_hold() -> None
     assert "alterator-autoinstall" not in text
     assert "systemctl" not in text
 
-def test_inventory_limits_and_json_normalization_are_explicit() -> None:
+def test_minimal_inventory_and_json_normalization_are_explicit() -> None:
     text = INVENTORY.read_text(encoding="utf-8")
-    assert "max_interfaces=16" in text
-    assert "max_disks=16" in text
     assert "sanitize_json_string" in text
 ```
 
@@ -143,7 +141,7 @@ Expected: failure because the agent files do not exist.
 
 - [ ] **Step 3: Implement bounded read-only agent behavior**
 
-Implement exact-token parsing without `eval`; accept only `http://192.168.100.17:18089` in PR1. Wait for `ip -4 route get 192.168.100.17`, collect no more than 16 interfaces and 16 non-loop/ram/zram disks, derive boot media from `findmnt -n -o SOURCE,FSTYPE,OPTIONS /image`, normalize untrusted values to bounded ASCII JSON strings, and display `waiting_for_network`, `controller_unavailable`, `waiting_for_approval`, `spike_approved`, `spike_cancelled`, or `spike_failed` through `dialog` with tty fallback.
+Implement exact-token parsing without `eval`; accept only `http://192.168.100.17:18089` in PR1. Wait for `ip -4 route get 192.168.100.17`, collect the minimal machine identity plus boot-media fields, normalize untrusted values to bounded ASCII JSON strings, and display `waiting_for_network`, `controller_unavailable`, `waiting_for_approval`, `spike_approved`, `spike_cancelled`, or `spike_failed` through `dialog` with tty fallback.
 
 - [ ] **Step 4: Add executable and syntax verification**
 
@@ -170,7 +168,7 @@ Commit: `git add deploy/alt-linux/install-agent tests/alt_linux/test_managed_iso
 - Test: `tests/alt_linux/test_managed_iso_spike.py`
 
 **Interfaces:**
-- `POST /spike/v1/sessions` accepts at most 32 KiB of bounded inventory JSON and returns `201` with a plain-text `spike-...` identifier.
+- `POST /spike/v1/sessions` accepts at most 32 KiB of minimal, validated inventory JSON and returns `201` with a plain-text `spike-...` identifier.
 - `GET /spike/v1/sessions/<id>/decision` returns exactly `waiting`, `approved`, or `cancelled` as plain text.
 - `ctl.py approve <id>` transitions only `waiting -> approved`; all repeated approvals are idempotent.
 
@@ -197,7 +195,7 @@ Expected: failure because the fixture modules do not exist.
 
 - [ ] **Step 3: Implement atomic private fixture state**
 
-Use only Python standard-library `http.server`, `json`, `pathlib`, `tempfile`, and `os.replace`. Create state root mode `0700`, session files mode `0600`, IDs matching `spike-YYYYMMDDTHHMMSSZ-[0-9a-f]{8}`, and fixed filenames only. Reject directory traversal, unknown sessions, payloads above 32 KiB, more than 16 interfaces/disks, invalid transition values, and fields exceeding the agent limits. Derive and record peer IP from the HTTP connection rather than trusting payload input.
+Use only Python standard-library `http.server`, `json`, `pathlib`, `tempfile`, and `os.replace`. Create state root mode `0700`, session files mode `0600`, IDs matching `spike-YYYYMMDDTHHMMSSZ-[0-9a-f]{8}`, and fixed filenames only. Reject directory traversal, unknown sessions, payloads above 32 KiB, unknown inventory fields, malformed machine identity, invalid transition values, and fields exceeding the agent bounds. Derive and record peer IP from the HTTP connection rather than trusting payload input.
 
 - [ ] **Step 4: Run focused fixture tests**
 
@@ -224,11 +222,11 @@ Commit: `git add deploy/alt-linux/install-agent/spike-server tests/alt_linux/tes
 - [ ] **Step 1: Write failing initrd gate and builder tests**
 
 ```python
-def test_gate_is_exactly_before_vendor_sysexec_and_blocks_spike_handoff() -> None:
-    patch = GATE_PATCH.read_text(encoding="utf-8")
-    assert "etc/rc.d/rc.sysexec" in patch
-    assert "sosnadmin.mode=spike" in patch
-    assert patch.index("sosnadmin-install-spike") < patch.index("exec runas /sbin/init")
+def test_gate_runs_from_post_network_up_and_blocks_spike_handoff() -> None:
+    hook = GATE_HOOK.read_text(encoding="utf-8")
+    assert "lib/initrd/post/network-up" in str(GATE_HOOK)
+    assert "sosnadmin.mode=spike" in hook
+    assert "exec /usr/libexec/sosnadmin-install-spike" in hook
 
 def test_builder_refuses_unknown_source_and_existing_output() -> None:
     text = BUILDER.read_text(encoding="utf-8")
@@ -301,7 +299,7 @@ Expected: failure because menu patches do not exist.
 
 - [ ] **Step 3: Implement menu patches and verifier**
 
-Keep the unmodified vendor installation entry as `Normal ALT installation`. Add `Boot from local disk` as the UEFI default with timeout five. Search and chainload in the pinned ALT-shim, ALT-GRUB, Windows order; display an error and return to the menu on no match. Add `Sosnadmin managed installation [SPIKE]` with only the allowed appended tokens. Preserve BIOS as local-disk default and normal installer manual. Add a read-only Diagnostics menu item that displays no shell and performs no installer transition.
+Keep the unmodified vendor installation entry as `Normal ALT installation`. Add `Boot from local disk` as the UEFI default with timeout ten. Search and chainload in the pinned ALT-shim, ALT-GRUB, Windows order; display an error and return to the menu on no match. Add the UEFI-only `Sosnadmin managed installation [SPIKE]` with only the allowed appended tokens. Preserve BIOS as local-disk default and normal installer manual. Add a read-only Diagnostics menu item that displays no shell and performs no installer transition.
 
 - [ ] **Step 4: Run menu verification**
 
@@ -349,7 +347,7 @@ Expected: failure because the harness does not exist.
 
 - [ ] **Step 3: Implement the manual acceptance harness**
 
-Require `qemu-system-x86_64`, `qemu-img`, `socat`, `sha256sum`, OVMF code/vars, and an existing fixture server. Copy OVMF vars and create only a disposable target disk if no target is supplied; attach it with `readonly=on`, boot ISO as read-only CD-ROM, enable QMP and serial logging, and use `-no-reboot`. Capture QMP `query-blockstats` before and after approval. Require guest console state `waiting_for_approval`, operator approval, `spike_approved`, `NO DISK CHANGES WERE MADE`, no `install2`, no `alterator`, no `sysexec` success marker, unchanged target hash and zero write statistics. Do not put this test in CI.
+Require `qemu-system-x86_64`, `qemu-img`, `socat`, `sha256sum`, OVMF code/vars, and an existing fixture server. Copy OVMF vars and create only a disposable target disk if no target is supplied; attach it with `readonly=on`, boot ISO as read-only CD-ROM, enable QMP and serial logging, and use `-no-reboot`. Capture QMP `query-blockstats` before and after approval. Require guest console state `waiting_for_approval`, operator approval, `spike_approved`, `NO DISK CHANGES WERE MADE`, no `install2` or `alterator` marker, unchanged target hash and zero write statistics for the `target` device. Do not put this test in CI.
 
 - [ ] **Step 4: Perform the authorized manual acceptance run**
 

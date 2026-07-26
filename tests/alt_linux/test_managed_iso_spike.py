@@ -70,14 +70,14 @@ def test_manifest_contains_exact_non_placeholder_source_contract() -> None:
         "initrd_sha256",
         "grub_cfg_sha256",
         "isolinux_cfg_sha256",
-        "handoff_sha256",
+        "runlevel_dispatcher_sha256",
     ):
         assert re.fullmatch(r"[0-9a-f]{64}", manifest[key])
 
     assert manifest["initrd_path"] == "/boot/initrd.img"
     assert manifest["grub_cfg_path"] == "/boot/grub/grub.cfg"
     assert manifest["isolinux_cfg_path"] == "/syslinux/isolinux.cfg"
-    assert manifest["handoff_path"] == "/etc/rc.d/rc"
+    assert manifest["runlevel_dispatcher_path"] == "/etc/rc.d/rc"
 
 
 def test_agent_is_fail_closed_and_does_not_reference_installer_actions() -> None:
@@ -107,12 +107,13 @@ def test_agent_libraries_bound_cmdline_and_inventory_data() -> None:
 
     assert "http://192.168.100.17:18089" in cmdline
     assert "eval" not in cmdline
-    assert "max_interfaces=16" in inventory
-    assert "max_disks=16" in inventory
     assert "sanitize_json_string" in inventory
     assert "findmnt -n -o SOURCE,FSTYPE,OPTIONS /image" in inventory
+    assert '"limits"' not in inventory
     assert "udhcpc -n -q -T 3 -t 3" in network
     assert "dhcp_configure" in network
+    assert '"$interface" != "lo"' in network
+    assert "while :; do" in network
     assert 'dhcp-hook.sh' in network
     assert 'ip -4 addr replace' in dhcp_hook
     assert 'ip -4 route replace default via' in dhcp_hook
@@ -136,13 +137,32 @@ def test_spike_repository_transitions_are_private_and_idempotent(
         sys.path.pop(0)
 
     repository = SpikeRepository(tmp_path)
-    session = repository.create_session({"machine": {"uuid": "test"}}, "192.0.2.1")
+    inventory = {
+        "machine": {
+            "uuid": "test",
+            "manufacturer": "QEMU",
+            "product_name": "Standard PC",
+            "memory_kib": "1024",
+            "boot_id": "boot",
+        },
+        "boot_media": "",
+        "build_id": "pr1",
+    }
+    session = repository.create_session(inventory, "192.0.2.1")
 
     assert session.startswith("spike-")
     assert repository.decision(session) == "waiting"
     assert repository.approve(session) == "approved"
     assert repository.approve(session) == "approved"
     assert repository.cancel(session) == "approved"
+    repository.report_state(session, "waiting_for_approval")
+    repository.report_state(session, "spike_approved")
+    repository.report_state(session, "spike_approved")
+    assert repository.states(session) == [
+        "waiting_for_approval",
+        "spike_approved",
+        "spike_approved",
+    ]
     if os.name == "nt":
         assert "os.chmod(temporary, 0o600)" in (
             SPIKE_SERVER_ROOT / "repository.py"
@@ -159,6 +179,7 @@ def test_spike_fixture_exposes_only_bounded_plain_text_contract() -> None:
     assert "32768" in server
     assert "Content-Type" in server
     assert "text/plain" in server
+    assert "self._empty(HTTPStatus.NO_CONTENT)" in server
     assert "approve" in ctl and "cancel" in ctl and "list" in ctl
 
 
@@ -181,7 +202,7 @@ def test_boot_menu_patches_default_to_disk_and_keep_spike_safe() -> None:
     grub = GRUB_PATCH.read_text(encoding="utf-8")
     isolinux = ISOLINUX_PATCH.read_text(encoding="utf-8")
 
-    assert "set timeout=60" in grub
+    assert "set timeout=10" in grub
     assert "\n+set GRUB_TERMINAL=" not in grub
     assert "/EFI/altlinux/shimx64.efi" in grub
     assert "/EFI/Microsoft/Boot/bootmgfw.efi" in grub
@@ -191,8 +212,8 @@ def test_boot_menu_patches_default_to_disk_and_keep_spike_safe() -> None:
     assert "--hotkey 's'" in grub
     assert " ai " not in grub
     assert "default harddisk" in isolinux
-    assert "sosnadmin.mode=spike" in isolinux
-    assert "console=ttyS0,115200" in isolinux
+    assert "sosnadmin.mode=spike" not in isolinux
+    assert "console=ttyS0,115200" not in isolinux
     assert " ai " not in isolinux
 
 
@@ -218,11 +239,20 @@ def test_verifier_and_overlay_enforce_the_spike_contract() -> None:
     )
     for token in (
         "--iso",
-        "set timeout=60",
+        "set timeout=10",
         "Sosnadmin managed installation [SPIKE]",
         "default harddisk",
-        "sosnadmin.mode=spike",
-        "console=ttyS0,115200",
+        "default harddisk",
+    ):
+        assert token in verifier
+    for token in (
+        "boot/initrd.img",
+        "gzip -dc",
+        "cpio -id",
+        "99-sosnadmin-spike",
+        "sosnadmin-install-spike",
+        "runlevel_dispatcher_sha256",
+        "build-manifest.json",
     ):
         assert token in verifier
 
@@ -241,12 +271,23 @@ def test_qemu_harness_keeps_target_read_only_and_records_safety_evidence() -> No
         "net=192.168.100.0/24",
         "host=192.168.100.17",
         "dhcpstart=192.168.100.50",
-        "-serial none",
+        "guest-console.log",
         '-vnc "unix:$vnc_socket"',
         "--fixture-state",
         "session.json",
+        "two spike_approved heartbeats",
+        "timeout after ten seconds",
+        'block.get("device") != "target"',
     ):
         assert token in text
+
+
+def test_builder_has_space_guard_and_writes_iso_integrity_record() -> None:
+    builder = BUILDER.read_text(encoding="utf-8")
+
+    assert "df -Pk" in builder
+    assert "source_size + 512 * 1024 * 1024" in builder
+    assert ".build-manifest.json" in builder
 
 
 def test_technical_spike_documentation_states_manual_no_write_scope() -> None:

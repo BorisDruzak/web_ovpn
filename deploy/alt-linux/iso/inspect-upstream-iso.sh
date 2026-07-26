@@ -98,7 +98,7 @@ verify_equals source_sha256 "$(manifest_value source_sha256)" "$(sha256_file "$s
 verify_equals initrd_sha256 "$(manifest_value initrd_sha256)" "$(sha256_file "$workdir/initrd.img")"
 verify_equals grub_cfg_sha256 "$(manifest_value grub_cfg_sha256)" "$(sha256_file "$workdir/grub.cfg")"
 verify_equals isolinux_cfg_sha256 "$(manifest_value isolinux_cfg_sha256)" "$(sha256_file "$workdir/isolinux.cfg")"
-verify_equals handoff_sha256 "$(manifest_value handoff_sha256)" "$(sha256_file "$workdir/rc")"
+verify_equals runlevel_dispatcher_sha256 "$(manifest_value runlevel_dispatcher_sha256)" "$(sha256_file "$workdir/rc")"
 
 grep -Fqx 'for i in "$rcd"/S*; do' "$workdir/rc" \
     || die "Expected runlevel start-loop anchor is absent"

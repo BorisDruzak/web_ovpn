@@ -5,7 +5,7 @@
  insmod normal
  insmod test
 -set timeout=60
-+set timeout=60
++set timeout=10
  if [ ! "$lang" ]; then lang=ru_RU; fi
  if [ -s $pfxfat/grubenv ]; then
    load_env --file $pfxfat/grubenv

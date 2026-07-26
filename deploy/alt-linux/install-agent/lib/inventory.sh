@@ -17,7 +17,7 @@ read_first_line() {
 }
 
 build_inventory() {
-    local uuid manufacturer product memory boot_id boot_media
+    local uuid manufacturer product memory boot_id boot_media build_id
     uuid=$(read_first_line "$INVENTORY_SYS_ROOT/class/dmi/id/product_uuid")
     manufacturer=$(read_first_line "$INVENTORY_SYS_ROOT/class/dmi/id/sys_vendor")
     product=$(read_first_line "$INVENTORY_SYS_ROOT/class/dmi/id/product_name")
@@ -25,6 +25,7 @@ build_inventory() {
     boot_id=$(read_first_line "$INVENTORY_PROC_ROOT/sys/kernel/random/boot_id")
     boot_media=$(findmnt -n -o SOURCE,FSTYPE,OPTIONS /image 2>/dev/null || true)
     boot_media=$(sanitize_json_string "$boot_media")
-    printf '{"machine":{"uuid":"%s","manufacturer":"%s","product_name":"%s","memory_kib":"%s","boot_id":"%s"},"boot_media":"%s","limits":{"interfaces":%s,"disks":%s}}\n' \
-        "$uuid" "$manufacturer" "$product" "$(sanitize_json_string "$memory")" "$boot_id" "$boot_media" "$max_interfaces" "$max_disks"
+    build_id=$(sanitize_json_string "${SPIKE_BUILD:-}")
+    printf '{"machine":{"uuid":"%s","manufacturer":"%s","product_name":"%s","memory_kib":"%s","boot_id":"%s"},"boot_media":"%s","build_id":"%s"}\n' \
+        "$uuid" "$manufacturer" "$product" "$(sanitize_json_string "$memory")" "$boot_id" "$boot_media" "$build_id"
 }
