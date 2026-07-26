@@ -92,15 +92,15 @@ extract_iso_file() {
 extract_iso_file /boot/initrd.img "$workdir/initrd.img"
 extract_iso_file /boot/grub/grub.cfg "$workdir/grub.cfg"
 extract_iso_file /syslinux/isolinux.cfg "$workdir/isolinux.cfg"
-gzip -dc "$workdir/initrd.img" | cpio -i --to-stdout --quiet etc/rc.d/rc.sysexec > "$workdir/rc.sysexec"
+gzip -dc "$workdir/initrd.img" | cpio -i --to-stdout --quiet etc/rc.d/rc > "$workdir/rc"
 
 verify_equals source_sha256 "$(manifest_value source_sha256)" "$(sha256_file "$source_iso")"
 verify_equals initrd_sha256 "$(manifest_value initrd_sha256)" "$(sha256_file "$workdir/initrd.img")"
 verify_equals grub_cfg_sha256 "$(manifest_value grub_cfg_sha256)" "$(sha256_file "$workdir/grub.cfg")"
 verify_equals isolinux_cfg_sha256 "$(manifest_value isolinux_cfg_sha256)" "$(sha256_file "$workdir/isolinux.cfg")"
-verify_equals handoff_sha256 "$(manifest_value handoff_sha256)" "$(sha256_file "$workdir/rc.sysexec")"
+verify_equals handoff_sha256 "$(manifest_value handoff_sha256)" "$(sha256_file "$workdir/rc")"
 
-grep -Fqx 'exec runas /sbin/init /bin/environ -cf /.initrd/kernenv /sbin/sysexec "$rootmnt" "$INIT" "$@"' "$workdir/rc.sysexec" \
-    || die "Expected stage-2 handoff anchor is absent"
+grep -Fqx 'for i in "$rcd"/S*; do' "$workdir/rc" \
+    || die "Expected runlevel start-loop anchor is absent"
 
 printf 'upstream_iso_verified=true\n'

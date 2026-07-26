@@ -10,7 +10,7 @@ while (($#)); do case "$1" in --source) source_iso="$2"; shift 2;; --output) out
 [[ ! -e "$output_iso" || "$force" == 1 ]] || die 'Output exists; use --force'
 for command in xorriso cpio gzip patch sha256sum mktemp python3; do command -v "$command" >/dev/null || die "Missing required command: $command"; done
 root=$(cd -- "$(dirname -- "$0")" && pwd -P)
-"$root/inspect-upstream-iso.sh" --source "$source_iso" --manifest "$root/manifests/alt-kworkstation-11.4-install-x86_64.json"
+bash "$root/inspect-upstream-iso.sh" --source "$source_iso" --manifest "$root/manifests/alt-kworkstation-11.4-install-x86_64.json"
 workdir=$(mktemp -d "${TMPDIR:-/var/tmp}/alt-spike-build.XXXXXX")
 trap 'rm -rf -- "$workdir"' EXIT
 xorriso -osirrox on -indev "$source_iso" -extract /boot/initrd.img "$workdir/initrd.img" >/dev/null
@@ -18,15 +18,16 @@ xorriso -osirrox on -indev "$source_iso" -extract /boot/grub/grub.cfg "$workdir/
 xorriso -osirrox on -indev "$source_iso" -extract /syslinux/isolinux.cfg "$workdir/isolinux.cfg" >/dev/null
 mkdir "$workdir/initrd"
 ( cd "$workdir/initrd"; gzip -dc "$workdir/initrd.img" | cpio -idmu --quiet )
-patch --fuzz=0 -d "$workdir/initrd" -p1 < "$root/initrd-patches/early-agent-gate.patch"
-install -D -m 0755 "$root/../install-agent/spike-agent" "$workdir/initrd/usr/libexec/sosnadmin-install-spike"
+install -D -m 0755 "$root/initrd-overlay/usr/libexec/sosnadmin-install-spike" "$workdir/initrd/usr/libexec/sosnadmin-install-spike"
+install -D -m 0755 "$root/initrd-overlay/lib/initrd/post/network-up/99-sosnadmin-spike" "$workdir/initrd/lib/initrd/post/network-up/99-sosnadmin-spike"
 install -D -m 0644 "$root/../install-agent/lib/cmdline.sh" "$workdir/initrd/usr/libexec/sosnadmin/lib/cmdline.sh"
+install -D -m 0755 "$root/../install-agent/lib/dhcp-hook.sh" "$workdir/initrd/usr/libexec/sosnadmin/lib/dhcp-hook.sh"
 install -D -m 0644 "$root/../install-agent/lib/network.sh" "$workdir/initrd/usr/libexec/sosnadmin/lib/network.sh"
 install -D -m 0644 "$root/../install-agent/lib/inventory.sh" "$workdir/initrd/usr/libexec/sosnadmin/lib/inventory.sh"
 install -D -m 0644 "$root/../install-agent/lib/protocol.sh" "$workdir/initrd/usr/libexec/sosnadmin/lib/protocol.sh"
 install -D -m 0644 "$root/../install-agent/lib/ui.sh" "$workdir/initrd/usr/libexec/sosnadmin/lib/ui.sh"
 sed -i 's#AGENT_ROOT=.*#AGENT_ROOT="/usr/libexec/sosnadmin"#' "$workdir/initrd/usr/libexec/sosnadmin-install-spike"
-( cd "$workdir/initrd"; find . -print0 | cpio --null -o -H newc --quiet | gzip -n > "$workdir/initrd-spike.img" )
+( cd "$workdir/initrd"; find . -print0 | cpio --null -o -H newc --owner=0:0 --quiet | gzip -n > "$workdir/initrd-spike.img" )
 mkdir -p "$workdir/menu/boot/grub" "$workdir/menu/syslinux"
 mv "$workdir/grub.cfg" "$workdir/menu/boot/grub/grub.cfg"
 mv "$workdir/isolinux.cfg" "$workdir/menu/syslinux/isolinux.cfg"

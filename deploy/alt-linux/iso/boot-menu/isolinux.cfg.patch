@@ -16,7 +16,7 @@
 +label sosnadmin-spike
 +  menu label Sosnadmin managed installation [SPIKE]
 +  kernel /boot/vmlinuz
-+  append initrd=/boot/initrd.img fastboot root=bootchain bootchain=fg,altboot stagename=live systemd.unit=install2.target ramdisk_size=4497433 showopts vga=normal quiet splash lowmem ip=dhcp sosnadmin.mode=spike sosnadmin.controller=http://192.168.100.17:18089 sosnadmin.build=pr1
++  append initrd=/boot/initrd.img fastboot root=bootchain bootchain=fg,altboot stagename=live systemd.unit=install2.target ramdisk_size=4497433 showopts vga=normal quiet splash lowmem ip=dhcp console=ttyS0,115200 sosnadmin.mode=spike sosnadmin.controller=http://192.168.100.17:18089 sosnadmin.build=pr1
 +
  label vncpasswd
    menu label VNC install (<Tab>, set pass^word and connect here)

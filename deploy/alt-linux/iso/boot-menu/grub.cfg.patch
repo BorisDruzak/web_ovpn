@@ -1,18 +1,18 @@
 --- a/boot/grub/grub.cfg
 +++ b/boot/grub/grub.cfg
-@@ -12,7 +12,7 @@
+@@ -15,7 +15,7 @@
  insmod minicmd
  insmod normal
  insmod test
 -set timeout=60
-+set timeout=5
++set timeout=60
  if [ ! "$lang" ]; then lang=ru_RU; fi
  if [ -s $pfxfat/grubenv ]; then
    load_env --file $pfxfat/grubenv
-@@ -56,6 +56,28 @@
+@@ -68,6 +68,30 @@
+     set color_highlight=black/white
    fi
  fi
- 
 +if [ "$grub_platform" = "efi" ]; then
 +  menuentry "Boot from local disk" --id 'harddisk' {
 +    set local_efi=
@@ -40,13 +40,13 @@
  if [ "$grub_platform" = "pc" ]; then
    menuentry $"Boot from hard drive" --id 'harddisk' {
      insmod part_msdos
-@@ -75,6 +97,13 @@
+@@ -90,6 +114,12 @@
    initrd /boot/initrd$KFLAVOUR.img
  }
  
-+menuentry "Sosnadmin managed installation [SPIKE]" --id 'sosnadmin-spike' {
++menuentry "Sosnadmin managed installation [SPIKE]" --hotkey 's' --id 'sosnadmin-spike' {
 +  echo "Loading managed spike ..."
-+  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot stagename=live systemd.unit=install2.target ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp sosnadmin.mode=spike sosnadmin.controller=http://192.168.100.17:18089 sosnadmin.build=pr1
++  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot stagename=live systemd.unit=install2.target ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=spike sosnadmin.controller=http://192.168.100.17:18089 sosnadmin.build=pr1
 +  initrd /boot/initrd$KFLAVOUR.img
 +}
 +
