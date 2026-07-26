@@ -52,6 +52,7 @@ def test_systemd_verifier_expects_the_retention_command() -> None:
         "30",
         "--apply",
     ]
+    assert verifier["EXPECTED_PROPERTIES"]["netctl-retention.timer"]["TimersCalendar"] == "*-*-* 03:17:00"
 
 
 def test_systemd_show_property_parser_reads_retention_hardening_and_schedule() -> None:
@@ -68,7 +69,7 @@ def test_systemd_show_property_parser_reads_retention_hardening_and_schedule() -
     assert json.loads(result.stdout) == {
         "Group": "netctl",
         "NoNewPrivileges": "yes",
-        "OnCalendar": "*-*-* 03:17:00",
+        "TimersCalendar": "{ OnCalendar=*-*-* 03:17:00 ; next_elapse=(null) }",
         "Persistent": "yes",
         "PrivateTmp": "yes",
         "ProtectHome": "yes",
@@ -85,8 +86,8 @@ def test_systemd_verifier_rejects_extra_retention_calendar_entries() -> None:
     )
 
     assert verifier["property_matches"](
-        "OnCalendar", one_calendar["OnCalendar"], "*-*-* 03:17:00"
+        "TimersCalendar", one_calendar["TimersCalendar"], "*-*-* 03:17:00"
     ) is True
     assert verifier["property_matches"](
-        "OnCalendar", properties["OnCalendar"], "*-*-* 03:17:00"
+        "TimersCalendar", properties["TimersCalendar"], "*-*-* 03:17:00"
     ) is False

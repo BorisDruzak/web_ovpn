@@ -52,7 +52,7 @@ EXPECTED_PROPERTIES = {
         "ProtectHome": "yes",
     },
     "netctl-retention.timer": {
-        "OnCalendar": "*-*-* 03:17:00",
+        "TimersCalendar": "*-*-* 03:17:00",
         "Persistent": "yes",
         "Unit": "netctl-retention.service",
     },
@@ -112,7 +112,7 @@ def _on_calendar_entries(serialized: str) -> list[str]:
 def property_matches(property_name: str, actual_value: str, expected_value: str) -> bool:
     """Match loaded systemd values, requiring one exact retention calendar."""
 
-    if property_name == "OnCalendar":
+    if property_name == "TimersCalendar":
         return _on_calendar_entries(actual_value) == [expected_value]
     return actual_value == expected_value
 
