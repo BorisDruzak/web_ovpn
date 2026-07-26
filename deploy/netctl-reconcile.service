@@ -1,5 +1,5 @@
 [Unit]
-Description=Reconcile netctl topology and asset attachments
+Description=Reconcile netctl state after collection failures
 After=netctl-collect.service
 
 [Service]
@@ -9,5 +9,4 @@ Group=netctl
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-ExecStart=/usr/local/sbin/netctl --json topology reconcile
-ExecStart=/usr/local/sbin/netctl --json attachments reconcile
+ExecStart=/usr/local/sbin/netctl --json reconcile

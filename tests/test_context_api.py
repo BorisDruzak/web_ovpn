@@ -25,7 +25,7 @@ if args[1:3] == ["context-view", "search"]:
         response["next_cursor"] = {"kind": "asset", "id": 1}
     print(json.dumps(response))
 elif args[1:3] == ["context-view", "asset"]:
-    print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": args[-1]}}}))
+    print(json.dumps({"status": "ok", "snapshot": {"context_revision_id": 1, "topology_correlation_run_id": 2, "attachment_correlation_run_id": 3, "observation_cutoff": "2026-07-22T12:00:00Z"}, "context": {"asset": {"asset_key": args[-1]}, "attachment": {"status": "confirmed", "switch": {"id": 10, "name": "access-a", "site": "central", "host": "192.0.2.10"}, "port": {"key": "physical:7", "alias": "Office 12", "oper_status": "up"}, "vlan_membership": {"vlan_id": 20, "egress": True, "untagged": True, "pvid": True}, "port_peers": {"items": [], "known_asset_count": 0, "unknown_mac_count": 0, "truncated": False}}, "topology_path": {"nodes": [10, 20, 30], "hops": [], "complete": True, "reason": ""}, "attachment_events": [], "freshness": {"topology_reconciled_at": "2026-07-26T10:05:00Z", "topology_source_watermark": {}, "attachment_reconciled_at": "2026-07-26T10:05:00Z", "attachment_source_watermark": {}}}}))
 elif args[1:3] == ["context-view", "topology"]:
     print(json.dumps({"status": "ok", "links": [{"link_key": "access|core", "state": "confirmed"}]}))
 elif args[1:3] == ["context-view", "findings"]:
@@ -164,7 +164,13 @@ def test_context_asset_api_delegates_to_netctl(tmp_path, monkeypatch):
     response = client.get("/api/v1/context/assets/mac:aa:bb:cc:dd:ee:ff", headers=headers)
 
     assert response.status_code == 200
+    assert response.headers["etag"]
+    assert response.json()["snapshot"] == {
+        "context_revision_id": 1, "topology_correlation_run_id": 2,
+        "attachment_correlation_run_id": 3, "observation_cutoff": "2026-07-22T12:00:00Z",
+    }
     assert response.json()["data"]["context"]["asset"]["asset_key"] == "mac:aa:bb:cc:dd:ee:ff"
+    assert response.json()["data"]["context"]["attachment"]["switch"]["name"] == "access-a"
     assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
         "--json",
         "context-view",

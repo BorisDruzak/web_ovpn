@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Network Observer history retention daily
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+Unit=netctl-retention.service
+
+[Install]
+WantedBy=timers.target

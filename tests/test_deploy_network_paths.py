@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+from test_deploy_netctl import _run_installer
+
 
 def test_installer_only_installs_role_only_path_sample_when_absent():
     installer = Path("deploy/install-openvpn-web.sh").read_text(encoding="utf-8")
@@ -13,9 +15,12 @@ def test_installer_only_installs_role_only_path_sample_when_absent():
     assert "192.168." not in sample
 
 
-def test_installer_does_not_enable_network_collection_timer():
-    installer = Path("deploy/install-openvpn-web.sh").read_text(encoding="utf-8")
-    assert "enable --now netctl-collect.timer" not in installer
+def test_installer_enables_network_collection_timer(tmp_path: Path):
+    result, _bin_dir, _calls_path, environment = _run_installer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    enabled_timers = Path(environment["SYSTEMD_ENABLED"]).read_text(encoding="utf-8").splitlines()
+    assert "netctl-collect.timer" in enabled_timers
 
 
 def test_installer_does_not_create_or_enable_routeros_sources():
@@ -48,7 +53,6 @@ def test_clean_host_installer_bootstraps_only_empty_netctl_infrastructure():
         "/etc/netctl/secrets.env",
         "sources.d/mikrotik",
         "netctl --json collect",
-        "enable --now netctl-collect.timer",
     ):
         assert forbidden not in installer
 

@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from dataclasses import asdict
@@ -48,6 +49,7 @@ from .switch_queries import (
 )
 from .switch_store import collect_and_save_switch
 from .topology_reconcile import reconcile_topology
+from .retention import apply_retention, retention_report
 from .user_context import bind_user_asset, close_network_session, create_user, ingest_network_session, inspect_user_context, retire_user_asset_binding
 from .switch_discovery_store import (
     UnknownSwitchFingerprint,
@@ -384,24 +386,118 @@ def collect_one(conn, args: argparse.Namespace, source_name: str) -> tuple[int, 
     return 0, ok(source=source_name, collected_at=utc_now(), summary=counts)
 
 
+def collect_all_locked(
+    conn, args: argparse.Namespace
+) -> tuple[int, list[dict[str, Any]]]:
+    """Collect every enabled source while the caller owns the collection lock."""
+    results: list[dict[str, Any]] = []
+    rc = 0
+    for source in list_sources(conn):
+        if not source.get("enabled"):
+            continue
+        item_rc, data = collect_one(conn, args, source["name"])
+        rc = max(rc, item_rc)
+        results.append(data)
+    return rc, results
+
+
+def collection_source_watermark(conn) -> dict[str, object]:
+    """Return a deterministic, non-secret record of collection freshness."""
+    rows = conn.execute(
+        """
+        SELECT sources.id, sources.name, sources.last_status, sources.last_collect_at,
+               runs.id AS switch_run_id, runs.status AS switch_status,
+               runs.finished_at AS switch_finished_at, runs.started_at AS switch_started_at
+        FROM network_sources AS sources
+        LEFT JOIN switch_collection_runs AS runs ON runs.id = (
+            SELECT latest.id
+            FROM switch_collection_runs AS latest
+            WHERE latest.source_id = sources.id
+            ORDER BY latest.id DESC
+            LIMIT 1
+        )
+        ORDER BY sources.id, sources.name
+        """
+    ).fetchall()
+    return {
+        "sources": [
+            {
+                "source_id": int(row["id"]),
+                "source_name": str(row["name"]),
+                "collection_status": str(row["switch_status"] or row["last_status"] or ""),
+                "collection_at": str(
+                    row["switch_finished_at"]
+                    or row["switch_started_at"]
+                    or row["last_collect_at"]
+                    or ""
+                ),
+                "switch_run_id": int(row["switch_run_id"])
+                if row["switch_run_id"] is not None
+                else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+def reconcile_current_locked(conn, observed_at: str) -> dict[str, Any]:
+    """Run topology then attachment correlation while the caller owns one lock."""
+    watermark = collection_source_watermark(conn)
+    topology = reconcile_topology(conn, observed_at, watermark)
+    attachments = reconcile_attachments(conn, observed_at, watermark)
+    return {
+        "topology_run_id": topology["run_id"],
+        "attachment_run_id": attachments["run_id"],
+        "source_watermark": watermark,
+    }
+
+
 def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = prepare_conn(args)
     try:
         with CollectLock(args.db):
             if args.source == "all":
-                results = []
-                rc = 0
-                for source in list_sources(conn):
-                    if not source.get("enabled"):
-                        continue
-                    item_rc, data = collect_one(conn, args, source["name"])
-                    rc = max(rc, item_rc)
-                    results.append(data)
+                rc, results = collect_all_locked(conn, args)
+                if args.reconcile:
+                    if rc != 0:
+                        return rc, ok(results=results, reconciliation_skipped="collection_failed")
+                    return 0, ok(results=results, reconciliation=reconcile_current_locked(conn, utc_now()))
                 return rc, ok(results=results)
             validate_source_name(args.source)
             return collect_one(conn, args, args.source)
     except RuntimeError as exc:
         return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
+def cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        with CollectLock(args.db):
+            return 0, ok(**reconcile_current_locked(conn, utc_now()))
+    except RuntimeError as exc:
+        return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
+def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    """Preview or atomically apply the fixed 30-day local-history policy."""
+    conn = prepare_conn(args)
+    try:
+        now = datetime.fromisoformat(utc_now().replace("Z", "+00:00"))
+        cutoff = (now - timedelta(days=args.days)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        with CollectLock(args.db):
+            if not args.apply:
+                return 0, ok(dry_run=True, cutoff=cutoff, **retention_report(conn, cutoff))
+            return 0, ok(dry_run=False, cutoff=cutoff, **apply_retention(conn, cutoff))
+    except (RuntimeError, sqlite3.Error) as exc:
+        if str(exc) == "collection already running":
+            return 1, err("collection already running")
+        return 1, err("retention_failed")
+    except ValueError:
+        return 2, err("retention_failed")
     finally:
         conn.close()
 
@@ -573,7 +669,7 @@ def cmd_topology(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn = prepare_conn(args)
         try:
             with CollectLock(args.db):
-                return 0, ok(**reconcile_topology(conn, utc_now()))
+                return 0, ok(**reconcile_topology(conn, utc_now(), collection_source_watermark(conn)))
         except RuntimeError as exc:
             return 1, err(str(exc))
         finally:
@@ -631,7 +727,7 @@ def cmd_attachments(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn = prepare_conn(args)
         try:
             with CollectLock(args.db):
-                return 0, ok(**reconcile_attachments(conn, utc_now()))
+                return 0, ok(**reconcile_attachments(conn, utc_now(), collection_source_watermark(conn)))
         except RuntimeError as exc:
             return 1, err(str(exc))
         finally:
@@ -1221,6 +1317,14 @@ def build_parser() -> argparse.ArgumentParser:
     collect = sub.add_parser("collect")
     collect.add_argument("source")
     collect.add_argument("--include-connections", action="store_true")
+    collect.add_argument("--reconcile", action="store_true")
+    sub.add_parser("reconcile")
+
+    retention = sub.add_parser("retention")
+    retention_sub = retention.add_subparsers(dest="retention_command", required=True)
+    cleanup = retention_sub.add_parser("cleanup")
+    cleanup.add_argument("--days", type=int, default=30, choices=(30,))
+    cleanup.add_argument("--apply", action="store_true")
 
     hosts = sub.add_parser("hosts")
     hosts_sub = hosts.add_subparsers(dest="hosts_command", required=True)
@@ -1458,6 +1562,10 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_sources(args)
     if args.command == "collect":
         return cmd_collect(args)
+    if args.command == "reconcile":
+        return cmd_reconcile(args)
+    if args.command == "retention":
+        return cmd_retention(args)
     if args.command == "hosts":
         return cmd_hosts(args)
     if args.command == "tags":

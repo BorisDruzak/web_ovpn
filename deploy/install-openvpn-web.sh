@@ -116,6 +116,7 @@ sudo_cmd chmod 0750 "$APP"
 sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
 sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
+sudo_cmd install -m 0755 "$SRC/deploy/verify_netctl_systemd.py" /usr/local/sbin/verify-netctl-systemd
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
 sudo_cmd mkdir -p /etc/openvpn/client-generator/output
 sudo_cmd chgrp openvpn-web /etc/openvpn/client-generator/output
@@ -253,14 +254,28 @@ sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.service" /etc/systemd/syste
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.timer" /etc/systemd/system/netctl-collect.timer
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-reconcile.service" /etc/systemd/system/netctl-reconcile.service
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-reconcile.timer" /etc/systemd/system/netctl-reconcile.timer
+sudo_cmd install -m 0644 "$SRC/deploy/netctl-retention.service" /etc/systemd/system/netctl-retention.service
+sudo_cmd install -m 0644 "$SRC/deploy/netctl-retention.timer" /etc/systemd/system/netctl-retention.timer
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy.service" /etc/systemd/system/vpn-policy.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.service" /etc/systemd/system/vpn-policy-reconcile.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.service" /etc/systemd/system/vpn-runtime-health.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
 sudo_cmd systemctl daemon-reload
+if sudo_cmd /usr/local/sbin/verify-netctl-systemd; then
+  :
+else
+  netctl_verification_status=$?
+  if [[ "$netctl_verification_status" -eq 77 ]]; then
+    printf '%s\n' 'netctl systemd verification skipped: no running systemd manager'
+  else
+    exit "$netctl_verification_status"
+  fi
+fi
 sudo_cmd systemctl enable openvpn-web.service
+sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now netctl-reconcile.timer
+sudo_cmd systemctl enable --now netctl-retention.timer
 sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer

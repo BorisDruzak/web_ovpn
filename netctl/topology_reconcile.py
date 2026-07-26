@@ -202,14 +202,20 @@ def _context_revision_id(conn: sqlite3.Connection) -> int | None:
     return int(row[0]) if row is not None else None
 
 
-def _insert_run(conn: sqlite3.Connection, observed_at: str) -> int:
+def _insert_run(
+    conn: sqlite3.Connection, observed_at: str, source_watermark: dict[str, object]
+) -> int:
     cursor = conn.execute(
         """
         INSERT INTO network_correlation_runs (
             run_type, started_at, status, context_revision_id, source_watermark_json
-        ) VALUES ('topology', ?, 'running', ?, '{}')
+        ) VALUES ('topology', ?, 'running', ?, ?)
         """,
-        (observed_at, _context_revision_id(conn)),
+        (
+            observed_at,
+            _context_revision_id(conn),
+            json.dumps(source_watermark, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        ),
     )
     conn.commit()
     return int(cursor.lastrowid)
@@ -295,11 +301,15 @@ def _replace_findings(
     return len(conflicts)
 
 
-def reconcile_topology(conn: sqlite3.Connection, observed_at: str) -> dict[str, Any]:
-    run_id = _insert_run(conn, observed_at)
+def reconcile_topology(
+    conn: sqlite3.Connection, observed_at: str, source_watermark: dict[str, object]
+) -> dict[str, Any]:
+    run_id = _insert_run(conn, observed_at, source_watermark)
     try:
         identities = list_source_identities(conn)
         links = aggregate_link_evidence(collect_link_evidence(conn, identities), observed_at)
+        roots = {identity.source_id for identity in identities if identity.topology_role == "core"}
+        depths = topology_depths(links, roots)
         conn.execute("BEGIN IMMEDIATE")
         event_count = _replace_current_links(conn, links, run_id, observed_at)
         finding_count = _replace_findings(conn, links, observed_at)
@@ -314,8 +324,7 @@ def reconcile_topology(conn: sqlite3.Connection, observed_at: str) -> dict[str, 
             (observed_at, json.dumps(counts, sort_keys=True, separators=(",", ":")), run_id),
         )
         conn.commit()
-        roots = {identity.source_id for identity in identities if identity.topology_role == "core"}
-        return {"run_id": run_id, "counts": counts, "depths": topology_depths(links, roots)}
+        return {"run_id": run_id, "counts": counts, "depths": depths}
     except Exception as exc:
         if conn.in_transaction:
             conn.rollback()

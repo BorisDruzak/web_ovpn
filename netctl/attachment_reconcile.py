@@ -84,10 +84,17 @@ def _current_links(conn: sqlite3.Connection) -> tuple[CurrentSwitchLink, ...]:
     )
 
 
-def _start_run(conn: sqlite3.Connection, observed_at: str) -> int:
+def _start_run(
+    conn: sqlite3.Connection, observed_at: str, source_watermark: dict[str, object]
+) -> int:
     run_id = conn.execute(
-        "INSERT INTO network_correlation_runs (run_type, started_at, status) VALUES ('attachments', ?, 'running')",
-        (observed_at,),
+        """INSERT INTO network_correlation_runs
+           (run_type, started_at, status, source_watermark_json)
+           VALUES ('attachments', ?, 'running', ?)""",
+        (
+            observed_at,
+            json.dumps(source_watermark, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        ),
     ).lastrowid
     conn.commit()
     return int(run_id)
@@ -184,8 +191,10 @@ def _event_type(before: dict[str, Any], after: AttachmentResolution) -> str | No
     return None
 
 
-def reconcile_attachments(conn: sqlite3.Connection, observed_at: str) -> dict[str, Any]:
-    run_id = _start_run(conn, observed_at)
+def reconcile_attachments(
+    conn: sqlite3.Connection, observed_at: str, source_watermark: dict[str, object]
+) -> dict[str, Any]:
+    run_id = _start_run(conn, observed_at, source_watermark)
     try:
         identities = list_source_identities(conn)
         roots = {identity.source_id for identity in identities if identity.topology_role == "core"}

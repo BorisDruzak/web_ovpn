@@ -393,24 +393,26 @@
 - `netctl-reconcile.service` executes exactly `/usr/local/sbin/netctl --json reconcile`.
 - The installer installs and enables both `netctl-collect.timer` and `netctl-reconcile.timer` after `daemon-reload`.
 
-- [ ] **Step 1: Write failing unit-file tests**
+- [ ] **Step 1: Write failing installation-behaviour tests**
 
-  Add assertions that prevent returning to two separate reconcile operations:
+  Run the installer against the existing controlled sudo/systemctl test double
+  and assert its observed commands enable both timers. In the Linux deployment
+  verification, stage the unit files and run `systemd-analyze verify` before
+  enabling them; after install, assert the observed `ExecStart` values through
+  `systemctl show`, not by grepping source text:
 
-  ```python
-  assert "ExecStart=/usr/local/sbin/netctl --json collect all --reconcile" in collect_service
-  assert reconcile_service.count("ExecStart=") == 1
-  assert "ExecStart=/usr/local/sbin/netctl --json reconcile" in reconcile_service
-  assert "netctl-collect.timer" in installer_enable_commands
-  assert "netctl-reconcile.timer" in installer_enable_commands
+  ```text
+  netctl-collect.service ExecStart = /usr/local/sbin/netctl --json collect all --reconcile
+  netctl-reconcile.service ExecStart = /usr/local/sbin/netctl --json reconcile
+  enabled timers = netctl-collect.timer, netctl-reconcile.timer
   ```
 
 - [ ] **Step 2: Run deployment-unit tests to verify failure**
 
   Run: `python -m pytest tests/test_netctl_reconcile_units.py tests/test_deploy_netctl.py -q`
 
-  Expected: FAIL because collect has no `--reconcile`, reconciliation has two
-  `ExecStart` lines, and the installer does not enable collection.
+  Expected: FAIL because the installer does not enable collection and the
+  installed service behaviour still invokes the old commands.
 
 - [ ] **Step 3: Update units and installer**
 
@@ -573,25 +575,21 @@
 - `netctl-retention.timer` runs once daily at `03:17`, has `Persistent=true`, and is enabled by the installer.
 - The runbook performs a manual, backup-first compaction only after normal retention has succeeded.
 
-- [ ] **Step 1: Write failing deployment and documentation tests**
+- [ ] **Step 1: Write failing installation-behaviour tests**
 
-  Add tests that read the unit files and runbook text:
-
-  ```python
-  assert "User=netctl" in retention_service
-  assert "NoNewPrivileges=true" in retention_service
-  assert "retention cleanup --days 30 --apply" in retention_service
-  assert "OnCalendar=*-*-* 03:17:00" in retention_timer
-  assert "Persistent=true" in retention_timer
-  assert "netctl-retention.timer" in installer
-  assert "VACUUM" in runbook and "backup" in runbook and "rollback" in runbook
-  ```
+  Run the installer against the controlled sudo/systemctl test double and
+  assert it installs/enables `netctl-retention.timer`. In the Linux deployment
+  verification, use `systemd-analyze verify` before enablement and inspect
+  `systemctl show` after installation to prove the retention command, daily
+  calendar and hardening directives are active. The runbook is reviewed as an
+  operator procedure, not unit-tested by source-text matching.
 
 - [ ] **Step 2: Run deployment tests to verify failure**
 
   Run: `python -m pytest tests/test_deploy_netctl_retention.py -q`
 
-  Expected: FAIL because no retention units or compaction runbook exist.
+  Expected: FAIL because no retention timer is installed or enabled by the
+  installer.
 
 - [ ] **Step 3: Add hardened service/timer and installer support**
 

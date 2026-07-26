@@ -1,0 +1,11 @@
+[Unit]
+Description=Prune expired Network Observer history
+
+[Service]
+Type=oneshot
+User=netctl
+Group=netctl
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ExecStart=/usr/local/sbin/netctl --json retention cleanup --days 30 --apply

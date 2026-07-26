@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -253,8 +254,22 @@ def test_reconcile_attachments_persists_candidates_and_a_move(
         first = (_candidate(port_key="physical:48", score=85),)
         monkeypatch.setattr(attachment_reconcile, "attachment_candidates", lambda _conn, _depths: first)
         monkeypatch.setattr(attachment_reconcile, "list_source_identities", lambda _conn: ())
-        created = attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:00:00Z")
+        watermark = {
+            "sources": [
+                {
+                    "source_id": 10,
+                    "source_name": "access",
+                    "collection_status": "partial",
+                    "collection_at": "2026-07-22T08:00:00Z",
+                    "switch_run_id": 100,
+                }
+            ]
+        }
+        created = attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:00:00Z", watermark)
         assert created["counts"]["confirmed"] == 1
+        assert json.loads(conn.execute(
+            "SELECT source_watermark_json FROM network_correlation_runs WHERE id = ?", (created["run_id"],)
+        ).fetchone()[0]) == watermark
         assert conn.execute(
             "SELECT selected_port_key FROM asset_attachment_resolutions WHERE asset_interface_id = 1"
         ).fetchone()[0] == "physical:48"
@@ -262,7 +277,7 @@ def test_reconcile_attachments_persists_candidates_and_a_move(
 
         moved = (_candidate(port_key="physical:47", score=85),)
         monkeypatch.setattr(attachment_reconcile, "attachment_candidates", lambda _conn, _depths: moved)
-        attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:01:00Z")
+        attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:01:00Z", {})
         assert conn.execute(
             "SELECT event_type FROM asset_attachment_events ORDER BY id DESC LIMIT 1"
         ).fetchone()[0] == "moved"
@@ -281,7 +296,7 @@ def test_reconcile_attachments_preserves_current_state_on_candidate_failure(
         monkeypatch.setattr(
             attachment_reconcile, "attachment_candidates", lambda _conn, _depths: (_candidate(score=85),),
         )
-        attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:00:00Z")
+        attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:00:00Z", {})
         before = [tuple(row) for row in conn.execute(
             "SELECT * FROM asset_attachment_resolutions ORDER BY asset_interface_id"
         )]
@@ -292,7 +307,7 @@ def test_reconcile_attachments_preserves_current_state_on_candidate_failure(
 
         monkeypatch.setattr(attachment_reconcile, "attachment_candidates", fail_candidates)
         with pytest.raises(RuntimeError, match="private collector detail"):
-            attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:01:00Z")
+            attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:01:00Z", {})
 
         assert [tuple(row) for row in conn.execute(
             "SELECT * FROM asset_attachment_resolutions ORDER BY asset_interface_id"

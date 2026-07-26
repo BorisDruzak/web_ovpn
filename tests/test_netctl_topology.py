@@ -266,15 +266,29 @@ def test_reconcile_topology_classifies_links_is_idempotent_and_records_change(
         monkeypatch.setattr(topology_reconcile, "list_source_identities", lambda _conn: _topology_identities())
         monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: initial)
 
-        first = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:00:00Z")
+        watermark = {
+            "sources": [
+                {
+                    "source_id": 1,
+                    "source_name": "core",
+                    "collection_status": "partial",
+                    "collection_at": "2026-07-22T08:00:00Z",
+                    "switch_run_id": 7,
+                }
+            ]
+        }
+        first = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:00:00Z", watermark)
         rows = conn.execute(
             "SELECT source_a_id, port_a_key, source_b_id, port_b_key, state, confidence FROM current_switch_links ORDER BY link_key"
         ).fetchall()
         assert first["counts"]["confirmed"] == 1
         assert [(row["state"], row["confidence"]) for row in rows] == [("confirmed", 100), ("inferred", 70)]
+        assert json.loads(conn.execute(
+            "SELECT source_watermark_json FROM network_correlation_runs WHERE id = ?", (first["run_id"],)
+        ).fetchone()[0]) == watermark
         assert conn.execute("SELECT count(*) FROM switch_link_events").fetchone()[0] == 2
 
-        second = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:01:00Z")
+        second = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:01:00Z", {})
         assert second["counts"]["events"] == 0
         assert conn.execute("SELECT count(*) FROM switch_link_events").fetchone()[0] == 2
 
@@ -284,14 +298,14 @@ def test_reconcile_topology_classifies_links_is_idempotent_and_records_change(
             _link_evidence(2, "physical:1", 3, "", "fdb_management_mac", 70),
         )
         monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: changed)
-        third = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:02:00Z")
+        third = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:02:00Z", {})
         assert third["counts"]["events"] == 1
         assert conn.execute(
             "SELECT event_type FROM switch_link_events ORDER BY id DESC LIMIT 1"
         ).fetchone()[0] == "changed"
 
         monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: changed[:2])
-        fourth = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:03:00Z")
+        fourth = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:03:00Z", {})
         assert fourth["counts"]["events"] == 1
         assert conn.execute(
             "SELECT event_type FROM switch_link_events ORDER BY id DESC LIMIT 1"
@@ -310,14 +324,14 @@ def test_reconcile_topology_records_conflict_and_preserves_current_on_failure(
     try:
         monkeypatch.setattr(topology_reconcile, "list_source_identities", lambda _conn: _topology_identities())
         monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: stable)
-        topology_reconcile.reconcile_topology(conn, "2026-07-22T08:00:00Z")
+        topology_reconcile.reconcile_topology(conn, "2026-07-22T08:00:00Z", {})
 
         conflicting = (
             _link_evidence(1, "ifindex:1", 2, "physical:24", "lldp_chassis_mac", 90),
             _link_evidence(1, "ifindex:2", 2, "physical:24", "lldp_chassis_mac", 90),
         )
         monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: conflicting)
-        result = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:01:00Z")
+        result = topology_reconcile.reconcile_topology(conn, "2026-07-22T08:01:00Z", {})
         assert result["counts"]["conflicting"] == 1
         assert conn.execute("SELECT count(*) FROM topology_findings WHERE status = 'open'").fetchone()[0] == 1
         current_before_failure = [
@@ -333,8 +347,48 @@ def test_reconcile_topology_records_conflict_and_preserves_current_on_failure(
         )
         conn.commit()
         with pytest.raises(sqlite3.DatabaseError, match="injected link replacement failure"):
-            topology_reconcile.reconcile_topology(conn, "2026-07-22T08:02:00Z")
+            topology_reconcile.reconcile_topology(conn, "2026-07-22T08:02:00Z", {})
         assert [tuple(row) for row in conn.execute("SELECT * FROM current_switch_links ORDER BY link_key")] == current_before_failure
+        assert conn.execute(
+            "SELECT status FROM network_correlation_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0] == "failed"
+    finally:
+        conn.close()
+
+
+def test_reconcile_topology_preserves_current_state_when_depth_calculation_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Computing depths after commit would leak a failed correlation's replacement state."""
+    from netctl import topology_reconcile
+
+    conn = _topology_db(tmp_path)
+    stable = (_link_evidence(1, "ifindex:1", 2, "physical:24", "lldp_chassis_mac", 90),)
+    conflicting = (
+        _link_evidence(1, "ifindex:1", 2, "physical:24", "lldp_chassis_mac", 90),
+        _link_evidence(1, "ifindex:2", 2, "physical:24", "lldp_chassis_mac", 90),
+    )
+    try:
+        monkeypatch.setattr(topology_reconcile, "list_source_identities", lambda _conn: _topology_identities())
+        monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: stable)
+        topology_reconcile.reconcile_topology(conn, "2026-07-22T08:00:00Z", {})
+        before_links = [tuple(row) for row in conn.execute("SELECT * FROM current_switch_links ORDER BY link_key")]
+        before_findings = [tuple(row) for row in conn.execute("SELECT * FROM topology_findings ORDER BY finding_key")]
+        before_events = [tuple(row) for row in conn.execute("SELECT * FROM switch_link_events ORDER BY id")]
+
+        monkeypatch.setattr(topology_reconcile, "collect_link_evidence", lambda _conn, _identities: conflicting)
+        monkeypatch.setattr(
+            topology_reconcile,
+            "topology_depths",
+            lambda _links, _roots: (_ for _ in ()).throw(RuntimeError("injected depth failure")),
+        )
+
+        with pytest.raises(RuntimeError, match="injected depth failure"):
+            topology_reconcile.reconcile_topology(conn, "2026-07-22T08:01:00Z", {})
+
+        assert [tuple(row) for row in conn.execute("SELECT * FROM current_switch_links ORDER BY link_key")] == before_links
+        assert [tuple(row) for row in conn.execute("SELECT * FROM topology_findings ORDER BY finding_key")] == before_findings
+        assert [tuple(row) for row in conn.execute("SELECT * FROM switch_link_events ORDER BY id")] == before_events
         assert conn.execute(
             "SELECT status FROM network_correlation_runs ORDER BY id DESC LIMIT 1"
         ).fetchone()[0] == "failed"
