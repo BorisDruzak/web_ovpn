@@ -35,7 +35,8 @@ def test_default_deployment_verification_does_not_require_collection_timer():
     deployment = Path("docs/DEPLOYMENT.md").read_text(encoding="utf-8")
     default_verification = deployment.split("After deployment:", 1)[1].split("```", 2)[1]
     assert "systemctl is-active netctl-collect.timer" not in default_verification
-    assert "separately approved timer activation" in deployment
+    assert "Netctl timers are enabled only after" in deployment
+    assert "Linux/systemd verifier" in deployment
 
 
 def test_deployment_docs_require_operator_to_provision_routeros_source():
