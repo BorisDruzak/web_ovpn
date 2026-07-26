@@ -276,7 +276,7 @@ class GuardState:
                 raise error("Guard restore permit is invalid")
         return payload
 
-    def _blocking_journals(
+    def _journals(
         self,
         error: Callable[[str], BackupError],
     ) -> tuple[RestoreJournal, ...]:
@@ -302,7 +302,7 @@ class GuardState:
             children = sorted(root.iterdir(), key=lambda item: item.name)
         except (BackupError, OSError) as exc:
             raise error("Restore transaction root is unsafe") from exc
-        blocking: list[RestoreJournal] = []
+        journals: list[RestoreJournal] = []
         expected_error_code = error("").code
         for child in children:
             if not RESTORE_ID_RE.fullmatch(child.name):
@@ -326,9 +326,18 @@ class GuardState:
                 if exc.code == expected_error_code:
                     raise
                 raise error("Restore transaction journal is invalid") from exc
-            if journal.phase not in _SAFE_RESTORE_PHASES:
-                blocking.append(journal)
-        return tuple(blocking)
+            journals.append(journal)
+        return tuple(journals)
+
+    def _blocking_journals(
+        self,
+        error: Callable[[str], BackupError],
+    ) -> tuple[RestoreJournal, ...]:
+        return tuple(
+            journal
+            for journal in self._journals(error)
+            if journal.phase not in _SAFE_RESTORE_PHASES
+        )
 
     @staticmethod
     def _rollout_matches(
@@ -465,6 +474,35 @@ class GuardState:
             if permit.get("backup_id") != backup_id:
                 raise _state_error("Rollout authorization does not match")
             self._remove_file(self.settings.rollout_permit, _state_error)
+
+    def abort_rollout(self, backup_id: str) -> None:
+        with exclusive_operation_lock(self.settings):
+            marker = self._marker(_state_error)
+            if marker is None or marker[0] != backup_id:
+                raise _state_error("Rollout marker does not match")
+            if self._permit(
+                self.settings.rollout_permit,
+                "rollout",
+                _state_error,
+            ) is not None or self._permit(
+                self.settings.restore_permit,
+                "restore",
+                _state_error,
+            ) is not None:
+                raise _state_error("Rollout authorization is still active")
+            journals = self._journals(_state_error)
+            if any(
+                journal.phase not in _SAFE_RESTORE_PHASES
+                for journal in journals
+            ) or not any(
+                journal.backup_id == backup_id
+                and journal.phase == "rolled_back"
+                for journal in journals
+            ):
+                raise _state_error(
+                    "Rolled-back restore evidence is required"
+                )
+            self._remove_file(self.settings.rollout_marker, _state_error)
 
     def complete_rollout(self, backup_id: str) -> None:
         with exclusive_operation_lock(self.settings):

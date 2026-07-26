@@ -117,6 +117,41 @@ def test_remove_apply_requires_root_before_mutation(
     assert snapshot_tree(sandbox.root) == before
 
 
+def test_stale_recovery_apply_requires_root_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    write_registration(
+        sandbox.settings,
+        "failed",
+        registration_payload(status="awaiting_assignment"),
+    )
+    AssignmentRepository(sandbox.settings).write(
+        TEST_MACHINE_UUID,
+        assignment_payload(),
+    )
+    before = snapshot_tree(sandbox.root)
+    monkeypatch.setattr(cli_module.os, "geteuid", lambda: 1000)
+
+    rc, payload, _ = run_json_cli(
+        [
+            "--json",
+            "machines",
+            "recover-stale-registration",
+            "apply",
+            TEST_MACHINE_UUID,
+            "--reason",
+            "legacy cleanup",
+        ],
+        sandbox.settings,
+    )
+
+    assert rc == 6
+    assert payload["error"]["code"] == "root_required"
+    assert snapshot_tree(sandbox.root) == before
+
+
 def test_remove_apply_success_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

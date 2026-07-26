@@ -28,6 +28,7 @@ COMMANDS_WITH_ID = {
     "rollout-begin",
     "rollout-authorize",
     "rollout-revoke",
+    "rollout-abort",
     "rollout-complete",
 }
 
@@ -110,6 +111,13 @@ def _dispatch(
         return {
             "status": "ok",
             "result": "rollout_revoked",
+            "backup_id": backup_id,
+        }
+    if backup_id is not None and command == "rollout-abort":
+        guard.abort_rollout(backup_id)
+        return {
+            "status": "ok",
+            "result": "rollout_aborted",
             "backup_id": backup_id,
         }
     if backup_id is not None and command == "rollout-complete":

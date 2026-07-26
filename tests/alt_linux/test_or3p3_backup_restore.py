@@ -181,7 +181,7 @@ def test_partial_original_move_failure_self_reverses(
     assert sandbox.latest_restore_phase() == "rolled_back"
 
 
-def test_loopback_health_uses_allowlisted_static_health_endpoint(
+def test_loopback_health_uses_legacy_compatible_static_asset_probe(
     tmp_path: Path,
 ) -> None:
     sandbox = BackupSandbox.create(tmp_path)
@@ -204,7 +204,7 @@ def test_loopback_health_uses_allowlisted_static_health_endpoint(
 
     assert checks == ("http_loopback", "registration_loopback")
     assert sandbox.health_probe_urls == [
-        "http://127.0.0.1:8087/health",
+        "http://127.0.0.1:8087/bootstrap/bootstrap.sh",
         "http://127.0.0.1:8088/health",
     ]
 
@@ -227,7 +227,7 @@ def test_restore_replaces_all_components_and_uses_backup_unit_state(
     assert sandbox.managed_unit_snapshot() == expected_units
     assert sandbox.latest_restore_phase() == "committed"
     assert set(sandbox.health_probe_urls) == {
-        "http://127.0.0.1:8087/health",
+        "http://127.0.0.1:8087/bootstrap/bootstrap.sh",
         "http://127.0.0.1:8088/health",
     }
 

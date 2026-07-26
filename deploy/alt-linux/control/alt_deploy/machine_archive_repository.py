@@ -76,6 +76,7 @@ class ArchiveTransaction:
     machine_uuid: str
     audit: dict[str, object]
     record_plans: tuple[ArchiveRecordPlan, ...]
+    archive_context: str | None = None
 
 
 class MachineArchiveRepository:
@@ -430,7 +431,7 @@ class MachineArchiveRepository:
         phase: str | None = None,
     ) -> dict[str, object]:
         active_phase = phase or transaction.phase
-        return {
+        payload: dict[str, object] = {
             "schema_version": ARCHIVE_SCHEMA_VERSION,
             "archive_id": transaction.archive_id,
             "machine_key": transaction.machine_key,
@@ -450,18 +451,28 @@ class MachineArchiveRepository:
             ],
             "updated_at": utc_now(),
         }
+        if transaction.archive_context is not None:
+            payload["archive_context"] = transaction.archive_context
+        return payload
 
     def prepare(
         self,
         identity: MachineIdentity,
         candidates: Sequence[RegistrationCandidate],
         audit: Mapping[str, object],
+        *,
+        archive_context: str | None = None,
     ) -> ArchiveTransaction:
         if not candidates:
             raise self._failed(
                 "Archive preparation requires registration records"
             )
         validated_audit = self._validate_audit(audit)
+        if (
+            archive_context is not None
+            and archive_context != "stale_registration_recovery"
+        ):
+            raise self._invalid("Archive context is invalid")
         states: set[str] = set()
         initial_plans: list[ArchiveRecordPlan] = []
         for candidate in candidates:
@@ -525,6 +536,7 @@ class MachineArchiveRepository:
             machine_uuid=identity.machine_uuid,
             audit=validated_audit,
             record_plans=tuple(initial_plans),
+            archive_context=archive_context,
         )
         self._durable_create(
             directory / "transaction.json",
@@ -640,6 +652,8 @@ class MachineArchiveRepository:
             ],
             "commit_phase": "committed",
         }
+        if transaction.archive_context is not None:
+            manifest["archive_context"] = transaction.archive_context
         self._durable_create(
             transaction.directory / "manifest.json",
             self._encoded_json(manifest),
@@ -899,6 +913,7 @@ class MachineArchiveRepository:
         phase = payload.get("phase")
         schema_version = payload.get("schema_version")
         audit = payload.get("audit")
+        archive_context = payload.get("archive_context")
         if (
             schema_version != ARCHIVE_SCHEMA_VERSION
             or not isinstance(archive_id, str)
@@ -911,6 +926,14 @@ class MachineArchiveRepository:
             or not isinstance(phase, str)
             or phase not in TRANSACTION_PHASES
             or not isinstance(audit, dict)
+            or (
+                archive_context is not None
+                and (
+                    not isinstance(archive_context, str)
+                    or archive_context
+                    != "stale_registration_recovery"
+                )
+            )
         ):
             raise self._invalid(
                 "Archive transaction identity is invalid"
@@ -928,6 +951,7 @@ class MachineArchiveRepository:
             machine_uuid=machine_uuid,
             audit=validated_audit,
             record_plans=plans,
+            archive_context=archive_context,
         )
 
         commit_path = directory / "commit.json"

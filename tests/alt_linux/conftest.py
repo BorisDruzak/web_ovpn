@@ -48,6 +48,7 @@ def provide_portable_altserver_account(
         if username == "altserver":
             return types.SimpleNamespace(
                 pw_uid=os.getuid(),
+                pw_name=username,
                 pw_gid=os.getgid(),
             )
         return real_getpwnam(username)
