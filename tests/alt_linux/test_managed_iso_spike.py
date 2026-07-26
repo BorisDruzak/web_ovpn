@@ -207,6 +207,9 @@ def test_boot_menu_patches_default_to_disk_and_keep_spike_safe() -> None:
     assert "/EFI/altlinux/shimx64.efi" in grub
     assert "/EFI/Microsoft/Boot/bootmgfw.efi" in grub
     assert "/EFI/BOOT/BOOTX64.EFI" not in grub
+    assert 'menuentry "Boot from local disk"' in grub
+    assert 'menuentry "Normal ALT installation"' in grub
+    assert 'menuentry "Diagnostics"' in grub
     assert "sosnadmin.mode=spike" in grub
     assert "console=ttyS0,115200" in grub
     assert "--hotkey 's'" in grub
@@ -241,6 +244,8 @@ def test_verifier_and_overlay_enforce_the_spike_contract() -> None:
         "--iso",
         "set timeout=10",
         "Sosnadmin managed installation [SPIKE]",
+        "Normal ALT installation",
+        "Diagnostics",
         "default harddisk",
         "default harddisk",
     ):
