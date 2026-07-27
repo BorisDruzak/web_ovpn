@@ -165,3 +165,60 @@ def test_failed_approval_removes_partial_artifacts_and_can_retry(
         reason="Approve after injected publication failure",
     )
     assert retried["state"] == "plan_published"
+
+
+def test_status_fsync_failure_preserves_an_already_published_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    key_path = tmp_path / "install-plan-ed25519.pem"
+    key_path.write_bytes(private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    key_path.chmod(0o600)
+    public_key_path = tmp_path / "install-plan-ed25519.pub"
+    public_key_path.write_text(json.dumps(public_key_metadata(private_key.public_key())), encoding="utf-8")
+    public_key_path.chmod(0o644)
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_PROFILE_ROOT", str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SIGNING_PRIVATE_KEY", str(key_path))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SIGNING_PUBLIC_KEY", str(public_key_path))
+    settings = Settings.from_env()
+    repository = InstallSessionRepository(settings)
+    payload = json.loads((FIXTURE_ROOT / "inventory-disk-100g.json").read_text(encoding="utf-8"))
+    created = InstallSessionService(
+        settings, repository=repository,
+        clock=lambda: "2026-07-27T12:00:00+00:00",
+        session_id_factory=lambda: "install-20260727T120000Z-a1b2c3d4",
+    ).create(payload, source_ip="192.168.100.10")
+    service = InstallSessionApprovalService(
+        settings, repository=repository,
+        clock=lambda: "2026-07-27T12:01:00+00:00", euid=lambda: 0,
+    )
+    original_fsync = repository._fsync_directory
+    calls = 0
+
+    def fail_final_status_fsync(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 4:
+            raise ControlError("install_session_storage_failed", "injected fsync", 6)
+        original_fsync(path)
+
+    monkeypatch.setattr(repository, "_fsync_directory", fail_final_status_fsync)
+    fingerprint = disk_fingerprint(parse_inventory(payload).disks[0])
+    with pytest.raises(ControlError) as error:
+        service.approve(
+            created.session_id,
+            inventory_sha256=repository.load_status(created.session_id)["inventory_sha256"],
+            disk_fingerprint_value=fingerprint,
+            reason="Preserve committed plan after fsync failure",
+        )
+    assert error.value.code == "install_session_status_commit_uncertain"
+    session_dir = settings.install_sessions_dir / created.session_id
+    assert repository.load_status(created.session_id)["state"] == "plan_published"
+    assert (session_dir / "approval.json").is_file()
+    assert (session_dir / "revision-0001" / "plan.json").is_file()

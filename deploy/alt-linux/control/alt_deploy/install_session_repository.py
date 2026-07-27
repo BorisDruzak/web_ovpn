@@ -327,14 +327,25 @@ class InstallSessionRepository:
             f".status.json.{secrets.token_hex(4)}.tmp"
         )
         try:
-            self._create_file(temporary, self._encoded_json(status))
+            self._create_file(
+                temporary,
+                self._encoded_json(status),
+                owner=self._service_owner(),
+            )
             os.replace(temporary, destination)
-            self._fsync_directory(directory)
         except ControlError:
             raise
         except OSError as exc:
             raise self._failed(
                 "Install session status cannot be replaced"
+            ) from exc
+        try:
+            self._fsync_directory(directory)
+        except ControlError as exc:
+            raise ControlError(
+                code="install_session_status_commit_uncertain",
+                message="Install session status replacement is durable-uncertain",
+                exit_code=6,
             ) from exc
         finally:
             temporary.unlink(missing_ok=True)

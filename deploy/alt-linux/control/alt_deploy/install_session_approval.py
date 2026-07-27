@@ -162,6 +162,11 @@ class InstallSessionApprovalService:
             self.repository.replace_status(
                 session_id, updated, allow_lifecycle=True
             )
+        except ControlError as exc:
+            if exc.code == "install_session_status_commit_uncertain":
+                raise
+            self.repository.discard_partial_publication(session_id)
+            raise
         except Exception:
             self.repository.discard_partial_publication(session_id)
             raise

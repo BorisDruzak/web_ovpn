@@ -80,3 +80,31 @@ def test_repository_creates_private_durable_session(
         "credential_sha256": "b" * 64,
     }
     assert repository.load_status(session_id) == status
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fchown is POSIX-only")
+def test_root_status_replacement_hands_file_to_service_account(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = _settings(monkeypatch, tmp_path)
+    repository = InstallSessionRepository(settings)
+    session_id = "install-20260727T120000Z-a1b2c3d4"
+    status = {
+        "schema_version": 1, "session_id": session_id,
+        "state": "awaiting_approval", "stage": "awaiting_approval",
+        "stage_history": [], "inventory_sha256": "a" * 64,
+        "machine_uuid": "machine-1", "agent_boot_id": "boot-1",
+        "source_ip": "192.168.100.10", "created_at": "2026-07-27T12:00:00+00:00",
+        "updated_at": "2026-07-27T12:00:00+00:00", "last_seen_at": "2026-07-27T12:00:00+00:00",
+        "plan_revision": None, "cancelled_at": None, "cancel_reason": None,
+    }
+    repository.create(
+        session_id=session_id, inventory_bytes=b'{"schema_version":1}\n',
+        credential_sha256="b" * 64, status=status,
+    )
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(repository, "_service_owner", lambda: (501, 502))
+    monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: calls.append((uid, gid)))
+    repository.replace_status(session_id, status)
+    assert calls == [(501, 502)]
