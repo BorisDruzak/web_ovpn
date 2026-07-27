@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from collections.abc import Callable
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
@@ -32,6 +33,16 @@ def _current_euid() -> int:
     return os.geteuid() if hasattr(os, "geteuid") else -1
 
 
+def _with_install_session_lock(method: Callable[..., dict[str, object]]) -> Callable[..., dict[str, object]]:
+    def wrapped(self: "InstallSessionApprovalService", *args: object, **kwargs: object) -> dict[str, object]:
+        lock = nullcontext() if os.name == "nt" else __import__(
+            "alt_deploy.locks", fromlist=["exclusive_lock"]
+        ).exclusive_lock(self.settings.install_sessions_lock)
+        with lock:
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class InstallSessionApprovalService:
     def __init__(
         self,
@@ -46,6 +57,7 @@ class InstallSessionApprovalService:
         self.clock = clock
         self.euid = euid
 
+    @_with_install_session_lock
     def approve(
         self,
         session_id: str,
@@ -131,6 +143,7 @@ class InstallSessionApprovalService:
             "warning": "Approval authorizes whole-disk destruction in a later phase",
         }
 
+    @_with_install_session_lock
     def cancel(self, session_id: str, *, reason: object) -> dict[str, object]:
         if self.euid() != 0:
             raise ControlError("install_session_root_required", "Install cancellation requires root", 4)
