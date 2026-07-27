@@ -304,7 +304,7 @@ git commit -m "feat: render deterministic ALT install artefacts"
 - Consumes: every Task 1–4 public API.
 - Produces: an end-to-end synthetic acceptance test and an explicit no-runtime-integration boundary.
 
-- [ ] **Step 1: Write failing end-to-end and source-boundary tests**
+- [ ] **Step 1: Write the failing end-to-end acceptance test**
 
 ~~~python
 def test_standard_office_pipeline_is_controller_only_and_deterministic():
@@ -317,7 +317,7 @@ def test_standard_office_pipeline_is_controller_only_and_deterministic():
     ).files
 ~~~
 
-Check that the five new modules contain no subprocess, socket, http.server, alterator, sfdisk, wipefs, mkfs, systemctl, or reboot token.
+The forbidden-capability scan remains a manual release gate in Task 6; it is not a source-text unit test.
 
 - [ ] **Step 2: Verify the ALT domain suite fails until complete**
 
