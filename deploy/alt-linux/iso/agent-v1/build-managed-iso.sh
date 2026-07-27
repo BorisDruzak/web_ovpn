@@ -39,65 +39,99 @@ done
     die 'Helper is not readable'
 [[ -f "$public_key" && -r "$public_key" ]] ||
     die 'Public key is not readable'
-command -v readlink >/dev/null ||
-    die 'Missing required command: readlink'
-source_resolved=$(readlink -f -- "$source_iso") ||
-    die 'Cannot resolve source path'
-output_resolved=$(readlink -f -- "$output_iso") ||
-    die 'Cannot resolve output path'
-helper_resolved=$(readlink -f -- "$helper") ||
-    die 'Cannot resolve helper path'
-public_key_resolved=$(readlink -f -- "$public_key") ||
-    die 'Cannot resolve public key path'
-[[ "$source_resolved" != "$output_resolved" ]] ||
-    die 'Source and output paths must differ'
-[[ "$helper_resolved" != "$output_resolved" &&
-    "$public_key_resolved" != "$output_resolved" ]] ||
-    die 'Output path conflicts with an input asset'
-[[ ! -e "$output_iso" || "$force" == 1 ]] ||
-    die 'Output exists; use --force'
-
-for command in xorriso cpio gzip patch sha256sum mktemp python3 \
-    df stat install find sort sed mv chmod awk grep mkdir rm; do
-    command -v "$command" >/dev/null ||
-        die "Missing required command: $command"
-done
-
 root=$(cd -- "$(dirname -- "$0")" && pwd -P)
 agent_root=$(cd -- "$root/../../install-agent/v1" && pwd -P)
 source_contract="$root/../manifests/alt-kworkstation-11.4-install-x86_64.json"
 source_identity="$root/manifests/source_iso.json"
-public_key_id=$(
-    python3 - "$public_key" <<'PY'
-import base64
-import hashlib
-import json
-import sys
-from pathlib import Path
+output_manifest="${output_iso}.build-manifest.json"
+command -v readlink >/dev/null ||
+    die 'Missing required command: readlink'
+output_resolved=$(readlink -f -- "$output_iso") ||
+    die 'Cannot resolve output path'
+manifest_resolved=$(readlink -f -- "$output_manifest") ||
+    die 'Cannot resolve sidecar path'
 
-path = Path(sys.argv[1])
-try:
-    document = json.loads(path.read_text(encoding="utf-8"))
-except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-    raise SystemExit("public key JSON is invalid") from exc
-if set(document) != {
-    "schema_version", "algorithm", "key_id", "public_key_b64"
-}:
-    raise SystemExit("public key fields are invalid")
-if document["schema_version"] != 1 or document["algorithm"] != "ed25519":
-    raise SystemExit("public key metadata is invalid")
-try:
-    raw = base64.b64decode(document["public_key_b64"], validate=True)
-except (TypeError, ValueError) as exc:
-    raise SystemExit("public key value is invalid") from exc
-if len(raw) != 32:
-    raise SystemExit("public key length is invalid")
-expected = "sha256:" + hashlib.sha256(raw).hexdigest()
-if document["key_id"] != expected:
-    raise SystemExit("public key ID is invalid")
-print(expected)
-PY
+input_assets=(
+    "$source_iso"
+    "$helper"
+    "$public_key"
+    "$source_contract"
+    "$source_identity"
+    "$root/build-managed-iso.sh"
+    "$root/verify-managed-iso.sh"
+    "$root/lib/build-inputs.sh"
+    "$root/../inspect-upstream-iso.sh"
+    "$root/boot-menu/grub.cfg.patch"
+    "$root/boot-menu/isolinux.cfg.patch"
+    "$root/initrd-overlay/lib/initrd/post/network-up/99-alt-install-agent-v1"
+    "$agent_root/alt-install-agent"
+    "$agent_root"/lib/*.sh
+)
+input_resolved=()
+public_key_resolved=
+for input_index in "${!input_assets[@]}"; do
+    input_asset=${input_assets[$input_index]}
+    resolved=$(readlink -f -- "$input_asset") ||
+        die "Cannot resolve input asset: $input_asset"
+    input_resolved+=("$resolved")
+    [[ "$input_index" -ne 2 ]] || public_key_resolved=$resolved
+    if [[ "$input_asset" == "$source_iso" &&
+        "$resolved" == "$output_resolved" ]]; then
+        die 'Source and output paths must differ'
+    fi
+    [[ "$resolved" != "$output_resolved" &&
+        "$resolved" != "$manifest_resolved" ]] ||
+        die 'Output artifacts conflict with an input asset'
+done
+[[ ! -e "$output_iso" || "$force" == 1 ]] ||
+    die 'Output exists; use --force'
+[[ ! -e "$output_manifest" || "$force" == 1 ]] ||
+    die 'Sidecar exists; use --force'
+
+for command in xorriso cpio gzip patch sha256sum mktemp python3 \
+    df stat install find sort sed mv chmod awk grep mkdir rm cat wc; do
+    command -v "$command" >/dev/null ||
+        die "Missing required command: $command"
+done
+# shellcheck source=lib/build-inputs.sh
+source "$root/lib/build-inputs.sh"
+
+output_dir=$(cd -- "$(dirname -- "$output_iso")" && pwd -P)
+source_size=$(stat -c '%s' "$source_iso")
+required_bytes=$((source_size + 512 * 1024 * 1024))
+required_kib=$(((required_bytes + 1023) / 1024))
+available_kib=$(df -Pk "$output_dir" | awk 'NR == 2 {print $4}')
+[[ "$available_kib" =~ ^[0-9]+$ &&
+    "$available_kib" -ge "$required_kib" ]] ||
+    die 'Insufficient free space for ISO build'
+
+workdir=$(mktemp -d "$output_dir/.alt-agent-v1-build.XXXXXX")
+chmod 0700 -- "$workdir"
+workdir_resolved=$(readlink -f -- "$workdir") ||
+    die 'Cannot resolve private staging directory'
+tmp_output="$workdir/managed.iso.staging"
+tmp_manifest="$workdir/build-manifest.json.staging"
+for resolved in "${input_resolved[@]}"; do
+    [[ "$resolved" != "$workdir_resolved" &&
+        "$resolved" != "$workdir_resolved"/* ]] ||
+        die 'Private staging artifacts conflict with an input asset'
+done
+cleanup() {
+    case "$workdir" in
+        "$output_dir"/.alt-agent-v1-build.*) rm -rf -- "$workdir" ;;
+    esac
+}
+trap cleanup EXIT
+
+public_key_snapshot="$workdir/public-key.snapshot.json"
+snapshot_public_key "$public_key_resolved" "$public_key_snapshot" ||
+    die 'Public key snapshot failed'
+read -r public_key_id public_key_sha256 < <(
+    public_key_metadata "$public_key_snapshot"
 ) || die 'Public key validation failed'
+[[ "$public_key_id" =~ ^sha256:[0-9a-f]{64}$ &&
+    "$public_key_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+    die 'Public key metadata output is invalid'
 
 python3 - "$helper" <<'PY' || die 'Helper must be a static Linux amd64 ELF'
 import struct
@@ -122,30 +156,9 @@ for index in range(entry_count):
         raise SystemExit(1)
 PY
 
-output_dir=$(cd -- "$(dirname -- "$output_iso")" && pwd -P)
-source_size=$(stat -c '%s' "$source_iso")
-required_bytes=$((source_size + 512 * 1024 * 1024))
-required_kib=$(((required_bytes + 1023) / 1024))
-available_kib=$(df -Pk "$output_dir" | awk 'NR == 2 {print $4}')
-[[ "$available_kib" =~ ^[0-9]+$ &&
-    "$available_kib" -ge "$required_kib" ]] ||
-    die 'Insufficient free space for ISO build'
-
 bash "$root/../inspect-upstream-iso.sh" \
     --source "$source_iso" \
     --manifest "$source_contract"
-
-temporary_root=${TMPDIR:-/var/tmp}
-workdir=$(mktemp -d "$temporary_root/alt-agent-v1-build.XXXXXX")
-tmp_output="${output_iso}.tmp.$$"
-tmp_manifest="${output_iso}.build-manifest.json.tmp.$$"
-cleanup() {
-    case "$workdir" in
-        "$temporary_root"/alt-agent-v1-build.*) rm -rf -- "$workdir" ;;
-    esac
-    rm -f -- "$tmp_output" "$tmp_manifest"
-}
-trap cleanup EXIT
 
 xorriso -osirrox on -indev "$source_iso" \
     -extract /boot/initrd.img "$workdir/initrd.img" \
@@ -172,7 +185,7 @@ install -D -m 0755 \
     "$workdir/initrd/lib/initrd/post/network-up/99-alt-install-agent-v1"
 install -D -m 0644 "$source_identity" \
     "$workdir/initrd/usr/share/alt-install/source_iso.json"
-install -D -m 0644 "$public_key" \
+install -D -m 0644 "$public_key_snapshot" \
     "$workdir/initrd/usr/share/alt-install/public-key.json"
 printf '%s\n' "$build_id" > "$workdir/build-id"
 chmod 0600 "$workdir/build-id"
@@ -213,7 +226,6 @@ sed -i "s/__ALT_INSTALL_BUILD_ID__/$build_id/g" \
 grep -F '__ALT_INSTALL_BUILD_ID__' "$workdir/menu/boot/grub/grub.cfg" \
     >/dev/null && die 'Build ID substitution failed'
 
-rm -f -- "$tmp_output"
 xorriso -indev "$source_iso" -outdev "$tmp_output" \
     -boot_image any replay \
     -map "$workdir/initrd-agent-v1.img" /boot/initrd.img \
@@ -222,14 +234,15 @@ xorriso -indev "$source_iso" -outdev "$tmp_output" \
     -commit >/dev/null
 
 python3 - "$source_iso" "$tmp_output" "$workdir/initrd-agent-v1.img" \
-    "$workdir/initrd" "$tmp_manifest" "$build_id" "$public_key_id" <<'PY'
+    "$workdir/initrd" "$tmp_manifest" "$build_id" "$public_key_id" \
+    "$public_key_sha256" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 source, output, initrd, root, manifest = map(Path, sys.argv[1:6])
-build_id, public_key_id = sys.argv[6:8]
+build_id, public_key_id, public_key_sha256 = sys.argv[6:9]
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -248,9 +261,7 @@ document = {
         root / "usr/share/alt-install/payload.sha256"
     ),
     "public_key_id": public_key_id,
-    "public_key_sha256": sha256(
-        root / "usr/share/alt-install/public-key.json"
-    ),
+    "public_key_sha256": public_key_sha256,
     "source_iso_sha256": sha256(source),
 }
 manifest.write_text(
@@ -260,7 +271,5 @@ manifest.write_text(
 PY
 
 mv -f -- "$tmp_output" "$output_iso"
-tmp_output=
-mv -f -- "$tmp_manifest" "${output_iso}.build-manifest.json"
-tmp_manifest=
+mv -f -- "$tmp_manifest" "$output_manifest"
 printf 'managed_iso=%s\n' "$output_iso"

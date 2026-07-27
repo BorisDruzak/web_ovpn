@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +26,7 @@ ISO_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "iso" / "agent-v1"
 BUILDER = ISO_ROOT / "build-managed-iso.sh"
 VERIFIER = ISO_ROOT / "verify-managed-iso.sh"
 SOURCE_ISO = ISO_ROOT / "manifests" / "source_iso.json"
+BUILD_INPUTS = ISO_ROOT / "lib" / "build-inputs.sh"
 GATE = (
     ISO_ROOT
     / "initrd-overlay"
@@ -64,6 +68,22 @@ def _run_bash(
         text=True,
         timeout=timeout,
         check=False,
+    )
+
+
+def _public_key_document(raw: bytes) -> str:
+    return (
+        json.dumps(
+            {
+                "algorithm": "ed25519",
+                "key_id": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "public_key_b64": base64.b64encode(raw).decode("ascii"),
+                "schema_version": 1,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
     )
 
 
@@ -600,6 +620,7 @@ def test_v1_payload_contains_no_destructive_handoff_tokens() -> None:
         *sorted((AGENT_ROOT / "lib").glob("*.sh")),
         GATE,
         BUILDER,
+        BUILD_INPUTS,
         VERIFIER,
         *sorted((ISO_ROOT / "boot-menu").glob("*.patch")),
     ]
@@ -664,6 +685,81 @@ def test_iso_assets_pin_source_and_require_external_public_key() -> None:
     assert "sosnadmin.mode=agent-v1" in gate
     assert "exec /usr/libexec/alt-install-agent" in gate
     assert "tests/test_alt_install_agent_v1.py" in workflow
+    assert "find deploy/alt-linux/iso/agent-v1/lib" in workflow
+
+
+def test_public_key_snapshot_survives_source_mutation_and_symlink_retarget(
+    tmp_path: Path,
+) -> None:
+    first_document = _public_key_document(bytes(range(32)))
+    second_document = _public_key_document(bytes(range(32, 64)))
+    first_target = tmp_path / "key-a.json"
+    second_target = tmp_path / "key-b.json"
+    source_link = tmp_path / "public-key.json"
+    stage = tmp_path / "stage"
+    snapshot = stage / "public-key.snapshot.json"
+    first_target.write_bytes(first_document.encode("utf-8"))
+    second_target.write_bytes(second_document.encode("utf-8"))
+    try:
+        source_link.symlink_to(first_target)
+    except OSError:
+        pytest.skip("file symlink creation is unavailable")
+
+    first = _run_bash(
+        f"""
+set -euo pipefail
+source deploy/alt-linux/iso/agent-v1/lib/build-inputs.sh
+mkdir -p '{stage.as_posix()}'
+chmod 0700 '{stage.as_posix()}'
+snapshot_public_key '{source_link.as_posix()}' '{snapshot.as_posix()}'
+public_key_metadata '{snapshot.as_posix()}'
+""",
+        env={"ALT_INSTALL_PYTHON": Path(sys.executable).as_posix()},
+    )
+    assert first.returncode == 0, first.stderr
+
+    first_target.write_bytes(second_document.encode("utf-8"))
+    source_link.unlink()
+    source_link.symlink_to(second_target)
+    second = _run_bash(
+        f"""
+set -euo pipefail
+source deploy/alt-linux/iso/agent-v1/lib/build-inputs.sh
+public_key_metadata '{snapshot.as_posix()}'
+""",
+        env={"ALT_INSTALL_PYTHON": Path(sys.executable).as_posix()},
+    )
+
+    expected_key_id = "sha256:" + hashlib.sha256(bytes(range(32))).hexdigest()
+    expected_document_sha256 = hashlib.sha256(
+        first_document.encode("utf-8")
+    ).hexdigest()
+    assert second.returncode == 0, second.stderr
+    assert first.stdout.strip().split() == [
+        expected_key_id,
+        expected_document_sha256,
+    ]
+    assert second.stdout == first.stdout
+    assert snapshot.read_text(encoding="utf-8") == first_document
+    if os.name == "nt":
+        assert "chmod 0600" in BUILD_INPUTS.read_text(encoding="utf-8")
+    else:
+        assert snapshot.stat().st_mode & 0o777 == 0o600
+
+
+def test_builder_never_reopens_mutable_public_key_after_snapshot() -> None:
+    builder = BUILDER.read_text(encoding="utf-8")
+    marker = (
+        'snapshot_public_key "$public_key_resolved" '
+        '"$public_key_snapshot"'
+    )
+    assert marker in builder
+    after_snapshot = builder.split(marker, maxsplit=1)[1]
+
+    assert '"$public_key"' not in after_snapshot
+    assert 'public_key_metadata "$public_key_snapshot"' in after_snapshot
+    assert 'install -D -m 0644 "$public_key_snapshot"' in after_snapshot
+    assert '"$public_key_sha256"' in after_snapshot
 
 
 def test_builder_refuses_to_run_without_public_key(tmp_path: Path) -> None:
@@ -686,6 +782,75 @@ bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
 
     assert completed.returncode == 2
     assert "--public-key" in completed.stderr
+    assert not output.exists()
+
+
+def test_builder_applies_overwrite_policy_to_existing_sidecar(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.iso"
+    helper = tmp_path / "alt-install-helper"
+    public_key = tmp_path / "public-key.json"
+    output = tmp_path / "managed.iso"
+    sidecar = tmp_path / "managed.iso.build-manifest.json"
+    source.write_bytes(b"source")
+    helper.write_bytes(b"helper")
+    public_key.write_text("{}", encoding="utf-8")
+    sidecar.write_bytes(b"preserve-sidecar")
+
+    completed = _run_bash(
+        f"""
+bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
+    --source '{source.as_posix()}' \
+    --output '{output.as_posix()}' \
+    --helper '{helper.as_posix()}' \
+    --public-key '{public_key.as_posix()}' \
+    --build-id test-build
+"""
+    )
+
+    assert completed.returncode == 1
+    assert "Sidecar exists; use --force" in completed.stderr
+    assert sidecar.read_bytes() == b"preserve-sidecar"
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("input_name", ["source", "helper", "public_key"])
+def test_builder_never_allows_sidecar_to_alias_an_input(
+    tmp_path: Path,
+    input_name: str,
+) -> None:
+    output = tmp_path / "managed.iso"
+    sidecar = tmp_path / "managed.iso.build-manifest.json"
+    source = tmp_path / "source.iso"
+    helper = tmp_path / "alt-install-helper"
+    public_key = tmp_path / "public-key.json"
+    source.write_bytes(b"source")
+    helper.write_bytes(b"helper")
+    public_key.write_text("{}", encoding="utf-8")
+    paths = {
+        "source": source,
+        "helper": helper,
+        "public_key": public_key,
+    }
+    paths[input_name] = sidecar
+    sidecar.write_bytes(b"protected-input")
+
+    completed = _run_bash(
+        f"""
+bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
+    --source '{paths["source"].as_posix()}' \
+    --output '{output.as_posix()}' \
+    --helper '{paths["helper"].as_posix()}' \
+    --public-key '{paths["public_key"].as_posix()}' \
+    --build-id test-build \
+    --force
+"""
+    )
+
+    assert completed.returncode == 1
+    assert "Output artifacts conflict with an input asset" in completed.stderr
+    assert sidecar.read_bytes() == b"protected-input"
     assert not output.exists()
 
 

@@ -53,6 +53,7 @@ jobs:
           bash -n deploy/alt-linux/qemu/run-spike-readonly-acceptance.sh
           bash -n deploy/alt-linux/iso/agent-v1/build-managed-iso.sh
           bash -n deploy/alt-linux/iso/agent-v1/verify-managed-iso.sh
+          find deploy/alt-linux/iso/agent-v1/lib -type f -name '*.sh' -print0 | xargs -0 -r bash -n
           bash -n deploy/alt-linux/install-agent/v1/alt-install-agent
           find deploy/alt-linux/install-agent/v1/lib -type f -name '*.sh' -print0 | xargs -0 -r bash -n
           find deploy/alt-linux/install-agent -type f -name '*.sh' -print0 | xargs -0 -r bash -n
