@@ -61,6 +61,7 @@ def test_repository_creates_private_durable_session(
         session_id=session_id,
         inventory_bytes=b'{"schema_version":1}\n',
         credential_sha256="b" * 64,
+        create_nonce_sha256="c" * 64,
         status=status,
     )
 
@@ -78,6 +79,7 @@ def test_repository_creates_private_durable_session(
     assert json.loads((directory / "auth.json").read_text(encoding="utf-8")) == {
         "schema_version": 1,
         "credential_sha256": "b" * 64,
+        "create_nonce_sha256": "c" * 64,
     }
     assert repository.load_status(session_id) == status
 
@@ -101,7 +103,8 @@ def test_root_status_replacement_hands_file_to_service_account(
     }
     repository.create(
         session_id=session_id, inventory_bytes=b'{"schema_version":1}\n',
-        credential_sha256="b" * 64, status=status,
+        credential_sha256="b" * 64, create_nonce_sha256="c" * 64,
+        status=status,
     )
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(repository, "_service_owner", lambda: (501, 502))

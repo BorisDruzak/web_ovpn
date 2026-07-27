@@ -57,6 +57,7 @@ def _repository(
         session_id=session_id,
         inventory_bytes=b'{"schema_version":1}\n',
         credential_sha256="b" * 64,
+        create_nonce_sha256="c" * 64,
         status=status,
     )
     return repository, session_id
