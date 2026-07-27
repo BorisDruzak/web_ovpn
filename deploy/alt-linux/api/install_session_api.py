@@ -90,7 +90,7 @@ def create_install_session_server(
             return True
 
         def _expire_if_needed(
-            self, status: dict[str, object]
+            self, status: dict[str, object], *, force: bool = False
         ) -> dict[str, object]:
             if status.get("state") in {"cancelled", "expired"}:
                 return status
@@ -102,6 +102,8 @@ def create_install_session_server(
             except ValueError:
                 expires_at = None
             if (
+                not force
+                and
                 expires_at is not None
                 and expires_at.tzinfo is not None
                 and expires_at > datetime.now(timezone.utc)
@@ -254,8 +256,13 @@ def create_install_session_server(
                 self._error(500, "published_plan_invalid")
                 return
             if expires_at <= datetime.now(timezone.utc):
-                with lock:
-                    self._expire_if_needed(repository.load_status(session_id))
+                expiry_lock = nullcontext() if os.name == "nt" else __import__(
+                    "alt_deploy.locks", fromlist=["exclusive_lock"]
+                ).exclusive_lock(settings.install_sessions_lock)
+                with expiry_lock:
+                    self._expire_if_needed(
+                        repository.load_status(session_id), force=True
+                    )
                 self._error(410, "plan_expired")
                 return
             self._send_bytes(200, payload)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import json
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -18,6 +21,7 @@ for path in (CONTROL_ROOT, API_ROOT):
         sys.path.insert(0, str(path))
 
 from alt_deploy.config import Settings
+from alt_deploy.install_session_repository import InstallSessionRepository
 from install_session_api import create_install_session_server
 
 
@@ -214,6 +218,77 @@ def test_api_accepts_preflight_ready_and_rejects_stages_outside_v1_vocabulary(
         assert accepted_status == 200
         assert rejected_status == 400
         assert rejected["error"]["code"] == "heartbeat_invalid"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_api_marks_expired_published_plan_inactive_under_posix_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
+    settings = Settings.from_env()
+    session_id = "install-20260727T120000Z-a1b2c3d4"
+    credential = "E" * 43
+    repository = InstallSessionRepository(settings)
+    status = {
+        "schema_version": 1, "session_id": session_id,
+        "state": "plan_published", "stage": "published",
+        "stage_history": [
+            {"stage": "session_created", "entered_at": "2026-07-27T12:00:00+00:00"},
+            {"stage": "inventory_validated", "entered_at": "2026-07-27T12:00:00+00:00"},
+            {"stage": "awaiting_approval", "entered_at": "2026-07-27T12:00:00+00:00"},
+            {"stage": "plan_built", "entered_at": "2026-07-27T12:00:00+00:00"},
+            {"stage": "plan_signed", "entered_at": "2026-07-27T12:00:00+00:00"},
+            {"stage": "published", "entered_at": "2026-07-27T12:00:00+00:00"},
+        ],
+        "inventory_sha256": "a" * 64, "machine_uuid": "machine-1",
+        "agent_boot_id": "boot-1", "source_ip": "192.168.100.10",
+        "created_at": "2026-07-27T12:00:00+00:00",
+        "updated_at": "2026-07-27T12:00:00+00:00",
+        "last_seen_at": "2026-07-27T12:00:00+00:00",
+        "expires_at": "2099-01-01T00:00:00+00:00", "expired_at": None,
+        "plan_revision": 1, "cancelled_at": None, "cancel_reason": None,
+    }
+    repository.create(
+        session_id=session_id,
+        inventory_bytes=b'{"schema_version":1}\n',
+        credential_sha256=hashlib.sha256(credential.encode("ascii")).hexdigest(),
+        create_nonce_sha256="b" * 64,
+        status=status,
+    )
+    plan_bytes = b'{"expires_at":"2020-01-01T00:00:00+00:00"}'
+    repository.publish_revision(
+        session_id,
+        plan_bytes=plan_bytes,
+        plan_sha256=hashlib.sha256(plan_bytes).hexdigest(),
+        signature={"schema_version": 1},
+    )
+    server = create_install_session_server(settings, listen_address="127.0.0.1", listen_port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    @contextmanager
+    def exclusive_lock(_path: Path):
+        yield
+
+    locks = ModuleType("alt_deploy.locks")
+    locks.exclusive_lock = exclusive_lock
+    monkeypatch.setitem(sys.modules, "alt_deploy.locks", locks)
+    monkeypatch.setattr("install_session_api.os", SimpleNamespace(name="posix"))
+    try:
+        response_status, _ = _request(
+            server,
+            "GET",
+            f"/v1/install-sessions/{session_id}/plan",
+            authorization=f"Bearer {credential}",
+        )
+
+        assert response_status == 410
+        assert repository.load_status(session_id)["state"] == "expired"
     finally:
         server.shutdown()
         server.server_close()
