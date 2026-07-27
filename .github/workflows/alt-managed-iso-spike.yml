@@ -1,0 +1,37 @@
+name: ALT managed ISO spike contract
+
+on:
+  pull_request:
+    paths:
+      - "deploy/alt-linux/**"
+      - "tests/alt_linux/test_managed_iso_spike.py"
+      - ".github/workflows/alt-managed-iso-spike.yml"
+  push:
+    paths:
+      - "deploy/alt-linux/**"
+      - "tests/alt_linux/test_managed_iso_spike.py"
+      - ".github/workflows/alt-managed-iso-spike.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: managed-iso-spike-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test runner
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Run static spike contract tests
+        run: python -m pytest -q tests/alt_linux/test_managed_iso_spike.py
+      - name: Check shell syntax
+        run: |
+          bash -n deploy/alt-linux/iso/inspect-upstream-iso.sh
+          bash -n deploy/alt-linux/iso/build-spike-iso.sh
+          bash -n deploy/alt-linux/iso/verify-spike-iso.sh
+          bash -n deploy/alt-linux/qemu/run-spike-readonly-acceptance.sh
+          find deploy/alt-linux/install-agent -type f -name '*.sh' -print0 | xargs -0 -r bash -n

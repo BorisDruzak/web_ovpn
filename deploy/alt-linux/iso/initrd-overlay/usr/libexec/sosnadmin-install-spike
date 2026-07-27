@@ -1,0 +1,58 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+readonly SPIKE_MODE_TOKEN="sosnadmin.mode=spike"
+readonly AGENT_ROOT="${SOSNADMIN_AGENT_ROOT:-$(cd -- "$(dirname -- "$0")" && pwd -P)}"
+
+# shellcheck source=lib/cmdline.sh
+source "$AGENT_ROOT/lib/cmdline.sh"
+# shellcheck source=lib/network.sh
+source "$AGENT_ROOT/lib/network.sh"
+# shellcheck source=lib/inventory.sh
+source "$AGENT_ROOT/lib/inventory.sh"
+# shellcheck source=lib/protocol.sh
+source "$AGENT_ROOT/lib/protocol.sh"
+# shellcheck source=lib/ui.sh
+source "$AGENT_ROOT/lib/ui.sh"
+
+spike_hold() {
+    local state="$1"
+    ui_show_state "$state"
+    while :; do
+        [[ -z "${SPIKE_SESSION:-}" ]] || report_spike_state "$SPIKE_SESSION" "$state" || true
+        sleep 5
+    done
+}
+
+main() {
+    load_spike_cmdline || spike_hold spike_failed
+    ui_show_state agent_started
+
+    wait_for_controller_route || spike_hold waiting_for_network
+    ui_show_state inventory_ready
+
+    inventory=$(build_inventory) || spike_hold spike_failed
+    session=$(create_spike_session "$inventory") || spike_hold controller_unavailable
+    export SPIKE_SESSION="$session"
+    report_spike_state "$session" agent_started || spike_hold controller_unavailable
+    report_spike_state "$session" inventory_ready || spike_hold controller_unavailable
+    report_spike_state "$session" waiting_for_approval || spike_hold controller_unavailable
+    ui_show_state waiting_for_approval
+
+    while :; do
+        decision=$(get_spike_decision "$session") || {
+            ui_show_state controller_unavailable
+            sleep 5
+            continue
+        }
+        case "$decision" in
+            waiting) ui_show_state waiting_for_approval ;;
+            approved) spike_hold spike_approved ;;
+            cancelled) spike_hold spike_cancelled ;;
+            *) spike_hold spike_failed ;;
+        esac
+        sleep 3
+    done
+}
+
+main "$@"

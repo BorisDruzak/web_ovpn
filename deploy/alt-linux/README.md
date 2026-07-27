@@ -11,6 +11,7 @@ Authoritative documentation:
 - [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)
 - [OR-3P1 pilot rollout](../../docs/ALT_OR3P1_PILOT_ROLLOUT.md)
 - [OR-3P3 coordinated backup and restore](../../docs/ALT_OR3P3_COORDINATED_BACKUP_RESTORE.md)
+- [ALT 11.4 managed ISO technical spike](../../docs/ALT_MANAGED_ISO_TECHNICAL_SPIKE.md) — manual, no-write integration proof; not an installer rollout.
 
 ## Architecture
 

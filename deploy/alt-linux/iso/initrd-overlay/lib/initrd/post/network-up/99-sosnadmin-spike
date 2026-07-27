@@ -1,0 +1,6 @@
+#!/bin/bash
+set -eu
+
+if grep -Fqw 'sosnadmin.mode=spike' /proc/cmdline; then
+    exec /usr/libexec/sosnadmin-install-spike
+fi
