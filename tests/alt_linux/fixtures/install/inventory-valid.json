@@ -5,7 +5,7 @@
     "boot_id": "boot-0001",
     "build_id": "pr2-fixture",
     "iso_id": "alt-kworkstation-11.4-install-x86_64",
-    "iso_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "iso_sha256": "2529f98bca03a652709434a6a17cd4aac5df20c0793927abdf784e8f9388243a"
   },
   "machine": {
     "dmi_uuid": "11111111-2222-3333-4444-555555555555",

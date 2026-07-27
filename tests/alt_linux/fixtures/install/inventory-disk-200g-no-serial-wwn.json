@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "agent": {"version": "1.0.0", "boot_id": "boot-200", "build_id": "pr2", "iso_id": "alt-kworkstation-11.4-install-x86_64", "iso_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "agent": {"version": "1.0.0", "boot_id": "boot-200", "build_id": "pr2", "iso_id": "alt-kworkstation-11.4-install-x86_64", "iso_sha256": "2529f98bca03a652709434a6a17cd4aac5df20c0793927abdf784e8f9388243a"},
   "machine": {"dmi_uuid": "11111111-2222-3333-4444-555555555555", "manufacturer": "QEMU", "product_name": "Standard PC", "serial_number": "vm-200", "firmware": "uefi", "memory_bytes": 8589934592, "cpu_arch": "x86_64"},
   "interfaces": [{"name": "ens3", "mac": "52:54:00:12:34:58", "addresses": ["192.0.2.12/24"], "route_to_controller": true}],
   "disks": [{"type": "disk", "path": "/dev/vda", "removable": false, "size_bytes": 214748364800, "model": "QEMU HARDDISK", "serial": null, "wwn": null, "filesystem_signatures": []}],

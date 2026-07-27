@@ -4,7 +4,7 @@
   "target_release": "ALT KWorkstation 11.4",
   "iso": {
     "id": "alt-kworkstation-11.4-install-x86_64",
-    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "sha256": "2529f98bca03a652709434a6a17cd4aac5df20c0793927abdf784e8f9388243a"
   },
   "firmware": "uefi",
   "architecture": "x86_64",
