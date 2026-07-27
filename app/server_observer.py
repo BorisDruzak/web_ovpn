@@ -64,6 +64,16 @@ _SAFE_VALUE_STRINGS = frozenset(
 _SAFE_ERROR_CATEGORIES = frozenset(
     {"timeout", "transport", "parse", "unexpected_response"}
 )
+COLLECTOR_FAILURE_CLASSES = frozenset(
+    {"config", "ssh", "probe", "snapshot_write", "internal"}
+)
+COLLECTOR_FAILURE_MESSAGES = {
+    "config": "Collector configuration is invalid",
+    "ssh": "SSH connection failed",
+    "probe": "Server health probe failed",
+    "snapshot_write": "Server health snapshot could not be saved",
+    "internal": "Collector failed",
+}
 
 # These are fixed, read-only remote probes.  Runtime configuration may select a
 # target and route, but can never supply a remote command.
@@ -606,9 +616,24 @@ def public_target(target: dict[str, Any]) -> dict[str, Any]:
     return {"role": role, "checks": checks, "status": status}
 
 
+def public_collector(collector: dict[str, Any]) -> dict[str, str]:
+    """Return the fixed, non-diagnostic collector failure record."""
+    if set(collector) != {"status", "failure_class", "message"}:
+        raise ValueError("collector fields are not allowed")
+    if collector.get("status") != "error":
+        raise ValueError("collector status is not allowed")
+    failure_class = collector.get("failure_class")
+    if failure_class not in COLLECTOR_FAILURE_CLASSES:
+        raise ValueError("collector failure class is not allowed")
+    message = collector.get("message")
+    if message != COLLECTOR_FAILURE_MESSAGES[failure_class]:
+        raise ValueError("collector message is not allowed")
+    return {"status": "error", "failure_class": failure_class, "message": message}
+
+
 def public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Return the complete persisted/API snapshot with no topology or raw output."""
-    if not set(snapshot) <= {"collected_at", "targets", "overall"}:
+    if not set(snapshot) <= {"collected_at", "targets", "overall", "collector"}:
         raise ValueError("snapshot fields are not allowed")
     collected_at = snapshot.get("collected_at")
     parse_utc(collected_at)
@@ -621,7 +646,10 @@ def public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
     if overall not in _STATUS_PRIORITY:
         raise ValueError("overall status is not allowed")
-    return {"collected_at": collected_at, "overall": overall, "targets": targets}
+    public = {"collected_at": collected_at, "overall": overall, "targets": targets}
+    if "collector" in snapshot:
+        public["collector"] = public_collector(_require_mapping(snapshot["collector"], "collector"))
+    return public
 
 
 def snapshot_status(snapshot: dict[str, Any], now: datetime) -> str:
@@ -671,13 +699,22 @@ def write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
         raise
 
 
-def load_snapshot(path: Path, now: datetime) -> dict[str, Any]:
-    """Load a public snapshot, returning generic status for absent or invalid files."""
+def load_snapshot_result(path: Path, now: datetime) -> dict[str, Any]:
+    """Load a public snapshot together with its safe freshness state."""
     try:
         snapshot = public_snapshot(json.loads(path.read_text(encoding="utf-8")))
     except FileNotFoundError:
-        return {"overall": "stale", "targets": []}
+        return {"snapshot": {"overall": "stale", "targets": []}, "freshness": "missing"}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
-        return {"overall": "error", "targets": []}
-    snapshot["overall"] = snapshot_status(snapshot, now)
+        return {"snapshot": {"overall": "error", "targets": []}, "freshness": "invalid"}
+    freshness = "stale" if snapshot_status(snapshot, now) == "stale" else "current"
+    return {"snapshot": snapshot, "freshness": freshness}
+
+
+def load_snapshot(path: Path, now: datetime) -> dict[str, Any]:
+    """Load a public snapshot with the established overall-status compatibility behavior."""
+    result = load_snapshot_result(path, now)
+    snapshot = dict(result["snapshot"])
+    if result["freshness"] == "stale":
+        snapshot["overall"] = "stale"
     return snapshot

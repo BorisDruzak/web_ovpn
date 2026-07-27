@@ -17,6 +17,7 @@ from app.server_observer import (
     collect,
     load_runtime_config,
     load_snapshot,
+    load_snapshot_result,
     parse_utc,
     snapshot_status,
     write_snapshot,
@@ -811,3 +812,120 @@ def test_snapshot_rejects_unknown_fields_at_every_schema_level(tmp_path, snapsho
         "overall": "error",
         "targets": [],
     }
+
+
+def test_failure_snapshot_redacts_exception_and_allows_only_safe_collector_fields(tmp_path):
+    path = tmp_path / "latest.json"
+    write_snapshot(
+        path,
+        {
+            "collected_at": "2026-07-27T12:00:00Z",
+            "overall": "error",
+            "targets": [],
+            "collector": {
+                "status": "error",
+                "failure_class": "ssh",
+                "message": "SSH connection failed",
+            },
+        },
+    )
+
+    snapshot = load_snapshot(path, parse_utc("2026-07-27T12:01:00Z"))
+
+    assert snapshot["collector"] == {
+        "status": "error",
+        "failure_class": "ssh",
+        "message": "SSH connection failed",
+    }
+    assert "192.168." not in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "collector",
+    [
+        {
+            "status": "error",
+            "failure_class": "ssh",
+            "message": "SSH connection failed",
+            "host": "sensitive.internal.example",
+        },
+        {
+            "status": "error",
+            "failure_class": "ssh",
+            "message": "SSH connection failed",
+            "command": "ssh sensitive.internal.example",
+        },
+        {
+            "status": "error",
+            "failure_class": "ssh",
+            "message": "Traceback (most recent call last): secret",
+        },
+        {
+            "status": "warn",
+            "failure_class": "ssh",
+            "message": "SSH connection failed",
+        },
+        {
+            "status": "error",
+            "failure_class": "unknown",
+            "message": "SSH connection failed",
+        },
+        {
+            "status": "error",
+            "failure_class": "ssh",
+            "message": "x" * 161,
+        },
+    ],
+)
+def test_failure_snapshot_rejects_unsafe_collector_records(tmp_path, collector):
+    path = tmp_path / "latest.json"
+    snapshot = {
+        "collected_at": "2026-07-27T12:00:00Z",
+        "overall": "error",
+        "targets": [],
+        "collector": collector,
+    }
+
+    with pytest.raises(ValueError):
+        write_snapshot(path, snapshot)
+
+    assert not path.exists()
+
+
+def test_load_snapshot_result_reports_current_stale_missing_and_invalid_states(tmp_path):
+    path = tmp_path / "latest.json"
+    now = parse_utc("2026-07-27T12:01:00Z")
+
+    assert load_snapshot_result(path, now) == {
+        "snapshot": {"overall": "stale", "targets": []},
+        "freshness": "missing",
+    }
+
+    path.write_text("not json", encoding="utf-8")
+    assert load_snapshot_result(path, now) == {
+        "snapshot": {"overall": "error", "targets": []},
+        "freshness": "invalid",
+    }
+
+    write_snapshot(
+        path,
+        {"collected_at": "2026-07-27T12:00:00Z", "overall": "ok", "targets": []},
+    )
+    assert load_snapshot_result(path, now) == {
+        "snapshot": {
+            "collected_at": "2026-07-27T12:00:00Z",
+            "overall": "ok",
+            "targets": [],
+        },
+        "freshness": "current",
+    }
+
+    assert load_snapshot_result(path, parse_utc("2026-07-27T12:16:00Z")) == {
+        "snapshot": {
+            "collected_at": "2026-07-27T12:00:00Z",
+            "overall": "ok",
+            "targets": [],
+        },
+        "freshness": "stale",
+    }
+    assert load_snapshot_result(path, parse_utc("2026-07-27T11:57:00Z"))["freshness"] == "stale"

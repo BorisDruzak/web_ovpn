@@ -323,9 +323,10 @@ def test_cli_writes_snapshot_and_prints_only_role_status_summary(tmp_path, monke
     ],
 )
 def test_cli_sanitizes_collector_exceptions_and_returns_nonzero(exception, tmp_path, monkeypatch, capsys):
+    snapshot_path = tmp_path / "latest.json"
     monkeypatch.setattr(server_observer_cli, "load_runtime_config", lambda path: (_ for _ in ()).throw(exception))
 
-    assert server_observer_cli.main(["--config", str(tmp_path / "config.json"), "--snapshot", str(tmp_path / "latest.json")]) == 1
+    assert server_observer_cli.main(["--config", str(tmp_path / "config.json"), "--snapshot", str(snapshot_path)]) == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -333,3 +334,46 @@ def test_cli_sanitizes_collector_exceptions_and_returns_nonzero(exception, tmp_p
     assert "host" not in captured.err
     assert "ssh" not in captured.err
     assert "key" not in captured.err
+    persisted = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert persisted["collector"] == {
+        "status": "error",
+        "failure_class": "config" if isinstance(exception, ValueError) else "internal",
+        "message": "Collector configuration is invalid" if isinstance(exception, ValueError) else "Collector failed",
+    }
+
+
+def test_cli_does_not_retry_when_snapshot_persistence_fails(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    monkeypatch.setattr(server_observer_cli, "load_runtime_config", lambda path: {"safe": True})
+    monkeypatch.setattr(
+        server_observer_cli,
+        "collect",
+        lambda config, runner, now: {"collected_at": "2026-07-27T12:00:00Z", "overall": "ok", "targets": []},
+    )
+    monkeypatch.setattr(
+        server_observer_cli,
+        "write_snapshot",
+        lambda path, snapshot: calls.append(snapshot) or (_ for _ in ()).throw(OSError("private path")),
+    )
+
+    assert server_observer_cli.main(["--snapshot", str(tmp_path / "latest.json")]) == 1
+
+    assert len(calls) == 1
+    assert capsys.readouterr().err == '{"status": "error", "message": "collector failed"}\n'
+
+
+def test_classify_collection_failure_uses_only_the_five_stable_classes():
+    cases = [
+        (ValueError("invalid config"), ("config", "Collector configuration is invalid")),
+        (subprocess.TimeoutExpired("ssh", 1), ("ssh", "SSH connection failed")),
+        (server_observer_cli._ProbeFailure("parse"), ("probe", "Server health probe failed")),
+        (
+            server_observer_cli._SnapshotWriteFailure(),
+            ("snapshot_write", "Server health snapshot could not be saved"),
+        ),
+        (RuntimeError("private diagnostic"), ("internal", "Collector failed")),
+    ]
+
+    for exception, expected in cases:
+        assert server_observer_cli.classify_collection_failure(exception) == expected
