@@ -27,6 +27,9 @@ def test_service_creates_session_for_valid_allowed_inventory(
         "ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions")
     )
     monkeypatch.setenv(
+        "ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock")
+    )
+    monkeypatch.setenv(
         "ALT_DEPLOY_INSTALL_PROFILE_ROOT",
         str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"),
     )
@@ -57,6 +60,7 @@ def test_service_enforces_per_machine_active_session_quota(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
     monkeypatch.setenv(
         "ALT_DEPLOY_INSTALL_PROFILE_ROOT",
         str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"),
@@ -85,6 +89,7 @@ def test_service_enforces_global_active_session_quota(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
     monkeypatch.setenv(
         "ALT_DEPLOY_INSTALL_PROFILE_ROOT",
         str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"),

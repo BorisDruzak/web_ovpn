@@ -28,6 +28,7 @@ def test_cli_show_redacts_private_session_fields(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
     monkeypatch.setenv(
         "ALT_DEPLOY_INSTALL_PROFILE_ROOT",
         str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"),

@@ -47,6 +47,7 @@ def test_api_creates_session_and_requires_its_bearer_credential(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_PROFILE_ROOT", str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"))
     settings = Settings.from_env()
     server = create_install_session_server(settings, listen_address="127.0.0.1", listen_port=0)
@@ -75,6 +76,7 @@ def test_api_rejects_conflicting_heartbeat_replay(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_PROFILE_ROOT", str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"))
     server = create_install_session_server(Settings.from_env(), listen_address="127.0.0.1", listen_port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
