@@ -69,15 +69,18 @@ def test_renderer_returns_repeatable_utf8_artifacts() -> None:
 
 
 def test_renderer_writes_only_declared_bundle_files(tmp_path: Path) -> None:
+    (tmp_path / "portable-ansible-vault").write_text("unrelated", encoding="utf-8")
+    destination = tmp_path / "bundle"
+    destination.mkdir()
     bundle = render_install_bundle(_plan(), _secrets(), TEMPLATE_ROOT)
-    write_install_bundle(bundle, tmp_path)
+    write_install_bundle(bundle, destination)
 
-    assert sorted(path.name for path in tmp_path.iterdir()) == [
+    assert sorted(path.name for path in destination.iterdir()) == [
         "autoinstall.scm",
         "sha256sums",
         "vm-profile.scm",
     ]
-    assert (tmp_path / "sha256sums").read_bytes() == bundle.files["sha256sums"]
+    assert (destination / "sha256sums").read_bytes() == bundle.files["sha256sums"]
 
 
 @pytest.mark.parametrize(
