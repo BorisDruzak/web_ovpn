@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "agent": {"version": "1.0.0", "boot_id": "boot-50", "build_id": "pr2", "iso_id": "alt-kworkstation-11.4-install-x86_64", "iso_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "machine": {"dmi_uuid": "11111111-2222-3333-4444-555555555555", "manufacturer": "QEMU", "product_name": "Standard PC", "serial_number": "vm-50", "firmware": "uefi", "memory_bytes": 8589934592, "cpu_arch": "x86_64"},
+  "interfaces": [{"name": "enp1s0", "mac": "52:54:00:12:34:56", "addresses": ["192.0.2.10/24"], "route_to_controller": true}],
+  "disks": [{"type": "disk", "path": "/dev/vda", "removable": false, "size_bytes": 53687091200, "model": "QEMU HARDDISK", "serial": "disk-50", "wwn": "0x5000000000000050", "filesystem_signatures": []}],
+  "boot_media": {"path": "/dev/sr0", "model": "ALT ISO", "serial": null, "wwn": null}
+}

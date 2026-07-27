@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "agent": {
+    "version": "1.0.0",
+    "boot_id": "boot-0001",
+    "build_id": "pr2-fixture",
+    "iso_id": "alt-kworkstation-11.4-install-x86_64",
+    "iso_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_ip": "192.0.2.10"
+  },
+  "machine": {
+    "dmi_uuid": "11111111-2222-3333-4444-555555555555",
+    "manufacturer": "QEMU",
+    "product_name": "Standard PC",
+    "serial_number": "vm-serial-001",
+    "firmware": "uefi",
+    "memory_bytes": 8589934592,
+    "cpu_arch": "x86_64"
+  },
+  "interfaces": [],
+  "disks": [],
+  "boot_media": {
+    "path": "/dev/sr0",
+    "model": "ALT ISO",
+    "serial": null,
+    "wwn": null
+  }
+}

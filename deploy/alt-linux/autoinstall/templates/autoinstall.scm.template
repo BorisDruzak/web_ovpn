@@ -1,0 +1,15 @@
+; Generated from immutable InstallPlan V1.  Do not edit generated output.
+("/sosnadmin/install-plan"
+ action "write"
+ iso_id "$iso_id"
+ target_disk "$target_disk_path"
+ network_interface "$network_name"
+ temporary_hostname "$temporary_hostname"
+ package_set "$package_set")
+"/root/change_password"
+ iscrypted #t
+ passwd_1 "$root_yescrypt_hash"
+"/users/create_account"
+ new_name "sosnadmin"
+ iscrypted #t
+ passwd_1 "$admin_yescrypt_hash"
