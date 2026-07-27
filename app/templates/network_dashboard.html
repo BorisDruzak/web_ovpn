@@ -56,8 +56,13 @@
 </section>
 <section id="server-health-card" class="table-wrap">
   <h2>Server Health</h2>
-  <p class="muted">Registered server roles are evaluated from the latest read-only health snapshot.</p>
-  <a class="button secondary" href="/network/paths">VPN path checks</a>
+  {% if server_health.freshness != "current" %}
+  <p class="muted">Health data is stale or unavailable</p>
+  {% else %}
+  {% set attention = server_health.summary.critical + server_health.summary.error %}
+  <p class="muted">{% if attention %}{{ attention }} roles need attention{% else %}All {{ server_health.summary.ok + server_health.summary.warn }} roles are reporting without critical errors{% endif %}</p>
+  {% endif %}
+  <a class="button secondary" href="/network/server-health">View server health</a>
 </section>
 <section class="table-wrap">
   <table>

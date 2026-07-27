@@ -127,6 +127,29 @@ a:hover {
   background: var(--bad-bg);
 }
 
+.health-banner {
+  margin: 0 0 14px;
+}
+
+.check-details {
+  min-width: 260px;
+}
+
+.check-details summary {
+  cursor: pointer;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.check-list {
+  margin: 10px 0 0;
+  padding-left: 20px;
+}
+
+.check-list li + li {
+  margin-top: 8px;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(160px, 1fr));

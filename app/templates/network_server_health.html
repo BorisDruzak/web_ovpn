@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Server health{% endblock %}
+{% block page_title %}Server health{% endblock %}
+{% block content %}
+{% if server_health.freshness == "current" %}
+<section class="alert ok health-banner">
+  Health data is current. Updated {{ server_health.collected_at }} ({{ server_health.age_seconds }} seconds ago).
+</section>
+{% elif server_health.freshness == "stale" %}
+<section class="alert bad health-banner">
+  Health data is stale{% if server_health.collected_at %}. Updated {{ server_health.collected_at }} ({{ server_health.age_seconds }} seconds ago){% endif %}.
+</section>
+{% else %}
+<section class="alert bad health-banner">Health data is unavailable.</section>
+{% endif %}
+
+{% if server_health.collector.status != "ok" %}
+<section class="alert bad health-banner">
+  Collector failed: {{ server_health.collector.message }}
+</section>
+{% endif %}
+
+<section class="metrics">
+  <div class="metric"><span>OK</span><strong>{{ server_health.summary.ok }}</strong></div>
+  <div class="metric"><span>Warning</span><strong>{{ server_health.summary.warn }}</strong></div>
+  <div class="metric"><span>Critical</span><strong>{{ server_health.summary.critical }}</strong></div>
+  <div class="metric"><span>Error</span><strong>{{ server_health.summary.error }}</strong></div>
+</section>
+
+<section class="table-wrap">
+  <table>
+    <thead><tr><th>Role</th><th>Status</th><th>Problems</th><th>Observed</th><th>Details</th></tr></thead>
+    <tbody>
+      {% for target in server_health.targets %}
+      <tr>
+        <td>{{ target.role }}</td>
+        <td><span class="badge {{ target.status|status_class }}">{{ target.status }}</span></td>
+        <td>{{ target.problem_count }}</td>
+        <td>{{ target.observed_at or "-" }}</td>
+        <td class="check-details">
+          <details>
+            <summary>Checks</summary>
+            <ul class="check-list">
+              {% for check in target.checks %}
+              <li>
+                <strong>{{ check.name }}</strong>
+                <span class="badge {{ check.status|status_class }}">{{ check.status }}</span>
+                {% if check.message %}<span>{{ check.message }}</span>{% endif %}
+                {% if check.observed %}<span>{{ check.observed }}</span>{% endif %}
+                {% if check.expected %}<span>expected {{ check.expected }}</span>{% endif %}
+                {% if check.latency_ms is defined %}<span>{{ check.latency_ms }} ms</span>{% endif %}
+              </li>
+              {% else %}
+              <li class="muted">No checks were recorded.</li>
+              {% endfor %}
+            </ul>
+          </details>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty">No server health results are available.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -33,6 +33,7 @@
       <details class="nav-group" {% if nav_path.startswith('/network/') and not nav_path.startswith('/network/backups') and not nav_path.startswith('/network/collect') and not nav_path.startswith('/network/server-drafts') %}open{% endif %}>
         <summary>Сеть и диагностика</summary>
         {{ nav_item('/network/dashboard', 'Обзор сети', nav_path == '/network/dashboard') }}
+        {{ nav_item('/network/server-health', 'Состояние серверов', nav_path == '/network/server-health') }}
         {{ nav_item('/network/hosts', 'Устройства сети', nav_path.startswith('/network/hosts') or nav_path.startswith('/network/assets/')) }}
         {{ nav_item('/network/monitoring', 'Доступность устройств', nav_path.startswith('/network/monitoring')) }}
         {{ nav_item('/network/paths', 'Пути VPN между площадками', nav_path.startswith('/network/paths')) }}
