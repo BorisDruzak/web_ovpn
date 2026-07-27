@@ -141,3 +141,16 @@ Python runtime. Local metadata may be placed under `/Metadata`; it is not used
 by this spike. The installer USB can be identified from the `/image` mount via
 `findmnt`. A future approved implementation may use these facts to hand off to
 Alterator and capture `wizard.log`; that work is explicitly out of scope here.
+
+## PR2 controller-only planning boundary
+
+PR2 adds a synthetic, server-side contract for a future approved installation:
+validated InstallInventory V1, the data-only `standard-office-v1` policy, an
+immutable InstallPlan V1, and deterministic `autoinstall.scm`,
+`vm-profile.scm`, and checksum rendering. Its detailed design is in
+[`2026-07-27-alt-install-plan-pr2-design.md`](superpowers/specs/2026-07-27-alt-install-plan-pr2-design.md).
+
+This does **not** change the PR1 ISO, start Alterator, expose an approval API,
+contact a VM, or write a target disk. It uses only sanitised fixtures and
+controller-side render output; live agent transport, signature/key lifecycle,
+and installer handoff remain later PRs.

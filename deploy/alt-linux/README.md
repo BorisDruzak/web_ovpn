@@ -510,6 +510,17 @@ ai curl=http://192.168.100.17:8087/metadata/
 The current profile clears the first detected disk. Use a disposable target
 with one disk until disk-selection hardening is complete.
 
+## PR2 install-plan contract
+
+`autoinstall/profiles/standard-office-v1.json` and the Python modules in
+`control/alt_deploy/install_*.py` are a controller-only planning boundary.
+They validate synthetic InstallInventory V1 payloads, select exactly one safe
+internal disk and one route-capable interface, construct an immutable plan,
+and render deterministic local artefacts. They do not modify an ISO, run
+Alterator, expose an API, contact a VM, or write a target disk. See
+[`docs/ALT_MANAGED_ISO_TECHNICAL_SPIKE.md`](../../docs/ALT_MANAGED_ISO_TECHNICAL_SPIKE.md)
+and the [PR2 design](../../docs/superpowers/specs/2026-07-27-alt-install-plan-pr2-design.md).
+
 ## OR-3P2 machine registry lifecycle
 
 OR-3P2 adds audited registration archival, exact registration generations,
