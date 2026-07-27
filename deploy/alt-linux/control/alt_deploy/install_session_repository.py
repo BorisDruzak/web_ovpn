@@ -296,6 +296,40 @@ class InstallSessionRepository:
             )
         return self._read_regular_bytes(directory / "inventory.json")
 
+    def load_credential_sha256(self, session_id: str) -> str:
+        directory = self.directory(session_id)
+        try:
+            payload = json.loads(
+                self._read_regular_bytes(directory / "auth.json").decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise self._invalid("Install session authorization is invalid") from exc
+        value = payload.get("credential_sha256") if isinstance(payload, dict) else None
+        if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+            raise self._invalid("Install session authorization is invalid")
+        return value
+
+    def read_revision_file(self, session_id: str, filename: str) -> bytes:
+        if filename not in {"plan.json", "plan-signature.json"}:
+            raise self._invalid("Install session revision filename is invalid")
+        return self._read_regular_bytes(
+            self.directory(session_id) / "revision-0001" / filename
+        )
+
+    def list_statuses(self) -> list[dict[str, Any]]:
+        root = self.settings.install_sessions_dir
+        if not root.exists() and not root.is_symlink():
+            return []
+        metadata = root.lstat()
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise self._invalid("Install session root is not a directory")
+        results: list[dict[str, Any]] = []
+        for path in sorted(root.iterdir()):
+            if not stat.S_ISDIR(path.lstat().st_mode) or not SESSION_ID_RE.fullmatch(path.name):
+                raise self._invalid("Install session root contains an unsafe object")
+            results.append(self.load_status(path.name))
+        return results
+
     def publish_revision(
         self,
         session_id: str,

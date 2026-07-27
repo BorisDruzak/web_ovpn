@@ -97,3 +97,35 @@ class InstallSessionApprovalService:
         updated.update({"state": "plan_published", "stage": "published", "stage_history": history, "updated_at": approved_at.isoformat(), "plan_revision": 1})
         self.repository.replace_status(session_id, updated)
         return updated
+
+    def preview(self, session_id: str) -> dict[str, object]:
+        status = self.repository.load_status(session_id)
+        try:
+            inventory = parse_inventory(json.loads(self.repository.load_inventory_bytes(session_id)))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ControlError("install_session_inventory_invalid", "Install session inventory is invalid", 4) from exc
+        profile = load_profile(self.settings.install_profile_root, "standard-office", 1)
+        evaluation = evaluate_policy(inventory, profile)
+        return {
+            "session_id": status["session_id"], "inventory_sha256": status["inventory_sha256"],
+            "profile": {"id": profile.profile_id, "version": profile.profile_version},
+            "target_disk": {**evaluation.eligible_disk.to_dict(), "fingerprint": disk_fingerprint(evaluation.eligible_disk)},
+            "network_interface": {"name": evaluation.route_interface.name, "mac": evaluation.route_interface.mac},
+            "warning": "Approval authorizes whole-disk destruction in a later phase",
+        }
+
+    def cancel(self, session_id: str, *, reason: object) -> dict[str, object]:
+        if self.euid() != 0:
+            raise ControlError("install_session_root_required", "Install cancellation requires root", 4)
+        if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 256:
+            raise ControlError("install_session_reason_invalid", "Install cancellation reason is invalid", 4)
+        status = self.repository.load_status(session_id)
+        if status.get("state") == "cancelled":
+            if status.get("cancel_reason") == reason.strip():
+                return status
+            raise ControlError("install_session_cancel_conflict", "Install session was cancelled with another reason", 4)
+        now = datetime.fromisoformat(self.clock()).astimezone(timezone.utc).isoformat()
+        updated = deepcopy(status)
+        updated.update({"state": "cancelled", "cancelled_at": now, "cancel_reason": reason.strip(), "updated_at": now})
+        self.repository.replace_status(session_id, updated)
+        return updated
