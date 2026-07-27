@@ -65,9 +65,28 @@ def test_root_approval_publishes_signed_first_revision(
 
     assert approved["state"] == "plan_published"
     assert approved["plan_revision"] == 1
+    approval = json.loads(
+        (settings.install_sessions_dir / created.session_id / "approval.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert approval["operator_uid"] == 0
+    assert approval["inventory_sha256"] == approved["inventory_sha256"]
     revision = settings.install_sessions_dir / created.session_id / "revision-0001"
     assert sorted(path.name for path in revision.iterdir()) == [
         "plan-signature.json",
         "plan.json",
         "plan.sha256",
     ]
+    repeated = InstallSessionApprovalService(
+        settings,
+        repository=repository,
+        clock=lambda: "2026-07-27T12:02:00+00:00",
+        euid=lambda: 0,
+    ).approve(
+        created.session_id,
+        inventory_sha256=approved["inventory_sha256"],
+        disk_fingerprint_value=disk_fingerprint(inventory.disks[0]),
+        reason="Approved disposable ALT installation target",
+    )
+    assert repeated == approved

@@ -309,6 +309,19 @@ class InstallSessionRepository:
             raise self._invalid("Install session authorization is invalid")
         return value
 
+    def load_approval(self, session_id: str) -> dict[str, Any]:
+        try:
+            payload = json.loads(
+                self._read_regular_bytes(
+                    self.directory(session_id) / "approval.json"
+                ).decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
+            raise self._invalid("Install session approval is invalid") from exc
+        if not isinstance(payload, dict):
+            raise self._invalid("Install session approval is invalid")
+        return payload
+
     def read_revision_file(self, session_id: str, filename: str) -> bytes:
         if filename not in {"plan.json", "plan-signature.json"}:
             raise self._invalid("Install session revision filename is invalid")
@@ -369,3 +382,28 @@ class InstallSessionRepository:
                 for child in temporary.iterdir():
                     child.unlink()
                 temporary.rmdir()
+
+    def write_approval(
+        self,
+        session_id: str,
+        approval: Mapping[str, object],
+    ) -> None:
+        directory = self.directory(session_id)
+        destination = directory / "approval.json"
+        if destination.exists() or destination.is_symlink():
+            raise ControlError(
+                code="install_session_approval_conflict",
+                message="Install session approval already exists",
+                exit_code=4,
+            )
+        temporary = directory / f".approval.json.{secrets.token_hex(4)}.tmp"
+        try:
+            self._create_file(temporary, self._encoded_json(approval))
+            os.replace(temporary, destination)
+            self._fsync_directory(directory)
+        except ControlError:
+            raise
+        except OSError as exc:
+            raise self._failed("Install session approval cannot be written") from exc
+        finally:
+            temporary.unlink(missing_ok=True)

@@ -59,6 +59,15 @@ class InstallSessionApprovalService:
         if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 256:
             raise ControlError("install_session_reason_invalid", "Install approval reason is invalid", 4)
         status = self.repository.load_status(session_id)
+        if status.get("state") == "plan_published":
+            approval = self.repository.load_approval(session_id)
+            if (
+                approval.get("inventory_sha256") == inventory_sha256
+                and approval.get("disk_fingerprint") == disk_fingerprint_value
+                and approval.get("reason") == reason.strip()
+            ):
+                return status
+            raise ControlError("install_session_approval_conflict", "Install session is already approved", 4)
         if status.get("state") != "awaiting_approval":
             raise ControlError("install_session_approval_conflict", "Install session is not awaiting approval", 4)
         try:
@@ -90,6 +99,14 @@ class InstallSessionApprovalService:
             "created_at": approved_at.isoformat(),
         }
         self.repository.publish_revision(session_id, plan_bytes=plan_bytes, plan_sha256=plan_sha256(plan), signature=signature_document)
+        self.repository.write_approval(session_id, {
+            "schema_version": 1, "session_id": session_id, "revision": 1,
+            "operator_uid": self.euid(), "operator_name": "root",
+            "reason": reason.strip(), "inventory_sha256": inventory_sha256,
+            "disk_fingerprint": actual_fingerprint, "profile_id": profile.profile_id,
+            "profile_version": profile.profile_version, "approved_at": approved_at.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        })
         updated = deepcopy(status)
         history = list(updated["stage_history"])
         for stage in ("plan_built", "plan_signed", "published"):
