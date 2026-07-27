@@ -21,7 +21,7 @@ INSTALL_SESSION_STAGES: tuple[str, ...] = (
 _STAGE_INDEX = {
     stage: index for index, stage in enumerate(INSTALL_SESSION_STAGES)
 }
-_TERMINAL_STATES = frozenset({"cancelled"})
+_TERMINAL_STATES = frozenset({"cancelled", "expired"})
 
 
 class InstallSessionStageManager:
@@ -108,7 +108,7 @@ class InstallSessionStageManager:
             )
         if state not in {
             "awaiting_approval", "approval_in_progress", "plan_published",
-            "cancelled",
+            "cancelled", "expired",
         }:
             raise self._invalid("Install session state is invalid")
 

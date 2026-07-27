@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import re
@@ -21,8 +20,8 @@ _REPORTED_STAGES = frozenset({
     "agent_started",
     "inventory_validated",
     "waiting_for_approval",
-    "plan_available",
     "plan_downloaded",
+    "preflight_ready",
 })
 
 
@@ -90,6 +89,41 @@ def create_install_session_server(
                 return False
             return True
 
+        def _expire_if_needed(
+            self, status: dict[str, object], *, force: bool = False
+        ) -> dict[str, object]:
+            if status.get("state") in {"cancelled", "expired"}:
+                return status
+            value = status.get("expires_at")
+            if not isinstance(value, str):
+                return status
+            try:
+                expires_at = datetime.fromisoformat(value)
+            except ValueError:
+                expires_at = None
+            if (
+                not force
+                and
+                expires_at is not None
+                and expires_at.tzinfo is not None
+                and expires_at > datetime.now(timezone.utc)
+            ):
+                return status
+            now = datetime.now(timezone.utc).isoformat()
+            updated = dict(status)
+            updated.update({
+                "state": "expired",
+                "expired_at": now,
+                "updated_at": now,
+            })
+            InstallSessionStageManager(
+                repository, clock=lambda: now
+            ).validate_status(updated)
+            repository.replace_status(
+                str(status["session_id"]), updated, allow_lifecycle=True
+            )
+            return updated
+
         def do_POST(self) -> None:
             if "?" in self.path or len(self.path) > 4096:
                 self._error(404, "not_found")
@@ -98,10 +132,24 @@ def create_install_session_server(
                 body = self._body()
                 if body is None:
                     return
+                if not isinstance(body, dict) or set(body) != {
+                    "create_nonce", "inventory"
+                }:
+                    self._error(400, "install_session_create_invalid")
+                    return
                 try:
-                    created = service.create(body, source_ip=self.client_address[0])
+                    created = service.create(
+                        body["inventory"],
+                        source_ip=self.client_address[0],
+                        create_nonce=body["create_nonce"],
+                    )
                 except ControlError as exc:
-                    self._error(403 if exc.code == "install_session_source_forbidden" else 400, exc.code)
+                    self._error(
+                        403 if exc.code == "install_session_source_forbidden"
+                        else 409 if exc.code == "install_session_create_nonce_mismatch"
+                        else 400,
+                        exc.code,
+                    )
                     return
                 self._send(201, {"session_id": created.session_id, "credential": created.credential, "state": created.state, "poll_after_seconds": created.poll_after_seconds})
                 return
@@ -145,6 +193,13 @@ def create_install_session_server(
             ).exclusive_lock(settings.install_sessions_lock)
             with lock:
                 status = repository.load_status(session_id)
+                status = self._expire_if_needed(status)
+                if status.get("state") == "expired":
+                    self._error(409, "session_expired")
+                    return
+                if status.get("state") == "cancelled":
+                    self._error(409, "session_cancelled")
+                    return
                 stages = InstallSessionStageManager(
                     repository, clock=lambda: datetime.now(timezone.utc).isoformat()
                 )
@@ -175,12 +230,19 @@ def create_install_session_server(
             session_id, operation = match.groups()
             if not self._authorize(session_id):
                 return
-            status = repository.load_status(session_id)
+            lock = nullcontext() if os.name == "nt" else __import__(
+                "alt_deploy.locks", fromlist=["exclusive_lock"]
+            ).exclusive_lock(settings.install_sessions_lock)
+            with lock:
+                status = self._expire_if_needed(repository.load_status(session_id))
             if operation == "status":
                 self._send(200, {key: value for key, value in status.items() if key not in {"source_ip", "agent_boot_id"}})
                 return
             if status.get("state") == "cancelled":
                 self._error(409, "session_cancelled")
+                return
+            if status.get("state") == "expired":
+                self._error(410, "plan_expired")
                 return
             if status.get("state") != "plan_published":
                 self._error(409, "plan_not_available")
@@ -194,6 +256,13 @@ def create_install_session_server(
                 self._error(500, "published_plan_invalid")
                 return
             if expires_at <= datetime.now(timezone.utc):
+                expiry_lock = nullcontext() if os.name == "nt" else __import__(
+                    "alt_deploy.locks", fromlist=["exclusive_lock"]
+                ).exclusive_lock(settings.install_sessions_lock)
+                with expiry_lock:
+                    self._expire_if_needed(
+                        repository.load_status(session_id), force=True
+                    )
                 self._error(410, "plan_expired")
                 return
             self._send_bytes(200, payload)

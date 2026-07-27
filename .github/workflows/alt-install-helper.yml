@@ -1,0 +1,65 @@
+name: ALT install helper contract
+
+on:
+  pull_request:
+    paths:
+      - "deploy/alt-linux/install-agent/helper/**"
+      - "deploy/alt-linux/control/alt_deploy/install_fingerprint.py"
+      - "deploy/alt-linux/control/alt_deploy/install_inventory.py"
+      - "deploy/alt-linux/control/alt_deploy/install_plan.py"
+      - "deploy/alt-linux/control/alt_deploy/install_policy.py"
+      - "deploy/alt-linux/control/alt_deploy/install_session_signing.py"
+      - "deploy/alt-linux/autoinstall/profiles/**"
+      - "tests/alt_linux/fixtures/install/**"
+      - "tests/alt_linux/test_install_helper_vectors.py"
+      - ".github/workflows/alt-install-helper.yml"
+  push:
+    paths:
+      - "deploy/alt-linux/install-agent/helper/**"
+      - "deploy/alt-linux/control/alt_deploy/install_fingerprint.py"
+      - "deploy/alt-linux/control/alt_deploy/install_inventory.py"
+      - "deploy/alt-linux/control/alt_deploy/install_plan.py"
+      - "deploy/alt-linux/control/alt_deploy/install_policy.py"
+      - "deploy/alt-linux/control/alt_deploy/install_session_signing.py"
+      - "deploy/alt-linux/autoinstall/profiles/**"
+      - "tests/alt_linux/fixtures/install/**"
+      - "tests/alt_linux/test_install_helper_vectors.py"
+      - ".github/workflows/alt-install-helper.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  helper:
+    name: go-1.22-static-helper
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/alt-linux/install-agent/helper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.12"
+          cache-dependency-path: deploy/alt-linux/install-agent/helper/go.sum
+      - name: Assert standard-library-only module
+        run: test "$(go list -m all | wc -l)" -eq 1
+      - name: Run Go helper tests
+        run: go test ./...
+      - name: Build twice with the deterministic static command
+        run: |
+          make build OUTPUT="$RUNNER_TEMP/alt-install-helper-a"
+          make build OUTPUT="$RUNNER_TEMP/alt-install-helper-b"
+          cmp "$RUNNER_TEMP/alt-install-helper-a" "$RUNNER_TEMP/alt-install-helper-b"
+          file "$RUNNER_TEMP/alt-install-helper-a" | grep -F "statically linked"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python contract dependencies
+        working-directory: .
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Regenerate shared PR3 golden vectors
+        working-directory: .
+        run: >-
+          python -m pytest -q --noconftest
+          tests/alt_linux/test_install_helper_vectors.py

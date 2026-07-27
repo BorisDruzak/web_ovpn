@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 from collections.abc import Callable
@@ -82,8 +81,19 @@ class InstallSessionApprovalService:
             ):
                 return status
             raise ControlError("install_session_approval_conflict", "Install session is already approved", 4)
+        if status.get("state") == "expired":
+            raise ControlError("install_session_expired", "Install session is expired", 4)
         if status.get("state") != "awaiting_approval":
             raise ControlError("install_session_approval_conflict", "Install session is not awaiting approval", 4)
+        approved_at = datetime.fromisoformat(self.clock()).astimezone(timezone.utc)
+        expires_at_value = status.get("expires_at")
+        if isinstance(expires_at_value, str) and datetime.fromisoformat(expires_at_value).astimezone(timezone.utc) <= approved_at:
+            expired = deepcopy(status)
+            timestamp = approved_at.isoformat()
+            expired.update({"state": "expired", "expired_at": timestamp, "updated_at": timestamp})
+            InstallSessionStageManager(self.repository, clock=self.clock).validate_status(expired)
+            self.repository.replace_status(session_id, expired, allow_lifecycle=True)
+            raise ControlError("install_session_expired", "Install session is expired", 4)
         # Artifact and status replacement cannot be one filesystem operation.
         # If a prior process died after publishing an artifact, status.json is
         # still authoritative and the retry removes only that partial output.
@@ -100,7 +110,6 @@ class InstallSessionApprovalService:
         actual_fingerprint = disk_fingerprint(evaluation.eligible_disk)
         if disk_fingerprint_value != actual_fingerprint:
             raise ControlError("install_session_disk_mismatch", "Install approval disk fingerprint does not match", 4)
-        approved_at = datetime.fromisoformat(self.clock()).astimezone(timezone.utc)
         expires_at = approved_at + timedelta(minutes=30)
         plan = build_install_plan(
             inventory, profile, evaluation,
@@ -150,6 +159,8 @@ class InstallSessionApprovalService:
         updated["state"] = "plan_published"
         updated["plan_revision"] = 1
         updated["updated_at"] = approved_at.isoformat()
+        updated["expires_at"] = expires_at.isoformat()
+        updated["expired_at"] = None
         stages.validate_status(updated)
         try:
             self.repository.publish_revision(

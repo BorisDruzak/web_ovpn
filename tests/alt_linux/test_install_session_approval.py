@@ -59,7 +59,9 @@ def test_root_approval_publishes_signed_first_revision(
         clock=lambda: "2026-07-27T12:00:00+00:00",
         credential_factory=lambda: "credential-for-test",
         session_id_factory=lambda: "install-20260727T120000Z-a1b2c3d4",
-    ).create(payload, source_ip="192.168.100.10")
+    ).create(
+        payload, source_ip="192.168.100.10", create_nonce="A" * 43
+    )
     inventory = parse_inventory(payload)
 
     approved = InstallSessionApprovalService(
@@ -136,7 +138,9 @@ def test_failed_approval_removes_partial_artifacts_and_can_retry(
         settings, repository=repository,
         clock=lambda: "2026-07-27T12:00:00+00:00",
         session_id_factory=lambda: session_id,
-    ).create(payload, source_ip="192.168.100.10")
+    ).create(
+        payload, source_ip="192.168.100.10", create_nonce="A" * 43
+    )
     fingerprint = disk_fingerprint(parse_inventory(payload).disks[0])
     service = InstallSessionApprovalService(
         settings, repository=repository,
@@ -196,7 +200,9 @@ def test_status_fsync_failure_preserves_an_already_published_plan(
         settings, repository=repository,
         clock=lambda: "2026-07-27T12:00:00+00:00",
         session_id_factory=lambda: "install-20260727T120000Z-a1b2c3d4",
-    ).create(payload, source_ip="192.168.100.10")
+    ).create(
+        payload, source_ip="192.168.100.10", create_nonce="A" * 43
+    )
     service = InstallSessionApprovalService(
         settings, repository=repository,
         clock=lambda: "2026-07-27T12:01:00+00:00", euid=lambda: 0,

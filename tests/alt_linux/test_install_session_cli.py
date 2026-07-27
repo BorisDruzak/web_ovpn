@@ -41,7 +41,9 @@ def test_cli_show_redacts_private_session_fields(
         repository=repository,
         clock=lambda: "2026-07-27T12:00:00+00:00",
         session_id_factory=lambda: "install-20260727T120000Z-a1b2c3d4",
-    ).create(payload, source_ip="192.168.100.10")
+    ).create(
+        payload, source_ip="192.168.100.10", create_nonce="A" * 43
+    )
 
     output = io.StringIO()
     assert main(

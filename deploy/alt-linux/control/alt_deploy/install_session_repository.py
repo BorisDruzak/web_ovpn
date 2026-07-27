@@ -217,6 +217,7 @@ class InstallSessionRepository:
         session_id: str,
         inventory_bytes: bytes,
         credential_sha256: str,
+        create_nonce_sha256: str,
         status: Mapping[str, object],
     ) -> None:
         normalized = self._validate_session_id(session_id)
@@ -224,6 +225,8 @@ class InstallSessionRepository:
             raise self._invalid("Install inventory bytes are invalid")
         if not _SHA256_RE.fullmatch(credential_sha256):
             raise self._invalid("Install credential hash is invalid")
+        if not _SHA256_RE.fullmatch(create_nonce_sha256):
+            raise self._invalid("Install create nonce hash is invalid")
         if status.get("session_id") != normalized:
             raise self._invalid("Install session status identity is invalid")
         self._ensure_private_directory(self.settings.install_sessions_dir)
@@ -246,6 +249,7 @@ class InstallSessionRepository:
                     {
                         "schema_version": 1,
                         "credential_sha256": credential_sha256,
+                        "create_nonce_sha256": create_nonce_sha256,
                     }
                 ),
             )
@@ -372,6 +376,30 @@ class InstallSessionRepository:
         if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
             raise self._invalid("Install session authorization is invalid")
         return value
+
+    def load_create_nonce_sha256(self, session_id: str) -> str:
+        directory = self.directory(session_id)
+        try:
+            payload = json.loads(
+                self._read_regular_bytes(directory / "auth.json").decode("utf-8")
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise self._invalid("Install session authorization is invalid") from exc
+        value = payload.get("create_nonce_sha256") if isinstance(payload, dict) else None
+        if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+            raise self._invalid("Install session authorization is invalid")
+        return value
+
+    def find_status_by_create_nonce_sha256(
+        self, create_nonce_sha256: str
+    ) -> dict[str, Any] | None:
+        if not _SHA256_RE.fullmatch(create_nonce_sha256):
+            raise self._invalid("Install create nonce hash is invalid")
+        for status in self.list_statuses():
+            stored = self.load_create_nonce_sha256(str(status.get("session_id", "")))
+            if stored == create_nonce_sha256:
+                return status
+        return None
 
     def load_approval(self, session_id: str) -> dict[str, Any]:
         try:

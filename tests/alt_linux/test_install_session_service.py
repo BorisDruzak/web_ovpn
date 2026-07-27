@@ -38,7 +38,6 @@ def test_service_creates_session_for_valid_allowed_inventory(
         settings,
         repository=InstallSessionRepository(settings),
         clock=lambda: "2026-07-27T12:00:00+00:00",
-        credential_factory=lambda: "credential-for-test",
         session_id_factory=lambda: "install-20260727T120000Z-a1b2c3d4",
     )
     payload = json.loads(
@@ -47,10 +46,12 @@ def test_service_creates_session_for_valid_allowed_inventory(
         )
     )
 
-    created = service.create(payload, source_ip="192.168.100.10")
+    created = service.create(
+        payload, source_ip="192.168.100.10", create_nonce="A" * 43
+    )
 
     assert created.session_id == "install-20260727T120000Z-a1b2c3d4"
-    assert created.credential == "credential-for-test"
+    assert created.credential == "A" * 43
     assert created.state == "awaiting_approval"
     assert created.poll_after_seconds == 3
 
@@ -77,10 +78,17 @@ def test_service_enforces_per_machine_active_session_quota(
         session_id_factory=lambda: next(session_ids),
     )
     payload = json.loads((FIXTURE_ROOT / "inventory-disk-100g.json").read_text(encoding="utf-8"))
+    nonces = iter(("A" * 42) + value for value in ("A", "E", "I", "M", "Q", "U"))
     for _ in range(5):
-        service.create(payload, source_ip="192.168.100.10")
+        service.create(
+            payload,
+            source_ip="192.168.100.10",
+            create_nonce=next(nonces),
+        )
     with pytest.raises(ControlError) as error:
-        service.create(payload, source_ip="192.168.100.10")
+        service.create(
+            payload, source_ip="192.168.100.10", create_nonce=("B" * 42) + "A"
+        )
     assert error.value.code == "install_session_machine_quota_exceeded"
 
 
@@ -101,8 +109,15 @@ def test_service_enforces_global_active_session_quota(
         "list_statuses",
         lambda: [{"state": "awaiting_approval"}] * 100,
     )
+    monkeypatch.setattr(
+        repository,
+        "find_status_by_create_nonce_sha256",
+        lambda _nonce: None,
+    )
     service = InstallSessionService(settings, repository=repository)
     payload = json.loads((FIXTURE_ROOT / "inventory-disk-100g.json").read_text(encoding="utf-8"))
     with pytest.raises(ControlError) as error:
-        service.create(payload, source_ip="192.168.100.10")
+        service.create(
+            payload, source_ip="192.168.100.10", create_nonce=("C" * 42) + "A"
+        )
     assert error.value.code == "install_session_quota_exceeded"

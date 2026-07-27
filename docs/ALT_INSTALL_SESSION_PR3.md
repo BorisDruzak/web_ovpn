@@ -4,7 +4,9 @@ PR3 adds a server-only, repository-complete control plane for ALT 11.4 installat
 
 ## Operator workflow
 
-The agent-facing HTTP API creates a private install session after strict `InstallInventoryV1` and `standard-office` policy validation. It returns a one-time Bearer credential; only its SHA-256 is stored.
+The agent-facing HTTP API creates a private install session after strict `InstallInventoryV1` and `standard-office` policy validation. The create body is an object with exactly `create_nonce` and `inventory`. `create_nonce` is a canonical URL-safe encoding of 32 random bytes generated once by the agent. Its SHA-256 is persisted alongside the Bearer credential hash; the nonce is also the returned credential, so an identical nonce plus canonical inventory hash safely returns the original session and credential after a transport retry. Reusing a nonce with another inventory fails closed.
+
+Awaiting approval expires after 30 minutes. Approval replaces that deadline with the signed plan expiry. Cancelled and expired sessions are inactive and do not consume the active-session quota. Agent heartbeat stages are versioned and limited to `agent_started`, `inventory_validated`, `waiting_for_approval`, `plan_downloaded`, and `preflight_ready`.
 
 An operator may inspect a bounded preview:
 
