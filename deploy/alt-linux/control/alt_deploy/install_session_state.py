@@ -91,6 +91,69 @@ class InstallSessionStageManager:
             raise self._invalid(
                 "Install session stage does not match history"
             )
+        state = status.get("state")
+        if state == "awaiting_approval" and stage != "awaiting_approval":
+            raise self._invalid(
+                "Awaiting approval state has an invalid stage"
+            )
+        if state == "plan_published" and stage != "published":
+            raise self._invalid(
+                "Published plan state has an invalid stage"
+            )
+        if state == "approval_in_progress" and stage not in {
+            "plan_built", "plan_signed", "published"
+        }:
+            raise self._invalid(
+                "Approval in progress state has an invalid stage"
+            )
+        if state not in {
+            "awaiting_approval", "approval_in_progress", "plan_published",
+            "cancelled",
+        }:
+            raise self._invalid("Install session state is invalid")
+
+    def validate_status(self, status: Mapping[str, object]) -> None:
+        self._validate(status)
+
+    def advance_status(
+        self,
+        status: Mapping[str, object],
+        next_stage: str,
+    ) -> dict[str, object]:
+        """Validate and advance an in-memory status by exactly one stage."""
+        self._validate(status)
+        if status.get("state") in _TERMINAL_STATES:
+            raise ControlError(
+                code="install_session_stage_terminal",
+                message="Cancelled install session cannot change stage",
+                exit_code=4,
+            )
+        current_stage = str(status["stage"])
+        if next_stage not in _STAGE_INDEX:
+            raise ControlError(
+                code="invalid_install_session_stage_transition",
+                message="Install session next stage is unknown",
+                exit_code=4,
+            )
+        if next_stage == current_stage:
+            return deepcopy(dict(status))
+        if _STAGE_INDEX[next_stage] != _STAGE_INDEX[current_stage] + 1:
+            raise ControlError(
+                code="invalid_install_session_stage_transition",
+                message="Install session stage is not the immediate next step",
+                exit_code=4,
+            )
+        entered_at = self._timestamp(self.clock())
+        updated = deepcopy(dict(status))
+        history = list(updated["stage_history"])
+        history.append({"stage": next_stage, "entered_at": entered_at})
+        updated["stage"] = next_stage
+        if next_stage == "plan_built":
+            updated["state"] = "approval_in_progress"
+        updated["stage_history"] = history
+        updated["updated_at"] = entered_at
+        self._validate(updated)
+        return updated
 
     def advance(
         self,
@@ -105,37 +168,10 @@ class InstallSessionStageManager:
         )
         with lock:
             status = self.repository.load_status(session_id)
-            self._validate(status)
-            if status.get("state") in _TERMINAL_STATES:
-                raise ControlError(
-                    code="install_session_stage_terminal",
-                    message="Cancelled install session cannot change stage",
-                    exit_code=4,
-                )
-            current_stage = str(status["stage"])
-            if next_stage not in _STAGE_INDEX:
-                raise ControlError(
-                    code="invalid_install_session_stage_transition",
-                    message="Install session next stage is unknown",
-                    exit_code=4,
-                )
-            if next_stage == current_stage:
+            updated = self.advance_status(status, next_stage)
+            if updated == status:
                 return status
-            if _STAGE_INDEX[next_stage] != _STAGE_INDEX[current_stage] + 1:
-                raise ControlError(
-                    code="invalid_install_session_stage_transition",
-                    message="Install session stage is not the immediate next step",
-                    exit_code=4,
-                )
-            entered_at = self._timestamp(self.clock())
-            updated = deepcopy(status)
-            history = list(updated["stage_history"])
-            history.append(
-                {"stage": next_stage, "entered_at": entered_at}
+            self.repository.replace_status(
+                session_id, updated, allow_lifecycle=True
             )
-            updated["stage"] = next_stage
-            updated["stage_history"] = history
-            updated["updated_at"] = entered_at
-            self._validate(updated)
-            self.repository.replace_status(session_id, updated)
             return updated

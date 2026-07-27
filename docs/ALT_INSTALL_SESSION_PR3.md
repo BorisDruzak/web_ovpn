@@ -25,7 +25,9 @@ Approval re-evaluates the inventory and policy, builds `InstallPlanV1` revision 
 
 ## Files and keys
 
-Sessions use `${ALT_DEPLOY_INSTALL_SESSIONS:-/var/lib/alt-deploy/install-sessions}`. Each session directory and revision directory is private (`0700`); inventory, authorization, status, plan, checksum and signature files are private (`0600`). The production private key is deliberately not created by PR3. It must be an Ed25519 PKCS#8 PEM, regular file, root-owned, and mode `0600` before later deployment.
+Sessions use `${ALT_DEPLOY_INSTALL_SESSIONS:-/var/lib/alt-deploy/install-sessions}`. Each session directory and revision directory is private (`0700`); inventory, authorization, status, approval, plan, checksum and signature files are private (`0600`). The session store belongs to `altserver:altserver`. Root-only approval explicitly transfers its newly created revision and approval files to that account before publication, so the API can serve a published plan without root access.
+
+The production private key is deliberately not created by PR3. Before a later deployment, it must be a regular root-owned Ed25519 PKCS#8 PEM with mode `0600`; the accompanying JSON public key must be regular, root-owned and mode `0644`. Approval reads both through no-follow descriptors and refuses mismatched key identities.
 
 ## HTTP boundary
 

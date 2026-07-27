@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from contextlib import nullcontext
 
 from .config import Settings
 from .errors import ControlError
@@ -22,6 +24,8 @@ _ALLOWED_NETWORKS = (
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("192.168.100.0/23"),
 )
+_MAX_ACTIVE_SESSIONS = 100
+_MAX_SESSIONS_PER_DMI_UUID = 5
 
 
 @dataclass(frozen=True)
@@ -82,36 +86,59 @@ class InstallSessionService:
             1,
         )
         evaluate_policy(inventory, profile)
-        session_id = self.session_id_factory()
-        credential = self.credential_factory()
-        now = self.clock()
-        status = {
-            "schema_version": 1,
-            "session_id": session_id,
-            "state": "awaiting_approval",
-            "stage": "awaiting_approval",
-            "stage_history": [
-                {"stage": "session_created", "entered_at": now},
-                {"stage": "inventory_validated", "entered_at": now},
-                {"stage": "awaiting_approval", "entered_at": now},
-            ],
-            "inventory_sha256": inventory_sha256(inventory),
-            "machine_uuid": inventory.machine.dmi_uuid,
-            "agent_boot_id": inventory.agent.boot_id,
-            "source_ip": source_ip,
-            "created_at": now,
-            "updated_at": now,
-            "last_seen_at": now,
-            "plan_revision": None,
-            "cancelled_at": None,
-            "cancel_reason": None,
-        }
-        self.repository.create(
-            session_id=session_id,
-            inventory_bytes=canonical_inventory_bytes(inventory),
-            credential_sha256=credential_sha256(credential),
-            status=status,
-        )
+        lock = nullcontext() if os.name == "nt" else __import__(
+            "alt_deploy.locks", fromlist=["exclusive_lock"]
+        ).exclusive_lock(self.settings.install_sessions_lock)
+        with lock:
+            active = [
+                item for item in self.repository.list_statuses()
+                if item.get("state") != "cancelled"
+            ]
+            if len(active) >= _MAX_ACTIVE_SESSIONS:
+                raise ControlError(
+                    code="install_session_quota_exceeded",
+                    message="Active install session quota is exhausted",
+                    exit_code=4,
+                )
+            if sum(
+                item.get("machine_uuid") == inventory.machine.dmi_uuid
+                for item in active
+            ) >= _MAX_SESSIONS_PER_DMI_UUID:
+                raise ControlError(
+                    code="install_session_machine_quota_exceeded",
+                    message="Install session machine quota is exhausted",
+                    exit_code=4,
+                )
+            session_id = self.session_id_factory()
+            credential = self.credential_factory()
+            now = self.clock()
+            status = {
+                "schema_version": 1,
+                "session_id": session_id,
+                "state": "awaiting_approval",
+                "stage": "awaiting_approval",
+                "stage_history": [
+                    {"stage": "session_created", "entered_at": now},
+                    {"stage": "inventory_validated", "entered_at": now},
+                    {"stage": "awaiting_approval", "entered_at": now},
+                ],
+                "inventory_sha256": inventory_sha256(inventory),
+                "machine_uuid": inventory.machine.dmi_uuid,
+                "agent_boot_id": inventory.agent.boot_id,
+                "source_ip": source_ip,
+                "created_at": now,
+                "updated_at": now,
+                "last_seen_at": now,
+                "plan_revision": None,
+                "cancelled_at": None,
+                "cancel_reason": None,
+            }
+            self.repository.create(
+                session_id=session_id,
+                inventory_bytes=canonical_inventory_bytes(inventory),
+                credential_sha256=credential_sha256(credential),
+                status=status,
+            )
         return CreatedInstallSession(
             session_id=session_id,
             credential=credential,

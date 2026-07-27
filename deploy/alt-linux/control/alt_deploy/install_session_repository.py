@@ -25,6 +25,41 @@ class InstallSessionRepository:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
+    def _service_owner(self) -> tuple[int, int] | None:
+        """Return the service account only when root must hand files over.
+
+        Normal API writes already run as ``altserver``.  Root-only approval is
+        the one path that would otherwise create unreadable plan artefacts.
+        """
+        if os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+            return None
+        try:
+            import pwd
+
+            account = pwd.getpwnam(self.settings.service_user)
+        except (ImportError, KeyError) as exc:
+            raise self._failed("Install service account cannot be resolved") from exc
+        return account.pw_uid, account.pw_gid
+
+    def _set_owner(self, descriptor: int, owner: tuple[int, int] | None) -> None:
+        if owner is None:
+            return
+        try:
+            os.fchown(descriptor, owner[0], owner[1])
+        except OSError as exc:
+            raise self._failed("Install session ownership cannot be assigned") from exc
+
+    def _make_private_directory(
+        self, path: Path, *, owner: tuple[int, int] | None = None
+    ) -> None:
+        try:
+            path.mkdir(mode=0o700)
+            os.chmod(path, 0o700)
+            if owner is not None:
+                os.chown(path, owner[0], owner[1])
+        except OSError as exc:
+            raise self._failed("Install session directory cannot be created") from exc
+
     @staticmethod
     def _invalid(message: str) -> ControlError:
         return ControlError(
@@ -66,7 +101,7 @@ class InstallSessionRepository:
                 raise self._invalid(
                     "Install session root is not a directory"
                 )
-            if stat.S_IMODE(metadata.st_mode) != 0o700:
+            if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != 0o700:
                 raise self._invalid(
                     "Install session directory permissions are invalid"
                 )
@@ -100,7 +135,13 @@ class InstallSessionRepository:
         finally:
             os.close(descriptor)
 
-    def _create_file(self, path: Path, data: bytes) -> None:
+    def _create_file(
+        self,
+        path: Path,
+        data: bytes,
+        *,
+        owner: tuple[int, int] | None = None,
+    ) -> None:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
@@ -112,6 +153,7 @@ class InstallSessionRepository:
             ) from exc
         try:
             os.fchmod(descriptor, 0o600)
+            self._set_owner(descriptor, owner)
             offset = 0
             while offset < len(data):
                 written = os.write(descriptor, data[offset:])
@@ -196,8 +238,7 @@ class InstallSessionRepository:
             f".{normalized}.{secrets.token_hex(4)}.tmp"
         )
         try:
-            temporary.mkdir(mode=0o700)
-            os.chmod(temporary, 0o700)
+            self._make_private_directory(temporary)
             self._create_file(temporary / "inventory.json", inventory_bytes)
             self._create_file(
                 temporary / "auth.json",
@@ -255,6 +296,8 @@ class InstallSessionRepository:
         self,
         session_id: str,
         status: Mapping[str, object],
+        *,
+        allow_lifecycle: bool = False,
     ) -> None:
         directory = self.directory(session_id)
         if status.get("session_id") != session_id:
@@ -269,6 +312,16 @@ class InstallSessionRepository:
             ) from exc
         if not stat.S_ISDIR(metadata.st_mode):
             raise self._invalid("Install session is not a directory")
+        current = self.load_status(session_id)
+        if not allow_lifecycle and any(
+            status.get(field) != current.get(field)
+            for field in ("state", "stage", "stage_history")
+        ):
+            raise ControlError(
+                code="install_session_lifecycle_update_forbidden",
+                message="Install session lifecycle requires stage manager",
+                exit_code=4,
+            )
         destination = directory / "status.json"
         temporary = directory / (
             f".status.json.{secrets.token_hex(4)}.tmp"
@@ -360,15 +413,17 @@ class InstallSessionRepository:
                 exit_code=4,
             )
         temporary = directory / f".revision-0001.{secrets.token_hex(4)}.tmp"
+        owner = self._service_owner()
         try:
-            temporary.mkdir(mode=0o700)
-            os.chmod(temporary, 0o700)
-            self._create_file(temporary / "plan.json", plan_bytes)
+            self._make_private_directory(temporary, owner=owner)
+            self._create_file(temporary / "plan.json", plan_bytes, owner=owner)
             self._create_file(
-                temporary / "plan.sha256", (plan_sha256 + "\n").encode("ascii")
+                temporary / "plan.sha256", (plan_sha256 + "\n").encode("ascii"),
+                owner=owner,
             )
             self._create_file(
-                temporary / "plan-signature.json", self._encoded_json(signature)
+                temporary / "plan-signature.json", self._encoded_json(signature),
+                owner=owner,
             )
             self._fsync_directory(temporary)
             os.replace(temporary, revision)
@@ -398,7 +453,11 @@ class InstallSessionRepository:
             )
         temporary = directory / f".approval.json.{secrets.token_hex(4)}.tmp"
         try:
-            self._create_file(temporary, self._encoded_json(approval))
+            self._create_file(
+                temporary,
+                self._encoded_json(approval),
+                owner=self._service_owner(),
+            )
             os.replace(temporary, destination)
             self._fsync_directory(directory)
         except ControlError:
@@ -407,3 +466,35 @@ class InstallSessionRepository:
             raise self._failed("Install session approval cannot be written") from exc
         finally:
             temporary.unlink(missing_ok=True)
+
+    def discard_partial_publication(self, session_id: str) -> None:
+        """Remove only the two artefacts of an incomplete approval attempt."""
+        directory = self.directory(session_id)
+        approval = directory / "approval.json"
+        revision = directory / "revision-0001"
+        try:
+            if approval.is_symlink() or revision.is_symlink():
+                raise self._invalid("Install session publication is unsafe")
+            if approval.exists():
+                approval.unlink()
+            if revision.exists():
+                metadata = revision.lstat()
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise self._invalid("Install session revision is unsafe")
+                for name in ("plan.json", "plan.sha256", "plan-signature.json"):
+                    child = revision / name
+                    if child.exists() and not child.is_symlink():
+                        child.unlink()
+                revision.rmdir()
+            self._fsync_directory(directory)
+        except ControlError:
+            raise
+        except OSError as exc:
+            raise self._failed("Incomplete install approval cannot be removed") from exc
+
+    def has_partial_publication(self, session_id: str) -> bool:
+        directory = self.directory(session_id)
+        return any(
+            (directory / name).exists() or (directory / name).is_symlink()
+            for name in ("approval.json", "revision-0001")
+        )

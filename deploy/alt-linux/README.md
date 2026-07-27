@@ -6,6 +6,7 @@ plane.
 
 Authoritative documentation:
 
+- [ALT install-session PR3 control plane](../../docs/ALT_INSTALL_SESSION_PR3.md) — durable, signed plan authorization; repository-only and not a deployed API service.
 - [Verified implementation context](../../docs/ALT_WORKSTATION_PROVISIONING_CONTEXT.md)
 - [Remaining work and acceptance roadmap](../../docs/ALT_WORKSTATION_PROVISIONING_NEXT_STEPS.md)
 - [Autoinstall and bootstrap background](../../docs/ALT_LINUX_AUTOINSTALL.md)

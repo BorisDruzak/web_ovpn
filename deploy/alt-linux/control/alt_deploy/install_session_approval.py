@@ -22,8 +22,10 @@ from .install_plan import (
 )
 from .install_policy import evaluate_policy, load_profile
 from .install_session_repository import InstallSessionRepository
+from .install_session_state import InstallSessionStageManager
 from .install_session_signing import (
     load_private_signer,
+    load_public_verifier,
     public_key_metadata,
     sign_plan_bytes,
 )
@@ -82,6 +84,11 @@ class InstallSessionApprovalService:
             raise ControlError("install_session_approval_conflict", "Install session is already approved", 4)
         if status.get("state") != "awaiting_approval":
             raise ControlError("install_session_approval_conflict", "Install session is not awaiting approval", 4)
+        # Artifact and status replacement cannot be one filesystem operation.
+        # If a prior process died after publishing an artifact, status.json is
+        # still authoritative and the retry removes only that partial output.
+        if self.repository.has_partial_publication(session_id):
+            self.repository.discard_partial_publication(session_id)
         try:
             inventory = parse_inventory(json.loads(self.repository.load_inventory_bytes(session_id)))
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
@@ -101,7 +108,25 @@ class InstallSessionApprovalService:
             PlanRequest(session_id, 1, f"alt-install-{session_id[-12:].lower()}", approved_at.isoformat(), expires_at.isoformat()),
         )
         plan_bytes = canonical_plan_bytes(plan)
-        signer = load_private_signer(self.settings.install_signing_private_key)
+        try:
+            signer = load_private_signer(
+                self.settings.install_signing_private_key
+            )
+            verifier = load_public_verifier(
+                self.settings.install_signing_public_key
+            )
+        except ValueError as exc:
+            raise ControlError(
+                "install_signing_key_invalid",
+                "Install signing key material is invalid",
+                4,
+            ) from exc
+        if public_key_metadata(signer.public_key()) != public_key_metadata(verifier):
+            raise ControlError(
+                "install_signing_key_mismatch",
+                "Install signing keys do not match",
+                4,
+            )
         metadata = public_key_metadata(signer.public_key())
         signature = sign_plan_bytes(signer, plan_bytes)
         signature_document = {
@@ -110,21 +135,36 @@ class InstallSessionApprovalService:
             "signature_b64": base64.b64encode(signature).decode("ascii"),
             "created_at": approved_at.isoformat(),
         }
-        self.repository.publish_revision(session_id, plan_bytes=plan_bytes, plan_sha256=plan_sha256(plan), signature=signature_document)
-        self.repository.write_approval(session_id, {
+        approval = {
             "schema_version": 1, "session_id": session_id, "revision": 1,
             "operator_uid": self.euid(), "operator_name": "root",
             "reason": reason.strip(), "inventory_sha256": inventory_sha256,
             "disk_fingerprint": actual_fingerprint, "profile_id": profile.profile_id,
             "profile_version": profile.profile_version, "approved_at": approved_at.isoformat(),
             "expires_at": expires_at.isoformat(),
-        })
-        updated = deepcopy(status)
-        history = list(updated["stage_history"])
-        for stage in ("plan_built", "plan_signed", "published"):
-            history.append({"stage": stage, "entered_at": approved_at.isoformat()})
-        updated.update({"state": "plan_published", "stage": "published", "stage_history": history, "updated_at": approved_at.isoformat(), "plan_revision": 1})
-        self.repository.replace_status(session_id, updated)
+        }
+        stages = InstallSessionStageManager(self.repository, clock=self.clock)
+        updated = stages.advance_status(status, "plan_built")
+        updated = stages.advance_status(updated, "plan_signed")
+        updated = stages.advance_status(updated, "published")
+        updated["state"] = "plan_published"
+        updated["plan_revision"] = 1
+        updated["updated_at"] = approved_at.isoformat()
+        stages.validate_status(updated)
+        try:
+            self.repository.publish_revision(
+                session_id,
+                plan_bytes=plan_bytes,
+                plan_sha256=plan_sha256(plan),
+                signature=signature_document,
+            )
+            self.repository.write_approval(session_id, approval)
+            self.repository.replace_status(
+                session_id, updated, allow_lifecycle=True
+            )
+        except Exception:
+            self.repository.discard_partial_publication(session_id)
+            raise
         return updated
 
     def preview(self, session_id: str) -> dict[str, object]:
@@ -154,8 +194,13 @@ class InstallSessionApprovalService:
             if status.get("cancel_reason") == reason.strip():
                 return status
             raise ControlError("install_session_cancel_conflict", "Install session was cancelled with another reason", 4)
+        stages = InstallSessionStageManager(self.repository, clock=self.clock)
+        stages.validate_status(status)
         now = datetime.fromisoformat(self.clock()).astimezone(timezone.utc).isoformat()
         updated = deepcopy(status)
         updated.update({"state": "cancelled", "cancelled_at": now, "cancel_reason": reason.strip(), "updated_at": now})
-        self.repository.replace_status(session_id, updated)
+        stages.validate_status(updated)
+        self.repository.replace_status(
+            session_id, updated, allow_lifecycle=True
+        )
         return updated

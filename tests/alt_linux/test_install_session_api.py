@@ -88,9 +88,12 @@ def test_api_rejects_conflicting_heartbeat_replay(
         assert status == 200
         replay_status, _ = _request(server, "POST", f"/v1/install-sessions/{session_id}/heartbeat", payload=heartbeat, authorization=f"Bearer {credential}")
         assert replay_status == 200
-        conflict_status, conflict = _request(server, "POST", f"/v1/install-sessions/{session_id}/heartbeat", payload=heartbeat | {"reported_stage": "other"}, authorization=f"Bearer {credential}")
+        conflict_status, conflict = _request(server, "POST", f"/v1/install-sessions/{session_id}/heartbeat", payload=heartbeat | {"reported_stage": "plan_available"}, authorization=f"Bearer {credential}")
         assert conflict_status == 409
         assert conflict["error"]["code"] == "heartbeat_conflict"
+        invalid_status, invalid = _request(server, "POST", f"/v1/install-sessions/{session_id}/heartbeat", payload=heartbeat | {"reported_stage": "other"}, authorization=f"Bearer {credential}")
+        assert invalid_status == 400
+        assert invalid["error"]["code"] == "heartbeat_invalid"
     finally:
         server.shutdown()
         server.server_close()

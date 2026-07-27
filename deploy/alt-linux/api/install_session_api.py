@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import re
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -11,9 +13,17 @@ from alt_deploy.errors import ControlError
 from alt_deploy.install_session_auth import verify_credential
 from alt_deploy.install_session_repository import InstallSessionRepository
 from alt_deploy.install_session_service import InstallSessionService
+from alt_deploy.install_session_state import InstallSessionStageManager
 
 
 _PATH_RE = re.compile(r"^/v1/install-sessions/(install-[A-Za-z0-9-]{4,64})/(status|heartbeat|plan|plan-signature)$")
+_REPORTED_STAGES = frozenset({
+    "agent_started",
+    "inventory_validated",
+    "waiting_for_approval",
+    "plan_available",
+    "plan_downloaded",
+})
 
 
 def create_install_session_server(
@@ -109,22 +119,49 @@ def create_install_session_server(
                 self._error(400, "heartbeat_invalid")
                 return
             sequence = body.get("sequence")
-            if type(sequence) is not int or sequence < 0 or not all(isinstance(body.get(key), str) and body[key] for key in {"boot_id", "agent_version", "reported_stage", "sent_at"}):
+            if (
+                body.get("schema_version") != 1
+                or type(sequence) is not int
+                or sequence < 0
+                or not all(
+                    isinstance(body.get(key), str)
+                    and 1 <= len(body[key]) <= 128
+                    for key in {"boot_id", "agent_version", "reported_stage", "sent_at"}
+                )
+                or body["reported_stage"] not in _REPORTED_STAGES
+            ):
                 self._error(400, "heartbeat_invalid")
                 return
-            status = repository.load_status(session_id)
-            previous = status.get("agent_status")
-            if isinstance(previous, dict) and sequence < previous.get("sequence", -1):
-                self._error(409, "heartbeat_conflict")
+            try:
+                sent_at = datetime.fromisoformat(body["sent_at"])
+            except ValueError:
+                self._error(400, "heartbeat_invalid")
                 return
-            if isinstance(previous, dict) and sequence == previous.get("sequence") and previous != body:
-                self._error(409, "heartbeat_conflict")
+            if sent_at.tzinfo is None:
+                self._error(400, "heartbeat_invalid")
                 return
-            if previous != body:
-                status["agent_status"] = body
-                status["last_seen_at"] = datetime.now(timezone.utc).isoformat()
-                status["updated_at"] = status["last_seen_at"]
-                repository.replace_status(session_id, status)
+            lock = nullcontext() if os.name == "nt" else __import__(
+                "alt_deploy.locks", fromlist=["exclusive_lock"]
+            ).exclusive_lock(settings.install_sessions_lock)
+            with lock:
+                status = repository.load_status(session_id)
+                stages = InstallSessionStageManager(
+                    repository, clock=lambda: datetime.now(timezone.utc).isoformat()
+                )
+                stages.validate_status(status)
+                previous = status.get("agent_status")
+                if isinstance(previous, dict) and sequence < previous.get("sequence", -1):
+                    self._error(409, "heartbeat_conflict")
+                    return
+                if isinstance(previous, dict) and sequence == previous.get("sequence") and previous != body:
+                    self._error(409, "heartbeat_conflict")
+                    return
+                if previous != body:
+                    status["agent_status"] = body
+                    status["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+                    status["updated_at"] = status["last_seen_at"]
+                    stages.validate_status(status)
+                    repository.replace_status(session_id, status)
             self._send(200, {"status": "ok"})
 
         def do_GET(self) -> None:
