@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
+import sys
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ALT_CONTROL_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "control"
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "install"
+
+if str(ALT_CONTROL_ROOT) not in sys.path:
+    sys.path.insert(0, str(ALT_CONTROL_ROOT))
 
 from alt_deploy.install_inventory import (
     InventoryError,
@@ -10,7 +20,15 @@ from alt_deploy.install_inventory import (
     inventory_sha256,
     parse_inventory,
 )
-from conftest import load_install_fixture
+
+
+def load_install_fixture(name: str) -> dict[str, object]:
+    return json.loads((FIXTURE_ROOT / name).read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def valid_inventory_payload() -> dict[str, object]:
+    return load_install_fixture("inventory-valid.json")
 
 
 def test_inventory_v1_preserves_valid_machine_and_canonical_hash(
