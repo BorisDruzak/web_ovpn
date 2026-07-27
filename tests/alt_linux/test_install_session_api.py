@@ -68,3 +68,30 @@ def test_api_creates_session_and_requires_its_bearer_credential(
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_api_rejects_conflicting_heartbeat_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_PROFILE_ROOT", str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"))
+    server = create_install_session_server(Settings.from_env(), listen_address="127.0.0.1", listen_port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        inventory = json.loads((FIXTURE_ROOT / "inventory-disk-100g.json").read_text(encoding="utf-8"))
+        _, created = _request(server, "POST", "/v1/install-sessions", payload=inventory)
+        session_id, credential = str(created["session_id"]), str(created["credential"])
+        heartbeat = {"schema_version": 1, "boot_id": "boot-100", "agent_version": "1.0.0", "sequence": 1, "reported_stage": "waiting_for_approval", "sent_at": "2026-07-27T12:00:00+00:00"}
+        status, _ = _request(server, "POST", f"/v1/install-sessions/{session_id}/heartbeat", payload=heartbeat, authorization=f"Bearer {credential}")
+        assert status == 200
+        replay_status, _ = _request(server, "POST", f"/v1/install-sessions/{session_id}/heartbeat", payload=heartbeat, authorization=f"Bearer {credential}")
+        assert replay_status == 200
+        conflict_status, conflict = _request(server, "POST", f"/v1/install-sessions/{session_id}/heartbeat", payload=heartbeat | {"reported_stage": "other"}, authorization=f"Bearer {credential}")
+        assert conflict_status == 409
+        assert conflict["error"]["code"] == "heartbeat_conflict"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
