@@ -285,3 +285,53 @@ class InstallSessionRepository:
             ) from exc
         finally:
             temporary.unlink(missing_ok=True)
+
+    def load_inventory_bytes(self, session_id: str) -> bytes:
+        directory = self.directory(session_id)
+        if not directory.is_dir() or directory.is_symlink():
+            raise ControlError(
+                code="install_session_not_found",
+                message="Install session does not exist",
+                exit_code=4,
+            )
+        return self._read_regular_bytes(directory / "inventory.json")
+
+    def publish_revision(
+        self,
+        session_id: str,
+        *,
+        plan_bytes: bytes,
+        plan_sha256: str,
+        signature: Mapping[str, object],
+    ) -> None:
+        directory = self.directory(session_id)
+        revision = directory / "revision-0001"
+        if revision.exists() or revision.is_symlink():
+            raise ControlError(
+                code="install_session_revision_conflict",
+                message="Install session revision already exists",
+                exit_code=4,
+            )
+        temporary = directory / f".revision-0001.{secrets.token_hex(4)}.tmp"
+        try:
+            temporary.mkdir(mode=0o700)
+            os.chmod(temporary, 0o700)
+            self._create_file(temporary / "plan.json", plan_bytes)
+            self._create_file(
+                temporary / "plan.sha256", (plan_sha256 + "\n").encode("ascii")
+            )
+            self._create_file(
+                temporary / "plan-signature.json", self._encoded_json(signature)
+            )
+            self._fsync_directory(temporary)
+            os.replace(temporary, revision)
+            self._fsync_directory(directory)
+        except ControlError:
+            raise
+        except OSError as exc:
+            raise self._failed("Install session revision cannot be published") from exc
+        finally:
+            if temporary.exists() and not temporary.is_symlink():
+                for child in temporary.iterdir():
+                    child.unlink()
+                temporary.rmdir()
