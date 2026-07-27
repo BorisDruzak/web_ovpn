@@ -1,0 +1,93 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+script_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+if [[ -n "${ALT_INSTALL_AGENT_ROOT:-}" ]]; then
+    agent_root=$ALT_INSTALL_AGENT_ROOT
+elif [[ -d "$script_root/lib" ]]; then
+    agent_root=$script_root
+else
+    agent_root=/usr/libexec/alt-install-agent-lib
+fi
+
+# shellcheck source=lib/config.sh
+source "$agent_root/lib/config.sh"
+# shellcheck source=lib/state.sh
+source "$agent_root/lib/state.sh"
+# shellcheck source=lib/network.sh
+source "$agent_root/lib/network.sh"
+# shellcheck source=lib/transport.sh
+source "$agent_root/lib/transport.sh"
+# shellcheck source=lib/protocol.sh
+source "$agent_root/lib/protocol.sh"
+# shellcheck source=lib/ui.sh
+source "$agent_root/lib/ui.sh"
+
+generate_create_nonce() {
+    local nonce
+    nonce=$(
+        head -c 32 /dev/urandom |
+            base64 |
+            tr '+/' '-_' |
+            tr -d '=\r\n'
+    )
+    [[ "$nonce" =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
+    state_write create-nonce "$nonce"
+}
+
+helper_inventory() {
+    "$ALT_INSTALL_HELPER" inventory \
+        --output "$(state_path inventory.json)" >/dev/null
+}
+
+helper_verify_plan() {
+    "$ALT_INSTALL_HELPER" verify-plan \
+        --plan "$(state_path plan.json)" \
+        --signature "$(state_path plan-signature.json)" \
+        --public-key "$ALT_INSTALL_PUBLIC_KEY" \
+        --inventory "$(state_path inventory.json)" \
+        --session "$(state_read session-id)" >/dev/null
+}
+
+helper_disk_preflight() {
+    "$ALT_INSTALL_HELPER" disk-preflight \
+        --plan "$(state_path plan.json)" \
+        --inventory "$(state_path inventory.json)" >/dev/null
+}
+
+agent_run() {
+    local boot_id_file=${ALT_INSTALL_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
+
+    config_load || terminal_hold configuration_failed
+    state_init || terminal_hold state_failed
+    network_prepare || terminal_hold network_failed
+    generate_create_nonce || terminal_hold nonce_failed
+    helper_inventory || terminal_hold inventory_failed
+    if [[ -r "$boot_id_file" ]] &&
+        ALT_INSTALL_BOOT_ID=$(tr -d '\r\n' < "$boot_id_file"); then
+        :
+    else
+        terminal_hold boot_id_failed
+    fi
+    [[ "$ALT_INSTALL_BOOT_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] ||
+        terminal_hold boot_id_failed
+    export ALT_INSTALL_BOOT_ID
+
+    protocol_create_session "$(state_path inventory.json)" ||
+        terminal_hold session_failed
+    protocol_heartbeat agent_started || terminal_hold heartbeat_failed
+    protocol_heartbeat inventory_validated || terminal_hold heartbeat_failed
+    protocol_heartbeat waiting_for_approval || terminal_hold heartbeat_failed
+    ui_status waiting_for_approval
+    protocol_wait_for_plan || terminal_hold approval_failed
+    protocol_download_plan || terminal_hold plan_download_failed
+    protocol_heartbeat plan_downloaded || terminal_hold heartbeat_failed
+    helper_verify_plan || terminal_hold plan_verification_failed
+    helper_disk_preflight || terminal_hold disk_preflight_failed
+    protocol_heartbeat preflight_ready || terminal_hold heartbeat_failed
+    terminal_hold preflight_ready
+}
+
+if [[ "${ALT_INSTALL_AGENT_LIBRARY_ONLY:-0}" != 1 ]]; then
+    agent_run
+fi

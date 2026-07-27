@@ -1,0 +1,6 @@
+#!/bin/bash
+set -eu
+
+if grep -Fqw 'sosnadmin.mode=agent-v1' /proc/cmdline; then
+    exec /usr/libexec/alt-install-agent
+fi
