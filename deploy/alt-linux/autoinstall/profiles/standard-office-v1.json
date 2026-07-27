@@ -1,0 +1,28 @@
+{
+  "profile_id": "standard-office",
+  "profile_version": 1,
+  "target_release": "ALT KWorkstation 11.4",
+  "iso": {
+    "id": "alt-kworkstation-11.4-install-x86_64",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "firmware": "uefi",
+  "architecture": "x86_64",
+  "network": "dhcp",
+  "disk": {
+    "mode": "exactly_one_eligible_internal",
+    "minimum_bytes": 53687091200,
+    "wipe_mode": "whole_disk"
+  },
+  "layout": {
+    "filesystem": "btrfs",
+    "swap_mib": 4096,
+    "btrfs_minimum_mib": 40960,
+    "grow": true,
+    "subvolumes": {"@": "/", "@home": "/home"},
+    "encryption": "none",
+    "raid": "none",
+    "lvm": "none"
+  },
+  "package_set": "standard-office-v1"
+}
