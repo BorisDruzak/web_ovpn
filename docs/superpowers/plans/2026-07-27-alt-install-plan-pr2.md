@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 0.3 seconds
-Output:
 # ALT Install Plan PR2 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
@@ -304,7 +301,7 @@ git commit -m "feat: render deterministic ALT install artefacts"
 
 **Interfaces:**
 
-- Consumes: every Task 1вЂ“4 public API.
+- Consumes: every Task 1-4 public API.
 - Produces: an end-to-end synthetic acceptance test and an explicit no-runtime-integration boundary.
 
 - [x] **Step 1: Write the failing end-to-end acceptance test**
@@ -326,7 +323,7 @@ The forbidden-capability scan remains a manual release gate in Task 6; it is not
 
 Run: python -m pytest -q tests/alt_linux/test_install_inventory.py tests/alt_linux/test_install_policy.py tests/alt_linux/test_install_plan.py tests/alt_linux/test_install_renderer.py
 
-Expected: FAIL before all Task 1вЂ“4 contracts exist, then PASS after their completion.
+Expected: FAIL before all Task 1-4 contracts exist, then PASS after their completion.
 
 - [x] **Step 3: Document the immutable boundary**
 
@@ -357,7 +354,7 @@ git commit -m "test: verify ALT install plan pipeline"
 
 **Interfaces:**
 
-- Consumes: final branch from Tasks 1вЂ“5.
+- Consumes: final branch from Tasks 1-5.
 - Produces: evidence the PR is server-only, deterministic, clean, and reviewable.
 
 - [x] **Step 1: Inspect the final diff and forbidden capability scan**
@@ -393,5 +390,3 @@ git commit -m "docs: record ALT install plan verification"
 Run: gh pr create --draft --base main --head codex/alt-install-plan-pr2 --title "ALT 11.4 install plan V1" --body "Server-only InstallInventory V1, standard-office policy, immutable plan and deterministic renderer. Synthetic fixtures only; no API, Alterator, ISO mutation or target-disk writes. Include final pytest totals in this reviewed text."
 
 Expected: a draft PR whose description states synthetic-fixture scope, no API/Alterator/target-disk side effects, deterministic artefacts, and exact test evidence.
-
-
