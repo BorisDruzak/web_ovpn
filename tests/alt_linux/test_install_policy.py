@@ -52,6 +52,7 @@ def test_standard_office_accepts_exactly_one_eligible_disk(
         (lambda payload: payload["machine"].__setitem__("firmware", "bios"), "unsupported_firmware"),
         (lambda payload: payload["machine"].__setitem__("cpu_arch", "aarch64"), "unsupported_architecture"),
         (lambda payload: payload["agent"].__setitem__("iso_id", "wrong-iso"), "iso_id_mismatch"),
+        (lambda payload: payload["agent"].__setitem__("iso_sha256", "b" * 64), "iso_sha256_mismatch"),
         (lambda payload: payload["agent"].__setitem__("iso_sha256", "c" * 64), "iso_sha256_mismatch"),
         (lambda payload: payload["boot_media"].__setitem__("path", "/dev/vda"), "disk_is_boot_media"),
         (lambda payload: payload["disks"][0].__setitem__("removable", True), "disk_removable"),

@@ -22,6 +22,21 @@ class Settings:
     workstationctl_path: Path
     service_user: str = "altserver"
     service_group: str = "altserver"
+    install_sessions_dir: Path = Path(
+        "/var/lib/alt-deploy/install-sessions"
+    )
+    install_sessions_lock: Path = Path(
+        "/var/lib/alt-deploy/install-sessions.lock"
+    )
+    install_profile_root: Path = Path(
+        "/opt/alt-deploy-control/autoinstall/profiles"
+    )
+    install_signing_private_key: Path = Path(
+        "/var/lib/alt-deploy-secrets/install-plan-ed25519.pem"
+    )
+    install_signing_public_key: Path = Path(
+        "/etc/alt-deploy/install-plan-ed25519.pub"
+    )
 
     @property
     def machine_archives_dir(self) -> Path:
@@ -108,5 +123,35 @@ class Settings:
             service_group=os.environ.get(
                 "ALT_DEPLOY_SERVICE_GROUP",
                 "altserver",
+            ),
+            install_sessions_dir=Path(
+                os.environ.get(
+                    "ALT_DEPLOY_INSTALL_SESSIONS",
+                    "/var/lib/alt-deploy/install-sessions",
+                )
+            ),
+            install_sessions_lock=Path(
+                os.environ.get(
+                    "ALT_DEPLOY_INSTALL_SESSIONS_LOCK",
+                    "/var/lib/alt-deploy/install-sessions.lock",
+                )
+            ),
+            install_profile_root=Path(
+                os.environ.get(
+                    "ALT_DEPLOY_INSTALL_PROFILE_ROOT",
+                    "/opt/alt-deploy-control/autoinstall/profiles",
+                )
+            ),
+            install_signing_private_key=Path(
+                os.environ.get(
+                    "ALT_DEPLOY_INSTALL_SIGNING_PRIVATE_KEY",
+                    "/var/lib/alt-deploy-secrets/install-plan-ed25519.pem",
+                )
+            ),
+            install_signing_public_key=Path(
+                os.environ.get(
+                    "ALT_DEPLOY_INSTALL_SIGNING_PUBLIC_KEY",
+                    "/etc/alt-deploy/install-plan-ed25519.pub",
+                )
             ),
         )

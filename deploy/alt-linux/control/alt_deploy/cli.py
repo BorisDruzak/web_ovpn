@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
@@ -15,6 +16,8 @@ from .controller_readiness import ControllerReadinessChecker
 from .errors import ControlError
 from .job_reconcile import JobReconciler
 from .job_retention import JobRetentionManager
+from .install_session_approval import InstallSessionApprovalService
+from .install_session_repository import InstallSessionRepository
 from .jobs import ACTIVE_STATES, JobRepository
 from .jsonio import read_json
 from .machine_archive import MachineArchiveService
@@ -152,6 +155,24 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("repair",),
     )
 
+    install_sessions = commands.add_parser("install-sessions")
+    install_commands = install_sessions.add_subparsers(
+        dest="install_session_command", required=True
+    )
+    install_commands.add_parser("list")
+    install_show = install_commands.add_parser("show")
+    install_show.add_argument("session_id")
+    install_preview = install_commands.add_parser("preview")
+    install_preview.add_argument("session_id")
+    install_approve = install_commands.add_parser("approve")
+    install_approve.add_argument("session_id")
+    install_approve.add_argument("--inventory-sha256", required=True)
+    install_approve.add_argument("--disk-fingerprint", required=True)
+    install_approve.add_argument("--reason", required=True)
+    install_cancel = install_commands.add_parser("cancel")
+    install_cancel.add_argument("session_id")
+    install_cancel.add_argument("--reason", required=True)
+
     return parser
 
 
@@ -218,6 +239,50 @@ def main(
                     for machine in repository.list()
                 ],
             }
+
+        elif (
+            parsed.command == "install-sessions"
+            and parsed.install_session_command == "list"
+        ):
+            sessions = InstallSessionRepository(active_settings).list_statuses()
+            payload = {"status": "ok", "sessions": [
+                {key: value for key, value in session.items() if key not in {"source_ip", "agent_boot_id"}}
+                for session in sessions
+            ]}
+
+        elif (
+            parsed.command == "install-sessions"
+            and parsed.install_session_command == "show"
+        ):
+            session = InstallSessionRepository(active_settings).load_status(parsed.session_id)
+            payload = {"status": "ok", "session": {
+                key: value for key, value in session.items() if key not in {"source_ip", "agent_boot_id"}
+            }}
+
+        elif (
+            parsed.command == "install-sessions"
+            and parsed.install_session_command == "preview"
+        ):
+            payload = {"status": "ok", "preview": InstallSessionApprovalService(
+                active_settings, clock=lambda: "", euid=lambda: -1
+            ).preview(parsed.session_id)}
+
+        elif (
+            parsed.command == "install-sessions"
+            and parsed.install_session_command == "approve"
+        ):
+            payload = {"status": "ok", "session": InstallSessionApprovalService(
+                active_settings, clock=lambda: datetime.now(timezone.utc).isoformat()
+            ).approve(parsed.session_id, inventory_sha256=parsed.inventory_sha256,
+                      disk_fingerprint_value=parsed.disk_fingerprint, reason=parsed.reason)}
+
+        elif (
+            parsed.command == "install-sessions"
+            and parsed.install_session_command == "cancel"
+        ):
+            payload = {"status": "ok", "session": InstallSessionApprovalService(
+                active_settings, clock=lambda: datetime.now(timezone.utc).isoformat()
+            ).cancel(parsed.session_id, reason=parsed.reason)}
 
         elif (
             parsed.command == "machines"

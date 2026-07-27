@@ -13,7 +13,7 @@ from .install_inventory import InstallInventoryV1, inventory_sha256
 from .install_policy import InstallProfile, PolicyEvaluation
 
 
-_SESSION_RE = re.compile(r"install-[a-z0-9-]{4,64}")
+_SESSION_RE = re.compile(r"install-[A-Za-z0-9-]{4,64}")
 _HOSTNAME_RE = re.compile(r"alt-install-[a-z0-9-]{1,63}")
 
 

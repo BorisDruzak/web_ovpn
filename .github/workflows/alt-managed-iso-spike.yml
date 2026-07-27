@@ -5,11 +5,13 @@ on:
     paths:
       - "deploy/alt-linux/**"
       - "tests/alt_linux/test_managed_iso_spike.py"
+      - "tests/alt_linux/test_install_session_*.py"
       - ".github/workflows/alt-managed-iso-spike.yml"
   push:
     paths:
       - "deploy/alt-linux/**"
       - "tests/alt_linux/test_managed_iso_spike.py"
+      - "tests/alt_linux/test_install_session_*.py"
       - ".github/workflows/alt-managed-iso-spike.yml"
 
 permissions:
@@ -24,10 +26,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install test runner
-        run: python -m pip install --disable-pip-version-check pytest
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
       - name: Run static spike contract tests
         run: python -m pytest -q tests/alt_linux/test_managed_iso_spike.py
+      - name: Run install-session contract tests
+        run: >-
+          python -m pytest -q --noconftest
+          tests/alt_linux/test_install_session_repository.py
+          tests/alt_linux/test_install_session_state.py
+          tests/alt_linux/test_install_session_auth.py
+          tests/alt_linux/test_install_session_signing.py
+          tests/alt_linux/test_install_session_service.py
+          tests/alt_linux/test_install_session_approval.py
+          tests/alt_linux/test_install_session_api.py
+          tests/alt_linux/test_install_session_cli.py
       - name: Check shell syntax
         run: |
           bash -n deploy/alt-linux/iso/inspect-upstream-iso.sh
