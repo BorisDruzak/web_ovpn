@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 )
 
@@ -80,6 +81,47 @@ func TestSysfsBlockTypeRejectsUnreadableType(t *testing.T) {
 
 	if _, err := sysfsBlockType(probe, "sda"); err == nil {
 		t.Fatal("unreadable sysfs type must not use name fallback")
+	}
+}
+
+func TestReadBlockDeviceHandlesOptionalIdentityReadErrors(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		path    string
+		err     error
+		wantErr bool
+	}{
+		{"serial missing", "/sys/class/block/sda/device/serial", os.ErrNotExist, false},
+		{"wwid missing", "/sys/class/block/sda/device/wwid", os.ErrNotExist, false},
+		{"serial unavailable", "/sys/class/block/sda/device/serial", syscall.ENXIO, false},
+		{"wwid unavailable", "/sys/class/block/sda/device/wwid", syscall.ENXIO, false},
+		{"serial I/O failure", "/sys/class/block/sda/device/serial", syscall.EIO, true},
+		{"wwid I/O failure", "/sys/class/block/sda/device/wwid", syscall.EIO, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			probe := &fakeSystemProbe{
+				files: map[string][]byte{
+					"/sys/class/block/sda/dev":       []byte("8:0\n"),
+					"/sys/class/block/sda/size":      []byte("2097152\n"),
+					"/sys/class/block/sda/removable": []byte("0\n"),
+				},
+				errors: map[string]error{test.path: test.err},
+			}
+
+			device, err := readBlockDevice(context.Background(), probe, "sda", "", nil)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("identity I/O failure must reject disk")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("optional identity read should not reject disk: %v", err)
+			}
+			if device.Serial != nil || device.WWN != nil {
+				t.Fatalf("optional identities = serial=%v wwid=%v, want absent", device.Serial, device.WWN)
+			}
+		})
 	}
 }
 

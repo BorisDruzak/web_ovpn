@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -307,11 +308,11 @@ func readBlockDevice(ctx context.Context, probe readOnlySystemProbe, name, force
 	if err != nil {
 		return blockDevice{}, err
 	}
-	serial, err := optionalBoundedText(probe, base+"/device/serial")
+	serial, err := optionalDeviceIdentityText(probe, base+"/device/serial")
 	if err != nil {
 		return blockDevice{}, err
 	}
-	wwn, err := optionalBoundedText(probe, base+"/device/wwid")
+	wwn, err := optionalDeviceIdentityText(probe, base+"/device/wwid")
 	if err != nil {
 		return blockDevice{}, err
 	}
@@ -390,6 +391,17 @@ func optionalBoundedText(probe readOnlySystemProbe, path string) (*string, error
 	value, err := readBoundedText(probe, path)
 	if err != nil {
 		if _, readErr := probe.ReadFile(path); errors.Is(readErr, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &value, nil
+}
+
+func optionalDeviceIdentityText(probe readOnlySystemProbe, path string) (*string, error) {
+	value, err := readBoundedText(probe, path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENXIO) {
 			return nil, nil
 		}
 		return nil, err
