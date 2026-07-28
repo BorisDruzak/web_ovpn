@@ -175,7 +175,7 @@ initrd_command() {
     die "Required initrd command is missing: $command"
 }
 
-for command in bash cat chmod curl date grep head ip lsblk mkdir mv od \
+for command in bash blkid cat chmod curl date grep head ip mkdir mv od \
     rm sleep tr udhcpc wc; do
     initrd_command "$command"
 done
