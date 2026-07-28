@@ -1,0 +1,13 @@
+--- a/syslinux/isolinux.cfg
++++ b/syslinux/isolinux.cfg
+@@ -4,7 +4,7 @@
+   menu label ^Boot from hard drive as usual
+   localboot -2
+-
++
+-default linux
++default harddisk
+-
++
+ label linux
+   menu label ^Install ALT (kworkstation-install)
