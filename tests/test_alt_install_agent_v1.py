@@ -260,6 +260,37 @@ state_read create-nonce
     assert nonce == expected
 
 
+def test_agent_initializes_without_dirname_command() -> None:
+    completed = _run_bash(
+        """
+set -euo pipefail
+dirname() { return 97; }
+export ALT_INSTALL_AGENT_LIBRARY_ONLY=1
+source deploy/alt-linux/install-agent/v1/alt-install-agent
+printf '%s\\n' "$agent_root"
+""",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().endswith("/install-agent/v1")
+
+
+def test_agent_initializes_from_basename_without_dirname_command() -> None:
+    completed = _run_bash(
+        """
+set -euo pipefail
+dirname() { return 97; }
+export ALT_INSTALL_AGENT_LIBRARY_ONLY=1
+cd deploy/alt-linux/install-agent/v1
+source alt-install-agent
+printf '%s\\n' "$agent_root"
+""",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip().endswith("/install-agent/v1")
+
+
 def test_transport_retries_only_failures_with_bounded_backoff(
     tmp_path: Path,
 ) -> None:
