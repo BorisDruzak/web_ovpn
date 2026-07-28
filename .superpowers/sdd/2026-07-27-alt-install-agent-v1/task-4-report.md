@@ -243,3 +243,81 @@ The unchanged manual prerequisite probe still exits 1 and names:
 No real QEMU run, deployment, physical-disk access, or manual acceptance
 evidence was performed or claimed in this fix round. PR5 remains gated on the
 documented isolated Linux acceptance run.
+
+## Round 2 fix report
+
+### Commit
+
+- `c28a4397eb3468df29340ec5a8352dcf8f254696` —
+  `fix: exercise disposable QEMU targets`
+
+### Finding addressed
+
+**The shell safety check described constants but did not execute target
+creation or QEMU drive construction.**
+
+- Root cause: `--describe-safety-contract` printed variables that the full
+  harness also used, but the test could pass without proving the executable
+  relationship between the harness-owned `mktemp` directory, each
+  `variant_work` directory, `qemu-img` creation, and the resulting QEMU
+  `-drive` value.
+- Fix: disposable target preparation and target-drive composition now live
+  in shared shell functions called by the full `run_variant` path.
+- The safe `--exercise-target-contract` mode creates its own private
+  `mktemp` work directory and invokes those same functions for both variants.
+  It does not accept a target path, start QEMU, require root, build an ISO, or
+  contact any deployment or production service.
+- The executable regression test places a recording `qemu-img` double first
+  in `PATH` and proves that the shared path:
+  - creates both backing files as qcow2 with a virtual size of 64 GiB;
+  - creates the writable overlay as qcow2 with its harness-owned qcow2
+    backing;
+  - points the writable QEMU drive at that overlay without a readonly flag;
+  - points the readonly QEMU drive at its independent backing with
+    `readonly=on`;
+  - derives both variant directories and every target path from the
+    harness-owned temporary work directory; and
+  - removes the temporary target tree after the exercise.
+- The existing executable rejection of caller-supplied
+  `--target /dev/sda`, fixed managed-ISO builder assertion, and fixed
+  source-identity manifest assertion remain in the focused suite.
+
+### TDD evidence
+
+RED after adding the executable Round 2 regression against the previous
+implementation:
+
+- `python -m pytest -q tests/test_alt_install_agent_v1_qemu.py::test_harness_exercises_its_executable_disposable_target_contract`
+- Result: `1 failed`.
+- Expected reason: `--exercise-target-contract` was rejected with usage and
+  exit 2 because no executable contract path existed.
+
+GREEN after sharing target/drive construction and adding the safe exercise
+mode:
+
+- `python -m pytest -q tests/test_alt_install_agent_v1_qemu.py::test_harness_exercises_its_executable_disposable_target_contract`
+- Result: `1 passed`.
+
+### Verification
+
+Fresh verification before the fix commit:
+
+- `python -m pytest -q tests/test_alt_install_agent_v1_qemu.py tests/test_alt_install_agent_v1.py`
+  - `43 passed, 1 skipped`
+- `bash -n deploy/alt-linux/qemu/run-agent-v1-dry-run-acceptance.sh`
+  - pass
+- `python -m py_compile tests/test_alt_install_agent_v1_qemu.py deploy/alt-linux/qemu/agent_v1_test_api.py`
+  - pass
+- `git diff --check`
+  - pass
+
+The unchanged manual prerequisite probe still exits 1 and names:
+
+- `qemu-system-x86_64`;
+- `qemu-img`;
+- `xorriso`; and
+- `cpio`.
+
+No real QEMU run, deployment, physical-disk access, or manual acceptance
+evidence was performed or claimed in Round 2. PR5 remains gated on the
+documented isolated Linux acceptance run.
