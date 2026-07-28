@@ -24,13 +24,32 @@ source "$agent_root/lib/protocol.sh"
 source "$agent_root/lib/ui.sh"
 
 generate_create_nonce() {
-    local nonce
-    nonce=$(
-        head -c 32 /dev/urandom |
-            base64 |
-            tr '+/' '-_' |
-            tr -d '=\r\n'
+    local alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    local nonce='' value index
+    local -a bytes
+
+    read -r -a bytes < <(
+        LC_ALL=C od -An -N32 -v -tu1 /dev/urandom | tr '\n' ' '
+        printf '\n'
     )
+    [[ "${#bytes[@]}" == 32 ]] || return 1
+
+    for ((index = 0; index < 30; index += 3)); do
+        value=$((
+            (bytes[index] << 16) |
+            (bytes[index + 1] << 8) |
+            bytes[index + 2]
+        ))
+        nonce+=${alphabet:$((value >> 18 & 63)):1}
+        nonce+=${alphabet:$((value >> 12 & 63)):1}
+        nonce+=${alphabet:$((value >> 6 & 63)):1}
+        nonce+=${alphabet:$((value & 63)):1}
+    done
+
+    value=$(((bytes[30] << 16) | (bytes[31] << 8)))
+    nonce+=${alphabet:$((value >> 18 & 63)):1}
+    nonce+=${alphabet:$((value >> 12 & 63)):1}
+    nonce+=${alphabet:$((value >> 6 & 63)):1}
     [[ "$nonce" =~ ^[A-Za-z0-9_-]{43}$ ]] || return 1
     state_write create-nonce "$nonce"
 }
