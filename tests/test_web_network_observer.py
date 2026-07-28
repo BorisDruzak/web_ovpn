@@ -510,7 +510,7 @@ def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_
     assert "access-a" in page.text
     assert "Office 12" in page.text
     assert "VLAN 20" in page.text
-    assert "РџРѕРґС‚РІРµСЂР¶РґРµРЅРѕ" in page.text
+    assert "Подтверждено" in page.text
     assert "AA:BB:CC:DD:EE:02" in page.text
     assert "must-not-render" not in page.text
     assert "Raw JSON" not in page.text
@@ -540,15 +540,15 @@ def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_pa
     stale = client.get("/network/assets/mac:AA:BB:CC:DD:EE:03")
 
     assert unknown.status_code == 200
-    assert "РЈСЃС‚СЂРѕР№СЃС‚РІРѕ РЅРµ РЅР°Р№РґРµРЅРѕ" in unknown.text
+    assert "Устройство не найдено" in unknown.text
     assert ambiguous.status_code == 200
-    assert "РќРµРѕРґРЅРѕР·РЅР°С‡РЅРѕ" in ambiguous.text
+    assert "Неоднозначно" in ambiguous.text
     assert "access-b" in ambiguous.text
     assert "must-not-render" not in ambiguous.text
     assert "AA:BB:CC:DD:EE:02" not in ambiguous.text
     assert stale.status_code == 200
-    assert "РўРѕРїРѕР»РѕРіРёСЏ: РЅСѓР¶РЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ" in stale.text
-    assert "Р’Р»РѕР¶РµРЅРёСЏ: РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅС‹" in stale.text
+    assert "Топология: нужно обновление" in stale.text
+    assert "Вложения: восстановлены" in stale.text
 
 
 def test_network_asset_card_renders_readable_cyrillic_freshness_and_confirmed_copy(tmp_path, monkeypatch):

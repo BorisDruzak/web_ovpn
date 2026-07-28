@@ -12,7 +12,7 @@
 {% if error %}
 <div class="alert bad">Не удалось загрузить карточку устройства.</div>
 {% elif not asset %}
-<section class="panel empty">РЈСЃС‚СЂРѕР№СЃС‚РІРѕ РЅРµ РЅР°Р№РґРµРЅРѕ.</section>
+<section class="panel empty">Устройство не найдено.</section>
 {% else %}
 <section class="panel">
   <h2>Идентификация</h2>
@@ -28,14 +28,14 @@
 
 <section class="panel">
   <h2>Свежесть данных</h2>
-  <p>{% if freshness.get("topology_reconciled_at") %}РўРѕРїРѕР»РѕРіРёСЏ: Р°РєС‚СѓР°Р»СЊРЅРѕ{% else %}РўРѕРїРѕР»РѕРіРёСЏ: РЅСѓР¶РЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ{% endif %}</p>
-  <p>{% if freshness.get("attachment_reconciled_at") %}Р’Р»РѕР¶РµРЅРёСЏ: РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅС‹{% else %}Р’Р»РѕР¶РµРЅРёСЏ: РЅСѓР¶РЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ{% endif %}</p>
+  <p>{% if freshness.get("topology_reconciled_at") %}Топология: актуально{% else %}Топология: нужно обновление{% endif %}</p>
+  <p>{% if freshness.get("attachment_reconciled_at") %}Вложения: восстановлены{% else %}Вложения: нужно обновление{% endif %}</p>
 </section>
 
 {% if confirmed %}
 <section class="panel">
   <h2>Подключение</h2>
-  <p><span class="badge ok">РџРѕРґС‚РІРµСЂР¶РґРµРЅРѕ</span></p>
+  <p><span class="badge ok">Подтверждено</span></p>
   <dl class="details">
     <dt>Коммутатор</dt><dd>{{ (attachment.get("switch") or {}).get("name") or "-" }}</dd>
     <dt>Порт</dt><dd>{{ (attachment.get("port") or {}).get("alias") or (attachment.get("port") or {}).get("name") or "-" }}</dd>
@@ -43,8 +43,8 @@
   </dl>
   {% set peers = attachment.get("port_peers") or {} %}
   {% if peers.get("items") %}
-  <h3>MAC-Р°РґСЂРµСЃР°, РІС‹СѓС‡РµРЅРЅС‹Рµ РЅР° СЌС‚РѕРј РїРѕСЂС‚Сѓ</h3>
-  <p class="muted">РќРµСЃРєРѕР»СЊРєРѕ MAC РЅР° РѕРґРЅРѕРј РїРѕСЂС‚Сѓ РЅРµ РґРѕРєР°Р·С‹РІР°СЋС‚ С„РёР·РёС‡РµСЃРєРѕРµ РїРѕРґРєР»СЋС‡РµРЅРёРµ РєР°Р¶РґРѕРіРѕ СѓСЃС‚СЂРѕР№СЃС‚РІР°: СЌС‚Рѕ РјРѕР¶РµС‚ Р±С‹С‚СЊ С‚РѕС‡РєР° РґРѕСЃС‚СѓРїР°, IP-С‚РµР»РµС„РѕРЅ, downstream-РєРѕРјРјСѓС‚Р°С‚РѕСЂ РёР»Рё trunk.</p>
+  <h3>MAC-адреса, выученные на этом порту</h3>
+  <p class="muted">Несколько MAC на одном порту не доказывают физическое подключение каждого устройства: это может быть точка доступа, IP-телефон, downstream-коммутатор или trunk.</p>
   <ul>
     {% for peer in peers.get("items") %}
     <li><span class="mono">{{ peer.get("mac") or "-" }}</span>{% if (peer.get("asset") or {}).get("display_name") %} — {{ peer.get("asset").get("display_name") }}{% endif %}</li>
@@ -55,7 +55,7 @@
 {% else %}
 <section class="panel">
   <h2>Подключение</h2>
-  <p><span class="badge muted">{% if attachment.get("status") == "ambiguous" %}РќРµРѕРґРЅРѕР·РЅР°С‡РЅРѕ{% elif attachment.get("status") == "uplink_only" %}РўРѕР»СЊРєРѕ uplink{% else %}РќРµ РѕРїСЂРµРґРµР»РµРЅРѕ{% endif %}</span></p>
+  <p><span class="badge muted">{% if attachment.get("status") == "ambiguous" %}Неоднозначно{% elif attachment.get("status") == "uplink_only" %}Только uplink{% else %}Не определено{% endif %}</span></p>
   {% if attachment.get("reason") %}<p>{{ attachment.get("reason") }}</p>{% endif %}
 </section>
 {% endif %}
