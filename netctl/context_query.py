@@ -20,7 +20,7 @@ from .util import utc_now
 def _asset_public(asset: dict[str, Any]) -> dict[str, Any]:
     return {
         key: asset[key]
-        for key in ("asset_key", "kind", "status", "site", "location", "display_name", "identity_method", "identity_confidence", "provisional")
+        for key in ("asset_key", "manual_name", "kind", "status", "site", "location", "display_name", "identity_method", "identity_confidence", "provisional")
         if key in asset
     }
 

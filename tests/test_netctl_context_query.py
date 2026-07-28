@@ -148,6 +148,49 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
         conn.close()
 
 
+def test_asset_context_keeps_manual_name_separate_from_hostname_and_ip(
+    tmp_path: Path,
+) -> None:
+    from netctl.context_query import inspect_asset_context
+
+    conn = _context_db(tmp_path)
+    try:
+        conn.execute(
+            "UPDATE assets SET manual_name = ? WHERE asset_key = ?",
+            ("Finance workstation", "mac:AA:BB:CC:DD:EE:01"),
+        )
+
+        context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+
+        assert context is not None
+        assert context["asset"]["manual_name"] == "Finance workstation"
+        assert context["network"]["hostname_observations"][0]["hostname"] == "Workstation"
+        assert context["network"]["ip_observations"][0]["ip"] == "192.0.2.10"
+    finally:
+        conn.close()
+
+
+def test_assets_set_name_cli_updates_the_requested_stable_asset(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    import netctl.cli as cli
+
+    conn = _context_db(tmp_path)
+    db_url = f"sqlite:///{(tmp_path / 'context.sqlite').as_posix()}"
+    conn.close()
+
+    assert cli.main([
+        "--json", "--db", db_url, "assets", "set-name",
+        "--asset-key", "mac:AA:BB:CC:DD:EE:01", "--name", "Finance workstation",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["asset"] == {
+        "asset_key": "mac:AA:BB:CC:DD:EE:01",
+        "manual_name": "Finance workstation",
+    }
+
+
 def test_inspect_asset_context_enriches_confirmed_attachment(tmp_path: Path) -> None:
     """Fails if a confirmed resolution omits joined safe network metadata."""
     from netctl.context_query import inspect_asset_context

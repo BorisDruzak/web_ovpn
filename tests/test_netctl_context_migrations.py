@@ -120,7 +120,7 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
             *INTENT_TABLES,
         } <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 16)
+            (version,) for version in range(1, 17)
         ]
         assert conn.execute("SELECT * FROM context_heads").fetchall() == []
         assert [tuple(row) for row in conn.execute("SELECT id, context_id, sha256 FROM context_revisions").fetchall()] == [

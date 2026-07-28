@@ -5,6 +5,35 @@ import sqlite3
 from typing import Any
 
 
+def set_asset_manual_name(
+    conn: sqlite3.Connection,
+    asset_key: str,
+    value: str,
+    *,
+    actor: str,
+    now: str,
+) -> dict[str, Any]:
+    """Store a validated manual name on one stable asset identity."""
+    if not str(actor).strip():
+        raise ValueError("actor is required")
+    manual_name = str(value).strip()
+    if not 1 <= len(manual_name) <= 160:
+        raise ValueError("manual name must contain 1 to 160 characters")
+
+    asset = conn.execute(
+        "SELECT asset_key FROM assets WHERE asset_key = ?", (asset_key,)
+    ).fetchone()
+    if asset is None:
+        raise ValueError("asset not found")
+
+    conn.execute(
+        "UPDATE assets SET manual_name = ?, updated_at = ? WHERE asset_key = ?",
+        (manual_name, now, asset_key),
+    )
+    conn.commit()
+    return {"asset_key": str(asset["asset_key"]), "manual_name": manual_name}
+
+
 def get_runtime_asset_by_key(
     conn: sqlite3.Connection, asset_key: str
 ) -> dict[str, Any] | None:

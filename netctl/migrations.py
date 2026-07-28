@@ -1701,6 +1701,10 @@ def _migration_15(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
+def _migration_16(conn: sqlite3.Connection) -> None:
+    conn.execute("ALTER TABLE assets ADD COLUMN manual_name TEXT")
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1717,6 +1721,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (13, _migration_13),
     (14, _migration_14),
     (15, _migration_15),
+    (16, _migration_16),
 )
 
 

@@ -37,6 +37,7 @@ from .runtime_assets import (
     inspect_runtime_asset,
     list_runtime_identity_findings,
     runtime_identity_status,
+    set_asset_manual_name,
 )
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .switch_queries import (
@@ -1234,6 +1235,26 @@ def cmd_runtime_assets(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_assets(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        if args.assets_command == "set-name":
+            return 0, ok(
+                asset=set_asset_manual_name(
+                    conn,
+                    args.asset_key,
+                    args.name,
+                    actor="netctl",
+                    now=utc_now(),
+                )
+            )
+        return 2, err("unsupported assets command")
+    except ValueError as exc:
+        return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
 def resolve_context_schema(path: Path, explicit_schema: str) -> Path:
     candidates = [Path(explicit_schema)] if explicit_schema else []
     candidates.append(path.parent.parent / "schemas" / "network-context.schema.json")
@@ -1605,6 +1626,12 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_assets_findings = runtime_assets_sub.add_parser("findings")
     runtime_assets_findings.add_argument("--status", dest="finding_status", default="open")
 
+    assets = sub.add_parser("assets")
+    assets_sub = assets.add_subparsers(dest="assets_command", required=True)
+    assets_set_name = assets_sub.add_parser("set-name")
+    assets_set_name.add_argument("--asset-key", required=True)
+    assets_set_name.add_argument("--name", required=True)
+
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
     for name in ("validate", "status", "import", "diff"):
@@ -1689,6 +1716,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_logs(args)
     if args.command == "runtime-assets":
         return cmd_runtime_assets(args)
+    if args.command == "assets":
+        return cmd_assets(args)
     if args.command == "context":
         return cmd_context(args)
     return 2, err("unsupported command")

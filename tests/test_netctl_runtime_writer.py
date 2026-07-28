@@ -498,6 +498,62 @@ def test_collector_fills_blank_fields_but_does_not_overwrite_manual_values(
     assert asset["last_seen_at"] == "2026-07-18T02:00:00Z"
 
 
+def test_manual_asset_name_survives_ip_change_and_rejects_invalid_values(
+    runtime_conn: sqlite3.Connection,
+) -> None:
+    """A user-assigned name belongs to the stable MAC asset, not its IP."""
+    from netctl.runtime_assets import set_asset_manual_name
+
+    source = _source(6, site="collector-site")
+    _seed_source(runtime_conn, source)
+    sync_runtime_hosts(
+        runtime_conn,
+        source=source,
+        hosts=[_host("192.0.2.60", "00:11:22:33:44:60")],
+        observed_at="2026-07-18T01:00:00Z",
+    )
+
+    updated = set_asset_manual_name(
+        runtime_conn,
+        "mac:00:11:22:33:44:60",
+        "  Finance workstation  ",
+        actor="test-operator",
+        now="2026-07-18T01:30:00Z",
+    )
+    assert updated["asset_key"] == "mac:00:11:22:33:44:60"
+    assert updated["manual_name"] == "Finance workstation"
+
+    sync_runtime_hosts(
+        runtime_conn,
+        source=source,
+        hosts=[_host("192.0.2.61", "00:11:22:33:44:60")],
+        observed_at="2026-07-18T02:00:00Z",
+    )
+
+    asset = runtime_conn.execute(
+        "SELECT manual_name FROM assets WHERE asset_key = ?",
+        ("mac:00:11:22:33:44:60",),
+    ).fetchone()
+    assert asset["manual_name"] == "Finance workstation"
+
+    with pytest.raises(ValueError, match="manual name"):
+        set_asset_manual_name(
+            runtime_conn,
+            "mac:00:11:22:33:44:60",
+            "   ",
+            actor="test-operator",
+            now="2026-07-18T02:30:00Z",
+        )
+    with pytest.raises(ValueError, match="manual name"):
+        set_asset_manual_name(
+            runtime_conn,
+            "mac:00:11:22:33:44:60",
+            "x" * 161,
+            actor="test-operator",
+            now="2026-07-18T02:30:00Z",
+        )
+
+
 def test_same_mac_in_multiple_sites_opens_collision_then_marks_it_resolved(
     runtime_conn: sqlite3.Connection,
 ) -> None:
