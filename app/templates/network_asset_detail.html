@@ -3,6 +3,9 @@
 {% block page_title %}{{ context.get("asset", {}).get("display_name") or asset_key }}{% endblock %}
 {% block content %}
 {% set asset = context.get("asset") or {} %}
+{% set network = context.get("network") or {} %}
+{% set ip_observations = network.get("ip_observations") or [] %}
+{% set best_hostname = network.get("best_hostname_observation") or {} %}
 {% set attachment = context.get("attachment") or {} %}
 {% set freshness = context.get("freshness") or {} %}
 {% set confirmed = attachment.get("status") == "confirmed" %}
@@ -17,13 +20,20 @@
 <section class="panel">
   <h2>Идентификация</h2>
   <dl class="details">
-    <dt>Название</dt><dd>{{ asset.get("display_name") or "-" }}</dd>
+    <dt>Название</dt><dd>{{ asset.get("manual_name") or "-" }}</dd>
+    <dt>IP-адрес</dt><dd class="mono">{{ (ip_observations[0] or {}).get("ip") if ip_observations else "-" }}</dd>
+    <dt>Имя хоста</dt><dd>{{ best_hostname.get("hostname") or "-" }}</dd>
     <dt>Ключ</dt><dd class="mono">{{ asset.get("asset_key") or asset_key }}</dd>
     <dt>Тип</dt><dd>{{ asset.get("kind") or "-" }}</dd>
     <dt>Site</dt><dd>{{ asset.get("site") or "-" }}</dd>
     <dt>Место</dt><dd>{{ asset.get("location") or "-" }}</dd>
     <dt>Статус</dt><dd>{{ asset.get("status") or "-" }}</dd>
   </dl>
+  <form class="toolbar" method="post" action="/network/assets/{{ asset_key|urlencode }}/name">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input name="name" value="{{ asset.get("manual_name") or "" }}" maxlength="160" required aria-label="Название">
+    <button class="button" type="submit">Сохранить название</button>
+  </form>
 </section>
 
 <section class="panel">

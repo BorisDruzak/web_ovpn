@@ -1523,6 +1523,26 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     )
     assert search["hosts"][0]["display_name"] == "pc-buh-01"
 
+    from netctl.db import connect
+
+    conn = connect(db_url)
+    try:
+        conn.execute(
+            "UPDATE assets SET manual_name = ? WHERE asset_key = ?",
+            ("Finance workstation", "mac:AA:BB:CC:DD:EE:FF"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _, manual_name_search = run_cli(
+        ["--json", "--config", str(config_path), "--db", db_url, "hosts", "list", "--q", "FINANCE"],
+        capsys,
+    )
+    assert len(manual_name_search["hosts"]) == 1
+    assert manual_name_search["hosts"][0]["ip"] == "192.168.100.55"
+    assert manual_name_search["hosts"][0]["manual_name"] == "Finance workstation"
+
     _, dashboard = run_cli(["--json", "--config", str(config_path), "--db", db_url, "dashboard"], capsys)
     assert dashboard["summary"]["total_hosts"] >= 3
     assert dashboard["sources"][0]["name"] == "mock-main"

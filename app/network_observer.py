@@ -109,6 +109,7 @@ def normalize_netctl_host(row: dict[str, Any]) -> dict[str, Any]:
         "ip": str(row.get("ip") or ""),
         "mac": row.get("mac"),
         "hostname": row.get("hostname"),
+        "manual_name": row.get("manual_name"),
         "display_name": _display_name(row),
         "category": row.get("category") or "unknown",
         "device_key": row.get("device_key") or "",
@@ -207,7 +208,7 @@ def filter_unified_hosts(rows: list[dict[str, Any]], params: dict[str, str]) -> 
             if q
             in " ".join(
                 [
-                    *(str(row.get(key) or "") for key in ["ip", "mac", "hostname", "display_name", "device_type", "device_key"]),
+                    *(str(row.get(key) or "") for key in ["ip", "mac", "hostname", "manual_name", "display_name", "device_type", "device_key"]),
                     *(str(tag) for tag in row.get("tags", [])),
                 ]
             ).lower()

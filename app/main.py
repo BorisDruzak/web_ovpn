@@ -6,6 +6,7 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
@@ -1659,6 +1660,43 @@ def network_asset_detail(asset_key: str, request: Request, db: Session = Depends
         },
         db,
     )
+
+
+@app.post("/network/assets/{asset_key}/name")
+async def network_asset_name_update(asset_key: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    valid_asset_key = validate_runtime_asset_key(asset_key)
+    form = await request.form()
+    name = str(form.get("name") or "").strip()
+    asset_path = quote(valid_asset_key, safe="")
+    if not 1 <= len(name) <= 160:
+        write_audit(
+            db,
+            request,
+            user,
+            "asset-name-update",
+            "error",
+            "manual name must contain 1 to 160 characters",
+            target_client=valid_asset_key,
+        )
+        add_flash(request, "bad", "Название должно содержать от 1 до 160 символов")
+        return redirect(f"/network/assets/{asset_path}")
+    _, error = net_cli_call(
+        request,
+        ["assets", "set-name", "--asset-key", valid_asset_key, "--name", name],
+    )
+    write_audit(
+        db,
+        request,
+        user,
+        "asset-name-update",
+        "error" if error else "ok",
+        error or "manual asset name updated",
+        target_client=valid_asset_key,
+    )
+    add_flash(request, "bad" if error else "ok", error or "Название сохранено")
+    return redirect(f"/network/assets/{asset_path}")
 
 
 @app.get("/network/hosts/{ip}", response_class=HTMLResponse)

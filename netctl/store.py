@@ -658,15 +658,27 @@ def query_hosts(conn: sqlite3.Connection, q: str = "", category: str = "", statu
     clauses: list[str] = []
     params: list[Any] = []
     if category and category != "all":
-        clauses.append("category = ?")
+        clauses.append("network_hosts.category = ?")
         params.append(category)
     if q:
         like = f"%{q.lower()}%"
-        clauses.append("(lower(ip) LIKE ? OR lower(coalesce(mac,'')) LIKE ? OR lower(coalesce(hostname,'')) LIKE ? OR lower(coalesce(display_name,'')) LIKE ?)")
-        params.extend([like, like, like, like])
+        clauses.append(
+            "(lower(network_hosts.ip) LIKE ? OR lower(coalesce(network_hosts.mac,'')) LIKE ? "
+            "OR lower(coalesce(network_hosts.hostname,'')) LIKE ? "
+            "OR lower(coalesce(network_hosts.display_name,'')) LIKE ? "
+            "OR lower(coalesce(network_hosts.device_key,'')) LIKE ? "
+            "OR lower(coalesce(assets.manual_name,'')) LIKE ?)"
+        )
+        params.extend([like, like, like, like, like, like])
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     rows = conn.execute(
-        f"SELECT * FROM network_hosts{where} ORDER BY ip",
+        f"""
+        SELECT network_hosts.*, assets.manual_name AS manual_name
+        FROM network_hosts
+        LEFT JOIN assets ON assets.asset_key = network_hosts.device_key
+        {where}
+        ORDER BY network_hosts.ip
+        """,
         params,
     ).fetchall()
     projected = [project_host_availability(conn, decode_host(dict(row)), now=utc_now()) for row in rows]
