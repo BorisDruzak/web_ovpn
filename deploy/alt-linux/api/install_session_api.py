@@ -223,6 +223,16 @@ def create_install_session_server(
             if "?" in self.path or len(self.path) > 4096:
                 self._error(404, "not_found")
                 return
+            if self.path == "/health":
+                self._send(
+                    200,
+                    {
+                        "schema_version": 1,
+                        "service": "alt-install-session",
+                        "status": "ok",
+                    },
+                )
+                return
             match = _PATH_RE.fullmatch(self.path)
             if not match:
                 self._error(404, "not_found")
