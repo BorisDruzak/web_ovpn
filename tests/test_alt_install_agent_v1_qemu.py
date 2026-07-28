@@ -639,6 +639,87 @@ def test_harness_rejects_any_caller_supplied_target_path() -> None:
     assert PASS_LINE not in completed.stdout
 
 
+def test_harness_exercises_its_executable_disposable_target_contract(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    qemu_img_log = tmp_path / "qemu-img.log"
+    fake_qemu_img = fake_bin / "qemu-img"
+    fake_qemu_img.write_text(
+        """#!/bin/bash
+set -eu
+{
+    printf 'arg'
+    for argument in "$@"; do
+        printf '\\t%s' "$argument"
+    done
+    printf '\\n'
+} >>"$FAKE_QEMU_IMG_LOG"
+if [[ "${!#}" == 64G ]]; then
+    output="${@: -2:1}"
+else
+    output="${!#}"
+fi
+: >"$output"
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_qemu_img.chmod(0o755)
+    contract_tmp = tmp_path / "contract-tmp"
+    contract_tmp.mkdir()
+    environment = os.environ.copy()
+    environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+    environment["FAKE_QEMU_IMG_LOG"] = qemu_img_log.as_posix()
+    environment["TMPDIR"] = contract_tmp.as_posix()
+
+    completed = subprocess.run(
+        [str(_bash()), HARNESS.as_posix(), "--exercise-target-contract"],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    contract = dict(
+        line.split("=", 1)
+        for line in completed.stdout.splitlines()
+        if "=" in line
+    )
+    workdir = contract["workdir"]
+    writable_work = contract["writable_variant_work"]
+    readonly_work = contract["readonly_variant_work"]
+    writable_backing = f"{writable_work}/backing.qcow2"
+    writable_overlay = f"{writable_work}/target-overlay.qcow2"
+    readonly_backing = f"{readonly_work}/backing.qcow2"
+
+    assert writable_work == f"{workdir}/writable"
+    assert readonly_work == f"{workdir}/readonly"
+    assert contract["writable_target"] == writable_overlay
+    assert contract["readonly_target"] == readonly_backing
+    assert contract["writable_drive"] == (
+        "id=target,if=none,format=qcow2,"
+        f"file={writable_overlay},cache=none"
+    )
+    assert contract["readonly_drive"] == (
+        "id=target,if=none,format=qcow2,"
+        f"file={readonly_backing},cache=none,readonly=on"
+    )
+    assert contract["cleanup"] == "removed"
+    assert "/dev/" not in completed.stdout
+
+    assert qemu_img_log.read_text(encoding="utf-8").splitlines() == [
+        f"arg\tcreate\t-f\tqcow2\t{writable_backing}\t64G",
+        "arg\tcreate\t-f\tqcow2\t-F\tqcow2"
+        f"\t-b\t{writable_backing}\t{writable_overlay}",
+        f"arg\tcreate\t-f\tqcow2\t{readonly_backing}\t64G",
+    ]
+    assert not any(contract_tmp.iterdir())
+
+
 def test_harness_reports_the_runtime_disposable_target_contract() -> None:
     completed = subprocess.run(
         [str(_bash()), HARNESS.as_posix(), "--describe-safety-contract"],

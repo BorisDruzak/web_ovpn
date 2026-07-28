@@ -11,6 +11,7 @@ usage() {
     printf '%s\n' \
         'Usage: run-agent-v1-dry-run-acceptance.sh --source-iso <ISO> --helper <STATIC-ELF> --ovmf-code <OVMF_CODE.fd> --ovmf-vars <OVMF_VARS.fd> [--evidence-dir <DIR>]' \
         '       run-agent-v1-dry-run-acceptance.sh --check-prerequisites' \
+        '       run-agent-v1-dry-run-acceptance.sh --exercise-target-contract' \
         '       run-agent-v1-dry-run-acceptance.sh --describe-safety-contract' >&2
     exit 2
 }
@@ -64,9 +65,148 @@ describe_safety_contract() {
         "source_identity_manifest=$source_identity_manifest_relative"
 }
 
+prepared_variant_work=
+prepared_variant_evidence=
+prepared_target=
+prepared_target_readonly=
+target_drive_argument=
+
+prepare_disposable_target() {
+    local variant=$1
+    local variant_work="$workdir/$variant"
+    local variant_evidence="$evidence/$variant"
+    local backing="$variant_work/backing.qcow2"
+    local target="$backing"
+    local target_readonly=on
+
+    case "$variant" in
+        writable|readonly) ;;
+        *) die "Unsupported disposable target variant: $variant" ;;
+    esac
+    case "$variant_work" in
+        "$workdir"/writable|"$workdir"/readonly) ;;
+        *) die 'Disposable target escaped the harness work directory' ;;
+    esac
+    mkdir -- "$variant_work"
+    chmod 0700 -- "$variant_work"
+    mkdir -- "$variant_evidence"
+    chmod 0755 -- "$variant_evidence"
+    qemu-img create -f "$target_format" "$backing" "$target_virtual_size" \
+        >"$variant_work/qemu-img.log" 2>&1 ||
+        die "$variant qemu backing creation failed"
+    (
+        cd -- "$variant_work"
+        sha256sum backing.qcow2
+    ) >"$variant_evidence/backing.before.sha256"
+    if [[ "$variant" == writable ]]; then
+        target="$variant_work/target-overlay.qcow2"
+        target_readonly=off
+        qemu-img create -f "$target_format" -F "$target_format" \
+            -b "$backing" "$target" \
+            >>"$variant_work/qemu-img.log" 2>&1 ||
+            die 'Writable qcow2 overlay creation failed'
+        (
+            cd -- "$variant_work"
+            sha256sum target-overlay.qcow2
+        ) >"$variant_evidence/target.before.sha256"
+    fi
+
+    prepared_variant_work=$variant_work
+    prepared_variant_evidence=$variant_evidence
+    prepared_target=$target
+    prepared_target_readonly=$target_readonly
+}
+
+compose_target_drive() {
+    local target=$1 target_readonly=$2
+
+    case "$target" in
+        "$workdir"/writable/*|"$workdir"/readonly/*) ;;
+        *) die 'QEMU target drive escaped the harness work directory' ;;
+    esac
+    target_drive_argument="id=target,if=none,format=$target_format,file=$target,cache=none"
+    [[ "$target_readonly" == off ]] ||
+        target_drive_argument="${target_drive_argument},${readonly_drive_option}"
+}
+
+contract_cleanup_root=
+contract_cleanup_workdir=
+cleanup_contract_exercise() {
+    case "$contract_cleanup_workdir" in
+        "$contract_cleanup_root"/.alt-agent-v1-qemu-contract.*)
+            rm -rf -- "$contract_cleanup_workdir"
+            ;;
+    esac
+}
+
+exercise_target_contract() {
+    local command
+    for command in qemu-img sha256sum mktemp readlink mkdir chmod rm; do
+        command -v "$command" >/dev/null 2>&1 ||
+            die "Missing target-contract command: $command"
+    done
+
+    contract_cleanup_root=${TMPDIR:-/tmp}
+    contract_cleanup_root=$(readlink -f -- "$contract_cleanup_root") ||
+        die 'Cannot resolve target-contract temporary root'
+    [[ -d "$contract_cleanup_root" ]] ||
+        die 'Target-contract temporary root is not a directory'
+    workdir=$(mktemp -d \
+        "$contract_cleanup_root/.alt-agent-v1-qemu-contract.XXXXXX")
+    chmod 0700 -- "$workdir"
+    workdir=$(readlink -f -- "$workdir") ||
+        die 'Cannot resolve target-contract work directory'
+    contract_cleanup_workdir=$workdir
+    case "$workdir" in
+        "$contract_cleanup_root"/.alt-agent-v1-qemu-contract.*) ;;
+        *) die 'Target-contract work directory escaped its temporary root' ;;
+    esac
+    case "$workdir" in
+        *,*) die 'Target-contract work paths containing commas are unsupported' ;;
+    esac
+    trap cleanup_contract_exercise EXIT
+
+    evidence="$workdir/evidence"
+    mkdir -- "$evidence"
+    chmod 0755 -- "$evidence"
+
+    local writable_variant_work writable_target writable_drive
+    local readonly_variant_work readonly_target readonly_drive
+    prepare_disposable_target writable
+    compose_target_drive "$prepared_target" "$prepared_target_readonly"
+    writable_variant_work=$prepared_variant_work
+    writable_target=$prepared_target
+    writable_drive=$target_drive_argument
+
+    prepare_disposable_target readonly
+    compose_target_drive "$prepared_target" "$prepared_target_readonly"
+    readonly_variant_work=$prepared_variant_work
+    readonly_target=$prepared_target
+    readonly_drive=$target_drive_argument
+
+    printf '%s\n' \
+        "workdir=$workdir" \
+        "writable_variant_work=$writable_variant_work" \
+        "writable_target=$writable_target" \
+        "writable_drive=$writable_drive" \
+        "readonly_variant_work=$readonly_variant_work" \
+        "readonly_target=$readonly_target" \
+        "readonly_drive=$readonly_drive"
+    cleanup_contract_exercise
+    [[ ! -e "$workdir" ]] ||
+        die 'Target-contract work directory cleanup failed'
+    trap - EXIT
+    contract_cleanup_workdir=
+    printf '%s\n' 'cleanup=removed'
+}
+
 if (($# == 1)) && [[ "$1" == --check-prerequisites ]]; then
     check_prerequisites || exit 1
     printf '%s\n' 'QEMU acceptance prerequisites are available'
+    exit 0
+fi
+if (($# == 1)) && [[ "$1" == --exercise-target-contract ]]; then
+    exercise_target_contract
     exit 0
 fi
 if (($# == 1)) && [[ "$1" == --describe-safety-contract ]]; then
@@ -251,11 +391,13 @@ stop_qemu() {
 
 run_variant() {
     local variant=$1 uuid=$2
-    local variant_work="$workdir/$variant"
-    local variant_evidence="$evidence/$variant"
-    local backing="$variant_work/backing.qcow2"
-    local target="$backing"
-    local target_readonly=on
+    local variant_work variant_evidence target target_readonly
+    prepare_disposable_target "$variant"
+    variant_work=$prepared_variant_work
+    variant_evidence=$prepared_variant_evidence
+    target=$prepared_target
+    target_readonly=$prepared_target_readonly
+
     local qmp_socket="$variant_work/qmp.sock"
     local vnc_socket="$variant_work/vnc.sock"
     local console="$variant_work/guest-console.log"
@@ -263,32 +405,10 @@ run_variant() {
     local vars_copy="$variant_work/OVMF_VARS.fd"
     local drive
 
-    mkdir -m 0700 -- "$variant_work"
-    mkdir -m 0755 -- "$variant_evidence"
-    qemu-img create -f "$target_format" "$backing" "$target_virtual_size" \
-        >"$variant_work/qemu-img.log" 2>&1 ||
-        die "$variant qemu backing creation failed"
-    (
-        cd -- "$variant_work"
-        sha256sum backing.qcow2
-    ) >"$variant_evidence/backing.before.sha256"
-    if [[ "$variant" == writable ]]; then
-        target="$variant_work/target-overlay.qcow2"
-        target_readonly=off
-        qemu-img create -f "$target_format" -F "$target_format" \
-            -b "$backing" "$target" \
-            >>"$variant_work/qemu-img.log" 2>&1 ||
-            die 'Writable qcow2 overlay creation failed'
-        (
-            cd -- "$variant_work"
-            sha256sum target-overlay.qcow2
-        ) >"$variant_evidence/target.before.sha256"
-    fi
     cp -- "$ovmf_vars" "$vars_copy"
 
-    drive="id=target,if=none,format=$target_format,file=$target,cache=none"
-    [[ "$target_readonly" == off ]] ||
-        drive="${drive},${readonly_drive_option}"
+    compose_target_drive "$target" "$target_readonly"
+    drive=$target_drive_argument
     qemu-system-x86_64 \
         -machine q35,accel=kvm:tcg \
         -m 4096 \
