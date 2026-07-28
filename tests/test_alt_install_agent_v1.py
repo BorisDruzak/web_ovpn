@@ -674,12 +674,12 @@ def test_iso_assets_pin_source_and_require_external_public_key() -> None:
     assert '[[ -f "$candidate" && -x "$candidate" ]]' in verifier
     for command in (
         "bash",
+        "blkid",
         "curl",
         "date",
         "grep",
         "head",
         "ip",
-        "lsblk",
         "od",
         "tr",
         "udhcpc",

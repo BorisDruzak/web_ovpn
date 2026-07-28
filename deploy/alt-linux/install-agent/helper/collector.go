@@ -23,6 +23,7 @@ const (
 
 type readOnlySystemProbe interface {
 	ReadFile(path string) ([]byte, error)
+	ReadDirectory(path string) ([]string, error)
 	Run(ctx context.Context, name string, arguments ...string) ([]byte, error)
 }
 
@@ -32,9 +33,21 @@ func (operatingSystemProbe) ReadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+func (operatingSystemProbe) ReadDirectory(path string) ([]string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry.Name())
+	}
+	return result, nil
+}
+
 func (operatingSystemProbe) Run(ctx context.Context, name string, arguments ...string) ([]byte, error) {
 	switch name {
-	case "lsblk", "ip":
+	case "/usr/sbin/blkid", "ip":
 	default:
 		return nil, contractError("inventory_probe_invalid", "inventory command is not allowlisted")
 	}
@@ -111,19 +124,11 @@ func collectSystemInventory(ctx context.Context, probe readOnlySystemProbe) ([]b
 		return nil, err
 	}
 
-	blockRaw, err := probe.Run(ctx, "lsblk", "--json", "--bytes", "--output", "NAME,TYPE,PATH,RM,SIZE,MODEL,SERIAL,WWN,FSTYPE,MOUNTPOINT")
-	if err != nil || len(blockRaw) > maxDocumentBytes {
+	blockDevices, err := collectBlockDevices(ctx, probe)
+	if err != nil {
 		return nil, contractError("inventory_disk_probe_failed", "block inventory probe failed")
 	}
-	var blockDocument struct {
-		Devices []blockDevice `json:"blockdevices"`
-	}
-	blockDecoder := json.NewDecoder(bytes.NewReader(blockRaw))
-	blockDecoder.DisallowUnknownFields()
-	if err := blockDecoder.Decode(&blockDocument); err != nil {
-		return nil, contractError("inventory_disk_probe_invalid", "block inventory probe returned invalid JSON")
-	}
-	disks, bootMedia, err := inventoryDisks(blockDocument.Devices)
+	disks, bootMedia, err := inventoryDisks(blockDevices)
 	if err != nil {
 		return nil, err
 	}
@@ -166,6 +171,282 @@ func collectSystemInventory(ctx context.Context, probe readOnlySystemProbe) ([]b
 		return nil, err
 	}
 	return canonical, nil
+}
+
+func collectBlockDevices(ctx context.Context, probe readOnlySystemProbe) ([]blockDevice, error) {
+	names, err := probe.ReadDirectory("/sys/class/block")
+	if err != nil || len(names) == 0 {
+		return nil, errors.New("block devices are unavailable")
+	}
+	sort.Strings(names)
+	mounts, err := imageMounts(probe)
+	if err != nil {
+		return nil, err
+	}
+	topLevel := make([]string, 0, len(names))
+	for _, name := range names {
+		if !safeBlockName(name) {
+			return nil, errors.New("block device name is unsafe")
+		}
+		if _, err := probe.ReadFile("/sys/class/block/" + name + "/partition"); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		topLevel = append(topLevel, name)
+	}
+	if err := validateImageMountTopology(probe, names, topLevel, mounts); err != nil {
+		return nil, err
+	}
+	devices := make([]blockDevice, 0, len(topLevel))
+	for _, name := range topLevel {
+		kind, err := sysfsBlockType(probe, name)
+		if err != nil {
+			return nil, err
+		}
+		if kind == "unsupported" {
+			continue
+		}
+		device, err := readBlockDevice(ctx, probe, name, "", mounts)
+		if err != nil {
+			return nil, err
+		}
+		for _, child := range names {
+			if blockParentName(child, topLevel) != name {
+				continue
+			}
+			partition, err := readBlockDevice(ctx, probe, child, "part", mounts)
+			if err != nil {
+				return nil, err
+			}
+			device.Children = append(device.Children, partition)
+		}
+		devices = append(devices, device)
+	}
+	return devices, nil
+}
+
+func validateImageMountTopology(probe readOnlySystemProbe, names, topLevel []string, mounts map[string]string) error {
+	for dev := range mounts {
+		mountedName := ""
+		for _, name := range names {
+			value, err := readBoundedText(probe, "/sys/class/block/"+name+"/dev")
+			if err != nil {
+				return err
+			}
+			if value == dev {
+				if mountedName != "" {
+					return errors.New("boot media is ambiguous")
+				}
+				mountedName = name
+			}
+		}
+		if mountedName == "" {
+			return errors.New("boot media device is unavailable")
+		}
+		physicalName := mountedName
+		if parent := blockParentName(mountedName, topLevel); parent != "" {
+			physicalName = parent
+		}
+		kind, err := sysfsBlockType(probe, physicalName)
+		if err != nil {
+			return err
+		}
+		if kind != "disk" && kind != "rom" {
+			return errors.New("boot media topology is unsupported")
+		}
+	}
+	return nil
+}
+
+func imageMounts(probe readOnlySystemProbe) (map[string]string, error) {
+	raw, err := probe.ReadFile("/proc/self/mountinfo")
+	if err != nil || len(raw) > maxDocumentBytes || !utf8Valid(raw) {
+		return nil, errors.New("mount information is unavailable")
+	}
+	result := make(map[string]string)
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 5 && fields[4] == "/image" {
+			result[fields[2]] = "/image"
+		}
+	}
+	return result, nil
+}
+
+func readBlockDevice(ctx context.Context, probe readOnlySystemProbe, name, forcedType string, mounts map[string]string) (blockDevice, error) {
+	base := "/sys/class/block/" + name
+	dev, err := readBoundedText(probe, base+"/dev")
+	if err != nil {
+		return blockDevice{}, err
+	}
+	sizeSectors, err := readPositiveInt(probe, base+"/size")
+	if err != nil {
+		return blockDevice{}, err
+	}
+	const sectorSize = int64(512)
+	if sizeSectors > (1<<63-1)/sectorSize {
+		return blockDevice{}, errors.New("block device size is invalid")
+	}
+	removableText, err := readBoundedText(probe, base+"/removable")
+	if forcedType == "part" && errors.Is(err, os.ErrNotExist) {
+		removableText = "0"
+		err = nil
+	}
+	if err != nil || (removableText != "0" && removableText != "1") {
+		return blockDevice{}, errors.New("removable state is invalid")
+	}
+	deviceType := forcedType
+	if deviceType == "" {
+		deviceType, err = sysfsBlockType(probe, name)
+		if err != nil {
+			return blockDevice{}, err
+		}
+	}
+	model, err := optionalBoundedText(probe, base+"/device/model")
+	if err != nil {
+		return blockDevice{}, err
+	}
+	serial, err := optionalBoundedText(probe, base+"/device/serial")
+	if err != nil {
+		return blockDevice{}, err
+	}
+	wwn, err := optionalBoundedText(probe, base+"/device/wwid")
+	if err != nil {
+		return blockDevice{}, err
+	}
+	filesystem, err := blockFilesystem(ctx, probe, name)
+	if err != nil {
+		return blockDevice{}, err
+	}
+	return blockDevice{
+		Name: name, Type: deviceType, Path: "/dev/" + name, Removable: removableText == "1",
+		Size: flexibleInt64(sizeSectors * sectorSize), Model: dereferenceText(model), Serial: serial, WWN: wwn,
+		FSType: filesystem, Mountpoint: optionalMountpoint(mounts, dev),
+	}, nil
+}
+
+func blockFilesystem(ctx context.Context, probe readOnlySystemProbe, name string) (*string, error) {
+	raw, err := probe.Run(ctx, "/usr/sbin/blkid", "-o", "export", "/dev/"+name)
+	if err != nil && len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > maxDocumentBytes || !utf8Valid(raw) {
+		return nil, errors.New("filesystem probe is invalid")
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.HasPrefix(line, "TYPE=") {
+			continue
+		}
+		value := strings.TrimPrefix(line, "TYPE=")
+		if value == "" || len([]rune(value)) > maxStringRunes {
+			return nil, errors.New("filesystem type is invalid")
+		}
+		return &value, nil
+	}
+	return nil, nil
+}
+
+func sysfsBlockType(probe readOnlySystemProbe, name string) (string, error) {
+	raw, err := probe.ReadFile("/sys/class/block/" + name + "/device/type")
+	if err == nil {
+		value, err := boundedText(raw)
+		if err != nil {
+			return "", err
+		}
+		switch value {
+		case "0":
+			return "disk", nil
+		case "5":
+			return "rom", nil
+		default:
+			return "unsupported", nil
+		}
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	for _, prefix := range []string{"sd", "vd", "xvd", "hd", "nvme", "mmcblk"} {
+		if strings.HasPrefix(name, prefix) {
+			return "disk", nil
+		}
+	}
+	return "unsupported", nil
+}
+
+func readPositiveInt(probe readOnlySystemProbe, path string) (int64, error) {
+	text, err := readBoundedText(probe, path)
+	if err != nil {
+		return 0, err
+	}
+	value, err := strconv.ParseInt(text, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, errors.New("positive integer is invalid")
+	}
+	return value, nil
+}
+
+func optionalBoundedText(probe readOnlySystemProbe, path string) (*string, error) {
+	value, err := readBoundedText(probe, path)
+	if err != nil {
+		if _, readErr := probe.ReadFile(path); errors.Is(readErr, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &value, nil
+}
+
+func optionalMountpoint(mounts map[string]string, dev string) *string {
+	if value, ok := mounts[dev]; ok {
+		return &value
+	}
+	return nil
+}
+
+func dereferenceText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func safeBlockName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, character := range name {
+		if !((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func blockParentName(name string, topLevel []string) string {
+	parent := ""
+	for _, candidate := range topLevel {
+		if !strings.HasPrefix(name, candidate) || len(name) == len(candidate) {
+			continue
+		}
+		suffix := strings.TrimPrefix(name, candidate)
+		if suffix[0] == 'p' {
+			suffix = suffix[1:]
+		}
+		if suffix == "" {
+			continue
+		}
+		for _, character := range suffix {
+			if character < '0' || character > '9' {
+				goto nextCandidate
+			}
+		}
+		if len(candidate) > len(parent) {
+			parent = candidate
+		}
+	nextCandidate:
+	}
+	return parent
 }
 
 func collectMachine(probe readOnlySystemProbe) (MachineInventory, error) {
@@ -293,7 +574,14 @@ func inventoryInterfaces(document []ipInterface, routeDevice string) ([]Interfac
 
 func readBoundedText(probe readOnlySystemProbe, path string) (string, error) {
 	raw, err := probe.ReadFile(path)
-	if err != nil || len(raw) == 0 || len(raw) > maxStringRunes*4+2 || !utf8Valid(raw) {
+	if err != nil {
+		return "", err
+	}
+	return boundedText(raw)
+}
+
+func boundedText(raw []byte) (string, error) {
+	if len(raw) == 0 || len(raw) > maxStringRunes*4+2 || !utf8Valid(raw) {
 		return "", errors.New("invalid bounded text")
 	}
 	text := strings.TrimSpace(string(raw))
