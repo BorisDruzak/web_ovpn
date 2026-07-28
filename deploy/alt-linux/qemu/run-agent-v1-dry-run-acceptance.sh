@@ -441,7 +441,9 @@ run_variant() {
         die "$variant QEMU continue failed"
 
     local booted=0
-    for _ in $(seq 1 600); do
+    # This host may fall back to TCG.  An ALT graphical initrd can legitimately
+    # need more than ten minutes before it reaches the serial agent banner.
+    for _ in $(seq 1 1200); do
         if [[ -f "$console" ]] &&
             {
                 grep -Fqx 'ALT install agent: waiting_for_approval' "$console" ||

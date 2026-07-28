@@ -93,6 +93,7 @@ def sha256(path: Path) -> str:
 helper = root / "usr/libexec/alt-install-helper"
 public_key_path = root / "usr/share/alt-install/public-key.json"
 source_path = root / "usr/share/alt-install/source_iso.json"
+managed_size_path = root / "usr/share/alt-install/managed_iso_size_bytes"
 checks = {
     "helper_sha256": sha256(helper),
     "managed_initrd_sha256": sha256(initrd),
@@ -115,6 +116,11 @@ if (
     or source["iso_sha256"] != document["source_iso_sha256"]
 ):
     raise SystemExit("source ISO identity does not match")
+managed_size = managed_size_path.read_text(encoding="ascii")
+if not managed_size.endswith("\n") or not managed_size[:-1].isdigit() or managed_size[:-1].startswith("0"):
+    raise SystemExit("managed ISO size is invalid")
+if int(managed_size) != iso.stat().st_size:
+    raise SystemExit("managed ISO size does not match")
 
 public_key = json.loads(public_key_path.read_text(encoding="utf-8"))
 if set(public_key) != {
@@ -160,7 +166,7 @@ for library in config.sh network.sh protocol.sh state.sh transport.sh ui.sh; do
     mode_is 644 \
         "$workdir/initrd/usr/libexec/alt-install-agent-lib/lib/$library"
 done
-for asset in build-id payload.sha256 public-key.json source_iso.json; do
+for asset in build-id managed_iso_size_bytes payload.sha256 public-key.json source_iso.json; do
     mode_is 644 "$workdir/initrd/usr/share/alt-install/$asset"
 done
 

@@ -191,7 +191,10 @@ printf '%s\n' "$build_id" > "$workdir/build-id"
 chmod 0600 "$workdir/build-id"
 install -D -m 0644 "$workdir/build-id" \
     "$workdir/initrd/usr/share/alt-install/build-id"
+printf '%011d\n' 0 > "$workdir/initrd/usr/share/alt-install/managed_iso_size_bytes"
+chmod 0644 "$workdir/initrd/usr/share/alt-install/managed_iso_size_bytes"
 
+repack_initrd() {
 (
     cd "$workdir/initrd"
     sha256sum \
@@ -206,6 +209,7 @@ install -D -m 0644 "$workdir/build-id" \
         usr/libexec/alt-install-agent-lib/lib/transport.sh \
         usr/libexec/alt-install-agent-lib/lib/ui.sh \
         usr/share/alt-install/build-id \
+        usr/share/alt-install/managed_iso_size_bytes \
         usr/share/alt-install/public-key.json \
         usr/share/alt-install/source_iso.json \
         > usr/share/alt-install/payload.sha256
@@ -215,6 +219,8 @@ install -D -m 0644 "$workdir/build-id" \
         cpio --null -o -H newc --owner=0:0 --quiet |
         gzip -n > "$workdir/initrd-agent-v1.img"
 )
+}
+repack_initrd
 
 mkdir -p "$workdir/menu/boot/grub" "$workdir/menu/syslinux"
 mv "$workdir/grub.cfg" "$workdir/menu/boot/grub/grub.cfg"
@@ -232,6 +238,23 @@ xorriso -indev "$source_iso" -outdev "$tmp_output" \
     -map "$workdir/menu/boot/grub/grub.cfg" /boot/grub/grub.cfg \
     -map "$workdir/menu/syslinux/isolinux.cfg" /syslinux/isolinux.cfg \
     -commit >/dev/null
+
+managed_iso_size=$(stat -c '%s' "$tmp_output")
+[[ "$managed_iso_size" =~ ^[1-9][0-9]{10,}$ ]] ||
+    die 'Managed ISO size is invalid'
+printf '%011d\n' "$managed_iso_size" > \
+    "$workdir/initrd/usr/share/alt-install/managed_iso_size_bytes"
+repack_initrd
+tmp_final_output="$workdir/managed.iso.final"
+xorriso -indev "$source_iso" -outdev "$tmp_final_output" \
+    -boot_image any replay \
+    -map "$workdir/initrd-agent-v1.img" /boot/initrd.img \
+    -map "$workdir/menu/boot/grub/grub.cfg" /boot/grub/grub.cfg \
+    -map "$workdir/menu/syslinux/isolinux.cfg" /syslinux/isolinux.cfg \
+    -commit >/dev/null
+[[ "$(stat -c '%s' "$tmp_final_output")" == "$managed_iso_size" ]] ||
+    die 'Managed ISO size fixed point did not converge'
+mv -f -- "$tmp_final_output" "$tmp_output"
 
 python3 - "$source_iso" "$tmp_output" "$workdir/initrd-agent-v1.img" \
     "$workdir/initrd" "$tmp_manifest" "$build_id" "$public_key_id" \

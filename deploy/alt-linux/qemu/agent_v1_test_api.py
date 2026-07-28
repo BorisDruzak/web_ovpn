@@ -174,6 +174,11 @@ def _settings(state_dir: Path) -> Settings:
         install_profile_root=PROFILE_ROOT,
         install_signing_private_key=paths["private_key"],
         install_signing_public_key=paths["public_key"],
+        # The disposable API deliberately runs as root so it can exercise the
+        # root-only approval path. Its test host need not have the production
+        # altserver account, so fixture artefacts remain owned by root.
+        service_user="root",
+        service_group="root",
     )
 
 
@@ -243,7 +248,17 @@ def serve_fixture(state_dir: Path, listen_address: str, listen_port: int) -> Non
     approved: set[str] = set()
     try:
         while not stop.wait(0.2):
-            for status in repository.list_statuses():
+            try:
+                statuses = repository.list_statuses()
+            except ControlError as exc:
+                # Session creation publishes a private temporary directory and
+                # then renames it atomically. A concurrent fixture poll can
+                # observe that directory briefly; retry instead of treating
+                # this expected publication race as a protocol rejection.
+                if exc.code == "install_session_invalid":
+                    continue
+                raise
+            for status in statuses:
                 session_id = str(status.get("session_id", ""))
                 if not SESSION_ID_RE.fullmatch(session_id):
                     _fail("Fixture observed an invalid session identifier")
