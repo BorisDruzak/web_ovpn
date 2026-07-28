@@ -381,6 +381,26 @@ def test_fixture_approval_gate_rejects_a_non_root_process() -> None:
         module.require_real_root(1000)
 
 
+def test_fixture_settings_keep_root_owned_approval_artifacts(tmp_path: Path) -> None:
+    specification = importlib.util.spec_from_file_location(
+        "agent_v1_test_api", SUPPORT
+    )
+    assert specification and specification.loader
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+
+    settings = module._settings(tmp_path)
+
+    assert settings.service_user == "root"
+    assert settings.service_group == "root"
+
+
+def test_harness_allows_the_tcg_boot_budget() -> None:
+    harness = HARNESS.read_text(encoding="utf-8")
+
+    assert "for _ in $(seq 1 1200); do" in harness
+
+
 def _write_variant_summary(
     path: Path,
     variant: str,

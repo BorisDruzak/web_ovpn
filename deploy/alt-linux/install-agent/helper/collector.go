@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	sourceISOPath = "/usr/share/alt-install/source_iso.json"
-	buildIDPath   = "/usr/share/alt-install/build-id"
-	agentVersion  = "1.0.0"
+	sourceISOPath      = "/usr/share/alt-install/source_iso.json"
+	buildIDPath        = "/usr/share/alt-install/build-id"
+	managedISOSizePath = "/usr/share/alt-install/managed_iso_size_bytes"
+	agentVersion       = "1.0.0"
 )
 
 type readOnlySystemProbe interface {
@@ -129,30 +130,16 @@ func collectSystemInventory(ctx context.Context, probe readOnlySystemProbe) ([]b
 	if err != nil {
 		return nil, contractError("inventory_disk_probe_failed", "block inventory probe failed")
 	}
-	disks, bootMedia, err := inventoryDisks(blockDevices)
+	managedISOSize, err := readPositiveInt(probe, managedISOSizePath)
+	if err != nil {
+		return nil, contractError("inventory_boot_media_size_unavailable", "managed ISO size is unavailable")
+	}
+	disks, bootMedia, err := inventoryDisks(blockDevices, managedISOSize)
 	if err != nil {
 		return nil, err
 	}
 
-	addressRaw, err := probe.Run(ctx, "ip", "-j", "address", "show")
-	if err != nil || len(addressRaw) > maxDocumentBytes {
-		return nil, contractError("inventory_network_probe_failed", "network address probe failed")
-	}
-	var addressDocument []ipInterface
-	addressDecoder := json.NewDecoder(bytes.NewReader(addressRaw))
-	if err := addressDecoder.Decode(&addressDocument); err != nil {
-		return nil, contractError("inventory_network_probe_invalid", "network address probe returned invalid JSON")
-	}
-	routeRaw, err := probe.Run(ctx, "ip", "-j", "route", "get", controllerHost)
-	if err != nil || len(routeRaw) > maxDocumentBytes {
-		return nil, contractError("inventory_route_probe_failed", "controller route probe failed")
-	}
-	var routeDocument []ipRoute
-	routeDecoder := json.NewDecoder(bytes.NewReader(routeRaw))
-	if err := routeDecoder.Decode(&routeDocument); err != nil || len(routeDocument) != 1 || routeDocument[0].Device == "" {
-		return nil, contractError("inventory_route_probe_invalid", "controller route probe is ambiguous")
-	}
-	interfaces, err := inventoryInterfaces(addressDocument, routeDocument[0].Device)
+	interfaces, err := collectNetworkInterfaces(ctx, probe, controllerHost)
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +159,172 @@ func collectSystemInventory(ctx context.Context, probe readOnlySystemProbe) ([]b
 		return nil, err
 	}
 	return canonical, nil
+}
+
+func collectNetworkInterfaces(ctx context.Context, probe readOnlySystemProbe, controllerHost string) ([]InterfaceInventory, error) {
+	addressRaw, addressErr := probe.Run(ctx, "ip", "-j", "address", "show")
+	if addressErr == nil && len(addressRaw) <= maxDocumentBytes {
+		var addressDocument []ipInterface
+		if json.NewDecoder(bytes.NewReader(addressRaw)).Decode(&addressDocument) == nil {
+			routeRaw, routeErr := probe.Run(ctx, "ip", "-j", "route", "get", controllerHost)
+			if routeErr == nil && len(routeRaw) <= maxDocumentBytes {
+				var routeDocument []ipRoute
+				if json.NewDecoder(bytes.NewReader(routeRaw)).Decode(&routeDocument) == nil {
+					if len(routeDocument) != 1 || routeDocument[0].Device == "" {
+						return nil, contractError("inventory_route_probe_invalid", "controller route probe is ambiguous")
+					}
+					return inventoryInterfaces(addressDocument, routeDocument[0].Device)
+				}
+			}
+		}
+	}
+	return collectBusyBoxNetworkInterfaces(ctx, probe, controllerHost)
+}
+
+func collectBusyBoxNetworkInterfaces(ctx context.Context, probe readOnlySystemProbe, controllerHost string) ([]InterfaceInventory, error) {
+	addressRaw, err := probe.Run(ctx, "ip", "-o", "address", "show")
+	if err != nil || len(addressRaw) > maxDocumentBytes || !utf8Valid(addressRaw) {
+		return nil, contractError("inventory_network_probe_failed", "network address probe failed")
+	}
+	linkRaw, err := probe.Run(ctx, "ip", "-o", "link", "show")
+	if err != nil || len(linkRaw) > maxDocumentBytes || !utf8Valid(linkRaw) {
+		return nil, contractError("inventory_network_probe_failed", "network link probe failed")
+	}
+	routeRaw, err := probe.Run(ctx, "ip", "route", "list")
+	if err != nil || len(routeRaw) > maxDocumentBytes || !utf8Valid(routeRaw) {
+		return nil, contractError("inventory_route_probe_failed", "controller route probe failed")
+	}
+	addresses, err := parseBusyBoxAddresses(string(addressRaw))
+	if err != nil {
+		return nil, contractError("inventory_network_probe_invalid", "network address probe is invalid")
+	}
+	macs, err := parseBusyBoxLinks(string(linkRaw))
+	if err != nil {
+		return nil, contractError("inventory_network_probe_invalid", "network link probe is invalid")
+	}
+	routeDevice, err := parseBusyBoxRouteToHost(string(routeRaw), controllerHost)
+	if err != nil {
+		return nil, contractError("inventory_route_probe_invalid", "controller route probe is ambiguous")
+	}
+	document := make([]ipInterface, 0, len(macs))
+	for name, mac := range macs {
+		document = append(document, ipInterface{Name: name, MAC: mac, Addresses: addresses[name]})
+	}
+	return inventoryInterfaces(document, routeDevice)
+}
+
+func parseBusyBoxAddresses(raw string) (map[string][]struct {
+	Local     string `json:"local"`
+	PrefixLen int    `json:"prefixlen"`
+}, error) {
+	result := make(map[string][]struct {
+		Local     string `json:"local"`
+		PrefixLen int    `json:"prefixlen"`
+	})
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 4 || !strings.HasSuffix(fields[0], ":") {
+			return nil, errors.New("address line is invalid")
+		}
+		if fields[2] != "inet" && fields[2] != "inet6" {
+			continue
+		}
+		ip, prefix, ok := strings.Cut(fields[3], "/")
+		prefixLen, err := strconv.Atoi(prefix)
+		if !ok || err != nil || net.ParseIP(ip) == nil || prefixLen < 0 || prefixLen > 128 {
+			return nil, errors.New("address value is invalid")
+		}
+		name := strings.TrimSuffix(fields[1], ":")
+		if name == "" {
+			return nil, errors.New("address interface is invalid")
+		}
+		result[name] = append(result[name], struct {
+			Local     string `json:"local"`
+			PrefixLen int    `json:"prefixlen"`
+		}{Local: ip, PrefixLen: prefixLen})
+	}
+	return result, nil
+}
+
+func parseBusyBoxLinks(raw string) (map[string]string, error) {
+	result := make(map[string]string)
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 3 || !strings.HasSuffix(fields[0], ":") || !strings.HasSuffix(fields[1], ":") {
+			return nil, errors.New("link line is invalid")
+		}
+		for index := range fields {
+			if fields[index] != "link/ether" || index+1 >= len(fields) {
+				continue
+			}
+			if _, err := net.ParseMAC(fields[index+1]); err != nil {
+				return nil, errors.New("link MAC is invalid")
+			}
+			result[strings.TrimSuffix(fields[1], ":")] = strings.ToLower(fields[index+1])
+			break
+		}
+	}
+	return result, nil
+}
+
+func parseBusyBoxRouteToHost(raw, host string) (string, error) {
+	destination := net.ParseIP(host)
+	if destination == nil {
+		return "", errors.New("controller host is not an IP address")
+	}
+	bestPrefix := -1
+	devices := make(map[string]struct{})
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		prefix := 0
+		if fields[0] != "default" {
+			ip, network, err := net.ParseCIDR(fields[0])
+			if err != nil {
+				if ip = net.ParseIP(fields[0]); ip == nil {
+					continue
+				}
+				bits := 128
+				if ip.To4() != nil {
+					bits = 32
+				}
+				network = &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
+			}
+			ones, _ := network.Mask.Size()
+			if !network.Contains(destination) {
+				continue
+			}
+			prefix = ones
+		}
+		if prefix < bestPrefix {
+			continue
+		}
+		if prefix > bestPrefix {
+			bestPrefix = prefix
+			clear(devices)
+		}
+		for index := range fields {
+			if fields[index] == "dev" && index+1 < len(fields) {
+				devices[fields[index+1]] = struct{}{}
+				break
+			}
+		}
+	}
+	if bestPrefix < 0 || len(devices) != 1 {
+		return "", errors.New("controller route is ambiguous")
+	}
+	for device := range devices {
+		return device, nil
+	}
+	return "", errors.New("controller route is unavailable")
 }
 
 func collectBlockDevices(ctx context.Context, probe readOnlySystemProbe) ([]blockDevice, error) {
@@ -308,11 +461,15 @@ func readBlockDevice(ctx context.Context, probe readOnlySystemProbe, name, force
 	if err != nil {
 		return blockDevice{}, err
 	}
-	serial, err := optionalDeviceIdentityText(probe, base+"/device/serial")
+	modelValue := dereferenceText(model)
+	if modelValue == "" {
+		modelValue = "unknown"
+	}
+	serial, err := optionalDeviceIdentity(probe, base+"/device/serial", base+"/serial")
 	if err != nil {
 		return blockDevice{}, err
 	}
-	wwn, err := optionalDeviceIdentityText(probe, base+"/device/wwid")
+	wwn, err := optionalDeviceIdentity(probe, base+"/device/wwid", base+"/wwid")
 	if err != nil {
 		return blockDevice{}, err
 	}
@@ -322,7 +479,7 @@ func readBlockDevice(ctx context.Context, probe readOnlySystemProbe, name, force
 	}
 	return blockDevice{
 		Name: name, Type: deviceType, Path: "/dev/" + name, Removable: removableText == "1",
-		Size: flexibleInt64(sizeSectors * sectorSize), Model: dereferenceText(model), Serial: serial, WWN: wwn,
+		Size: flexibleInt64(sizeSectors * sectorSize), Model: modelValue, Serial: serial, WWN: wwn,
 		FSType: filesystem, Mountpoint: optionalMountpoint(mounts, dev),
 	}, nil
 }
@@ -376,11 +533,19 @@ func sysfsBlockType(probe readOnlySystemProbe, name string) (string, error) {
 }
 
 func readPositiveInt(probe readOnlySystemProbe, path string) (int64, error) {
-	text, err := readBoundedText(probe, path)
+	raw, err := probe.ReadFile(path)
 	if err != nil {
 		return 0, err
 	}
-	value, err := strconv.ParseInt(text, 10, 64)
+	if len(raw) < 2 || len(raw) > maxStringRunes*4+2 || raw[len(raw)-1] != '\n' || raw[0] == '0' {
+		return 0, errors.New("positive integer is invalid")
+	}
+	for _, character := range raw[:len(raw)-1] {
+		if character < '0' || character > '9' {
+			return 0, errors.New("positive integer is invalid")
+		}
+	}
+	value, err := strconv.ParseInt(string(raw[:len(raw)-1]), 10, 64)
 	if err != nil || value <= 0 {
 		return 0, errors.New("positive integer is invalid")
 	}
@@ -407,6 +572,14 @@ func optionalDeviceIdentityText(probe readOnlySystemProbe, path string) (*string
 		return nil, err
 	}
 	return &value, nil
+}
+
+func optionalDeviceIdentity(probe readOnlySystemProbe, primary, fallback string) (*string, error) {
+	value, err := optionalDeviceIdentityText(probe, primary)
+	if err != nil || value != nil {
+		return value, err
+	}
+	return optionalDeviceIdentityText(probe, fallback)
 }
 
 func optionalMountpoint(mounts map[string]string, dev string) *string {
@@ -520,7 +693,7 @@ func controllerHostFromCmdline(probe readOnlySystemProbe) (string, error) {
 	return "", contractError("inventory_controller_missing", "controller endpoint is unavailable")
 }
 
-func inventoryDisks(devices []blockDevice) ([]DiskInventory, BootMediaInventory, error) {
+func inventoryDisks(devices []blockDevice, managedISOSizeBytes int64) ([]DiskInventory, BootMediaInventory, error) {
 	disks := make([]DiskInventory, 0, len(devices))
 	var boot *blockDevice
 	for index := range devices {
@@ -546,7 +719,19 @@ func inventoryDisks(devices []blockDevice) ([]DiskInventory, BootMediaInventory,
 		})
 	}
 	if boot == nil {
-		return nil, BootMediaInventory{}, contractError("inventory_boot_media_missing", "boot media is unavailable")
+		for index := range devices {
+			device := &devices[index]
+			if device.Type != "rom" || !device.Removable || int64(device.Size) != managedISOSizeBytes {
+				continue
+			}
+			if boot != nil {
+				return nil, BootMediaInventory{}, contractError("inventory_boot_media_ambiguous", "boot media is ambiguous")
+			}
+			boot = device
+		}
+		if boot == nil {
+			return nil, BootMediaInventory{}, contractError("inventory_boot_media_missing", "boot media is unavailable")
+		}
 	}
 	sort.Slice(disks, func(left, right int) bool { return disks[left].Path < disks[right].Path })
 	return disks, BootMediaInventory{
