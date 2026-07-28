@@ -138,3 +138,108 @@ The manual operator must follow
 `docs/ALT_INSTALL_AGENT_V1_QEMU_ACCEPTANCE.md` on a suitable isolated Linux
 acceptance host. Only the documented sanitized evidence directory may be
 archived after review.
+
+## Round 1 fix report
+
+### Commit
+
+- `4a60dfec771f4f7157ab1f9fc8bef7a9b3d088db` —
+  `fix: bind QEMU readonly evidence`
+
+### Findings addressed
+
+1. **Readonly was configured but not independently verified.**
+   - Root cause: the QMP transcript contained only `query-blockstats`.
+     Variant identity came from a caller-supplied summary label, so no
+     measured QEMU field distinguished writable from readonly.
+   - Fix: every QMP snapshot now includes `query-block` as well as
+     `query-blockstats`. The verifier requires the selected target's
+     `inserted.ro` to be a strict boolean and binds it to the variant:
+     `false` for writable and `true` for readonly.
+   - The verifier also requires `inserted.drv=qcow2`. Both measured readonly
+     values are preserved in the variant summary, and finalization validates
+     them again. A writable summary relabeled `readonly` now fails before the
+     final PASS line.
+
+2. **Missing parent/backing statistics could pass as a target-only graph.**
+   - Root cause: recursive checking covered every relation that happened to
+     be present but had no independent topology contract describing which
+     relations must be present.
+   - Fix: `query-block.inserted.backing_file_depth` now supplies that
+     topology contract. The fixed harness topology is:
+     - writable overlay: backing depth 1;
+     - readonly fresh qcow2: backing depth 0.
+   - Every qcow2 format node implied by that depth must have its
+     file-protocol `parent` statistics. Every backing level implied by the
+     depth must exist, and a deeper unexpected backing level is rejected.
+     All additional reported `parent`/`backing` nodes remain recursively
+     checked for zero integer `wr_*` counters.
+   - This is fail-closed without requiring a backing relation from the
+     legitimate depth-zero readonly qcow2.
+
+3. **The shell harness safety surface lacked executable contract coverage.**
+   - The harness now exposes `--describe-safety-contract`, which needs no
+     QEMU/root prerequisites and reports values shared with the full runtime:
+     no target input, 64 GiB target size, writable qcow2 overlay/backing,
+     readonly qcow2 plus `readonly=on`, the fixed managed-ISO builder, and the
+     fixed source-identity manifest.
+   - Runtime image creation and QEMU drive construction use those same
+     target-size, format, and readonly variables.
+   - The source identity manifest is an explicit validated regular-file input
+     beside the fixed managed-ISO builder.
+   - A shell invocation test proves that a caller-supplied `--target /dev/sda`
+     is rejected by the real argument parser before any prerequisite or QEMU
+     action.
+
+### TDD evidence
+
+RED after adding the Round 1 contracts against the previous implementation:
+
+- `python -m pytest -q tests/test_alt_install_agent_v1_qemu.py`
+- Result: `10 failed, 7 passed`.
+- Observed failures included:
+  - valid QMP transcripts containing `query-block` were not understood;
+  - a writable summary relabeled readonly incorrectly emitted the exact PASS
+    line;
+  - missing required topology relations were not distinguished;
+  - `--describe-safety-contract` was rejected as unknown.
+
+GREEN after the fixes:
+
+- `python -m pytest -q tests/test_alt_install_agent_v1_qemu.py`
+- Result: `18 passed`.
+
+New regressions cover:
+
+- writable QMP evidence relabeled readonly;
+- finalization of a target-only readonly graph;
+- missing qcow2 file-protocol parent statistics;
+- missing writable backing statistics at reported depth 1;
+- legitimate readonly depth 0 with no backing relation;
+- executable rejection of a caller-supplied target path; and
+- executable reporting of the runtime disposable-target, readonly, and
+  pinned-source build contract.
+
+### Verification
+
+Fresh staged verification before the fix commit:
+
+- `python -m pytest -q tests/test_alt_install_agent_v1_qemu.py tests/test_alt_install_agent_v1.py`
+  - `42 passed, 1 skipped`
+- `bash -n deploy/alt-linux/qemu/run-agent-v1-dry-run-acceptance.sh`
+  - pass
+- `python -m py_compile deploy/alt-linux/qemu/agent_v1_test_api.py tests/test_alt_install_agent_v1_qemu.py`
+  - pass
+- `git diff --cached --check`
+  - pass
+
+The unchanged manual prerequisite probe still exits 1 and names:
+
+- `qemu-system-x86_64`;
+- `qemu-img`;
+- `xorriso`; and
+- `cpio`.
+
+No real QEMU run, deployment, physical-disk access, or manual acceptance
+evidence was performed or claimed in this fix round. PR5 remains gated on the
+documented isolated Linux acceptance run.
