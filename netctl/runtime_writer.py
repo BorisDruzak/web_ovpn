@@ -5,6 +5,7 @@ import json
 import sqlite3
 from typing import Any
 
+from .dns_ptr import normalize_ptr_hostname
 from .normalizer import normalize_mac
 
 
@@ -248,6 +249,7 @@ def _upsert_hostname_observation(
     source_id: int,
     source_key: str,
     hostname: str,
+    source_type: str,
     observed_at: str,
 ) -> None:
     conn.execute(
@@ -255,7 +257,7 @@ def _upsert_hostname_observation(
         INSERT INTO hostname_observations (
             asset_id, hostname, source_id, source_key, source_type,
             first_seen_at, last_seen_at, is_current
-        ) VALUES (?, ?, ?, ?, 'collector_host', ?, ?, 1)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(asset_id, hostname, source_key, source_type) DO UPDATE SET
             source_id = excluded.source_id,
             first_seen_at = min(hostname_observations.first_seen_at, excluded.first_seen_at),
@@ -267,6 +269,7 @@ def _upsert_hostname_observation(
             hostname,
             source_id,
             source_key,
+            source_type,
             observed_at,
             observed_at,
         ),
@@ -312,7 +315,9 @@ def sync_runtime_hosts(
     conn.execute(
         """
         UPDATE hostname_observations SET is_current = 0
-        WHERE source_key = ? AND source_type = 'collector_host' AND is_current = 1
+        WHERE source_key = ?
+          AND source_type IN ('collector_host', 'dhcp', 'dns_ptr')
+          AND is_current = 1
         """,
         (source_key,),
     )
@@ -417,12 +422,28 @@ def sync_runtime_hosts(
 
         hostname = _nonblank(host.get("hostname"))
         if hostname:
+            source_type = _nonblank(host.get("hostname_source_type"))
+            if source_type not in {"collector_host", "dhcp"}:
+                source_type = "collector_host"
             _upsert_hostname_observation(
                 conn,
                 asset_id=asset_id,
                 source_id=source_id,
                 source_key=source_key,
                 hostname=hostname,
+                source_type=source_type,
+                observed_at=observed_at,
+            )
+            counts["hostname_observations"] += 1
+        dns_ptr_hostname = normalize_ptr_hostname(host.get("dns_ptr_hostname"))
+        if dns_ptr_hostname:
+            _upsert_hostname_observation(
+                conn,
+                asset_id=asset_id,
+                source_id=source_id,
+                source_key=source_key,
+                hostname=dns_ptr_hostname,
+                source_type="dns_ptr",
                 observed_at=observed_at,
             )
             counts["hostname_observations"] += 1
@@ -470,7 +491,8 @@ def sync_runtime_hosts(
         conn.execute(
             """
             SELECT COUNT(*) FROM hostname_observations
-            WHERE source_key = ? AND source_type = 'collector_host'
+            WHERE source_key = ?
+              AND source_type IN ('collector_host', 'dhcp', 'dns_ptr')
               AND is_current = 1
             """,
             (source_key,),

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import ipaddress
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,11 @@ TOPOLOGY_ROLES = frozenset({"core", "distribution", "access", "edge", "unknown"}
 SOURCE_IDENTITY_OPTION_KEYS = frozenset(
     {"runtime_asset_key", "intent_context_id", "intent_stable_id", "topology_role"}
 )
+RUNTIME_DNS_OPTION_KEYS = frozenset({"dns_ptr_server", "dns_ptr_timeout_seconds"})
+SOURCE_OPTION_YAML_KEYS = {
+    **{key: key for key in SOURCE_IDENTITY_OPTION_KEYS},
+    **{key: key for key in RUNTIME_DNS_OPTION_KEYS},
+}
 
 SNMP_OPTION_YAML_KEYS = {
     "snmp_version": "snmp_version",
@@ -105,10 +111,10 @@ def write_source_yaml(config_path: str | Path, source: dict[str, Any]) -> Path:
     else:
         options = source.get("driver_options")
         if isinstance(options, dict):
-            for option_key in SOURCE_IDENTITY_OPTION_KEYS:
+            for option_key in SOURCE_IDENTITY_OPTION_KEYS | RUNTIME_DNS_OPTION_KEYS:
                 if option_key in options:
                     values[option_key] = options[option_key]
-        ordered.extend(sorted(SOURCE_IDENTITY_OPTION_KEYS))
+        ordered.extend(sorted(SOURCE_IDENTITY_OPTION_KEYS | RUNTIME_DNS_OPTION_KEYS))
     rendered_values = {
         key: _render_source_yaml_scalar(values[key])
         for key in ordered
@@ -263,7 +269,9 @@ def _topology_role(value: Any) -> str:
 
 
 def _source_option(source: dict[str, Any], option_key: str) -> tuple[bool, Any]:
-    yaml_key = SNMP_OPTION_YAML_KEYS[option_key]
+    yaml_key = SOURCE_OPTION_YAML_KEYS.get(option_key)
+    if yaml_key is None:
+        yaml_key = SNMP_OPTION_YAML_KEYS[option_key]
     if yaml_key in source:
         return True, source[yaml_key]
     nested_options = source.get("driver_options")
@@ -288,6 +296,27 @@ def _normalize_generic_driver_options(source: dict[str, Any]) -> dict[str, Any]:
     configured, topology_role = _source_option(source, "topology_role")
     if configured:
         normalized["topology_role"] = _topology_role(topology_role)
+    dns_server_configured, dns_server = _source_option(source, "dns_ptr_server")
+    dns_timeout_configured, dns_timeout = _source_option(
+        source, "dns_ptr_timeout_seconds"
+    )
+    if dns_timeout_configured and not dns_server_configured:
+        raise ValueError("dns_ptr_server is required when dns PTR is configured")
+    if dns_server_configured:
+        if not isinstance(dns_server, str):
+            raise ValueError("dns_ptr_server must be an IP address")
+        try:
+            normalized["dns_ptr_server"] = str(
+                ipaddress.ip_address(dns_server.strip())
+            )
+        except ValueError:
+            raise ValueError("dns_ptr_server must be an IP address") from None
+        normalized["dns_ptr_timeout_seconds"] = _bounded_int(
+            dns_timeout if dns_timeout_configured else 2,
+            field="dns_ptr_timeout_seconds",
+            minimum=1,
+            maximum=10,
+        )
     return normalized
 
 

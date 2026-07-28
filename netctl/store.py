@@ -13,6 +13,7 @@ from .context_classifier import (
     load_active_segment_rules,
 )
 from .availability import project_host_availability
+from .dns_ptr import normalize_ptr_hostname, resolve_ptr_hostname
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
 from .path_facts import save_path_facts
 from .runtime_writer import (
@@ -185,6 +186,35 @@ def _insert_observation(
             _json(item),
         ),
     )
+
+
+def _enrich_hosts_with_dns_ptr(
+    hosts: list[dict[str, Any]], source: dict[str, Any]
+) -> None:
+    """Attach at most one validated PTR name to each current collected IP."""
+    options = source.get("driver_options")
+    if not isinstance(options, dict):
+        return
+    server = options.get("dns_ptr_server")
+    timeout_seconds = options.get("dns_ptr_timeout_seconds")
+    if not isinstance(server, str) or isinstance(timeout_seconds, bool):
+        return
+    try:
+        timeout = int(timeout_seconds)
+    except (TypeError, ValueError):
+        return
+    if not 1 <= timeout <= 10:
+        return
+    hosts_by_ip = {str(host["ip"]): host for host in hosts if host.get("ip")}
+    for ip in sorted(hosts_by_ip)[:256]:
+        try:
+            hostname = normalize_ptr_hostname(
+                resolve_ptr_hostname(ip, server=server, timeout_seconds=timeout)
+            )
+        except Exception:
+            hostname = None
+        if hostname is not None:
+            hosts_by_ip[ip]["dns_ptr_hostname"] = hostname
 
 
 def _upsert_host(conn: sqlite3.Connection, host: dict[str, Any]) -> int:
@@ -534,6 +564,7 @@ def _save_collection(
 
     source_for_normalizer = dict(source)
     hosts = normalize_hosts(source_for_normalizer, snapshot, observed_at, segment_rules=segment_rules)
+    _enrich_hosts_with_dns_ptr(hosts, source)
     current_ips = {host["ip"] for host in hosts}
     for host in hosts:
         host_id = _upsert_host(conn, host)

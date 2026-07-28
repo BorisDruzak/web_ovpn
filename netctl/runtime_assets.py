@@ -92,6 +92,35 @@ def list_current_hostname_observations(
     return [dict(row) for row in rows]
 
 
+def resolve_best_hostname_observation(
+    conn: sqlite3.Connection, asset_id: int
+) -> dict[str, Any] | None:
+    """Return safe preferred hostname evidence without exposing resolver settings."""
+    row = conn.execute(
+        """
+        SELECT hostname, source_type, last_seen_at
+        FROM hostname_observations
+        WHERE asset_id = ? AND is_current = 1
+        ORDER BY CASE source_type
+                   WHEN 'dhcp' THEN 0
+                   WHEN 'collector_host' THEN 1
+                   WHEN 'dns_ptr' THEN 2
+                   ELSE 3
+                 END,
+                 last_seen_at DESC, first_seen_at DESC, hostname, source_key, id
+        LIMIT 1
+        """,
+        (asset_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "hostname": str(row["hostname"]),
+        "source_type": str(row["source_type"]),
+        "observed_at": str(row["last_seen_at"]),
+    }
+
+
 def runtime_identity_report(conn: sqlite3.Connection) -> dict[str, Any] | None:
     """Return the runtime-identity migration report with JSON arrays decoded."""
     row = conn.execute(
@@ -171,6 +200,9 @@ def inspect_runtime_asset(
         "interfaces": list_asset_interfaces(conn, asset_id),
         "current_ip_observations": list_current_ip_observations(conn, asset_id),
         "current_hostname_observations": list_current_hostname_observations(
+            conn, asset_id
+        ),
+        "best_hostname_observation": resolve_best_hostname_observation(
             conn, asset_id
         ),
         "findings": findings,

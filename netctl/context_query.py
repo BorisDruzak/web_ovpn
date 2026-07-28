@@ -13,6 +13,7 @@ from .runtime_assets import (
     list_asset_interfaces,
     list_current_hostname_observations,
     list_current_ip_observations,
+    resolve_best_hostname_observation,
 )
 from .util import utc_now
 
@@ -333,6 +334,9 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
         "network": {
             "ip_observations": list_current_ip_observations(conn, asset_id)[:64],
             "hostname_observations": list_current_hostname_observations(conn, asset_id)[:64],
+            "best_hostname_observation": resolve_best_hostname_observation(
+                conn, asset_id
+            ),
         },
         "topology_path": _topology_path(conn, attachment),
         "attachment_events": _attachment_events(conn, asset_id),

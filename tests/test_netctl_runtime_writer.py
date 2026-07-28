@@ -554,6 +554,46 @@ def test_manual_asset_name_survives_ip_change_and_rejects_invalid_values(
         )
 
 
+def test_runtime_writer_retains_dhcp_and_dns_ptr_hostname_observations(
+    runtime_conn: sqlite3.Connection,
+) -> None:
+    """Replacing DHCP evidence with PTR data would hide the more reliable name."""
+    from netctl.runtime_assets import resolve_best_hostname_observation
+
+    source = _source(61, site="central")
+    _seed_source(runtime_conn, source)
+    host = _host("192.0.2.61", "00:11:22:33:44:61", hostname="dhcp-workstation")
+    host["hostname_source_type"] = "dhcp"
+    host["dns_ptr_hostname"] = "ptr-workstation.example.test"
+
+    sync_runtime_hosts(
+        runtime_conn,
+        source=source,
+        hosts=[host],
+        observed_at="2026-07-28T10:00:00Z",
+    )
+
+    rows = runtime_conn.execute(
+        """
+        SELECT hostname, source_type, first_seen_at, last_seen_at
+        FROM hostname_observations
+        ORDER BY source_type, hostname
+        """
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("dhcp-workstation", "dhcp", "2026-07-28T10:00:00Z", "2026-07-28T10:00:00Z"),
+        ("ptr-workstation.example.test", "dns_ptr", "2026-07-28T10:00:00Z", "2026-07-28T10:00:00Z"),
+    ]
+    asset_id = runtime_conn.execute(
+        "SELECT id FROM assets WHERE asset_key = ?", ("mac:00:11:22:33:44:61",)
+    ).fetchone()[0]
+    assert resolve_best_hostname_observation(runtime_conn, asset_id) == {
+        "hostname": "dhcp-workstation",
+        "source_type": "dhcp",
+        "observed_at": "2026-07-28T10:00:00Z",
+    }
+
+
 def test_same_mac_in_multiple_sites_opens_collision_then_marks_it_resolved(
     runtime_conn: sqlite3.Connection,
 ) -> None:

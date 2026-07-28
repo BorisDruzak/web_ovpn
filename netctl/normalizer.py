@@ -42,6 +42,7 @@ def _ensure_host(hosts: dict[str, dict[str, Any]], ip: str, now: str, source: di
             "ip": ip,
             "mac": None,
             "hostname": None,
+            "hostname_source_type": None,
             "display_name": None,
             "category": "unknown",
             "status": "seen",
@@ -128,6 +129,7 @@ def normalize_hosts(
         router = _ensure_host(hosts, source_ip, observed_at, source)
         identity = next((item.get("name") for item in snapshot.get("identity", []) if item.get("name")), None)
         router["hostname"] = identity or source.get("name")
+        router["hostname_source_type"] = "collector_host"
         router["display_name"] = router["hostname"]
         _add_source(router, "mikrotik_identity")
 
@@ -137,7 +139,9 @@ def normalize_hosts(
             continue
         host = _ensure_host(hosts, ip, observed_at, source)
         host["mac"] = normalize_mac(lease.get("mac")) or host["mac"]
-        host["hostname"] = lease.get("hostname") or host["hostname"]
+        if lease.get("hostname"):
+            host["hostname"] = lease["hostname"]
+            host["hostname_source_type"] = "dhcp"
         host["display_name"] = host["hostname"] or host["display_name"]
         if not host["display_name"] and lease.get("comment"):
             host["display_name"] = lease.get("comment")
@@ -166,7 +170,9 @@ def normalize_hosts(
         host["mac"] = host["mac"] or normalize_mac(neighbor.get("mac"))
         identity = neighbor.get("identity")
         if identity:
-            host["hostname"] = host["hostname"] or identity
+            if not host["hostname"]:
+                host["hostname"] = identity
+                host["hostname_source_type"] = "collector_host"
             host["display_name"] = host["display_name"] or identity
         platform = str(neighbor.get("platform") or "").lower()
         if platform == "mikrotik" or str(identity or "").lower().startswith(("mt-", "mikrotik", "cap-")):
@@ -188,7 +194,9 @@ def normalize_hosts(
         )
         if host["category"] == "router":
             host["display_name"] = host["display_name"] or source.get("name")
-            host["hostname"] = host["hostname"] or source.get("name")
+            if not host["hostname"]:
+                host["hostname"] = source.get("name")
+                host["hostname_source_type"] = "collector_host"
         if host["category"] not in {"unknown", "local_device"}:
             _add_tag(host, host["category"])
         device_type, confidence, evidence = _device_guess(host)

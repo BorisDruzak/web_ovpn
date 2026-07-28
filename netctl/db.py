@@ -569,6 +569,10 @@ def _is_private_source_key(key: Any) -> bool:
     )
 
 
+def _is_runtime_only_source_key(key: Any) -> bool:
+    return str(key).lower() in {"dns_ptr_server", "dns_ptr_timeout_seconds"}
+
+
 def _contains_private_source_key(value: Any) -> bool:
     if isinstance(value, dict):
         return any(
@@ -639,7 +643,7 @@ def _redact_source_value(value: Any) -> Any:
         return {
             key: _redact_source_value(nested_value)
             for key, nested_value in value.items()
-            if not _is_private_source_key(key)
+            if not _is_private_source_key(key) and not _is_runtime_only_source_key(key)
         }
     if isinstance(value, list):
         return [_redact_source_value(item) for item in value]

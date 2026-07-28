@@ -6,6 +6,7 @@ import sys
 from contextlib import nullcontext
 from pathlib import Path
 
+import dns.resolver
 import pytest
 
 
@@ -436,6 +437,135 @@ def write_mock_source(config_path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def test_collect_one_enriches_current_hosts_with_redacted_dns_ptr_names(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Removing PTR enrichment would lose a safe secondary hostname observation."""
+    import netctl.cli as cli
+    import netctl.store as store
+    from netctl.config import normalize_source
+    from netctl.db import connect, source_public, upsert_source
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    conn = connect(db_url)
+    source = normalize_source(
+        {
+            "name": "ptr-router",
+            "driver": "mock",
+            "host": "192.0.2.1",
+            "port": 8729,
+            "username": "observer",
+            "secret_ref": "ptr_router",
+            "dns_ptr_server": "192.0.2.53",
+            "dns_ptr_timeout_seconds": 2,
+        }
+    )
+    upsert_source(conn, source)
+    source = cli.get_source(conn, "ptr-router")
+    assert source is not None
+    assert source["driver_options"] == {
+        "dns_ptr_server": "192.0.2.53",
+        "dns_ptr_timeout_seconds": 2,
+    }
+    assert "192.0.2.53" not in json.dumps(source_public(source))
+
+    class Driver:
+        def collect(self, *, include_connections: bool):
+            assert include_connections is False
+            return {
+                "dhcp_leases": [
+                    {
+                        "ip": "192.0.2.61",
+                        "mac": "00:11:22:33:44:61",
+                        "hostname": "dhcp-workstation",
+                        "status": "bound",
+                    }
+                ],
+                "arp": [
+                    {
+                        "ip": "192.0.2.61",
+                        "mac": "00:11:22:33:44:61",
+                        "complete": True,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(cli, "legacy_driver_for", lambda *_args: Driver())
+    monkeypatch.setattr(
+        store,
+        "resolve_ptr_hostname",
+        lambda ip, *, server, timeout_seconds: "PTR-WORKSTATION.EXAMPLE.TEST.",
+    )
+    args = cli.build_parser().parse_args(["--db", db_url, "collect", "ptr-router"])
+
+    rc, payload = cli.collect_one(conn, args, "ptr-router")
+
+    assert rc == 0
+    assert "192.0.2.53" not in json.dumps(payload)
+    assert [tuple(row) for row in conn.execute(
+        "SELECT hostname, source_type FROM hostname_observations ORDER BY source_type, hostname"
+    )] == [
+        ("dhcp-workstation", "dhcp"),
+        ("ptr-workstation.example.test", "dns_ptr"),
+    ]
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "resolver_result",
+    [TimeoutError("private DNS timeout"), dns.resolver.NXDOMAIN(), "x" * 254],
+)
+def test_collect_one_discards_failed_or_unsafe_dns_ptr_results(
+    tmp_path: Path, monkeypatch, resolver_result: object
+) -> None:
+    """Surfacing resolver failures or accepting unsafe PTR text would disclose untrusted DNS data."""
+    import netctl.cli as cli
+    import netctl.store as store
+    from netctl.config import normalize_source
+    from netctl.db import connect, upsert_source
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    conn = connect(db_url)
+    source = normalize_source(
+        {
+            "name": "ptr-router",
+            "driver": "mock",
+            "host": "192.0.2.1",
+            "port": 8729,
+            "username": "observer",
+            "secret_ref": "ptr_router",
+            "dns_ptr_server": "192.0.2.53",
+            "dns_ptr_timeout_seconds": 1,
+        }
+    )
+    upsert_source(conn, source)
+
+    class Driver:
+        def collect(self, *, include_connections: bool):
+            return {
+                "dhcp_leases": [{"ip": "192.0.2.62", "mac": "00:11:22:33:44:62", "status": "bound"}],
+                "arp": [{"ip": "192.0.2.62", "mac": "00:11:22:33:44:62", "complete": True}],
+            }
+
+    def resolve(_ip: str, *, server: str, timeout_seconds: int) -> str:
+        if isinstance(resolver_result, Exception):
+            raise resolver_result
+        return str(resolver_result)
+
+    monkeypatch.setattr(cli, "legacy_driver_for", lambda *_args: Driver())
+    monkeypatch.setattr(store, "resolve_ptr_hostname", resolve)
+    args = cli.build_parser().parse_args(["--db", db_url, "collect", "ptr-router"])
+
+    rc, payload = cli.collect_one(conn, args, "ptr-router")
+
+    assert rc == 0
+    assert "private DNS timeout" not in json.dumps(payload)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM hostname_observations WHERE source_type = 'dns_ptr'"
+    ).fetchone()[0] == 0
+    conn.close()
 
 
 def write_mock_ipsec_pair_sources(config_path: Path) -> None:
@@ -1418,7 +1548,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     assert data["status"] == "ok"
     summary = data["runtime_identity"]
     assert summary["schema_migration_versions"] == [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
     ]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1
