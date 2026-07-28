@@ -410,17 +410,39 @@ def _qmp_write_graph(
     return graph
 
 
+def _validate_qmp_topology(
+    graph: dict[str, dict[str, int]],
+    *,
+    backing_depth: int,
+) -> None:
+    format_path = "target"
+    for _ in range(backing_depth + 1):
+        if format_path not in graph:
+            _fail(
+                "QMP backing statistics do not match query-block depth"
+            )
+        parent_path = f"{format_path}.parent"
+        if parent_path not in graph:
+            _fail(
+                f"QMP {format_path} parent statistics are absent"
+            )
+        format_path = f"{format_path}.backing"
+    if format_path in graph:
+        _fail("QMP backing statistics do not match query-block depth")
+
+
 def _read_qmp_snapshot(
     path: Path,
     device: str,
-) -> dict[str, dict[str, int]]:
+) -> tuple[dict[str, dict[str, int]], bool, int]:
     try:
         text = _read_bytes(path).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise AcceptanceError(
             f"QMP transcript is not UTF-8: {path.name}"
         ) from exc
-    matches: list[dict[str, object]] = []
+    stats_matches: list[dict[str, object]] = []
+    block_matches: list[dict[str, object]] = []
     for line in text.splitlines():
         if not line:
             continue
@@ -435,17 +457,52 @@ def _read_qmp_snapshot(
         returned = message.get("return")
         if not isinstance(returned, list):
             continue
-        candidates = [
+        stats_candidates = [
             item
             for item in returned
-            if isinstance(item, dict) and item.get("device") == device
+            if (
+                isinstance(item, dict)
+                and item.get("device") == device
+                and isinstance(item.get("stats"), dict)
+            )
         ]
-        if len(candidates) > 1:
+        block_candidates = [
+            item
+            for item in returned
+            if (
+                isinstance(item, dict)
+                and item.get("device") == device
+                and isinstance(item.get("inserted"), dict)
+            )
+        ]
+        if len(stats_candidates) > 1 or len(block_candidates) > 1:
             _fail("QMP target device is ambiguous")
-        matches.extend(candidates)
-    if len(matches) != 1:
+        stats_matches.extend(stats_candidates)
+        block_matches.extend(block_candidates)
+    if not stats_matches and not block_matches:
         _fail("QMP target device is absent")
-    return _qmp_write_graph(matches[0], graph_path="target")
+    if len(stats_matches) != 1:
+        _fail("QMP target block statistics are absent")
+    if len(block_matches) != 1:
+        _fail("QMP target query-block evidence is absent")
+    inserted = block_matches[0]["inserted"]
+    if not isinstance(inserted, dict):
+        _fail("QMP target inserted information is invalid")
+    read_only = inserted.get("ro")
+    backing_depth = inserted.get("backing_file_depth")
+    if not isinstance(read_only, bool):
+        _fail("QMP target inserted read-only state is invalid")
+    if (
+        isinstance(backing_depth, bool)
+        or not isinstance(backing_depth, int)
+        or not 0 <= backing_depth <= 16
+    ):
+        _fail("QMP target backing depth is invalid")
+    if inserted.get("drv") != "qcow2":
+        _fail("QMP target is not qcow2")
+    graph = _qmp_write_graph(stats_matches[0], graph_path="target")
+    _validate_qmp_topology(graph, backing_depth=backing_depth)
+    return graph, read_only, backing_depth
 
 
 def _read_sha256_record(path: Path) -> str:
@@ -478,8 +535,27 @@ def verify_variant(
 ) -> None:
     if variant not in {"writable", "readonly"}:
         _fail("QEMU variant is invalid")
-    before_graph = _read_qmp_snapshot(before_qmp, "target")
-    after_graph = _read_qmp_snapshot(after_qmp, "target")
+    before_graph, before_read_only, before_depth = _read_qmp_snapshot(
+        before_qmp, "target"
+    )
+    after_graph, after_read_only, after_depth = _read_qmp_snapshot(
+        after_qmp, "target"
+    )
+    expected_read_only = variant == "readonly"
+    expected_depth = 0 if expected_read_only else 1
+    if before_read_only != expected_read_only or (
+        after_read_only != expected_read_only
+    ):
+        _fail(
+            "readonly QEMU variant is not read-only"
+            if expected_read_only
+            else "writable QEMU variant is unexpectedly read-only"
+        )
+    if before_depth != expected_depth or after_depth != expected_depth:
+        _fail(
+            "QMP backing depth does not match the disposable "
+            f"{variant} topology"
+        )
     before_digest = _read_sha256_record(before_sha)
     after_digest = _read_sha256_record(after_sha)
     if before_digest != after_digest:
@@ -489,6 +565,10 @@ def verify_variant(
         "device": "target",
         "qmp_write_counters_after": after_graph["target"],
         "qmp_write_counters_before": before_graph["target"],
+        "qmp_backing_depth_after": after_depth,
+        "qmp_backing_depth_before": before_depth,
+        "qmp_inserted_read_only_after": after_read_only,
+        "qmp_inserted_read_only_before": before_read_only,
         "qmp_write_graph_after": after_graph,
         "qmp_write_graph_before": before_graph,
         "variant": variant,
@@ -533,6 +613,30 @@ def finalize_evidence(
                     )
                 ):
                     _fail("Variant QMP graph counters are incomplete")
+        expected_read_only = variant == "readonly"
+        expected_depth = 0 if expected_read_only else 1
+        if (
+            summary.get("qmp_inserted_read_only_before")
+            is not expected_read_only
+            or summary.get("qmp_inserted_read_only_after")
+            is not expected_read_only
+        ):
+            _fail(
+                "Readonly QMP evidence is incomplete"
+                if expected_read_only
+                else "Writable QMP evidence is incomplete"
+            )
+        for suffix in ("before", "after"):
+            depth = summary.get(f"qmp_backing_depth_{suffix}")
+            graph = summary.get(f"qmp_write_graph_{suffix}")
+            if (
+                isinstance(depth, bool)
+                or not isinstance(depth, int)
+                or depth != expected_depth
+                or not isinstance(graph, dict)
+            ):
+                _fail("Variant QMP topology evidence is incomplete")
+            _validate_qmp_topology(graph, backing_depth=depth)
         variants[variant] = summary
     if set(variants) != {"writable", "readonly"}:
         _fail("writable and readonly evidence are both required")
@@ -639,6 +743,11 @@ def qmp_query(socket_path: Path, output: Path) -> None:
         )
         if "error" in response or not isinstance(response.get("return"), list):
             _fail("QMP query-blockstats failed")
+        request = {"execute": "query-block", "id": "block"}
+        stream.write((json.dumps(request) + "\r\n").encode("ascii"))
+        response = _qmp_receive(stream, transcript, expected_id="block")
+        if "error" in response or not isinstance(response.get("return"), list):
+            _fail("QMP query-block failed")
     finally:
         stream.close()
         client.close()

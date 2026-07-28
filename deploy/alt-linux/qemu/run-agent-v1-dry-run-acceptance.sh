@@ -1,10 +1,17 @@
 #!/bin/bash
 set -Eeuo pipefail
 
+readonly target_virtual_size='64G'
+readonly target_format='qcow2'
+readonly readonly_drive_option='readonly=on'
+readonly managed_iso_builder_relative='deploy/alt-linux/iso/agent-v1/build-managed-iso.sh'
+readonly source_identity_manifest_relative='deploy/alt-linux/iso/agent-v1/manifests/source_iso.json'
+
 usage() {
     printf '%s\n' \
         'Usage: run-agent-v1-dry-run-acceptance.sh --source-iso <ISO> --helper <STATIC-ELF> --ovmf-code <OVMF_CODE.fd> --ovmf-vars <OVMF_VARS.fd> [--evidence-dir <DIR>]' \
-        '       run-agent-v1-dry-run-acceptance.sh --check-prerequisites' >&2
+        '       run-agent-v1-dry-run-acceptance.sh --check-prerequisites' \
+        '       run-agent-v1-dry-run-acceptance.sh --describe-safety-contract' >&2
     exit 2
 }
 
@@ -47,9 +54,23 @@ check_prerequisites() {
     fi
 }
 
+describe_safety_contract() {
+    printf '%s\n' \
+        'target_input=none' \
+        "target_virtual_size=$target_virtual_size" \
+        'writable_target=qcow2-overlay-with-qcow2-backing' \
+        "readonly_target=qcow2-backing,$readonly_drive_option" \
+        "managed_iso_builder=$managed_iso_builder_relative" \
+        "source_identity_manifest=$source_identity_manifest_relative"
+}
+
 if (($# == 1)) && [[ "$1" == --check-prerequisites ]]; then
     check_prerequisites || exit 1
     printf '%s\n' 'QEMU acceptance prerequisites are available'
+    exit 0
+fi
+if (($# == 1)) && [[ "$1" == --describe-safety-contract ]]; then
+    describe_safety_contract
     exit 0
 fi
 
@@ -97,10 +118,11 @@ check_prerequisites || exit 1
 script_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$script_root/../../.." && pwd -P)
 support="$script_root/agent_v1_test_api.py"
-builder="$repo_root/deploy/alt-linux/iso/agent-v1/build-managed-iso.sh"
+builder="$repo_root/$managed_iso_builder_relative"
+source_identity="$repo_root/$source_identity_manifest_relative"
 verifier="$repo_root/deploy/alt-linux/iso/agent-v1/verify-managed-iso.sh"
 for path in "$source_iso" "$helper" "$ovmf_code" "$ovmf_vars" \
-    "$support" "$builder" "$verifier"; do
+    "$support" "$builder" "$source_identity" "$verifier"; do
     [[ -f "$path" && -r "$path" && ! -L "$path" ]] ||
         die "Required regular file is unreadable: $path"
 done
@@ -243,7 +265,7 @@ run_variant() {
 
     mkdir -m 0700 -- "$variant_work"
     mkdir -m 0755 -- "$variant_evidence"
-    qemu-img create -f qcow2 "$backing" 64G \
+    qemu-img create -f "$target_format" "$backing" "$target_virtual_size" \
         >"$variant_work/qemu-img.log" 2>&1 ||
         die "$variant qemu backing creation failed"
     (
@@ -253,7 +275,8 @@ run_variant() {
     if [[ "$variant" == writable ]]; then
         target="$variant_work/target-overlay.qcow2"
         target_readonly=off
-        qemu-img create -f qcow2 -F qcow2 -b "$backing" "$target" \
+        qemu-img create -f "$target_format" -F "$target_format" \
+            -b "$backing" "$target" \
             >>"$variant_work/qemu-img.log" 2>&1 ||
             die 'Writable qcow2 overlay creation failed'
         (
@@ -263,9 +286,9 @@ run_variant() {
     fi
     cp -- "$ovmf_vars" "$vars_copy"
 
-    drive="id=target,if=none,format=qcow2,file=$target,cache=none"
+    drive="id=target,if=none,format=$target_format,file=$target,cache=none"
     [[ "$target_readonly" == off ]] ||
-        drive="${drive},readonly=on"
+        drive="${drive},${readonly_drive_option}"
     qemu-system-x86_64 \
         -machine q35,accel=kvm:tcg \
         -m 4096 \

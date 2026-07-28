@@ -48,8 +48,20 @@ sudo deploy/alt-linux/qemu/run-agent-v1-dry-run-acceptance.sh \
 The check exits nonzero and names every missing command. The full run also
 fails closed for unreadable/symlinked input files, a non-root process, a busy
 fixture port, missing QMP target statistics, any nonzero QMP `wr_*` counter,
-a backing-image SHA-256 change, an incomplete root approval, or a missing
-variant.
+a QMP readonly/topology mismatch, a backing-image SHA-256 change, an
+incomplete root approval, or a missing variant.
+
+The harness exposes its immutable target/build boundary without requiring
+QEMU or root:
+
+```bash
+deploy/alt-linux/qemu/run-agent-v1-dry-run-acceptance.sh \
+  --describe-safety-contract
+```
+
+That report is generated from the same target-size, format, readonly option,
+managed-ISO builder, and source-identity paths used by the full run. The normal
+argument parser rejects every caller-supplied target path.
 
 ## Run
 
@@ -72,12 +84,21 @@ host service to the guest as the fixed controller address
 effective UID 0, publishes a plan signed by the temporary key, and requires
 the final `preflight_ready` heartbeat.
 
-QEMU starts paused. The harness records initial `query-blockstats`, resumes the
-VM, waits for the exact guest PASS line, records final block statistics, stops
-QEMU, and compares the backing SHA-256. In both snapshots, `wr_bytes`,
-`wr_operations`, and every other reported integer `wr_*` counter must be zero
-for the selected target and every nested `parent` or `backing` block node in
-its reported graph.
+QEMU starts paused. The harness records initial `query-blockstats` and
+`query-block`, resumes the VM, waits for the exact guest PASS line, records the
+same QMP evidence again, stops QEMU, and compares the backing SHA-256. In both
+snapshots, `wr_bytes`, `wr_operations`, and every other reported integer
+`wr_*` counter must be zero for the selected target and every nested `parent`
+or `backing` block node in its reported graph.
+
+`query-block` independently binds that graph to the configured variant. The
+writable overlay must report `inserted.ro=false` and backing depth 1. The
+readonly guard must report `inserted.ro=true` and backing depth 0. Every qcow2
+format node implied by that depth must have its file-protocol `parent`
+statistics, and every backing level implied by the reported depth must be
+present. Additional reported parent/backing nodes are also checked for zero
+writes. A writable run cannot pass by changing its summary label to
+`readonly`.
 
 Success is reported only after both variants and both root-approved sessions
 are verified. The last output line is exactly:
