@@ -240,6 +240,11 @@ def test_create_nonce_is_32_bytes_in_url_safe_form(tmp_path: Path) -> None:
     completed = _run_bash(
         """
 set -euo pipefail
+base64() { return 97; }
+od() {
+    printf '%s ' {0..31}
+    printf '\\n'
+}
 export ALT_INSTALL_AGENT_LIBRARY_ONLY=1
 source deploy/alt-linux/install-agent/v1/alt-install-agent
 state_init
@@ -251,10 +256,8 @@ state_read create-nonce
 
     assert completed.returncode == 0, completed.stderr
     nonce = completed.stdout.strip()
-    assert len(nonce) == 43
-    assert all(
-        character.isalnum() or character in "_-" for character in nonce
-    )
+    expected = base64.urlsafe_b64encode(bytes(range(32))).rstrip(b"=").decode()
+    assert nonce == expected
 
 
 def test_transport_retries_only_failures_with_bounded_backoff(
@@ -668,15 +671,16 @@ def test_iso_assets_pin_source_and_require_external_public_key() -> None:
     assert "stat -c '%a'" in verifier
     assert "sha256sum -c" in verifier
     assert "initrd_command" in verifier
+    assert '[[ -f "$candidate" && -x "$candidate" ]]' in verifier
     for command in (
         "bash",
-        "base64",
         "curl",
         "date",
         "grep",
         "head",
         "ip",
         "lsblk",
+        "od",
         "tr",
         "udhcpc",
         "wc",

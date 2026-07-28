@@ -168,14 +168,14 @@ initrd_command() {
     local command="$1" directory candidate
     for directory in bin sbin usr/bin usr/sbin; do
         candidate="$workdir/initrd/$directory/$command"
-        if [[ -e "$candidate" || -L "$candidate" ]]; then
+        if [[ -f "$candidate" && -x "$candidate" ]]; then
             return 0
         fi
     done
     die "Required initrd command is missing: $command"
 }
 
-for command in bash base64 cat chmod curl date grep head ip lsblk mkdir mv \
+for command in bash cat chmod curl date grep head ip lsblk mkdir mv od \
     rm sleep tr udhcpc wc; do
     initrd_command "$command"
 done
