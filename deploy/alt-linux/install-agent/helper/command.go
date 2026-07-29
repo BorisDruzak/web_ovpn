@@ -312,11 +312,13 @@ func runServeExecutionMetadataCommand(
 	directory := flags.String("directory", "", "")
 	port := flags.Int("port", 0, "")
 	deadlineText := flags.String("deadline", "", "")
+	readyFile := flags.String("ready-file", "", "")
 	if err := flags.Parse(arguments); err != nil ||
 		flags.NArg() != 0 ||
 		*directory == "" ||
 		*port != executionRelayPort ||
-		*deadlineText == "" {
+		*deadlineText == "" ||
+		*readyFile == "" {
 		return nil, contractError(
 			"usage_invalid",
 			"serve-execution-metadata arguments are invalid",
@@ -342,6 +344,7 @@ func runServeExecutionMetadataCommand(
 			Directory: *directory,
 			Port:      *port,
 			Deadline:  deadline,
+			ReadyFile: *readyFile,
 		},
 	); err != nil {
 		return nil, err

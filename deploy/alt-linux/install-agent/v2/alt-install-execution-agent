@@ -28,6 +28,8 @@ source "$agent_root/lib/protocol.sh"
 # shellcheck source=lib/ui.sh
 source "$agent_root/lib/ui.sh"
 
+ALT_INSTALL_RELAY_PID=
+
 helper_verify_execution_bundle() {
     local result temporary
     result=$(state_path execution-verification.json) || return 1
@@ -62,26 +64,66 @@ helper_disk_preflight() {
 }
 
 start_execution_relay() {
-    local verification deadline relay_pid
+    local verification deadline relay_pid ready_file ready_content ready_size
+    local stop_at
     verification=$(state_path execution-verification.json) || return 1
     deadline=$(execution_json_string "$verification" expires_at) || return 1
     [[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || return 1
+    [[ "$ALT_INSTALL_RELAY_READY_TIMEOUT" =~ ^[0-9]+$ &&
+        "$ALT_INSTALL_RELAY_READY_TIMEOUT" -ge 1 &&
+        "$ALT_INSTALL_RELAY_READY_TIMEOUT" -le 60 ]] || return 1
+    [[ "$ALT_INSTALL_RELAY_POLL_INTERVAL" =~ ^0\.[0-9]+$ ]] || return 1
+    ready_file=$(state_path relay-ready) || return 1
+    state_remove relay-ready
+    [[ ! -e "$ready_file" && ! -L "$ready_file" ]] || return 1
 
     "$ALT_INSTALL_HELPER" serve-execution-metadata \
         --directory "$ALT_INSTALL_STATE_ROOT/execution-bundle" \
         --port 18192 \
-        --deadline "$deadline" >/dev/null 2>&1 &
+        --deadline "$deadline" \
+        --ready-file "$ready_file" >/dev/null 2>&1 &
     relay_pid=$!
-    "$ALT_INSTALL_SLEEP" "$ALT_INSTALL_RELAY_START_DELAY"
-    if ! kill -0 "$relay_pid" 2>/dev/null; then
+    stop_at=$((SECONDS + ALT_INSTALL_RELAY_READY_TIMEOUT))
+    while ((SECONDS < stop_at)); do
+        if [[ -f "$ready_file" && ! -L "$ready_file" ]]; then
+            ready_content=$(<"$ready_file")
+            ready_size=$(wc -c < "$ready_file")
+            if [[ "$ready_size" == 27 &&
+                "$ready_content" == ALT_INSTALL_RELAY_READY_V1 ]] &&
+                kill -0 "$relay_pid" 2>/dev/null; then
+                ALT_INSTALL_RELAY_PID=$relay_pid
+                break
+            fi
+            break
+        fi
+        if ! kill -0 "$relay_pid" 2>/dev/null; then
+            break
+        fi
+        "$ALT_INSTALL_SLEEP" "$ALT_INSTALL_RELAY_POLL_INTERVAL"
+    done
+    if [[ "$ALT_INSTALL_RELAY_PID" != "$relay_pid" ]]; then
+        kill "$relay_pid" 2>/dev/null || true
         wait "$relay_pid" || true
+        state_remove relay-ready
         return 1
     fi
     if ! state_write relay-pid "$relay_pid"; then
         kill "$relay_pid" 2>/dev/null || true
         wait "$relay_pid" || true
+        state_remove relay-ready
+        ALT_INSTALL_RELAY_PID=
         return 1
     fi
+}
+
+stop_execution_relay() {
+    if [[ -n "$ALT_INSTALL_RELAY_PID" ]]; then
+        kill "$ALT_INSTALL_RELAY_PID" 2>/dev/null || true
+        wait "$ALT_INSTALL_RELAY_PID" || true
+    fi
+    state_remove relay-pid
+    state_remove relay-ready
+    ALT_INSTALL_RELAY_PID=
 }
 
 agent_run() {
@@ -96,8 +138,11 @@ agent_run() {
     # preflight immediately before the irreversible handoff transition.
     helper_verify_plan || terminal_hold plan_verification_failed
     helper_disk_preflight || terminal_hold disk_preflight_failed
-    protocol_handoff_started || terminal_hold handoff_record_failed
     start_execution_relay || terminal_hold relay_failed
+    if ! protocol_handoff_started; then
+        stop_execution_relay
+        terminal_hold handoff_record_failed
+    fi
 }
 
 if [[ "${ALT_INSTALL_AGENT_LIBRARY_ONLY:-0}" != 1 ]]; then

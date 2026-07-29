@@ -440,6 +440,96 @@ func TestServeExecutionMetadataCountsOnlySuccessfulGETs(t *testing.T) {
 	}
 }
 
+func TestServeExecutionMetadataSignalsReadinessAfterBind(t *testing.T) {
+	fixture := validExecutionFixture(t)
+	verifyFixture(t, fixture)
+	readyFile := filepath.Join(t.TempDir(), "relay.ready")
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeExecutionMetadata(
+			context.Background(),
+			ServeExecutionMetadataInput{
+				Directory: fixture.directory,
+				Port:      executionRelayPort,
+				Deadline:  time.Now().Add(time.Minute),
+				ReadyFile: readyFile,
+			},
+		)
+	}()
+	waitForFileContent(
+		t, readyFile, []byte("ALT_INSTALL_RELAY_READY_V1\n"),
+	)
+	client := &http.Client{Timeout: time.Second}
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		for _, name := range executionArtifactNames {
+			request, err := http.NewRequest(
+				method,
+				"http://"+executionRelayAddress+"/"+name,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf(
+					"%s %s = %d",
+					method, name, response.StatusCode,
+				)
+			}
+		}
+		if method == http.MethodHead {
+			select {
+			case err := <-done:
+				t.Fatalf("HEAD ended relay: %v", err)
+			default:
+			}
+		} else {
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for all GETs to stop relay")
+			}
+		}
+	}
+	if _, err := os.Lstat(readyFile); !os.IsNotExist(err) {
+		t.Fatalf("readiness signal was not cleaned up: %v", err)
+	}
+}
+
+func waitForFileContent(
+	t *testing.T,
+	path string,
+	expected []byte,
+) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			if !bytes.Equal(raw, expected) {
+				t.Fatalf("readiness signal = %q", raw)
+			}
+			return
+		}
+		if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatal("timed out waiting for relay readiness signal")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func pemCertificate(t *testing.T, raw []byte) []byte {
 	t.Helper()
 	return []byte(fmt.Sprintf(

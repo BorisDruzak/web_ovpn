@@ -33,6 +33,7 @@ const (
 	maxExecutionArtifactBytes    = 64 << 20
 	executionRequestTimeout      = 30 * time.Second
 	executionTLSHandshakeTimeout = 5 * time.Second
+	executionRelayReadyContent   = "ALT_INSTALL_RELAY_READY_V1\n"
 )
 
 var (
@@ -126,6 +127,7 @@ type ServeExecutionMetadataInput struct {
 	Directory string
 	Port      int
 	Deadline  time.Time
+	ReadyFile string
 }
 
 func DownloadExecutionBundle(
@@ -1009,7 +1011,8 @@ func ServeExecutionMetadata(
 ) error {
 	if input.Port != executionRelayPort ||
 		input.Deadline.IsZero() ||
-		!time.Now().Before(input.Deadline) {
+		!time.Now().Before(input.Deadline) ||
+		!filepath.IsAbs(input.ReadyFile) {
 		return contractError(
 			"execution_relay_invalid",
 			"execution relay binding is invalid",
@@ -1053,6 +1056,12 @@ func ServeExecutionMetadata(
 		}
 		served <- err
 	}()
+	if err := publishExecutionRelayReadiness(input.ReadyFile); err != nil {
+		_ = server.Close()
+		<-served
+		return err
+	}
+	defer os.Remove(input.ReadyFile)
 	timer := time.NewTimer(time.Until(input.Deadline))
 	defer timer.Stop()
 	select {
@@ -1084,6 +1093,74 @@ func ServeExecutionMetadata(
 			"execution metadata relay failed",
 		)
 	}
+	return nil
+}
+
+func publishExecutionRelayReadiness(path string) error {
+	if filepath.Base(path) == "." ||
+		filepath.Base(path) == string(filepath.Separator) {
+		return contractError(
+			"execution_relay_ready_failed",
+			"execution relay readiness path is invalid",
+		)
+	}
+	parent := filepath.Dir(path)
+	info, err := os.Lstat(parent)
+	if err != nil ||
+		!info.IsDir() ||
+		info.Mode()&os.ModeSymlink != 0 {
+		return contractError(
+			"execution_relay_ready_failed",
+			"execution relay readiness parent is unsafe",
+		)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		return contractError(
+			"execution_relay_ready_failed",
+			"execution relay readiness path already exists",
+		)
+	}
+	file, err := os.OpenFile(
+		path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600,
+	)
+	if err != nil {
+		return contractError(
+			"execution_relay_ready_failed",
+			"cannot create execution relay readiness signal",
+		)
+	}
+	complete := false
+	defer func() {
+		_ = file.Close()
+		if !complete {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return contractError(
+			"execution_relay_ready_failed",
+			"cannot protect execution relay readiness signal",
+		)
+	}
+	if _, err := io.WriteString(file, executionRelayReadyContent); err != nil {
+		return contractError(
+			"execution_relay_ready_failed",
+			"cannot write execution relay readiness signal",
+		)
+	}
+	if err := file.Sync(); err != nil {
+		return contractError(
+			"execution_relay_ready_failed",
+			"cannot sync execution relay readiness signal",
+		)
+	}
+	if err := file.Close(); err != nil {
+		return contractError(
+			"execution_relay_ready_failed",
+			"cannot close execution relay readiness signal",
+		)
+	}
+	complete = true
 	return nil
 }
 

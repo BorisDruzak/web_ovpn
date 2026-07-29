@@ -97,7 +97,7 @@ agent_run
     ]
 
 
-def test_agent_repeats_preflight_then_records_handoff_before_relay(
+def test_agent_repeats_preflight_then_starts_relay_before_handoff(
     tmp_path: Path,
 ) -> None:
     actions = tmp_path / "actions"
@@ -124,8 +124,140 @@ agent_run
         "claim",
         "verify-plan",
         "disk-preflight",
-        "handoff-started",
         "serve-execution-metadata",
+        "handoff-started",
+    ]
+
+
+def _readiness_helper(
+    tmp_path: Path,
+    *,
+    signal_ready: bool,
+    startup_delay: float,
+) -> tuple[Path, Path]:
+    helper = tmp_path / "alt-install-helper"
+    actions = tmp_path / "readiness-actions"
+    ready_action = (
+        f"""
+sleep {startup_delay}
+printf 'relay-bound\\n' >> '{actions.as_posix()}'
+printf 'ALT_INSTALL_RELAY_READY_V1\\n' > "$ready_file"
+sleep 1
+"""
+        if signal_ready
+        else f"""
+sleep {startup_delay}
+printf 'relay-failed\\n' >> '{actions.as_posix()}'
+exit 1
+"""
+    )
+    helper.write_text(
+        f"""#!/bin/bash
+set -eu
+[[ "$1" == serve-execution-metadata ]]
+printf 'relay-started\\n' >> '{actions.as_posix()}'
+shift
+ready_file=
+while (($#)); do
+    if [[ "$1" == --ready-file ]]; then
+        ready_file=$2
+        shift 2
+    else
+        shift
+    fi
+done
+[[ -n "$ready_file" ]]
+{ready_action}
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    helper.chmod(0o755)
+    return helper, actions
+
+
+def test_agent_waits_for_delayed_post_bind_readiness_before_handoff(
+    tmp_path: Path,
+) -> None:
+    helper, actions = _readiness_helper(
+        tmp_path, signal_ready=True, startup_delay=0.35
+    )
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "execution-verification.json").write_text(
+        '{"expires_at":"2099-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+    completed = _run_bash(
+        _library_agent_script(
+            f"""
+protocol_download_execution_bundle() {{ :; }}
+helper_verify_execution_bundle() {{ :; }}
+protocol_claim_execution() {{ :; }}
+helper_verify_plan() {{ :; }}
+helper_disk_preflight() {{ :; }}
+protocol_handoff_started() {{
+    printf 'handoff-started\\n' >> '{actions.as_posix()}'
+}}
+agent_run
+printf 'agent-returned\\n' >> '{actions.as_posix()}'
+"""
+        ),
+        env={
+            "ALT_INSTALL_STATE_ROOT": state.as_posix(),
+            "ALT_INSTALL_HELPER": helper.as_posix(),
+            "ALT_INSTALL_RELAY_READY_TIMEOUT": "2",
+            "ALT_INSTALL_RELAY_POLL_INTERVAL": "0.05",
+        },
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert actions.read_text(encoding="utf-8").splitlines() == [
+        "relay-started",
+        "relay-bound",
+        "handoff-started",
+        "agent-returned",
+    ]
+
+
+def test_relay_exit_before_readiness_holds_without_handoff(
+    tmp_path: Path,
+) -> None:
+    helper, actions = _readiness_helper(
+        tmp_path, signal_ready=False, startup_delay=0.2
+    )
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "execution-verification.json").write_text(
+        '{"expires_at":"2099-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+    completed = _run_bash(
+        _library_agent_script(
+            f"""
+protocol_download_execution_bundle() {{ :; }}
+helper_verify_execution_bundle() {{ :; }}
+protocol_claim_execution() {{ :; }}
+helper_verify_plan() {{ :; }}
+helper_disk_preflight() {{ :; }}
+protocol_handoff_started() {{
+    printf 'handoff-must-not-run\\n' >> '{actions.as_posix()}'
+}}
+agent_run
+"""
+        ),
+        env={
+            "ALT_INSTALL_STATE_ROOT": state.as_posix(),
+            "ALT_INSTALL_HELPER": helper.as_posix(),
+            "ALT_INSTALL_RELAY_READY_TIMEOUT": "2",
+            "ALT_INSTALL_RELAY_POLL_INTERVAL": "0.05",
+        },
+    )
+
+    assert completed.returncode == 97
+    assert completed.stdout.strip() == "terminal=relay_failed"
+    assert actions.read_text(encoding="utf-8").splitlines() == [
+        "relay-started",
+        "relay-failed",
     ]
 
 
