@@ -1707,7 +1707,9 @@ def _migration_16(conn: sqlite3.Connection) -> bool | None:
     ).fetchone()
     if asset_table is None:
         return False
-    conn.execute("ALTER TABLE assets ADD COLUMN manual_name TEXT")
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(assets)")}
+    if "manual_name" not in columns:
+        conn.execute("ALTER TABLE assets ADD COLUMN manual_name TEXT")
     return None
 
 

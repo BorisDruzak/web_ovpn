@@ -194,3 +194,31 @@ def test_migration_16_defers_until_a_compatible_assets_table_exists() -> None:
         assert "manual_name" in {row[1] for row in conn.execute("PRAGMA table_info(assets)")}
     finally:
         conn.close()
+
+
+def test_migration_16_records_an_existing_manual_name_column_without_altering() -> None:
+    """A deployed schema can have the column before its migration ledger entry."""
+    from netctl.migrations import apply_migrations
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+        conn.executemany(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, '2026-07-29T00:00:00Z')",
+            [(version,) for version in range(1, 16)],
+        )
+        conn.execute(
+            """CREATE TABLE assets (
+               id INTEGER PRIMARY KEY,
+               asset_key TEXT NOT NULL,
+               manual_name TEXT,
+               updated_at TEXT NOT NULL DEFAULT ''
+            )"""
+        )
+
+        apply_migrations(conn)
+
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 17))
+        assert "manual_name" in {row[1] for row in conn.execute("PRAGMA table_info(assets)")}
+    finally:
+        conn.close()
