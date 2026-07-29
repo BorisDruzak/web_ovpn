@@ -26,14 +26,16 @@ def normalize_ptr_hostname(value: Any) -> str | None:
 
 
 def resolve_ptr_hostname(
-    ip: str, *, server: str, timeout_seconds: int
+    ip: str, *, server: str, timeout_seconds: float
 ) -> str | None:
     """Perform one bounded, read-only PTR lookup without leaking DNS failures."""
     try:
         address = str(ipaddress.ip_address(ip))
         nameserver = str(ipaddress.ip_address(server))
-        timeout = int(timeout_seconds)
-        if not 1 <= timeout <= 10:
+        if isinstance(timeout_seconds, bool):
+            return None
+        timeout = float(timeout_seconds)
+        if not 0 < timeout <= 10:
             return None
         resolver = dns.resolver.Resolver(configure=False)
         resolver.nameservers = [nameserver]

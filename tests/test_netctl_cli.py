@@ -592,6 +592,31 @@ def test_dns_ptr_enrichment_uses_one_total_deadline_for_unavailable_resolver(mon
     assert calls == ["192.0.2.1"]
 
 
+def test_dns_ptr_enrichment_passes_only_remaining_deadline_budget(monkeypatch) -> None:
+    """A partial first timeout must not grant the next PTR lookup a fresh full timeout."""
+    import pytest
+    import netctl.store as store
+
+    clock = [0.0]
+    received_timeouts: list[float] = []
+
+    def unavailable(_ip: str, *, server: str, timeout_seconds: float) -> None:
+        received_timeouts.append(timeout_seconds)
+        clock[0] += 0.6 if len(received_timeouts) == 1 else timeout_seconds
+        return None
+
+    monkeypatch.setattr(store, "resolve_ptr_hostname", unavailable)
+    monkeypatch.setattr(store.time, "monotonic", lambda: clock[0])
+
+    store._enrich_hosts_with_dns_ptr(
+        [{"ip": "192.0.2.1"}, {"ip": "192.0.2.2"}],
+        {"driver_options": {"dns_ptr_server": "192.0.2.53", "dns_ptr_timeout_seconds": 1}},
+    )
+
+    assert received_timeouts == pytest.approx([1.0, 0.4])
+    assert clock[0] == pytest.approx(1.0)
+
+
 def write_mock_ipsec_pair_sources(config_path: Path) -> None:
     sources_dir = config_path.parent / "sources.d"
     sources_dir.mkdir(parents=True, exist_ok=True)

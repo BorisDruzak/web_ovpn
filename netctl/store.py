@@ -209,11 +209,12 @@ def _enrich_hosts_with_dns_ptr(
     hosts_by_ip = {str(host["ip"]): host for host in hosts if host.get("ip")}
     deadline = time.monotonic() + timeout
     for ip in sorted(hosts_by_ip)[:256]:
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             break
         try:
             hostname = normalize_ptr_hostname(
-                resolve_ptr_hostname(ip, server=server, timeout_seconds=timeout)
+                resolve_ptr_hostname(ip, server=server, timeout_seconds=remaining)
             )
         except Exception:
             hostname = None
