@@ -173,6 +173,37 @@ def test_root_execution_authorization_is_bound_to_preflight_plan_and_disk(
         )
 
 
+def test_execution_authorization_refuses_preflight_from_different_boot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = (
+        _approved_session(tmp_path, monkeypatch, preflight=True)
+    )
+    status = repository.load_status(session_id)
+    agent_status = dict(status["agent_status"])
+    agent_status["boot_id"] = "different-boot"
+    status["agent_status"] = agent_status
+    repository.replace_status(session_id, status)
+    plan = json.loads(
+        repository.read_revision_file(session_id, "plan.json")
+    )
+
+    with pytest.raises(ControlError) as raised:
+        _execution_service(
+            settings, repository, tmp_path
+        ).authorize(
+            session_id,
+            plan_sha256=plan_sha256,
+            inventory_sha256=approved["inventory_sha256"],
+            disk_fingerprint_value=plan["target_disk"]["fingerprint"],
+            confirm_target="/dev/vda",
+            reason="Reject a preflight from a different boot",
+        )
+
+    assert raised.value.code == "execution_preflight_stale"
+
+
 def test_execution_authorization_refuses_a_plan_without_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
