@@ -37,10 +37,12 @@
   {% else %}
   <p>Устройство не мониторится.</p>
   {% endif %}
+  {% if can_probe_availability %}
   <form method="post" action="/network/hosts/{{ ip }}/availability-check">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <button class="button" type="submit">Проверить доступность</button>
   </form>
+  {% endif %}
 </section>
 <section class="panel">
   <h3>Свежесть наблюдений</h3>

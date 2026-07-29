@@ -139,11 +139,12 @@ def availability_status_label(host: object) -> str:
     availability = host.get("availability")
     if not isinstance(availability, dict):
         return "не мониторится"
-    state = str(availability.get("state") or host.get("status") or "").lower()
+    state = str(availability.get("state") or "").lower()
+    host_status = str(host.get("status") or "").lower()
     method = availability_method_label(availability.get("active_method"))
     evidence = availability_evidence_label(availability.get("passive_evidence"), "/")
-    if state in {"online", "connected"}:
-        return f"online · {method}" if method else "online"
+    if state == "online":
+        return f"online · {method}" if method else "не мониторится"
     if state == "seen":
         return f"seen · {evidence}" if evidence else "seen"
     if state == "offline":
@@ -152,6 +153,8 @@ def availability_status_label(host: object) -> str:
         return "не мониторится"
     if state == "stale":
         return "данные устарели"
+    if state == "connected" or host_status == "connected":
+        return "VPN подключён"
     return "не мониторится"
 
 
@@ -1886,6 +1889,18 @@ def canonical_host_ipv4(value: str) -> str:
     return str(address)
 
 
+def host_availability_action_error(host: object, valid_ip: str) -> tuple[int, str] | None:
+    if not isinstance(host, dict) or str(host.get("ip") or "") != valid_ip:
+        return 404, "host target not found"
+    availability = host.get("availability")
+    if (
+        not isinstance(availability, dict)
+        or str(availability.get("state") or "") == "not_monitored"
+    ):
+        return 403, "host target is not monitored"
+    return None
+
+
 @app.post("/network/hosts/{ip}/availability-check")
 async def network_host_availability_check(
     ip: str,
@@ -1908,6 +1923,21 @@ async def network_host_availability_check(
         )
         raise
     target_path = quote(valid_ip, safe="")
+    host_data, host_error = net_cli_call(request, ["hosts", "inspect", valid_ip])
+    resolved_host = None if host_error else host_data.get("host")
+    action_error = host_availability_action_error(resolved_host, valid_ip)
+    if action_error is not None:
+        status_code, message = action_error
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-availability",
+            "denied",
+            message,
+            target_client=valid_ip,
+        )
+        raise HTTPException(status_code=status_code)
     permit = acquire_network_action(
         db,
         user.username,
@@ -2011,9 +2041,14 @@ def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)
     require_user(request, db)
     valid_ip = canonical_host_ipv4(ip)
     data, error = net_cli_call(request, ["hosts", "inspect", valid_ip])
+    netctl_host = (
+        data.get("host")
+        if not error and isinstance(data.get("host"), dict)
+        else None
+    )
     rows, unified_error = unified_network_rows(request)
     vpn_row = next((row for row in rows if row.get("ip") == valid_ip), None)
-    host = vpn_row or normalize_netctl_host(data.get("host") if isinstance(data.get("host"), dict) else {})
+    host = vpn_row or normalize_netctl_host(netctl_host or {})
     detail = dict(data)
     detail["host"] = host
     return render(
@@ -2024,6 +2059,9 @@ def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)
             "detail": detail,
             "host": host,
             "vpn_row": vpn_row,
+            "can_probe_availability": (
+                host_availability_action_error(netctl_host, valid_ip) is None
+            ),
             "error": error or unified_error,
         },
         db,

@@ -128,10 +128,10 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
     return sorted(rules, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))
 
 
-def load_active_availability_segments(conn: sqlite3.Connection) -> tuple[SegmentRule, ...]:
-    from .availability_settings import resolve_availability_segment_rules
-
-    rules = resolve_availability_segment_rules(conn, load_active_segment_rules(conn))
+def validate_active_availability_segments(
+    rules: list[SegmentRule],
+) -> tuple[SegmentRule, ...]:
+    """Validate the complete effective monitoring ruleset before it can be used."""
     monitored = tuple(rule for rule in rules if rule.availability_monitoring)
     target_count = 0
     for index, rule in enumerate(monitored):
@@ -154,6 +154,13 @@ def load_active_availability_segments(conn: sqlite3.Connection) -> tuple[Segment
                 f"availability target limit {MAX_AVAILABILITY_TARGETS} exceeded"
             )
     return monitored
+
+
+def load_active_availability_segments(conn: sqlite3.Connection) -> tuple[SegmentRule, ...]:
+    from .availability_settings import resolve_availability_segment_rules
+
+    rules = resolve_availability_segment_rules(conn, load_active_segment_rules(conn))
+    return validate_active_availability_segments(rules)
 
 
 def match_segment_rule(ip: str, *, rules: list[SegmentRule]) -> SegmentRule | None:

@@ -228,6 +228,50 @@ def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
     assert watermarks[0] == payload["reconciliation"]["source_watermark"]
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["collect", "router"],
+        ["reconcile"],
+    ],
+)
+def test_stateful_connection_preparation_occurs_after_collect_lock(monkeypatch, command):
+    """Preparing migrations before the lock lets two stateful commands race each other."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    events = []
+    conn = type("Connection", (), {"close": lambda self: events.append("close")})()
+
+    class RecordingLock:
+        def __init__(self, _db):
+            pass
+
+        def __enter__(self):
+            events.append("lock")
+
+        def __exit__(self, *_args):
+            events.append("unlock")
+
+    def prepare(_args):
+        events.append("prepare")
+        return conn
+
+    monkeypatch.setattr(cli, "CollectLock", RecordingLock)
+    monkeypatch.setattr(cli, "prepare_conn", prepare)
+    monkeypatch.setattr(cli, "collect_one", lambda *_args: (0, {"status": "ok"}))
+    monkeypatch.setattr(
+        cli,
+        "reconcile_current_locked",
+        lambda *_args: {"topology_run_id": 1, "attachment_run_id": 2},
+    )
+
+    rc, _payload = cli.dispatch(parser.parse_args(command))
+
+    assert rc == 0
+    assert events == ["lock", "prepare", "unlock", "close"]
+
+
 def test_collect_all_runs_availability_only_after_every_enabled_source_succeeds(monkeypatch):
     """A failed source must prevent availability from publishing a mixed collection snapshot."""
     import netctl.cli as cli

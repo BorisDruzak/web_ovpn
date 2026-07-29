@@ -94,12 +94,30 @@ def set_availability_setting(
     if not isinstance(segment_id, str) or not segment_id:
         raise ValueError("segment_id must be a non-empty string")
 
-    from .context_classifier import load_active_segment_rules
+    from .context_classifier import (
+        load_active_segment_rules,
+        validate_active_availability_segments,
+    )
 
-    rules_by_id = {rule.segment_id: rule for rule in load_active_segment_rules(conn)}
+    canonical_rules = load_active_segment_rules(conn)
+    rules_by_id = {rule.segment_id: rule for rule in canonical_rules}
     rule = rules_by_id.get(segment_id)
     if rule is None or rule.network.version != 4:
         raise ValueError("setting requires an active IPv4 segment")
+
+    effective_rules = resolve_availability_segment_rules(conn, canonical_rules)
+    prospective_rules = [
+        replace(
+            current,
+            availability_monitoring=enabled,
+            availability_tcp_ports=ports,
+            availability_interval_minutes=interval,
+        )
+        if current.segment_id == segment_id
+        else current
+        for current in effective_rules
+    ]
+    validate_active_availability_segments(prospective_rules)
 
     updated_at = utc_now()
     conn.execute(

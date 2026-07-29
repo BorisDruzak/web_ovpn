@@ -583,9 +583,10 @@ def reconcile_current_locked(conn, observed_at: str) -> dict[str, Any]:
 
 
 def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    conn = prepare_conn(args)
+    conn = None
     try:
         with CollectLock(args.db):
+            conn = prepare_conn(args)
             if args.source == "all":
                 rc, results = collect_all_locked(conn, args)
                 if rc == 0:
@@ -611,18 +612,21 @@ def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     except RuntimeError as exc:
         return 1, err(str(exc))
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    conn = prepare_conn(args)
+    conn = None
     try:
         with CollectLock(args.db):
+            conn = prepare_conn(args)
             return 0, ok(**reconcile_current_locked(conn, utc_now()))
     except RuntimeError as exc:
         return 1, err(str(exc))
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def cmd_observations(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:

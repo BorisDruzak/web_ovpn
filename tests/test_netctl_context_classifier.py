@@ -382,6 +382,46 @@ def test_setting_rejects_unknown_ipv6_and_invalid_interval(tmp_path):
         conn.close()
 
 
+def test_setting_rejects_invalid_prospective_effective_rules_without_persisting(tmp_path):
+    """Enabling a broad canonical segment must not poison the effective rule loader."""
+    from netctl.availability_settings import (
+        list_availability_settings,
+        set_availability_setting,
+    )
+    from netctl.context_classifier import load_active_availability_segments
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(
+            conn,
+            [
+                {"id": "office-wide", "cidr": "192.0.0.0/16"},
+                {
+                    "id": "office",
+                    "cidr": "192.0.2.0/24",
+                    "availability_monitoring": True,
+                },
+            ],
+        )
+
+        with pytest.raises(ValueError, match="at least /24"):
+            set_availability_setting(
+                conn,
+                "office-wide",
+                enabled=True,
+                tcp_ports=(443,),
+                interval_minutes=10,
+            )
+
+        assert list_availability_settings(conn) == []
+        assert [str(rule.network) for rule in load_active_availability_segments(conn)] == [
+            "192.0.2.0/24"
+        ]
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     "ports",
     [(), (22,), (22, 443, 8443)],
