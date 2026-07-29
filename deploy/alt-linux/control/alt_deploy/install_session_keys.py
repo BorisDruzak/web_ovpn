@@ -52,9 +52,37 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _require_root_owner(metadata: os.stat_result, *, description: str) -> None:
+    if os.name != "nt" and (metadata.st_uid != 0 or metadata.st_gid != 0):
+        raise ValueError(f"Install signing {description} ownership is invalid")
+
+
+def _validate_root_parent_chain(path: Path) -> None:
+    current = path
+    while True:
+        metadata = _lstat(current, description="key parent")
+        if metadata is None or not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError("Install signing key parent is not a directory")
+        _require_root_owner(metadata, description="key parent")
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
+
+
+def _validate_root_directory(path: Path, *, mode: int, description: str) -> None:
+    _validate_root_parent_chain(path)
+    metadata = _lstat(path, description=description)
+    if metadata is None or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("Install signing key directory is not a directory")
+    if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != mode:
+        raise ValueError("Install signing key directory permissions are invalid")
+
+
 def _ensure_root_directory(path: Path, *, mode: int, description: str) -> None:
     metadata = _lstat(path, description=description)
     if metadata is None:
+        _validate_root_parent_chain(path.parent)
         try:
             path.mkdir(mode=mode)
         except FileExistsError:
@@ -65,17 +93,13 @@ def _ensure_root_directory(path: Path, *, mode: int, description: str) -> None:
             raise ValueError("Install signing key directory cannot be created") from exc
         else:
             try:
+                if os.name != "nt":
+                    os.chown(path, 0, 0)
                 os.chmod(path, mode)
             except OSError as exc:
                 raise ValueError("Install signing key directory permissions cannot be set") from exc
             _fsync_directory(path.parent)
-            metadata = _lstat(path, description=description)
-    if metadata is None or not stat.S_ISDIR(metadata.st_mode):
-        raise ValueError("Install signing key directory is not a directory")
-    if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != mode:
-        raise ValueError("Install signing key directory permissions are invalid")
-    if os.name != "nt" and metadata.st_uid != 0:
-        raise ValueError("Install signing key directory ownership is invalid")
+    _validate_root_directory(path, mode=mode, description=description)
 
 
 def _write_all(descriptor: int, content: bytes) -> None:
@@ -104,6 +128,8 @@ def _create_regular_exclusive(path: Path, content: bytes, *, mode: int) -> None:
         raise ValueError("Install signing key cannot be created") from exc
     try:
         try:
+            if os.name != "nt":
+                os.fchown(descriptor, 0, 0)
             os.fchmod(descriptor, mode)
         except AttributeError:
             os.chmod(path, mode)
@@ -112,8 +138,7 @@ def _create_regular_exclusive(path: Path, content: bytes, *, mode: int) -> None:
             raise ValueError("Install signing key is not a regular file")
         if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != mode:
             raise ValueError("Install signing key permissions are invalid")
-        if os.name != "nt" and metadata.st_uid != 0:
-            raise ValueError("Install signing key ownership is invalid")
+        _require_root_owner(metadata, description="key")
         _write_all(descriptor, content)
         os.fsync(descriptor)
     except OSError as exc:
@@ -167,6 +192,13 @@ def ensure_install_session_keypair(
             _canonical_json(public_key_metadata(private.public_key())),
             mode=0o644,
         )
+
+    _validate_root_directory(
+        private_path.parent, mode=0o700, description="private key directory"
+    )
+    _validate_root_directory(
+        public_path.parent, mode=0o755, description="public key directory"
+    )
 
     private = load_private_signer(private_path)
     public = load_public_verifier(public_path)

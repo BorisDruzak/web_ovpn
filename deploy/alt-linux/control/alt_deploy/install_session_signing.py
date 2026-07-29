@@ -35,12 +35,8 @@ def _read_regular_file(
             raise ValueError("Install signing key is not a regular file")
         if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != mode:
             raise ValueError("Install signing key permissions are invalid")
-        # Production signing happens only in the root-only approval process.
-        # Non-root test runners cannot prove root ownership, so the check is
-        # deliberately enforced whenever it can protect that execution path.
-        if (
-            root_owned and os.name != "nt" and hasattr(os, "geteuid")
-            and os.geteuid() == 0 and metadata.st_uid != 0
+        if root_owned and os.name != "nt" and (
+            metadata.st_uid != 0 or metadata.st_gid != 0
         ):
             raise ValueError("Install signing key ownership is invalid")
         if metadata.st_size < 1 or metadata.st_size > maximum_size:
@@ -71,6 +67,13 @@ def public_key_metadata(key: Ed25519PublicKey) -> dict[str, object]:
         "key_id": "sha256:" + hashlib.sha256(raw).hexdigest(),
         "public_key_b64": base64.b64encode(raw).decode("ascii"),
     }
+
+
+def _canonical_public_key_json(metadata: dict[str, object]) -> bytes:
+    return (
+        json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        + b"\n"
+    )
 
 
 def load_private_signer(path: Path) -> Ed25519PrivateKey:
@@ -111,6 +114,8 @@ def load_public_verifier(path: Path) -> Ed25519PublicKey:
         raise ValueError("Install signing public key value is invalid") from exc
     if document.get("key_id") != public_key_metadata(public_key)["key_id"]:
         raise ValueError("Install signing public key ID is invalid")
+    if raw != _canonical_public_key_json(public_key_metadata(public_key)):
+        raise ValueError("Install signing public key JSON is not canonical")
     return public_key
 
 

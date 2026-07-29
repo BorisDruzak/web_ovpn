@@ -111,7 +111,14 @@ def test_failed_approval_removes_partial_artifacts_and_can_retry(
     ))
     key_path.chmod(0o600)
     public_key_path = tmp_path / "install-plan-ed25519.pub"
-    public_key_path.write_text(json.dumps(public_key_metadata(private_key.public_key())), encoding="utf-8")
+    public_key_path.write_bytes(
+        json.dumps(
+            public_key_metadata(private_key.public_key()),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
     public_key_path.chmod(0o644)
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
@@ -174,7 +181,14 @@ def test_status_fsync_failure_preserves_an_already_published_plan(
     ))
     key_path.chmod(0o600)
     public_key_path = tmp_path / "install-plan-ed25519.pub"
-    public_key_path.write_text(json.dumps(public_key_metadata(private_key.public_key())), encoding="utf-8")
+    public_key_path.write_bytes(
+        json.dumps(
+            public_key_metadata(private_key.public_key()),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
     public_key_path.chmod(0o644)
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))

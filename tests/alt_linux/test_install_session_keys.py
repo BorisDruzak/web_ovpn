@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import sys
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -47,6 +48,8 @@ def write_complete_pair(
 ) -> None:
     settings.install_signing_private_key.parent.mkdir()
     settings.install_signing_public_key.parent.mkdir()
+    settings.install_signing_private_key.parent.chmod(0o700)
+    settings.install_signing_public_key.parent.chmod(0o755)
     settings.install_signing_private_key.write_bytes(
         private.private_bytes(
             serialization.Encoding.PEM,
@@ -55,8 +58,11 @@ def write_complete_pair(
         )
     )
     settings.install_signing_private_key.chmod(0o600)
-    settings.install_signing_public_key.write_text(
-        json.dumps(public_key_metadata(public)), encoding="utf-8"
+    settings.install_signing_public_key.write_bytes(
+        json.dumps(
+            public_key_metadata(public), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        + b"\n"
     )
     settings.install_signing_public_key.chmod(0o644)
 
@@ -88,7 +94,6 @@ def test_existing_matching_pair_is_retained(tmp_path: Path) -> None:
         settings.install_signing_private_key.read_bytes(),
         settings.install_signing_public_key.read_bytes(),
     )
-
     second = ensure_install_session_keypair(settings, euid=lambda: 0)
 
     assert second == first
@@ -96,6 +101,131 @@ def test_existing_matching_pair_is_retained(tmp_path: Path) -> None:
         settings.install_signing_private_key.read_bytes(),
         settings.install_signing_public_key.read_bytes(),
     )
+
+
+def test_existing_pair_with_noncanonical_public_json_is_rejected_without_rewrite(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for_keys(tmp_path)
+    metadata = ensure_install_session_keypair(settings, euid=lambda: 0)
+    settings.install_signing_public_key.write_bytes(
+        json.dumps(metadata, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    )
+    before = settings.install_signing_public_key.read_bytes()
+
+    with pytest.raises(ValueError, match="canonical"):
+        ensure_install_session_keypair(settings, euid=lambda: 0)
+
+    assert settings.install_signing_public_key.read_bytes() == before
+
+
+def test_existing_pair_with_symlinked_private_parent_is_rejected(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for_keys(tmp_path)
+    private = Ed25519PrivateKey.generate()
+    real_private_directory = tmp_path / "real-secrets"
+    real_private_directory.mkdir()
+    settings.install_signing_public_key.parent.mkdir()
+    real_private_directory.chmod(0o700)
+    settings.install_signing_public_key.parent.chmod(0o755)
+    real_private_key = real_private_directory / settings.install_signing_private_key.name
+    real_private_key.write_bytes(
+        private.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    real_private_key.chmod(0o600)
+    settings.install_signing_public_key.write_bytes(
+        json.dumps(
+            public_key_metadata(private.public_key()),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+    settings.install_signing_public_key.chmod(0o644)
+    try:
+        settings.install_signing_private_key.parent.symlink_to(
+            real_private_directory, target_is_directory=True
+        )
+    except OSError as exc:
+        pytest.skip(f"directory symlinks are unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="symlink"):
+        ensure_install_session_keypair(settings, euid=lambda: 0)
+
+
+def test_existing_pair_with_unsafe_private_directory_metadata_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import alt_deploy.install_session_keys as keys
+
+    settings = settings_for_keys(tmp_path)
+    private = Ed25519PrivateKey.generate()
+    write_complete_pair(settings, private=private, public=private.public_key())
+    settings.install_signing_private_key.parent.chmod(0o755)
+    monkeypatch.setattr(keys.os, "name", "posix")
+    monkeypatch.setattr(keys, "load_private_signer", lambda path: private)
+    monkeypatch.setattr(keys, "load_public_verifier", lambda path: private.public_key())
+
+    with pytest.raises(ValueError, match="directory"):
+        ensure_install_session_keypair(settings, euid=lambda: 0)
+
+
+@pytest.mark.parametrize(
+    ("loader", "mode"),
+    (("private", 0o600), ("public", 0o644)),
+)
+def test_signing_loaders_reject_non_root_group(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    loader: str,
+    mode: int,
+) -> None:
+    import alt_deploy.install_session_signing as signing
+
+    private = Ed25519PrivateKey.generate()
+    path = tmp_path / ("private.pem" if loader == "private" else "public.json")
+    if loader == "private":
+        path.write_bytes(
+            private.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        load = load_private_signer
+    else:
+        path.write_bytes(
+            json.dumps(
+                public_key_metadata(private.public_key()),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        load = load_public_verifier
+    path.chmod(mode)
+    real_fstat = signing.os.fstat
+
+    def non_root_group_fstat(descriptor: int) -> object:
+        metadata = real_fstat(descriptor)
+        return types.SimpleNamespace(
+            st_mode=stat.S_IFREG | mode,
+            st_uid=0,
+            st_gid=123,
+            st_size=metadata.st_size,
+        )
+
+    monkeypatch.setattr(signing.os, "name", "posix")
+    monkeypatch.setattr(signing.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(signing.os, "fstat", non_root_group_fstat)
+
+    with pytest.raises(ValueError, match="ownership"):
+        load(path)
 
 
 def test_mismatched_pair_is_rejected_without_replacement(tmp_path: Path) -> None:
@@ -127,6 +257,7 @@ def test_missing_half_pair_is_rejected_without_replacement(
     private = Ed25519PrivateKey.generate()
     if present == "private":
         settings.install_signing_private_key.parent.mkdir()
+        settings.install_signing_private_key.parent.chmod(0o700)
         settings.install_signing_private_key.write_bytes(
             private.private_bytes(
                 serialization.Encoding.PEM,
@@ -138,6 +269,7 @@ def test_missing_half_pair_is_rejected_without_replacement(
         existing = settings.install_signing_private_key
     else:
         settings.install_signing_public_key.parent.mkdir()
+        settings.install_signing_public_key.parent.chmod(0o755)
         settings.install_signing_public_key.write_text(
             json.dumps(public_key_metadata(private.public_key())), encoding="utf-8"
         )
@@ -192,6 +324,8 @@ def test_non_ed25519_private_pem_is_rejected_without_replacement(tmp_path: Path)
     public = Ed25519PrivateKey.generate().public_key()
     settings.install_signing_private_key.parent.mkdir()
     settings.install_signing_public_key.parent.mkdir()
+    settings.install_signing_private_key.parent.chmod(0o700)
+    settings.install_signing_public_key.parent.chmod(0o755)
     settings.install_signing_private_key.write_bytes(
         generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
             serialization.Encoding.PEM,
@@ -217,6 +351,8 @@ def test_malformed_public_json_is_rejected_without_replacement(tmp_path: Path) -
     private = Ed25519PrivateKey.generate()
     settings.install_signing_private_key.parent.mkdir()
     settings.install_signing_public_key.parent.mkdir()
+    settings.install_signing_private_key.parent.chmod(0o700)
+    settings.install_signing_public_key.parent.chmod(0o755)
     settings.install_signing_private_key.write_bytes(
         private.private_bytes(
             serialization.Encoding.PEM,
