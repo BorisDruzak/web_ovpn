@@ -114,6 +114,30 @@ def test_missing_or_failed_current_run_is_stale_not_offline(conn):
     assert project_host_availability(conn, host, now=NOW)["status"] == "stale"
 
 
+def test_live_openvpn_connection_precedes_nonmonitored_cidr_eligibility(conn):
+    """Checking CIDR first would hide a live tunnel endpoint outside active monitoring."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn, ip="203.0.113.8", status="seen")
+    host["openvpn_connected"] = True
+
+    projected = project_host_availability(conn, host, now=NOW)
+
+    assert projected["status"] == "connected"
+    assert projected["availability"] is None
+
+
+def test_historical_connected_status_does_not_substitute_for_live_openvpn_marker(conn):
+    """A persisted connected label is historical metadata, not current OpenVPN management evidence."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn, status="connected")
+    _projection_segment(conn)
+    conn.commit()
+
+    assert project_host_availability(conn, host, now=NOW)["status"] == "stale"
+
+
 def availability_segment(cidr: str, *, ports: tuple[int, ...] = ()):
     """Build literal canonical-policy input for collector behavior tests."""
     from ipaddress import ip_network

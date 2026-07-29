@@ -543,6 +543,17 @@ def _availability_payload(*, state: str, cidr: str, active_method: str | None, c
 def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *, now: str | datetime) -> dict[str, Any]:
     """Derive the public host status from current active and passive evidence."""
     projected = dict(host)
+    if bool(host.get("openvpn_connected")):
+        cidr = _availability_cidr(conn, str(host["ip"]))
+        projected["status"] = "connected"
+        projected["availability"] = (
+            _availability_payload(
+                state="connected", cidr=cidr, active_method=None, checked_at=None,
+                run_status="", passive_evidence=[], reason="openvpn_management",
+            )
+            if cidr is not None else None
+        )
+        return projected
     cidr = _availability_cidr(conn, str(host["ip"]))
     if cidr is None:
         projected["availability"] = None
@@ -550,13 +561,6 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
     timestamp = _as_utc(now)
     if timestamp is None:
         raise ValueError("now must be a UTC timestamp")
-    if host.get("status") == "connected" or bool(host.get("openvpn_connected")):
-        projected["status"] = "connected"
-        projected["availability"] = _availability_payload(
-            state="connected", cidr=cidr, active_method=None, checked_at=None,
-            run_status="", passive_evidence=[], reason="openvpn_management",
-        )
-        return projected
     run = conn.execute(
         """SELECT id, status, finished_at, error_class FROM availability_runs
            WHERE cidr = ? ORDER BY finished_at DESC, id DESC LIMIT 1""",
