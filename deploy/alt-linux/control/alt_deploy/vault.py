@@ -1,16 +1,53 @@
 from __future__ import annotations
 
 import os
-import pwd
 import stat
 import subprocess
 from pathlib import Path
+
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows has no account database module.
+    pwd = None  # type: ignore[assignment]
 
 from .config import Settings
 from .errors import ControlError
 
 
 VAULT_VARIABLE = "vault_employee_password_hash"
+EXECUTION_ROOT_VARIABLE = "vault_install_root_password_hash"
+EXECUTION_ADMIN_VARIABLE = "vault_install_admin_password_hash"
+
+
+def extract_execution_password_hashes(decrypted_text: str) -> dict[str, str]:
+    """Return the two distinct V2 renderer hashes without logging them."""
+    if not isinstance(decrypted_text, str):
+        raise ValueError("execution password material is invalid")
+    values: dict[str, str] = {}
+    names = {
+        EXECUTION_ROOT_VARIABLE: "root_yescrypt_hash",
+        EXECUTION_ADMIN_VARIABLE: "admin_yescrypt_hash",
+    }
+    for line in decrypted_text.splitlines():
+        name, separator, raw_value = line.partition(":")
+        if separator and name.strip() in names:
+            value = raw_value.strip()
+            if len(value) >= 2 and value[0] in {"'", '"'} and value[-1] == value[0]:
+                value = value[1:-1]
+            values[names[name.strip()]] = value
+    if set(values) != {"root_yescrypt_hash", "admin_yescrypt_hash"}:
+        raise ValueError("execution password material is invalid")
+    root_hash = values["root_yescrypt_hash"]
+    admin_hash = values["admin_yescrypt_hash"]
+    if (
+        root_hash == admin_hash
+        or not root_hash.startswith("$y$")
+        or not admin_hash.startswith("$y$")
+        or len(root_hash) > 256
+        or len(admin_hash) > 256
+    ):
+        raise ValueError("execution password material is invalid")
+    return values
 
 
 class VaultHealthChecker:
@@ -42,6 +79,8 @@ class VaultHealthChecker:
         )
 
     def _service_uid(self) -> int | None:
+        if pwd is None:
+            return None
         try:
             return pwd.getpwnam(
                 self.settings.service_user
