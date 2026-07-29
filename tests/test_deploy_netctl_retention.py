@@ -55,6 +55,25 @@ def test_systemd_verifier_expects_the_retention_command() -> None:
     assert verifier["EXPECTED_PROPERTIES"]["netctl-retention.timer"]["TimersCalendar"] == "*-*-* 03:17:00"
 
 
+def test_systemd_verifier_expects_hardened_read_only_availability_recovery() -> None:
+    """A permissive recovery unit could run with different privileges or modify network configuration."""
+    verifier = runpy.run_path(str(VERIFIER))
+
+    assert verifier["EXPECTED_PROPERTIES"]["netctl-availability.service"] == {
+        "User": "netctl",
+        "Group": "netctl",
+        "NoNewPrivileges": "yes",
+        "PrivateTmp": "yes",
+        "ProtectHome": "yes",
+    }
+    assert verifier["EXPECTED_PROPERTIES"]["netctl-availability.timer"] == {
+        "TimersMonotonic": ("OnBootSec=3min", "OnUnitActiveSec=5min"),
+        "AccuracyUSec": "30s",
+        "Persistent": "yes",
+        "Unit": "netctl-availability.service",
+    }
+
+
 def test_systemd_show_property_parser_reads_retention_hardening_and_schedule() -> None:
     result = subprocess.run(
         [sys.executable, "-B", str(VERIFIER), "--parse-show-properties"],

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -169,6 +170,35 @@ def test_installer_enables_the_collection_and_recovery_timers_after_reload(tmp_p
     assert reload_index < recovery_index
     assert "restart wg-quick@wg0.service" not in calls
     assert "restart openvpn-server@server.service" not in calls
+
+
+def test_availability_unit_uses_only_fixed_netctl_argv() -> None:
+    """Extra service arguments could turn recovery collection into an unsafe write path."""
+    verifier = runpy.run_path(str(VERIFIER))
+
+    assert verifier["EXPECTED_EXEC_STARTS"]["netctl-availability.service"] == [
+        "/usr/local/sbin/netctl",
+        "--json",
+        "availability",
+        "collect",
+    ]
+
+
+def test_installer_enables_availability_timer_after_systemd_verification(tmp_path: Path) -> None:
+    """Enabling an unverified recovery timer could schedule malformed systemd units."""
+    result, _bin_dir, calls_path, environment = _run_installer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    calls = calls_path.read_text(encoding="utf-8").splitlines()
+    sudo_calls = Path(environment["SUDO_CALLS"]).read_text(encoding="utf-8").splitlines()
+    verification_index = next(
+        index
+        for index, call in enumerate(sudo_calls)
+        if call.startswith("/usr/local/sbin/verify-netctl-systemd")
+    )
+    availability_enable = "systemctl enable --now netctl-availability.timer"
+    assert "enable --now netctl-availability.timer" in calls
+    assert verification_index < sudo_calls.index(availability_enable)
 
 
 def test_installer_verifies_units_after_reload_before_enabling_timers(tmp_path: Path) -> None:

@@ -1,0 +1,12 @@
+[Unit]
+Description=Recover netctl host availability collection after boot
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=netctl-availability.service
+
+[Install]
+WantedBy=timers.target

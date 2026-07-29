@@ -256,6 +256,8 @@ sudo_cmd install -m 0644 "$SRC/deploy/netctl-reconcile.service" /etc/systemd/sys
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-reconcile.timer" /etc/systemd/system/netctl-reconcile.timer
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-retention.service" /etc/systemd/system/netctl-retention.service
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-retention.timer" /etc/systemd/system/netctl-retention.timer
+sudo_cmd install -m 0644 "$SRC/deploy/netctl-availability.service" /etc/systemd/system/netctl-availability.service
+sudo_cmd install -m 0644 "$SRC/deploy/netctl-availability.timer" /etc/systemd/system/netctl-availability.timer
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy.service" /etc/systemd/system/vpn-policy.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.service" /etc/systemd/system/vpn-policy-reconcile.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
@@ -276,6 +278,7 @@ sudo_cmd systemctl enable openvpn-web.service
 sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now netctl-reconcile.timer
 sudo_cmd systemctl enable --now netctl-retention.timer
+sudo_cmd systemctl enable --now netctl-availability.timer
 sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer

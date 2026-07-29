@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect netctl host availability after boot recovery
+
+[Service]
+Type=oneshot
+User=netctl
+Group=netctl
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ExecStart=/usr/local/sbin/netctl --json availability collect

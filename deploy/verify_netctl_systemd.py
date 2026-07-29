@@ -41,6 +41,12 @@ EXPECTED_EXEC_STARTS = {
         "30",
         "--apply",
     ],
+    "netctl-availability.service": [
+        "/usr/local/sbin/netctl",
+        "--json",
+        "availability",
+        "collect",
+    ],
 }
 
 EXPECTED_PROPERTIES = {
@@ -56,6 +62,19 @@ EXPECTED_PROPERTIES = {
         "Persistent": "yes",
         "Unit": "netctl-retention.service",
     },
+    "netctl-availability.service": {
+        "User": "netctl",
+        "Group": "netctl",
+        "NoNewPrivileges": "yes",
+        "PrivateTmp": "yes",
+        "ProtectHome": "yes",
+    },
+    "netctl-availability.timer": {
+        "TimersMonotonic": ("OnBootSec=3min", "OnUnitActiveSec=5min"),
+        "AccuracyUSec": "30s",
+        "Persistent": "yes",
+        "Unit": "netctl-availability.service",
+    },
 }
 
 _ARGV_PATTERN = re.compile(
@@ -63,6 +82,7 @@ _ARGV_PATTERN = re.compile(
     re.DOTALL,
 )
 _ON_CALENDAR_ENTRY_PATTERN = re.compile(r"OnCalendar=(?P<calendar>[^;}]+?)\s*;")
+_MONOTONIC_TIMER_ENTRY_PATTERN = re.compile(r"(?P<timer>On[A-Za-z]+Sec)=(?P<value>[^;}\s]+)")
 
 
 def parse_exec_starts(serialized: str) -> list[list[str]]:
@@ -114,6 +134,11 @@ def property_matches(property_name: str, actual_value: str, expected_value: str)
 
     if property_name == "TimersCalendar":
         return _on_calendar_entries(actual_value) == [expected_value]
+    if property_name == "TimersMonotonic":
+        return tuple(
+            f"{match.group('timer')}={match.group('value')}"
+            for match in _MONOTONIC_TIMER_ENTRY_PATTERN.finditer(actual_value)
+        ) == expected_value
     return actual_value == expected_value
 
 
@@ -218,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print("verified netctl collection, reconciliation, and retention units through systemd")
+    print("verified netctl collection, reconciliation, retention, and availability units through systemd")
     return 0
 
 
