@@ -89,7 +89,7 @@ elif cmd[:2] == ["context-view", "asset"]:
         freshness["topology_reconciled_at"] = ""
         print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "stale desktop"}, "attachment": {"status": "unresolved", "alternatives": []}, "freshness": freshness}}))
     elif asset_key == "mac:AA:BB:CC:DD:EE:04":
-        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "ambiguous desktop"}, "attachment": {"status": "ambiguous", "reason": "Есть конкурирующие FDB-записи", "alternatives": [{"source": "tplink-ito-15", "port_key": "physical:2", "vlan_id": 20, "candidate_class": "unknown", "score": 50, "reason": "статус порта не получен"}], "switch": {"name": "must-not-render"}, "port": {"alias": "must-not-render"}, "port_peers": {"items": [{"asset": {"asset_key": "AA:BB:CC:DD:EE:02", "display_name": "must-not-render"}}]}}, "freshness": freshness}}))
+        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "ambiguous desktop"}, "attachment": {"status": "ambiguous", "reason": "есть конкурирующая FDB-запись", "alternatives": [{"source": "tplink-ito-15", "port_key": "physical:2", "vlan_id": 20, "candidate_class": "unknown", "score": 50, "reason": "статус порта не получен"}, {"source": "", "port_key": "", "vlan_id": None, "candidate_class": "", "score": None, "reason": ""}], "switch": {"name": "must-not-render"}, "port": {"alias": "must-not-render"}, "port_peers": {"items": [{"asset": {"asset_key": "AA:BB:CC:DD:EE:02", "display_name": "must-not-render"}}]}}, "freshness": freshness}}))
     else:
         print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "desktop pc-buh-01", "manual_name": "Finance workstation", "kind": "device", "status": "active", "site": "main", "location": "Office", "identity_method": "mac", "identity_confidence": 100}, "network": {"ip_observations": [{"ip": "192.168.100.55"}], "best_hostname_observation": {"hostname": "pc-buh-01"}}, "attachment": {"status": "confirmed", "confidence": 100, "last_seen_at": "2026-07-26T10:00:00Z", "switch": {"name": "access-a", "site": "main", "host": "must-not-render"}, "port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up"}, "vlan_membership": {"vlan_id": 20, "egress": True, "untagged": True, "pvid": True}, "port_peers": {"items": [{"asset": {"asset_key": "mac:AA:BB:CC:DD:EE:02", "display_name": "Printer"}, "mac": "AA:BB:CC:DD:EE:02", "vlan_id": 20}], "known_asset_count": 1, "unknown_mac_count": 0, "truncated": False}, "alternatives": []}, "topology_path": {"nodes": [], "hops": [], "complete": True, "reason": ""}, "attachment_events": [{"event_type": "confirmed", "observed_at": "2026-07-25T10:00:00Z", "before": {"status": "unresolved"}, "after": {"status": "confirmed"}}], "freshness": freshness, "evidence": {"secret": "must-not-render"}}}))
 elif cmd[:2] == ["assets", "set-name"]:
@@ -653,11 +653,17 @@ def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_pa
     assert "Неоднозначно" in ambiguous.text
     assert "tplink-ito-15" in ambiguous.text
     assert "physical:2" in ambiguous.text
-    assert "VLAN 20" in ambiguous.text
+    assert "VLAN: 20" in ambiguous.text
     assert "unknown" in ambiguous.text
     assert "50" in ambiguous.text
     assert "статус порта не получен" in ambiguous.text
-    assert "Есть конкурирующие FDB-записи" in ambiguous.text
+    assert "есть конкурирующая FDB-запись" in ambiguous.text
+    assert "Источник: —" in ambiguous.text
+    assert "Порт: —" in ambiguous.text
+    assert "VLAN: —" in ambiguous.text
+    assert "класс: —" in ambiguous.text
+    assert "оценка: —" in ambiguous.text
+    assert "причина: —" in ambiguous.text
     assert "must-not-render" not in ambiguous.text
     assert "AA:BB:CC:DD:EE:02" not in ambiguous.text
     assert stale.status_code == 200

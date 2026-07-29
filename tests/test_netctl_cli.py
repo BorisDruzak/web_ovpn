@@ -29,6 +29,25 @@ def run_cli(args, capsys):
     return rc, json.loads(captured.out)
 
 
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        ([{"oper_status": "unknown"}], "статус порта не получен"),
+        ([{"verified_backbone_port": True}], "это подтверждённый uplink"),
+        ([{"collector_status": "partial"}], "сбор коммутатора неполный"),
+        ([{"reason": "not_public", "collector_error": "private detail"}], ""),
+        ("not-json", ""),
+    ],
+)
+def test_attachment_reason_projects_only_allowlisted_evidence(evidence, expected):
+    """Unknown or malformed collector evidence must never become public text."""
+    from netctl.context_query import _attachment_reason
+
+    raw = evidence if isinstance(evidence, str) else json.dumps(evidence)
+
+    assert _attachment_reason(raw) == expected
+
+
 def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_path, capsys):
     """Dropping candidate evidence would leave an ambiguous port impossible to assess."""
     from netctl.db import connect
@@ -55,7 +74,11 @@ def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_pa
                (id, name, driver, host, port, username, secret_ref, tls, verify_tls,
                 enabled, created_at, updated_at)
                VALUES (?, ?, 'snmp_switch', '192.0.2.1', 161, '', 'env:TEST', 0, 0, 1, ?, ?)""",
-            [(10, 'tplink-ito-15', now, now), (11, 'tplink-ito-14', now, now)],
+            [
+                (10, 'tplink-ito-15', now, now),
+                (11, 'tplink-ito-14', now, now),
+                (12, 'tplink-ito-13', now, now),
+            ],
         )
         run_id = conn.execute(
             """INSERT INTO network_correlation_runs
@@ -63,22 +86,46 @@ def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_pa
                VALUES ('attachments', ?, ?, 'success')""",
             (now, now),
         ).lastrowid
+        resolution_evidence = [
+            {
+                "asset_id": 1, "asset_interface_id": interface_id,
+                "switch_source_id": 10, "port_key": "physical:2", "vlan_key": "20",
+                "vlan_id": 20, "candidate_class": "unknown", "topology_depth": None,
+                "score": 50, "observed_at": now,
+                "evidence": [{"collector_status": "success", "oper_status": "unknown"}],
+            },
+            {
+                "asset_id": 1, "asset_interface_id": interface_id,
+                "switch_source_id": 11, "port_key": "physical:47", "vlan_key": "20",
+                "vlan_id": 20, "candidate_class": "direct", "topology_depth": None,
+                "score": 50, "observed_at": now,
+                "evidence": [{"collector_status": "success", "oper_status": "up"}],
+            },
+            {
+                "asset_id": 1, "asset_interface_id": interface_id,
+                "switch_source_id": 12, "port_key": "physical:48", "vlan_key": "20",
+                "vlan_id": 20, "candidate_class": "direct", "topology_depth": None,
+                "score": 50, "observed_at": now,
+                "evidence": [{"collector_status": "success", "oper_status": "up"}],
+            },
+        ]
         conn.execute(
             """INSERT INTO asset_attachment_resolutions
                (asset_interface_id, asset_id, status, confidence, first_seen_at,
                 last_seen_at, correlation_run_id, evidence_json)
-               VALUES (?, 1, 'ambiguous', 50, ?, ?, ?, '[{"reason":"competing_fdb"}]')""",
-            (interface_id, now, now, run_id),
+               VALUES (?, 1, 'ambiguous', 50, ?, ?, ?, ?)""",
+            (interface_id, now, now, run_id, json.dumps(resolution_evidence)),
         )
         conn.executemany(
             """INSERT INTO asset_attachment_candidates
                (asset_interface_id, asset_id, switch_source_id, port_key, vlan_key,
                 vlan_id, candidate_class, score, observed_at, correlation_run_id,
                 evidence_json)
-               VALUES (?, 1, ?, ?, '20', 20, 'unknown', 50, ?, ?, ?)""",
+               VALUES (?, 1, ?, ?, '20', 20, ?, 50, ?, ?, ?)""",
             [
-                (interface_id, 10, 'physical:2', now, run_id, '[{"reason":"oper_status_unknown"}]'),
-                (interface_id, 11, 'physical:47', now, run_id, '[{"reason":"competing_fdb"}]'),
+                (interface_id, 10, 'physical:2', 'unknown', now, run_id, '[{"collector_status":"success","oper_status":"unknown"}]'),
+                (interface_id, 11, 'physical:47', 'direct', now, run_id, '[{"collector_status":"success","oper_status":"up"}]'),
+                (interface_id, 12, 'physical:48', 'direct', now, run_id, '[{"collector_status":"success","oper_status":"up"}]'),
             ],
         )
         conn.commit()
@@ -93,7 +140,7 @@ def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_pa
     assert rc == 0
     attachment = payload["context"]["attachment"]
     assert attachment["status"] == "ambiguous"
-    assert attachment["reason"] == "Есть конкурирующие FDB-записи"
+    assert attachment["reason"] == "есть конкурирующая FDB-запись"
     likely = next(
         alternative
         for alternative in attachment["alternatives"]
@@ -110,6 +157,12 @@ def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_pa
         "observed_at": now,
         "reason": "статус порта не получен",
     }
+    direct = next(
+        alternative
+        for alternative in attachment["alternatives"]
+        if alternative["source"] == "tplink-ito-14" and alternative["port_key"] == "physical:47"
+    )
+    assert direct["reason"] == "есть конкурирующая FDB-запись"
 
 
 def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
