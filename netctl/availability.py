@@ -556,6 +556,8 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
         return projected
     cidr = _availability_cidr(conn, str(host["ip"]))
     if cidr is None:
+        if projected.get("status") == "connected":
+            projected["status"] = "seen"
         projected["availability"] = None
         return projected
     timestamp = _as_utc(now)

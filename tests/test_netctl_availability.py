@@ -138,6 +138,18 @@ def test_historical_connected_status_does_not_substitute_for_live_openvpn_marker
     assert project_host_availability(conn, host, now=NOW)["status"] == "stale"
 
 
+def test_nonmonitored_historical_connected_status_is_not_projected_as_live_connection(conn):
+    """Passing through a stored connected label would fabricate a live tunnel outside monitoring."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn, ip="203.0.113.8", status="connected")
+
+    projected = project_host_availability(conn, host, now=NOW)
+
+    assert projected["status"] == "seen"
+    assert projected["availability"] is None
+
+
 def availability_segment(cidr: str, *, ports: tuple[int, ...] = ()):
     """Build literal canonical-policy input for collector behavior tests."""
     from ipaddress import ip_network
