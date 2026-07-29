@@ -115,7 +115,10 @@ def parse_show_properties(serialized: str) -> dict[str, str]:
         if not separator or not key:
             raise ValueError("systemctl show output has an invalid property line")
         if key in properties:
-            raise ValueError(f"systemctl show output repeated property {key}")
+            if key != "TimersMonotonic":
+                raise ValueError(f"systemctl show output repeated property {key}")
+            properties[key] = f"{properties[key]} {value}"
+            continue
         properties[key] = value
     if not properties:
         raise ValueError("systemctl show output has no properties")
@@ -135,10 +138,11 @@ def property_matches(property_name: str, actual_value: str, expected_value: str)
     if property_name == "TimersCalendar":
         return _on_calendar_entries(actual_value) == [expected_value]
     if property_name == "TimersMonotonic":
-        return tuple(
+        actual_entries = tuple(
             f"{match.group('timer')}={match.group('value')}"
             for match in _MONOTONIC_TIMER_ENTRY_PATTERN.finditer(actual_value)
-        ) == expected_value
+        )
+        return len(actual_entries) == len(expected_value) and set(actual_entries) == set(expected_value)
     return actual_value == expected_value
 
 
