@@ -32,6 +32,11 @@ ALLOWED_PUBLIC_MATERIAL = {
     "usr/share/alt-install/execution-ca.pem",
     "usr/share/alt-install/public-key.json",
 }
+SCAN_CHUNK_SIZE = 64 * 1024
+SCAN_OVERLAP_SIZE = 128
+PRIVATE_KEY_MARKER = re.compile(
+    rb"-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY-----"
+)
 
 
 class ContractError(ValueError):
@@ -217,6 +222,22 @@ def validate_menu(
         raise ContractError("BIOS menu must remain non-execution")
 
 
+def _contains_private_key_marker(path: Path) -> bool:
+    overlap = b""
+    try:
+        with path.open("rb") as stream:
+            while chunk := stream.read(SCAN_CHUNK_SIZE):
+                window = overlap + chunk.upper()
+                if PRIVATE_KEY_MARKER.search(window):
+                    return True
+                overlap = window[-SCAN_OVERLAP_SIZE:]
+    except OSError as exc:
+        raise ContractError(
+            f"cannot inspect extracted payload file: {path.name}"
+        ) from exc
+    return False
+
+
 def scan_secret_like_files(root: Path) -> None:
     if not root.is_dir() or root.is_symlink():
         raise ContractError("extracted initrd root is invalid")
@@ -233,23 +254,7 @@ def scan_secret_like_files(root: Path) -> None:
             )
         if not path.is_file() or path.is_symlink():
             continue
-        try:
-            size = path.stat().st_size
-        except OSError as exc:
-            raise ContractError(
-                f"cannot inspect extracted payload file: {relative}"
-            ) from exc
-        if size > 1024 * 1024:
-            continue
-        try:
-            content = path.read_bytes().upper()
-        except OSError as exc:
-            raise ContractError(
-                f"cannot inspect extracted payload file: {relative}"
-            ) from exc
-        if re.search(
-            rb"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----", content
-        ):
+        if _contains_private_key_marker(path):
             raise ContractError(
                 f"secret-like payload content is forbidden: {relative}"
             )
