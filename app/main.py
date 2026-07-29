@@ -34,7 +34,7 @@ from .models import (
     utcnow,
 )
 from .netctl_client import NetctlError, run_netctl
-from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts
+from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_FILTERS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
@@ -1599,10 +1599,11 @@ def validate_runtime_asset_key(value: object) -> str:
 def network_hosts(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
     rows, error = unified_network_rows(request)
+    requested_status = request.query_params.get("status")
     filters = {
         "q": request.query_params.get("q") or "",
         "category": request.query_params.get("category") or "all",
-        "status": request.query_params.get("status") or "all",
+        "status": requested_status if requested_status in HOST_STATUS_FILTERS else "" if requested_status is not None else "current",
         "source": request.query_params.get("source") or "all",
         "network": request.query_params.get("network") or "all",
         "has_hostname": request.query_params.get("has_hostname") or "",
@@ -1649,10 +1650,13 @@ def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)
     data, error = net_cli_call(request, ["hosts", "inspect", ip])
     rows, unified_error = unified_network_rows(request)
     vpn_row = next((row for row in rows if row.get("ip") == ip), None)
+    host = vpn_row or normalize_netctl_host(data.get("host") if isinstance(data.get("host"), dict) else {})
+    detail = dict(data)
+    detail["host"] = host
     return render(
         request,
         "network_host_detail.html",
-        {"ip": ip, "detail": data, "host": data.get("host") or vpn_row or {}, "vpn_row": vpn_row, "error": error or unified_error},
+        {"ip": ip, "detail": detail, "host": host, "vpn_row": vpn_row, "error": error or unified_error},
         db,
     )
 

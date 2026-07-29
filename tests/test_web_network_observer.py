@@ -546,6 +546,93 @@ def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
     assert phone["device_confidence"] == 85
 
 
+def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    import app.api
+
+    hosts = [
+        {"ip": "192.168.99.2", "status": "offline", "availability": {"reason": "active_negative_no_passive_evidence"}},
+        {"ip": "192.168.99.44", "status": "online", "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "active_probe"}},
+        {"ip": "192.168.99.45", "status": "seen", "availability": {"passive_evidence": ["mikrotik_dhcp"], "reason": "passive_evidence"}},
+        {"ip": "192.168.99.46", "status": "stale", "availability": {"reason": "run_failed socket timeout"}},
+    ]
+
+    def fake_netctl(args, timeout=None):
+        assert args == ["hosts", "list"]
+        return {"hosts": hosts}
+
+    monkeypatch.setattr(app.api, "call_netctl", fake_netctl)
+    monkeypatch.setattr(app.api, "call_vpnctl", lambda args, timeout=None: {"connected": []} if args[0] == "connected" else {"clients": []})
+
+    current = client.get("/api/v1/network/hosts", headers=headers)
+    offline = client.get("/api/v1/network/hosts?status=offline", headers=headers)
+    stale = client.get("/api/v1/network/hosts?status=stale", headers=headers)
+    invalid = client.get("/api/v1/network/hosts?status=unexpected", headers=headers)
+
+    assert [host["ip"] for host in current.json()["data"]["hosts"]] == ["192.168.99.44", "192.168.99.45"]
+    assert [host["ip"] for host in offline.json()["data"]["hosts"]] == ["192.168.99.2"]
+    assert stale.json()["data"]["hosts"][0]["availability"]["reason"] == "run_failed"
+    assert "socket timeout" not in stale.text
+    assert invalid.status_code == 422
+
+
+def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    hosts = [
+        {
+            "ip": "192.168.99.46", "display_name": "stale host", "status": "stale",
+            "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "run_failed socket timeout"},
+        },
+        {"ip": "192.168.99.47", "display_name": "unmonitored host", "status": "seen", "availability": None},
+    ]
+
+    def fake_netctl(request, args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": hosts}, None
+        if args == ["sources", "list"]:
+            return {"sources": []}, None
+        if args == ["hosts", "inspect", "192.168.99.46"]:
+            return {"host": hosts[0]}, None
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    monkeypatch.setattr(app.main, "cli_call", lambda request, args, timeout=None: ({"connected": []} if args[0] == "connected" else {"clients": []}, None))
+    login(client)
+
+    page = client.get("/network/hosts?status=stale")
+    detail = client.get("/network/hosts/192.168.99.46")
+    all_hosts = client.get("/network/hosts?status=all")
+    invalid = client.get("/network/hosts?status=unexpected")
+
+    assert page.status_code == detail.status_code == all_hosts.status_code == invalid.status_code == 200
+    assert "run failed" in page.text
+    assert "socket timeout" not in page.text
+    assert "run_failed" in detail.text
+    assert "socket timeout" not in detail.text
+    assert "not monitored" in all_hosts.text
+    assert 'value="unexpected"' not in invalid.text
+    assert "stale host" not in invalid.text
+
+
+def test_openvpn_merge_copies_availability_without_mutating_netctl_row():
+    from app.network_observer import merge_unified_hosts
+
+    source = {
+        "ip": "192.168.99.44", "status": "online",
+        "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "active_probe"},
+    }
+
+    [merged] = merge_unified_hosts([source], [{"common_name": "alpha", "virtual_address": "192.168.99.44"}], [])
+
+    assert merged["status"] == "connected"
+    assert merged["availability"] == {
+        "active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "openvpn_management",
+    }
+    assert source["availability"]["reason"] == "active_probe"
+
+
 def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)

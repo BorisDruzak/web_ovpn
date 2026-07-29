@@ -1094,7 +1094,7 @@ def api_network_hosts(
     actor: str = Depends(require_api_actor),
     q: str = Query(default=""),
     category: str = Query(default="all"),
-    status: str = Query(default="all"),
+    status: Literal["current", "all", "online", "seen", "offline", "stale", "connected"] = Query(default="current"),
     source: str = Query(default="all"),
     network: str = Query(default="all"),
     has_hostname: str = Query(default=""),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Mapping
 from typing import Any
 
 NETWORK_FILTERS = [
@@ -49,6 +50,12 @@ DEVICE_TYPE_LABELS = {
     "noise": "Шум",
     "unknown": "Неизвестно",
 }
+HOST_STATUS_FILTERS = frozenset({"current", "all", "online", "seen", "offline", "stale", "connected"})
+CURRENT_HOST_STATUSES = frozenset({"online", "seen", "connected"})
+_PUBLIC_AVAILABILITY_REASONS = frozenset({
+    "active_probe", "passive_evidence", "active_negative_no_passive_evidence", "missing_run",
+    "run_failed", "run_stale", "missing_result", "openvpn_management",
+})
 
 
 def list_from(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
@@ -64,6 +71,25 @@ def _vpn_ip(row: dict[str, Any]) -> str:
 
 def _display_name(row: dict[str, Any]) -> str:
     return str(row.get("display_name") or row.get("hostname") or row.get("common_name") or row.get("name") or row.get("ip") or "")
+
+
+def _public_availability(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    availability: dict[str, Any] = {}
+    for key in ("state", "active_method", "checked_at", "run_status", "cidr"):
+        field = value.get(key)
+        if isinstance(field, str) and field:
+            availability[key] = field
+    passive_evidence = value.get("passive_evidence")
+    if isinstance(passive_evidence, list):
+        availability["passive_evidence"] = [str(item) for item in passive_evidence if isinstance(item, str) and item]
+    raw_reason = value.get("reason")
+    if isinstance(raw_reason, str):
+        reason = raw_reason.split(maxsplit=1)[0]
+        if reason in _PUBLIC_AVAILABILITY_REASONS:
+            availability["reason"] = reason
+    return availability
 
 
 def normalize_netctl_host(row: dict[str, Any]) -> dict[str, Any]:
@@ -96,6 +122,7 @@ def normalize_netctl_host(row: dict[str, Any]) -> dict[str, Any]:
         "site": row.get("site") or "",
         "last_seen_at": row.get("last_seen_at") or "",
         "last_source": row.get("last_source") or "",
+        "availability": _public_availability(row.get("availability")),
         "vpn_client": None,
     }
 
@@ -127,6 +154,7 @@ def vpn_rows(connected: list[dict[str, Any]], clients: list[dict[str, Any]]) -> 
                 "device_evidence": ["category:vpn_client"],
                 "tags": ["device:pc"],
                 "manual_tags": [],
+                "availability": {"reason": "openvpn_management"},
                 "vpn_client": {
                     "common_name": common_name,
                     "profile": profile,
@@ -151,6 +179,9 @@ def merge_unified_hosts(
         existing["sources"] = sorted(set(existing.get("sources", [])) | {"openvpn"})
         existing["vpn_client"] = vpn["vpn_client"]
         existing["status"] = "connected"
+        availability = dict(existing.get("availability") or {})
+        availability["reason"] = "openvpn_management"
+        existing["availability"] = availability
         if existing.get("category") in {"", "unknown"}:
             existing["category"] = "vpn_client"
         if not existing.get("display_name"):
@@ -161,7 +192,7 @@ def merge_unified_hosts(
 def filter_unified_hosts(rows: list[dict[str, Any]], params: dict[str, str]) -> list[dict[str, Any]]:
     q = (params.get("q") or "").strip().lower()
     category = params.get("category") or "all"
-    status = params.get("status") or "all"
+    status = params.get("status") or "current"
     source = params.get("source") or "all"
     network = params.get("network") or "all"
     has_hostname = params.get("has_hostname") or ""
@@ -183,7 +214,9 @@ def filter_unified_hosts(rows: list[dict[str, Any]], params: dict[str, str]) -> 
         ]
     if category != "all":
         result = [row for row in result if row.get("category") == category]
-    if status != "all":
+    if status == "current":
+        result = [row for row in result if row.get("status") in CURRENT_HOST_STATUSES]
+    elif status != "all":
         result = [row for row in result if row.get("status") == status]
     if source != "all":
         if source == "openvpn":
