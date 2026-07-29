@@ -328,6 +328,7 @@ bash "$builder" \
     --helper "$helper" \
     --public-key "$fixture_state/install-plan-ed25519.pub" \
     --build-id "$build_id" \
+    --controller-url http://192.168.100.17:18089 \
     >"$workdir/build.log" 2>&1 ||
     die 'Managed ISO build failed'
 bash "$verifier" --iso "$managed_iso" \
