@@ -31,7 +31,7 @@ def test_root_approval_publishes_signed_first_revision(
     tmp_path: Path,
 ) -> None:
     key_path = tmp_path / "secrets" / "install-plan-ed25519.pem"
-    public_key_path = tmp_path / "install-plan-ed25519.pub"
+    public_key_path = tmp_path / "etc" / "install-plan-ed25519.pub"
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_PROFILE_ROOT", str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"))
