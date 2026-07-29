@@ -421,6 +421,22 @@ def test_availability_parsers_accept_only_canonical_settings_and_one_ip():
         )
 
 
+def test_availability_force_parser_accepts_only_one_fixed_existing_host_toggle():
+    """Force monitoring must not accept a CIDR or browser-defined probe options."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        ["availability", "force", "--ip", "192.0.2.33", "--enabled", "true"]
+    )
+
+    assert (args.ip, args.enabled) == ("192.0.2.33", "true")
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["availability", "force", "--ip", "192.0.2.33", "--enabled", "true", "--tcp-port", "22"]
+        )
+
+
 def test_availability_settings_returns_effective_canonical_segment_fields(monkeypatch):
     """Listing only overrides would force the web layer to invent CIDR and context metadata."""
     import ipaddress
@@ -2017,7 +2033,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     assert data["status"] == "ok"
     summary = data["runtime_identity"]
     assert summary["schema_migration_versions"] == [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
     ]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1

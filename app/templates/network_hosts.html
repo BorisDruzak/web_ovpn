@@ -17,6 +17,11 @@
     {% endfor %}
     <option value="stale" {% if filters.status == "stale" %}selected{% endif %}>данные устарели</option>
   </select>
+  <select name="seen_within">
+    {% for value, label in {"1h":"За 1 час","24h":"За 24 часа","7d":"За 7 дней","30d":"За 30 дней","all":"За всё время"}.items() %}
+    <option value="{{ value }}" {% if filters.seen_within == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
   <select name="source">
     <option value="all">Все источники</option>
     <option value="openvpn" {% if filters.source == "openvpn" %}selected{% endif %}>OpenVPN</option>

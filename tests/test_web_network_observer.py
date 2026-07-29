@@ -5,7 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -72,9 +72,9 @@ if invoked_cli_path:
         invoked_cli.write(" ".join(cmd) + "\\n")
 if cmd[:2] == ["hosts", "list"]:
     print(json.dumps({"status": "ok", "hosts": [
-        {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:01", "hostname": "pc-buh-01", "display_name": "desktop pc-buh-01", "manual_name": "Finance workstation", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:01", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
-        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "legacy-host:desk?old", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
-        {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "device_key": "mac:E0:1C:FC:AE:82:9B", "device_type": "server", "device_confidence": 80, "device_evidence": ["category:mgmt"], "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"}
+        {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:01", "hostname": "pc-buh-01", "display_name": "desktop pc-buh-01", "manual_name": "Finance workstation", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:01", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": collected_at},
+        {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "legacy-host:desk?old", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": collected_at},
+        {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "device_key": "mac:E0:1C:FC:AE:82:9B", "device_type": "server", "device_confidence": 80, "device_evidence": ["category:mgmt"], "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": collected_at}
     ]}))
 elif cmd[:2] == ["hosts", "inspect"]:
     print(json.dumps({"status": "ok", "host": {"ip": cmd[2], "display_name": "pc-buh-01"}, "observations": []}))
@@ -820,9 +820,9 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     monkeypatch.setattr(app.main, "cli_call", lambda request, args, timeout=None: ({"connected": []} if args[0] == "connected" else {"clients": []}, None))
     login(client)
 
-    page = client.get("/network/hosts?status=stale")
+    page = client.get("/network/hosts?status=stale&seen_within=all")
     detail = client.get("/network/hosts/192.168.99.46")
-    all_hosts = client.get("/network/hosts?status=all")
+    all_hosts = client.get("/network/hosts?status=all&seen_within=all")
     invalid = client.get("/network/hosts?status=unexpected")
 
     assert page.status_code == detail.status_code == all_hosts.status_code == invalid.status_code == 200
@@ -836,6 +836,28 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     assert ">stale<" not in page.text
     assert 'value="unexpected"' not in invalid.text
     assert "stale host" not in invalid.text
+
+
+def test_host_history_period_defaults_to_24_hours_and_can_include_history():
+    """The normal device list must be observation-based, with explicit access to history."""
+    from app.network_observer import filter_unified_hosts
+
+    now = datetime.now(timezone.utc)
+    fresh = now.isoformat().replace("+00:00", "Z")
+    old = (now.replace(microsecond=0) - timedelta(days=8)).isoformat().replace("+00:00", "Z")
+    rows = [
+        {"ip": "192.0.2.1", "display_name": "fresh device", "category": "unknown", "status": "seen", "last_seen_at": fresh},
+        {"ip": "192.0.2.2", "display_name": "old device", "category": "unknown", "status": "stale", "last_seen_at": old},
+        {"ip": "192.0.2.3", "display_name": "bad timestamp", "category": "unknown", "status": "stale", "last_seen_at": "not-a-time"},
+    ]
+
+    default_rows = filter_unified_hosts(rows, {"status": "all", "seen_within": "24h"})
+    weekly_rows = filter_unified_hosts(rows, {"status": "all", "seen_within": "7d"})
+    historical_rows = filter_unified_hosts(rows, {"status": "all", "seen_within": "all"})
+
+    assert [row["display_name"] for row in default_rows] == ["fresh device"]
+    assert [row["display_name"] for row in weekly_rows] == ["fresh device"]
+    assert [row["display_name"] for row in historical_rows] == ["fresh device", "old device", "bad timestamp"]
 
 
 @pytest.mark.parametrize(
@@ -1480,6 +1502,42 @@ def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(t
     assert 'name="ip"' not in availability_form + refresh_form
     assert 'name="cidr"' not in availability_form + refresh_form
     assert 'name="tcp_port"' not in availability_form + refresh_form
+
+
+def test_force_monitor_route_uses_fixed_persist_probe_and_refresh_commands(tmp_path, monkeypatch):
+    """Force monitoring of a known historical host must be explicit and immediately verifiable."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    calls = []
+
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {
+                "host": {
+                    "ip": "192.168.99.44",
+                    "availability": {"state": "stale", "reason": "missing_run"},
+                }
+            }, None
+        return {}, None
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    csrf = login(client)
+
+    response = client.post(
+        "/network/hosts/192.168.99.44/force-monitor",
+        data={"csrf_token": csrf, "ip": "192.0.2.77"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert calls == [
+        (["hosts", "inspect", "192.168.99.44"], None),
+        (["availability", "force", "--ip", "192.168.99.44", "--enabled", "true"], 30),
+        (["availability", "probe", "--ip", "192.168.99.44"], 60),
+        (["observations", "refresh"], 300),
+    ]
 
 
 def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, monkeypatch):

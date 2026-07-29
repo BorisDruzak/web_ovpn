@@ -1798,6 +1798,7 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
         else "current"
     )
     rows, error = unified_network_rows(request, status=selected_status)
+    requested_seen_within = request.query_params.get("seen_within") or "24h"
     filters = {
         "q": request.query_params.get("q") or "",
         "category": request.query_params.get("category") or "all",
@@ -1806,6 +1807,7 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
         "network": request.query_params.get("network") or "all",
         "has_hostname": request.query_params.get("has_hostname") or "",
         "has_mac": request.query_params.get("has_mac") or "",
+        "seen_within": requested_seen_within if requested_seen_within in {"1h", "24h", "7d", "30d", "all"} else "24h",
     }
     rows = filter_unified_hosts(rows, filters)
     sources_data, sources_error = net_cli_call(request, ["sources", "list"])
@@ -2033,6 +2035,74 @@ async def network_host_observation_refresh(
         "bad" if error else "ok",
         error or "Наблюдения обновлены",
     )
+    return redirect(f"/network/hosts/{target_path}")
+
+
+@app.post("/network/hosts/{ip}/force-monitor")
+async def network_host_force_monitor(
+    ip: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    try:
+        valid_ip = canonical_host_ipv4(ip)
+    except HTTPException:
+        write_audit(db, request, user, "network-host-force-monitor", "error", "invalid IPv4 host target", target_client=ip[:180])
+        raise
+    target_path = quote(valid_ip, safe="")
+    host_data, host_error = net_cli_call(request, ["hosts", "inspect", valid_ip])
+    action_error = host_availability_action_error(
+        None if host_error else host_data.get("host"), valid_ip
+    )
+    if action_error is not None:
+        status_code, message = action_error
+        write_audit(db, request, user, "network-host-force-monitor", "denied", message, target_client=valid_ip)
+        raise HTTPException(status_code=status_code)
+    permit = acquire_network_action(db, user.username, "network-host-force-monitor", utcnow())
+    if not permit.accepted:
+        write_audit(db, request, user, "network-host-force-monitor", "denied", permit.message, target_client=valid_ip)
+        add_flash(request, "bad", permit.message)
+        return redirect(f"/network/hosts/{target_path}")
+    _, force_error = net_cli_call(
+        request, ["availability", "force", "--ip", valid_ip, "--enabled", "true"], timeout=30
+    )
+    probe_error = ""
+    refresh_error = ""
+    if not force_error:
+        _, probe_error = net_cli_call(request, ["availability", "probe", "--ip", valid_ip], timeout=60)
+        _, refresh_error = net_cli_call(request, ["observations", "refresh"], timeout=300)
+    error = force_error or probe_error or refresh_error
+    write_audit(db, request, user, "network-host-force-monitor", "error" if error else "ok", error or valid_ip, target_client=valid_ip)
+    add_flash(request, "bad" if error else "ok", error or "Принудительный мониторинг включён; проверка и сбор выполнены")
+    return redirect(f"/network/hosts/{target_path}")
+
+
+@app.post("/network/hosts/{ip}/force-monitor/disable")
+async def network_host_force_monitor_disable(
+    ip: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    try:
+        valid_ip = canonical_host_ipv4(ip)
+    except HTTPException:
+        write_audit(db, request, user, "network-host-force-monitor-disable", "error", "invalid IPv4 host target", target_client=ip[:180])
+        raise
+    target_path = quote(valid_ip, safe="")
+    permit = acquire_network_action(db, user.username, "network-host-force-monitor-disable", utcnow())
+    if not permit.accepted:
+        write_audit(db, request, user, "network-host-force-monitor-disable", "denied", permit.message, target_client=valid_ip)
+        add_flash(request, "bad", permit.message)
+        return redirect(f"/network/hosts/{target_path}")
+    _, error = net_cli_call(
+        request, ["availability", "force", "--ip", valid_ip, "--enabled", "false"], timeout=30
+    )
+    write_audit(db, request, user, "network-host-force-monitor-disable", "error" if error else "ok", error or valid_ip, target_client=valid_ip)
+    add_flash(request, "bad" if error else "ok", error or "Принудительный мониторинг отключён")
     return redirect(f"/network/hosts/{target_path}")
 
 

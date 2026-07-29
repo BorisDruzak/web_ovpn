@@ -1755,6 +1755,25 @@ def _migration_18(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_19(conn: sqlite3.Connection) -> bool | None:
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'network_hosts'"
+    ).fetchone() is None:
+        return False
+    for statement in """
+        CREATE TABLE availability_force_monitors (
+          ip TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          enabled_at TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX network_hosts_last_seen_ip_idx
+        ON network_hosts(last_seen_at, ip);
+        """.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1774,6 +1793,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (16, _migration_16),
     (17, _migration_17),
     (18, _migration_18),
+    (19, _migration_19),
 )
 
 

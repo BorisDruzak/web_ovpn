@@ -19,7 +19,9 @@ from .availability import (
     AvailabilityCollection,
     collect_due_availability,
     default_probe_executor,
+    monitored_rule_for_ip,
     probe_one_availability,
+    set_force_monitor,
 )
 from .availability_settings import (
     resolve_availability_segment_rules,
@@ -487,6 +489,20 @@ def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     "check_origin": "manual",
                 }
             )
+        if args.availability_command == "force":
+            with CollectLock(args.db):
+                host = inspect_host(conn, args.ip)
+                if host is None:
+                    raise ValueError("host target not found")
+                if monitored_rule_for_ip(conn, args.ip) is None:
+                    raise ValueError("host target is not monitored")
+                state = set_force_monitor(
+                    conn,
+                    args.ip,
+                    enabled=args.enabled == "true",
+                    now=utc_now(),
+                )
+            return 0, ok(force_monitor=state)
         with CollectLock(args.db):
             collection = collect_due_availability(
                 conn,
@@ -1517,6 +1533,9 @@ def build_parser() -> argparse.ArgumentParser:
     set_segment.add_argument("--interval-minutes", type=int, required=True)
     availability_probe = availability_sub.add_parser("probe")
     availability_probe.add_argument("--ip", required=True)
+    availability_force = availability_sub.add_parser("force")
+    availability_force.add_argument("--ip", required=True)
+    availability_force.add_argument("--enabled", required=True, choices=("true", "false"))
     sub.add_parser("reconcile")
 
     retention = sub.add_parser("retention")
