@@ -269,6 +269,7 @@ def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
         assert response.status_code == 303
 
         form = client.get("/clients/new")
+        assert 'enctype="multipart/form-data"' in form.text
         csrf = form.text.split('name="csrf_token" value="')[1].split('"')[0]
         created = client.post(
             "/clients/new",
