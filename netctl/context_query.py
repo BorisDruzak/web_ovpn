@@ -18,6 +18,15 @@ from .runtime_assets import (
 from .util import utc_now
 
 
+ATTACHMENT_REASON_LABELS = {
+    "oper_status_unknown": "статус порта не получен",
+    "competing_fdb": "есть конкурирующая FDB-запись",
+    "verified_backbone_port": "это подтверждённый uplink",
+    "partial_collection": "сбор коммутатора неполный",
+}
+MAX_ATTACHMENT_EVIDENCE_DEPTH = 16
+
+
 def _asset_public(asset: dict[str, Any]) -> dict[str, Any]:
     return {
         key: asset[key]
@@ -104,6 +113,66 @@ def _port_peers(
     }
 
 
+def _attachment_evidence_items(evidence_json: object) -> list[dict[str, Any]]:
+    """Decode collector evidence into dictionaries without exposing malformed input."""
+    try:
+        evidence = json.loads(str(evidence_json or "[]"))
+    except (RecursionError, TypeError, ValueError, json.JSONDecodeError):
+        return []
+    items = evidence if isinstance(evidence, list) else [evidence]
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _nested_evidence_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Iteratively flatten only a bounded amount of untrusted evidence."""
+    nested: list[dict[str, Any]] = []
+    pending = [(item, 0) for item in reversed(items)]
+    while pending:
+        item, depth = pending.pop()
+        nested.append(item)
+        if depth >= MAX_ATTACHMENT_EVIDENCE_DEPTH:
+            continue
+        children: list[dict[str, Any]] = []
+        for value in item.values():
+            if isinstance(value, dict):
+                children.append(value)
+            elif isinstance(value, list):
+                children.extend(entry for entry in value if isinstance(entry, dict))
+        pending.extend((child, depth + 1) for child in reversed(children))
+    return nested
+
+
+def _attachment_reason(evidence_json: object) -> str:
+    """Project allowlisted attachment evidence without exposing collector detail."""
+    items = _nested_evidence_items(_attachment_evidence_items(evidence_json))
+    for item in items:
+        reason = item.get("reason")
+        if isinstance(reason, str) and reason in ATTACHMENT_REASON_LABELS:
+            return ATTACHMENT_REASON_LABELS[reason]
+    for item in items:
+        if item.get("oper_status") in {"", "unknown", None} and "oper_status" in item:
+            return ATTACHMENT_REASON_LABELS["oper_status_unknown"]
+        if item.get("verified_backbone_port") is True:
+            return ATTACHMENT_REASON_LABELS["verified_backbone_port"]
+        if item.get("collector_status") == "partial":
+            return ATTACHMENT_REASON_LABELS["partial_collection"]
+    return ""
+
+
+def _competing_direct_candidates(evidence_json: object) -> set[tuple[int, str, str]]:
+    """Identify distinct direct candidates stored by attachment reconciliation."""
+    candidates: set[tuple[int, str, str]] = set()
+    for item in _nested_evidence_items(_attachment_evidence_items(evidence_json)):
+        if item.get("candidate_class") != "direct":
+            continue
+        source_id = item.get("switch_source_id")
+        port_key = item.get("port_key")
+        vlan_key = item.get("vlan_key")
+        if isinstance(source_id, int) and isinstance(port_key, str) and isinstance(vlan_key, str):
+            candidates.add((source_id, port_key, vlan_key))
+    return candidates if len(candidates) > 1 else set()
+
+
 def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int | None = None) -> dict[str, Any] | None:
     conditions = ["resolutions.asset_id = ?"]
     params: list[object] = [asset_id]
@@ -115,7 +184,8 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
                   resolutions.selected_vlan_key, resolutions.selected_vlan_id, resolutions.confidence,
                   resolutions.last_seen_at, sources.name AS switch_name, sources.site AS switch_site,
                   sources.host AS switch_host, ports.name AS port_name, ports.alias AS port_alias,
-                  ports.admin_status AS port_admin_status, ports.oper_status AS port_oper_status
+                  ports.admin_status AS port_admin_status, ports.oper_status AS port_oper_status,
+                  resolutions.evidence_json AS evidence_json
            FROM asset_attachment_resolutions AS resolutions
            LEFT JOIN network_sources AS sources ON sources.id = resolutions.selected_source_id
            LEFT JOIN switch_ports AS ports
@@ -127,9 +197,11 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
         return None
     attachment = {key: row[key] for key in ("status", "selected_source_id", "selected_port_key", "selected_vlan_key", "selected_vlan_id", "confidence", "last_seen_at")}
     alternatives = conn.execute(
-        f"""SELECT sources.name AS source, candidates.port_key, candidates.vlan_key,
+        f"""SELECT sources.name AS source, candidates.switch_source_id AS source_id,
+                  candidates.port_key, candidates.vlan_key,
                   candidates.vlan_id, candidates.candidate_class,
-                  candidates.topology_depth, candidates.score, candidates.observed_at
+                  candidates.topology_depth, candidates.score, candidates.observed_at,
+                  candidates.evidence_json
            FROM asset_attachment_candidates AS candidates
            LEFT JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
            WHERE candidates.asset_id = ? {"AND candidates.asset_interface_id = ?" if asset_interface_id is not None else ""}
@@ -138,7 +210,25 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
            LIMIT 32""",
         (asset_id, asset_interface_id) if asset_interface_id is not None else (asset_id,),
     ).fetchall()
-    attachment["alternatives"] = [dict(item) for item in alternatives]
+    competing_direct_candidates = _competing_direct_candidates(row["evidence_json"])
+    attachment["alternatives"] = []
+    for item in alternatives:
+        alternative = dict(item)
+        candidate_key = (
+            int(alternative.pop("source_id")),
+            str(alternative.get("port_key") or ""),
+            str(alternative.get("vlan_key") or ""),
+        )
+        reason = _attachment_reason(alternative.pop("evidence_json", ""))
+        if candidate_key in competing_direct_candidates:
+            reason = ATTACHMENT_REASON_LABELS["competing_fdb"]
+        if reason:
+            alternative["reason"] = reason
+        attachment["alternatives"].append(alternative)
+    if competing_direct_candidates:
+        attachment["reason"] = ATTACHMENT_REASON_LABELS["competing_fdb"]
+    elif reason := _attachment_reason(row["evidence_json"]):
+        attachment["reason"] = reason
     attachment["switch"] = None
     attachment["port"] = None
     attachment["vlan_membership"] = None

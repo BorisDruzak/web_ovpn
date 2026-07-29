@@ -35,6 +35,7 @@ from .models import (
     utcnow,
 )
 from .netctl_client import NetctlError, run_netctl
+from .network_actions import acquire_network_action
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_FILTERS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -84,10 +85,88 @@ def format_bytes(value: Any) -> str:
     return f"{number} B"
 
 
+def availability_method_label(value: object) -> str:
+    method = str(value or "").strip().lower()
+    if method == "icmp":
+        return "ICMP"
+    if method.startswith("tcp:"):
+        port = method.partition(":")[2]
+        return f"TCP:{port}" if port.isdigit() else "TCP"
+    if method == "tcp":
+        return "TCP"
+    return method.upper()
+
+
+def availability_evidence_label(value: object, separator: str = ", ") -> str:
+    if not isinstance(value, list):
+        return ""
+    labels = {
+        "mikrotik_arp": "ARP",
+        "mikrotik_dhcp": "DHCP",
+        "mikrotik_bridge": "bridge",
+        "snmp_fdb": "FDB",
+    }
+    return separator.join(
+        labels[key]
+        for item in value
+        if (key := str(item).lower()) in labels
+    )
+
+
+def availability_reason_label(value: object) -> str:
+    labels = {
+        "active_probe": "активная проверка (active probe)",
+        "passive_evidence": "пассивные наблюдения",
+        "active_negative_no_passive_evidence": "нет ответа и свежих наблюдений",
+        "missing_run": "нет запуска",
+        "run_failed": "ошибка запуска / run failed (run_failed)",
+        "run_stale": "устаревший запуск",
+        "missing_result": "нет результата",
+        "openvpn_management": "сессия OpenVPN",
+        "not_monitored": "не мониторится",
+    }
+    reason = str(value or "").split(maxsplit=1)[0]
+    return labels.get(reason, "")
+
+
+def availability_origin_label(value: object) -> str:
+    return {"manual": "ручная", "scheduled": "плановая"}.get(str(value or ""), "-")
+
+
+def availability_status_label(host: object) -> str:
+    if not isinstance(host, dict):
+        return "не мониторится"
+    availability = host.get("availability")
+    if not isinstance(availability, dict):
+        return "не мониторится"
+    state = str(availability.get("state") or "").lower()
+    host_status = str(host.get("status") or "").lower()
+    method = availability_method_label(availability.get("active_method"))
+    evidence = availability_evidence_label(availability.get("passive_evidence"), "/")
+    if state == "online":
+        return f"online · {method}" if method else "не мониторится"
+    if state == "seen":
+        return f"seen · {evidence}" if evidence else "seen"
+    if state == "offline":
+        return "offline"
+    if state == "not_monitored":
+        return "не мониторится"
+    if state == "stale":
+        return "данные устарели"
+    if state == "connected" or host_status == "connected":
+        return "VPN подключён"
+    return "не мониторится"
+
+
 templates.env.globals["csrf_token"] = csrf_token
 templates.env.globals["category_labels"] = CATEGORY_LABELS
 templates.env.globals["device_type_labels"] = DEVICE_TYPE_LABELS
 templates.env.globals["source_labels"] = SOURCE_LABELS
+templates.env.globals["availability_method_label"] = availability_method_label
+templates.env.globals["availability_evidence_label"] = availability_evidence_label
+templates.env.globals["availability_reason_label"] = availability_reason_label
+templates.env.globals["availability_origin_label"] = availability_origin_label
+templates.env.globals["availability_status_label"] = availability_status_label
 templates.env.filters["status_class"] = status_class
 templates.env.filters["format_bytes"] = format_bytes
 
@@ -1562,6 +1641,107 @@ def network_dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@app.get("/network/monitoring", response_class=HTMLResponse)
+def network_monitoring(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    data, error = net_cli_call(request, ["availability", "settings"])
+    return render(
+        request,
+        "network_monitoring.html",
+        {"segments": list_from(data, "segments"), "error": error},
+        db,
+    )
+
+
+def availability_settings_args(segment_id: str, form: Any) -> list[str]:
+    if not segment_id or len(segment_id) > 120 or "/" in segment_id or "\\" in segment_id:
+        raise ValueError("invalid segment")
+    enabled = str(form.get("enabled") or "false").lower()
+    if enabled not in {"true", "false"}:
+        raise ValueError("invalid enabled value")
+    raw_ports = str(form.get("tcp_ports") or "").strip()
+    try:
+        ports = [int(value) for value in re.split(r"[\s,]+", raw_ports) if value]
+        interval = int(str(form.get("interval_minutes") or ""))
+    except ValueError as exc:
+        raise ValueError("invalid monitoring settings") from exc
+    if len(ports) > 3 or len(set(ports)) != len(ports) or any(port < 1 or port > 65535 for port in ports):
+        raise ValueError("invalid tcp ports")
+    if interval not in {5, 10, 15, 30, 60}:
+        raise ValueError("invalid interval")
+    args = [
+        "availability",
+        "set-segment",
+        "--segment-id",
+        segment_id,
+        "--enabled",
+        enabled,
+    ]
+    for port in sorted(ports):
+        args.extend(["--tcp-port", str(port)])
+    args.extend(["--interval-minutes", str(interval)])
+    return args
+
+
+@app.post("/network/monitoring/{segment_id}")
+async def network_monitoring_update(
+    segment_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    try:
+        args = availability_settings_args(segment_id, form)
+    except ValueError:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-availability-settings",
+            "error",
+            "invalid bounded monitoring settings",
+            target_client=segment_id[:120],
+        )
+        add_flash(request, "bad", "Проверьте порты и интервал мониторинга")
+        return redirect("/network/monitoring")
+    permit = acquire_network_action(
+        db,
+        user.username,
+        "network-availability-settings",
+        utcnow(),
+    )
+    if not permit.accepted:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-availability-settings",
+            "denied",
+            permit.message,
+            target_client=segment_id,
+        )
+        add_flash(request, "bad", permit.message)
+        return redirect("/network/monitoring")
+    _, error = net_cli_call(request, args, timeout=60)
+    write_audit(
+        db,
+        request,
+        user,
+        "network-availability-settings",
+        "error" if error else "ok",
+        error or "bounded segment monitoring settings updated",
+        target_client=segment_id,
+    )
+    add_flash(
+        request,
+        "bad" if error else "ok",
+        error or "Настройки доступности сохранены",
+    )
+    return redirect("/network/monitoring")
+
+
 @app.get("/network/paths", response_class=HTMLResponse)
 def network_paths(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
@@ -1699,19 +1879,191 @@ async def network_asset_name_update(asset_key: str, request: Request, db: Sessio
     return redirect(f"/network/assets/{asset_path}")
 
 
+def canonical_host_ipv4(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=404) from exc
+    if address.version != 4 or str(address) != value:
+        raise HTTPException(status_code=404)
+    return str(address)
+
+
+def host_availability_action_error(host: object, valid_ip: str) -> tuple[int, str] | None:
+    if not isinstance(host, dict) or str(host.get("ip") or "") != valid_ip:
+        return 404, "host target not found"
+    availability = host.get("availability")
+    if (
+        not isinstance(availability, dict)
+        or str(availability.get("state") or "") == "not_monitored"
+    ):
+        return 403, "host target is not monitored"
+    return None
+
+
+@app.post("/network/hosts/{ip}/availability-check")
+async def network_host_availability_check(
+    ip: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    try:
+        valid_ip = canonical_host_ipv4(ip)
+    except HTTPException:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-availability",
+            "error",
+            "invalid IPv4 host target",
+            target_client=ip[:180],
+        )
+        raise
+    target_path = quote(valid_ip, safe="")
+    host_data, host_error = net_cli_call(request, ["hosts", "inspect", valid_ip])
+    resolved_host = None if host_error else host_data.get("host")
+    action_error = host_availability_action_error(resolved_host, valid_ip)
+    if action_error is not None:
+        status_code, message = action_error
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-availability",
+            "denied",
+            message,
+            target_client=valid_ip,
+        )
+        raise HTTPException(status_code=status_code)
+    permit = acquire_network_action(
+        db,
+        user.username,
+        "network-host-availability",
+        utcnow(),
+    )
+    if not permit.accepted:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-availability",
+            "denied",
+            permit.message,
+            target_client=valid_ip,
+        )
+        add_flash(request, "bad", permit.message)
+        return redirect(f"/network/hosts/{target_path}")
+    _, error = net_cli_call(
+        request,
+        ["availability", "probe", "--ip", valid_ip],
+        timeout=60,
+    )
+    write_audit(
+        db,
+        request,
+        user,
+        "network-host-availability",
+        "error" if error else "ok",
+        error or valid_ip,
+        target_client=valid_ip,
+    )
+    add_flash(
+        request,
+        "bad" if error else "ok",
+        error or "Проверка доступности завершена",
+    )
+    return redirect(f"/network/hosts/{target_path}")
+
+
+@app.post("/network/hosts/{ip}/refresh-observations")
+async def network_host_observation_refresh(
+    ip: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    try:
+        valid_ip = canonical_host_ipv4(ip)
+    except HTTPException:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-observation-refresh",
+            "error",
+            "invalid IPv4 host target",
+            target_client=ip[:180],
+        )
+        raise
+    target_path = quote(valid_ip, safe="")
+    permit = acquire_network_action(
+        db,
+        user.username,
+        "network-host-observation-refresh",
+        utcnow(),
+    )
+    if not permit.accepted:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-observation-refresh",
+            "denied",
+            permit.message,
+            target_client=valid_ip,
+        )
+        add_flash(request, "bad", permit.message)
+        return redirect(f"/network/hosts/{target_path}")
+    _, error = net_cli_call(request, ["observations", "refresh"], timeout=300)
+    write_audit(
+        db,
+        request,
+        user,
+        "network-host-observation-refresh",
+        "error" if error else "ok",
+        error or "all observations refreshed and reconciled",
+        target_client=valid_ip,
+    )
+    add_flash(
+        request,
+        "bad" if error else "ok",
+        error or "Наблюдения обновлены",
+    )
+    return redirect(f"/network/hosts/{target_path}")
+
+
 @app.get("/network/hosts/{ip}", response_class=HTMLResponse)
 def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
-    data, error = net_cli_call(request, ["hosts", "inspect", ip])
+    valid_ip = canonical_host_ipv4(ip)
+    data, error = net_cli_call(request, ["hosts", "inspect", valid_ip])
+    netctl_host = (
+        data.get("host")
+        if not error and isinstance(data.get("host"), dict)
+        else None
+    )
     rows, unified_error = unified_network_rows(request)
-    vpn_row = next((row for row in rows if row.get("ip") == ip), None)
-    host = vpn_row or normalize_netctl_host(data.get("host") if isinstance(data.get("host"), dict) else {})
+    vpn_row = next((row for row in rows if row.get("ip") == valid_ip), None)
+    host = vpn_row or normalize_netctl_host(netctl_host or {})
     detail = dict(data)
     detail["host"] = host
     return render(
         request,
         "network_host_detail.html",
-        {"ip": ip, "detail": detail, "host": host, "vpn_row": vpn_row, "error": error or unified_error},
+        {
+            "ip": valid_ip,
+            "detail": detail,
+            "host": host,
+            "vpn_row": vpn_row,
+            "can_probe_availability": (
+                host_availability_action_error(netctl_host, valid_ip) is None
+            ),
+            "error": error or unified_error,
+        },
         db,
     )
 

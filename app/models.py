@@ -54,6 +54,20 @@ class NetworkChangeIdempotency(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class NetworkActionThrottle(Base):
+    """Public-only record of the last accepted interactive network action."""
+
+    __tablename__ = "network_action_throttle"
+    __table_args__ = (
+        UniqueConstraint("actor", "action", name="uq_network_action_throttle_actor_action"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor: Mapped[str] = mapped_column(String(120), nullable=False)
+    action: Mapped[str] = mapped_column(String(120), nullable=False)
+    last_accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class DownloadToken(Base):
     __tablename__ = "download_tokens"
 

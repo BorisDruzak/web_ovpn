@@ -29,6 +29,151 @@ def run_cli(args, capsys):
     return rc, json.loads(captured.out)
 
 
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        ([{"oper_status": "unknown"}], "статус порта не получен"),
+        ([{"verified_backbone_port": True}], "это подтверждённый uplink"),
+        ([{"collector_status": "partial"}], "сбор коммутатора неполный"),
+        ([{"reason": "not_public", "collector_error": "private detail"}], ""),
+        ("not-json", ""),
+    ],
+)
+def test_attachment_reason_projects_only_allowlisted_evidence(evidence, expected):
+    """Unknown or malformed collector evidence must never become public text."""
+    from netctl.context_query import _attachment_reason
+
+    raw = evidence if isinstance(evidence, str) else json.dumps(evidence)
+
+    assert _attachment_reason(raw) == expected
+
+
+def test_attachment_reason_omits_deeply_nested_evidence_without_recursion():
+    """Untrusted valid JSON beyond the traversal bound must not break asset context."""
+    from netctl.context_query import _attachment_reason
+
+    evidence = '{"evidence":' * 1200 + '{"reason":"oper_status_unknown"}' + "}" * 1200
+
+    assert _attachment_reason(evidence) == ""
+
+
+def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_path, capsys):
+    """Dropping candidate evidence would leave an ambiguous port impossible to assess."""
+    from netctl.db import connect
+
+    db_url = f"sqlite:///{(tmp_path / 'attachments.sqlite').as_posix()}"
+    conn = connect(db_url)
+    now = "2026-07-29T12:00:00Z"
+    try:
+        conn.execute(
+            """INSERT INTO assets
+               (id, asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES (1, 'mac:C0:9B:F4:62:54:E5', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        )
+        interface_id = conn.execute(
+            """INSERT INTO asset_interfaces
+               (asset_id, interface_key, mac, first_seen_at, last_seen_at)
+               VALUES (1, 'eth0', 'C0:9B:F4:62:54:E5', ?, ?)""",
+            (now, now),
+        ).lastrowid
+        conn.executemany(
+            """INSERT INTO network_sources
+               (id, name, driver, host, port, username, secret_ref, tls, verify_tls,
+                enabled, created_at, updated_at)
+               VALUES (?, ?, 'snmp_switch', '192.0.2.1', 161, '', 'env:TEST', 0, 0, 1, ?, ?)""",
+            [
+                (10, 'tplink-ito-15', now, now),
+                (11, 'tplink-ito-14', now, now),
+                (12, 'tplink-ito-13', now, now),
+            ],
+        )
+        run_id = conn.execute(
+            """INSERT INTO network_correlation_runs
+               (run_type, started_at, finished_at, status)
+               VALUES ('attachments', ?, ?, 'success')""",
+            (now, now),
+        ).lastrowid
+        resolution_evidence = [
+            {
+                "asset_id": 1, "asset_interface_id": interface_id,
+                "switch_source_id": 10, "port_key": "physical:2", "vlan_key": "20",
+                "vlan_id": 20, "candidate_class": "unknown", "topology_depth": None,
+                "score": 50, "observed_at": now,
+                "evidence": [{"collector_status": "success", "oper_status": "unknown"}],
+            },
+            {
+                "asset_id": 1, "asset_interface_id": interface_id,
+                "switch_source_id": 11, "port_key": "physical:47", "vlan_key": "20",
+                "vlan_id": 20, "candidate_class": "direct", "topology_depth": None,
+                "score": 50, "observed_at": now,
+                "evidence": [{"collector_status": "success", "oper_status": "up"}],
+            },
+            {
+                "asset_id": 1, "asset_interface_id": interface_id,
+                "switch_source_id": 12, "port_key": "physical:48", "vlan_key": "20",
+                "vlan_id": 20, "candidate_class": "direct", "topology_depth": None,
+                "score": 50, "observed_at": now,
+                "evidence": [{"collector_status": "success", "oper_status": "up"}],
+            },
+        ]
+        conn.execute(
+            """INSERT INTO asset_attachment_resolutions
+               (asset_interface_id, asset_id, status, confidence, first_seen_at,
+                last_seen_at, correlation_run_id, evidence_json)
+               VALUES (?, 1, 'ambiguous', 50, ?, ?, ?, ?)""",
+            (interface_id, now, now, run_id, json.dumps(resolution_evidence)),
+        )
+        conn.executemany(
+            """INSERT INTO asset_attachment_candidates
+               (asset_interface_id, asset_id, switch_source_id, port_key, vlan_key,
+                vlan_id, candidate_class, score, observed_at, correlation_run_id,
+                evidence_json)
+               VALUES (?, 1, ?, ?, '20', 20, ?, 50, ?, ?, ?)""",
+            [
+                (interface_id, 10, 'physical:2', 'unknown', now, run_id, '[{"collector_status":"success","oper_status":"unknown"}]'),
+                (interface_id, 11, 'physical:47', 'direct', now, run_id, '[{"collector_status":"success","oper_status":"up"}]'),
+                (interface_id, 12, 'physical:48', 'direct', now, run_id, '[{"collector_status":"success","oper_status":"up"}]'),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, payload = run_cli(
+        ["--json", "--db", db_url, "context-view", "asset", "--asset-key", "mac:C0:9B:F4:62:54:E5"],
+        capsys,
+    )
+
+    assert rc == 0
+    attachment = payload["context"]["attachment"]
+    assert attachment["status"] == "ambiguous"
+    assert attachment["reason"] == "есть конкурирующая FDB-запись"
+    likely = next(
+        alternative
+        for alternative in attachment["alternatives"]
+        if alternative["source"] == "tplink-ito-15" and alternative["port_key"] == "physical:2"
+    )
+    assert likely == {
+        "source": "tplink-ito-15",
+        "port_key": "physical:2",
+        "vlan_key": "20",
+        "vlan_id": 20,
+        "candidate_class": "unknown",
+        "topology_depth": None,
+        "score": 50,
+        "observed_at": now,
+        "reason": "статус порта не получен",
+    }
+    direct = next(
+        alternative
+        for alternative in attachment["alternatives"]
+        if alternative["source"] == "tplink-ito-14" and alternative["port_key"] == "physical:47"
+    )
+    assert direct["reason"] == "есть конкурирующая FDB-запись"
+
+
 def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
     """Removing the all-success gate must prevent correlation from running."""
     import netctl.cli as cli
@@ -55,7 +200,7 @@ def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
 
     monkeypatch.setattr(cli, "collect_one", collect)
     monkeypatch.setattr(
-        cli, "collect_availability",
+        cli, "collect_due_availability",
         lambda *_args, **_kwargs: __import__("netctl.availability", fromlist=["AvailabilityCollection"]).AvailabilityCollection("success", (), {}),
     )
     monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {"switch": {"status": "partial"}})
@@ -83,6 +228,50 @@ def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
     assert watermarks[0] == payload["reconciliation"]["source_watermark"]
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["collect", "router"],
+        ["reconcile"],
+    ],
+)
+def test_stateful_connection_preparation_occurs_after_collect_lock(monkeypatch, command):
+    """Preparing migrations before the lock lets two stateful commands race each other."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    events = []
+    conn = type("Connection", (), {"close": lambda self: events.append("close")})()
+
+    class RecordingLock:
+        def __init__(self, _db):
+            pass
+
+        def __enter__(self):
+            events.append("lock")
+
+        def __exit__(self, *_args):
+            events.append("unlock")
+
+    def prepare(_args):
+        events.append("prepare")
+        return conn
+
+    monkeypatch.setattr(cli, "CollectLock", RecordingLock)
+    monkeypatch.setattr(cli, "prepare_conn", prepare)
+    monkeypatch.setattr(cli, "collect_one", lambda *_args: (0, {"status": "ok"}))
+    monkeypatch.setattr(
+        cli,
+        "reconcile_current_locked",
+        lambda *_args: {"topology_run_id": 1, "attachment_run_id": 2},
+    )
+
+    rc, _payload = cli.dispatch(parser.parse_args(command))
+
+    assert rc == 0
+    assert events == ["lock", "prepare", "unlock", "close"]
+
+
 def test_collect_all_runs_availability_only_after_every_enabled_source_succeeds(monkeypatch):
     """A failed source must prevent availability from publishing a mixed collection snapshot."""
     import netctl.cli as cli
@@ -94,7 +283,7 @@ def test_collect_all_runs_availability_only_after_every_enabled_source_succeeds(
     monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
     monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "router", "enabled": True}, {"name": "switch", "enabled": True}))
     monkeypatch.setattr(cli, "collect_one", lambda _conn, _args, name: (1 if name == "switch" else 0, {"source": name}))
-    monkeypatch.setattr(cli, "collect_availability", lambda *_args, **_kwargs: calls.append("availability"))
+    monkeypatch.setattr(cli, "collect_due_availability", lambda *_args, **_kwargs: calls.append("availability"))
 
     rc, payload = cli.dispatch(parser.parse_args(["collect", "all"]))
 
@@ -117,7 +306,7 @@ def test_collect_all_reconciles_when_auxiliary_availability_collection_fails(mon
     monkeypatch.setattr(cli, "collect_one", lambda _conn, _args, name: (0, {"source": name}))
     monkeypatch.setattr(
         cli,
-        "collect_availability",
+        "collect_due_availability",
         lambda *_args, **_kwargs: AvailabilityCollection(
             "failed", (), {"targets": 2, "completed": 0, "reachable": 0, "unreachable": 0}, "executor_error"
         ),
@@ -177,7 +366,7 @@ def test_availability_collect_returns_only_sanitized_collection_fields(monkeypat
     monkeypatch.setattr(cli, "availability_source_health", lambda _conn: True)
     monkeypatch.setattr(
         cli,
-        "collect_availability",
+        "collect_due_availability",
         lambda _conn, _executor, *, now: AvailabilityCollection("failed", (), {"targets": 0, "completed": 0}, "executor_error"),
     )
 
@@ -196,12 +385,242 @@ def test_availability_collect_fails_closed_before_probing_an_unhealthy_source(mo
     monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
     monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
     monkeypatch.setattr(cli, "availability_source_health", lambda _conn: False)
-    monkeypatch.setattr(cli, "collect_availability", lambda *_args, **_kwargs: pytest.fail("probe must not run"))
+    monkeypatch.setattr(cli, "collect_due_availability", lambda *_args, **_kwargs: pytest.fail("probe must not run"))
 
     rc, payload = cli.dispatch(parser.parse_args(["availability", "collect"]))
 
     assert rc == 1
     assert payload == {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
+
+
+def test_availability_parsers_accept_only_canonical_settings_and_one_ip():
+    """CIDRs, commands, and browser-selected probe ports must not enter the execution surface."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    set_args = parser.parse_args(
+        [
+            "availability",
+            "set-segment",
+            "--segment-id",
+            "office",
+            "--enabled",
+            "true",
+            "--tcp-port",
+            "443",
+            "--interval-minutes",
+            "15",
+        ]
+    )
+    probe_args = parser.parse_args(
+        ["availability", "probe", "--ip", "192.0.2.33"]
+    )
+
+    assert (
+        set_args.segment_id,
+        set_args.enabled,
+        set_args.tcp_port,
+        set_args.interval_minutes,
+    ) == ("office", "true", [443], 15)
+    assert probe_args.ip == "192.0.2.33"
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "availability",
+                "probe",
+                "--ip",
+                "192.0.2.33",
+                "--tcp-port",
+                "22",
+            ]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["availability", "set-segment", "--cidr", "192.0.2.0/24"]
+        )
+
+
+def test_availability_settings_returns_effective_canonical_segment_fields(monkeypatch):
+    """Listing only overrides would force the web layer to invent CIDR and context metadata."""
+    import ipaddress
+    import netctl.cli as cli
+    from netctl.context_classifier import SegmentRule
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(
+        cli,
+        "effective_availability_rules",
+        lambda _conn: [
+            SegmentRule(
+                "office",
+                ipaddress.ip_network("192.0.2.0/24"),
+                "local_device",
+                "hq",
+                True,
+                (443,),
+                15,
+            )
+        ],
+    )
+
+    rc, payload = cli.dispatch(parser.parse_args(["availability", "settings"]))
+
+    assert rc == 0
+    assert payload == {
+        "status": "ok",
+        "segments": [
+            {
+                "segment_id": "office",
+                "cidr": "192.0.2.0/24",
+                "site": "hq",
+                "category": "local_device",
+                "enabled": True,
+                "tcp_ports": [443],
+                "interval_minutes": 15,
+            }
+        ],
+    }
+
+
+def test_availability_set_segment_passes_only_bounded_override_fields(monkeypatch):
+    """The CLI must not synthesize or persist a browser-provided CIDR."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    recorded = {}
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+
+    def save(_conn, segment_id, *, enabled, tcp_ports, interval_minutes):
+        recorded.update(
+            segment_id=segment_id,
+            enabled=enabled,
+            tcp_ports=tcp_ports,
+            interval_minutes=interval_minutes,
+        )
+        return {**recorded, "updated_at": "2026-07-29T12:00:00Z"}
+
+    monkeypatch.setattr(cli, "set_availability_setting", save)
+
+    rc, payload = cli.dispatch(
+        parser.parse_args(
+            [
+                "availability",
+                "set-segment",
+                "--segment-id",
+                "office",
+                "--enabled",
+                "false",
+                "--tcp-port",
+                "443",
+                "--interval-minutes",
+                "15",
+            ]
+        )
+    )
+
+    assert rc == 0
+    assert recorded == {
+        "segment_id": "office",
+        "enabled": False,
+        "tcp_ports": (443,),
+        "interval_minutes": 15,
+    }
+    assert payload["setting"]["segment_id"] == "office"
+
+
+def test_observations_refresh_runs_fixed_collect_all_then_reconcile_under_one_lock(monkeypatch):
+    """Letting refresh accept a source would permit a mixed partial observation snapshot."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    calls = []
+
+    class RecordingLock:
+        def __init__(self, _db):
+            pass
+
+        def __enter__(self):
+            calls.append("lock")
+
+        def __exit__(self, *_args):
+            calls.append("unlock")
+
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", RecordingLock)
+    monkeypatch.setattr(
+        cli,
+        "collect_all_locked",
+        lambda _conn, _args: (calls.append("collect-all") or 0, [{"source": "all"}]),
+    )
+    monkeypatch.setattr(
+        cli,
+        "collect_due_availability",
+        lambda *_args, **_kwargs: (
+            calls.append("availability")
+            or __import__(
+                "netctl.availability", fromlist=["AvailabilityCollection"]
+            ).AvailabilityCollection("success", (), {"targets": 0, "completed": 0})
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "reconcile_current_locked",
+        lambda _conn, _now: calls.append("reconcile")
+        or {"topology_run_id": 11, "attachment_run_id": 22},
+    )
+
+    rc, payload = cli.dispatch(parser.parse_args(["observations", "refresh"]))
+
+    assert rc == 0
+    assert calls == [
+        "lock",
+        "collect-all",
+        "availability",
+        "reconcile",
+        "unlock",
+    ]
+    assert payload["reconciliation"]["attachment_run_id"] == 22
+    with pytest.raises(SystemExit):
+        parser.parse_args(["observations", "refresh", "--source", "router"])
+
+
+def test_observations_refresh_acquires_lock_before_stateful_connection_prepare(
+    tmp_path,
+):
+    """A rejected refresh must not sync configured sources before owning the collection lock."""
+    import netctl.cli as cli
+    from netctl.collect_lock import CollectLock
+    from netctl.db import connect, get_source
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    config_path = tmp_path / "netctl.yaml"
+    write_mock_source(config_path)
+    args = cli.build_parser().parse_args(
+        [
+            "--db",
+            db_url,
+            "--config",
+            str(config_path),
+            "observations",
+            "refresh",
+        ]
+    )
+
+    with CollectLock(db_url):
+        rc, payload = cli.dispatch(args)
+
+    conn = connect(db_url)
+    try:
+        assert get_source(conn, "mock-main") is None
+    finally:
+        conn.close()
+    assert rc == 1
+    assert payload["message"] == "collection already running"
 
 
 def test_retention_cleanup_defaults_to_a_non_destructive_thirty_day_preview(monkeypatch):
@@ -296,7 +715,7 @@ def test_collect_all_reconciles_after_a_partial_snmp_result(monkeypatch):
     monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "switch", "enabled": True},))
     monkeypatch.setattr(cli, "collect_one", lambda *_args: (0, {"status": "partial"}))
     monkeypatch.setattr(
-        cli, "collect_availability",
+        cli, "collect_due_availability",
         lambda *_args, **_kwargs: __import__("netctl.availability", fromlist=["AvailabilityCollection"]).AvailabilityCollection("success", (), {}),
     )
     monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {})
@@ -1356,7 +1775,7 @@ def test_legacy_hosts_without_device_columns_get_defaults(tmp_path):
         )
         conn.commit()
 
-        host = query_hosts(conn)[0]
+        host = query_hosts(conn, status="all")[0]
 
         assert host["device_key"] == "mac:AA:BB:CC:DD:EE:99"
         assert host["device_type"] == "unknown"
@@ -1617,7 +2036,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     assert data["status"] == "ok"
     summary = data["runtime_identity"]
     assert summary["schema_migration_versions"] == [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
     ]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1

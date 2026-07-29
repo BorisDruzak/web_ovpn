@@ -89,7 +89,7 @@ elif cmd[:2] == ["context-view", "asset"]:
         freshness["topology_reconciled_at"] = ""
         print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "stale desktop"}, "attachment": {"status": "unresolved", "alternatives": []}, "freshness": freshness}}))
     elif asset_key == "mac:AA:BB:CC:DD:EE:04":
-        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "ambiguous desktop"}, "attachment": {"status": "ambiguous", "alternatives": [{"source": "access-b", "port_key": "physical:12", "vlan_id": 20, "candidate_class": "fdb", "score": 70}], "switch": {"name": "must-not-render"}, "port": {"alias": "must-not-render"}, "port_peers": {"items": [{"asset": {"asset_key": "AA:BB:CC:DD:EE:02", "display_name": "must-not-render"}}]}}, "freshness": freshness}}))
+        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "ambiguous desktop"}, "attachment": {"status": "ambiguous", "reason": "есть конкурирующая FDB-запись", "alternatives": [{"source": "tplink-ito-15", "port_key": "physical:2", "vlan_id": 20, "candidate_class": "unknown", "score": 50, "reason": "статус порта не получен"}, {"source": "", "port_key": "", "vlan_id": None, "candidate_class": "", "score": None, "reason": ""}], "switch": {"name": "must-not-render"}, "port": {"alias": "must-not-render"}, "port_peers": {"items": [{"asset": {"asset_key": "AA:BB:CC:DD:EE:02", "display_name": "must-not-render"}}]}}, "freshness": freshness}}))
     else:
         print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "desktop pc-buh-01", "manual_name": "Finance workstation", "kind": "device", "status": "active", "site": "main", "location": "Office", "identity_method": "mac", "identity_confidence": 100}, "network": {"ip_observations": [{"ip": "192.168.100.55"}], "best_hostname_observation": {"hostname": "pc-buh-01"}}, "attachment": {"status": "confirmed", "confidence": 100, "last_seen_at": "2026-07-26T10:00:00Z", "switch": {"name": "access-a", "site": "main", "host": "must-not-render"}, "port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up"}, "vlan_membership": {"vlan_id": 20, "egress": True, "untagged": True, "pvid": True}, "port_peers": {"items": [{"asset": {"asset_key": "mac:AA:BB:CC:DD:EE:02", "display_name": "Printer"}, "mac": "AA:BB:CC:DD:EE:02", "vlan_id": 20}], "known_asset_count": 1, "unknown_mac_count": 0, "truncated": False}, "alternatives": []}, "topology_path": {"nodes": [], "hops": [], "complete": True, "reason": ""}, "attachment_events": [{"event_type": "confirmed", "observed_at": "2026-07-25T10:00:00Z", "before": {"status": "unresolved"}, "after": {"status": "confirmed"}}], "freshness": freshness, "evidence": {"secret": "must-not-render"}}}))
 elif cmd[:2] == ["assets", "set-name"]:
@@ -486,7 +486,7 @@ def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path,
 
     assert page.status_code == 200
     assert 'href="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01"' in page.text
-    assert 'href="/network/hosts/192.168.100.55"' not in page.text
+    assert 'href="/network/hosts/192.168.100.55"' in page.text
     all_hosts = client.get("/network/hosts")
     assert 'href="/network/assets/legacy-host%3Adesk%3Fold"' in all_hosts.text
     assert 'href="/network/hosts/192.168.50.10"' in all_hosts.text
@@ -651,7 +651,19 @@ def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_pa
     assert "Устройство не найдено" in unknown.text
     assert ambiguous.status_code == 200
     assert "Неоднозначно" in ambiguous.text
-    assert "access-b" in ambiguous.text
+    assert "tplink-ito-15" in ambiguous.text
+    assert "physical:2" in ambiguous.text
+    assert "VLAN: 20" in ambiguous.text
+    assert "unknown" in ambiguous.text
+    assert "50" in ambiguous.text
+    assert "статус порта не получен" in ambiguous.text
+    assert "есть конкурирующая FDB-запись" in ambiguous.text
+    assert "Источник: —" in ambiguous.text
+    assert "Порт: —" in ambiguous.text
+    assert "VLAN: —" in ambiguous.text
+    assert "класс: —" in ambiguous.text
+    assert "оценка: —" in ambiguous.text
+    assert "причина: —" in ambiguous.text
     assert "must-not-render" not in ambiguous.text
     assert "AA:BB:CC:DD:EE:02" not in ambiguous.text
     assert stale.status_code == 200
@@ -684,6 +696,45 @@ def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
     phone = next(row for row in rows if row["ip"] == "192.168.0.12")
     assert phone["device_type"] == "phone"
     assert phone["device_confidence"] == 85
+
+
+def test_public_availability_keeps_safe_not_monitored_reason_and_check_origin():
+    """Dropping safe origin fields would make manual and disabled projections indistinguishable."""
+    from app.network_observer import normalize_netctl_host
+
+    host = normalize_netctl_host(
+        {
+            "ip": "192.0.2.33",
+            "status": "stale",
+            "availability": {
+                "state": "not_monitored",
+                "reason": "not_monitored",
+                "check_origin": "manual",
+            },
+        }
+    )
+
+    assert host["availability"]["state"] == "not_monitored"
+    assert host["availability"]["reason"] == "not_monitored"
+    assert host["availability"]["check_origin"] == "manual"
+
+
+def test_public_availability_drops_unknown_check_origin():
+    """Only server-declared manual and scheduled origins belong in the public payload."""
+    from app.network_observer import normalize_netctl_host
+
+    host = normalize_netctl_host(
+        {
+            "ip": "192.0.2.33",
+            "status": "stale",
+            "availability": {
+                "state": "stale",
+                "check_origin": "browser-command",
+            },
+        }
+    )
+
+    assert "check_origin" not in host["availability"]
 
 
 def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_path, monkeypatch):
@@ -739,9 +790,19 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     hosts = [
         {
             "ip": "192.168.99.46", "display_name": "stale host", "status": "stale",
-            "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "run_failed socket timeout"},
+            "availability": {
+                "state": "stale",
+                "active_method": "icmp",
+                "checked_at": "2026-07-29T10:00:00Z",
+                "reason": "run_failed socket timeout",
+            },
         },
-        {"ip": "192.168.99.47", "display_name": "unmonitored host", "status": "seen", "availability": None},
+        {
+            "ip": "192.168.99.47",
+            "display_name": "unmonitored host",
+            "status": "stale",
+            "availability": {"state": "not_monitored", "reason": "not_monitored"},
+        },
     ]
 
     def fake_netctl(request, args, timeout=None):
@@ -769,9 +830,64 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     assert "socket timeout" not in page.text
     assert "run_failed" in detail.text
     assert "socket timeout" not in detail.text
-    assert "not monitored" in all_hosts.text
+    assert "данные устарели" in page.text
+    assert "не мониторится" in all_hosts.text
+    assert "not_monitored" not in all_hosts.text
+    assert ">stale<" not in page.text
     assert 'value="unexpected"' not in invalid.text
     assert "stale host" not in invalid.text
+
+
+@pytest.mark.parametrize(
+    ("state", "reason", "expected"),
+    [
+        ("stale", "run_stale", "данные устарели"),
+        ("not_monitored", "not_monitored", "не мониторится"),
+    ],
+)
+def test_network_host_detail_sanitizes_summary_and_availability_status(
+    tmp_path,
+    monkeypatch,
+    state,
+    reason,
+    expected,
+):
+    """The host summary must not bypass the public availability-state presentation."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    host = {
+        "ip": "192.168.99.48",
+        "display_name": "archive host",
+        "status": "stale",
+        "availability": {"state": state, "reason": reason},
+    }
+
+    def fake_netctl(request, args, timeout=None):
+        if args == ["hosts", "inspect", "192.168.99.48"]:
+            return {"host": host, "observations": []}, None
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}, None
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    monkeypatch.setattr(
+        app.main,
+        "cli_call",
+        lambda request, args, timeout=None: (
+            {"connected": []} if args[0] == "connected" else {"clients": []},
+            None,
+        ),
+    )
+    login(client)
+
+    detail = client.get("/network/hosts/192.168.99.48")
+
+    assert detail.status_code == 200
+    summary_status = detail.text.split("<dt>Статус</dt><dd>", 1)[1].split("</dd>", 1)[0]
+    availability_status = detail.text.split("<dt>Состояние</dt><dd>", 1)[1].split("</dd>", 1)[0]
+    assert summary_status == expected
+    assert availability_status == expected
 
 
 def test_network_dashboard_renders_availability_counts_and_run_health(tmp_path, monkeypatch):
@@ -822,16 +938,40 @@ def test_openvpn_merge_copies_availability_without_mutating_netctl_row():
 
     source = {
         "ip": "192.168.99.44", "status": "online",
-        "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "active_probe"},
+        "availability": {
+            "state": "online",
+            "active_method": "icmp",
+            "checked_at": "2026-07-29T10:00:00Z",
+            "reason": "active_probe",
+        },
     }
 
     [merged] = merge_unified_hosts([source], [{"common_name": "alpha", "virtual_address": "192.168.99.44"}], [])
 
     assert merged["status"] == "connected"
     assert merged["availability"] == {
-        "active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "openvpn_management",
+        "state": "online",
+        "active_method": "icmp",
+        "checked_at": "2026-07-29T10:00:00Z",
+        "reason": "openvpn_management",
     }
     assert source["availability"]["reason"] == "active_probe"
+
+
+def test_openvpn_only_host_is_connected_but_never_online():
+    """A management connection without ICMP/TCP evidence must not claim availability."""
+    from app.main import availability_status_label
+    from app.network_observer import merge_unified_hosts
+
+    [host] = merge_unified_hosts(
+        [],
+        [{"common_name": "alpha", "virtual_address": "192.168.50.10"}],
+        [],
+    )
+
+    assert host["status"] == "connected"
+    assert host["availability"] == {"reason": "openvpn_management"}
+    assert availability_status_label(host) == "VPN подключён"
 
 
 def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeypatch):
@@ -842,6 +982,7 @@ def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeyp
     host = {
         "ip": "192.168.99.44", "display_name": "vpn workstation", "status": "online",
         "availability": {
+            "state": "online",
             "active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z",
             "reason": "active_probe socket timeout",
         },
@@ -880,10 +1021,465 @@ def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeyp
     assert listed.status_code == api_detail.status_code == page_detail.status_code == 200
     assert listed.json()["data"]["hosts"][0]["status"] == "connected"
     assert api_detail.json()["data"]["host"]["status"] == "connected"
-    assert "connected" in page_detail.text
+    assert "<dt>Статус</dt><dd>online · ICMP</dd>" in page_detail.text
     assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"
     assert "socket timeout" not in api_detail.text
     assert "socket timeout" not in page_detail.text
+
+
+def test_monitoring_page_renders_only_canonical_read_only_segment_context(tmp_path, monkeypatch):
+    """Making canonical CIDR/context editable would let the browser redefine network intent."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    login(client)
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (
+            {
+                "segments": [
+                    {
+                        "segment_id": "office",
+                        "cidr": "192.168.99.0/24",
+                        "site": "hq",
+                        "category": "local_device",
+                        "enabled": True,
+                        "tcp_ports": [443],
+                        "interval_minutes": 10,
+                    }
+                ]
+            },
+            None,
+        )
+        if args == ["availability", "settings"]
+        else pytest.fail(f"unexpected netctl call: {args}"),
+    )
+
+    page = client.get("/network/monitoring")
+
+    assert page.status_code == 200
+    assert "Настройки доступности" in page.text
+    assert "192.168.99.0/24" in page.text
+    assert "hq" in page.text
+    assert 'action="/network/monitoring/office"' in page.text
+    assert 'name="cidr"' not in page.text
+    assert 'name="site"' not in page.text
+    assert 'name="category"' not in page.text
+
+
+def test_monitoring_settings_posts_fixed_canonical_segment_and_audits(tmp_path, monkeypatch):
+    """A browser field must not be able to replace the canonical segment identity or CIDR."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        return {"setting": {"segment_id": "office"}}, None
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+
+    response = client.post(
+        "/network/monitoring/office",
+        data={
+            "enabled": "true",
+            "tcp_ports": "443",
+            "interval_minutes": "10",
+            "cidr": "203.0.113.0/24",
+            "site": "forged",
+            "category": "wan",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/network/monitoring"
+    assert calls == [
+        (
+            [
+                "availability",
+                "set-segment",
+                "--segment-id",
+                "office",
+                "--enabled",
+                "true",
+                "--tcp-port",
+                "443",
+                "--interval-minutes",
+                "10",
+            ],
+            60,
+        )
+    ]
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audit = db.query(WebAuditLog).filter_by(action="network-availability-settings").one()
+    assert audit.actor == "admin"
+    assert audit.target_client == "office"
+    assert audit.result == "ok"
+    assert "203.0.113.0/24" not in audit.message
+
+
+def test_manual_check_uses_url_ip_audits_and_rate_limits(tmp_path, monkeypatch):
+    """A repeated accepted probe could bypass the five-minute public action budget."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {
+                "host": {
+                    "ip": "192.168.99.44",
+                    "availability": {"state": "stale", "reason": "missing_run"},
+                }
+            }, None
+        return {"result": {"ip": "192.168.99.44"}}, None
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+
+    first = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        data={"csrf_token": csrf, "ip": "203.0.113.77", "tcp_port": "22"},
+        follow_redirects=False,
+    )
+    second = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    flash_page = client.get(second.headers["location"])
+
+    assert first.status_code == second.status_code == 303
+    assert first.headers["location"] == second.headers["location"] == "/network/hosts/192.168.99.44"
+    assert [call for call in calls if call[0][:2] == ["availability", "probe"]] == [
+        (["availability", "probe", "--ip", "192.168.99.44"], 60)
+    ]
+    assert "через 5 минут" in flash_page.text
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audits = db.query(WebAuditLog).filter_by(action="network-host-availability").all()
+    assert [(audit.actor, audit.target_client, audit.result) for audit in audits] == [
+        ("admin", "192.168.99.44", "ok"),
+        ("admin", "192.168.99.44", "denied"),
+    ]
+
+
+def test_manual_check_rejects_nonexistent_in_cidr_target_and_audits(tmp_path, monkeypatch):
+    """CIDR membership alone must not turn an arbitrary URL IP into a probe target."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        if args == ["hosts", "inspect", "192.168.99.222"]:
+            return {}, "host not found"
+        pytest.fail(f"unexpected netctl call: {args}")
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+
+    response = client.post(
+        "/network/hosts/192.168.99.222/availability-check",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert calls == [(["hosts", "inspect", "192.168.99.222"], None)]
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audit = db.query(WebAuditLog).filter_by(action="network-host-availability").one()
+    assert (audit.target_client, audit.result, audit.message) == (
+        "192.168.99.222",
+        "denied",
+        "host target not found",
+    )
+
+
+def test_not_monitored_host_hides_and_rejects_manual_check(tmp_path, monkeypatch):
+    """A known passive host outside enabled segments must not expose or accept probing."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    host = {
+        "ip": "192.168.99.47",
+        "display_name": "archive host",
+        "status": "seen",
+        "availability": {"state": "not_monitored", "reason": "not_monitored"},
+    }
+    calls = []
+
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        if args == ["hosts", "inspect", "192.168.99.47"]:
+            return {"host": host, "observations": []}, None
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}, None
+        pytest.fail(f"unexpected netctl call: {args}")
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    monkeypatch.setattr(
+        app.main,
+        "cli_call",
+        lambda request, args, timeout=None: (
+            {"connected": []} if args[0] == "connected" else {"clients": []},
+            None,
+        ),
+    )
+    csrf = login(client)
+
+    page = client.get("/network/hosts/192.168.99.47")
+    response = client.post(
+        "/network/hosts/192.168.99.47/availability-check",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert page.status_code == 200
+    assert 'action="/network/hosts/192.168.99.47/availability-check"' not in page.text
+    assert response.status_code == 403
+    assert not any(args[:2] == ["availability", "probe"] for args, _timeout in calls)
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audit = db.query(WebAuditLog).filter_by(action="network-host-availability").one()
+    assert (audit.target_client, audit.result, audit.message) == (
+        "192.168.99.47",
+        "denied",
+        "host target is not monitored",
+    )
+
+
+def test_network_action_throttle_accepts_only_one_concurrent_session(tmp_path, monkeypatch):
+    """Two simultaneous database sessions must not both acquire the same action budget."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    make_client(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.models import utcnow
+    from app.network_actions import acquire_network_action
+
+    barrier = Barrier(2)
+    now = utcnow()
+
+    def attempt() -> bool:
+        with get_sessionmaker()() as db:
+            barrier.wait(timeout=5)
+            return acquire_network_action(
+                db,
+                "admin",
+                "network-host-availability",
+                now,
+            ).accepted
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        accepted = list(pool.map(lambda _: attempt(), range(2)))
+
+    assert sorted(accepted) == [False, True]
+
+
+def test_observation_refresh_is_independently_throttled_and_uses_fixed_command(tmp_path, monkeypatch):
+    """Observation refresh must not accept a browser-selected source or reuse the probe budget."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {
+                "host": {
+                    "ip": "192.168.99.44",
+                    "availability": {"state": "stale", "reason": "missing_run"},
+                }
+            }, None
+        return {"status": "ok"}, None
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+
+    probe = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    refresh = client.post(
+        "/network/hosts/192.168.99.44/refresh-observations",
+        data={"csrf_token": csrf, "source": "forged", "ip": "203.0.113.77"},
+        follow_redirects=False,
+    )
+
+    assert probe.status_code == refresh.status_code == 303
+    assert calls == [
+        (["hosts", "inspect", "192.168.99.44"], None),
+        (["availability", "probe", "--ip", "192.168.99.44"], 60),
+        (["observations", "refresh"], 300),
+    ]
+
+
+def test_network_host_actions_require_login_and_csrf_without_cli_calls(tmp_path, monkeypatch):
+    """Authentication or CSRF regressions must never reach a network action."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    calls = []
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (calls.append(args) or {}, None),
+    )
+
+    anonymous = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        follow_redirects=False,
+    )
+    login(client)
+    bad_csrf = client.post(
+        "/network/hosts/192.168.99.44/refresh-observations",
+        data={"csrf_token": "wrong"},
+        follow_redirects=False,
+    )
+
+    assert anonymous.status_code == 303
+    assert anonymous.headers["location"] == "/login"
+    assert bad_csrf.status_code == 400
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("route_suffix", "ip", "action"),
+    [
+        ("availability-check", "not-an-ip", "network-host-availability"),
+        ("availability-check", "192.168.099.44", "network-host-availability"),
+        ("refresh-observations", "not-an-ip", "network-host-observation-refresh"),
+        ("refresh-observations", "192.168.099.44", "network-host-observation-refresh"),
+    ],
+)
+def test_authenticated_host_actions_audit_invalid_ip_without_cli(
+    tmp_path,
+    monkeypatch,
+    route_suffix,
+    ip,
+    action,
+):
+    """Invalid URL targets must remain 404s while leaving an authenticated audit trail."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (calls.append(args) or {}, None),
+    )
+
+    response = client.post(
+        f"/network/hosts/{ip}/{route_suffix}",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert calls == []
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audit = db.query(WebAuditLog).filter_by(action=action).one()
+    assert audit.actor == "admin"
+    assert audit.result == "error"
+    assert audit.message == "invalid IPv4 host target"
+    assert audit.target_client == ip
+
+
+def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(tmp_path, monkeypatch):
+    """Raw reasons or editable action targets would leak internals or widen device controls."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    host = {
+        "ip": "192.168.99.44",
+        "display_name": "Архивный сервер",
+        "status": "online",
+        "sources": ["mikrotik_arp"],
+        "availability": {
+            "state": "online",
+            "active_method": "tcp:443",
+            "checked_at": "2026-07-29T10:00:00Z",
+            "check_origin": "manual",
+            "cidr": "192.168.99.0/24",
+            "passive_evidence": [
+                "mikrotik_arp",
+                "mikrotik_dhcp",
+                "mikrotik_bridge",
+                "snmp_fdb",
+            ],
+            "reason": "active_probe socket timeout must-not-render",
+        },
+    }
+
+    def fake_netctl(request, args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}, None
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {"host": host, "observations": []}, None
+        if args == ["sources", "list"]:
+            return {"sources": []}, None
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    monkeypatch.setattr(
+        app.main,
+        "cli_call",
+        lambda request, args, timeout=None: (
+            {"connected": []} if args[0] == "connected" else {"clients": []},
+            None,
+        ),
+    )
+    login(client)
+
+    listed = client.get("/network/hosts")
+    detail = client.get("/network/hosts/192.168.99.44")
+
+    assert listed.status_code == detail.status_code == 200
+    assert 'href="/network/hosts/192.168.99.44"' in listed.text
+    assert "online · TCP:443" in listed.text
+    assert "Доступность" in detail.text
+    assert "Свежесть наблюдений" in detail.text
+    assert "192.168.99.0/24" in detail.text
+    assert "TCP:443" in detail.text
+    assert "ручная" in detail.text
+    assert "ARP, DHCP, bridge, FDB" in detail.text
+    evidence_row = detail.text.split("<dt>Пассивные признаки</dt><dd>", 1)[1].split("</dd>", 1)[0]
+    assert evidence_row == "ARP, DHCP, bridge, FDB"
+    assert "active probe" in detail.text
+    assert "socket timeout" not in detail.text
+    availability_form = detail.text.split('action="/network/hosts/192.168.99.44/availability-check"', 1)[1].split("</form>", 1)[0]
+    refresh_form = detail.text.split('action="/network/hosts/192.168.99.44/refresh-observations"', 1)[1].split("</form>", 1)[0]
+    assert 'name="csrf_token"' in availability_form
+    assert 'name="csrf_token"' in refresh_form
+    assert 'name="ip"' not in availability_form + refresh_form
+    assert 'name="cidr"' not in availability_form + refresh_form
+    assert 'name="tcp_port"' not in availability_form + refresh_form
 
 
 def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, monkeypatch):

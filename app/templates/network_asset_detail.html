@@ -73,7 +73,16 @@
 {% set alternatives = attachment.get("alternatives") or [] %}
 <section class="panel">
   <h2>Варианты</h2>
-  {% if alternatives %}<ul>{% for alternative in alternatives %}<li>{{ alternative.get("source") or "-" }}{% if alternative.get("port_key") %}: {{ alternative.get("port_key") }}{% endif %}{% if alternative.get("vlan_id") is not none %}, VLAN {{ alternative.get("vlan_id") }}{% endif %}</li>{% endfor %}</ul>{% else %}<p class="empty">Нет достоверных вариантов.</p>{% endif %}
+  {% if alternatives %}
+  <p class="muted">Это варианты по телеметрии, а не подтверждение физического подключения.</p>
+  <ul>
+    {% for alternative in alternatives %}
+    <li>
+      Источник: {{ alternative.get("source") or "—" }} · Порт: {{ alternative.get("port_key") or "—" }} · VLAN: {{ alternative.get("vlan_id") if alternative.get("vlan_id") is not none else "—" }} · класс: {{ alternative.get("candidate_class") or "—" }} · оценка: {{ alternative.get("score") if alternative.get("score") is not none else "—" }} · причина: {{ alternative.get("reason") or "—" }}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="empty">Нет достоверных вариантов.</p>{% endif %}
 </section>
 
 <section class="panel">

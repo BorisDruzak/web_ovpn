@@ -47,6 +47,25 @@ def _negative_projection_run(conn, ip: str = "203.0.113.8") -> None:
     )
 
 
+def _set_segment(
+    conn,
+    segment_id: str,
+    *,
+    enabled: bool = True,
+    tcp_ports: tuple[int, ...] = (),
+    interval_minutes: int = 5,
+) -> None:
+    from netctl.availability_settings import set_availability_setting
+
+    set_availability_setting(
+        conn,
+        segment_id,
+        enabled=enabled,
+        tcp_ports=tcp_ports,
+        interval_minutes=interval_minutes,
+    )
+
+
 def _fresh_passive(conn, source: str, *, ip: str, mac: str) -> int:
     source_id = conn.execute(
         """INSERT INTO network_sources
@@ -187,8 +206,36 @@ def test_nonmonitored_historical_connected_status_is_not_projected_as_live_conne
 
     projected = project_host_availability(conn, host, now=NOW)
 
+    assert projected["status"] == "stale"
+    assert projected["availability"]["state"] == "not_monitored"
+    assert projected["availability"]["reason"] == "not_monitored"
+
+
+def test_unmonitored_historical_online_status_is_stale_without_current_passive_evidence(conn):
+    """Passing through collector online would violate the enabled-segment monitoring boundary."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn, status="online")
+
+    projected = project_host_availability(conn, host, now=NOW)
+
+    assert projected["status"] == "stale"
+    assert projected["availability"]["state"] == "not_monitored"
+    assert projected["availability"]["reason"] == "not_monitored"
+
+
+def test_unmonitored_host_with_current_passive_evidence_is_seen_not_online(conn):
+    """Current passive evidence may explain seen but must never manufacture active reachability."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn, mac="AA:BB:CC:DD:EE:08", status="online")
+    _fresh_passive(conn, "mikrotik_arp", ip=host["ip"], mac=host["mac"])
+
+    projected = project_host_availability(conn, host, now=NOW)
+
     assert projected["status"] == "seen"
-    assert projected["availability"] is None
+    assert projected["availability"]["passive_evidence"] == ["mikrotik_arp"]
+    assert projected["availability"]["reason"] == "not_monitored"
 
 
 def availability_segment(cidr: str, *, ports: tuple[int, ...] = ()):
@@ -215,6 +262,256 @@ class FakeExecutor:
     def connect(self, ip, port):
         self.calls.append(("tcp", ip, port))
         return self.tcp.get((ip, port), False)
+
+
+def test_due_collection_skips_segment_until_selected_interval_expires(conn):
+    """Ignoring the effective interval would probe a segment before its configured due time."""
+    from netctl.availability import (
+        AvailabilityResult,
+        AvailabilityRun,
+        collect_due_availability,
+        save_availability_run,
+    )
+
+    _set_segment(conn, "availability-a", interval_minutes=15)
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30",
+            started=NOW,
+            finished=NOW,
+            results=[
+                AvailabilityResult("192.0.2.1", "reachable", "icmp"),
+                AvailabilityResult("192.0.2.2", "unreachable", None),
+            ],
+        ),
+    )
+    executor = FakeExecutor(
+        icmp={"192.0.2.1": pytest.fail, "192.0.2.2": pytest.fail}
+    )
+
+    result = collect_due_availability(
+        conn,
+        executor=executor,
+        now=lambda: "2026-07-29T12:10:00Z",
+    )
+
+    assert result.summary == {"targets": 2, "completed": 2, "reachable": 0, "unreachable": 2}
+    assert [run.cidr for run in result.runs] == ["198.51.100.0/30"]
+    assert executor.calls == [
+        ("icmp", "198.51.100.1"),
+        ("icmp", "198.51.100.2"),
+    ]
+
+
+def test_due_collection_with_no_due_segments_does_not_call_executor(conn):
+    """An empty due set must be a successful no-op, not a forced full scan."""
+    from netctl.availability import (
+        AvailabilityResult,
+        AvailabilityRun,
+        collect_due_availability,
+        save_availability_run,
+    )
+
+    for segment_id, cidr, addresses in (
+        ("availability-a", "192.0.2.0/30", ("192.0.2.1", "192.0.2.2")),
+        (
+            "availability-b",
+            "198.51.100.0/30",
+            ("198.51.100.1", "198.51.100.2"),
+        ),
+    ):
+        _set_segment(conn, segment_id, interval_minutes=15)
+        save_availability_run(
+            conn,
+            AvailabilityRun.success(
+                cidr,
+                started=NOW,
+                finished=NOW,
+                results=[
+                    AvailabilityResult(addresses[0], "reachable", "icmp"),
+                    AvailabilityResult(addresses[1], "unreachable", None),
+                ],
+            ),
+        )
+    executor = FakeExecutor()
+
+    result = collect_due_availability(
+        conn,
+        executor=executor,
+        now=lambda: "2026-07-29T12:10:00Z",
+    )
+
+    assert result.status == "success"
+    assert result.summary == {"targets": 0, "completed": 0}
+    assert executor.calls == []
+
+
+def test_due_collection_fails_closed_when_active_context_is_missing(tmp_path):
+    """Treating missing context as an intentional empty schedule would hide collector failure."""
+    from netctl.availability import collect_due_availability
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'missing-context.sqlite').as_posix()}")
+    try:
+        result = collect_due_availability(
+            conn,
+            executor=FakeExecutor(),
+            now=lambda: NOW,
+        )
+    finally:
+        conn.close()
+
+    assert result.status == "failed"
+    assert result.error_class == "context_unavailable"
+
+
+def test_manual_probe_rejects_unmonitored_ip_without_ping(conn):
+    """Accepting an arbitrary IP would turn the one-host action into an unrestricted probe."""
+    from netctl.availability import probe_one_availability
+
+    executor = FakeExecutor()
+
+    with pytest.raises(ValueError, match="not monitored"):
+        probe_one_availability(
+            conn,
+            "203.0.113.33",
+            executor=executor,
+            now=NOW,
+        )
+
+    assert executor.calls == []
+
+
+def test_manual_tcp_fallback_is_saved_without_replacing_cidr_results(conn):
+    """Writing a one-host result to the CIDR projection would erase the complete scan snapshot."""
+    from netctl.availability import (
+        current_availability_results,
+        probe_one_availability,
+    )
+
+    _set_segment(conn, "availability-a", tcp_ports=(443,))
+    executor = FakeExecutor(tcp={("192.0.2.1", 443): True})
+
+    result = probe_one_availability(
+        conn,
+        "192.0.2.1",
+        executor=executor,
+        now=NOW,
+    )
+
+    assert (result.state, result.method) == ("reachable", "tcp:443")
+    assert executor.calls == [
+        ("icmp", "192.0.2.1"),
+        ("tcp", "192.0.2.1", 443),
+    ]
+    assert current_availability_results(conn, "192.0.2.0/30") == {}
+    assert [
+        tuple(row)
+        for row in conn.execute(
+            """SELECT segment_id, ip, requested_at, checked_at, active_state,
+                      active_method, failure_class
+               FROM availability_manual_results"""
+        )
+    ] == [
+        (
+            "availability-a",
+            "192.0.2.1",
+            NOW,
+            NOW,
+            "reachable",
+            "tcp:443",
+            "",
+        )
+    ]
+
+
+def test_manual_result_rejects_probe_method_not_allowed_by_segment(conn):
+    """A caller must not be able to persist a browser-selected TCP method."""
+    from netctl.availability import AvailabilityResult, save_manual_result
+
+    with pytest.raises(ValueError, match="method"):
+        save_manual_result(
+            conn,
+            segment_id="availability-a",
+            result=AvailabilityResult(
+                "192.0.2.1",
+                "reachable",
+                "tcp:22",
+            ),
+            checked_at=NOW,
+        )
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM availability_manual_results"
+    ).fetchone()[0] == 0
+
+
+def test_fresh_manual_result_precedes_scheduled_cidr_result(conn):
+    """Reading scheduled evidence first would hide the user's newer one-host proof."""
+    from netctl.availability import (
+        AvailabilityResult,
+        AvailabilityRun,
+        probe_one_availability,
+        project_host_availability,
+        save_availability_run,
+    )
+
+    host = _projection_host(conn, ip="192.0.2.1", status="offline")
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30",
+            started=NOW,
+            finished=NOW,
+            results=[
+                AvailabilityResult("192.0.2.1", "unreachable", None),
+                AvailabilityResult("192.0.2.2", "unreachable", None),
+            ],
+        ),
+    )
+    probe_one_availability(
+        conn,
+        "192.0.2.1",
+        executor=FakeExecutor(icmp={"192.0.2.1": True}),
+        now=NOW,
+    )
+
+    projected = project_host_availability(conn, host, now=NOW)
+
+    assert projected["status"] == "online"
+    assert projected["availability"]["active_method"] == "icmp"
+    assert projected["availability"]["check_origin"] == "manual"
+
+
+def test_scheduled_projection_identifies_check_origin(conn):
+    """Without an origin marker the public payload cannot distinguish full scans from manual checks."""
+    from netctl.availability import (
+        AvailabilityResult,
+        AvailabilityRun,
+        project_host_availability,
+        save_availability_run,
+    )
+
+    host = _projection_host(conn, ip="192.0.2.1", status="offline")
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30",
+            started=NOW,
+            finished=NOW,
+            results=[
+                AvailabilityResult("192.0.2.1", "reachable", "icmp"),
+                AvailabilityResult("192.0.2.2", "unreachable", None),
+            ],
+        ),
+    )
+
+    projected = project_host_availability(conn, host, now=NOW)
+
+    assert projected["availability"]["check_origin"] == "scheduled"
 
 
 def test_target_expansion_deduplicates_overlap_and_excludes_ipv4_network_and_broadcast():

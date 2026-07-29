@@ -54,7 +54,7 @@ HOST_STATUS_FILTERS = frozenset({"current", "all", "online", "seen", "offline", 
 CURRENT_HOST_STATUSES = frozenset({"online", "seen", "connected"})
 _PUBLIC_AVAILABILITY_REASONS = frozenset({
     "active_probe", "passive_evidence", "active_negative_no_passive_evidence", "missing_run",
-    "run_failed", "run_stale", "missing_result", "openvpn_management",
+    "run_failed", "run_stale", "missing_result", "openvpn_management", "not_monitored",
 })
 
 
@@ -81,6 +81,9 @@ def _public_availability(value: object) -> dict[str, Any] | None:
         field = value.get(key)
         if isinstance(field, str) and field:
             availability[key] = field
+    check_origin = value.get("check_origin")
+    if check_origin in {"manual", "scheduled"}:
+        availability["check_origin"] = check_origin
     passive_evidence = value.get("passive_evidence")
     if isinstance(passive_evidence, list):
         availability["passive_evidence"] = [str(item) for item in passive_evidence if isinstance(item, str) and item]
