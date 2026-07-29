@@ -17,14 +17,20 @@ from .collect_lock import CollectLock
 from .availability import (
     PASSIVE_EVIDENCE_FRESHNESS,
     AvailabilityCollection,
-    collect_availability,
+    collect_due_availability,
     default_probe_executor,
+    probe_one_availability,
+)
+from .availability_settings import (
+    resolve_availability_segment_rules,
+    set_availability_setting,
 )
 from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
 from .context_diff import diff_snapshots
 from .context_query import context_snapshot, inspect_asset_context, topology_context, search_context_page
+from .context_classifier import load_active_segment_rules
 from .source_identity import source_readiness
 from .topology_evidence import backbone_evidence
 from .path_engine import PathRequest
@@ -448,17 +454,79 @@ def _availability_payload(collection: AvailabilityCollection) -> dict[str, Any]:
     }
 
 
+def effective_availability_rules(conn):
+    """Return effective active IPv4 segment rules with canonical identity fields intact."""
+    return [
+        rule
+        for rule in resolve_availability_segment_rules(
+            conn,
+            load_active_segment_rules(conn),
+        )
+        if rule.network.version == 4
+    ]
+
+
 def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = prepare_conn(args)
     try:
+        if args.availability_command == "settings":
+            return 0, ok(
+                segments=[
+                    {
+                        "segment_id": rule.segment_id,
+                        "cidr": str(rule.network),
+                        "site": rule.site,
+                        "category": rule.observer_category,
+                        "enabled": rule.availability_monitoring,
+                        "tcp_ports": list(rule.availability_tcp_ports),
+                        "interval_minutes": rule.availability_interval_minutes,
+                    }
+                    for rule in effective_availability_rules(conn)
+                ]
+            )
+        if args.availability_command == "set-segment":
+            with CollectLock(args.db):
+                setting = set_availability_setting(
+                    conn,
+                    args.segment_id,
+                    enabled=args.enabled == "true",
+                    tcp_ports=tuple(args.tcp_port),
+                    interval_minutes=args.interval_minutes,
+                )
+            return 0, ok(setting=setting)
+        if args.availability_command == "probe":
+            with CollectLock(args.db):
+                result = probe_one_availability(
+                    conn,
+                    args.ip,
+                    default_probe_executor(),
+                    utc_now(),
+                )
+            return 0, ok(
+                result={
+                    "ip": result.ip,
+                    "state": result.state,
+                    "method": result.method,
+                    "checked_at": result.checked_at,
+                    "check_origin": "manual",
+                }
+            )
         with CollectLock(args.db):
             if not availability_source_health(conn):
                 return 1, {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
-            collection = collect_availability(conn, default_probe_executor(), now=utc_now)
+            collection = collect_due_availability(
+                conn,
+                default_probe_executor(),
+                now=utc_now,
+            )
             payload = _availability_payload(collection)
             return (0 if collection.status == "success" else 1), payload
     except RuntimeError as exc:
         return 1, err(str(exc))
+    except ValueError as exc:
+        return 2, err(str(exc))
+    except (sqlite3.Error, OSError):
+        return 1, err("availability_failed")
     finally:
         conn.close()
 
@@ -522,7 +590,7 @@ def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 rc, results = collect_all_locked(conn, args)
                 if rc == 0:
                     try:
-                        collection = collect_availability(
+                        collection = collect_due_availability(
                             conn, default_probe_executor(), now=utc_now
                         )
                         availability = _availability_payload(collection)
@@ -551,6 +619,42 @@ def cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     try:
         with CollectLock(args.db):
             return 0, ok(**reconcile_current_locked(conn, utc_now()))
+    except RuntimeError as exc:
+        return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
+def cmd_observations(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.observations_command == "list":
+        return cmd_table(args, "host_observations", "observations")
+    conn = prepare_conn(args)
+    try:
+        with CollectLock(args.db):
+            rc, results = collect_all_locked(conn, args)
+            if rc != 0:
+                return rc, ok(
+                    results=results,
+                    reconciliation_skipped="collection_failed",
+                )
+            try:
+                collection = collect_due_availability(
+                    conn,
+                    default_probe_executor(),
+                    now=utc_now,
+                )
+                availability = _availability_payload(collection)
+            except Exception:
+                availability = {
+                    "status": "failed",
+                    "runs": [],
+                    "summary": {"targets": 0, "completed": 0},
+                }
+            results.append({"availability": availability})
+            return 0, ok(
+                results=results,
+                reconciliation=reconcile_current_locked(conn, utc_now()),
+            )
     except RuntimeError as exc:
         return 1, err(str(exc))
     finally:
@@ -1416,6 +1520,23 @@ def build_parser() -> argparse.ArgumentParser:
     availability = sub.add_parser("availability")
     availability_sub = availability.add_subparsers(dest="availability_command", required=True)
     availability_sub.add_parser("collect")
+    availability_sub.add_parser("settings")
+    set_segment = availability_sub.add_parser("set-segment")
+    set_segment.add_argument("--segment-id", required=True)
+    set_segment.add_argument(
+        "--enabled",
+        choices=("true", "false"),
+        required=True,
+    )
+    set_segment.add_argument(
+        "--tcp-port",
+        action="append",
+        type=int,
+        default=[],
+    )
+    set_segment.add_argument("--interval-minutes", type=int, required=True)
+    availability_probe = availability_sub.add_parser("probe")
+    availability_probe.add_argument("--ip", required=True)
     sub.add_parser("reconcile")
 
     retention = sub.add_parser("retention")
@@ -1483,6 +1604,7 @@ def build_parser() -> argparse.ArgumentParser:
     observations_sub = observations.add_subparsers(dest="observations_command", required=True)
     observations_list = observations_sub.add_parser("list")
     observations_list.add_argument("--host", default="")
+    observations_sub.add_parser("refresh")
 
     switches = sub.add_parser("switches")
     switches_sub = switches.add_subparsers(
@@ -1691,7 +1813,7 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 conn.close()
         return cmd_table(args, args.table, args.table_key)
     if args.command == "observations":
-        return cmd_table(args, "host_observations", "observations")
+        return cmd_observations(args)
     if args.command == "switches":
         return cmd_switches(args)
     if args.command == "topology":

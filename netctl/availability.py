@@ -274,14 +274,33 @@ def collect_availability(
     now: Callable[[], str | datetime],
 ) -> AvailabilityCollection:
     """Collect canonical availability atomically: incomplete probes never publish current state."""
-    started = _collection_timestamp(now)
     try:
         segments = load_active_availability_segments(conn)
         if not segments:
             return AvailabilityCollection("failed", (), {"targets": 0, "completed": 0, "reachable": 0, "unreachable": 0}, "context_unavailable")
-        targets = expand_targets(segments)
     except (sqlite3.Error, ValueError):
         return AvailabilityCollection("failed", (), {"targets": 0, "completed": 0, "reachable": 0, "unreachable": 0}, "context_unavailable")
+    return _collect_availability_segments(conn, executor, now=now, segments=segments)
+
+
+def _collect_availability_segments(
+    conn: sqlite3.Connection,
+    executor: ProbeExecutor,
+    *,
+    now: Callable[[], str | datetime],
+    segments: tuple[Any, ...],
+) -> AvailabilityCollection:
+    """Collect exactly the already-authorized effective segment rules."""
+    started = _collection_timestamp(now)
+    try:
+        targets = expand_targets(segments)
+    except ValueError:
+        return AvailabilityCollection(
+            "failed",
+            (),
+            {"targets": 0, "completed": 0, "reachable": 0, "unreachable": 0},
+            "context_unavailable",
+        )
 
     targets_by_cidr: dict[str, list[ProbeTarget]] = {str(segment.network): [] for segment in segments}
     for target in targets:
@@ -330,6 +349,78 @@ def collect_availability(
     return AvailabilityCollection(
         "success", tuple(runs),
         {"targets": len(targets), "completed": len(completed), "reachable": reachable, "unreachable": len(completed) - reachable},
+    )
+
+
+def collect_due_availability(
+    conn: sqlite3.Connection,
+    executor: ProbeExecutor,
+    *,
+    now: Callable[[], str | datetime],
+) -> AvailabilityCollection:
+    """Collect only enabled canonical segments whose configured interval has elapsed."""
+    checked_at = _collection_timestamp(now)
+    timestamp = _as_utc(checked_at)
+    if timestamp is None:
+        return AvailabilityCollection(
+            "failed",
+            (),
+            {"targets": 0, "completed": 0},
+            "context_unavailable",
+        )
+    try:
+        segments = load_active_availability_segments(conn)
+    except (sqlite3.Error, ValueError):
+        return AvailabilityCollection(
+            "failed",
+            (),
+            {"targets": 0, "completed": 0},
+            "context_unavailable",
+        )
+    if not segments:
+        try:
+            from .context_classifier import load_active_segment_rules
+
+            if not load_active_segment_rules(conn):
+                return AvailabilityCollection(
+                    "failed",
+                    (),
+                    {"targets": 0, "completed": 0},
+                    "context_unavailable",
+                )
+        except (sqlite3.Error, ValueError):
+            return AvailabilityCollection(
+                "failed",
+                (),
+                {"targets": 0, "completed": 0},
+                "context_unavailable",
+            )
+    due: list[Any] = []
+    for rule in segments:
+        row = conn.execute(
+            """SELECT finished_at
+               FROM availability_runs
+               WHERE cidr = ? AND status = 'success'
+                 AND completed_target_count = target_count
+               ORDER BY finished_at DESC, id DESC
+               LIMIT 1""",
+            (str(rule.network),),
+        ).fetchone()
+        latest = _as_utc(str(row["finished_at"])) if row is not None else None
+        interval = timedelta(minutes=rule.availability_interval_minutes)
+        if latest is None or timestamp - latest >= interval:
+            due.append(rule)
+    if not due:
+        return AvailabilityCollection(
+            "success",
+            (),
+            {"targets": 0, "completed": 0},
+        )
+    return _collect_availability_segments(
+        conn,
+        executor,
+        now=lambda: checked_at,
+        segments=tuple(due),
     )
 
 
@@ -492,6 +583,113 @@ def current_availability_results(conn: sqlite3.Connection, cidr: str) -> dict[st
     return _current_rows(conn, normalized)
 
 
+def monitored_rule_for_ip(conn: sqlite3.Connection, ip: str) -> Any | None:
+    """Return the one effective monitored rule authorizing a usable IPv4 host."""
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if address.version != 4:
+        return None
+    matches = [
+        rule
+        for rule in load_active_availability_segments(conn)
+        if address in rule.network
+        and (
+            rule.network.prefixlen >= 31
+            or address
+            not in (rule.network.network_address, rule.network.broadcast_address)
+        )
+    ]
+    if not matches:
+        return None
+    return sorted(
+        matches,
+        key=lambda rule: (-rule.network.prefixlen, rule.segment_id),
+    )[0]
+
+
+def save_manual_result(
+    conn: sqlite3.Connection,
+    *,
+    segment_id: str,
+    result: AvailabilityResult,
+    checked_at: str | datetime,
+) -> AvailabilityResult:
+    """Append one bounded manual check without touching complete CIDR results."""
+    timestamp = _utc_timestamp(
+        checked_at.isoformat() if isinstance(checked_at, datetime) else checked_at,
+        field="checked_at",
+    )
+    rule = monitored_rule_for_ip(conn, result.ip)
+    if rule is None or rule.segment_id != segment_id:
+        raise ValueError("not monitored")
+    if result.state not in {"reachable", "unreachable"}:
+        raise ValueError("result state must be reachable or unreachable")
+    allowed_methods = {"icmp"} | {
+        f"tcp:{port}" for port in rule.availability_tcp_ports
+    }
+    if (
+        result.state == "reachable"
+        and result.method not in allowed_methods
+    ) or (
+        result.state == "unreachable"
+        and result.method is not None
+    ):
+        raise ValueError("result method is not allowed by monitored segment")
+    normalized = AvailabilityResult(
+        str(ipaddress.ip_address(result.ip)),
+        result.state,
+        str(result.method or "") or None,
+        timestamp,
+        _sanitize_reason(result.failure_class),
+    )
+    conn.execute(
+        """INSERT INTO availability_manual_results
+           (segment_id, ip, requested_at, checked_at, active_state,
+            active_method, failure_class)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            segment_id,
+            normalized.ip,
+            timestamp,
+            timestamp,
+            normalized.state,
+            normalized.method or "",
+            normalized.failure_class,
+        ),
+    )
+    conn.commit()
+    return normalized
+
+
+def probe_one_availability(
+    conn: sqlite3.Connection,
+    ip: str,
+    executor: ProbeExecutor,
+    now: str | datetime,
+) -> AvailabilityResult:
+    """Probe one usable host authorized by its effective canonical segment rule."""
+    rule = monitored_rule_for_ip(conn, ip)
+    if rule is None:
+        raise ValueError("not monitored")
+    normalized_ip = str(ipaddress.ip_address(ip))
+    result = probe_target(
+        ProbeTarget(
+            normalized_ip,
+            tuple(rule.availability_tcp_ports),
+            str(rule.network),
+        ),
+        executor,
+    )
+    return save_manual_result(
+        conn,
+        segment_id=rule.segment_id,
+        result=result,
+        checked_at=now,
+    )
+
+
 def _as_utc(value: str | datetime) -> datetime | None:
     try:
         if isinstance(value, datetime):
@@ -511,11 +709,8 @@ def _fresh_at(value: Any, *, now: datetime, budget: timedelta) -> bool:
 
 
 def _availability_cidr(conn: sqlite3.Connection, ip: str) -> str | None:
-    address = ipaddress.ip_address(ip)
-    matching = [rule for rule in load_active_availability_segments(conn) if address in rule.network]
-    if not matching:
-        return None
-    return str(sorted(matching, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))[0].network)
+    rule = monitored_rule_for_ip(conn, ip)
+    return str(rule.network) if rule is not None else None
 
 
 def _passive_evidence(conn: sqlite3.Connection, *, ip: str, mac: str | None, now: datetime) -> list[str]:
@@ -602,8 +797,17 @@ def _healthy_passive_source(row: sqlite3.Row, *, now: datetime) -> bool:
     )
 
 
-def _availability_payload(*, state: str, cidr: str, active_method: str | None, checked_at: str | None,
-                          run_status: str, passive_evidence: list[str], reason: str) -> dict[str, Any]:
+def _availability_payload(
+    *,
+    state: str,
+    cidr: str | None,
+    active_method: str | None,
+    checked_at: str | None,
+    run_status: str,
+    passive_evidence: list[str],
+    reason: str,
+    check_origin: str = "",
+) -> dict[str, Any]:
     return {
         "state": state,
         "active_method": active_method,
@@ -612,57 +816,104 @@ def _availability_payload(*, state: str, cidr: str, active_method: str | None, c
         "cidr": cidr,
         "passive_evidence": passive_evidence,
         "reason": reason,
+        "check_origin": check_origin,
     }
 
 
 def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *, now: str | datetime) -> dict[str, Any]:
     """Derive the public host status from current active and passive evidence."""
     projected = dict(host)
+    rule = monitored_rule_for_ip(conn, str(host["ip"]))
     if bool(host.get("openvpn_connected")):
-        cidr = _availability_cidr(conn, str(host["ip"]))
         projected["status"] = "connected"
         projected["availability"] = (
             _availability_payload(
-                state="connected", cidr=cidr, active_method=None, checked_at=None,
+                state="connected", cidr=str(rule.network), active_method=None, checked_at=None,
                 run_status="", passive_evidence=[], reason="openvpn_management",
             )
-            if cidr is not None else None
+            if rule is not None else None
         )
-        return projected
-    cidr = _availability_cidr(conn, str(host["ip"]))
-    if cidr is None:
-        if projected.get("status") == "connected":
-            projected["status"] = "seen"
-        projected["availability"] = None
         return projected
     timestamp = _as_utc(now)
     if timestamp is None:
         raise ValueError("now must be a UTC timestamp")
+    evidence = _passive_evidence(
+        conn,
+        ip=str(host["ip"]),
+        mac=normalize_mac(host.get("mac")),
+        now=timestamp,
+    )
+    if rule is None:
+        projected["status"] = "seen" if evidence else "stale"
+        projected["availability"] = _availability_payload(
+            state="not_monitored",
+            cidr=None,
+            active_method=None,
+            checked_at=None,
+            run_status="",
+            passive_evidence=evidence,
+            reason="not_monitored",
+        )
+        return projected
+
+    cidr = str(rule.network)
+    freshness = timedelta(minutes=rule.availability_interval_minutes * 2)
+    manual = conn.execute(
+        """SELECT active_state, active_method, checked_at
+           FROM availability_manual_results
+           WHERE segment_id = ? AND ip = ?
+           ORDER BY checked_at DESC, id DESC
+           LIMIT 1""",
+        (rule.segment_id, str(host["ip"])),
+    ).fetchone()
+    if manual is not None and _fresh_at(
+        manual["checked_at"],
+        now=timestamp,
+        budget=freshness,
+    ):
+        reason = ""
+        result = manual
+        run_status = "success"
+        checked_at = str(manual["checked_at"])
+        check_origin = "manual"
+    else:
+        result = None
+        run_status = ""
+        checked_at = None
+        check_origin = "scheduled"
+        reason = ""
     run = conn.execute(
         """SELECT id, status, finished_at, error_class FROM availability_runs
            WHERE cidr = ? ORDER BY finished_at DESC, id DESC LIMIT 1""",
         (cidr,),
-    ).fetchone()
-    if run is None:
-        reason, result = "missing_run", None
-    elif str(run["status"]) != "success":
-        reason, result = "run_failed", None
-    elif not _fresh_at(run["finished_at"], now=timestamp, budget=AVAILABILITY_FRESHNESS):
-        reason, result = "run_stale", None
-    else:
-        result = conn.execute(
-            """SELECT active_state, active_method, checked_at
-               FROM availability_results WHERE cidr = ? AND ip = ? AND run_id = ?""",
-            (cidr, host["ip"], int(run["id"])),
         ).fetchone()
-        reason = "missing_result" if result is None else ""
-    run_status = str(run["status"]) if run is not None else ""
-    checked_at = str(result["checked_at"]) if result is not None else (str(run["finished_at"]) if run is not None else None)
+    if result is None:
+        if run is None:
+            reason = "missing_run"
+        elif str(run["status"]) != "success":
+            reason = "run_failed"
+        elif not _fresh_at(run["finished_at"], now=timestamp, budget=freshness):
+            reason = "run_stale"
+        else:
+            result = conn.execute(
+                """SELECT active_state, active_method, checked_at
+                   FROM availability_results
+                   WHERE cidr = ? AND ip = ? AND run_id = ?""",
+                (cidr, host["ip"], int(run["id"])),
+            ).fetchone()
+            reason = "missing_result" if result is None else ""
+        run_status = str(run["status"]) if run is not None else ""
+        checked_at = (
+            str(result["checked_at"])
+            if result is not None
+            else (str(run["finished_at"]) if run is not None else None)
+        )
     if result is not None and str(result["active_state"]) == "reachable":
         projected["status"] = "online"
         projected["availability"] = _availability_payload(
             state="online", cidr=cidr, active_method=str(result["active_method"]) or None,
             checked_at=checked_at, run_status=run_status, passive_evidence=[], reason="active_probe",
+            check_origin=check_origin,
         )
         return projected
     if reason:
@@ -670,19 +921,21 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
         projected["availability"] = _availability_payload(
             state="stale", cidr=cidr, active_method=None, checked_at=checked_at,
             run_status=run_status, passive_evidence=[], reason=reason,
+            check_origin=check_origin,
         )
         return projected
-    evidence = _passive_evidence(conn, ip=str(host["ip"]), mac=normalize_mac(host.get("mac")), now=timestamp)
     if evidence:
         projected["status"] = "seen"
         projected["availability"] = _availability_payload(
             state="seen", cidr=cidr, active_method=None, checked_at=checked_at,
             run_status=run_status, passive_evidence=evidence, reason="passive_evidence",
+            check_origin=check_origin,
         )
         return projected
     projected["status"] = "offline"
     projected["availability"] = _availability_payload(
         state="offline", cidr=cidr, active_method=None, checked_at=checked_at,
         run_status=run_status, passive_evidence=[], reason="active_negative_no_passive_evidence",
+        check_origin=check_origin,
     )
     return projected

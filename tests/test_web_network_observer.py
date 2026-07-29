@@ -686,6 +686,45 @@ def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
     assert phone["device_confidence"] == 85
 
 
+def test_public_availability_keeps_safe_not_monitored_reason_and_check_origin():
+    """Dropping safe origin fields would make manual and disabled projections indistinguishable."""
+    from app.network_observer import normalize_netctl_host
+
+    host = normalize_netctl_host(
+        {
+            "ip": "192.0.2.33",
+            "status": "stale",
+            "availability": {
+                "state": "not_monitored",
+                "reason": "not_monitored",
+                "check_origin": "manual",
+            },
+        }
+    )
+
+    assert host["availability"]["state"] == "not_monitored"
+    assert host["availability"]["reason"] == "not_monitored"
+    assert host["availability"]["check_origin"] == "manual"
+
+
+def test_public_availability_drops_unknown_check_origin():
+    """Only server-declared manual and scheduled origins belong in the public payload."""
+    from app.network_observer import normalize_netctl_host
+
+    host = normalize_netctl_host(
+        {
+            "ip": "192.0.2.33",
+            "status": "stale",
+            "availability": {
+                "state": "stale",
+                "check_origin": "browser-command",
+            },
+        }
+    )
+
+    assert "check_origin" not in host["availability"]
+
+
 def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     import app.api

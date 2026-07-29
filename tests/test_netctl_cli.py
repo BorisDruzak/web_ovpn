@@ -55,7 +55,7 @@ def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
 
     monkeypatch.setattr(cli, "collect_one", collect)
     monkeypatch.setattr(
-        cli, "collect_availability",
+        cli, "collect_due_availability",
         lambda *_args, **_kwargs: __import__("netctl.availability", fromlist=["AvailabilityCollection"]).AvailabilityCollection("success", (), {}),
     )
     monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {"switch": {"status": "partial"}})
@@ -94,7 +94,7 @@ def test_collect_all_runs_availability_only_after_every_enabled_source_succeeds(
     monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
     monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "router", "enabled": True}, {"name": "switch", "enabled": True}))
     monkeypatch.setattr(cli, "collect_one", lambda _conn, _args, name: (1 if name == "switch" else 0, {"source": name}))
-    monkeypatch.setattr(cli, "collect_availability", lambda *_args, **_kwargs: calls.append("availability"))
+    monkeypatch.setattr(cli, "collect_due_availability", lambda *_args, **_kwargs: calls.append("availability"))
 
     rc, payload = cli.dispatch(parser.parse_args(["collect", "all"]))
 
@@ -117,7 +117,7 @@ def test_collect_all_reconciles_when_auxiliary_availability_collection_fails(mon
     monkeypatch.setattr(cli, "collect_one", lambda _conn, _args, name: (0, {"source": name}))
     monkeypatch.setattr(
         cli,
-        "collect_availability",
+        "collect_due_availability",
         lambda *_args, **_kwargs: AvailabilityCollection(
             "failed", (), {"targets": 2, "completed": 0, "reachable": 0, "unreachable": 0}, "executor_error"
         ),
@@ -177,7 +177,7 @@ def test_availability_collect_returns_only_sanitized_collection_fields(monkeypat
     monkeypatch.setattr(cli, "availability_source_health", lambda _conn: True)
     monkeypatch.setattr(
         cli,
-        "collect_availability",
+        "collect_due_availability",
         lambda _conn, _executor, *, now: AvailabilityCollection("failed", (), {"targets": 0, "completed": 0}, "executor_error"),
     )
 
@@ -196,12 +196,208 @@ def test_availability_collect_fails_closed_before_probing_an_unhealthy_source(mo
     monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
     monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
     monkeypatch.setattr(cli, "availability_source_health", lambda _conn: False)
-    monkeypatch.setattr(cli, "collect_availability", lambda *_args, **_kwargs: pytest.fail("probe must not run"))
+    monkeypatch.setattr(cli, "collect_due_availability", lambda *_args, **_kwargs: pytest.fail("probe must not run"))
 
     rc, payload = cli.dispatch(parser.parse_args(["availability", "collect"]))
 
     assert rc == 1
     assert payload == {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
+
+
+def test_availability_parsers_accept_only_canonical_settings_and_one_ip():
+    """CIDRs, commands, and browser-selected probe ports must not enter the execution surface."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    set_args = parser.parse_args(
+        [
+            "availability",
+            "set-segment",
+            "--segment-id",
+            "office",
+            "--enabled",
+            "true",
+            "--tcp-port",
+            "443",
+            "--interval-minutes",
+            "15",
+        ]
+    )
+    probe_args = parser.parse_args(
+        ["availability", "probe", "--ip", "192.0.2.33"]
+    )
+
+    assert (
+        set_args.segment_id,
+        set_args.enabled,
+        set_args.tcp_port,
+        set_args.interval_minutes,
+    ) == ("office", "true", [443], 15)
+    assert probe_args.ip == "192.0.2.33"
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "availability",
+                "probe",
+                "--ip",
+                "192.0.2.33",
+                "--tcp-port",
+                "22",
+            ]
+        )
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["availability", "set-segment", "--cidr", "192.0.2.0/24"]
+        )
+
+
+def test_availability_settings_returns_effective_canonical_segment_fields(monkeypatch):
+    """Listing only overrides would force the web layer to invent CIDR and context metadata."""
+    import ipaddress
+    import netctl.cli as cli
+    from netctl.context_classifier import SegmentRule
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(
+        cli,
+        "effective_availability_rules",
+        lambda _conn: [
+            SegmentRule(
+                "office",
+                ipaddress.ip_network("192.0.2.0/24"),
+                "local_device",
+                "hq",
+                True,
+                (443,),
+                15,
+            )
+        ],
+    )
+
+    rc, payload = cli.dispatch(parser.parse_args(["availability", "settings"]))
+
+    assert rc == 0
+    assert payload == {
+        "status": "ok",
+        "segments": [
+            {
+                "segment_id": "office",
+                "cidr": "192.0.2.0/24",
+                "site": "hq",
+                "category": "local_device",
+                "enabled": True,
+                "tcp_ports": [443],
+                "interval_minutes": 15,
+            }
+        ],
+    }
+
+
+def test_availability_set_segment_passes_only_bounded_override_fields(monkeypatch):
+    """The CLI must not synthesize or persist a browser-provided CIDR."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    recorded = {}
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+
+    def save(_conn, segment_id, *, enabled, tcp_ports, interval_minutes):
+        recorded.update(
+            segment_id=segment_id,
+            enabled=enabled,
+            tcp_ports=tcp_ports,
+            interval_minutes=interval_minutes,
+        )
+        return {**recorded, "updated_at": "2026-07-29T12:00:00Z"}
+
+    monkeypatch.setattr(cli, "set_availability_setting", save)
+
+    rc, payload = cli.dispatch(
+        parser.parse_args(
+            [
+                "availability",
+                "set-segment",
+                "--segment-id",
+                "office",
+                "--enabled",
+                "false",
+                "--tcp-port",
+                "443",
+                "--interval-minutes",
+                "15",
+            ]
+        )
+    )
+
+    assert rc == 0
+    assert recorded == {
+        "segment_id": "office",
+        "enabled": False,
+        "tcp_ports": (443,),
+        "interval_minutes": 15,
+    }
+    assert payload["setting"]["segment_id"] == "office"
+
+
+def test_observations_refresh_runs_fixed_collect_all_then_reconcile_under_one_lock(monkeypatch):
+    """Letting refresh accept a source would permit a mixed partial observation snapshot."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    calls = []
+
+    class RecordingLock:
+        def __init__(self, _db):
+            pass
+
+        def __enter__(self):
+            calls.append("lock")
+
+        def __exit__(self, *_args):
+            calls.append("unlock")
+
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", RecordingLock)
+    monkeypatch.setattr(
+        cli,
+        "collect_all_locked",
+        lambda _conn, _args: (calls.append("collect-all") or 0, [{"source": "all"}]),
+    )
+    monkeypatch.setattr(
+        cli,
+        "collect_due_availability",
+        lambda *_args, **_kwargs: (
+            calls.append("availability")
+            or __import__(
+                "netctl.availability", fromlist=["AvailabilityCollection"]
+            ).AvailabilityCollection("success", (), {"targets": 0, "completed": 0})
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "reconcile_current_locked",
+        lambda _conn, _now: calls.append("reconcile")
+        or {"topology_run_id": 11, "attachment_run_id": 22},
+    )
+
+    rc, payload = cli.dispatch(parser.parse_args(["observations", "refresh"]))
+
+    assert rc == 0
+    assert calls == [
+        "lock",
+        "collect-all",
+        "availability",
+        "reconcile",
+        "unlock",
+    ]
+    assert payload["reconciliation"]["attachment_run_id"] == 22
+    with pytest.raises(SystemExit):
+        parser.parse_args(["observations", "refresh", "--source", "router"])
 
 
 def test_retention_cleanup_defaults_to_a_non_destructive_thirty_day_preview(monkeypatch):
@@ -296,7 +492,7 @@ def test_collect_all_reconciles_after_a_partial_snmp_result(monkeypatch):
     monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "switch", "enabled": True},))
     monkeypatch.setattr(cli, "collect_one", lambda *_args: (0, {"status": "partial"}))
     monkeypatch.setattr(
-        cli, "collect_availability",
+        cli, "collect_due_availability",
         lambda *_args, **_kwargs: __import__("netctl.availability", fromlist=["AvailabilityCollection"]).AvailabilityCollection("success", (), {}),
     )
     monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {})
@@ -1356,7 +1552,7 @@ def test_legacy_hosts_without_device_columns_get_defaults(tmp_path):
         )
         conn.commit()
 
-        host = query_hosts(conn)[0]
+        host = query_hosts(conn, status="all")[0]
 
         assert host["device_key"] == "mac:AA:BB:CC:DD:EE:99"
         assert host["device_type"] == "unknown"
