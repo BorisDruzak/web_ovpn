@@ -7,6 +7,111 @@ import pytest
 
 OLD = "2026-06-01T00:00:00Z"
 NEW = "2026-07-01T00:00:00Z"
+NOW = "2026-07-29T12:00:00Z"
+
+
+def _projection_segment(conn, cidr: str = "192.0.2.0/24") -> None:
+    """Add one approved monitored segment without changing collector fixtures."""
+    revision = conn.execute("SELECT id FROM context_revisions WHERE context_id = 'availability-test'").fetchone()[0]
+    conn.execute(
+        """INSERT INTO intent_segments
+           (context_revision_id, stable_id, lifecycle, canonical_json, canonical_hash, origin_context_revision_id)
+           VALUES (?, 'projection', 'active', ?, 'projection-hash', ?)""",
+        (revision, json.dumps({"id": "projection", "cidr": cidr, "availability_monitoring": True}, sort_keys=True), revision),
+    )
+
+
+def _projection_host(conn, *, ip: str = "192.0.2.8", mac: str | None = None, status: str = "online") -> dict:
+    conn.execute(
+        """INSERT INTO network_hosts
+           (ip, mac, category, status, first_seen_at, last_seen_at, last_source, tags_json)
+           VALUES (?, ?, 'unknown', ?, ?, ?, 'test', '{}')""",
+        (ip, mac, status, NOW, NOW),
+    )
+    return dict(conn.execute("SELECT * FROM network_hosts WHERE ip = ?", (ip,)).fetchone())
+
+
+def _negative_projection_run(conn, ip: str = "192.0.2.8") -> None:
+    from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run
+
+    _projection_segment(conn)
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/24", started=NOW, finished=NOW,
+            results=[AvailabilityResult(ip, "unreachable", None)],
+            target_count=1,
+        ),
+    )
+
+
+def _fresh_passive(conn, source: str, *, ip: str, mac: str) -> None:
+    if source == "mikrotik_arp":
+        conn.execute("INSERT INTO arp_entries (ip, mac, complete, last_seen_at) VALUES (?, ?, 1, ?)", (ip, mac, NOW))
+    elif source == "mikrotik_dhcp":
+        conn.execute("INSERT INTO dhcp_leases (ip, mac, status, last_seen_at) VALUES (?, ?, 'bound', ?)", (ip, mac, NOW))
+    elif source == "mikrotik_bridge":
+        conn.execute("INSERT INTO bridge_hosts (mac, bridge, interface, last_seen_at) VALUES (?, 'bridge', 'ether2', ?)", (mac, NOW))
+    elif source == "snmp_fdb":
+        source_id = conn.execute(
+            """INSERT INTO network_sources
+               (name, driver, host, port, username, secret_ref, enabled, created_at, updated_at)
+               VALUES ('switch-projection', 'snmp_switch', '192.0.2.254', 161, '', '', 1, ?, ?)""",
+            (NOW, NOW),
+        ).lastrowid
+        run_id = conn.execute(
+            """INSERT INTO switch_collection_runs (source_id, started_at, finished_at, status, outcomes_json)
+               VALUES (?, ?, ?, 'success', '{}')""",
+            (source_id, NOW, NOW),
+        ).lastrowid
+        conn.execute(
+            """INSERT INTO current_switch_fdb
+               (source_id, vlan_key, mac, port_key, status, first_seen_at, last_seen_at, collector_run_id)
+               VALUES (?, '1', ?, 'physical:1', 'learned', ?, ?, ?)""",
+            (source_id, mac, NOW, NOW, run_id),
+        )
+    else:
+        raise AssertionError(source)
+
+
+def test_complete_arp_without_mac_is_not_online_or_seen(conn):
+    """Treating a complete empty-MAC ARP row as passive evidence would revive false online hosts."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn)
+    _negative_projection_run(conn, host["ip"])
+    conn.execute("INSERT INTO arp_entries (ip, mac, complete, last_seen_at) VALUES (?, '', 1, ?)", (host["ip"], NOW))
+
+    assert project_host_availability(conn, host, now=NOW)["status"] == "offline"
+
+
+@pytest.mark.parametrize("passive_source", ("mikrotik_arp", "mikrotik_dhcp", "mikrotik_bridge", "snmp_fdb"))
+def test_fresh_valid_mac_passive_evidence_yields_seen_after_negative_probe(conn, passive_source):
+    """Dropping any approved fresh passive source would hide a currently observed device."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn, mac="AA:BB:CC:DD:EE:08")
+    _negative_projection_run(conn, host["ip"])
+    _fresh_passive(conn, passive_source, ip=host["ip"], mac=host["mac"])
+
+    availability = project_host_availability(conn, host, now=NOW)
+
+    assert availability["status"] == "seen"
+    assert availability["availability"]["passive_evidence"] == [passive_source]
+
+
+def test_missing_or_failed_current_run_is_stale_not_offline(conn):
+    """Classifying missing or failed scans as offline would mistake collector failure for endpoint failure."""
+    from netctl.availability import AvailabilityRun, project_host_availability, save_availability_run
+
+    host = _projection_host(conn)
+    _projection_segment(conn)
+    conn.commit()
+    assert project_host_availability(conn, host, now=NOW)["status"] == "stale"
+
+    save_availability_run(conn, AvailabilityRun.failed("192.0.2.0/24", started=NOW, finished=NOW, error_class="deadline_exceeded"))
+    assert project_host_availability(conn, host, now=NOW)["status"] == "stale"
 
 
 def availability_segment(cidr: str, *, ports: tuple[int, ...] = ()):

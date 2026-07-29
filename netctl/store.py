@@ -7,6 +7,7 @@ from typing import Any
 
 from .db import get_source
 from .context_classifier import SegmentRule, legacy_segment_rules, load_active_segment_rules
+from .availability import project_host_availability
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
 from .path_facts import save_path_facts
 from .runtime_writer import (
@@ -617,15 +618,12 @@ def _save_collection(
     return counts
 
 
-def query_hosts(conn: sqlite3.Connection, q: str = "", category: str = "", status: str = "") -> list[dict[str, Any]]:
+def query_hosts(conn: sqlite3.Connection, q: str = "", category: str = "", status: str = "current") -> list[dict[str, Any]]:
     clauses: list[str] = []
     params: list[Any] = []
     if category and category != "all":
         clauses.append("category = ?")
         params.append(category)
-    if status and status != "all":
-        clauses.append("status = ?")
-        params.append(status)
     if q:
         like = f"%{q.lower()}%"
         clauses.append("(lower(ip) LIKE ? OR lower(coalesce(mac,'')) LIKE ? OR lower(coalesce(hostname,'')) LIKE ? OR lower(coalesce(display_name,'')) LIKE ?)")
@@ -635,7 +633,13 @@ def query_hosts(conn: sqlite3.Connection, q: str = "", category: str = "", statu
         f"SELECT * FROM network_hosts{where} ORDER BY ip",
         params,
     ).fetchall()
-    return [decode_host(dict(row)) for row in rows]
+    projected = [project_host_availability(conn, decode_host(dict(row)), now=utc_now()) for row in rows]
+    selected = status or "current"
+    if selected == "all":
+        return projected
+    if selected == "current":
+        return [host for host in projected if host.get("status") in {"online", "seen", "connected"}]
+    return [host for host in projected if host.get("status") == selected]
 
 
 def decode_host(row: dict[str, Any]) -> dict[str, Any]:
@@ -665,7 +669,7 @@ def inspect_host(conn: sqlite3.Connection, ip_or_id: str) -> dict[str, Any] | No
         row = conn.execute("SELECT * FROM network_hosts WHERE id = ?", (int(ip_or_id),)).fetchone()
     else:
         row = conn.execute("SELECT * FROM network_hosts WHERE ip = ?", (ip_or_id,)).fetchone()
-    return decode_host(dict(row)) if row else None
+    return project_host_availability(conn, decode_host(dict(row)), now=utc_now()) if row else None
 
 
 def related_for_host(conn: sqlite3.Connection, host: dict[str, Any]) -> dict[str, Any]:
@@ -697,12 +701,14 @@ def related_for_host(conn: sqlite3.Connection, host: dict[str, Any]) -> dict[str
 
 
 def dashboard_summary(conn: sqlite3.Connection) -> dict[str, Any]:
-    hosts = [dict(row) for row in conn.execute("SELECT category, status FROM network_hosts").fetchall()]
+    hosts = [project_host_availability(conn, decode_host(dict(row)), now=utc_now()) for row in conn.execute("SELECT * FROM network_hosts").fetchall()]
     summary = {
         "total_hosts": len(hosts),
         "online": sum(1 for host in hosts if host.get("status") == "online"),
         "seen": sum(1 for host in hosts if host.get("status") == "seen"),
         "offline": sum(1 for host in hosts if host.get("status") == "offline"),
+        "stale": sum(1 for host in hosts if host.get("status") == "stale"),
+        "connected": sum(1 for host in hosts if host.get("status") == "connected"),
         "local_device": sum(1 for host in hosts if host.get("category") == "local_device"),
         "vpn_client": sum(1 for host in hosts if host.get("category") == "vpn_client"),
         "router": sum(1 for host in hosts if host.get("category") == "router"),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import ipaddress
 import sqlite3
@@ -12,6 +12,13 @@ from collections.abc import Callable
 from typing import Any
 
 from .context_classifier import load_active_availability_segments
+from .normalizer import normalize_mac
+
+
+COLLECTOR_INTERVAL = timedelta(minutes=5)
+AVAILABILITY_INTERVAL = timedelta(minutes=5)
+PASSIVE_EVIDENCE_FRESHNESS = COLLECTOR_INTERVAL * 2
+AVAILABILITY_FRESHNESS = AVAILABILITY_INTERVAL * 2
 
 
 @dataclass(frozen=True)
@@ -462,3 +469,139 @@ def current_availability_results(conn: sqlite3.Connection, cidr: str) -> dict[st
     except ValueError as exc:
         raise ValueError("cidr must be valid") from exc
     return _current_rows(conn, normalized)
+
+
+def _as_utc(value: str | datetime) -> datetime | None:
+    try:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _fresh_at(value: Any, *, now: datetime, budget: timedelta) -> bool:
+    observed = _as_utc(str(value or ""))
+    return observed is not None and timedelta(0) <= now - observed <= budget
+
+
+def _availability_cidr(conn: sqlite3.Connection, ip: str) -> str | None:
+    address = ipaddress.ip_address(ip)
+    matching = [rule for rule in load_active_availability_segments(conn) if address in rule.network]
+    if not matching:
+        return None
+    return str(sorted(matching, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))[0].network)
+
+
+def _passive_evidence(conn: sqlite3.Connection, *, ip: str, mac: str | None, now: datetime) -> list[str]:
+    if not mac:
+        return []
+    evidence: list[str] = []
+    for row in conn.execute("SELECT mac, complete, last_seen_at FROM arp_entries WHERE ip = ?", (ip,)):
+        if bool(row["complete"]) and normalize_mac(row["mac"]) == mac and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS):
+            evidence.append("mikrotik_arp")
+            break
+    for row in conn.execute("SELECT mac, status, last_seen_at FROM dhcp_leases WHERE ip = ?", (ip,)):
+        if (str(row["status"] or "").lower() in {"bound", "online"} and normalize_mac(row["mac"]) == mac
+                and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)):
+            evidence.append("mikrotik_dhcp")
+            break
+    for row in conn.execute("SELECT mac, last_seen_at FROM bridge_hosts"):
+        if normalize_mac(row["mac"]) == mac and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS):
+            evidence.append("mikrotik_bridge")
+            break
+    for row in conn.execute(
+        """SELECT f.mac, f.last_seen_at
+           FROM current_switch_fdb AS f
+           JOIN switch_collection_runs AS runs
+             ON runs.id = f.collector_run_id AND runs.source_id = f.source_id
+           WHERE runs.status = 'success' AND lower(f.status) NOT IN ('self', 'mgmt')"""
+    ):
+        if normalize_mac(row["mac"]) == mac and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS):
+            evidence.append("snmp_fdb")
+            break
+    return evidence
+
+
+def _availability_payload(*, state: str, cidr: str, active_method: str | None, checked_at: str | None,
+                          run_status: str, passive_evidence: list[str], reason: str) -> dict[str, Any]:
+    return {
+        "state": state,
+        "active_method": active_method,
+        "checked_at": checked_at,
+        "run_status": run_status,
+        "cidr": cidr,
+        "passive_evidence": passive_evidence,
+        "reason": reason,
+    }
+
+
+def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *, now: str | datetime) -> dict[str, Any]:
+    """Derive the public host status from current active and passive evidence."""
+    projected = dict(host)
+    cidr = _availability_cidr(conn, str(host["ip"]))
+    if cidr is None:
+        projected["availability"] = None
+        return projected
+    timestamp = _as_utc(now)
+    if timestamp is None:
+        raise ValueError("now must be a UTC timestamp")
+    if host.get("status") == "connected" or bool(host.get("openvpn_connected")):
+        projected["status"] = "connected"
+        projected["availability"] = _availability_payload(
+            state="connected", cidr=cidr, active_method=None, checked_at=None,
+            run_status="", passive_evidence=[], reason="openvpn_management",
+        )
+        return projected
+    run = conn.execute(
+        """SELECT id, status, finished_at, error_class FROM availability_runs
+           WHERE cidr = ? ORDER BY finished_at DESC, id DESC LIMIT 1""",
+        (cidr,),
+    ).fetchone()
+    if run is None:
+        reason, result = "missing_run", None
+    elif str(run["status"]) != "success":
+        reason, result = "run_failed", None
+    elif not _fresh_at(run["finished_at"], now=timestamp, budget=AVAILABILITY_FRESHNESS):
+        reason, result = "run_stale", None
+    else:
+        result = conn.execute(
+            """SELECT active_state, active_method, checked_at
+               FROM availability_results WHERE cidr = ? AND ip = ? AND run_id = ?""",
+            (cidr, host["ip"], int(run["id"])),
+        ).fetchone()
+        reason = "missing_result" if result is None else ""
+    run_status = str(run["status"]) if run is not None else ""
+    checked_at = str(result["checked_at"]) if result is not None else (str(run["finished_at"]) if run is not None else None)
+    if result is not None and str(result["active_state"]) == "reachable":
+        projected["status"] = "online"
+        projected["availability"] = _availability_payload(
+            state="online", cidr=cidr, active_method=str(result["active_method"]) or None,
+            checked_at=checked_at, run_status=run_status, passive_evidence=[], reason="active_probe",
+        )
+        return projected
+    if reason:
+        projected["status"] = "stale"
+        projected["availability"] = _availability_payload(
+            state="stale", cidr=cidr, active_method=None, checked_at=checked_at,
+            run_status=run_status, passive_evidence=[], reason=reason,
+        )
+        return projected
+    evidence = _passive_evidence(conn, ip=str(host["ip"]), mac=normalize_mac(host.get("mac")), now=timestamp)
+    if evidence:
+        projected["status"] = "seen"
+        projected["availability"] = _availability_payload(
+            state="seen", cidr=cidr, active_method=None, checked_at=checked_at,
+            run_status=run_status, passive_evidence=evidence, reason="passive_evidence",
+        )
+        return projected
+    projected["status"] = "offline"
+    projected["availability"] = _availability_payload(
+        state="offline", cidr=cidr, active_method=None, checked_at=checked_at,
+        run_status=run_status, passive_evidence=[], reason="active_negative_no_passive_evidence",
+    )
+    return projected

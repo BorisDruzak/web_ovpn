@@ -2147,3 +2147,21 @@ def test_mikrotik_ssh_collection_uses_scalar_routerboard_print_for_routeros6(mon
 
     routerboard_commands = [command[-1] for command in calls if "/system routerboard print" in command[-1]]
     assert routerboard_commands == ["/system routerboard print"]
+
+
+def test_normalizer_never_assigns_online_from_router_dhcp_or_arp():
+    """Letting any normalizer branch emit online would bypass the active-probe projection."""
+    from netctl.normalizer import normalize_hosts
+
+    hosts = normalize_hosts(
+        {"name": "router", "host": "192.0.2.1"},
+        {
+            "identity": [{"name": "router"}],
+            "dhcp_leases": [{"ip": "192.0.2.8", "mac": "AA:BB:CC:DD:EE:08", "status": "bound"}],
+            "arp": [{"ip": "192.0.2.9", "mac": "invalid", "complete": True}],
+        },
+        "2026-07-29T12:00:00Z",
+    )
+
+    assert all(host["status"] != "online" for host in hosts)
+    assert next(host for host in hosts if host["ip"] == "192.0.2.9")["mac"] is None

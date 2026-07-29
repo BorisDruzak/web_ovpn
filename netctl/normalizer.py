@@ -129,7 +129,6 @@ def normalize_hosts(
         identity = next((item.get("name") for item in snapshot.get("identity", []) if item.get("name")), None)
         router["hostname"] = identity or source.get("name")
         router["display_name"] = router["hostname"]
-        router["status"] = "online"
         _add_source(router, "mikrotik_identity")
 
     for lease in snapshot.get("dhcp_leases", []):
@@ -142,7 +141,8 @@ def normalize_hosts(
         host["display_name"] = host["hostname"] or host["display_name"]
         if not host["display_name"] and lease.get("comment"):
             host["display_name"] = lease.get("comment")
-        host["status"] = "online" if str(lease.get("status") or "").lower() in {"bound", "online"} else "seen"
+        # A bound lease is passive observation, not an active reachability assertion.
+        host["status"] = "seen"
         host["comment"] = host["comment"] or lease.get("comment")
         _apply_hint_tags(host, lease.get("hostname"), lease.get("comment"))
         _add_source(host, "mikrotik_dhcp")
@@ -156,8 +156,6 @@ def normalize_hosts(
         host = _ensure_host(hosts, ip, observed_at, source)
         host["mac"] = host["mac"] or normalize_mac(arp.get("mac"))
         host["comment"] = host["comment"] or arp.get("comment")
-        if arp.get("complete"):
-            host["status"] = "online"
         _add_source(host, "mikrotik_arp")
 
     for neighbor in snapshot.get("neighbors", []):
