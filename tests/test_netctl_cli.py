@@ -29,6 +29,89 @@ def run_cli(args, capsys):
     return rc, json.loads(captured.out)
 
 
+def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_path, capsys):
+    """Dropping candidate evidence would leave an ambiguous port impossible to assess."""
+    from netctl.db import connect
+
+    db_url = f"sqlite:///{(tmp_path / 'attachments.sqlite').as_posix()}"
+    conn = connect(db_url)
+    now = "2026-07-29T12:00:00Z"
+    try:
+        conn.execute(
+            """INSERT INTO assets
+               (id, asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES (1, 'mac:C0:9B:F4:62:54:E5', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        )
+        interface_id = conn.execute(
+            """INSERT INTO asset_interfaces
+               (asset_id, interface_key, mac, first_seen_at, last_seen_at)
+               VALUES (1, 'eth0', 'C0:9B:F4:62:54:E5', ?, ?)""",
+            (now, now),
+        ).lastrowid
+        conn.executemany(
+            """INSERT INTO network_sources
+               (id, name, driver, host, port, username, secret_ref, tls, verify_tls,
+                enabled, created_at, updated_at)
+               VALUES (?, ?, 'snmp_switch', '192.0.2.1', 161, '', 'env:TEST', 0, 0, 1, ?, ?)""",
+            [(10, 'tplink-ito-15', now, now), (11, 'tplink-ito-14', now, now)],
+        )
+        run_id = conn.execute(
+            """INSERT INTO network_correlation_runs
+               (run_type, started_at, finished_at, status)
+               VALUES ('attachments', ?, ?, 'success')""",
+            (now, now),
+        ).lastrowid
+        conn.execute(
+            """INSERT INTO asset_attachment_resolutions
+               (asset_interface_id, asset_id, status, confidence, first_seen_at,
+                last_seen_at, correlation_run_id, evidence_json)
+               VALUES (?, 1, 'ambiguous', 50, ?, ?, ?, '[{"reason":"competing_fdb"}]')""",
+            (interface_id, now, now, run_id),
+        )
+        conn.executemany(
+            """INSERT INTO asset_attachment_candidates
+               (asset_interface_id, asset_id, switch_source_id, port_key, vlan_key,
+                vlan_id, candidate_class, score, observed_at, correlation_run_id,
+                evidence_json)
+               VALUES (?, 1, ?, ?, '20', 20, 'unknown', 50, ?, ?, ?)""",
+            [
+                (interface_id, 10, 'physical:2', now, run_id, '[{"reason":"oper_status_unknown"}]'),
+                (interface_id, 11, 'physical:47', now, run_id, '[{"reason":"competing_fdb"}]'),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, payload = run_cli(
+        ["--json", "--db", db_url, "context-view", "asset", "--asset-key", "mac:C0:9B:F4:62:54:E5"],
+        capsys,
+    )
+
+    assert rc == 0
+    attachment = payload["context"]["attachment"]
+    assert attachment["status"] == "ambiguous"
+    assert attachment["reason"] == "Есть конкурирующие FDB-записи"
+    likely = next(
+        alternative
+        for alternative in attachment["alternatives"]
+        if alternative["source"] == "tplink-ito-15" and alternative["port_key"] == "physical:2"
+    )
+    assert likely == {
+        "source": "tplink-ito-15",
+        "port_key": "physical:2",
+        "vlan_key": "20",
+        "vlan_id": 20,
+        "candidate_class": "unknown",
+        "topology_depth": None,
+        "score": 50,
+        "observed_at": now,
+        "reason": "статус порта не получен",
+    }
+
+
 def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
     """Removing the all-success gate must prevent correlation from running."""
     import netctl.cli as cli

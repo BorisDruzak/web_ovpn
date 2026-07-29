@@ -15,6 +15,14 @@ from .runtime_assets import (
     list_current_ip_observations,
     resolve_best_hostname_observation,
 )
+
+
+ATTACHMENT_REASON_LABELS = {
+    "oper_status_unknown": "статус порта не получен",
+    "competing_fdb": "Есть конкурирующие FDB-записи",
+    "verified_backbone_port": "это подтверждённый uplink",
+    "partial_collection": "сбор коммутатора неполный",
+}
 from .util import utc_now
 
 
@@ -104,6 +112,31 @@ def _port_peers(
     }
 
 
+def _attachment_reason(evidence_json: object) -> str:
+    """Project allowlisted attachment evidence without exposing collector detail."""
+    try:
+        evidence = json.loads(str(evidence_json or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    items = evidence if isinstance(evidence, list) else [evidence]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        reason = item.get("reason")
+        if isinstance(reason, str) and reason in ATTACHMENT_REASON_LABELS:
+            return ATTACHMENT_REASON_LABELS[reason]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("oper_status") in {"", "unknown", None} and "oper_status" in item:
+            return ATTACHMENT_REASON_LABELS["oper_status_unknown"]
+        if item.get("verified_backbone_port") is True:
+            return ATTACHMENT_REASON_LABELS["verified_backbone_port"]
+        if item.get("collector_status") == "partial":
+            return ATTACHMENT_REASON_LABELS["partial_collection"]
+    return ""
+
+
 def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int | None = None) -> dict[str, Any] | None:
     conditions = ["resolutions.asset_id = ?"]
     params: list[object] = [asset_id]
@@ -115,7 +148,8 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
                   resolutions.selected_vlan_key, resolutions.selected_vlan_id, resolutions.confidence,
                   resolutions.last_seen_at, sources.name AS switch_name, sources.site AS switch_site,
                   sources.host AS switch_host, ports.name AS port_name, ports.alias AS port_alias,
-                  ports.admin_status AS port_admin_status, ports.oper_status AS port_oper_status
+                  ports.admin_status AS port_admin_status, ports.oper_status AS port_oper_status,
+                  resolutions.evidence_json AS evidence_json
            FROM asset_attachment_resolutions AS resolutions
            LEFT JOIN network_sources AS sources ON sources.id = resolutions.selected_source_id
            LEFT JOIN switch_ports AS ports
@@ -129,7 +163,8 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
     alternatives = conn.execute(
         f"""SELECT sources.name AS source, candidates.port_key, candidates.vlan_key,
                   candidates.vlan_id, candidates.candidate_class,
-                  candidates.topology_depth, candidates.score, candidates.observed_at
+                  candidates.topology_depth, candidates.score, candidates.observed_at,
+                  candidates.evidence_json
            FROM asset_attachment_candidates AS candidates
            LEFT JOIN network_sources AS sources ON sources.id = candidates.switch_source_id
            WHERE candidates.asset_id = ? {"AND candidates.asset_interface_id = ?" if asset_interface_id is not None else ""}
@@ -138,7 +173,15 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
            LIMIT 32""",
         (asset_id, asset_interface_id) if asset_interface_id is not None else (asset_id,),
     ).fetchall()
-    attachment["alternatives"] = [dict(item) for item in alternatives]
+    attachment["alternatives"] = []
+    for item in alternatives:
+        alternative = dict(item)
+        reason = _attachment_reason(alternative.pop("evidence_json", ""))
+        if reason:
+            alternative["reason"] = reason
+        attachment["alternatives"].append(alternative)
+    if reason := _attachment_reason(row["evidence_json"]):
+        attachment["reason"] = reason
     attachment["switch"] = None
     attachment["port"] = None
     attachment["vlan_membership"] = None
