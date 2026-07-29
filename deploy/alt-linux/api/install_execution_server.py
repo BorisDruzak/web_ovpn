@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from collections.abc import Sequence
@@ -85,7 +84,8 @@ def create_execution_tls_server(
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != "HEAD":
+                self.wfile.write(body)
 
         def _send_json(
             self, status: int, payload: dict[str, object]
@@ -162,34 +162,77 @@ def create_execution_tls_server(
                 self._error(_http_status(exc), exc.code)
                 return False
 
-        def _read_execution(
+        def _stream_execution(
             self,
             session_id: str,
             filename: str,
             *,
             maximum: int,
-        ) -> bytes | None:
+            content_type: str,
+        ) -> None:
             try:
-                files = repository.read_execution_files(session_id)
-                body = files[filename]
-                status = repository.load_status(session_id)
-                execution_status = status["execution"]
-                if (
-                    not isinstance(execution_status, dict)
-                    or hashlib.sha256(
-                        files["execution-manifest.json"]
-                    ).hexdigest()
-                    != execution_status.get("manifest_sha256")
-                    or not 1 <= len(body) <= maximum
-                ):
-                    raise ValueError
-                return body
+                with repository.open_execution_file(
+                    session_id, filename
+                ) as snapshot:
+                    status = repository.load_status(session_id)
+                    execution_status = status["execution"]
+                    if (
+                        not isinstance(execution_status, dict)
+                        or snapshot.manifest_sha256
+                        != execution_status.get("manifest_sha256")
+                        or not 1 <= snapshot.length <= maximum
+                    ):
+                        raise ValueError
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header(
+                        "Content-Length", str(snapshot.length)
+                    )
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header(
+                        "X-Content-Type-Options", "nosniff"
+                    )
+                    self.end_headers()
+                    while True:
+                        chunk = snapshot.read()
+                        if not chunk:
+                            return
+                        self.wfile.write(chunk)
             except (KeyError, TypeError, ValueError):
                 self._error(409, "execution_bundle_invalid")
-                return None
             except ControlError as exc:
                 self._error(_http_status(exc), "execution_bundle_invalid")
+
+        def _route_session_id(self) -> str | None:
+            path = getattr(self, "path", "")
+            if "?" in path or len(path) > 4096:
                 return None
+            for pattern in (
+                _MANIFEST_PATH_RE,
+                _ARTIFACT_PATH_RE,
+                _CLAIM_PATH_RE,
+            ):
+                match = pattern.fullmatch(path)
+                if match is not None:
+                    return match.group(1)
+            return None
+
+        def _reject_method(self) -> None:
+            session_id = self._route_session_id()
+            if session_id is None:
+                self._error(404, "not_found")
+                return
+            if not self._authorize(session_id):
+                return
+            self._error(405, "method_not_allowed")
+
+        def send_error(
+            self,
+            code: int,
+            message: str | None = None,
+            explain: str | None = None,
+        ) -> None:
+            self._reject_method()
 
         def do_GET(self) -> None:
             if "?" in self.path or len(self.path) > 4096:
@@ -209,7 +252,7 @@ def create_execution_tls_server(
             artifact_match = _ARTIFACT_PATH_RE.fullmatch(self.path)
             match = manifest_match or artifact_match
             if match is None:
-                self._error(404, "not_found")
+                self._reject_method()
                 return
             session_id = match.group(1)
             if (
@@ -222,7 +265,7 @@ def create_execution_tls_server(
                 if manifest_match is not None
                 else match.group(2)
             )
-            body = self._read_execution(
+            self._stream_execution(
                 session_id,
                 filename,
                 maximum=(
@@ -230,12 +273,6 @@ def create_execution_tls_server(
                     if manifest_match is not None
                     else _MAX_ARTIFACT_BYTES
                 ),
-            )
-            if body is None:
-                return
-            self._send_bytes(
-                200,
-                body,
                 content_type=(
                     "application/json; charset=utf-8"
                     if manifest_match is not None
@@ -249,7 +286,7 @@ def create_execution_tls_server(
                 return
             match = _CLAIM_PATH_RE.fullmatch(self.path)
             if match is None:
-                self._error(404, "not_found")
+                self._reject_method()
                 return
             session_id = match.group(1)
             if not self._authorize(session_id):
@@ -288,6 +325,14 @@ def create_execution_tls_server(
                     "execution": {"state": "claimed"},
                 },
             )
+
+        do_HEAD = _reject_method
+        do_PUT = _reject_method
+        do_PATCH = _reject_method
+        do_DELETE = _reject_method
+        do_OPTIONS = _reject_method
+        do_TRACE = _reject_method
+        do_CONNECT = _reject_method
 
     server = ThreadingHTTPServer(
         (settings.install_execution_listen_address, listen_port or settings.install_execution_listen_port),

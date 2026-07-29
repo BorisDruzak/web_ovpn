@@ -388,6 +388,96 @@ def test_reads_require_a_current_execution_authorization(
     )
 
 
+def test_artifact_get_never_uses_the_all_file_buffering_api(
+    tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, material, _claims, _settings = tls_server
+    calls: list[str] = []
+    opened: list[str] = []
+    original = InstallSessionRepository.read_execution_files
+    original_open = InstallSessionRepository._open_execution_regular
+
+    def tracked(
+        repository: InstallSessionRepository, session_id: str
+    ) -> dict[str, bytes]:
+        calls.append(session_id)
+        return original(repository, session_id)
+
+    monkeypatch.setattr(
+        InstallSessionRepository, "read_execution_files", tracked
+    )
+
+    def tracked_open(
+        repository: InstallSessionRepository,
+        path: Path,
+        *,
+        maximum_size: int = 64 * 1024 * 1024,
+    ) -> tuple[int, object]:
+        opened.append(path.name)
+        return original_open(
+            repository, path, maximum_size=maximum_size
+        )
+
+    monkeypatch.setattr(
+        InstallSessionRepository,
+        "_open_execution_regular",
+        tracked_open,
+    )
+    path = (
+        f"/v2/install-sessions/{SESSION_ID}/execution/artifacts/"
+        "pkg-groups.tar"
+    )
+
+    with _running(server):
+        response = _request(
+            server, material, "GET", path, bearer=CREDENTIAL
+        )
+
+    assert response[0] == 200
+    assert response[2] == ARTIFACTS["pkg-groups.tar"]
+    assert calls == []
+    assert opened == ["execution-digests.json", "pkg-groups.tar"]
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["HEAD", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "BREW"],
+)
+def test_unsupported_methods_are_authenticated_and_hardened(
+    tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
+    method: str,
+) -> None:
+    server, material, _claims, _settings = tls_server
+    path = f"/v2/install-sessions/{SESSION_ID}/execution/manifest"
+
+    with _running(server):
+        missing = _request(server, material, method, path)
+        rejected = _request(
+            server, material, method, path, bearer=CREDENTIAL
+        )
+        unknown = _request(
+            server,
+            material,
+            method,
+            "/v2/install-sessions/unknown/execution/manifest",
+        )
+
+    assert missing[0] == 401
+    assert rejected[0] == 405
+    assert unknown[0] == 404
+    for status, headers, body in (missing, rejected, unknown):
+        assert status in {401, 404, 405}
+        assert headers["Cache-Control"] == "no-store"
+        assert headers["X-Content-Type-Options"] == "nosniff"
+        assert int(headers["Content-Length"]) <= 256
+        if method == "HEAD":
+            assert body == b""
+        else:
+            assert len(body) == int(headers["Content-Length"])
+        assert "Location" not in headers
+
+
 def test_v2_listener_rejects_plain_http_without_a_response(
     tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
 ) -> None:

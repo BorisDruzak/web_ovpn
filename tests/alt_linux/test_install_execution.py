@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import pytest
 
@@ -184,6 +185,42 @@ def _release_archives(tmp_path: Path) -> dict[str, ReleaseArchiveSource]:
     }
 
 
+def _publish_held_release_contract(
+    root: Path,
+) -> dict[str, ReleaseArchiveSource]:
+    root.mkdir(mode=0o755, parents=True, exist_ok=False)
+    sources = _release_archives(root)
+    document = {
+        "archives": {
+            name: {
+                "members": list(source.members),
+                "sha256": source.sha256,
+            }
+            for name, source in sources.items()
+        },
+        "schema_version": 1,
+    }
+    (root / "manifest.json").write_bytes(
+        (
+            json.dumps(
+                document,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    root.chmod(0o755)
+    for path in (root / "manifest.json", *(source.path for source in sources.values())):
+        path.chmod(0o444)
+        if os.name == "posix" and os.geteuid() == 0:
+            os.chown(path, 0, 0)
+    if os.name == "posix" and os.geteuid() == 0:
+        os.chown(root, 0, 0)
+    return sources
+
+
 def _renderer_secrets() -> RendererSecrets:
     return RendererSecrets(
         root_yescrypt_hash=(
@@ -193,6 +230,135 @@ def _renderer_secrets() -> RendererSecrets:
             "$y$j9T$execution-admin$abcdefghijklmnopqrstuv"
         ),
     )
+
+
+def test_release_manifest_loads_fixed_digest_and_member_pinned_archives(
+    tmp_path: Path,
+) -> None:
+    loader = getattr(
+        execution_module, "load_execution_release_archives", None
+    )
+    assert callable(loader), "secure release-held archive loader is missing"
+    root = _root_safe_install_fixture_base(tmp_path) / "held-release"
+    expected = _publish_held_release_contract(root)
+    settings = replace(
+        Settings.from_env(), install_execution_release_root=root
+    )
+
+    loaded = loader(settings)
+
+    assert loaded == expected
+
+
+def test_execution_release_root_has_no_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "ALT_DEPLOY_INSTALL_EXECUTION_RELEASE_ROOT",
+        "/tmp/operator-controlled-release",
+    )
+
+    assert Settings.from_env().install_execution_release_root == Path(
+        "/srv/alt-deploy/install-execution-release"
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_archive", "wrong_digest", "unknown_field"],
+)
+def test_release_manifest_rejects_absent_or_mutated_inputs(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    loader = getattr(
+        execution_module, "load_execution_release_archives", None
+    )
+    assert callable(loader), "secure release-held archive loader is missing"
+    root = _root_safe_install_fixture_base(tmp_path) / (
+        f"held-release-{mutation}"
+    )
+    _publish_held_release_contract(root)
+    manifest_path = root / "manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mutation == "missing_archive":
+        archive_path = root / "pkg-groups.tar"
+        archive_path.chmod(0o600)
+        archive_path.unlink()
+    elif mutation == "wrong_digest":
+        document["archives"]["pkg-groups.tar"]["sha256"] = "0" * 64
+        manifest_path.chmod(0o600)
+        manifest_path.write_bytes(
+            (
+                json.dumps(
+                    document,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+        manifest_path.chmod(0o444)
+    else:
+        document["archives"]["pkg-groups.tar"]["path"] = "other.tar"
+        manifest_path.chmod(0o600)
+        manifest_path.write_bytes(
+            (
+                json.dumps(
+                    document,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+        manifest_path.chmod(0o444)
+
+    settings = replace(
+        Settings.from_env(), install_execution_release_root=root
+    )
+
+    with pytest.raises(ControlError, match="release"):
+        loader(settings)
+
+
+def test_release_manifest_refuses_symlinks_and_writable_files(
+    tmp_path: Path,
+) -> None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("no-follow file opens are unavailable")
+    loader = getattr(
+        execution_module, "load_execution_release_archives", None
+    )
+    assert callable(loader), "secure release-held archive loader is missing"
+    base = _root_safe_install_fixture_base(tmp_path)
+    symlink_root = base / "held-release-symlink"
+    _publish_held_release_contract(symlink_root)
+    target = symlink_root / "pkg-groups-real.tar"
+    archive = symlink_root / "pkg-groups.tar"
+    archive.chmod(0o600)
+    archive.replace(target)
+    archive.symlink_to(target.name)
+    symlink_settings = replace(
+        Settings.from_env(),
+        install_execution_release_root=symlink_root,
+    )
+
+    with pytest.raises(ControlError, match="release"):
+        loader(symlink_settings)
+
+    mutable_root = base / "held-release-mutable"
+    _publish_held_release_contract(mutable_root)
+    (mutable_root / "install-scripts.tar").chmod(0o644)
+    mutable_settings = replace(
+        Settings.from_env(),
+        install_execution_release_root=mutable_root,
+    )
+
+    with pytest.raises(ControlError, match="release"):
+        loader(mutable_settings)
 
 
 def _execution_service(

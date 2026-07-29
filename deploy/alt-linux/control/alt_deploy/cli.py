@@ -14,7 +14,10 @@ from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
 from .controller_readiness import ControllerReadinessChecker
 from .errors import ControlError
-from .install_execution import ExecutionAuthorizationService
+from .install_execution import (
+    ExecutionAuthorizationService,
+    load_execution_release_archives,
+)
 from .job_reconcile import JobReconciler
 from .job_retention import JobRetentionManager
 from .install_session_approval import InstallSessionApprovalService
@@ -397,6 +400,9 @@ def main(
             result = ExecutionAuthorizationService(
                 active_settings,
                 clock=lambda: datetime.now(timezone.utc).isoformat(),
+                release_archives=load_execution_release_archives(
+                    active_settings
+                ),
             ).authorize(
                 parsed.session_id,
                 plan_sha256=parsed.plan_sha256,

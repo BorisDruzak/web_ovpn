@@ -53,6 +53,10 @@ _DEVICE_RE = re.compile(r"^/dev/[A-Za-z0-9._+-]{1,63}$")
 _ARCHIVE_MEMBER_RE = re.compile(
     r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$))[A-Za-z0-9._+@/-]{1,256}/?$"
 )
+_RELEASE_ARCHIVE_NAMES = ("pkg-groups.tar", "install-scripts.tar")
+_RELEASE_MANIFEST_NAME = "manifest.json"
+_MAX_RELEASE_MANIFEST_BYTES = 64 * 1024
+_MAX_RELEASE_ARCHIVE_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,187 @@ class ReleaseArchiveSource:
             )
         ):
             raise ValueError("Execution release archive identity is invalid")
+
+
+def _release_invalid() -> ControlError:
+    return ControlError(
+        "execution_release_invalid",
+        "Execution release manifest is invalid",
+        4,
+    )
+
+
+def canonical_execution_release_manifest_bytes(
+    sources: Mapping[str, ReleaseArchiveSource],
+) -> bytes:
+    if (
+        not isinstance(sources, Mapping)
+        or set(sources) != set(_RELEASE_ARCHIVE_NAMES)
+        or any(
+            not isinstance(sources[name], ReleaseArchiveSource)
+            or sources[name].path.name != name
+            for name in _RELEASE_ARCHIVE_NAMES
+        )
+    ):
+        raise _release_invalid()
+    return (
+        json.dumps(
+            {
+                "archives": {
+                    name: {
+                        "members": list(sources[name].members),
+                        "sha256": sources[name].sha256,
+                    }
+                    for name in _RELEASE_ARCHIVE_NAMES
+                },
+                "schema_version": 1,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _held_release_file(
+    path: Path,
+    *,
+    maximum_size: int,
+    capture: bool,
+) -> tuple[bytes, str]:
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise _release_invalid() from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise _release_invalid()
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise _release_invalid() from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+            or not 1 <= opened.st_size <= maximum_size
+        ):
+            raise _release_invalid()
+        if os.name != "nt" and (
+            opened.st_uid != 0
+            or opened.st_gid != 0
+            or stat.S_IMODE(opened.st_mode) != 0o444
+        ):
+            raise _release_invalid()
+        digest = hashlib.sha256()
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > maximum_size:
+                raise _release_invalid()
+            digest.update(chunk)
+            if capture:
+                chunks.append(chunk)
+        if size != opened.st_size:
+            raise _release_invalid()
+        return b"".join(chunks), digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def load_execution_release_archives(
+    settings: Settings,
+) -> dict[str, ReleaseArchiveSource]:
+    root = settings.install_execution_release_root
+    try:
+        metadata = root.lstat()
+    except OSError as exc:
+        raise _release_invalid() from exc
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise _release_invalid()
+    if os.name != "nt" and (
+        metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o755
+    ):
+        raise _release_invalid()
+    raw, _manifest_digest = _held_release_file(
+        root / _RELEASE_MANIFEST_NAME,
+        maximum_size=_MAX_RELEASE_MANIFEST_BYTES,
+        capture=True,
+    )
+
+    def strict_object(
+        pairs: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=strict_object,
+        )
+        if (
+            not isinstance(document, dict)
+            or set(document) != {"schema_version", "archives"}
+            or document.get("schema_version") != 1
+            or type(document.get("schema_version")) is not int
+            or not isinstance(document.get("archives"), dict)
+            or set(document["archives"]) != set(_RELEASE_ARCHIVE_NAMES)
+        ):
+            raise ValueError
+        sources: dict[str, ReleaseArchiveSource] = {}
+        for name in _RELEASE_ARCHIVE_NAMES:
+            entry = document["archives"][name]
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {"sha256", "members"}
+                or not isinstance(entry.get("sha256"), str)
+                or not _SHA256_RE.fullmatch(entry["sha256"])
+                or not isinstance(entry.get("members"), list)
+                or not entry["members"]
+                or len(set(entry["members"])) != len(entry["members"])
+                or any(
+                    not isinstance(member, str)
+                    or not _ARCHIVE_MEMBER_RE.fullmatch(member)
+                    for member in entry["members"]
+                )
+            ):
+                raise ValueError
+            path = root / name
+            _content, actual_sha256 = _held_release_file(
+                path,
+                maximum_size=_MAX_RELEASE_ARCHIVE_BYTES,
+                capture=False,
+            )
+            if actual_sha256 != entry["sha256"]:
+                raise ValueError
+            sources[name] = ReleaseArchiveSource(
+                path=path,
+                sha256=entry["sha256"],
+                members=tuple(entry["members"]),
+            )
+        if canonical_execution_release_manifest_bytes(sources) != raw:
+            raise ValueError
+        return sources
+    except (KeyError, TypeError, UnicodeDecodeError, ValueError):
+        raise _release_invalid() from None
 
 
 @dataclass(frozen=True)

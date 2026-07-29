@@ -6,7 +6,9 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,20 @@ _EXECUTION_ALL_FILES = frozenset(
     (*EXECUTION_BUNDLE_FILES, _EXECUTION_DIGEST_FILE)
 )
 _MAX_EXECUTION_FILE_BYTES = 64 * 1024 * 1024
+_MAX_EXECUTION_DIGEST_BYTES = 16 * 1024
+
+
+@dataclass
+class ExecutionFileSnapshot:
+    descriptor: int
+    length: int
+    sha256: str
+    manifest_sha256: str
+
+    def read(self, size: int = 64 * 1024) -> bytes:
+        if type(size) is not int or not 1 <= size <= 1024 * 1024:
+            raise ValueError("Execution stream read size is invalid")
+        return os.read(self.descriptor, size)
 
 
 class InstallSessionRepository:
@@ -643,7 +659,12 @@ class InstallSessionRepository:
                     child.unlink()
                 temporary.rmdir()
 
-    def _read_execution_regular_bytes(self, path: Path) -> bytes:
+    def _open_execution_regular(
+        self,
+        path: Path,
+        *,
+        maximum_size: int = _MAX_EXECUTION_FILE_BYTES,
+    ) -> tuple[int, os.stat_result]:
         try:
             before = path.lstat()
         except OSError as exc:
@@ -682,10 +703,25 @@ class InstallSessionRepository:
                 raise self._invalid(
                     "Install execution revision permissions are invalid"
                 )
-            if not 1 <= opened.st_size <= _MAX_EXECUTION_FILE_BYTES:
+            if not 1 <= opened.st_size <= maximum_size:
                 raise self._invalid(
                     "Install execution revision file size is invalid"
                 )
+            return descriptor, opened
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def _read_execution_regular_bytes(
+        self,
+        path: Path,
+        *,
+        maximum_size: int = _MAX_EXECUTION_FILE_BYTES,
+    ) -> bytes:
+        descriptor, opened = self._open_execution_regular(
+            path, maximum_size=maximum_size
+        )
+        try:
             chunks: list[bytes] = []
             size = 0
             while True:
@@ -693,7 +729,7 @@ class InstallSessionRepository:
                 if not chunk:
                     break
                 size += len(chunk)
-                if size > _MAX_EXECUTION_FILE_BYTES:
+                if size > maximum_size:
                     raise self._invalid(
                         "Install execution revision file size is invalid"
                     )
@@ -705,6 +741,59 @@ class InstallSessionRepository:
             return b"".join(chunks)
         finally:
             os.close(descriptor)
+
+    def _execution_digest_document(
+        self, directory: Path
+    ) -> dict[str, str]:
+        raw = self._read_execution_regular_bytes(
+            directory / _EXECUTION_DIGEST_FILE,
+            maximum_size=_MAX_EXECUTION_DIGEST_BYTES,
+        )
+
+        def strict_object(
+            pairs: list[tuple[str, object]],
+        ) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError
+                result[key] = value
+            return result
+
+        try:
+            document = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=strict_object,
+            )
+            if (
+                not isinstance(document, dict)
+                or set(document) != {"schema_version", "files"}
+                or type(document.get("schema_version")) is not int
+                or document.get("schema_version") != 1
+                or not isinstance(document.get("files"), dict)
+                or set(document["files"]) != set(EXECUTION_BUNDLE_FILES)
+                or any(
+                    not isinstance(value, str)
+                    or not _SHA256_RE.fullmatch(value)
+                    for value in document["files"].values()
+                )
+                or raw
+                != (
+                    json.dumps(
+                        document,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+            ):
+                raise ValueError
+            return dict(document["files"])
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise self._invalid(
+                "Install execution digest metadata is invalid"
+            ) from None
 
     def _read_execution_snapshot_at(
         self, directory: Path
@@ -770,11 +859,77 @@ class InstallSessionRepository:
         )
 
     def read_execution_file(self, session_id: str, filename: str) -> bytes:
+        with self.open_execution_file(session_id, filename) as snapshot:
+            chunks: list[bytes] = []
+            while True:
+                chunk = snapshot.read()
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+
+    @contextmanager
+    def open_execution_file(
+        self, session_id: str, filename: str
+    ) -> Iterator[ExecutionFileSnapshot]:
         if filename not in EXECUTION_BUNDLE_FILES:
             raise self._invalid(
                 "Install execution revision filename is invalid"
             )
-        return self.read_execution_files(session_id)[filename]
+        directory = self.directory(session_id) / "execution-0001"
+        try:
+            metadata = directory.lstat()
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise self._invalid(
+                "Install execution revision is not a directory"
+            )
+        try:
+            children = {child.name: child for child in directory.iterdir()}
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if set(children) != _EXECUTION_ALL_FILES:
+            raise self._invalid(
+                "Install execution revision filenames are invalid"
+            )
+        digests = self._execution_digest_document(directory)
+        descriptor, opened = self._open_execution_regular(
+            children[filename]
+        )
+        try:
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_EXECUTION_FILE_BYTES:
+                    raise self._invalid(
+                        "Install execution revision file size is invalid"
+                    )
+                digest.update(chunk)
+            actual_sha256 = digest.hexdigest()
+            if (
+                size != opened.st_size
+                or actual_sha256 != digests[filename]
+            ):
+                raise self._invalid(
+                    "Install execution revision digest is invalid"
+                )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            yield ExecutionFileSnapshot(
+                descriptor=descriptor,
+                length=size,
+                sha256=actual_sha256,
+                manifest_sha256=digests["execution-manifest.json"],
+            )
+        finally:
+            os.close(descriptor)
 
     def read_execution_files(
         self, session_id: str

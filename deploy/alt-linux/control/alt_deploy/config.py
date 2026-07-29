@@ -37,6 +37,9 @@ class Settings:
     install_signing_public_key: Path = Path(
         "/etc/alt-deploy/install-plan-ed25519.pub"
     )
+    install_execution_release_root: Path = Path(
+        "/srv/alt-deploy/install-execution-release"
+    )
     install_execution_listen_address: str = "192.168.100.17"
     install_execution_listen_port: int = 18092
     install_execution_tls_root: Path = Path("/var/lib/alt-deploy-secrets")
