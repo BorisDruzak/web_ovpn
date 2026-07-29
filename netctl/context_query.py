@@ -24,6 +24,7 @@ ATTACHMENT_REASON_LABELS = {
     "verified_backbone_port": "это подтверждённый uplink",
     "partial_collection": "сбор коммутатора неполный",
 }
+MAX_ATTACHMENT_EVIDENCE_DEPTH = 16
 
 
 def _asset_public(asset: dict[str, Any]) -> dict[str, Any]:
@@ -116,21 +117,28 @@ def _attachment_evidence_items(evidence_json: object) -> list[dict[str, Any]]:
     """Decode collector evidence into dictionaries without exposing malformed input."""
     try:
         evidence = json.loads(str(evidence_json or "[]"))
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except (RecursionError, TypeError, ValueError, json.JSONDecodeError):
         return []
     items = evidence if isinstance(evidence, list) else [evidence]
     return [item for item in items if isinstance(item, dict)]
 
 
 def _nested_evidence_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Iteratively flatten only a bounded amount of untrusted evidence."""
     nested: list[dict[str, Any]] = []
-    for item in items:
+    pending = [(item, 0) for item in reversed(items)]
+    while pending:
+        item, depth = pending.pop()
         nested.append(item)
+        if depth >= MAX_ATTACHMENT_EVIDENCE_DEPTH:
+            continue
+        children: list[dict[str, Any]] = []
         for value in item.values():
             if isinstance(value, dict):
-                nested.extend(_nested_evidence_items([value]))
+                children.append(value)
             elif isinstance(value, list):
-                nested.extend(_nested_evidence_items([entry for entry in value if isinstance(entry, dict)]))
+                children.extend(entry for entry in value if isinstance(entry, dict))
+        pending.extend((child, depth + 1) for child in reversed(children))
     return nested
 
 

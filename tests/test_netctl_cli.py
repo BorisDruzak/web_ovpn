@@ -48,6 +48,15 @@ def test_attachment_reason_projects_only_allowlisted_evidence(evidence, expected
     assert _attachment_reason(raw) == expected
 
 
+def test_attachment_reason_omits_deeply_nested_evidence_without_recursion():
+    """Untrusted valid JSON beyond the traversal bound must not break asset context."""
+    from netctl.context_query import _attachment_reason
+
+    evidence = '{"evidence":' * 1200 + '{"reason":"oper_status_unknown"}' + "}" * 1200
+
+    assert _attachment_reason(evidence) == ""
+
+
 def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_path, capsys):
     """Dropping candidate evidence would leave an ambiguous port impossible to assess."""
     from netctl.db import connect
