@@ -278,6 +278,10 @@ label[hidden] {
   grid-template-columns: repeat(2, minmax(220px, 1fr));
 }
 
+.client-form-mode {
+  grid-column: 1 / -1;
+}
+
 .grid-form .form-actions {
   grid-column: 1 / -1;
 }
