@@ -110,9 +110,17 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
         }
 
-        assert {"schema_migrations", "context_import_runs", "context_heads", *INTENT_TABLES} <= table_names
+        assert {
+            "schema_migrations",
+            "context_import_runs",
+            "context_heads",
+            "availability_runs",
+            "availability_results",
+            "availability_result_events",
+            *INTENT_TABLES,
+        } <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 14)
+            (version,) for version in range(1, 15)
         ]
         assert conn.execute("SELECT * FROM context_heads").fetchall() == []
         assert [tuple(row) for row in conn.execute("SELECT id, context_id, sha256 FROM context_revisions").fetchall()] == [

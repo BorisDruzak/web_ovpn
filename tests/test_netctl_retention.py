@@ -200,3 +200,117 @@ def test_retention_rejects_naive_or_invalid_cutoff(conn):
         retention_report(conn, "2026-06-26T00:00:00")
     with pytest.raises(ValueError, match="cutoff"):
         retention_report(conn, "not-a-time")
+
+
+def test_retention_keeps_current_and_latest_successful_availability_run(conn):
+    """Pruning the only current or latest successful CIDR run would break state and recovery."""
+    from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run
+    from netctl.retention import retention_report
+
+    revision = conn.execute(
+        """INSERT INTO context_revisions
+           (context_id, schema_version, sha256, source_path, validated_at, git_sha,
+            status, error_json, counts_json, validation_order)
+           VALUES ('retention-availability', '2.2.0', 'retention-sha', 'context.yaml',
+                   ?, 'retention-git', 'ok', '[]', '{}', 1)""",
+        (OLD,),
+    ).lastrowid
+    import_run = conn.execute(
+        """INSERT INTO context_import_runs
+           (context_id, context_revision_id, input_sha256, git_sha, source_path,
+            started_at, finished_at, status, errors_json)
+           VALUES ('retention-availability', ?, 'retention-sha', 'retention-git',
+                   'context.yaml', ?, ?, 'success_imported', '[]')""",
+        (revision, OLD, OLD),
+    ).lastrowid
+    conn.execute(
+        """INSERT INTO intent_segments
+           (context_revision_id, stable_id, lifecycle, canonical_json, canonical_hash,
+            origin_context_revision_id)
+           VALUES (?, 'retention-availability', 'active',
+                   '{"availability_monitoring":true,"cidr":"203.0.113.0/30","id":"retention-availability"}',
+                   'retention-hash', ?)""",
+        (revision, revision),
+    )
+    conn.execute(
+        """INSERT INTO context_heads
+           (context_id, context_revision_id, activated_by_import_run_id, activated_at)
+           VALUES ('retention-availability', ?, ?, ?)""",
+        (revision, import_run, OLD),
+    )
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "203.0.113.0/30", started=OLD, finished=OLD,
+            results=[AvailabilityResult("203.0.113.1", "reachable", "icmp"), AvailabilityResult("203.0.113.2", "reachable", "icmp")],
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.failed("203.0.113.0/30", started=OLD, error_class="deadline_exceeded"),
+    )
+
+    report = retention_report(conn, CUTOFF)
+
+    assert report["keep"]["availability_runs_current_reference"] == 1
+    assert report["keep"]["availability_runs_last_success"] == 1
+    assert report["delete"]["availability_result_events"] == 2
+    assert report["delete"]["availability_runs"] == 1
+
+
+def test_retention_rolls_back_availability_deletions_on_run_delete_failure(conn):
+    """Deleting availability events before a later run-delete failure must remain atomic."""
+    from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run
+    from netctl.retention import apply_retention
+
+    conn.execute(
+        """INSERT INTO context_revisions
+           (id, context_id, schema_version, sha256, source_path, validated_at, git_sha,
+            status, error_json, counts_json, validation_order)
+           VALUES (100, 'availability-rollback', '2.2.0', 'rollback-sha', 'context.yaml',
+                   ?, 'rollback-git', 'ok', '[]', '{}', 1)""",
+        (OLD,),
+    )
+    run = conn.execute(
+        """INSERT INTO context_import_runs
+           (context_id, context_revision_id, input_sha256, git_sha, source_path,
+            started_at, finished_at, status, errors_json)
+           VALUES ('availability-rollback', 100, 'rollback-sha', 'rollback-git',
+                   'context.yaml', ?, ?, 'success_imported', '[]')""",
+        (OLD, OLD),
+    ).lastrowid
+    conn.execute(
+        """INSERT INTO intent_segments
+           (context_revision_id, stable_id, lifecycle, canonical_json, canonical_hash,
+            origin_context_revision_id)
+           VALUES (100, 'availability-rollback', 'active',
+                   '{"availability_monitoring":true,"cidr":"203.0.114.0/30","id":"availability-rollback"}',
+                   'rollback-hash', 100)"""
+    )
+    conn.execute(
+        """INSERT INTO context_heads
+           (context_id, context_revision_id, activated_by_import_run_id, activated_at)
+           VALUES ('availability-rollback', 100, ?, ?)""",
+        (run, OLD),
+    )
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "203.0.114.0/30", started=OLD, finished=OLD,
+            results=[AvailabilityResult("203.0.114.1", "reachable", "icmp"), AvailabilityResult("203.0.114.2", "reachable", "icmp")],
+        ),
+    )
+    save_availability_run(conn, AvailabilityRun.failed("203.0.114.0/30", started=OLD, error_class="deadline_exceeded"))
+    conn.execute(
+        """CREATE TRIGGER fixture_abort_availability_run_delete
+           BEFORE DELETE ON availability_runs
+           BEGIN SELECT RAISE(ABORT, 'availability delete abort'); END"""
+    )
+
+    with pytest.raises(sqlite3.DatabaseError, match="availability delete abort"):
+        apply_retention(conn, CUTOFF)
+
+    assert conn.execute("SELECT count(*) FROM availability_result_events").fetchone()[0] == 2
+    assert conn.execute("SELECT count(*) FROM availability_runs").fetchone()[0] == 2

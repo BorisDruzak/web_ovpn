@@ -25,6 +25,7 @@ _EVENT_TABLES = (
     ("asset_attachment_events", "observed_at"),
     ("host_observations", "observed_at"),
     ("network_events", "ts"),
+    ("availability_result_events", "observed_at"),
 )
 
 
@@ -91,6 +92,13 @@ def protected_path_fact_run_ids(conn: sqlite3.Connection) -> set[int]:
         conn, "router_path_fact_runs", "source_id", ("success",))
 
 
+def protected_availability_run_ids(conn: sqlite3.Connection) -> set[int]:
+    """Return CIDR runs still needed by current availability state or recovery."""
+    return _current_run_ids(conn, ("availability_results",), "run_id") | _latest_run_ids(
+        conn, "availability_runs", "cidr", ("success",)
+    )
+
+
 def _old_ids(conn: sqlite3.Connection, table: str, timestamp_column: str, cutoff: str, protected: set[int] | None = None) -> list[int]:
     query = f"SELECT id FROM {table} WHERE {timestamp_column} < ?"
     params: list[object] = [cutoff]
@@ -111,6 +119,7 @@ def retention_report(conn: sqlite3.Connection, cutoff: str) -> dict[str, dict[st
     switch_protected = protected_switch_run_ids(conn)
     correlation_protected = protected_correlation_run_ids(conn)
     path_protected = protected_path_fact_run_ids(conn)
+    availability_protected = protected_availability_run_ids(conn)
     delete = {table: len(_old_ids(conn, table, column, cutoff)) for table, column in _EVENT_TABLES}
     delete.update(
         {
@@ -125,6 +134,7 @@ def retention_report(conn: sqlite3.Connection, cutoff: str) -> dict[str, dict[st
             "switch_collection_runs": len(_old_ids(conn, "switch_collection_runs", "COALESCE(finished_at, started_at)", cutoff, switch_protected)),
             "network_correlation_runs": len(_old_ids(conn, "network_correlation_runs", "COALESCE(finished_at, started_at)", cutoff, correlation_protected)),
             "router_path_fact_runs": len(_old_ids(conn, "router_path_fact_runs", "COALESCE(finished_at, started_at)", cutoff, path_protected)),
+            "availability_runs": len(_old_ids(conn, "availability_runs", "COALESCE(finished_at, started_at)", cutoff, availability_protected)),
         }
     )
     return {
@@ -136,6 +146,8 @@ def retention_report(conn: sqlite3.Connection, cutoff: str) -> dict[str, dict[st
             "network_correlation_runs_last_success": len(_latest_run_ids(conn, "network_correlation_runs", "run_type", ("success", "partial"))),
             "router_path_fact_runs_current_reference": _count_current_references(conn, _PATH_CURRENT_TABLES, "collector_run_id"),
             "router_path_fact_runs_last_success": len(_latest_run_ids(conn, "router_path_fact_runs", "source_id", ("success",))),
+            "availability_runs_current_reference": _count_current_references(conn, ("availability_results",), "run_id"),
+            "availability_runs_last_success": len(_latest_run_ids(conn, "availability_runs", "cidr", ("success",))),
         },
     }
 
@@ -182,6 +194,9 @@ def apply_retention(conn: sqlite3.Connection, cutoff: str) -> dict[str, object]:
         ))
         deleted["router_path_fact_runs"] = _delete_ids(conn, "router_path_fact_runs", _old_ids(
             conn, "router_path_fact_runs", "COALESCE(finished_at, started_at)", cutoff, protected_path_fact_run_ids(conn)
+        ))
+        deleted["availability_runs"] = _delete_ids(conn, "availability_runs", _old_ids(
+            conn, "availability_runs", "COALESCE(finished_at, started_at)", cutoff, protected_availability_run_ids(conn)
         ))
         _verify_database(conn)
         metrics = {

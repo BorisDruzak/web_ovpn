@@ -1653,6 +1653,50 @@ def _migration_13(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE network_routes ADD COLUMN route_type TEXT NOT NULL DEFAULT 'unicast'")
 
 
+def _migration_14(conn: sqlite3.Connection) -> None:
+    for statement in """
+        CREATE TABLE availability_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          context_revision_id INTEGER NOT NULL REFERENCES context_revisions(id) ON DELETE RESTRICT,
+          cidr TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          status TEXT NOT NULL CHECK (status IN ('success', 'failed')),
+          target_count INTEGER NOT NULL CHECK (target_count >= 0),
+          completed_target_count INTEGER NOT NULL CHECK (completed_target_count >= 0),
+          error_class TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX availability_runs_cidr_finished_idx ON availability_runs(cidr, finished_at DESC, id DESC);
+
+        CREATE TABLE availability_results (
+          cidr TEXT NOT NULL,
+          ip TEXT NOT NULL,
+          run_id INTEGER NOT NULL REFERENCES availability_runs(id) ON DELETE RESTRICT,
+          active_state TEXT NOT NULL CHECK (active_state IN ('reachable', 'unreachable')),
+          active_method TEXT NOT NULL DEFAULT '',
+          checked_at TEXT NOT NULL,
+          failure_class TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (cidr, ip)
+        );
+        CREATE INDEX availability_results_run_idx ON availability_results(run_id);
+
+        CREATE TABLE availability_result_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          run_id INTEGER NOT NULL REFERENCES availability_runs(id) ON DELETE RESTRICT,
+          ip TEXT NOT NULL,
+          old_active_state TEXT NOT NULL DEFAULT '',
+          new_active_state TEXT NOT NULL DEFAULT '',
+          old_active_method TEXT NOT NULL DEFAULT '',
+          new_active_method TEXT NOT NULL DEFAULT '',
+          observed_at TEXT NOT NULL,
+          reason TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX availability_result_events_observed_idx ON availability_result_events(observed_at, id);
+        """.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1667,6 +1711,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (11, _migration_11),
     (12, _migration_12),
     (13, _migration_13),
+    (14, _migration_14),
 )
 
 
