@@ -10,7 +10,7 @@
     <label>Режим
       <select name="creation_mode"><option value="single">Один клиент</option><option value="bulk">Массовое создание</option></select>
     </label>
-    <label>
+    <label data-mode-section="single-input">
       Client name
       <input name="client" required pattern="[A-Za-z0-9._-]+" value="{{ form_values.client if form_values else '' }}">
     </label>
@@ -61,6 +61,49 @@
     </div>
   </form>
 </section>
+
+<script>
+(() => {
+  const form = document.querySelector('form[action="/clients/new"]');
+  if (!form) return;
+  const creationMode = form.elements.creation_mode;
+  const clientType = form.elements.client_type;
+  const accessMode = form.elements.access_mode;
+  const profile = form.elements.profile;
+  const client = form.elements.client;
+
+  function setControls(name, selector, visible) {
+    form.querySelectorAll(selector).forEach((control) => {
+      const section = control.closest('label') || control;
+      section.hidden = !visible;
+      section.dataset.modeSection = name;
+      control.disabled = !visible;
+      if (!visible) control.required = false;
+    });
+  }
+
+  function syncClientFormModes() {
+    const isBatch = creationMode.value === 'bulk';
+    if (isBatch) clientType.value = "user";
+    const isRouter = !isBatch && clientType.value !== 'user';
+    const usesCustomRoutes = !isRouter && accessMode.value === 'custom';
+    setControls("single-input", '[name="client"], [name="client_type"]', !isBatch);
+    setControls("batch-input", '[name="client_names"], [name="clients_csv"]', isBatch);
+    setControls("router-options", '[name="vpn_ip"], [name="remote_lan_cidr"], [name="create_server_route"]', isRouter);
+    setControls("access-options", '[name="access_mode"]', !isRouter);
+    setControls("template-options", '[name="profile"]', isRouter || !usesCustomRoutes);
+    setControls("custom-options", '[name="custom_cidrs"], [name="dns"]', !isRouter && usesCustomRoutes);
+    client.required = !isBatch;
+    clientType.required = !isBatch;
+    profile.required = isRouter || !usesCustomRoutes;
+  }
+
+  creationMode.addEventListener('change', syncClientFormModes);
+  clientType.addEventListener('change', syncClientFormModes);
+  accessMode.addEventListener('change', syncClientFormModes);
+  syncClientFormModes();
+})();
+</script>
 
 {% if result %}
 <section class="panel">
