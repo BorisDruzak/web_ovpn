@@ -35,7 +35,10 @@ install_execution_api_exact_socket_status() {
     fi
     if printf '%s\n' "${listeners}" | awk \
         -v endpoint="${INSTALL_EXECUTION_API_ADDRESS}:${INSTALL_EXECUTION_API_PORT}" \
-        '$4 == endpoint { occupied = 1 } END { exit !occupied }'
+        -v port="${INSTALL_EXECUTION_API_PORT}" \
+        '$4 == endpoint || $4 == "*:" port || $4 == "0.0.0.0:" port ||
+         $4 == "[::]:" port || $4 == ":::" port { occupied = 1 }
+         END { exit !occupied }'
     then
         return 0
     else
@@ -112,6 +115,79 @@ raise SystemExit(value != expected)
 '
 }
 
+install_execution_api_capture_systemd_state() {
+    local enabled_rc
+    local active_rc
+
+    if systemctl is-enabled "${INSTALL_EXECUTION_API_UNIT}" >/dev/null 2>&1; then
+        INSTALL_EXECUTION_WAS_ENABLED=1
+    else
+        enabled_rc=$?
+        case ${enabled_rc} in
+            1|4) INSTALL_EXECUTION_WAS_ENABLED=0 ;;
+            *)
+                install_execution_api_error "Execution API service state inspection failed"
+                return 1
+                ;;
+        esac
+    fi
+    if systemctl is-active "${INSTALL_EXECUTION_API_UNIT}" >/dev/null 2>&1; then
+        INSTALL_EXECUTION_WAS_ACTIVE=1
+    else
+        active_rc=$?
+        case ${active_rc} in
+            1|3|4) INSTALL_EXECUTION_WAS_ACTIVE=0 ;;
+            *)
+                install_execution_api_error "Execution API service state inspection failed"
+                return 1
+                ;;
+        esac
+    fi
+}
+
+install_execution_api_restore_activation() {
+    trap - ERR INT TERM
+    if [[ ${INSTALL_EXECUTION_TRANSACTION_ACTIVE:-0} != 1 ]]; then
+        return
+    fi
+    if [[ -n ${INSTALL_EXECUTION_OLD_CURRENT_TARGET:-} ]]; then
+        install_execution_api_atomic_pointer \
+            "${INSTALL_EXECUTION_CURRENT}" \
+            "${INSTALL_EXECUTION_OLD_CURRENT_TARGET}" || true
+    else
+        rm -f -- "${INSTALL_EXECUTION_CURRENT}" || true
+    fi
+    if [[ ${INSTALL_EXECUTION_HAD_UNIT:-0} == 1 ]]; then
+        install_execution_api_atomic_regular_file \
+            "${INSTALL_EXECUTION_UNIT_BACKUP}" \
+            "${INSTALL_EXECUTION_UNIT_PATH}" || true
+    else
+        rm -f -- "${INSTALL_EXECUTION_UNIT_PATH}" || true
+    fi
+    systemctl daemon-reload || true
+    if [[ ${INSTALL_EXECUTION_WAS_ENABLED:-0} == 1 ]]; then
+        systemctl enable "${INSTALL_EXECUTION_API_UNIT}" || true
+    else
+        systemctl disable "${INSTALL_EXECUTION_API_UNIT}" || true
+    fi
+    if [[ ${INSTALL_EXECUTION_WAS_ACTIVE:-0} == 1 ]]; then
+        systemctl start "${INSTALL_EXECUTION_API_UNIT}" || true
+    else
+        systemctl stop "${INSTALL_EXECUTION_API_UNIT}" || true
+    fi
+    rm -rf -- "${INSTALL_EXECUTION_RELEASE_PATH}" \
+        "${INSTALL_EXECUTION_TRANSACTION_DIR}" || true
+    INSTALL_EXECUTION_TRANSACTION_ACTIVE=0
+}
+
+install_execution_api_fail_activation() {
+    local message=$1
+
+    install_execution_api_error "${message}"
+    install_execution_api_restore_activation
+    return 1
+}
+
 install_execution_api_install() {
     local root_prefix=$1
     local script_dir
@@ -184,23 +260,52 @@ install_execution_api_install() {
         rm -rf -- "${transaction}"
         return 1
     fi
-    mv -- "${stage}" "${release}"
-    rmdir "${transaction}"
-    if ! install_execution_api_atomic_pointer "${current}" "${release}"; then
-        install_execution_api_error "Execution API current pointer activation failed"
+    INSTALL_EXECUTION_CURRENT=${current}
+    INSTALL_EXECUTION_UNIT_PATH=${unit_path}
+    INSTALL_EXECUTION_TRANSACTION_DIR=${transaction}
+    INSTALL_EXECUTION_RELEASE_PATH=${release}
+    INSTALL_EXECUTION_UNIT_BACKUP="${transaction}/unit.backup"
+    INSTALL_EXECUTION_OLD_CURRENT_TARGET=
+    INSTALL_EXECUTION_HAD_UNIT=0
+    INSTALL_EXECUTION_WAS_ENABLED=0
+    INSTALL_EXECUTION_WAS_ACTIVE=0
+    INSTALL_EXECUTION_TRANSACTION_ACTIVE=0
+    if [[ -L ${current} ]]; then
+        INSTALL_EXECUTION_OLD_CURRENT_TARGET=$(readlink -- "${current}")
+    fi
+    if [[ -f ${unit_path} ]]; then
+        cp -- "${unit_path}" "${INSTALL_EXECUTION_UNIT_BACKUP}"
+        INSTALL_EXECUTION_HAD_UNIT=1
+    fi
+    if ! install_execution_api_capture_systemd_state; then
+        rm -rf -- "${transaction}"
         return 1
+    fi
+    mv -- "${stage}" "${release}"
+    INSTALL_EXECUTION_TRANSACTION_ACTIVE=1
+    if ! install_execution_api_atomic_pointer "${current}" "${release}"; then
+        install_execution_api_fail_activation "Execution API current pointer activation failed"
+        return $?
     fi
     if ! install_execution_api_atomic_regular_file \
         "${alt_root}/systemd/${INSTALL_EXECUTION_API_UNIT}" "${unit_path}"; then
-        install_execution_api_error "Execution API unit installation failed"
-        return 1
+        install_execution_api_fail_activation "Execution API unit installation failed"
+        return $?
     fi
-    systemctl daemon-reload
-    systemctl enable --now "${INSTALL_EXECUTION_API_UNIT}"
+    if ! systemctl daemon-reload; then
+        install_execution_api_fail_activation "Execution API daemon reload failed"
+        return $?
+    fi
+    if ! systemctl enable --now "${INSTALL_EXECUTION_API_UNIT}"; then
+        install_execution_api_fail_activation "Execution API activation failed"
+        return $?
+    fi
     if ! install_execution_api_health_is_exact "${root_prefix}"; then
-        install_execution_api_error "Execution API TLS health validation failed"
-        return 1
+        install_execution_api_fail_activation "Execution API TLS health validation failed"
+        return $?
     fi
+    rm -rf -- "${transaction}"
+    INSTALL_EXECUTION_TRANSACTION_ACTIVE=0
     printf 'Installed V2 execution API: %s\n' "${release_id}"
 }
 

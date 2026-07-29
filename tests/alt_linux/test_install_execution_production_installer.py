@@ -19,19 +19,32 @@ def _fake_command(directory: Path, name: str, body: str) -> None:
     path.chmod(0o755)
 
 
-def _environment(tmp_path: Path, *, listener: str = "") -> dict[str, str]:
+def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dict[str, str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     command_log = tmp_path / "commands.log"
     service_state = tmp_path / "service-state"
-    service_state.write_text("disabled inactive\n", encoding="utf-8")
+    service_state.write_text(
+        overrides.get("INSTALLER_SERVICE_INITIAL_STATE", "disabled inactive") + "\n",
+        encoding="utf-8",
+    )
     _fake_command(
         fake_bin,
         "systemctl",
         "printf '%s\\n' \"$*\" >> \"${INSTALLER_COMMAND_LOG:?}\"\n"
-        "case ${1:-} in\n"
+        "action=${1:-}\n"
+        "if [[ ${INSTALLER_SYSTEMCTL_FAIL_ONCE:-} == \"$action\" && ! -e ${INSTALLER_SYSTEMCTL_FAIL_MARKER:?} ]]; then\n"
+        "  : > \"${INSTALLER_SYSTEMCTL_FAIL_MARKER}\"\n"
+        "  exit 91\n"
+        "fi\n"
+        "case \"$action\" in\n"
+        "  is-enabled) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; [[ $enabled == enabled ]] ;;\n"
+        "  is-active) read -r _ active < \"${INSTALLER_SERVICE_STATE:?}\"; [[ $active == active ]] ;;\n"
         "  daemon-reload) exit 0 ;;\n"
         "  enable) printf 'enabled active\\n' > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
+        "  disable) printf 'disabled inactive\\n' > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
+        "  start) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; printf '%s active\\n' \"$enabled\" > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
+        "  stop) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; printf '%s inactive\\n' \"$enabled\" > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
         "  *) exit 90 ;;\n"
         "esac\n",
     )
@@ -39,7 +52,11 @@ def _environment(tmp_path: Path, *, listener: str = "") -> dict[str, str]:
     _fake_command(
         fake_bin,
         "curl",
-        "printf '%s\\n' '{\"schema_version\":1,\"service\":\"alt-install-execution\",\"status\":\"ok\"}'\n",
+        "if [[ ${INSTALLER_HEALTH_FAIL:-0} == 1 ]]; then\n"
+        "  printf '%s\\n' '{\"schema_version\":1,\"service\":\"alt-install-execution\",\"status\":\"starting\"}'\n"
+        "else\n"
+        "  printf '%s\\n' '{\"schema_version\":1,\"service\":\"alt-install-execution\",\"status\":\"ok\"}'\n"
+        "fi\n",
     )
     environment = os.environ.copy()
     environment.update(
@@ -48,12 +65,14 @@ def _environment(tmp_path: Path, *, listener: str = "") -> dict[str, str]:
             "INSTALLER_COMMAND_LOG": str(command_log),
             "INSTALLER_SERVICE_STATE": str(service_state),
             "INSTALLER_SS_OUTPUT": listener,
+            "INSTALLER_SYSTEMCTL_FAIL_MARKER": str(tmp_path / "systemctl-failed"),
         }
     )
+    environment.update(overrides)
     return environment
 
 
-def _run(tmp_path: Path, *, listener: str = "") -> subprocess.CompletedProcess[str]:
+def _run(tmp_path: Path, *, listener: str = "", **overrides: str) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "host-root"
     command = (
         "set -Eeuo pipefail; "
@@ -65,7 +84,7 @@ def _run(tmp_path: Path, *, listener: str = "") -> subprocess.CompletedProcess[s
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
-        env=_environment(tmp_path, listener=listener),
+        env=_environment(tmp_path, listener=listener, **overrides),
         check=False,
     )
 
@@ -113,6 +132,80 @@ def test_installer_refuses_the_exact_v2_listener_without_touching_v1(
     assert "Listener already occupies 192.168.100.17:18092" in result.stderr
     assert v1.read_text(encoding="utf-8") == "unchanged\n"
     assert not (root / "opt" / "alt-install-execution-api").exists()
+
+
+@pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
+@pytest.mark.parametrize("listener", (
+    "LISTEN 0 128 0.0.0.0:18092 0.0.0.0:*\\n",
+    "LISTEN 0 128 [::]:18092 [::]:*\\n",
+))
+def test_installer_refuses_wildcard_v2_listener(tmp_path: Path, listener: str) -> None:
+    result = _run(tmp_path, listener=listener)
+
+    assert result.returncode != 0
+    assert "Listener already occupies 192.168.100.17:18092" in result.stderr
+    assert not (tmp_path / "host-root" / "opt" / "alt-install-execution-api").exists()
+
+
+def _seed_prior_v2_runtime(tmp_path: Path) -> tuple[Path, bytes, str]:
+    root = tmp_path / "host-root"
+    old_release = root / "opt" / "alt-install-execution-api" / "releases" / "old"
+    old_release.mkdir(parents=True)
+    (old_release / "marker").write_text("old\\n", encoding="utf-8")
+    current = root / "opt" / "alt-install-execution-api" / "current"
+    current.symlink_to(old_release)
+    unit = root / "etc" / "systemd" / "system" / "alt-install-execution.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_bytes(b"[Service]\\nExecStart=/old\\n")
+    return current, unit.read_bytes(), str(old_release)
+
+
+@pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
+@pytest.mark.parametrize(
+    ("overrides", "expected_error"),
+    (
+        ({"INSTALLER_SYSTEMCTL_FAIL_ONCE": "daemon-reload"}, "daemon reload"),
+        ({"INSTALLER_SYSTEMCTL_FAIL_ONCE": "enable"}, "activation"),
+        ({"INSTALLER_HEALTH_FAIL": "1"}, "TLS health"),
+    ),
+)
+def test_activation_failure_restores_preexisting_v2_runtime(
+    tmp_path: Path, overrides: dict[str, str], expected_error: str,
+) -> None:
+    current, old_unit, old_target = _seed_prior_v2_runtime(tmp_path)
+
+    result = _run(
+        tmp_path,
+        INSTALLER_SERVICE_INITIAL_STATE="enabled active",
+        **overrides,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert str(current.resolve()) == old_target
+    assert (tmp_path / "host-root" / "etc" / "systemd" / "system" / "alt-install-execution.service").read_bytes() == old_unit
+    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "enabled active\\n"
+
+
+@pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"INSTALLER_SYSTEMCTL_FAIL_ONCE": "daemon-reload"},
+        {"INSTALLER_SYSTEMCTL_FAIL_ONCE": "enable"},
+        {"INSTALLER_HEALTH_FAIL": "1"},
+    ),
+)
+def test_activation_failure_restores_clean_host_absence(
+    tmp_path: Path, overrides: dict[str, str],
+) -> None:
+    result = _run(tmp_path, **overrides)
+
+    assert result.returncode != 0
+    root = tmp_path / "host-root"
+    assert not (root / "opt" / "alt-install-execution-api" / "current").exists()
+    assert not (root / "etc" / "systemd" / "system" / "alt-install-execution.service").exists()
+    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "disabled inactive\\n"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="systemd unit verification requires Linux")

@@ -24,9 +24,14 @@ for path in (CONTROL_ROOT, API_ROOT):
         sys.path.insert(0, str(path))
 
 from alt_deploy.config import Settings
+from alt_deploy import install_tls
 from alt_deploy.install_tls import ensure_execution_tls_material
 import install_execution_server
 from install_execution_server import create_execution_tls_server
+
+
+def _has_root_authority() -> bool:
+    return os.name != "nt" and os.geteuid() == 0
 
 
 def _settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
@@ -50,6 +55,7 @@ def _health(port: int, cafile: Path, *, tls12_only: bool = False) -> dict[str, o
     return json.loads(body)
 
 
+@pytest.mark.skipif(not _has_root_authority(), reason="TLS authority material requires Linux root")
 def test_tls_material_has_expected_modes_and_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     material = ensure_execution_tls_material(_settings(tmp_path, monkeypatch))
 
@@ -60,6 +66,23 @@ def test_tls_material_has_expected_modes_and_is_idempotent(tmp_path: Path, monke
         assert material.ca_certificate.stat().st_mode & 0o777 == 0o644
 
 
+def test_tls_material_refuses_creation_without_root_authority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(install_tls, "_is_root", lambda: False)
+
+    with pytest.raises(PermissionError, match="root"):
+        ensure_execution_tls_material(_settings(tmp_path, monkeypatch))
+
+
+@pytest.mark.skipif(not _has_root_authority(), reason="root ownership is a Linux root contract")
+def test_tls_material_is_owned_by_root_when_created_as_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    material = ensure_execution_tls_material(_settings(tmp_path, monkeypatch))
+
+    assert material.server_private_key.stat().st_uid == 0
+    assert material.server_private_key.stat().st_gid == 0
+    assert material.server_private_key.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.skipif(not _has_root_authority(), reason="TLS authority material requires Linux root")
 def test_tls_listener_accepts_only_trusted_tls13_clients(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
     material = ensure_execution_tls_material(settings)
@@ -86,6 +109,7 @@ def test_tls_listener_accepts_only_trusted_tls13_clients(tmp_path: Path, monkeyp
         thread.join(timeout=3)
 
 
+@pytest.mark.skipif(not _has_root_authority(), reason="TLS authority material requires Linux root")
 def test_tls_listener_rejects_an_expired_server_certificate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
     material = ensure_execution_tls_material(settings)
@@ -120,6 +144,7 @@ def test_tls_listener_rejects_an_expired_server_certificate(tmp_path: Path, monk
         thread.join(timeout=3)
 
 
+@pytest.mark.skipif(not _has_root_authority(), reason="TLS authority material requires Linux root")
 def test_runtime_uses_credential_copy_without_reading_root_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path, monkeypatch)
     material = ensure_execution_tls_material(settings)
@@ -149,7 +174,24 @@ def test_runtime_uses_credential_copy_without_reading_root_key(tmp_path: Path, m
         lambda *_args, **_kwargs: _Server(),
     )
 
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_EXECUTION_LISTEN_ADDRESS", "192.168.100.17")
     assert install_execution_server.main([
-        "--listen-address", "127.0.0.1", "--listen-port", "18492",
+        "--listen-address", "192.168.100.17", "--listen-port", "18092",
         "--credential-key", str(material.server_private_key),
     ]) == 0
+
+
+@pytest.mark.parametrize(
+    ("address", "port"),
+    (("127.0.0.1", "18092"), ("192.168.100.17", "18492")),
+)
+def test_runtime_rejects_any_listener_other_than_fixed_v2_endpoint(
+    address: str, port: str,
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        install_execution_server.main([
+            "--listen-address", address, "--listen-port", port,
+            "--credential-key", "/run/credentials/execution-tls-key",
+        ])
+
+    assert exc_info.value.code == 2

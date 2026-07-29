@@ -14,6 +14,10 @@ from alt_deploy.install_tls import (
 )
 
 
+INSTALL_EXECUTION_LISTEN_ADDRESS = "192.168.100.17"
+INSTALL_EXECUTION_LISTEN_PORT = 18092
+
+
 def create_execution_tls_server(
     settings: Settings,
     material: TLSMaterial,
@@ -59,11 +63,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--listen-port", required=True, type=int)
     parser.add_argument("--credential-key", required=True)
     parsed = parser.parse_args(argv)
-    if not 1 <= parsed.listen_port <= 65535:
-        parser.error("listen port must be between 1 and 65535")
+    if parsed.listen_address != INSTALL_EXECUTION_LISTEN_ADDRESS:
+        parser.error("listen address must be 192.168.100.17")
+    if parsed.listen_port != INSTALL_EXECUTION_LISTEN_PORT:
+        parser.error("listen port must be 18092")
     settings = Settings.from_env()
-    if parsed.listen_address != settings.install_execution_listen_address:
-        parser.error("listen address does not match configured V2 address")
+    if (
+        settings.install_execution_listen_address != INSTALL_EXECUTION_LISTEN_ADDRESS
+        or settings.install_execution_listen_port != INSTALL_EXECUTION_LISTEN_PORT
+    ):
+        parser.error("configured V2 listener does not match fixed endpoint")
     material = load_execution_tls_material(settings)
     server = create_execution_tls_server(
         settings,

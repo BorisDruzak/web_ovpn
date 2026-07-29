@@ -226,6 +226,8 @@ def load_execution_tls_material(settings: Settings) -> TLSMaterial:
 
 
 def ensure_execution_tls_material(settings: Settings) -> TLSMaterial:
+    if not _is_root():
+        raise PermissionError("Execution TLS material must be created as root")
     material = TLSMaterial(
         ca_certificate=settings.install_execution_ca_certificate,
         server_certificate=settings.install_execution_server_certificate,

@@ -24,6 +24,12 @@ from alt_deploy.install_tls import ensure_execution_tls_material
 from install_execution_server import create_execution_tls_server
 
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() != 0,
+    reason="TLS authority material requires Linux root",
+)
+
+
 def _settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_EXECUTION_TLS_ROOT", str(tmp_path / "tls"))
     monkeypatch.setenv(
