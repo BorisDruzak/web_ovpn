@@ -834,6 +834,8 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
     await verify_csrf(request)
     form = await request.form()
     action = str(form.get("action") or "preview")
+    if action not in {"preview", "generate"}:
+        raise HTTPException(status_code=400, detail="invalid action")
     creation_mode = str(form.get("creation_mode") or "single")
     access_mode = str(form.get("access_mode") or "template")
     template = str(form.get("template") or form.get("profile") or "").strip()
@@ -867,7 +869,17 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
         return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": str(exc)}, db, status_code=400)
     profiles_data, profiles_error = cli_call(request, ["profiles"])
     if access_mode == "custom":
+        network_data, network_error = cli_call(request, ["networks", "list"])
+        if network_error:
+            return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": network_error}, db, status_code=400)
+        existing_cidrs = {
+            str(row.get("cidr"))
+            for row in network_data.get("networks", [])
+            if isinstance(row, dict) and row.get("cidr")
+        }
         for cidr in cidrs:
+            if cidr in existing_cidrs:
+                continue
             _, error = cli_call(request, ["networks", "add", cidr, "--tag", "custom-route", "--no-nat", "--comment", "added from client creation"], timeout=60)
             if error:
                 return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error}, db, status_code=400)
@@ -900,7 +912,7 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
                     created_by=user.username, expires_at=utcnow() + timedelta(minutes=get_settings().download_ttl_minutes),
                 )
                 result["download_url"] = f"/download/{token}"
-            except (ClientBatchInputError, ValueError, KeyError) as exc:
+            except (ClientBatchInputError, OSError, ValueError, KeyError) as exc:
                 sync_error = str(exc)
         if sync_error:
             add_flash(request, "bad", f"Профиль создан, но автосинхронизация не прошла: {sync_error}")

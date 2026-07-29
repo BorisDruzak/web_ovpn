@@ -239,7 +239,7 @@ def test_network_add_without_comment_omits_comment_flag(tmp_path, monkeypatch):
     assert add_calls[1][add_calls[1].index("--comment") + 1] == "branch office"
 
 
-def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
+def test_generate_batch_from_csv_runs_sync_after_success(tmp_path, monkeypatch):
     fake = make_fake_vpnctl(tmp_path / "vpnctl")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
     monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
@@ -276,11 +276,12 @@ def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
             data={
                 "csrf_token": csrf,
                 "action": "generate",
-                "client": "alpha",
+                "creation_mode": "bulk",
+                "access_mode": "template",
                 "profile": "directum",
-                "vpn_ip": "",
                 "comment": "test",
             },
+            files={"clients_csv": ("clients.csv", b"client_name\nalice\nbob\n", "text/csv")},
         )
 
         assert created.status_code == 200
@@ -292,6 +293,10 @@ def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
         commands = [call[1] for call in calls]
         assert "generate-batch" in commands
         assert "sync" in commands[commands.index("generate-batch") + 1 :]
+        batch = calls[commands.index("generate-batch")]
+        assert batch.count("--client") == 2
+        assert "alice" in batch
+        assert "bob" in batch
 
 
 def test_new_client_form_supports_router_site_to_site_preview(tmp_path, monkeypatch):
