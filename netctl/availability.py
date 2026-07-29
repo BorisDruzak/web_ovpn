@@ -52,11 +52,13 @@ def _sanitize_reason(value: str) -> str:
     return " ".join(value.split())[:200]
 
 
-def _active_context_revision_for_cidr(conn: sqlite3.Connection, cidr: str) -> tuple[int, str, ipaddress.IPv4Network | ipaddress.IPv6Network]:
+def _active_context_revision_for_cidr(conn: sqlite3.Connection, cidr: str) -> tuple[int, str, ipaddress.IPv4Network]:
     try:
         network = ipaddress.ip_network(cidr, strict=False)
     except ValueError as exc:
         raise ValueError("cidr must be valid") from exc
+    if network.version != 4:
+        raise ValueError("availability cidr must be IPv4")
     normalized = str(network)
     matching_rules = [rule for rule in load_active_availability_segments(conn) if str(rule.network) == normalized]
     if len(matching_rules) != 1:
@@ -73,7 +75,7 @@ def _active_context_revision_for_cidr(conn: sqlite3.Connection, cidr: str) -> tu
     return int(row[0]), normalized, network
 
 
-def _validate_run(run: AvailabilityRun, network: ipaddress.IPv4Network | ipaddress.IPv6Network) -> tuple[str, str, tuple[AvailabilityResult, ...]]:
+def _validate_run(run: AvailabilityRun, network: ipaddress.IPv4Network) -> tuple[str, str, tuple[AvailabilityResult, ...]]:
     started_at = _utc_timestamp(run.started_at, field="started_at")
     finished_at = _utc_timestamp(run.finished_at, field="finished_at")
     if run.status not in {"success", "failed"}:
@@ -129,7 +131,7 @@ def _insert_change_event(conn: sqlite3.Connection, *, run_id: int, ip: str, old:
 def _active_result_changed(old: AvailabilityResult | None, new: AvailabilityResult | None) -> bool:
     if old is None or new is None:
         return old is not new
-    return (old.state, old.method, old.failure_class) != (new.state, new.method, new.failure_class)
+    return (old.state, old.method) != (new.state, new.method)
 
 
 def save_availability_run(conn: sqlite3.Connection, run: AvailabilityRun) -> int:

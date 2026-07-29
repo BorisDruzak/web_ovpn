@@ -154,3 +154,44 @@ def test_unchanged_active_results_do_not_create_duplicate_change_events(conn):
     save_availability_run(conn, AvailabilityRun.success("192.0.2.0/30", started=NEW, finished=NEW, results=results))
 
     assert conn.execute("SELECT count(*) FROM availability_result_events").fetchone()[0] == 2
+
+
+def test_ipv6_cidr_is_rejected_before_active_segment_matching(conn):
+    """An IPv6 run must not enter storage even if policy matching later changes."""
+    from netctl.availability import AvailabilityRun, save_availability_run
+
+    with pytest.raises(ValueError, match="IPv4"):
+        save_availability_run(
+            conn,
+            AvailabilityRun.failed("2001:db8::/64", started=OLD, error_class="deadline_exceeded"),
+        )
+
+    assert conn.execute("SELECT count(*) FROM availability_runs").fetchone()[0] == 0
+
+
+def test_failure_class_change_without_active_change_does_not_create_event(conn):
+    """Failure diagnostics are metadata, not a change in active state or active method."""
+    from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run
+
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30", started=OLD, finished=OLD,
+            results=[
+                AvailabilityResult("192.0.2.1", "reachable", "icmp"),
+                AvailabilityResult("192.0.2.2", "unreachable", None, failure_class="timeout"),
+            ],
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30", started=NEW, finished=NEW,
+            results=[
+                AvailabilityResult("192.0.2.1", "reachable", "icmp"),
+                AvailabilityResult("192.0.2.2", "unreachable", None, failure_class="refused"),
+            ],
+        ),
+    )
+
+    assert conn.execute("SELECT count(*) FROM availability_result_events").fetchone()[0] == 2
