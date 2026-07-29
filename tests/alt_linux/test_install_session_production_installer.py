@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 ALT_ROOT = REPO_ROOT / "deploy" / "alt-linux"
 INSTALLER = ALT_ROOT / "install-install-session-api.sh"
 UNIT = ALT_ROOT / "systemd" / "alt-install-session.service"
+RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "alt-install-session-api-pr5a.md"
 EXISTING_UNIT = "[Service]\nExecStart=/existing\n"
 
 
@@ -45,6 +46,15 @@ def test_production_unit_is_bound_and_least_privileged() -> None:
         "CapabilityBoundingSet=",
     ):
         assert item in text
+
+
+def test_pr5a_runbook_prohibits_spike_reuse_and_target_writes() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+
+    assert "192.168.100.17:18090" in text
+    assert "18089" in text and "must not" in text.lower()
+    assert "target-disk write" in text
+    assert "systemd-analyze security alt-install-session.service" in text
 
 
 def test_installer_activates_only_the_isolated_unit(tmp_path: Path) -> None:
