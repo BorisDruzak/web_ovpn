@@ -76,6 +76,26 @@ The third review round closes the remaining code-real gaps:
   and rejects missing, empty, extra, external-reference, and validly resealed
   semantic mutations.
 
+## Fourth review hardening
+
+The fourth review round closes the final ordering and cleanup races:
+
+- the boundary and root-observation clocks serialize canonical UTC with six
+  fractional digits, and an actual `main()` wrapper regression proves a
+  same-second microsecond boundary reaches the production CLI call;
+- QEMU, dnsmasq, and execution-API termination now opens a pidfd first,
+  verifies the recorded process start time after anchoring, signals only
+  through the pidfd, and waits at most five seconds. PID reuse is rejected
+  without signaling the replacement;
+- namespace-stop verification or timeout is recorded in
+  `cleanup-failures.log` and does not fall through to an unbounded shell
+  `wait`. Any process or namespace cleanup failure preserves the work
+  directory and live resources for investigation;
+- portable replay now binds every delivery and authenticated-reporter
+  schema/run/challenge/VM/controller/session/boot identity field to the
+  manifest and signed lifecycle chain. Individually mutated and validly
+  resealed variants all fail semantic verification.
+
 ## TDD evidence
 
 Initial Task 6 red:
@@ -210,6 +230,38 @@ while its original descriptor remains open. The behavior is implemented for
 the Linux acceptance host and cannot be exercised on Windows file-sharing
 semantics.
 
+Fourth review red:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py -q -k \
+  'authorization_wrapper_reaches_cli_with_same_second_boundary or \
+  owned_process_cleanup_cannot_signal_a_reused_process or \
+  harness_cleanup_has_no_check_then_raw_signal_or_failed_netns_wait or \
+  signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes'
+4 failed, 31 deselected
+```
+
+The four failures were the intended missing precise `main()` wrapper path,
+absent generic pidfd cleanup, raw shell signals/wait, and unbound resealed
+postflight fields.
+
+Fourth review green:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py \
+  tests/test_alt_install_execution_agent.py -q
+47 passed, 1 skipped
+
+pytest --noconftest \
+  tests/alt_linux/test_install_session_cli.py \
+  tests/alt_linux/test_install_execution.py \
+  tests/alt_linux/test_install_execution_api.py -q
+56 passed, 5 skipped
+
+pytest tests/test_alt_install_execution_iso.py -q
+30 passed
+```
+
 ## Specification self-review
 
 Verdict: **PASS for the implementation contract; no QEMU execution PASS
@@ -217,9 +269,11 @@ claimed.**
 
 - C1: the root boundary is the real production CLI/service/repository path,
   after two ordered signed, exact-identity, zero-write QMP/SHA boundary
-  documents; a caller-independent observation time and the controller
+  documents; a canonical microsecond observation time and the controller
   authorization time are persisted in signed evidence and must be
-  contemporaneous within fixed 10/30/10-second ceilings.
+  contemporaneous within fixed 10/30/10-second ceilings. Boundary and
+  observation clocks always serialize the same six-digit fractional
+  precision.
 - C2: every run has unpredictable trust material and exact
   ISO/VM/target/sentinel/controller bindings. The verifier-derived digest is
   copied from an open descriptor into a private run-owned ISO, which is
@@ -231,12 +285,14 @@ claimed.**
   device/inode file identities are exact.
 - I4: work-directory ownership is recorded immediately after creation and
   cleanup walks stable directory descriptors. Network resources live in a
-  dedicated anonymous namespace; pidfd plus process/namespace identity checks
-  eliminate the host TAP ifindex ABA deletion window.
+  dedicated anonymous namespace; every QEMU/DHCP/API/namespace termination is
+  pidfd-anchored and bounded after process/namespace identity checks. Cleanup
+  failure is recorded without waiting on or deleting beneath a live owner.
 - I5: the public, non-secret proof has an exclusive hash-linked index and a
   seventh Ed25519 seal. Its exact mandatory portable corpus is semantically
-  replayed without live artifact paths and remains independently verifiable
-  after private work-directory cleanup.
+  replayed, including every delivery and authenticated postflight identity,
+  without live artifact paths and remains independently verifiable after
+  private work-directory cleanup.
 - There is no CLI route for an existing disk, infrastructure VM, Proxmox, VM
   114, an arbitrary authorization request, a caller timeline, or a caller
   postflight result.

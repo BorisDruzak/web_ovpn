@@ -36,12 +36,16 @@ during, or after the descriptor copy cannot change the bytes QEMU receives.
 
 Cleanup records the work-directory device/inode immediately after creation.
 The TAP, DHCP service, execution service, and QEMU run only inside an
-anonymous network namespace whose holder records its PID start time and
-namespace device/inode. Cleanup opens a pidfd first, rechecks both identities,
-then signals that anchored holder; PID/namespace reuse fails closed without
-targeting the replacement. Namespace teardown removes its TAP as one kernel
-resource. Work-directory cleanup continues to use stable directory
-descriptors. Replacements are preserved for investigation.
+anonymous network namespace. QEMU, DHCP, and execution-service cleanup opens
+a pidfd before rechecking the recorded PID start time, and signals only
+through that anchored descriptor. The namespace holder additionally binds its
+namespace device/inode. Every pidfd wait is bounded to five seconds, and
+PID/namespace reuse fails closed without targeting the replacement. A failed
+identity check, pidfd operation, or bounded stop is recorded in
+`cleanup-failures.log`; cleanup does not wait again on that live holder and
+preserves the private work directory for investigation. Successful namespace
+teardown removes its TAP as one kernel resource. Successful work-directory
+cleanup continues to use stable directory descriptors.
 
 ## Authorization sequence
 
@@ -58,14 +62,17 @@ postflight files from its caller.
 4. A second ordered, signed boundary document is captured immediately before
    authorization. It must still show zero writes, unchanged target and
    sentinel files, and the exact install ISO.
-5. As real root, the support program records a fresh UTC observation and
+5. As real root, the harness records a fresh canonical UTC observation with
+   microsecond precision and
    calls the production
    `alt_deploy.cli.main` `authorize-execution` command with the exact derived
    plan, inventory, disk fingerprint, session, and `/dev/vda` values. The
    controller's authorization time must be contemporaneous with that
    observation and strictly after both boundary documents. A boundary capture
    may take at most 10 seconds, pending-to-preauthorization at most 30
-   seconds, and preauthorization-to-root-observation at most 10 seconds.
+   seconds, and preauthorization-to-root-observation at most 10 seconds. Both
+   boundary capture and root observation clocks always serialize six
+   fractional UTC digits, so their same-second ordering is exact.
 6. The returned execution ID and `authorized` state are checked against the
    authoritative repository and signed as attestation 1.
 7. The authenticated V2 TLS service records the single-use
@@ -143,11 +150,14 @@ corpus; the public index links to the seal. The verifier independently
 replays boundary freshness, QMP identities/read-only/write predicates, ISO
 presence and no-ISO boot, SHA transitions, controller lifecycle, boot
 reporter/postflight bindings, and receipt semantics entirely from copied
-bytes. It never opens target, sentinel, or ISO paths that disappear at
-cleanup. Missing, empty, extra, externally referenced, semantically mutated,
-mis-permissioned, wrongly owned, hash-broken, or invalidly signed packages
-fail before PASS. The package remains verifiable after the private work
-directory is safely removed.
+bytes. Delivery and authenticated-reporter schema version, run ID, challenge,
+VM identity, controller URL where present, session, boot nonce, boot ID,
+reported time, and embedded boot attestation are bound to the signed manifest
+and lifecycle chain. It never opens target, sentinel, or ISO paths that
+disappear at cleanup. Missing, empty, extra, externally referenced,
+semantically mutated and resealed, mis-permissioned, wrongly owned,
+hash-broken, or invalidly signed packages fail before PASS. The package
+remains verifiable after the private work directory is safely removed.
 
 PASS requires zero target and sentinel writes through authorization,
 positive target writes after installation, zero sentinel writes at every

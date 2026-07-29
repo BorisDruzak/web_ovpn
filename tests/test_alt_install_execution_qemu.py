@@ -396,6 +396,8 @@ def test_harness_uses_run_owned_authorization_and_postflight_chain() -> None:
     assert "--acceptance-state-dir \"$state_dir\"" in source
     assert "capture-authorization-boundary" in source
     assert "--observed-at" in source
+    assert 'isoformat(timespec="microseconds")' in source
+    assert "date -u +%Y-%m-%dT%H:%M:%S+00:00" not in source
     assert "verify-run-iso" in source
     assert "export-public-evidence" in source
     assert "remove-owned-workdir" in source
@@ -412,6 +414,36 @@ def test_harness_uses_run_owned_authorization_and_postflight_chain() -> None:
     assert workdir_created < ownership_recorded
     assert "prepare_storage" not in source[
         workdir_created:ownership_recorded
+    ]
+
+
+def test_harness_cleanup_has_no_check_then_raw_signal_or_failed_netns_wait() -> None:
+    source = HARNESS.read_text(encoding="utf-8")
+    cleanup_source = source[
+        source.index("stop_qemu() {") : source.index("shopt -s extglob")
+    ]
+
+    for pid_name in (
+        "qemu_pid",
+        "execution_server_pid",
+        "dnsmasq_pid",
+    ):
+        assert f'kill "${pid_name}"' not in cleanup_source
+    assert "stop-owned-process" in source
+    assert cleanup_source.count("stop_recorded_process") >= 3
+    assert "cleanup-failures.log" in source
+    assert (
+        'if python3 "$support" stop-network-namespace' in cleanup_source
+    )
+    assert (
+        'else\n            record_cleanup_failure "network namespace"'
+        in cleanup_source
+    )
+    namespace_failure = cleanup_source.index(
+        'record_cleanup_failure "network namespace"'
+    )
+    assert 'wait "$netns_holder_pid"' not in cleanup_source[
+        namespace_failure:
     ]
 
 
@@ -1055,6 +1087,77 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     assert verified["chain"][-1]["event"] == "acceptance_evidence"
     assert verified["chain"][-2]["event"] == "installed"
 
+    postflight_mutations = (
+        ("postflight-delivery.json", "schema_version", 2),
+        ("postflight-delivery.json", "run_id", "other-run"),
+        ("postflight-delivery.json", "challenge", "B" * 43),
+        (
+            "postflight-delivery.json",
+            "vm_instance_id",
+            str(uuid4()),
+        ),
+        (
+            "postflight-delivery.json",
+            "controller_url",
+            "https://192.0.2.10:18092",
+        ),
+        (
+            "postflight-delivery.json",
+            "session_id",
+            "install-20260729T120000Z-deadbeef",
+        ),
+        ("postflight-delivery.json", "boot_nonce", "C" * 43),
+        (
+            "postflight-delivery.json",
+            "boot_attestation",
+            chain[3],
+        ),
+        (
+            "authenticated-postflight.json",
+            "schema_version",
+            2,
+        ),
+        ("authenticated-postflight.json", "run_id", "other-run"),
+        ("authenticated-postflight.json", "challenge", "D" * 43),
+        (
+            "authenticated-postflight.json",
+            "vm_instance_id",
+            str(uuid4()),
+        ),
+        (
+            "authenticated-postflight.json",
+            "boot_id",
+            str(uuid4()),
+        ),
+        (
+            "authenticated-postflight.json",
+            "boot_nonce",
+            "E" * 43,
+        ),
+        (
+            "authenticated-postflight.json",
+            "reported_at",
+            "2026-07-29T12:02:02+00:00",
+        ),
+        (
+            "authenticated-postflight.json",
+            "boot_attestation",
+            chain[3],
+        ),
+    )
+    for index, (filename, field, value) in enumerate(
+        postflight_mutations
+    ):
+        mutated = tmp_path / f"semantic-postflight-{index}"
+        shutil.copytree(public_evidence, mutated)
+        path = mutated / "evidence" / filename
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document[field] = value
+        path.write_bytes(module._json_bytes(document))
+        _reseal_public_evidence(module, state, mutated)
+        with pytest.raises(module.AcceptanceError, match="semantic"):
+            module.verify_public_evidence(mutated, euid=lambda: 0)
+
     zero_write = tmp_path / "semantic-zero-write"
     shutil.copytree(public_evidence, zero_write)
     _write_qmp(
@@ -1437,31 +1540,106 @@ def test_network_namespace_cleanup_cannot_signal_a_reused_process() -> None:
     assert closed == [73, 74]
 
 
-def test_root_authorization_checks_two_zero_write_snapshots_then_calls_cli(
+def test_owned_process_cleanup_cannot_signal_a_reused_process() -> None:
+    module = _support_module()
+    signaled: list[int] = []
+    closed: list[int] = []
+
+    with pytest.raises(module.AcceptanceError, match="process identity"):
+        module.stop_owned_process(
+            pid=501,
+            process_starttime=7001,
+            pidfd_open=lambda _pid: 81,
+            process_starttime_reader=lambda _pid: 8002,
+            signaler=signaled.append,
+            waiter=lambda _pidfd: None,
+            descriptor_close=closed.append,
+        )
+
+    assert signaled == []
+    assert closed == [81]
+
+    module.stop_owned_process(
+        pid=501,
+        process_starttime=7001,
+        pidfd_open=lambda _pid: 82,
+        process_starttime_reader=lambda _pid: 7001,
+        signaler=signaled.append,
+        waiter=lambda _pidfd: None,
+        descriptor_close=closed.append,
+    )
+    assert signaled == [82]
+    assert closed == [81, 82]
+
+
+def test_network_namespace_cleanup_returns_after_bounded_wait_failure() -> None:
+    module = _support_module()
+    ownership = module.network_namespace_ownership(
+        pid=501,
+        process_starttime=7001,
+        namespace_device=42,
+        namespace_inode=9001,
+    )
+    signaled: list[int] = []
+    closed: list[int] = []
+
+    def timeout(_pidfd: int) -> None:
+        raise module.AcceptanceError(
+            "Harness network namespace holder did not exit"
+        )
+
+    with pytest.raises(module.AcceptanceError, match="did not exit"):
+        module.stop_owned_network_namespace(
+            ownership,
+            pidfd_open=lambda _pid: 83,
+            process_starttime_reader=lambda _pid: 7001,
+            namespace_identity_reader=lambda _pid: (42, 9001),
+            signaler=signaled.append,
+            waiter=timeout,
+            descriptor_close=closed.append,
+        )
+
+    assert signaled == [83]
+    assert closed == [83]
+
+
+def test_authorization_wrapper_reaches_cli_with_same_second_boundary(
     tmp_path: Path,
 ) -> None:
     state, manifest = _create_run_state(tmp_path)
-    initial_qmp = tmp_path / "initial.qmp.jsonl"
-    immediate_qmp = tmp_path / "immediate-before-authorization.qmp.jsonl"
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
     qmp_arguments = {
         "target_write_bytes": 0,
         "sentinel_write_bytes": 0,
         "target_file": manifest["artifacts"]["target"]["canonical_path"],
         "sentinel_file": manifest["artifacts"]["sentinel"]["canonical_path"],
+        "install_iso_file": manifest["iso"]["canonical_path"],
     }
-    _write_qmp(initial_qmp, **qmp_arguments)
-    _write_qmp(immediate_qmp, **qmp_arguments)
-    sha_paths: dict[str, Path] = {}
-    for phase in ("initial", "immediate"):
-        for artifact in ("target", "sentinel"):
-            path = tmp_path / f"{phase}-{artifact}.sha256"
-            binding = manifest["artifacts"][artifact]
-            _write_sha(
-                path,
-                binding["initial_sha256"],
-                binding["canonical_path"],
-            )
-            sha_paths[f"{phase}_{artifact}"] = path
+    module = _support_module()
+    boundary_times = iter(
+        (
+            "2026-07-29T12:01:00.100000+00:00",
+            "2026-07-29T12:01:00.200000+00:00",
+            "2026-07-29T12:01:01.100000+00:00",
+            "2026-07-29T12:01:01.900000+00:00",
+        )
+    )
+
+    def capture(_socket: Path, output: Path) -> None:
+        _write_qmp(output, **qmp_arguments)
+
+    for phase in ("pending", "before-authorization"):
+        module.capture_authorization_boundary(
+            state,
+            socket_path=tmp_path / "install.qmp.sock",
+            evidence_dir=evidence,
+            phase=phase,
+            qmp_capture=capture,
+            clock=lambda: next(boundary_times),
+        )
+    initial_qmp = evidence / "pending.qmp.jsonl"
+    immediate_qmp = evidence / "before-authorization.qmp.jsonl"
     plan_bytes = json.dumps(
         {
             "target_disk": {
@@ -1497,7 +1675,9 @@ def test_root_authorization_checks_two_zero_write_snapshots_then_calls_cli(
         }
         if status_reads == 2:
             base["execution"] = {
-                "authorized_at": "2026-07-29T12:02:00+00:00",
+                "authorized_at": (
+                    "2026-07-29T12:01:01.950000+00:00"
+                ),
                 "disk_fingerprint": request["disk_fingerprint"],
                 "inventory_sha256": request["inventory_sha256"],
                 "plan_sha256": request["plan_sha256"],
@@ -1531,23 +1711,25 @@ def test_root_authorization_checks_two_zero_write_snapshots_then_calls_cli(
         )
         return 0
 
-    module = _support_module()
-    attestation = module.invoke_root_execution_authorization(
-        state,
-        request_path=request_path,
-        initial_qmp=initial_qmp,
-        before_authorization_qmp=immediate_qmp,
-        initial_target_sha=sha_paths["initial_target"],
-        before_authorization_target_sha=sha_paths["immediate_target"],
-        initial_sentinel_sha=sha_paths["initial_sentinel"],
-        before_authorization_sentinel_sha=sha_paths["immediate_sentinel"],
-        observed_at="2026-07-29T12:02:00+00:00",
+    result = module.main(
+        [
+            "authorize-execution",
+            "--state-dir",
+            str(state),
+            "--pending-boundary",
+            str(evidence / "pending-boundary.json"),
+            "--before-authorization-boundary",
+            str(evidence / "before-authorization-boundary.json"),
+            "--observed-at",
+            "2026-07-29T12:01:01.900001+00:00",
+        ],
         cli=real_cli_boundary,
         status_loader=load_status,
         revision_loader=lambda _session, _filename: plan_bytes,
         euid=lambda: 0,
     )
 
+    assert result == 0
     assert calls == [
         [
             "--json",
@@ -1566,6 +1748,7 @@ def test_root_authorization_checks_two_zero_write_snapshots_then_calls_cli(
             f"Disposable OVMF acceptance {manifest['run_id']}",
         ]
     ]
+    attestation = module.load_attestation_chain(state)[0]
     assert attestation["event"] == "authorization"
     assert attestation["payload"]["controller"] == {
         "execution_id": (

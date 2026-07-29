@@ -891,7 +891,7 @@ def capture_authorization_boundary(
     qmp_capture: Callable[[Path, Path], None] | None = None,
     clock: Callable[[], str] = lambda: datetime.now(
         timezone.utc
-    ).isoformat(),
+    ).isoformat(timespec="microseconds"),
 ) -> dict[str, object]:
     if phase not in {"pending", "before-authorization"}:
         _fail("Authorization boundary phase is invalid")
@@ -1375,6 +1375,42 @@ def _wait_pidfd(pidfd: int) -> None:
     poller.register(pidfd, select.POLLIN)
     if not poller.poll(5000):
         _fail("Harness network namespace holder did not exit")
+
+
+def stop_owned_process(
+    *,
+    pid: int,
+    process_starttime: int,
+    pidfd_open: Callable[[int], int] = _open_pidfd,
+    process_starttime_reader: Callable[[int], int] = _process_starttime,
+    signaler: Callable[[int], None] = _signal_pidfd,
+    waiter: Callable[[int], None] = _wait_pidfd,
+    descriptor_close: Callable[[int], None] = os.close,
+) -> None:
+    if (
+        type(pid) is not int
+        or pid < 1
+        or type(process_starttime) is not int
+        or process_starttime < 1
+    ):
+        _fail("Harness owned process identity is invalid")
+    try:
+        pidfd = pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    try:
+        try:
+            observed_starttime = process_starttime_reader(pid)
+        except OSError as exc:
+            raise AcceptanceError(
+                "Harness owned process identity is unavailable"
+            ) from exc
+        if observed_starttime != process_starttime:
+            _fail("Harness owned process identity changed")
+        signaler(pidfd)
+        waiter(pidfd)
+    finally:
+        descriptor_close(pidfd)
 
 
 def stop_owned_network_namespace(
@@ -2902,14 +2938,30 @@ def _replay_public_acceptance(
         or boot_payload.get("qmp_sha256") != boot["qmp_sha256"]
         or boot_payload.get("iso_attached") is not False
         or boot_payload.get("session_id") != session_id
+        or boot_payload.get("vm_instance_id")
+        != manifest.get("vm_instance_id")
         or boot_payload.get("controller")
         != {
             "execution_id": execution_id,
             "state": "installer_started",
         }
+        or type(delivery.get("schema_version")) is not int
+        or delivery.get("schema_version") != 1
+        or delivery.get("run_id") != manifest.get("run_id")
+        or delivery.get("challenge") != manifest.get("challenge")
+        or delivery.get("vm_instance_id")
+        != manifest.get("vm_instance_id")
+        or delivery.get("controller_url")
+        != "https://192.168.100.17:18092"
         or delivery.get("boot_attestation") != chain[4]
         or delivery.get("boot_nonce") != boot_payload.get("boot_nonce")
         or delivery.get("session_id") != session_id
+        or type(authenticated.get("schema_version")) is not int
+        or authenticated.get("schema_version") != 1
+        or authenticated.get("run_id") != manifest.get("run_id")
+        or authenticated.get("challenge") != manifest.get("challenge")
+        or authenticated.get("vm_instance_id")
+        != manifest.get("vm_instance_id")
         or authenticated.get("boot_attestation") != chain[4]
         or authenticated.get("boot_nonce") != boot_payload.get("boot_nonce")
         or authenticated.get("boot_id") != installed_payload.get("boot_id")
@@ -3710,6 +3762,13 @@ def build_parser() -> argparse.ArgumentParser:
         "stop-network-namespace", allow_abbrev=False
     )
     stop_netns.add_argument("--record", required=True, type=Path)
+    stop_process = commands.add_parser(
+        "stop-owned-process", allow_abbrev=False
+    )
+    stop_process.add_argument("--pid", required=True, type=int)
+    stop_process.add_argument(
+        "--process-starttime", required=True, type=int
+    )
     export = commands.add_parser(
         "export-public-evidence", allow_abbrev=False
     )
@@ -3772,7 +3831,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    cli: Callable[..., int] = control_cli_main,
+    status_loader: Callable[[str], dict[str, object]] = controller_status,
+    revision_loader: Callable[
+        [str, str], bytes
+    ] = controller_revision_file,
+    euid: Callable[[], int] = lambda: getattr(
+        os, "geteuid", lambda: -1
+    )(),
+) -> int:
     arguments = build_parser().parse_args(argv)
     try:
         if arguments.command == "create-run":
@@ -3810,6 +3880,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 before_authorization_boundary=(
                     arguments.before_authorization_boundary
                 ),
+                cli=cli,
+                status_loader=status_loader,
+                revision_loader=revision_loader,
+                euid=euid,
             )
             store_attestation(arguments.state_dir, attestation)
             print("execution_state=authorized")
@@ -3880,6 +3954,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "stop-network-namespace":
             stop_owned_network_namespace(_read_json(arguments.record))
             print("network_namespace=stopped")
+        elif arguments.command == "stop-owned-process":
+            stop_owned_process(
+                pid=arguments.pid,
+                process_starttime=arguments.process_starttime,
+            )
+            print("owned_process=stopped")
         elif arguments.command == "export-public-evidence":
             evidence_files: dict[str, Path] = {}
             for item in arguments.evidence:

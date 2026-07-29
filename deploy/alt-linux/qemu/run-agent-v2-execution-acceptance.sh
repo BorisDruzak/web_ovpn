@@ -270,6 +270,8 @@ execution_server_starttime=
 tap_name="aiv2$(( $$ % 100000 ))"
 netns_holder_pid=
 netns_ownership_record="$evidence/network-namespace-ownership.json"
+cleanup_failure_record="$evidence/cleanup-failures.log"
+cleanup_failed=0
 
 process_starttime() {
     local pid=$1
@@ -285,60 +287,85 @@ owned_process_alive() {
     kill -0 "$pid" 2>/dev/null
 }
 
+record_cleanup_failure() {
+    cleanup_failed=1
+    printf '%s\n' "$1" >>"$cleanup_failure_record" 2>/dev/null || true
+    chmod 0600 -- "$cleanup_failure_record" 2>/dev/null || true
+    printf 'agent-v2-qemu: %s; preserving live resources and workdir\n' \
+        "$1" >&2
+}
+
+stop_recorded_process() {
+    local pid=$1 starttime=$2 label=$3
+    [[ -n "$pid" && -n "$starttime" ]] || return 0
+    if python3 "$support" stop-owned-process \
+        --pid "$pid" \
+        --process-starttime "$starttime" >/dev/null 2>&1; then
+        wait "$pid" 2>/dev/null || true
+        return 0
+    fi
+    record_cleanup_failure "$label cleanup verification failed"
+    return 1
+}
+
 stop_qemu() {
     local qmp_socket=${1:-}
-    if [[ -n "$qemu_pid" ]] &&
-        owned_process_alive "$qemu_pid" "$qemu_starttime"; then
-        if [[ -n "$qmp_socket" && -S "$qmp_socket" ]]; then
-            python3 "$support" qmp-command \
-                --socket "$qmp_socket" --execute quit >/dev/null 2>&1 ||
-                kill "$qemu_pid" 2>/dev/null || true
-        else
-            kill "$qemu_pid" 2>/dev/null || true
-        fi
-        wait "$qemu_pid" 2>/dev/null || true
+    [[ -n "$qemu_pid" ]] || return 0
+    if [[ -n "$qmp_socket" && -S "$qmp_socket" ]]; then
+        python3 "$support" qmp-command \
+            --socket "$qmp_socket" --execute quit >/dev/null 2>&1 ||
+            true
     fi
-    qemu_pid=
-    qemu_starttime=
+    if stop_recorded_process \
+        "$qemu_pid" "$qemu_starttime" "QEMU process"; then
+        qemu_pid=
+        qemu_starttime=
+        return 0
+    fi
+    return 1
 }
 
 cleanup() {
-    stop_qemu
-    if [[ -n "$execution_server_pid" ]] &&
-        owned_process_alive \
-            "$execution_server_pid" "$execution_server_starttime"; then
-        kill "$execution_server_pid" 2>/dev/null || true
-        wait "$execution_server_pid" 2>/dev/null || true
+    stop_qemu || true
+    if stop_recorded_process \
+        "$execution_server_pid" "$execution_server_starttime" \
+        "execution API process"; then
+        execution_server_pid=
+        execution_server_starttime=
     fi
-    if [[ -n "$dnsmasq_pid" ]] &&
-        owned_process_alive "$dnsmasq_pid" "$dnsmasq_starttime"; then
-        kill "$dnsmasq_pid" 2>/dev/null || true
-        wait "$dnsmasq_pid" 2>/dev/null || true
+    if stop_recorded_process \
+        "$dnsmasq_pid" "$dnsmasq_starttime" "dnsmasq process"; then
+        dnsmasq_pid=
+        dnsmasq_starttime=
     fi
     if [[ -f "$netns_ownership_record" &&
         ! -L "$netns_ownership_record" ]]; then
-        python3 "$support" stop-network-namespace \
-            --record "$netns_ownership_record" >/dev/null 2>&1 || {
-                printf '%s\n' \
-                    'agent-v2-qemu: netns identity changed; preserving namespace' >&2
-            }
-        [[ -z "$netns_holder_pid" ]] ||
-            wait "$netns_holder_pid" 2>/dev/null || true
+        if python3 "$support" stop-network-namespace \
+            --record "$netns_ownership_record" >/dev/null 2>&1; then
+            if [[ -n "$netns_holder_pid" ]]; then
+                wait "$netns_holder_pid" 2>/dev/null || true
+                netns_holder_pid=
+            fi
+        else
+            record_cleanup_failure "network namespace"
+        fi
     elif [[ -n "$netns_holder_pid" ]]; then
-        printf '%s\n' \
-            'agent-v2-qemu: netns identity absent; preserving namespace holder' >&2
+        record_cleanup_failure \
+            "network namespace identity is absent"
+    fi
+    if ((cleanup_failed != 0)); then
+        return 0
     fi
     if [[ -f "$workdir_ownership_record" &&
         ! -L "$workdir_ownership_record" ]]; then
         python3 "$support" remove-owned-workdir \
             --record "$workdir_ownership_record" \
             --workdir "$workdir" >/dev/null 2>&1 || {
-            printf '%s\n' \
-                'agent-v2-qemu: workdir identity changed; preserving workdir' >&2
+            record_cleanup_failure \
+                "workdir cleanup verification failed"
         }
     else
-        printf '%s\n' \
-            'agent-v2-qemu: workdir identity absent; preserving workdir' >&2
+        record_cleanup_failure "workdir identity is absent"
     fi
 }
 shopt -s extglob
@@ -534,7 +561,8 @@ python3 "$support" capture-authorization-boundary \
     --evidence-dir "$evidence" \
     --phase before-authorization ||
     die 'Immediate authorization boundary capture failed'
-authorization_observed_at=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+authorization_observed_at=$(python3 -c \
+    'from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat(timespec="microseconds"))')
 python3 "$support" authorize-execution \
     --state-dir "$state_dir" \
     --pending-boundary "$evidence/pending-boundary.json" \
