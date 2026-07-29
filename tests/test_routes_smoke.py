@@ -289,8 +289,8 @@ def test_generate_profile_runs_sync_after_success(tmp_path, monkeypatch):
             if line
         ]
         commands = [call[1] for call in calls]
-        assert "generate" in commands
-        assert "sync" in commands[commands.index("generate") + 1 :]
+        assert "generate-batch" in commands
+        assert "sync" in commands[commands.index("generate-batch") + 1 :]
 
 
 def test_new_client_form_supports_router_site_to_site_preview(tmp_path, monkeypatch):
