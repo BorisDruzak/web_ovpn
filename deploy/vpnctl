@@ -127,6 +127,8 @@ PROFILE_DESCRIPTIONS = {
     "lan_full": "Полный служебный доступ: 192.168.100.0/23, 10.83.1.0/24, 10.10.10.0/23 + DNS",
 }
 
+PROFILE_DESCRIPTIONS["custom"] = "Empty base profile for managed custom routes"
+
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 CCD_FILE_MODE = 0o644
 CLIENT_TYPES = {"user", "router_nat", "router_site_to_site"}
@@ -723,6 +725,8 @@ def profile_ccd_lines(
         lines.append(route_line("10.83.1.0/24"))
         lines.append(route_line("10.10.10.0/23"))
         dns()
+    elif profile == "custom":
+        pass
     else:
         # Should be unreachable because validate_profile was already called.
         raise SystemExit(f"Ошибка: неизвестный профиль: {profile}")
@@ -1354,6 +1358,50 @@ def generate_client(
     upsert_client(row)
     record_operation("generate", client, "ok", f"profile={profile} vpn_ip={vpn_ip or '-'}")
     return result
+
+
+def preflight_batch_clients(clients: Iterable[str]) -> List[str]:
+    names: List[str] = []
+    for value in clients:
+        name = str(value).strip()
+        validate_client(name)
+        names.append(name)
+    if not names:
+        raise SystemExit("Error: specify at least one batch client.")
+    if len(set(names)) != len(names):
+        raise SystemExit("Error: batch client names must be unique.")
+    active = {str(row.get("name") or "") for row in list_clients() if row.get("status") == "active"}
+    conflicts = [name for name in names if name in active or any(path.exists() for path in client_paths(name).values())]
+    if conflicts:
+        raise SystemExit(f"Error: clients already exist: {', '.join(conflicts)}")
+    return names
+
+
+def generate_batch(
+    clients: Iterable[str], template: str = "", cidrs: Iterable[str] = (), dns: bool = False,
+    comment: str = "", dry_run: bool = False,
+) -> Dict[str, Any]:
+    names = preflight_batch_clients(clients)
+    selected = unique_cidrs(cidrs)
+    if bool(template) == bool(selected):
+        raise SystemExit("Error: select a template or one or more custom networks.")
+    if template:
+        get_network_template(template)
+        access_mode = "template"
+    else:
+        missing = [cidr for cidr in selected if cidr not in available_network_cidrs()]
+        if missing:
+            raise SystemExit(f"Error: networks are not in the catalogue: {', '.join(missing)}")
+        access_mode = "custom"
+    rows: List[Dict[str, Any]] = []
+    for name in names:
+        generated = generate_client(name, "custom", dry_run=dry_run, comment=comment, client_type="user")
+        row: Dict[str, Any] = {"client": name, "status": generated["status"], "ovpn_path": generated["ovpn_path"], "ccd_path": generated["ccd_path"], "actions": generated["actions"]}
+        if not dry_run:
+            access = apply_network_template_to_client(name, template, reason=comment or "batch client creation") if template else apply_networks_to_client(name, selected, dns=dns, reason=comment or "batch client creation")
+            row["access"] = {key: access.get(key) for key in ("template", "networks", "dns", "detected_profile")}
+        rows.append(row)
+    return {"status": "preview" if dry_run else "ok", "clients": rows, "requested_count": len(names), "generated_count": len(rows), "access_mode": access_mode, "template": template or None, "networks": selected, "dns": bool(dns)}
 
 
 def is_mountpoint(path: Path) -> bool:
@@ -2729,6 +2777,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--create-server-route", action="store_true")
     p.add_argument("--comment", default="")
 
+    p = sub.add_parser("generate-batch", help="generate identical user profiles from one route mode")
+    p.add_argument("--client", action="append", default=[])
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--template", default="")
+    mode.add_argument("--cidr", action="append", default=[])
+    p.add_argument("--dns", action="store_true")
+    p.add_argument("--comment", default="")
+    p.add_argument("--dry-run", action="store_true")
+
     p = sub.add_parser("preview", help="alias for generate --dry-run")
     p.add_argument("client")
     p.add_argument("profile")
@@ -2959,6 +3016,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                         print(line)
                 if data.get("share_warning"):
                     print("warning:", data["share_warning"])
+            return 0
+
+        if args.cmd == "generate-batch":
+            if args.dry_run:
+                data = generate_batch(args.client, template=args.template, cidrs=args.cidr, dns=args.dns, comment=args.comment, dry_run=True)
+            else:
+                with lock_exclusive():
+                    data = generate_batch(args.client, template=args.template, cidrs=args.cidr, dns=args.dns, comment=args.comment)
+            emit(data, args)
             return 0
 
         if args.cmd == "sync":
