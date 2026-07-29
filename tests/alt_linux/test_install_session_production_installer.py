@@ -8,6 +8,7 @@ import pytest
 
 from tests.alt_linux.support.installer_sandbox import (
     DEFAULT_ROLLBACK_BACKUP_ID,
+    DEFAULT_SOURCE_COMMIT,
     InstallSessionInstallerSandbox,
 )
 
@@ -55,6 +56,100 @@ def test_pr5a_runbook_prohibits_spike_reuse_and_target_writes() -> None:
     assert "18089" in text and "must not" in text.lower()
     assert "target-disk write" in text
     assert "systemd-analyze security alt-install-session.service" in text
+    assert "--source-commit COMMIT" in text
+    assert "curl --noproxy '*' --fail --silent --show-error" in text
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_error"),
+    (
+        (
+            {"INSTALL_SESSION_GIT_HEAD": "2" * 40},
+            "Source commit does not match exact HEAD",
+        ),
+        (
+            {"INSTALL_SESSION_GIT_MERGE_BASE_RC": "1"},
+            "Source commit is not merged to authoritative main",
+        ),
+        (
+            {
+                "INSTALL_SESSION_GIT_STATUS_OUTPUT": (
+                    " M deploy/alt-linux/api/install_session_api.py\n"
+                )
+            },
+            "Relevant source paths are not clean",
+        ),
+    ),
+)
+def test_installer_rejects_source_that_cannot_match_named_merged_commit(
+    tmp_path: Path,
+    overrides: dict[str, str],
+    expected_error: str,
+) -> None:
+    sandbox = InstallSessionInstallerSandbox.create(tmp_path)
+    old_target = sandbox.current_target()
+
+    result = sandbox.run_install(**overrides)
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert sandbox.current_target() == old_target
+    assert not any(
+        command[:2] == ["alt-deploy-backup", "rehearse-status"]
+        for command in sandbox.commands()
+    )
+
+
+def test_installer_records_exact_validated_source_commit(
+    tmp_path: Path,
+) -> None:
+    sandbox = InstallSessionInstallerSandbox.create(tmp_path)
+
+    result = sandbox.run_install()
+
+    assert result.returncode == 0, result.stderr
+    assert f"Installed source commit: {DEFAULT_SOURCE_COMMIT}" in result.stdout
+    git_commands = [
+        command for command in sandbox.commands()
+        if command and command[0] == "git"
+    ]
+    assert any(
+        command[-2:] == ["--verify", "HEAD^{commit}"]
+        for command in git_commands
+    )
+    assert any(
+        command[command.index("merge-base"):command.index("merge-base") + 2]
+        == ["merge-base", "--is-ancestor"]
+        and command[command.index("merge-base") + 2]
+        == DEFAULT_SOURCE_COMMIT
+        for command in git_commands
+        if "merge-base" in command
+    )
+
+
+def test_key_initializer_uses_only_pinned_signing_paths(
+    tmp_path: Path,
+) -> None:
+    sandbox = InstallSessionInstallerSandbox.create(tmp_path)
+
+    result = sandbox.run_install(
+        ALT_DEPLOY_INSTALL_SIGNING_PRIVATE_KEY="/tmp/poison-private.pem",
+        ALT_DEPLOY_INSTALL_SIGNING_PUBLIC_KEY="/tmp/poison-public.json",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sandbox.signing_paths.read_text(encoding="utf-8").splitlines() == [
+        sandbox._bash_path(
+            sandbox.destination(
+                "/var/lib/alt-deploy-secrets/install-plan-ed25519.pem"
+            )
+        ),
+        sandbox._bash_path(
+            sandbox.destination(
+                "/etc/alt-deploy/install-plan-ed25519.pub"
+            )
+        ),
+    ]
 
 
 def test_installer_activates_only_the_isolated_unit(tmp_path: Path) -> None:
@@ -416,6 +511,38 @@ def test_preactivation_failure_removes_staging_runtime(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"INSTALL_SESSION_CP_FAIL_AT": "1"},
+        {"INSTALL_SESSION_CHOWN_FAIL_AT": "2"},
+        {"INSTALL_SESSION_CHMOD_FAIL_AT": "2"},
+        {"INSTALL_SESSION_MV_FAIL_AT": "3"},
+        {"INSTALL_SESSION_RM_FAIL_MATCH": "/.transaction-"},
+    ),
+)
+def test_transaction_command_failure_restores_state_and_releases_lock(
+    tmp_path: Path,
+    overrides: dict[str, str],
+) -> None:
+    sandbox = InstallSessionInstallerSandbox.create(tmp_path)
+    old_target = sandbox.current_target()
+
+    result = sandbox.run_install(**overrides)
+
+    assert result.returncode != 0
+    assert sandbox.current_target() == old_target
+    assert sandbox.unit_text() == EXISTING_UNIT
+    assert sandbox.service_status() == ("enabled", "active")
+    assert not sandbox.installer_lock_state.exists()
+    releases = sandbox.destination(
+        "/opt/alt-install-session-api/releases"
+    )
+    assert sorted(path.name for path in releases.iterdir()) == [
+        "existing-release"
+    ]
+
+
 def test_rollback_restores_previous_pointer_and_disables_only_owned_unit(
     tmp_path: Path,
 ) -> None:
@@ -442,3 +569,54 @@ def test_rollback_restores_previous_pointer_and_disables_only_owned_unit(
         for command in sandbox.commands()
         if command and command[0] == "systemctl"
     )
+
+
+def test_clean_host_install_then_rollback_restores_absent_runtime(
+    tmp_path: Path,
+) -> None:
+    sandbox = InstallSessionInstallerSandbox.create_clean_host(tmp_path)
+    before = sandbox.protected_snapshot()
+
+    installed = sandbox.run_install()
+    assert installed.returncode == 0, installed.stderr
+    assert sandbox.destination(
+        "/opt/alt-install-session-api/current"
+    ).is_symlink()
+
+    rolled_back = sandbox.run_rollback()
+
+    assert rolled_back.returncode == 0, rolled_back.stderr
+    assert not sandbox.destination(
+        "/opt/alt-install-session-api/current"
+    ).exists()
+    assert not sandbox.destination(
+        "/opt/alt-install-session-api/previous"
+    ).exists()
+    assert not sandbox.destination(
+        "/etc/systemd/system/alt-install-session.service"
+    ).exists()
+    assert sandbox.service_status() == ("disabled", "inactive")
+    after = sandbox.protected_snapshot()
+    assert all(after[path] == content for path, content in before.items())
+
+
+def test_rollback_systemctl_failure_restores_installed_state_and_lock(
+    tmp_path: Path,
+) -> None:
+    sandbox = InstallSessionInstallerSandbox.create(tmp_path)
+    old_target = sandbox.current_target()
+    installed = sandbox.run_install()
+    assert installed.returncode == 0, installed.stderr
+    installed_target = sandbox.current_target()
+    installed_unit = sandbox.unit_text()
+
+    rolled_back = sandbox.run_rollback(
+        INSTALL_SESSION_ROLLBACK_SYSTEMCTL_FAIL_ONCE="1"
+    )
+
+    assert rolled_back.returncode != 0
+    assert sandbox.current_target() == installed_target
+    assert sandbox.current_target() != old_target
+    assert sandbox.unit_text() == installed_unit
+    assert sandbox.service_status() == ("enabled", "active")
+    assert not sandbox.installer_lock_state.exists()

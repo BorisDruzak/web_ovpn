@@ -16,6 +16,7 @@ LIBRARY_PATH = ALT_ROOT / "install-control-plane-lib.sh"
 PUBLIC_INSTALLER = ALT_ROOT / "install-control-plane.sh"
 INSTALL_SESSION_INSTALLER = ALT_ROOT / "install-install-session-api.sh"
 DEFAULT_ROLLBACK_BACKUP_ID = "backup-20260722T120000Z-11111111"
+DEFAULT_SOURCE_COMMIT = "1" * 40
 
 
 @dataclass
@@ -355,6 +356,9 @@ exit 2
 class InstallSessionInstallerSandbox(InstallerSandbox):
     service_state: Path
     health_counter: Path
+    installer_lock_state: Path
+    failure_counters: Path
+    signing_paths: Path
 
     @staticmethod
     def _bash_path(path: Path) -> str:
@@ -371,13 +375,34 @@ class InstallSessionInstallerSandbox(InstallerSandbox):
             command_log=tmp_path / "install-session-commands.jsonl",
             service_state=tmp_path / "install-session-service-state",
             health_counter=tmp_path / "install-session-health-counter",
+            installer_lock_state=tmp_path / "install-session-installer-lock",
+            failure_counters=tmp_path / "install-session-failure-counters",
+            signing_paths=tmp_path / "install-session-signing-paths",
         )
         sandbox.root.mkdir()
         sandbox.fake_bin.mkdir()
+        sandbox.failure_counters.mkdir()
         sandbox._seed_runtime_state()
         sandbox._install_fakes()
         sandbox._install_backup_tool_fake()
         sandbox._seed_install_session_state()
+        return sandbox
+
+    @classmethod
+    def create_clean_host(
+        cls,
+        tmp_path: Path,
+    ) -> "InstallSessionInstallerSandbox":
+        sandbox = cls.create(tmp_path)
+        current = sandbox.destination("/opt/alt-install-session-api/current")
+        current.unlink()
+        shutil.rmtree(
+            sandbox.destination("/opt/alt-install-session-api/releases")
+        )
+        sandbox.destination(
+            "/etc/systemd/system/alt-install-session.service"
+        ).unlink()
+        sandbox.service_state.write_bytes(b"disabled inactive\n")
         return sandbox
 
     def _seed_install_session_state(self) -> None:
@@ -415,7 +440,33 @@ class InstallSessionInstallerSandbox(InstallerSandbox):
             "if [[ ${1:-} == -c ]]; then exec "
             + shlex.quote(Path(sys.executable).as_posix())
             + " \"$@\"; fi\n"
+            "printf '%s\\n%s\\n' "
+            "\"${ALT_DEPLOY_INSTALL_SIGNING_PRIVATE_KEY-}\" "
+            "\"${ALT_DEPLOY_INSTALL_SIGNING_PUBLIC_KEY-}\" "
+            "> \"${INSTALL_SESSION_SIGNING_PATHS:?}\"\n"
             "exit \"${INSTALL_SESSION_KEY_INIT_RC:-0}\"\n",
+        )
+        self._fake_script(
+            "git",
+            r'''case "${1:-}" in
+  -C) shift 2 ;;
+esac
+case "${1:-} ${2:-} ${3:-}" in
+  "rev-parse --verify HEAD^{commit}")
+    printf '%s\n' "${INSTALL_SESSION_GIT_HEAD:-1111111111111111111111111111111111111111}"
+    ;;
+  "rev-parse --verify refs/remotes/origin/main^{commit}")
+    printf '%s\n' "${INSTALL_SESSION_GIT_MAIN:-2222222222222222222222222222222222222222}"
+    ;;
+  "merge-base --is-ancestor "*)
+    exit "${INSTALL_SESSION_GIT_MERGE_BASE_RC:-0}"
+    ;;
+  "status --porcelain "*)
+    printf '%s' "${INSTALL_SESSION_GIT_STATUS_OUTPUT:-}"
+    ;;
+  *) exit 92 ;;
+esac
+''',
         )
         self._fake_script(
             "systemctl",
@@ -459,6 +510,12 @@ case "$action" in
     enabled=disabled
     [[ " $* " == *" --now "* ]] && active=inactive
     printf '%s %s\n' "$enabled" "$active" > "$state_file"
+    if [[ " $* " == *" --now "* ]] &&
+       [[ ${INSTALL_SESSION_ROLLBACK_SYSTEMCTL_FAIL_ONCE:-0} == 1 ]] &&
+       [[ ! -e ${INSTALL_SESSION_ROLLBACK_SYSTEMCTL_MARKER:?} ]]; then
+      : > "$INSTALL_SESSION_ROLLBACK_SYSTEMCTL_MARKER"
+      exit 93
+    fi
     ;;
   start)
     [[ $unit == alt-install-session.service ]] || exit 90
@@ -515,7 +572,16 @@ esac
         )
         self._fake_script(
             "flock",
-            "exit \"${INSTALL_SESSION_FLOCK_RC:-0}\"\n",
+            "if [[ ${1:-} == --unlock ]]; then\n"
+            "  rm -f -- \"${INSTALL_SESSION_INSTALLER_LOCK_STATE:?}\"\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [[ ${INSTALL_SESSION_FLOCK_RC:-0} != 0 || "
+            "-e ${INSTALL_SESSION_INSTALLER_LOCK_STATE:?} ]]; then\n"
+            "  exit \"${INSTALL_SESSION_FLOCK_RC:-1}\"\n"
+            "fi\n"
+            "printf '%s\\n' \"$$\" > "
+            "\"${INSTALL_SESSION_INSTALLER_LOCK_STATE}\"\n",
         )
         self._fake_script("sleep", "exit 0\n")
         self._fake_script(
@@ -552,7 +618,51 @@ else
 fi
 ''',
         )
-        self._fake_script("mv", "exec /bin/mv \"$@\"\n")
+        failure_prefix = (
+            "counter=\"${INSTALL_SESSION_FAILURE_COUNTERS:?}/"
+        )
+        self._fake_script(
+            "cp",
+            failure_prefix
+            + "cp\"; count=0; [[ -f $counter ]] && count=$(<\"$counter\"); "
+            "count=$((count + 1)); printf '%s\\n' \"$count\" > \"$counter\"; "
+            "if [[ ${INSTALL_SESSION_CP_FAIL_AT:-0} == \"$count\" ]]; then "
+            "exit 91; fi\nexec /bin/cp \"$@\"\n",
+        )
+        self._fake_script(
+            "chown",
+            failure_prefix
+            + "chown\"; count=0; [[ -f $counter ]] && count=$(<\"$counter\"); "
+            "count=$((count + 1)); printf '%s\\n' \"$count\" > \"$counter\"; "
+            "if [[ ${INSTALL_SESSION_CHOWN_FAIL_AT:-0} == \"$count\" ]]; then "
+            "exit 91; fi\nexit 0\n",
+        )
+        self._fake_script(
+            "chmod",
+            failure_prefix
+            + "chmod\"; count=0; [[ -f $counter ]] && count=$(<\"$counter\"); "
+            "count=$((count + 1)); printf '%s\\n' \"$count\" > \"$counter\"; "
+            "if [[ ${INSTALL_SESSION_CHMOD_FAIL_AT:-0} == \"$count\" ]]; then "
+            "exit 91; fi\nexec /bin/chmod \"$@\"\n",
+        )
+        self._fake_script(
+            "mv",
+            failure_prefix
+            + "mv\"; count=0; [[ -f $counter ]] && count=$(<\"$counter\"); "
+            "count=$((count + 1)); printf '%s\\n' \"$count\" > \"$counter\"; "
+            "if [[ ${INSTALL_SESSION_MV_FAIL_AT:-0} == \"$count\" ]]; then "
+            "exit 91; fi\nexec /bin/mv \"$@\"\n",
+        )
+        self._fake_script(
+            "rm",
+            "if [[ -n ${INSTALL_SESSION_RM_FAIL_MATCH:-} ]] && "
+            "[[ \" $* \" == *\"${INSTALL_SESSION_RM_FAIL_MATCH}\"* ]] && "
+            "[[ ! -e ${INSTALL_SESSION_RM_FAIL_MARKER:?} ]]; then\n"
+            "  : > \"${INSTALL_SESSION_RM_FAIL_MARKER}\"\n"
+            "  exit 91\n"
+            "fi\n"
+            "exec /bin/rm \"$@\"\n",
+        )
         self._fake_script(
             "ln",
             "args=(\"$@\")\n"
@@ -575,6 +685,21 @@ fi
             INSTALL_SESSION_HEALTH_COUNTER=self._bash_path(
                 self.health_counter
             ),
+            INSTALL_SESSION_INSTALLER_LOCK_STATE=self._bash_path(
+                self.installer_lock_state
+            ),
+            INSTALL_SESSION_FAILURE_COUNTERS=self._bash_path(
+                self.failure_counters
+            ),
+            INSTALL_SESSION_SIGNING_PATHS=self._bash_path(
+                self.signing_paths
+            ),
+            INSTALL_SESSION_ROLLBACK_SYSTEMCTL_MARKER=self._bash_path(
+                self.failure_counters / "rollback-systemctl"
+            ),
+            INSTALL_SESSION_RM_FAIL_MARKER=self._bash_path(
+                self.failure_counters / "rm-failed"
+            ),
         )
         environment["PATH"] = (
             f"{self._bash_path(self.fake_bin)}:{os.environ['PATH']}"
@@ -589,6 +714,7 @@ fi
         self,
         *,
         rollback_backup_id: str = DEFAULT_ROLLBACK_BACKUP_ID,
+        source_commit: str = DEFAULT_SOURCE_COMMIT,
         **overrides: str,
     ) -> subprocess.CompletedProcess[str]:
         command = (
@@ -598,6 +724,7 @@ fi
             f"source {json.dumps(self._bash_path(INSTALL_SESSION_INSTALLER))}; "
             "install_session_api_main "
             f"{json.dumps(self._bash_path(self.root))} "
+            f"--source-commit {json.dumps(source_commit)} "
             f"--rollback-backup-id {json.dumps(rollback_backup_id)}"
         )
         bash = shutil.which("bash") or "/bin/bash"

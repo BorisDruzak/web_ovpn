@@ -30,7 +30,11 @@ exit status and the non-secret output named in [Evidence](#evidence).
 ```bash
 /usr/local/sbin/alt-deploy-backup rehearse-status BACKUP_ID
 git rev-parse --verify COMMIT^{commit}
-bash deploy/alt-linux/install-install-session-api.sh --rollback-backup-id BACKUP_ID
+git fetch origin main
+test "$(git rev-parse --verify HEAD^{commit})" = "$(git rev-parse --verify COMMIT^{commit})"
+git merge-base --is-ancestor COMMIT refs/remotes/origin/main
+git status --short --untracked-files=all -- deploy/alt-linux/api deploy/alt-linux/control deploy/alt-linux/autoinstall/profiles deploy/alt-linux/systemd/alt-install-session.service deploy/alt-linux/install-install-session-api.sh
+bash deploy/alt-linux/install-install-session-api.sh --source-commit COMMIT --rollback-backup-id BACKUP_ID
 ```
 
 Stop at the first non-zero exit status.  The backup rehearsal must identify
@@ -49,7 +53,7 @@ systemctl cat alt-install-session.service
 systemctl is-enabled alt-install-session.service
 systemctl is-active alt-install-session.service
 systemd-analyze security alt-install-session.service
-curl --fail --silent --show-error http://192.168.100.17:18090/health
+curl --noproxy '*' --fail --silent --show-error http://192.168.100.17:18090/health
 sudo -u altserver test ! -r /var/lib/alt-deploy-secrets/install-plan-ed25519.pem
 stat -c '%U:%G %a %F' /var/lib/alt-deploy-secrets /var/lib/alt-deploy-secrets/install-plan-ed25519.pem /etc/alt-deploy/install-plan-ed25519.pub
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["key_id"])' /etc/alt-deploy/install-plan-ed25519.pub
