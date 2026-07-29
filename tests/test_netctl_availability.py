@@ -32,6 +32,17 @@ def _projection_host(conn, *, ip: str = "203.0.113.8", mac: str | None = None, s
     return dict(conn.execute("SELECT * FROM network_hosts WHERE ip = ?", (ip,)).fetchone())
 
 
+def _observed_targets(conn, *, seen_at: str) -> None:
+    """Seed passive inventory explicitly; collection must not invent these rows."""
+    conn.executemany(
+        """INSERT INTO network_hosts
+           (ip, category, status, first_seen_at, last_seen_at, last_source, tags_json)
+           VALUES (?, 'unknown', 'seen', ?, ?, 'test', '{}')""",
+        [(ip, seen_at, seen_at) for ip in ("192.0.2.1", "192.0.2.2", "198.51.100.1", "198.51.100.2")],
+    )
+    conn.commit()
+
+
 def _negative_projection_run(conn, ip: str = "203.0.113.8") -> None:
     from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run
 
@@ -64,6 +75,55 @@ def _set_segment(
         tcp_ports=tcp_ports,
         interval_minutes=interval_minutes,
     )
+
+
+def test_availability_targets_include_recent_hosts_management_and_forced_history(conn):
+    """Scheduled checks must use observed intent, never all usable CIDR addresses."""
+    from netctl.availability import availability_targets, set_force_monitor
+    from netctl.context_classifier import load_active_availability_segments
+
+    _set_segment(conn, "availability-a", tcp_ports=(22, 443))
+    conn.execute(
+        """INSERT INTO network_hosts
+           (ip, category, status, first_seen_at, last_seen_at, last_source, tags_json)
+           VALUES
+           ('192.0.2.1', 'unknown', 'seen', ?, ?, 'test', '{}'),
+           ('192.0.2.2', 'unknown', 'seen', ?, ?, 'test', '{}'),
+           ('192.0.2.3', 'unknown', 'seen', ?, ?, 'test', '{}')""",
+        (NOW, NOW, OLD, OLD, OLD, OLD),
+    )
+    revision = conn.execute(
+        "SELECT context_revision_id FROM context_heads WHERE context_id = 'availability-test'"
+    ).fetchone()[0]
+    conn.execute(
+        """INSERT INTO intent_assets
+           (context_revision_id, stable_id, lifecycle, canonical_json, canonical_hash,
+            origin_context_revision_id)
+           VALUES (?, 'management-host', 'active', ?, 'management-hash', ?)""",
+        (revision, json.dumps({"id": "management-host", "management_ip": "192.0.2.2"}), revision),
+    )
+    set_force_monitor(conn, "192.0.2.3", enabled=True, now=NOW)
+
+    targets = availability_targets(conn, load_active_availability_segments(conn), now=NOW)
+
+    assert [(target.ip, target.tcp_ports) for target in targets] == [
+        ("192.0.2.1", (22, 443)),
+        ("192.0.2.2", (22, 443)),
+        ("192.0.2.3", (22, 443)),
+    ]
+
+
+def test_availability_targets_never_expand_every_usable_address(conn):
+    """One fresh host in /30 is one scheduled target, not every usable address."""
+    from netctl.availability import availability_targets
+    from netctl.context_classifier import load_active_availability_segments
+
+    _set_segment(conn, "availability-a")
+    _projection_host(conn, ip="192.0.2.1")
+
+    targets = availability_targets(conn, load_active_availability_segments(conn), now=NOW)
+
+    assert [target.ip for target in targets] == ["192.0.2.1"]
 
 
 def _fresh_passive(conn, source: str, *, ip: str, mac: str) -> int:
@@ -274,6 +334,7 @@ def test_due_collection_skips_segment_until_selected_interval_expires(conn):
     )
 
     _set_segment(conn, "availability-a", interval_minutes=15)
+    _observed_targets(conn, seen_at="2026-07-29T12:10:00Z")
     save_availability_run(
         conn,
         AvailabilityRun.success(
@@ -740,6 +801,7 @@ def test_deadline_failure_keeps_current_results_and_persists_no_partial_success(
     """A deadline after the first address must not replace the previous complete CIDR state."""
     from netctl.availability import AvailabilityResult, AvailabilityRun, ProbeExecutor, collect_availability, current_availability_results, save_availability_run
 
+    _observed_targets(conn, seen_at=NEW)
     save_availability_run(
         conn,
         AvailabilityRun.success(
@@ -762,6 +824,7 @@ def test_socket_infrastructure_errno_fails_collection_without_replacing_current(
     """A local TCP failure must preserve the last complete current state."""
     import netctl.availability as availability
 
+    _observed_targets(conn, seen_at=NEW)
     conn.execute(
         "UPDATE intent_segments SET canonical_json = ? WHERE stable_id = 'availability-a'",
         (
@@ -843,6 +906,7 @@ def test_second_cidr_persistence_failure_rolls_back_every_current_result(conn):
     """A later CIDR storage error must not leave the first CIDR published under a failed collection."""
     from netctl.availability import ProbeExecutor, collect_availability
 
+    _observed_targets(conn, seen_at=NEW)
     conn.execute(
         """
         CREATE TRIGGER reject_second_availability_result
@@ -878,6 +942,7 @@ def test_submit_failure_returns_sanitized_executor_error_and_persists_failed_run
         def shutdown(self, **_kwargs):
             return None
 
+    _observed_targets(conn, seen_at=NEW)
     monkeypatch.setattr(availability, "ThreadPoolExecutor", SubmitFailurePool)
     executor = availability.ProbeExecutor(lambda _ip: True, lambda _ip, _port: False, lambda: 0.0)
 
@@ -896,6 +961,7 @@ def test_availability_collect_publishes_only_completed_canonical_targets(conn):
     """Publishing a result for a probe-only address would create unverified network inventory."""
     from netctl.availability import ProbeExecutor, collect_availability
 
+    _observed_targets(conn, seen_at=NEW)
     executor = FakeExecutor(icmp={"192.0.2.1": True, "192.0.2.2": False})
     collection = collect_availability(
         conn,
@@ -913,7 +979,7 @@ def test_availability_collect_publishes_only_completed_canonical_targets(conn):
         ("198.51.100.1", "unreachable"),
         ("198.51.100.2", "unreachable"),
     ]
-    assert conn.execute("SELECT count(*) FROM network_hosts").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM network_hosts").fetchone()[0] == 4
 
 
 def test_dashboard_includes_availability_counts_last_success_and_failure_health(conn, monkeypatch):

@@ -117,12 +117,13 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
             "availability_runs",
             "availability_results",
             "availability_result_events",
-            "availability_segment_settings",
-            "availability_manual_results",
-            *INTENT_TABLES,
-        } <= table_names
+                "availability_segment_settings",
+                "availability_manual_results",
+                "availability_force_monitors",
+                *INTENT_TABLES,
+            } <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 19)
+            (version,) for version in range(1, 20)
         ]
         manual_result_index = conn.execute(
             "PRAGMA index_xinfo(availability_manual_results_latest_idx)"

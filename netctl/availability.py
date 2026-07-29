@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import errno
 import ipaddress
+import json
 import sqlite3
 import socket
 import subprocess
@@ -131,6 +132,100 @@ def expand_targets(segments: tuple[Any, ...]) -> tuple[ProbeTarget, ...]:
             ip = str(address)
             if ip not in targets:
                 targets[ip] = ProbeTarget(ip, ports, cidr)
+    return tuple(targets[ip] for ip in sorted(targets, key=lambda value: int(ipaddress.ip_address(value))))
+
+
+def _target_rule(ip: str, segments: tuple[Any, ...]) -> Any | None:
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if address.version != 4:
+        return None
+    matches = [rule for rule in segments if address in rule.network]
+    if not matches:
+        return None
+    return min(matches, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))
+
+
+def set_force_monitor(
+    conn: sqlite3.Connection,
+    ip: str,
+    *,
+    enabled: bool,
+    now: str | datetime,
+) -> dict[str, object]:
+    """Persist explicit monitoring intent for one normalized IPv4 host."""
+    address = ipaddress.ip_address(ip)
+    if address.version != 4:
+        raise ValueError("force monitor requires IPv4")
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a boolean")
+    timestamp = _utc_timestamp(
+        now.isoformat() if isinstance(now, datetime) else str(now), field="updated_at"
+    )
+    normalized = str(address)
+    conn.execute(
+        """INSERT INTO availability_force_monitors (ip, enabled, enabled_at, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(ip) DO UPDATE SET
+             enabled=excluded.enabled,
+             enabled_at=CASE WHEN excluded.enabled = 1 THEN excluded.enabled_at
+                             ELSE availability_force_monitors.enabled_at END,
+             updated_at=excluded.updated_at""",
+        (normalized, int(enabled), timestamp if enabled else "", timestamp),
+    )
+    conn.commit()
+    return {"ip": normalized, "enabled": enabled, "enabled_at": timestamp if enabled else "", "updated_at": timestamp}
+
+
+def availability_targets(
+    conn: sqlite3.Connection,
+    segments: tuple[Any, ...],
+    *,
+    now: str | datetime,
+) -> tuple[ProbeTarget, ...]:
+    """Return only fresh observed, canonical management, or explicitly forced hosts."""
+    timestamp = _as_utc(now.isoformat() if isinstance(now, datetime) else str(now))
+    if timestamp is None:
+        raise ValueError("target clock must be UTC")
+    cutoff = (timestamp - timedelta(hours=24)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    candidates = {
+        str(row["ip"])
+        for row in conn.execute(
+            "SELECT ip FROM network_hosts WHERE last_seen_at >= ?", (cutoff,)
+        )
+    }
+    candidates.update(
+        str(row["ip"])
+        for row in conn.execute(
+            "SELECT ip FROM availability_force_monitors WHERE enabled = 1"
+        )
+    )
+    revision = conn.execute(
+        """SELECT context_revision_id FROM context_heads
+           ORDER BY activated_at DESC, context_id LIMIT 1"""
+    ).fetchone()
+    if revision is not None:
+        for row in conn.execute(
+            """SELECT canonical_json FROM intent_assets
+               WHERE context_revision_id = ? AND lifecycle = 'active'""",
+            (revision["context_revision_id"],),
+        ):
+            try:
+                asset = json.loads(str(row["canonical_json"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(asset, dict) and isinstance(asset.get("management_ip"), str):
+                candidates.add(asset["management_ip"])
+
+    targets: dict[str, ProbeTarget] = {}
+    for candidate in candidates:
+        rule = _target_rule(candidate, segments)
+        if rule is None:
+            continue
+        normalized = str(ipaddress.ip_address(candidate))
+        targets[normalized] = ProbeTarget(normalized, tuple(rule.availability_tcp_ports), str(rule.network))
     return tuple(targets[ip] for ip in sorted(targets, key=lambda value: int(ipaddress.ip_address(value))))
 
 
@@ -293,7 +388,7 @@ def _collect_availability_segments(
     """Collect exactly the already-authorized effective segment rules."""
     started = _collection_timestamp(now)
     try:
-        targets = expand_targets(segments)
+        targets = availability_targets(conn, segments, now=started)
     except ValueError:
         return AvailabilityCollection(
             "failed",
