@@ -10,9 +10,10 @@ import json
 import os
 import re
 import secrets
+import select
+import signal
 import socket
 import stat
-import struct
 import sys
 from datetime import datetime, timedelta, timezone
 from io import StringIO
@@ -84,6 +85,9 @@ SESSION_ID_RE = re.compile(
     r"^install-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$"
 )
 MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
+AUTHORIZATION_CAPTURE_MAX_SECONDS = 10
+AUTHORIZATION_PENDING_TO_PREAUTH_MAX_SECONDS = 30
+AUTHORIZATION_PREAUTH_TO_OBSERVED_MAX_SECONDS = 10
 TIMELINE_KEYS = (
     "waiting_for_authorization_at",
     "preflight_ready_at",
@@ -96,6 +100,27 @@ TIMELINE_KEYS = (
 RUN_ID_RE = re.compile(r"^run-[0-9a-f]{64}$")
 NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 KEY_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+MANDATORY_PUBLIC_SOURCE_NAMES = frozenset(
+    {
+        "after-install.qmp.jsonl",
+        "authenticated-postflight.json",
+        "before-authorization-boundary.json",
+        "before-authorization.qmp.jsonl",
+        "before-authorization.sentinel.sha256",
+        "before-authorization.target.sha256",
+        "pending-boundary.json",
+        "pending.qmp.jsonl",
+        "pending.sentinel.sha256",
+        "pending.target.sha256",
+        "postflight-boot.qmp.jsonl",
+        "postflight-delivery.json",
+        "sentinel.after.sha256",
+        "target.after.sha256",
+    }
+)
+MANDATORY_PUBLIC_EVIDENCE_NAMES = (
+    MANDATORY_PUBLIC_SOURCE_NAMES | {"iso-evidence.json"}
+)
 
 
 class AcceptanceError(RuntimeError):
@@ -210,6 +235,81 @@ def _file_identity(metadata: os.stat_result) -> dict[str, int]:
     }
 
 
+def _copy_verified_iso(
+    source: Path,
+    destination: Path,
+    *,
+    expected_sha256: str,
+    after_open: Callable[[], None] | None = None,
+) -> tuple[Path, os.stat_result, dict[str, int]]:
+    if not SHA256_RE.fullmatch(expected_sha256):
+        _fail("Verified ISO SHA-256 is invalid")
+    canonical_source, source_metadata = _canonical_regular(source)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    try:
+        source_descriptor = os.open(canonical_source, flags)
+    except OSError as exc:
+        raise AcceptanceError("Verified ISO cannot be opened") from exc
+    destination_descriptor = -1
+    try:
+        opened_source = os.fstat(source_descriptor)
+        if (
+            not stat.S_ISREG(opened_source.st_mode)
+            or opened_source.st_dev != source_metadata.st_dev
+            or opened_source.st_ino != source_metadata.st_ino
+            or opened_source.st_size != source_metadata.st_size
+        ):
+            _fail("Verified ISO source identity changed")
+        if after_open is not None:
+            after_open()
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | (getattr(os, "O_BINARY", 0)),
+            0o400,
+        )
+        digest = hashlib.sha256()
+        copied = 0
+        while chunk := os.read(source_descriptor, 1024 * 1024):
+            digest.update(chunk)
+            copied += len(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_descriptor, view)
+                if written < 1:
+                    _fail("Verified ISO copy was truncated")
+                view = view[written:]
+        os.fsync(destination_descriptor)
+        copied_metadata = os.fstat(destination_descriptor)
+        final_source = os.fstat(source_descriptor)
+        if (
+            copied != opened_source.st_size
+            or digest.hexdigest() != expected_sha256
+            or final_source.st_dev != opened_source.st_dev
+            or final_source.st_ino != opened_source.st_ino
+            or final_source.st_size != opened_source.st_size
+            or copied_metadata.st_size != copied
+        ):
+            _fail("Verified ISO bytes changed before run ownership")
+    except OSError as exc:
+        raise AcceptanceError("Verified ISO copy failed closed") from exc
+    finally:
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
+        os.close(source_descriptor)
+    os.chmod(destination, 0o400)
+    canonical_copy, copied_metadata = _canonical_regular(destination)
+    return (
+        canonical_copy,
+        copied_metadata,
+        _file_identity(opened_source),
+    )
+
+
 def _urlsafe_nonce() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode(
         "ascii"
@@ -220,9 +320,11 @@ def create_run_state(
     state_dir: Path,
     *,
     iso: Path,
+    expected_iso_sha256: str,
     target: Path,
     sentinel: Path,
     vm_instance_id: str,
+    after_iso_open: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     if not state_dir.is_dir() or any(state_dir.iterdir()):
         _fail("Run state directory must be empty")
@@ -232,8 +334,20 @@ def create_run_state(
     except (OSError, ValueError) as exc:
         raise AcceptanceError("Run state identity is invalid") from exc
     os.chmod(canonical_state, 0o700)
+    run_artifacts = canonical_state / "run-artifacts"
+    run_artifacts.mkdir(mode=0o700)
+    (
+        owned_iso,
+        owned_iso_metadata,
+        source_iso_identity,
+    ) = _copy_verified_iso(
+        iso,
+        run_artifacts / "install.iso",
+        expected_sha256=expected_iso_sha256,
+        after_open=after_iso_open,
+    )
     paths: dict[str, tuple[Path, os.stat_result]] = {
-        "iso": _canonical_regular(iso),
+        "iso": (owned_iso, owned_iso_metadata),
         "target": _canonical_regular(target),
         "sentinel": _canonical_regular(sentinel),
     }
@@ -285,7 +399,8 @@ def create_run_state(
         "iso": {
             "canonical_path": str(iso_path),
             "file_identity": _file_identity(iso_metadata),
-            "sha256": _sha256_file(iso_path),
+            "sha256": expected_iso_sha256,
+            "verified_source_file_identity": source_iso_identity,
         },
         "run_id": "run-" + secrets.token_hex(32),
         "schema_version": 1,
@@ -380,7 +495,25 @@ def _load_run_manifest(state_dir: Path) -> dict[str, object]:
 def verify_run_iso(state_dir: Path) -> dict[str, object]:
     manifest = _load_run_manifest(state_dir)
     binding = manifest.get("iso")
-    if not isinstance(binding, dict):
+    if (
+        not isinstance(binding, dict)
+        or set(binding)
+        != {
+            "canonical_path",
+            "file_identity",
+            "sha256",
+            "verified_source_file_identity",
+        }
+        or not isinstance(binding.get("file_identity"), dict)
+        or not isinstance(
+            binding.get("verified_source_file_identity"), dict
+        )
+        or set(binding["file_identity"]) != {"device", "inode", "size"}
+        or set(binding["verified_source_file_identity"])
+        != {"device", "inode", "size"}
+        or not isinstance(binding.get("sha256"), str)
+        or not SHA256_RE.fullmatch(str(binding["sha256"]))
+    ):
         _fail("Run ISO binding is invalid")
     try:
         canonical, metadata = _canonical_regular(
@@ -388,10 +521,18 @@ def verify_run_iso(state_dir: Path) -> dict[str, object]:
         )
     except (KeyError, TypeError):
         _fail("Run ISO binding is invalid")
+    expected_path = (
+        state_dir.resolve(strict=True) / "run-artifacts" / "install.iso"
+    )
     if (
-        str(canonical) != binding.get("canonical_path")
+        canonical != expected_path
+        or str(canonical) != binding.get("canonical_path")
         or _file_identity(metadata) != binding.get("file_identity")
         or _sha256_file(canonical) != binding.get("sha256")
+        or (
+            os.name == "posix"
+            and stat.S_IMODE(metadata.st_mode) != 0o400
+        )
     ):
         _fail("Run ISO identity or SHA-256 changed")
     return binding
@@ -693,9 +834,52 @@ def _write_bound_sha_record(
     )
     return {
         "file_identity": current_identity,
-        "record_path": str(output.resolve(strict=True)),
+        "record_file": output.name,
         "sha256": digest,
     }
+
+
+def validate_authorization_boundary_freshness(
+    *,
+    pending_captured_at: str,
+    before_authorization_started_at: str,
+    before_authorization_captured_at: str,
+    authorization_observed_at: str,
+) -> None:
+    pending_captured = _parse_timestamp(
+        pending_captured_at, field="pending_captured_at"
+    )
+    preauth_started = _parse_timestamp(
+        before_authorization_started_at,
+        field="before_authorization_started_at",
+    )
+    preauth_captured = _parse_timestamp(
+        before_authorization_captured_at,
+        field="before_authorization_captured_at",
+    )
+    observed = _parse_timestamp(
+        authorization_observed_at,
+        field="authorization_observed_at",
+    )
+    if (
+        not pending_captured
+        < preauth_started
+        < preauth_captured
+        <= observed
+        or (
+            preauth_started - pending_captured
+            > timedelta(
+                seconds=AUTHORIZATION_PENDING_TO_PREAUTH_MAX_SECONDS
+            )
+        )
+        or (
+            observed - preauth_captured
+            > timedelta(
+                seconds=AUTHORIZATION_PREAUTH_TO_OBSERVED_MAX_SECONDS
+            )
+        )
+    ):
+        _fail("Authorization boundary freshness is invalid")
 
 
 def capture_authorization_boundary(
@@ -748,8 +932,12 @@ def capture_authorization_boundary(
         started_at, field="capture_started_at"
     )
     captured = _parse_timestamp(captured_at, field="captured_at")
-    if captured <= started:
-        _fail("Authorization boundary timestamp order is invalid")
+    if (
+        captured <= started
+        or captured - started
+        > timedelta(seconds=AUTHORIZATION_CAPTURE_MAX_SECONDS)
+    ):
+        _fail("Authorization boundary capture freshness is invalid")
     manifest = _load_run_manifest(state_dir)
     unsigned = {
         "capture_started_at": started_at,
@@ -758,7 +946,7 @@ def capture_authorization_boundary(
         "iso": iso,
         "phase": phase,
         "qmp": {
-            "path": str(qmp_path.resolve(strict=True)),
+            "file": qmp_path.name,
             "sha256": hashlib.sha256(
                 _read_bytes(qmp_path)
             ).hexdigest(),
@@ -856,15 +1044,19 @@ def read_authorization_boundary(
     captured = _parse_timestamp(
         document.get("captured_at"), field="captured_at"
     )
-    if captured <= started:
-        _fail("Authorization boundary timestamp order is invalid")
+    if (
+        captured <= started
+        or captured - started
+        > timedelta(seconds=AUTHORIZATION_CAPTURE_MAX_SECONDS)
+    ):
+        _fail("Authorization boundary capture freshness is invalid")
     parent = actual_path.parent
     qmp = document.get("qmp")
     if not isinstance(qmp, dict):
         _fail("Authorization boundary QMP binding is invalid")
     qmp_path = parent / f"{expected_phase}.qmp.jsonl"
     if (
-        qmp.get("path") != str(qmp_path.resolve(strict=True))
+        qmp.get("file") != qmp_path.name
         or qmp.get("sha256")
         != hashlib.sha256(_read_bytes(qmp_path)).hexdigest()
     ):
@@ -882,8 +1074,7 @@ def read_authorization_boundary(
         record = parent / f"{expected_phase}.{artifact}.sha256"
         if (
             not isinstance(item, dict)
-            or item.get("record_path")
-            != str(record.resolve(strict=True))
+            or item.get("record_file") != record.name
             or item.get("sha256")
             != read_bound_sha256_record(record, state_dir, artifact)
         ):
@@ -1023,6 +1214,8 @@ def _empty_directory_path(path: Path) -> None:
             _empty_directory_path(child)
             child.rmdir()
         else:
+            if os.name == "nt":
+                child.chmod(0o600)
             child.unlink()
 
 
@@ -1112,102 +1305,180 @@ def remove_owned_workdir(
     workdir.rmdir()
 
 
-def tap_ownership(
-    *, tap_name: str, tap_ifindex: int
+def network_namespace_ownership(
+    *,
+    pid: int,
+    process_starttime: int,
+    namespace_device: int,
+    namespace_inode: int,
 ) -> dict[str, object]:
     if (
-        not re.fullmatch(r"aiv2[0-9]{1,10}", tap_name)
-        or type(tap_ifindex) is not int
-        or tap_ifindex < 1
+        any(
+            type(value) is not int or value < 1
+            for value in (
+                pid,
+                process_starttime,
+                namespace_device,
+                namespace_inode,
+            )
+        )
     ):
-        _fail("Harness TAP creation identity is invalid")
+        _fail("Harness network namespace identity is invalid")
     return {
+        "namespace_device": namespace_device,
+        "namespace_inode": namespace_inode,
+        "pid": pid,
+        "process_starttime": process_starttime,
         "schema_version": 1,
-        "tap_ifindex": tap_ifindex,
-        "tap_name": tap_name,
     }
 
 
-def _tap_ifindex(tap_name: str) -> int:
+def _process_starttime(pid: int) -> int:
     try:
-        value = (
-            Path("/sys/class/net")
-            .joinpath(tap_name, "ifindex")
-            .read_text(encoding="ascii")
-            .strip()
-        )
-        if not value.isdecimal():
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        close = text.rfind(")")
+        fields = text[close + 2 :].split()
+        value = int(fields[19])
+        if close < 1 or value < 1:
             raise ValueError
-        return int(value)
+        return value
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise AcceptanceError(
-            "Harness TAP identity is unavailable"
+            "Harness network namespace process identity is unavailable"
         ) from exc
 
 
-def _delete_link_by_ifindex(ifindex: int) -> None:
-    if not hasattr(socket, "AF_NETLINK"):
-        _fail("Netlink TAP deletion is unavailable")
-    request = 1
-    acknowledge = 4
-    delete_link = 17
-    sequence = secrets.randbits(31) or 1
-    info = struct.pack(
-        "=BBHiII", socket.AF_UNSPEC, 0, 0, ifindex, 0, 0xFFFFFFFF
-    )
-    header = struct.pack(
-        "=IHHII",
-        16 + len(info),
-        delete_link,
-        request | acknowledge,
-        sequence,
-        0,
-    )
-    client = socket.socket(
-        socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE
-    )
-    client.settimeout(5)
+def _network_namespace_identity(pid: int) -> tuple[int, int]:
     try:
-        client.bind((0, 0))
-        client.sendto(header + info, (0, 0))
-        response = client.recv(4096)
+        metadata = Path(f"/proc/{pid}/ns/net").stat()
     except OSError as exc:
-        raise AcceptanceError("Harness TAP deletion failed") from exc
-    finally:
-        client.close()
-    if len(response) < 20:
-        _fail("Harness TAP deletion response is invalid")
-    _length, message_type, _flags, observed_sequence, _pid = (
-        struct.unpack_from("=IHHII", response)
-    )
-    error = struct.unpack_from("=i", response, 16)[0]
-    if (
-        message_type != 2
-        or observed_sequence != sequence
-        or error != 0
-    ):
-        _fail("Harness TAP deletion failed")
+        raise AcceptanceError(
+            "Harness network namespace identity is unavailable"
+        ) from exc
+    return metadata.st_dev, metadata.st_ino
 
 
-def delete_owned_tap(
+def _signal_pidfd(pidfd: int) -> None:
+    if not hasattr(signal, "pidfd_send_signal"):
+        _fail("Harness pidfd signaling is unavailable")
+    signal.pidfd_send_signal(pidfd, signal.SIGTERM)
+
+
+def _open_pidfd(pid: int) -> int:
+    if not hasattr(os, "pidfd_open"):
+        _fail("Harness pidfd ownership is unavailable")
+    return os.pidfd_open(pid)
+
+
+def _wait_pidfd(pidfd: int) -> None:
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    if not poller.poll(5000):
+        _fail("Harness network namespace holder did not exit")
+
+
+def stop_owned_network_namespace(
     ownership: dict[str, object],
     *,
-    identity_reader: Callable[[str], int] = _tap_ifindex,
-    delete_by_ifindex: Callable[[int], None] = _delete_link_by_ifindex,
+    pidfd_open: Callable[[int], int] = _open_pidfd,
+    process_starttime_reader: Callable[[int], int] = _process_starttime,
+    namespace_identity_reader: Callable[
+        [int], tuple[int, int]
+    ] = _network_namespace_identity,
+    signaler: Callable[[int], None] = _signal_pidfd,
+    waiter: Callable[[int], None] = _wait_pidfd,
+    descriptor_close: Callable[[int], None] = os.close,
 ) -> None:
     if (
         set(ownership)
-        != {"schema_version", "tap_ifindex", "tap_name"}
+        != {
+            "namespace_device",
+            "namespace_inode",
+            "pid",
+            "process_starttime",
+            "schema_version",
+        }
         or ownership.get("schema_version") != 1
-        or not isinstance(ownership.get("tap_name"), str)
-        or type(ownership.get("tap_ifindex")) is not int
+        or any(
+            type(ownership.get(name)) is not int
+            or int(ownership[name]) < 1
+            for name in (
+                "namespace_device",
+                "namespace_inode",
+                "pid",
+                "process_starttime",
+            )
+        )
     ):
-        _fail("Harness TAP ownership record is invalid")
-    tap_name = str(ownership["tap_name"])
-    tap_ifindex = int(ownership["tap_ifindex"])
-    if identity_reader(tap_name) != tap_ifindex:
-        _fail("Harness TAP creation identity changed")
-    delete_by_ifindex(tap_ifindex)
+        _fail("Harness network namespace ownership record is invalid")
+    pid = int(ownership["pid"])
+    try:
+        pidfd = pidfd_open(pid)
+    except ProcessLookupError:
+        return
+    try:
+        namespace_device, namespace_inode = (
+            namespace_identity_reader(pid)
+        )
+        if (
+            process_starttime_reader(pid)
+            != ownership["process_starttime"]
+            or namespace_device != ownership["namespace_device"]
+            or namespace_inode != ownership["namespace_inode"]
+        ):
+            _fail("Harness network namespace identity changed")
+        signaler(pidfd)
+        waiter(pidfd)
+    finally:
+        descriptor_close(pidfd)
+
+
+def hold_network_namespace(record: Path) -> None:
+    pid = os.getpid()
+    namespace_device, namespace_inode = _network_namespace_identity(pid)
+    ownership = network_namespace_ownership(
+        pid=pid,
+        process_starttime=_process_starttime(pid),
+        namespace_device=namespace_device,
+        namespace_inode=namespace_inode,
+    )
+    _write_new(record, _json_bytes(ownership), mode=0o600)
+    while True:
+        signal.pause()
+
+
+def run_in_owned_network_namespace(
+    ownership: dict[str, object], command: Sequence[str]
+) -> NoReturn:
+    if not command or any(not item for item in command):
+        _fail("Harness network namespace command is invalid")
+    pid = ownership.get("pid")
+    if type(pid) is not int:
+        _fail("Harness network namespace ownership record is invalid")
+    try:
+        descriptor = os.open(
+            f"/proc/{pid}/ns/net",
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as exc:
+        raise AcceptanceError(
+            "Harness network namespace cannot be entered"
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            _process_starttime(pid) != ownership.get("process_starttime")
+            or metadata.st_dev != ownership.get("namespace_device")
+            or metadata.st_ino != ownership.get("namespace_inode")
+        ):
+            _fail("Harness network namespace identity changed")
+        if not hasattr(os, "setns"):
+            _fail("Harness network namespace entry is unavailable")
+        os.setns(descriptor, getattr(os, "CLONE_NEWNET", 0))
+    finally:
+        os.close(descriptor)
+    os.execvp(command[0], list(command))
+    raise AssertionError("unreachable")
 
 
 def create_authorization_request(
@@ -1402,38 +1673,37 @@ def invoke_root_execution_authorization(
             before_authorization_boundary,
             expected_phase="before-authorization",
         )
-        pending_captured = _parse_timestamp(
-            pending["captured_at"], field="pending_captured_at"
+        validate_authorization_boundary_freshness(
+            pending_captured_at=str(pending["captured_at"]),
+            before_authorization_started_at=str(
+                immediate_boundary["capture_started_at"]
+            ),
+            before_authorization_captured_at=str(
+                immediate_boundary["captured_at"]
+            ),
+            authorization_observed_at=observed_at,
         )
-        immediate_started = _parse_timestamp(
-            immediate_boundary["capture_started_at"],
-            field="before_authorization_started_at",
+        boundary_parent = pending_boundary.parent.resolve(strict=True)
+        before_parent = (
+            before_authorization_boundary.parent.resolve(strict=True)
         )
-        immediate_captured = _parse_timestamp(
-            immediate_boundary["captured_at"],
-            field="before_authorization_captured_at",
+        initial_qmp = boundary_parent / str(pending["qmp"]["file"])
+        before_authorization_qmp = (
+            before_parent / str(immediate_boundary["qmp"]["file"])
         )
-        if not (
-            pending_captured < immediate_started
-            < immediate_captured
-            <= authorization_observed
-        ):
-            _fail("Authorization boundary timeline is invalid")
-        initial_qmp = Path(str(pending["qmp"]["path"]))
-        before_authorization_qmp = Path(
-            str(immediate_boundary["qmp"]["path"])
+        initial_target_sha = (
+            boundary_parent / str(pending["target"]["record_file"])
         )
-        initial_target_sha = Path(
-            str(pending["target"]["record_path"])
+        before_authorization_target_sha = (
+            before_parent
+            / str(immediate_boundary["target"]["record_file"])
         )
-        before_authorization_target_sha = Path(
-            str(immediate_boundary["target"]["record_path"])
+        initial_sentinel_sha = (
+            boundary_parent / str(pending["sentinel"]["record_file"])
         )
-        initial_sentinel_sha = Path(
-            str(pending["sentinel"]["record_path"])
-        )
-        before_authorization_sentinel_sha = Path(
-            str(immediate_boundary["sentinel"]["record_path"])
+        before_authorization_sentinel_sha = (
+            before_parent
+            / str(immediate_boundary["sentinel"]["record_file"])
         )
         boundary_payload = {
             "before_authorization_boundary_sha256": hashlib.sha256(
@@ -2188,6 +2458,531 @@ def _copy_public_file(source: Path, output: Path) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _portable_qmp_snapshot(
+    path: Path,
+    manifest: dict[str, object],
+    *,
+    require_iso: bool,
+) -> dict[str, dict[str, object]]:
+    responses = _qmp_responses(path)
+    snapshot = _read_qmp_snapshot(path)
+    blocks = responses["block"].get("return")
+    artifacts = manifest.get("artifacts")
+    iso = manifest.get("iso")
+    if (
+        not isinstance(blocks, list)
+        or not isinstance(artifacts, dict)
+        or not isinstance(iso, dict)
+    ):
+        _fail("Public evidence QMP semantic binding is invalid")
+    inserted: dict[str, dict[str, object]] = {}
+    for item in blocks:
+        if not isinstance(item, dict):
+            _fail("Public evidence QMP semantic binding is invalid")
+        device = item.get("device")
+        details = item.get("inserted")
+        if device in {"target", "sentinel", "install-iso"}:
+            if (
+                not isinstance(device, str)
+                or device in inserted
+                or not isinstance(details, dict)
+            ):
+                _fail("Public evidence QMP semantic binding is invalid")
+            inserted[device] = details
+    for artifact in ("target", "sentinel"):
+        binding = artifacts.get(artifact)
+        if (
+            not isinstance(binding, dict)
+            or inserted.get(artifact, {}).get("file")
+            != binding.get("canonical_path")
+        ):
+            _fail("Public evidence QMP semantic binding is invalid")
+    install_iso = inserted.get("install-iso")
+    if require_iso:
+        install_blocks = [
+            item
+            for item in blocks
+            if isinstance(item, dict)
+            and item.get("device") == "install-iso"
+        ]
+        if (
+            len(install_blocks) != 1
+            or not isinstance(install_iso, dict)
+            or install_iso.get("file") != iso.get("canonical_path")
+            or install_iso.get("ro") is not True
+            or install_blocks[0].get("removable") is not True
+        ):
+            _fail("Public evidence ISO QMP semantic binding is invalid")
+    elif install_iso is not None:
+        _fail("Public evidence unexpectedly contains an install ISO")
+    return snapshot
+
+
+def _portable_sha256_record(
+    path: Path,
+    manifest: dict[str, object],
+    artifact: str,
+) -> str:
+    try:
+        lines = _read_bytes(path, maximum=4096).decode("ascii").splitlines()
+    except UnicodeDecodeError as exc:
+        raise AcceptanceError(
+            "Public SHA-256 evidence is not ASCII"
+        ) from exc
+    artifacts = manifest.get("artifacts")
+    binding = (
+        artifacts.get(artifact)
+        if isinstance(artifacts, dict)
+        else None
+    )
+    fields = lines[0].split(maxsplit=1) if len(lines) == 1 else []
+    if (
+        not isinstance(binding, dict)
+        or len(fields) != 2
+        or not SHA256_RE.fullmatch(fields[0])
+        or fields[1] != binding.get("canonical_path")
+    ):
+        _fail("Public SHA-256 semantic binding is invalid")
+    return fields[0]
+
+
+def _public_attestation_key(root: Path) -> Ed25519PublicKey:
+    try:
+        public = serialization.load_pem_public_key(
+            _read_bytes(
+                root / "attestation-public.pem", maximum=16 * 1024
+            )
+        )
+    except ValueError as exc:
+        raise AcceptanceError(
+            "Public acceptance key is invalid"
+        ) from exc
+    if not isinstance(public, Ed25519PublicKey):
+        _fail("Public acceptance key is invalid")
+    return public
+
+
+def _verify_portable_boundary(
+    root: Path,
+    manifest: dict[str, object],
+    *,
+    phase: str,
+    public: Ed25519PublicKey,
+) -> dict[str, object]:
+    evidence = root / "evidence"
+    document_path = evidence / f"{phase}-boundary.json"
+    document = _read_json(document_path)
+    signature = document.get("signature_b64")
+    unsigned = dict(document)
+    unsigned.pop("signature_b64", None)
+    qmp = document.get("qmp")
+    if (
+        set(document)
+        != {
+            "capture_started_at",
+            "captured_at",
+            "challenge",
+            "iso",
+            "phase",
+            "qmp",
+            "run_id",
+            "schema_version",
+            "sentinel",
+            "signature_b64",
+            "target",
+            "trust_anchor_key_id",
+        }
+        or document.get("schema_version") != 1
+        or document.get("phase") != phase
+        or document.get("run_id") != manifest.get("run_id")
+        or document.get("challenge") != manifest.get("challenge")
+        or document.get("trust_anchor_key_id")
+        != manifest.get("trust_anchor_key_id")
+        or document.get("iso") != manifest.get("iso")
+        or not isinstance(signature, str)
+        or not isinstance(qmp, dict)
+        or set(qmp) != {"file", "sha256"}
+        or qmp.get("file") != f"{phase}.qmp.jsonl"
+    ):
+        _fail("Public boundary semantic binding is invalid")
+    try:
+        public.verify(
+            base64.b64decode(signature, validate=True),
+            _attestation_unsigned(unsigned),
+        )
+    except (InvalidSignature, ValueError):
+        _fail("Public boundary signature is invalid")
+    started = _parse_timestamp(
+        document.get("capture_started_at"),
+        field="capture_started_at",
+    )
+    captured = _parse_timestamp(
+        document.get("captured_at"), field="captured_at"
+    )
+    if (
+        captured <= started
+        or captured - started
+        > timedelta(seconds=AUTHORIZATION_CAPTURE_MAX_SECONDS)
+    ):
+        _fail("Public boundary semantic freshness is invalid")
+    qmp_path = evidence / str(qmp["file"])
+    if qmp.get("sha256") != hashlib.sha256(
+        _read_bytes(qmp_path)
+    ).hexdigest():
+        _fail("Public boundary QMP hash is invalid")
+    snapshot = _portable_qmp_snapshot(
+        qmp_path, manifest, require_iso=True
+    )
+    if (
+        snapshot["target"]["read_only"] is not False
+        or snapshot["sentinel"]["read_only"] is not True
+        or any(
+            not _all_writes_zero(snapshot[name]["graph"])
+            for name in ("target", "sentinel")
+        )
+    ):
+        _fail("Public boundary QMP semantic predicate is invalid")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        _fail("Public boundary artifact binding is invalid")
+    for artifact in ("target", "sentinel"):
+        item = document.get(artifact)
+        record_name = f"{phase}.{artifact}.sha256"
+        binding = artifacts.get(artifact)
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"file_identity", "record_file", "sha256"}
+            or item.get("record_file") != record_name
+            or not isinstance(binding, dict)
+            or item.get("file_identity") != binding.get("file_identity")
+            or item.get("sha256")
+            != _portable_sha256_record(
+                evidence / record_name, manifest, artifact
+            )
+        ):
+            _fail("Public boundary artifact semantic binding is invalid")
+    return document
+
+
+def _replay_public_acceptance(
+    root: Path,
+    manifest: dict[str, object],
+    chain: list[dict[str, object]],
+    receipt: dict[str, object],
+) -> None:
+    evidence = root / "evidence"
+    public = _public_attestation_key(root)
+    pending = _verify_portable_boundary(
+        root, manifest, phase="pending", public=public
+    )
+    preauth = _verify_portable_boundary(
+        root,
+        manifest,
+        phase="before-authorization",
+        public=public,
+    )
+    preauth_snapshot = _portable_qmp_snapshot(
+        root / "evidence" / "before-authorization.qmp.jsonl",
+        manifest,
+        require_iso=True,
+    )
+    events = [item.get("event") for item in chain]
+    if events != [
+        "authorization",
+        "claimed",
+        "handoff_started",
+        "installer_started",
+        "postflight_boot",
+        "installed",
+        "acceptance_evidence",
+    ]:
+        _fail("Public controller lifecycle semantic chain is invalid")
+    authorization = chain[0].get("payload")
+    if (
+        not isinstance(authorization, dict)
+        or set(authorization)
+        != {
+            "authorization_observed_at",
+            "before_authorization_boundary_sha256",
+            "before_authorization_qmp_sha256",
+            "controller",
+            "initial_qmp_sha256",
+            "initial_sentinel_sha256",
+            "initial_target_sha256",
+            "pending_boundary_sha256",
+            "request",
+            "sentinel_sha256_before_authorization",
+            "target_disk",
+            "target_sha256_before_authorization",
+        }
+    ):
+        _fail("Public authorization semantic evidence is invalid")
+    validate_authorization_boundary_freshness(
+        pending_captured_at=str(pending["captured_at"]),
+        before_authorization_started_at=str(
+            preauth["capture_started_at"]
+        ),
+        before_authorization_captured_at=str(preauth["captured_at"]),
+        authorization_observed_at=str(
+            authorization.get("authorization_observed_at")
+        ),
+    )
+    authorization_observed = _parse_timestamp(
+        authorization.get("authorization_observed_at"),
+        field="authorization_observed_at",
+    )
+    controller_authorized = _parse_timestamp(
+        chain[0].get("observed_at"), field="authorized_at"
+    )
+    if (
+        controller_authorized < authorization_observed
+        or controller_authorized - authorization_observed
+        > timedelta(seconds=30)
+    ):
+        _fail("Public authorization semantic freshness is invalid")
+    pending_qmp = evidence / "pending.qmp.jsonl"
+    preauth_qmp = evidence / "before-authorization.qmp.jsonl"
+    if (
+        authorization.get("pending_boundary_sha256")
+        != hashlib.sha256(
+            _read_bytes(evidence / "pending-boundary.json")
+        ).hexdigest()
+        or authorization.get("before_authorization_boundary_sha256")
+        != hashlib.sha256(
+            _read_bytes(
+                evidence / "before-authorization-boundary.json"
+            )
+        ).hexdigest()
+        or authorization.get("initial_qmp_sha256")
+        != hashlib.sha256(_read_bytes(pending_qmp)).hexdigest()
+        or authorization.get("before_authorization_qmp_sha256")
+        != hashlib.sha256(_read_bytes(preauth_qmp)).hexdigest()
+    ):
+        _fail("Public authorization semantic hash binding is invalid")
+    request = authorization.get("request")
+    controller = authorization.get("controller")
+    if (
+        not isinstance(request, dict)
+        or not isinstance(controller, dict)
+        or request.get("target_disk") != "/dev/vda"
+        or controller
+        != {
+            "execution_id": (
+                f"{request.get('session_id')}:execution-0001"
+            ),
+            "state": "authorized",
+        }
+    ):
+        _fail("Public authorization semantic controller binding is invalid")
+    session_id = request.get("session_id")
+    execution_id = controller["execution_id"]
+    for attestation, state in zip(
+        chain[1:4],
+        ("claimed", "handoff_started", "installer_started"),
+        strict=True,
+    ):
+        payload = attestation.get("payload")
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"controller", "session_id"}
+            or payload.get("session_id") != session_id
+            or payload.get("controller")
+            != {"execution_id": execution_id, "state": state}
+        ):
+            _fail("Public controller lifecycle semantic chain is invalid")
+    initial_target = _portable_sha256_record(
+        evidence / "pending.target.sha256", manifest, "target"
+    )
+    preauth_target = _portable_sha256_record(
+        evidence / "before-authorization.target.sha256",
+        manifest,
+        "target",
+    )
+    after_target = _portable_sha256_record(
+        evidence / "target.after.sha256", manifest, "target"
+    )
+    initial_sentinel = _portable_sha256_record(
+        evidence / "pending.sentinel.sha256", manifest, "sentinel"
+    )
+    preauth_sentinel = _portable_sha256_record(
+        evidence / "before-authorization.sentinel.sha256",
+        manifest,
+        "sentinel",
+    )
+    after_sentinel = _portable_sha256_record(
+        evidence / "sentinel.after.sha256", manifest, "sentinel"
+    )
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, dict):
+        _fail("Public artifact semantic transition is invalid")
+    target_binding = artifacts.get("target")
+    sentinel_binding = artifacts.get("sentinel")
+    if (
+        not isinstance(target_binding, dict)
+        or not isinstance(sentinel_binding, dict)
+        or initial_target != target_binding.get("initial_sha256")
+        or preauth_target != initial_target
+        or after_target == initial_target
+        or initial_sentinel != sentinel_binding.get("initial_sha256")
+        or preauth_sentinel != initial_sentinel
+        or after_sentinel != initial_sentinel
+        or authorization.get("initial_target_sha256") != initial_target
+        or authorization.get("target_sha256_before_authorization")
+        != preauth_target
+        or authorization.get("initial_sentinel_sha256")
+        != initial_sentinel
+        or authorization.get("sentinel_sha256_before_authorization")
+        != preauth_sentinel
+    ):
+        _fail("Public artifact semantic transition is invalid")
+    after = _portable_qmp_snapshot(
+        evidence / "after-install.qmp.jsonl",
+        manifest,
+        require_iso=True,
+    )
+    if (
+        after["target"]["read_only"] is not False
+        or after["sentinel"]["read_only"] is not True
+        or after["target"]["write_bytes"] <= 0
+        or not _all_writes_zero(after["sentinel"]["graph"])
+    ):
+        _fail("Public QMP semantic write transition is invalid")
+    boot = _read_postflight_boot_qmp(
+        evidence / "postflight-boot.qmp.jsonl", root
+    )
+    boot_payload = chain[4].get("payload")
+    installed_payload = chain[5].get("payload")
+    delivery = _read_json(evidence / "postflight-delivery.json")
+    authenticated = _read_json(
+        evidence / "authenticated-postflight.json"
+    )
+    if (
+        not isinstance(boot_payload, dict)
+        or not isinstance(installed_payload, dict)
+        or set(boot_payload)
+        != {
+            "boot_nonce",
+            "controller",
+            "iso_attached",
+            "qmp_sha256",
+            "session_id",
+            "status",
+            "vm_instance_id",
+        }
+        or set(installed_payload)
+        != {
+            "boot_id",
+            "boot_nonce",
+            "controller",
+            "reported_at",
+            "session_id",
+        }
+        or set(delivery)
+        != {
+            "boot_attestation",
+            "boot_nonce",
+            "challenge",
+            "controller_url",
+            "run_id",
+            "schema_version",
+            "session_id",
+            "vm_instance_id",
+        }
+        or set(authenticated)
+        != {
+            "boot_attestation",
+            "boot_id",
+            "boot_nonce",
+            "challenge",
+            "reported_at",
+            "run_id",
+            "schema_version",
+            "vm_instance_id",
+        }
+        or boot_payload.get("qmp_sha256") != boot["qmp_sha256"]
+        or boot_payload.get("iso_attached") is not False
+        or boot_payload.get("session_id") != session_id
+        or boot_payload.get("controller")
+        != {
+            "execution_id": execution_id,
+            "state": "installer_started",
+        }
+        or delivery.get("boot_attestation") != chain[4]
+        or delivery.get("boot_nonce") != boot_payload.get("boot_nonce")
+        or delivery.get("session_id") != session_id
+        or authenticated.get("boot_attestation") != chain[4]
+        or authenticated.get("boot_nonce") != boot_payload.get("boot_nonce")
+        or authenticated.get("boot_id") != installed_payload.get("boot_id")
+        or authenticated.get("reported_at")
+        != installed_payload.get("reported_at")
+        or installed_payload.get("session_id") != session_id
+        or installed_payload.get("controller")
+        != {"execution_id": execution_id, "state": "installed"}
+    ):
+        _fail("Public postflight semantic evidence is invalid")
+    iso = manifest.get("iso")
+    iso_evidence = _read_json(evidence / "iso-evidence.json")
+    receipt_artifacts = receipt.get("artifacts")
+    receipt_controller = receipt.get("controller")
+    receipt_writes = receipt.get("writes")
+    receipt_postflight = receipt.get("postflight")
+    if (
+        not isinstance(iso, dict)
+        or not isinstance(receipt_artifacts, dict)
+        or not isinstance(receipt_controller, dict)
+        or not isinstance(receipt_writes, dict)
+        or not isinstance(receipt_writes.get("after_install"), dict)
+        or not isinstance(
+            receipt_writes.get("before_authorization"), dict
+        )
+        or not isinstance(receipt_postflight, dict)
+        or iso_evidence
+        != {
+            "file_identity": iso.get("file_identity"),
+            "owned_file": "run-artifacts/install.iso",
+            "schema_version": 1,
+            "sha256": iso.get("sha256"),
+            "verified_source_file_identity": iso.get(
+                "verified_source_file_identity"
+            ),
+        }
+        or receipt_artifacts.get("iso") != iso
+        or not isinstance(receipt_artifacts.get("target"), dict)
+        or receipt_artifacts["target"].get("after_sha256") != after_target
+        or not isinstance(receipt_artifacts.get("sentinel"), dict)
+        or receipt_artifacts["sentinel"].get("after_sha256")
+        != after_sentinel
+        or receipt_controller
+        != {
+            "execution_id": execution_id,
+            "session_id": session_id,
+            "state": "installed",
+        }
+        or receipt_writes["before_authorization"]
+        != {
+            "sentinel_write_bytes": preauth_snapshot["sentinel"][
+                "write_bytes"
+            ],
+            "target_write_bytes": preauth_snapshot["target"][
+                "write_bytes"
+            ],
+        }
+        or receipt_writes["after_install"]
+        != {
+            "sentinel_write_bytes": after["sentinel"]["write_bytes"],
+            "target_write_bytes": after["target"]["write_bytes"],
+        }
+        or receipt_postflight
+        != {
+            "boot_id": installed_payload.get("boot_id"),
+            "boot_nonce": installed_payload.get("boot_nonce"),
+            "iso_attached": False,
+            "vm_instance_id": manifest.get("vm_instance_id"),
+        }
+    ):
+        _fail("Public receipt or ISO semantic evidence is invalid")
+
+
 def export_public_evidence(
     state_dir: Path,
     *,
@@ -2215,6 +3010,8 @@ def export_public_evidence(
     ):
         _fail("Acceptance receipt chain binding is invalid")
     sources = evidence_files or {}
+    if set(sources) != MANDATORY_PUBLIC_SOURCE_NAMES:
+        _fail("Public acceptance evidence corpus is incomplete or ambiguous")
     if any(
         not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", name)
         for name in sources
@@ -2240,6 +3037,22 @@ def export_public_evidence(
         evidence_sha256[name] = hashlib.sha256(
             _read_bytes(source)
         ).hexdigest()
+    iso = manifest.get("iso")
+    if not isinstance(iso, dict):
+        _fail("Run ISO binding is invalid")
+    iso_evidence = {
+        "file_identity": iso.get("file_identity"),
+        "owned_file": "run-artifacts/install.iso",
+        "schema_version": 1,
+        "sha256": iso.get("sha256"),
+        "verified_source_file_identity": iso.get(
+            "verified_source_file_identity"
+        ),
+    }
+    iso_evidence_bytes = _json_bytes(iso_evidence)
+    evidence_sha256["iso-evidence.json"] = hashlib.sha256(
+        iso_evidence_bytes
+    ).hexdigest()
     public_key = state_dir / "attestation-public.pem"
     manifest_path = state_dir / "run-manifest.json"
     seal = issue_attestation(
@@ -2283,6 +3096,11 @@ def export_public_evidence(
         )
     for name, source in sorted(sources.items()):
         _copy_public_file(source, output / "evidence" / name)
+    _write_new(
+        output / "evidence" / "iso-evidence.json",
+        iso_evidence_bytes,
+        mode=0o600,
+    )
     index = {
         "evidence_sha256": evidence_sha256,
         "final_attestation_sha256": attestation_sha256(seal),
@@ -2320,6 +3138,7 @@ def verify_public_evidence(
     if (
         not root.is_dir()
         or evidence_dir.is_symlink()
+        or any(path.is_symlink() for path in root.rglob("*"))
         or any("private" in path.name.casefold() for path in root.rglob("*"))
     ):
         _fail("Public evidence directory is unsafe")
@@ -2404,7 +3223,10 @@ def verify_public_evidence(
     actual_names = {
         path.name for path in (root / "evidence").iterdir()
     }
-    if actual_names != set(evidence_hashes):
+    if (
+        actual_names != MANDATORY_PUBLIC_EVIDENCE_NAMES
+        or set(evidence_hashes) != MANDATORY_PUBLIC_EVIDENCE_NAMES
+    ):
         _fail("Public evidence file set is invalid")
     for name, expected_sha256 in evidence_hashes.items():
         if (
@@ -2416,6 +3238,7 @@ def verify_public_evidence(
             != expected_sha256
         ):
             _fail("Public evidence file hash is invalid")
+    _replay_public_acceptance(root, manifest, chain, receipt)
     return {"chain": chain, "index": index, "receipt": receipt}
 
 
@@ -2802,6 +3625,7 @@ def build_parser() -> argparse.ArgumentParser:
     create = commands.add_parser("create-run", allow_abbrev=False)
     create.add_argument("--state-dir", required=True, type=Path)
     create.add_argument("--iso", required=True, type=Path)
+    create.add_argument("--expected-iso-sha256", required=True)
     create.add_argument("--target", required=True, type=Path)
     create.add_argument("--sentinel", required=True, type=Path)
     create.add_argument("--vm-instance-id", required=True)
@@ -2873,16 +3697,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     remove_workdir.add_argument("--record", required=True, type=Path)
     remove_workdir.add_argument("--workdir", required=True, type=Path)
-    record_tap = commands.add_parser(
-        "record-tap-ownership", allow_abbrev=False
+    hold_netns = commands.add_parser(
+        "hold-network-namespace", allow_abbrev=False
     )
-    record_tap.add_argument("--record", required=True, type=Path)
-    record_tap.add_argument("--tap-name", required=True)
-    record_tap.add_argument("--tap-ifindex", required=True, type=int)
-    delete_tap = commands.add_parser(
-        "delete-owned-tap", allow_abbrev=False
+    hold_netns.add_argument("--record", required=True, type=Path)
+    run_netns = commands.add_parser(
+        "run-in-network-namespace", allow_abbrev=False
     )
-    delete_tap.add_argument("--record", required=True, type=Path)
+    run_netns.add_argument("--record", required=True, type=Path)
+    run_netns.add_argument("network_command", nargs=argparse.REMAINDER)
+    stop_netns = commands.add_parser(
+        "stop-network-namespace", allow_abbrev=False
+    )
+    stop_netns.add_argument("--record", required=True, type=Path)
     export = commands.add_parser(
         "export-public-evidence", allow_abbrev=False
     )
@@ -2952,6 +3779,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest = create_run_state(
                 arguments.state_dir,
                 iso=arguments.iso,
+                expected_iso_sha256=arguments.expected_iso_sha256,
                 target=arguments.target,
                 sentinel=arguments.sentinel,
                 vm_instance_id=arguments.vm_instance_id,
@@ -2969,8 +3797,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(f"boundary_phase={boundary['phase']}")
         elif arguments.command == "verify-run-iso":
-            verify_run_iso(arguments.state_dir)
-            print("run_iso=verified")
+            binding = verify_run_iso(arguments.state_dir)
+            print(f"run_iso_path={binding['canonical_path']}")
         elif arguments.command == "authorize-execution":
             attestation = invoke_root_execution_authorization(
                 arguments.state_dir,
@@ -3040,21 +3868,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _read_json(arguments.record), arguments.workdir
             )
             print("workdir=removed")
-        elif arguments.command == "record-tap-ownership":
-            _write_new(
-                arguments.record,
-                _json_bytes(
-                    tap_ownership(
-                        tap_name=arguments.tap_name,
-                        tap_ifindex=arguments.tap_ifindex,
-                    )
-                ),
-                mode=0o600,
+        elif arguments.command == "hold-network-namespace":
+            hold_network_namespace(arguments.record)
+        elif arguments.command == "run-in-network-namespace":
+            network_command = list(arguments.network_command)
+            if network_command[:1] == ["--"]:
+                network_command = network_command[1:]
+            run_in_owned_network_namespace(
+                _read_json(arguments.record), network_command
             )
-            print("tap_ownership=recorded")
-        elif arguments.command == "delete-owned-tap":
-            delete_owned_tap(_read_json(arguments.record))
-            print("tap=deleted")
+        elif arguments.command == "stop-network-namespace":
+            stop_owned_network_namespace(_read_json(arguments.record))
+            print("network_namespace=stopped")
         elif arguments.command == "export-public-evidence":
             evidence_files: dict[str, Path] = {}
             for item in arguments.evidence:

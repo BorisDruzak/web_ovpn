@@ -8,15 +8,18 @@ an existing disk, block device, Proxmox VM, controller deployment, or VM 114.
 
 The harness creates one 64 GiB writable qcow2 target exposed as `/dev/vda`,
 one 8 MiB read-only qcow2 sentinel, a copied OVMF variable store, a unique
-TAP, and a private work directory. The first boot includes the verified V2
-ISO; the postflight boot has no ISO drive.
+TAP inside a dedicated anonymous network namespace, and a private work
+directory. The first boot includes the harness-owned V2 ISO copy; the
+postflight boot has no ISO drive.
 
 At run creation, the harness creates:
 
 - an unpredictable 256-bit run ID and 256-bit challenge;
 - a per-run Ed25519 key pair;
 - the QEMU UUID;
-- canonical ISO, target, and sentinel paths;
+- a private `0400` install-ISO copy made through the verified source's open
+  descriptor while hashing and fsyncing it;
+- canonical owned-ISO, target, and sentinel paths;
 - SHA-256 and device/inode/size identities for all three artifacts.
 
 Immediately before the install QEMU process starts, the harness rechecks the
@@ -27,9 +30,18 @@ path. Every QMP transcript must contain the exact request IDs and exact
 `query-block` `inserted.file` paths. SHA records must name those same
 canonical files and retain their device/inode creation identity.
 
-Cleanup records the work-directory device/inode and TAP name/ifindex
-immediately after creation. It removes the TAP and directory only if those
-identities still match. A replacement is preserved for investigation.
+The source verifier returns the exact managed-ISO SHA-256 it validated.
+`create-run` accepts only that digest, so replacing the source path before,
+during, or after the descriptor copy cannot change the bytes QEMU receives.
+
+Cleanup records the work-directory device/inode immediately after creation.
+The TAP, DHCP service, execution service, and QEMU run only inside an
+anonymous network namespace whose holder records its PID start time and
+namespace device/inode. Cleanup opens a pidfd first, rechecks both identities,
+then signals that anchored holder; PID/namespace reuse fails closed without
+targeting the replacement. Namespace teardown removes its TAP as one kernel
+resource. Work-directory cleanup continues to use stable directory
+descriptors. Replacements are preserved for investigation.
 
 ## Authorization sequence
 
@@ -51,7 +63,9 @@ postflight files from its caller.
    `alt_deploy.cli.main` `authorize-execution` command with the exact derived
    plan, inventory, disk fingerprint, session, and `/dev/vda` values. The
    controller's authorization time must be contemporaneous with that
-   observation and strictly after both boundary documents.
+   observation and strictly after both boundary documents. A boundary capture
+   may take at most 10 seconds, pending-to-preauthorization at most 30
+   seconds, and preauthorization-to-root-observation at most 10 seconds.
 6. The returned execution ID and `authorized` state are checked against the
    authoritative repository and signed as attestation 1.
 7. The authenticated V2 TLS service records the single-use
@@ -91,8 +105,9 @@ deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh \
   --check-prerequisites
 ```
 
-On a dedicated Linux acceptance host with a locally prepared V2 install
-session and controller settings:
+On a dedicated Linux acceptance host with `unshare`, Python
+`setns`/pidfd support, a locally prepared V2 install session, and controller
+settings:
 
 ```bash
 sudo deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh \
@@ -103,9 +118,9 @@ sudo deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh \
   --evidence-dir /var/lib/alt-v2-acceptance
 ```
 
-Do not use a host with an existing `192.168.100.17/24` test network. The
-command deliberately has no caller-supplied target, TAP, session,
-authorization request, timeline, or postflight result.
+The test address exists only inside the dedicated namespace. The command
+deliberately has no caller-supplied target, TAP, session, authorization
+request, timeline, or postflight result.
 
 ## Receipt rule
 
@@ -116,14 +131,23 @@ It writes an exclusive receipt outside the private work directory but does
 not emit PASS.
 
 `export-public-evidence` then creates a separate root-owned `0700` evidence
-directory. It copies only the public key, run manifest, receipt, selected raw
-QMP/SHA evidence, and attestations. Every file is `0600`. A seventh signed
-attestation seals the receipt and the exact hashes of the exported evidence;
-the public index links to that seal. The exporter independently verifies the
-complete package before it emits the sole PASS line. The verifier rejects
-private keys, credentials, extra files, changed permissions or ownership,
-broken hash links, and invalid signatures. The package remains verifiable
-after the private work directory is safely removed.
+directory. It requires and copies the exact mandatory corpus: both signed
+authorization boundaries, all four QMP captures, all six SHA records, the
+ISO identity record, postflight delivery, authenticated boot-reporter
+document, public key, manifest, receipt, and all attestations. Every file is
+`0600`. References inside signed boundary documents are relative package
+filenames, never external paths.
+
+A seventh signed attestation seals the receipt and the exact hashes of that
+corpus; the public index links to the seal. The verifier independently
+replays boundary freshness, QMP identities/read-only/write predicates, ISO
+presence and no-ISO boot, SHA transitions, controller lifecycle, boot
+reporter/postflight bindings, and receipt semantics entirely from copied
+bytes. It never opens target, sentinel, or ISO paths that disappear at
+cleanup. Missing, empty, extra, externally referenced, semantically mutated,
+mis-permissioned, wrongly owned, hash-broken, or invalidly signed packages
+fail before PASS. The package remains verifiable after the private work
+directory is safely removed.
 
 PASS requires zero target and sentinel writes through authorization,
 positive target writes after installation, zero sentinel writes at every
@@ -138,6 +162,7 @@ PASS: root-authorized install wrote only the disposable target; authenticated po
 ```
 
 Contract tests do not constitute this acceptance. The Windows development
-host cannot provide KVM/QEMU, Linux root/TAP, or AF_UNIX prerequisites. No
-ISO was generated, no guest was started, no controller was deployed, and no
-execution PASS is claimed by the implementation tests.
+host cannot provide KVM/QEMU, Linux root/netns/TAP, pidfd, or AF_UNIX
+prerequisites. The real-QEMU run remains the external Linux platform gate.
+No managed ISO was generated, no guest was started, no controller was
+deployed, and no execution PASS is claimed by the implementation tests.

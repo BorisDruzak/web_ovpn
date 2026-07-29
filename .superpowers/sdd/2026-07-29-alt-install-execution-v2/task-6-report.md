@@ -24,10 +24,11 @@ The executable acceptance path now:
   identity, then issues a fresh signed single-use boot nonce;
 - installs a minimal first-boot reporter through `install-scripts.tar`; the
   reporter sends its real kernel boot ID through the V2 TLS postflight API;
-- accepts PASS only from the exact six-entry signed run/session/controller
-  chain and the four bound QMP/SHA evidence phases;
-- records work-directory device/inode and TAP name/ifindex at creation and
-  refuses cleanup if either creation identity changes.
+- accepts PASS only after the exact signed run/session/controller chain and
+  mandatory portable QMP/SHA/ISO/postflight corpus replay successfully;
+- records work-directory device/inode at creation and isolates the TAP in an
+  anonymous namespace whose holder process and namespace identities are
+  pidfd-bound at cleanup.
 
 The old caller-supplied `--timeline` and `--postflight` route was removed.
 Console prefixes are no longer evidence or authorization.
@@ -53,6 +54,27 @@ The second review round additionally:
   chain, receipt, public key, manifest, and raw evidence hashes. The package
   is independently verifiable after work-directory cleanup and contains no
   private key or controller credential.
+
+## Third review hardening
+
+The third review round closes the remaining code-real gaps:
+
+- signed boundary captures have hard freshness ceilings: 10 seconds per
+  capture, 30 seconds from pending capture to preauthorization start, and 10
+  seconds from preauthorization capture to the root CLI observation;
+- the managed-ISO verifier returns its verified digest. `create-run` copies
+  only bytes matching that digest from an already-open source descriptor into
+  a private `0400` run artifact while hashing and fsyncing it. QEMU and QMP
+  bind only to that copy;
+- the host TAP deletion path is gone. The harness creates an anonymous
+  dedicated network namespace, runs TAP/DHCP/API/QEMU inside it, and tears it
+  down through a pidfd-anchored holder after exact process-start-time and
+  namespace device/inode checks. A reused process is never signaled;
+- public export requires one exact corpus, including all QMP/SHA/boundary,
+  ISO, controller attestation, delivery, boot-reporter, and postflight
+  evidence. The verifier semantically replays it from portable copied bytes
+  and rejects missing, empty, extra, external-reference, and validly resealed
+  semantic mutations.
 
 ## TDD evidence
 
@@ -145,6 +167,49 @@ The new non-injected production CLI integration is POSIX-only because the
 production repository locking implementation requires `fcntl`; it is
 collected for Linux CI and is skipped on this Windows development host.
 
+Third review red slices:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py -q \
+  -k 'overlong_capture or stale_but_ordered_boundaries'
+3 failed, 26 deselected
+
+pytest tests/test_alt_install_execution_qemu.py -q \
+  -k 'source_iso_replaced or launches_owned_iso_copy'
+2 failed, 29 deselected
+
+pytest tests/test_alt_install_execution_qemu.py::test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes -q
+1 failed
+
+pytest tests/test_alt_install_execution_qemu.py::test_network_namespace_cleanup_cannot_signal_a_reused_process -q
+1 failed
+```
+
+Each failure was the intended absent ceiling, owned copy, mandatory semantic
+replay, or identity-anchored namespace behavior.
+
+Third review green:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py \
+  tests/test_alt_install_execution_agent.py -q
+44 passed, 1 skipped
+
+pytest --noconftest \
+  tests/alt_linux/test_install_session_cli.py \
+  tests/alt_linux/test_install_execution.py \
+  tests/alt_linux/test_install_execution_api.py -q
+56 passed, 5 skipped
+
+pytest tests/test_alt_install_execution_iso.py -q
+30 passed
+```
+
+The one QEMU-contract skip is the POSIX-only test that replaces an ISO path
+while its original descriptor remains open. The behavior is implemented for
+the Linux acceptance host and cannot be exercised on Windows file-sharing
+semantics.
+
 ## Specification self-review
 
 Verdict: **PASS for the implementation contract; no QEMU execution PASS
@@ -154,20 +219,24 @@ claimed.**
   after two ordered signed, exact-identity, zero-write QMP/SHA boundary
   documents; a caller-independent observation time and the controller
   authorization time are persisted in signed evidence and must be
-  contemporaneous.
+  contemporaneous within fixed 10/30/10-second ceilings.
 - C2: every run has unpredictable trust material and exact
-  ISO/VM/target/sentinel/controller bindings. The ISO identity is reverified
-  immediately before QEMU and against the exact QMP CD-ROM. The actual no-ISO
-  QMP boot precedes nonce generation. The real first-boot component and TLS
-  API consume it once; stale or replayed evidence is rejected.
+  ISO/VM/target/sentinel/controller bindings. The verifier-derived digest is
+  copied from an open descriptor into a private run-owned ISO, which is
+  reverified immediately before QEMU and against the exact QMP CD-ROM. The
+  actual no-ISO QMP boot precedes nonce generation. The real first-boot
+  component and TLS API consume it once; stale or replayed evidence is
+  rejected.
 - I3: QMP response IDs, `inserted.file`, canonical SHA filenames, and
   device/inode file identities are exact.
 - I4: work-directory ownership is recorded immediately after creation and
-  cleanup walks stable directory descriptors; TAP cleanup uses the recorded
-  kernel ifindex. Name/path replacements are preserved.
+  cleanup walks stable directory descriptors. Network resources live in a
+  dedicated anonymous namespace; pidfd plus process/namespace identity checks
+  eliminate the host TAP ifindex ABA deletion window.
 - I5: the public, non-secret proof has an exclusive hash-linked index and a
-  seventh Ed25519 seal. It remains independently verifiable after private
-  work-directory cleanup.
+  seventh Ed25519 seal. Its exact mandatory portable corpus is semantically
+  replayed without live artifact paths and remains independently verifiable
+  after private work-directory cleanup.
 - There is no CLI route for an existing disk, infrastructure VM, Proxmox, VM
   114, an arbitrary authorization request, a caller timeline, or a caller
   postflight result.
@@ -191,7 +260,8 @@ Verdict: **PASS**
 ## Remaining external acceptance work
 
 An actual accepted run still requires a dedicated Linux/root host with QEMU,
-OVMF, TAP/DHCP, AF_UNIX, the held release archives containing the reporter, a
-previously built verified V2 ISO, and a locally prepared V2 session. Those
-preconditions are absent on this Windows host, so no QEMU run or PASS receipt
-was produced.
+OVMF, anonymous network namespaces, `setns`, pidfd, TAP/DHCP, AF_UNIX, the
+held release archives containing the reporter, a previously built verified
+V2 ISO, and a locally prepared V2 session. That real-QEMU proof is the
+remaining external platform gate. Those preconditions are absent on this
+Windows host, so no QEMU run or PASS receipt was produced or simulated.

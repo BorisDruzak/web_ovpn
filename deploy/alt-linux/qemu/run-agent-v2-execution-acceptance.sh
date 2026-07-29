@@ -25,7 +25,7 @@ check_prerequisites() {
     local required=(
         qemu-system-x86_64 qemu-img python3 bash xorriso cpio socat
         sha256sum mktemp readlink id ip dnsmasq grep cp chmod mkdir
-        date sleep seq dirname rm stat sed tail kill awk
+        date sleep seq dirname rm stat sed tail kill awk unshare
     )
     for command in "${required[@]}"; do
         if ! command -v "$command" >/dev/null 2>&1; then
@@ -36,10 +36,10 @@ check_prerequisites() {
     done
     if command -v python3 >/dev/null 2>&1; then
         if ! python3 -c \
-            'import cryptography, socket; raise SystemExit(0 if hasattr(socket, "AF_UNIX") else 1)' \
+            'import cryptography, os, signal, socket; raise SystemExit(0 if all((hasattr(socket, "AF_UNIX"), hasattr(os, "setns"), hasattr(os, "pidfd_open"), hasattr(signal, "pidfd_send_signal"))) else 1)' \
             >/dev/null 2>&1; then
             printf '%s\n' \
-                'agent-v2-qemu: Required Python cryptography/AF_UNIX support is unavailable' >&2
+                'agent-v2-qemu: Required Python cryptography/AF_UNIX/netns support is unavailable' >&2
             missing=1
         fi
     fi
@@ -62,8 +62,8 @@ describe_safety_contract() {
         'sentinel_drive=qcow2,readonly=on' \
         'iso_first_boot=required' \
         'iso_postflight_boot=absent' \
-        'network=tap,harness-created' \
-        'cleanup=qemu,tap,temporary-directory;validated-harness-owned-only'
+        'network=tap,dedicated-harness-netns' \
+        'cleanup=qemu,identity-bound-netns,temporary-directory;validated-harness-owned-only'
 }
 
 workdir=
@@ -213,8 +213,15 @@ for path in "$iso" "$ovmf_code" "$ovmf_vars"; do
         *,*) die "Input paths containing commas are unsupported: $path" ;;
     esac
 done
-bash "$iso_verifier" --iso "$iso" >/dev/null ||
+iso_verification=$(bash "$iso_verifier" --iso "$iso") ||
     die 'V2 managed ISO verification failed'
+grep -Fxq 'managed_iso_verified=true' <<<"$iso_verification" ||
+    die 'V2 managed ISO verifier result is invalid'
+expected_iso_sha256=$(sed -n \
+    's/^managed_iso_sha256=\([0-9a-f]\{64\}\)$/\1/p' \
+    <<<"$iso_verification")
+[[ "$expected_iso_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+    die 'V2 managed ISO verifier digest is invalid'
 iso=$(readlink -f -- "$iso") ||
     die 'Cannot resolve verified V2 ISO'
 
@@ -261,8 +268,8 @@ dnsmasq_starttime=
 execution_server_pid=
 execution_server_starttime=
 tap_name="aiv2$(( $$ % 100000 ))"
-tap_created=0
-tap_ownership_record="$evidence/tap-ownership.json"
+netns_holder_pid=
+netns_ownership_record="$evidence/network-namespace-ownership.json"
 
 process_starttime() {
     local pid=$1
@@ -308,17 +315,18 @@ cleanup() {
         kill "$dnsmasq_pid" 2>/dev/null || true
         wait "$dnsmasq_pid" 2>/dev/null || true
     fi
-    if ((tap_created == 1)); then
-        if [[ -f "$tap_ownership_record" && ! -L "$tap_ownership_record" ]]; then
-            python3 "$support" delete-owned-tap \
-                --record "$tap_ownership_record" >/dev/null 2>&1 || {
+    if [[ -f "$netns_ownership_record" &&
+        ! -L "$netns_ownership_record" ]]; then
+        python3 "$support" stop-network-namespace \
+            --record "$netns_ownership_record" >/dev/null 2>&1 || {
                 printf '%s\n' \
-                    'agent-v2-qemu: TAP identity changed; preserving TAP' >&2
+                    'agent-v2-qemu: netns identity changed; preserving namespace' >&2
             }
-        else
-            printf '%s\n' \
-                'agent-v2-qemu: TAP identity absent; preserving TAP' >&2
-        fi
+        [[ -z "$netns_holder_pid" ]] ||
+            wait "$netns_holder_pid" 2>/dev/null || true
+    elif [[ -n "$netns_holder_pid" ]]; then
+        printf '%s\n' \
+            'agent-v2-qemu: netns identity absent; preserving namespace holder' >&2
     fi
     if [[ -f "$workdir_ownership_record" &&
         ! -L "$workdir_ownership_record" ]]; then
@@ -343,27 +351,54 @@ vm_instance_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
 python3 "$support" create-run \
     --state-dir "$state_dir" \
     --iso "$(readlink -f -- "$iso")" \
+    --expected-iso-sha256 "$expected_iso_sha256" \
     --target "$target" \
     --sentinel "$sentinel" \
     --vm-instance-id "$vm_instance_id" >/dev/null ||
     die 'Run trust state creation failed'
+run_iso_output=$(python3 "$support" verify-run-iso \
+    --state-dir "$state_dir") ||
+    die 'Harness-owned run ISO verification failed'
+case "$run_iso_output" in
+    run_iso_path=*) iso=${run_iso_output#run_iso_path=} ;;
+    *) die 'Harness-owned run ISO path is invalid' ;;
+esac
+[[ -f "$iso" && ! -L "$iso" ]] ||
+    die 'Harness-owned run ISO is unavailable'
 cp -- "$ovmf_vars" "$workdir/OVMF_VARS.fd"
 
-[[ ! -e "/sys/class/net/$tap_name" ]] ||
-    die 'Selected harness TAP name is already in use'
-ip tuntap add dev "$tap_name" mode tap user "$(id -u)" ||
+unshare --net -- python3 "$support" hold-network-namespace \
+    --record "$netns_ownership_record" \
+    >"$workdir/netns-holder.log" 2>&1 &
+netns_holder_pid=$!
+for _attempt in $(seq 1 50); do
+    [[ -f "$netns_ownership_record" &&
+        ! -L "$netns_ownership_record" ]] && break
+    kill -0 "$netns_holder_pid" 2>/dev/null || break
+    sleep 0.1
+done
+[[ -f "$netns_ownership_record" &&
+    ! -L "$netns_ownership_record" ]] ||
+    die 'Harness network namespace identity recording failed'
+python3 "$support" run-in-network-namespace \
+    --record "$netns_ownership_record" -- \
+    ip link set lo up ||
+    die 'Harness network namespace loopback activation failed'
+python3 "$support" run-in-network-namespace \
+    --record "$netns_ownership_record" -- \
+    ip tuntap add dev "$tap_name" mode tap user "$(id -u)" ||
     die 'Harness TAP creation failed'
-tap_created=1
-tap_ifindex=$(<"/sys/class/net/$tap_name/ifindex")
-python3 "$support" record-tap-ownership \
-    --record "$tap_ownership_record" \
-    --tap-name "$tap_name" \
-    --tap-ifindex "$tap_ifindex" ||
-    die 'Harness TAP creation identity recording failed'
-ip address add 192.168.100.17/24 dev "$tap_name" ||
+python3 "$support" run-in-network-namespace \
+    --record "$netns_ownership_record" -- \
+    ip address add 192.168.100.17/24 dev "$tap_name" ||
     die 'Harness TAP address assignment failed'
-ip link set "$tap_name" up || die 'Harness TAP activation failed'
-dnsmasq \
+python3 "$support" run-in-network-namespace \
+    --record "$netns_ownership_record" -- \
+    ip link set "$tap_name" up ||
+    die 'Harness TAP activation failed'
+python3 "$support" run-in-network-namespace \
+    --record "$netns_ownership_record" -- \
+    dnsmasq \
     --keep-in-foreground \
     --bind-interfaces \
     --interface="$tap_name" \
@@ -377,7 +412,9 @@ dnsmasq \
 dnsmasq_pid=$!
 dnsmasq_starttime=$(process_starttime "$dnsmasq_pid") ||
     die 'Harness DHCP process identity recording failed'
-python3 "$execution_server" \
+python3 "$support" run-in-network-namespace \
+    --record "$netns_ownership_record" -- \
+    python3 "$execution_server" \
     --listen-address 192.168.100.17 \
     --listen-port 18092 \
     --credential-key "$controller_credential_key" \
@@ -448,7 +485,9 @@ launch_qemu() {
             -chardev "socket,id=postflight,path=$workdir/postflight.channel.sock,server=on,wait=off"
             -device "virtserialport,chardev=postflight,name=alt.install.postflight"
         )
-    qemu-system-x86_64 \
+    python3 "$support" run-in-network-namespace \
+        --record "$netns_ownership_record" -- \
+        qemu-system-x86_64 \
         -machine q35,accel=kvm:tcg \
         -m 4096 \
         -uuid "$vm_instance_id" \
@@ -581,4 +620,6 @@ python3 "$support" export-public-evidence \
     --evidence "after-install.qmp.jsonl=$evidence/after-install.qmp.jsonl" \
     --evidence "postflight-boot.qmp.jsonl=$evidence/postflight-boot.qmp.jsonl" \
     --evidence "target.after.sha256=$evidence/target.after.sha256" \
-    --evidence "sentinel.after.sha256=$evidence/sentinel.after.sha256"
+    --evidence "sentinel.after.sha256=$evidence/sentinel.after.sha256" \
+    --evidence "postflight-delivery.json=$state_dir/postflight-delivery.json" \
+    --evidence "authenticated-postflight.json=$state_dir/authenticated-postflight.json"

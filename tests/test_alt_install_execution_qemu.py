@@ -212,6 +212,41 @@ def _write_sha(path: Path, digest: str, filename: str) -> None:
     path.write_text(f"{digest}  {filename}\n", encoding="ascii")
 
 
+def _reseal_public_evidence(module, state: Path, evidence: Path) -> None:
+    evidence_hashes = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (evidence / "evidence").iterdir()
+    }
+    existing = json.loads(
+        (
+            evidence / "attestations" / "07-acceptance_evidence.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = dict(existing["payload"])
+    payload["evidence_sha256"] = evidence_hashes
+    previous = json.loads(
+        (
+            evidence / "attestations" / "06-installed.json"
+        ).read_text(encoding="utf-8")
+    )
+    seal = module.issue_attestation(
+        state,
+        event="acceptance_evidence",
+        sequence=7,
+        payload=payload,
+        observed_at=existing["observed_at"],
+        previous_sha256=module.attestation_sha256(previous),
+    )
+    (
+        evidence / "attestations" / "07-acceptance_evidence.json"
+    ).write_bytes(module._json_bytes(seal))
+    index_path = evidence / "evidence-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["evidence_sha256"] = evidence_hashes
+    index["final_attestation_sha256"] = module.attestation_sha256(seal)
+    index_path.write_bytes(module._json_bytes(index))
+
+
 def _support_module():
     specification = importlib.util.spec_from_file_location(
         "agent_v2_test_api_under_test", SUPPORT
@@ -238,6 +273,8 @@ def _create_run_state(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         str(state),
         "--iso",
         str(iso),
+        "--expected-iso-sha256",
+        hashlib.sha256(iso.read_bytes()).hexdigest(),
         "--target",
         str(target),
         "--sentinel",
@@ -335,8 +372,9 @@ def test_harness_reports_only_the_generic_disposable_execution_contract() -> Non
         "sentinel_drive=qcow2,readonly=on\n"
         "iso_first_boot=required\n"
         "iso_postflight_boot=absent\n"
-        "network=tap,harness-created\n"
-        "cleanup=qemu,tap,temporary-directory;validated-harness-owned-only\n"
+        "network=tap,dedicated-harness-netns\n"
+        "cleanup=qemu,identity-bound-netns,temporary-directory;"
+        "validated-harness-owned-only\n"
     )
 
 
@@ -361,7 +399,10 @@ def test_harness_uses_run_owned_authorization_and_postflight_chain() -> None:
     assert "verify-run-iso" in source
     assert "export-public-evidence" in source
     assert "remove-owned-workdir" in source
-    assert "delete-owned-tap" in source
+    assert "hold-network-namespace" in source
+    assert "run-in-network-namespace" in source
+    assert "stop-network-namespace" in source
+    assert "delete-owned-tap" not in source
     assert 'rm -rf -- "$workdir"' not in source
     assert 'ip tuntap del dev "$tap_name"' not in source
     workdir_created = source.index(
@@ -517,17 +558,116 @@ def test_install_boundary_binds_current_iso_identity_and_qmp_cdrom(
 
     iso = Path(manifest["iso"]["canonical_path"])
     original = iso.read_bytes()
+    iso.chmod(0o600)
     iso.write_bytes(original + b"-mutated")
     with pytest.raises(module.AcceptanceError, match="ISO"):
         module.read_bound_qmp_snapshot(qmp, state, require_iso=True)
 
     iso.write_bytes(original)
+    iso.chmod(0o400)
     replacement = tmp_path / "replacement.iso"
     replacement.write_bytes(original)
+    iso.chmod(0o600)
     iso.unlink()
     replacement.replace(iso)
+    iso.chmod(0o400)
     with pytest.raises(module.AcceptanceError, match="ISO"):
         module.read_bound_qmp_snapshot(qmp, state, require_iso=True)
+
+
+def test_create_run_rejects_source_iso_replaced_after_verification(
+    tmp_path: Path,
+) -> None:
+    module = _support_module()
+    state = tmp_path / "run-state"
+    state.mkdir()
+    iso = tmp_path / "managed.iso"
+    target = tmp_path / "target.qcow2"
+    sentinel = tmp_path / "sentinel.qcow2"
+    verified = b"verified-managed-iso"
+    iso.write_bytes(verified)
+    target.write_bytes(b"target")
+    sentinel.write_bytes(b"sentinel")
+    expected_sha256 = hashlib.sha256(verified).hexdigest()
+    iso.write_bytes(b"replacement-after-verifier")
+
+    with pytest.raises(module.AcceptanceError, match="[Vv]erified ISO"):
+        module.create_run_state(
+            state,
+            iso=iso,
+            expected_iso_sha256=expected_sha256,
+            target=target,
+            sentinel=sentinel,
+            vm_instance_id=str(uuid4()),
+        )
+
+
+def test_create_run_launches_owned_iso_copy_despite_source_path_replacement(
+    tmp_path: Path,
+) -> None:
+    module = _support_module()
+    state = tmp_path / "run-state"
+    state.mkdir()
+    iso = tmp_path / "managed.iso"
+    target = tmp_path / "target.qcow2"
+    sentinel = tmp_path / "sentinel.qcow2"
+    verified = b"verified-managed-iso"
+    iso.write_bytes(verified)
+    target.write_bytes(b"target")
+    sentinel.write_bytes(b"sentinel")
+    manifest = module.create_run_state(
+        state,
+        iso=iso,
+        expected_iso_sha256=hashlib.sha256(verified).hexdigest(),
+        target=target,
+        sentinel=sentinel,
+        vm_instance_id=str(uuid4()),
+    )
+
+    owned_iso = Path(manifest["iso"]["canonical_path"])
+    assert owned_iso == (state / "run-artifacts" / "install.iso").resolve()
+    assert owned_iso.read_bytes() == verified
+    iso.write_bytes(b"changed-again-after-create-run")
+    assert module.verify_run_iso(state) == manifest["iso"]
+    assert owned_iso.read_bytes() == verified
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX permits replacement of an opened source path",
+)
+def test_create_run_open_descriptor_survives_source_path_replacement(
+    tmp_path: Path,
+) -> None:
+    module = _support_module()
+    state = tmp_path / "run-state"
+    state.mkdir()
+    iso = tmp_path / "managed.iso"
+    target = tmp_path / "target.qcow2"
+    sentinel = tmp_path / "sentinel.qcow2"
+    verified = b"verified-managed-iso"
+    iso.write_bytes(verified)
+    target.write_bytes(b"target")
+    sentinel.write_bytes(b"sentinel")
+    replacement = tmp_path / "replacement.iso"
+    replacement.write_bytes(b"unverified-replacement")
+
+    def replace_source_after_open() -> None:
+        iso.unlink()
+        replacement.replace(iso)
+
+    manifest = module.create_run_state(
+        state,
+        iso=iso,
+        expected_iso_sha256=hashlib.sha256(verified).hexdigest(),
+        target=target,
+        sentinel=sentinel,
+        vm_instance_id=str(uuid4()),
+        after_iso_open=replace_source_after_open,
+    )
+
+    assert Path(manifest["iso"]["canonical_path"]).read_bytes() == verified
+    assert iso.read_bytes() == b"unverified-replacement"
 
 
 def test_install_boundary_rejects_missing_or_relabelled_iso_qmp(
@@ -635,36 +775,61 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     sentinel = Path(
         manifest["artifacts"]["sentinel"]["canonical_path"]
     )
-    initial_qmp = tmp_path / "initial.qmp.jsonl"
-    immediate_qmp = tmp_path / "immediate.qmp.jsonl"
-    after_qmp = tmp_path / "after.qmp.jsonl"
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    initial_qmp = evidence / "pending.qmp.jsonl"
+    immediate_qmp = evidence / "before-authorization.qmp.jsonl"
+    after_qmp = evidence / "after-install.qmp.jsonl"
     common = {
         "target_file": str(target),
         "sentinel_file": str(sentinel),
     }
-    _write_qmp(
-        initial_qmp,
-        target_write_bytes=0,
-        sentinel_write_bytes=0,
-        **common,
+    boundary_times = iter(
+        (
+            "2026-07-29T12:01:00+00:00",
+            "2026-07-29T12:01:01+00:00",
+            "2026-07-29T12:01:02+00:00",
+            "2026-07-29T12:01:03+00:00",
+        )
     )
-    _write_qmp(
-        immediate_qmp,
-        target_write_bytes=0,
-        sentinel_write_bytes=0,
-        **common,
+
+    def capture(_socket: Path, output: Path) -> None:
+        _write_qmp(
+            output,
+            target_write_bytes=0,
+            sentinel_write_bytes=0,
+            install_iso_file=manifest["iso"]["canonical_path"],
+            **common,
+        )
+
+    module.capture_authorization_boundary(
+        state,
+        socket_path=tmp_path / "install.qmp.sock",
+        evidence_dir=evidence,
+        phase="pending",
+        qmp_capture=capture,
+        clock=lambda: next(boundary_times),
+    )
+    module.capture_authorization_boundary(
+        state,
+        socket_path=tmp_path / "install.qmp.sock",
+        evidence_dir=evidence,
+        phase="before-authorization",
+        qmp_capture=capture,
+        clock=lambda: next(boundary_times),
     )
     initial_target = hashlib.sha256(target.read_bytes()).hexdigest()
     initial_sentinel = hashlib.sha256(sentinel.read_bytes()).hexdigest()
-    sha_records: dict[str, Path] = {}
-    for phase in ("initial", "immediate"):
-        for name, path, digest in (
-            ("target", target, initial_target),
-            ("sentinel", sentinel, initial_sentinel),
-        ):
-            record = tmp_path / f"{phase}-{name}.sha256"
-            _write_sha(record, digest, str(path))
-            sha_records[f"{phase}_{name}"] = record
+    sha_records: dict[str, Path] = {
+        "initial_target": evidence / "pending.target.sha256",
+        "initial_sentinel": evidence / "pending.sentinel.sha256",
+        "immediate_target": (
+            evidence / "before-authorization.target.sha256"
+        ),
+        "immediate_sentinel": (
+            evidence / "before-authorization.sentinel.sha256"
+        ),
+    }
     plan_bytes = json.dumps(
         {
             "target_disk": {
@@ -686,6 +851,14 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
         event="authorization",
         sequence=1,
         payload={
+            "authorization_observed_at": (
+                "2026-07-29T12:01:04+00:00"
+            ),
+            "before_authorization_boundary_sha256": hashlib.sha256(
+                (
+                    evidence / "before-authorization-boundary.json"
+                ).read_bytes()
+            ).hexdigest(),
             "before_authorization_qmp_sha256": hashlib.sha256(
                 immediate_qmp.read_bytes()
             ).hexdigest(),
@@ -700,12 +873,15 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
             ).hexdigest(),
             "initial_sentinel_sha256": initial_sentinel,
             "initial_target_sha256": initial_target,
+            "pending_boundary_sha256": hashlib.sha256(
+                (evidence / "pending-boundary.json").read_bytes()
+            ).hexdigest(),
             "request": request,
             "sentinel_sha256_before_authorization": initial_sentinel,
             "target_disk": "/dev/vda",
             "target_sha256_before_authorization": initial_target,
         },
-        observed_at="2026-07-29T12:02:00+00:00",
+        observed_at="2026-07-29T12:01:05+00:00",
         previous_sha256=None,
     )
     chain = [authorization]
@@ -727,19 +903,19 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
                 "session_id": request["session_id"],
             },
             observed_at=(
-                f"2026-07-29T12:02:0{sequence - 1}+00:00"
+                f"2026-07-29T12:01:0{sequence + 4}+00:00"
             ),
             previous_sha256=module.attestation_sha256(chain[-1]),
         )
         chain.append(item)
     for item in chain:
         module.store_attestation(state, item)
-    boot_qmp = tmp_path / "postflight-boot.qmp.jsonl"
+    boot_qmp = evidence / "postflight-boot.qmp.jsonl"
     _write_boot_qmp(boot_qmp, manifest)
     delivery = module.issue_postflight_boot_challenge(
         state,
         qmp_path=boot_qmp,
-        observed_at="2026-07-29T12:03:00+00:00",
+        observed_at="2026-07-29T12:02:00+00:00",
     )
     assert delivery["boot_nonce"] != manifest["challenge"]
     postflight = {
@@ -747,7 +923,7 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
         "boot_id": str(uuid4()),
         "boot_nonce": delivery["boot_nonce"],
         "challenge": manifest["challenge"],
-        "reported_at": "2026-07-29T12:03:01+00:00",
+        "reported_at": "2026-07-29T12:02:01+00:00",
         "run_id": manifest["run_id"],
         "schema_version": 1,
         "vm_instance_id": manifest["vm_instance_id"],
@@ -773,15 +949,16 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
         after_qmp,
         target_write_bytes=8192,
         sentinel_write_bytes=0,
+        install_iso_file=manifest["iso"]["canonical_path"],
         **common,
     )
     for name, path in (("target", target), ("sentinel", sentinel)):
-        record = tmp_path / f"after-{name}.sha256"
+        record = evidence / f"{name}.after.sha256"
         _write_sha(
             record, hashlib.sha256(path.read_bytes()).hexdigest(), str(path)
         )
         sha_records[f"after_{name}"] = record
-    receipt = tmp_path / "acceptance-receipt.json"
+    receipt = evidence / "acceptance-receipt.json"
     module.finalize_signed_evidence(
         state,
         initial_qmp=initial_qmp,
@@ -806,25 +983,123 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     assert result["controller"]["state"] == "installed"
     assert result["postflight"]["iso_attached"] is False
     assert result["run"]["run_id"] == manifest["run_id"]
+    corpus = {
+        "pending-boundary.json": evidence / "pending-boundary.json",
+        "pending.qmp.jsonl": initial_qmp,
+        "pending.target.sha256": sha_records["initial_target"],
+        "pending.sentinel.sha256": sha_records["initial_sentinel"],
+        "before-authorization-boundary.json": (
+            evidence / "before-authorization-boundary.json"
+        ),
+        "before-authorization.qmp.jsonl": immediate_qmp,
+        "before-authorization.target.sha256": (
+            sha_records["immediate_target"]
+        ),
+        "before-authorization.sentinel.sha256": (
+            sha_records["immediate_sentinel"]
+        ),
+        "after-install.qmp.jsonl": after_qmp,
+        "postflight-boot.qmp.jsonl": boot_qmp,
+        "target.after.sha256": sha_records["after_target"],
+        "sentinel.after.sha256": sha_records["after_sentinel"],
+        "postflight-delivery.json": state / "postflight-delivery.json",
+        "authenticated-postflight.json": (
+            state / "authenticated-postflight.json"
+        ),
+    }
+    with pytest.raises(module.AcceptanceError, match="corpus"):
+        module.export_public_evidence(
+            state,
+            receipt=receipt,
+            output=tmp_path / "missing-public-evidence",
+            evidence_files={},
+            euid=lambda: 0,
+        )
+    with pytest.raises(module.AcceptanceError, match="corpus"):
+        module.export_public_evidence(
+            state,
+            receipt=receipt,
+            output=tmp_path / "extra-public-evidence",
+            evidence_files={
+                **corpus,
+                "unexpected.json": evidence / "pending-boundary.json",
+            },
+            euid=lambda: 0,
+        )
+    empty = tmp_path / "empty.qmp.jsonl"
+    empty.touch()
+    with pytest.raises(module.AcceptanceError, match="Evidence file"):
+        module.export_public_evidence(
+            state,
+            receipt=receipt,
+            output=tmp_path / "empty-public-evidence",
+            evidence_files={**corpus, "pending.qmp.jsonl": empty},
+            euid=lambda: 0,
+        )
     public_evidence = tmp_path / "public-evidence"
     module.export_public_evidence(
         state,
         receipt=receipt,
         output=public_evidence,
+        evidence_files=corpus,
+        observed_at="2026-07-29T12:04:00+00:00",
         euid=lambda: 0,
     )
     assert not (
         public_evidence / "attestation-private.pem"
     ).exists()
-    ownership = module.workdir_ownership(workdir)
-    module.remove_owned_workdir(ownership, workdir)
-    assert not workdir.exists()
     verified = module.verify_public_evidence(
         public_evidence, euid=lambda: 0
     )
     assert verified["receipt"]["result"] == "pass"
     assert verified["chain"][-1]["event"] == "acceptance_evidence"
     assert verified["chain"][-2]["event"] == "installed"
+
+    zero_write = tmp_path / "semantic-zero-write"
+    shutil.copytree(public_evidence, zero_write)
+    _write_qmp(
+        zero_write / "evidence" / "after-install.qmp.jsonl",
+        target_write_bytes=0,
+        sentinel_write_bytes=0,
+        install_iso_file=manifest["iso"]["canonical_path"],
+        **common,
+    )
+    _reseal_public_evidence(module, state, zero_write)
+    with pytest.raises(module.AcceptanceError, match="semantic"):
+        module.verify_public_evidence(zero_write, euid=lambda: 0)
+
+    unchanged_target = tmp_path / "semantic-unchanged-target"
+    shutil.copytree(public_evidence, unchanged_target)
+    _write_sha(
+        unchanged_target / "evidence" / "target.after.sha256",
+        initial_target,
+        str(target),
+    )
+    _reseal_public_evidence(module, state, unchanged_target)
+    with pytest.raises(module.AcceptanceError, match="semantic"):
+        module.verify_public_evidence(unchanged_target, euid=lambda: 0)
+
+    absolute_ref = tmp_path / "semantic-absolute-ref"
+    shutil.copytree(public_evidence, absolute_ref)
+    pending_path = absolute_ref / "evidence" / "pending-boundary.json"
+    pending_document = json.loads(
+        pending_path.read_text(encoding="utf-8")
+    )
+    pending_document["qmp"]["file"] = str(
+        tmp_path / "outside.qmp.jsonl"
+    )
+    pending_path.write_bytes(module._json_bytes(pending_document))
+    _reseal_public_evidence(module, state, absolute_ref)
+    with pytest.raises(module.AcceptanceError, match="semantic"):
+        module.verify_public_evidence(absolute_ref, euid=lambda: 0)
+
+    ownership = module.workdir_ownership(workdir)
+    module.remove_owned_workdir(ownership, workdir)
+    assert not workdir.exists()
+    verified_after_cleanup = module.verify_public_evidence(
+        public_evidence, euid=lambda: 0
+    )
+    assert verified_after_cleanup["receipt"]["result"] == "pass"
 
 
 @pytest.mark.parametrize("mutation", ["wrong_vm", "iso_attached"])
@@ -974,6 +1249,79 @@ def test_authorization_boundary_captures_qmp_and_sha_as_one_signed_unit(
     assert loaded == boundary
 
 
+def test_authorization_boundary_rejects_an_overlong_capture(
+    tmp_path: Path,
+) -> None:
+    state, manifest = _create_run_state(tmp_path / "run")
+    module = _support_module()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    timestamps = iter(
+        (
+            "2026-07-29T12:01:00+00:00",
+            "2026-07-29T12:01:11+00:00",
+        )
+    )
+
+    def capture(_socket: Path, output: Path) -> None:
+        _write_qmp(
+            output,
+            target_write_bytes=0,
+            sentinel_write_bytes=0,
+            target_file=manifest["artifacts"]["target"][
+                "canonical_path"
+            ],
+            sentinel_file=manifest["artifacts"]["sentinel"][
+                "canonical_path"
+            ],
+            install_iso_file=manifest["iso"]["canonical_path"],
+        )
+
+    with pytest.raises(module.AcceptanceError, match="freshness"):
+        module.capture_authorization_boundary(
+            state,
+            socket_path=tmp_path / "qmp.sock",
+            evidence_dir=evidence,
+            phase="pending",
+            qmp_capture=capture,
+            clock=lambda: next(timestamps),
+        )
+
+
+@pytest.mark.parametrize(
+    ("pending_captured", "preauth_started", "preauth_captured", "observed"),
+    [
+        (
+            "2026-07-29T12:00:00+00:00",
+            "2026-07-29T12:00:31+00:00",
+            "2026-07-29T12:00:32+00:00",
+            "2026-07-29T12:00:33+00:00",
+        ),
+        (
+            "2026-07-29T12:00:00+00:00",
+            "2026-07-29T12:00:01+00:00",
+            "2026-07-29T12:00:02+00:00",
+            "2026-07-29T12:00:13+00:00",
+        ),
+    ],
+)
+def test_authorization_rejects_stale_but_ordered_boundaries(
+    pending_captured: str,
+    preauth_started: str,
+    preauth_captured: str,
+    observed: str,
+) -> None:
+    module = _support_module()
+
+    with pytest.raises(module.AcceptanceError, match="freshness"):
+        module.validate_authorization_boundary_freshness(
+            pending_captured_at=pending_captured,
+            before_authorization_started_at=preauth_started,
+            before_authorization_captured_at=preauth_captured,
+            authorization_observed_at=observed,
+        )
+
+
 def test_cleanup_rejects_replaced_workdir_and_tap_ifindex(
     tmp_path: Path,
 ) -> None:
@@ -1052,25 +1400,41 @@ def test_cleanup_refuses_workdir_replacement_race_without_deleting_it(
     ) == "must survive"
 
 
-def test_tap_cleanup_deletes_only_the_recorded_ifindex() -> None:
+def test_network_namespace_cleanup_cannot_signal_a_reused_process() -> None:
     module = _support_module()
-    ownership = module.tap_ownership(
-        tap_name="aiv21234", tap_ifindex=91
+    ownership = module.network_namespace_ownership(
+        pid=501,
+        process_starttime=7001,
+        namespace_device=42,
+        namespace_inode=9001,
     )
-    deleted: list[int] = []
-    with pytest.raises(module.AcceptanceError, match="TAP"):
-        module.delete_owned_tap(
+    signaled: list[int] = []
+    closed: list[int] = []
+
+    with pytest.raises(module.AcceptanceError, match="namespace"):
+        module.stop_owned_network_namespace(
             ownership,
-            identity_reader=lambda _name: 92,
-            delete_by_ifindex=deleted.append,
+            pidfd_open=lambda _pid: 73,
+            process_starttime_reader=lambda _pid: 8002,
+            namespace_identity_reader=lambda _pid: (42, 9002),
+            signaler=signaled.append,
+            waiter=lambda _pidfd: None,
+            descriptor_close=closed.append,
         )
-    assert deleted == []
-    module.delete_owned_tap(
+    assert signaled == []
+    assert closed == [73]
+
+    module.stop_owned_network_namespace(
         ownership,
-        identity_reader=lambda _name: 91,
-        delete_by_ifindex=deleted.append,
+        pidfd_open=lambda _pid: 74,
+        process_starttime_reader=lambda _pid: 7001,
+        namespace_identity_reader=lambda _pid: (42, 9001),
+        signaler=signaled.append,
+        waiter=lambda _pidfd: None,
+        descriptor_close=closed.append,
     )
-    assert deleted == [91]
+    assert signaled == [74]
+    assert closed == [73, 74]
 
 
 def test_root_authorization_checks_two_zero_write_snapshots_then_calls_cli(

@@ -429,6 +429,7 @@ def test_qemu_authorization_cli_reaches_real_production_service_by_default(
     manifest = support.create_run_state(
         state,
         iso=iso,
+        expected_iso_sha256=hashlib.sha256(iso.read_bytes()).hexdigest(),
         target=target,
         sentinel=sentinel,
         vm_instance_id="22222222-3333-4444-5555-666666666662",

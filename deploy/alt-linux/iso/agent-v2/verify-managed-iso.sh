@@ -69,7 +69,7 @@ python3 "$contract" scan --root "$workdir/initrd" ||
     die 'Extracted payload secret scan failed'
 
 python3 - "$manifest" "$iso" "$workdir/initrd.img" \
-    "$workdir/initrd" <<'PY'
+    "$workdir/initrd" "$workdir/managed-iso.sha256" <<'PY'
 import base64
 import hashlib
 import json
@@ -79,7 +79,9 @@ import struct
 import sys
 from pathlib import Path
 
-manifest_path, iso, initrd, root = map(Path, sys.argv[1:])
+manifest_path, iso, initrd, root, verified_digest_path = map(
+    Path, sys.argv[1:]
+)
 document = json.loads(manifest_path.read_text(encoding="utf-8"))
 expected_fields = {
     "build_id",
@@ -284,6 +286,9 @@ for index in range(entry_count):
         raise SystemExit("helper program headers are truncated")
     if struct.unpack_from("<I", raw_helper, offset)[0] == 3:
         raise SystemExit("helper has a dynamic interpreter")
+verified_digest_path.write_text(
+    checks["managed_iso_sha256"] + "\n", encoding="ascii"
+)
 PY
 
 mode_is() {
@@ -356,3 +361,4 @@ python3 "$contract" menu \
     die 'Boot menu contract verification failed'
 
 printf 'managed_iso_verified=true\n'
+printf 'managed_iso_sha256=%s\n' "$(<"$workdir/managed-iso.sha256")"
