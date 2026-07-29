@@ -367,6 +367,22 @@ printf '{"status":"ok","result":"backup_rehearsed","backup_id":"%s","manifest_sh
             + "\n",
             encoding="utf-8",
         )
+        task6_receipt = (
+            self.task6_evidence / "acceptance-receipt.json"
+        ).read_bytes()
+        (self.task6_evidence / "evidence-index.json").write_text(
+            json.dumps(
+                {
+                    "receipt_sha256": hashlib.sha256(
+                        task6_receipt
+                    ).hexdigest(),
+                    "schema_version": 1,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         self.pilot_record = self.root / "pilot.json"
         self.pilot_record.write_text(
             json.dumps(_pilot_record()), encoding="utf-8"
@@ -385,7 +401,26 @@ printf '{"status":"ok","result":"backup_rehearsed","backup_id":"%s","manifest_sh
         python = Path(sys.executable).as_posix().replace("C:/", "/c/")
         self._executable(
             self.fake_bin / "python3",
-            f'#!/bin/bash\nexec "{python}" "$@"\n',
+            f"""#!/bin/bash
+set -Eeuo pipefail
+if [[ ${{1:-}} == *verify-install-execution-pilot.py ]]; then
+  "{python}" "$@"
+  status=$?
+  if [[ $status == 0 &&
+        ${{ROLLOUT_REPLACE_PILOT_AFTER_VALIDATION:-0}} == 1 ]]; then
+    "{python}" - "$ROLLOUT_PILOT_ORIGINAL" <<'PY'
+import json, sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["asset_id"] = "ALT-WS-REPLACED"
+value["rollback_owner"] = "Replacement Operator"
+open(path, "w", encoding="utf-8").write(json.dumps(value))
+PY
+  fi
+  exit "$status"
+fi
+exec "{python}" "$@"
+""",
         )
         self._fake_command(
             "git",
@@ -432,8 +467,26 @@ case "${1:-}" in
       mv "$state.new" "$state"
     fi ;;
   start) sed -E 's/ [^ ]+$/ active/' "$state" > "$state.new"; mv "$state.new" "$state" ;;
-  stop) sed -E 's/ [^ ]+$/ inactive/' "$state" > "$state.new"; mv "$state.new" "$state" ;;
+  stop)
+    [[ ${ROLLOUT_SYSTEMCTL_STOP_FAIL:-0} != 1 ]] || exit 1
+    sed -E 's/ [^ ]+$/ inactive/' "$state" > "$state.new"
+    mv "$state.new" "$state" ;;
   daemon-reload) ;;
+  *) exit 2 ;;
+esac
+""",
+        )
+        self._fake_command(
+            "flock",
+            """case "${1:-}" in
+  --exclusive)
+    if [[ ${ROLLOUT_CREATE_ACTIVE_ON_LOCK:-0} == 1 ]]; then
+      active="$ROLLOUT_ROOT/var/lib/alt-deploy/install-sessions/raced/status.json"
+      mkdir -p "$(dirname "$active")"
+      printf '%s\n' '{"execution":{"state":"authorized"}}' > "$active"
+    fi
+    exit "${ROLLOUT_FLOCK_ACQUIRE_RC:-0}" ;;
+  --unlock) exit "${ROLLOUT_FLOCK_UNLOCK_RC:-0}" ;;
   *) exit 2 ;;
 esac
 """,
@@ -500,6 +553,22 @@ if sys.argv[1:3] != ["verify-public-evidence", "--evidence-dir"]:
 if os.environ.get("ROLLOUT_TASK6_VERIFY", "pass") != "pass":
     print("Task 6 receipt rejected", file=sys.stderr)
     raise SystemExit(1)
+with open(os.environ["ROLLOUT_COMMAND_LOG"], "a", encoding="utf-8") as log:
+    log.write(f"task6-verify {sys.argv[3]}\\n")
+if os.environ.get("ROLLOUT_REPLACE_TASK6_AFTER_VALIDATION") == "1":
+    import json
+    from pathlib import Path
+
+    path = (
+        Path(os.environ["ROLLOUT_TASK6_ORIGINAL"])
+        / "acceptance-receipt.json"
+    )
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["run"]["run_id"] = "run-" + "f" * 64
+    value["writes"]["after_install"]["target_write_bytes"] = 16384
+    path.write_text(
+        json.dumps(value, sort_keys=True) + "\\n", encoding="utf-8"
+    )
 print("public_evidence=verified")
 """,
             encoding="utf-8",
@@ -556,11 +625,13 @@ print("public_evidence=verified")
                 "ROLLOUT_INITRD_SHA256": "7" * 64,
                 "ROLLOUT_MANAGED_ISO_SHA256": MANAGED_ISO_SHA256,
                 "ROLLOUT_MANIFEST_SHA256": "8" * 64,
+                "ROLLOUT_PILOT_ORIGINAL": self.pilot_record.as_posix(),
                 "ROLLOUT_PUBLIC_KEY_HEX": "1" * 64,
                 "ROLLOUT_PUBLIC_KEY_SHA256": "9" * 64,
                 "ROLLOUT_ROOT": self.root.as_posix(),
                 "ROLLOUT_SOURCE_COMMIT": SOURCE_COMMIT,
                 "ROLLOUT_SOURCE_ISO_SHA256": SOURCE_ISO_SHA256,
+                "ROLLOUT_TASK6_ORIGINAL": self.task6_evidence.as_posix(),
                 "ROLLOUT_TASK6_VERIFY": task6_verify,
             }
         )
@@ -718,6 +789,140 @@ def test_rollout_health_failure_restores_only_staged_v2_runtime(
     ).exists()
     assert v1.read_bytes() == before_v1
     assert not any(command.startswith("builder ") for command in sandbox.commands())
+    assert not sandbox.receipt.exists()
+
+
+def test_rollout_uses_validated_pilot_snapshot_after_source_replacement(
+    tmp_path: Path,
+) -> None:
+    sandbox = RolloutSandbox(tmp_path)
+    pilot_before = sandbox.pilot_record.read_bytes()
+
+    completed = sandbox.run(
+        overrides={"ROLLOUT_REPLACE_PILOT_AFTER_VALIDATION": "1"}
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(
+        sandbox.pilot_record.read_text(encoding="utf-8")
+    )["asset_id"] == "ALT-WS-REPLACED"
+    receipt = json.loads(sandbox.receipt.read_text(encoding="utf-8"))
+    assert receipt["pilot"]["asset_id"] == "ALT-WS-017"
+    assert receipt["pilot"]["record_sha256"] == hashlib.sha256(
+        pilot_before
+    ).hexdigest()
+
+
+def test_rollout_uses_verified_task6_snapshot_after_source_replacement(
+    tmp_path: Path,
+) -> None:
+    sandbox = RolloutSandbox(tmp_path)
+    task6_before = (
+        sandbox.task6_evidence / "acceptance-receipt.json"
+    ).read_bytes()
+
+    completed = sandbox.run(
+        overrides={"ROLLOUT_REPLACE_TASK6_AFTER_VALIDATION": "1"}
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    replaced = json.loads(
+        (
+            sandbox.task6_evidence / "acceptance-receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert replaced["writes"]["after_install"]["target_write_bytes"] == 16384
+    receipt = json.loads(sandbox.receipt.read_text(encoding="utf-8"))
+    assert (
+        receipt["task6"]["writes"]["after_install"]["target_write_bytes"]
+        == 8192
+    )
+    assert receipt["task6"]["receipt_sha256"] == hashlib.sha256(
+        task6_before
+    ).hexdigest()
+    task6_commands = [
+        command
+        for command in sandbox.commands()
+        if command.startswith("task6-verify ")
+    ]
+    assert len(task6_commands) == 1
+    assert sandbox.task6_evidence.as_posix() not in task6_commands[0]
+
+
+def test_rollout_final_session_scan_runs_under_canonical_lock(
+    tmp_path: Path,
+) -> None:
+    sandbox = RolloutSandbox(tmp_path)
+
+    completed = sandbox.run(
+        overrides={"ROLLOUT_CREATE_ACTIVE_ON_LOCK": "1"}
+    )
+
+    assert completed.returncode != 0
+    assert "active execution session" in completed.stderr.lower()
+    assert any(
+        command.startswith("flock --exclusive ")
+        for command in sandbox.commands()
+    )
+    assert not any(
+        command.startswith("installer ") for command in sandbox.commands()
+    )
+
+
+def test_rollout_holds_session_lock_through_v2_health_boundary(
+    tmp_path: Path,
+) -> None:
+    sandbox = RolloutSandbox(tmp_path)
+
+    completed = sandbox.run()
+
+    assert completed.returncode == 0, completed.stderr
+    commands = sandbox.commands()
+    lock = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("flock --exclusive ")
+    )
+    installer = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("installer ")
+    )
+    health = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("curl ")
+    )
+    unlock = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("flock --unlock ")
+    )
+    assert lock < installer < health < unlock
+
+
+def test_rollback_failure_is_reported_and_preserves_live_staged_runtime(
+    tmp_path: Path,
+) -> None:
+    sandbox = RolloutSandbox(tmp_path)
+
+    completed = sandbox.run(
+        health_state="starting",
+        overrides={"ROLLOUT_SYSTEMCTL_STOP_FAIL": "1"},
+    )
+
+    assert completed.returncode != 0
+    assert "rollback failed" in completed.stderr.lower()
+    assert sandbox.destination(
+        "/opt/alt-install-execution-api/releases/new-release"
+    ).exists()
+    assert sandbox.destination(
+        "/etc/systemd/system/alt-install-execution.service"
+    ).exists()
+    assert not any(
+        command.startswith("systemctl start ")
+        for command in sandbox.commands()
+    )
     assert not sandbox.receipt.exists()
 
 

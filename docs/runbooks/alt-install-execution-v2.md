@@ -56,6 +56,21 @@ and health-checks only `alt-install-execution.service`, publishes the V2 ISO
 without replacement, and then runs the Task 6 verifier. The production
 receipt is the final mutation.
 
+The pilot JSON is copied through a no-follow regular-file descriptor into a
+private snapshot before validation. Only those validated bytes are used in
+the production receipt. The Task 6 public-evidence tree is likewise copied
+into the private rollout snapshot, checked for symlinks/non-regular entries,
+and independently verified there. The receipt binds the exact copied Task 6
+receipt and evidence-index SHA-256 values; replacing either source path after
+validation cannot change the recorded evidence.
+
+Immediately before the final execution-session scan, the rollout takes the
+canonical exclusive
+`/var/lib/alt-deploy/install-sessions.lock`. It holds that lock across the
+V2 runtime installation and exact TLS health check, then releases it before
+ISO publication. Authorization and execution transitions therefore cannot
+interleave with the final scan-to-health boundary.
+
 ## Failure and rollback
 
 Stop at the first failure. A failure before staging changes no service file.
@@ -63,6 +78,12 @@ A failure after staging restores only the former V2 unit, current-runtime
 pointer and activation state, and removes only the newly staged V2 release.
 It does not change V1, `alt-deploy-*`, session state, signing/TLS keys, a
 published immutable ISO, Proxmox, VM 114, or a target disk.
+
+Rollback command failures are not ignored. The rollout reports every failed
+or skipped restoration phase and exits with a rollback-failure status. It
+does not restart the service or delete a possibly live staged runtime when
+stop, pointer, unit, daemon-reload, or activation prerequisites fail. The
+reported private recovery snapshot is retained for the named rollback owner.
 
 A successfully published ISO remains immutable when a later Task 6 gate
 fails. Investigate and use a new release ID; never overwrite or delete the
