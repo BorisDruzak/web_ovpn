@@ -89,8 +89,13 @@ def _run(tmp_path: Path, *, listener: str = "", **overrides: str) -> subprocess.
     )
 
 
-def _run_active_restore(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run_active_restore(
+    tmp_path: Path, **overrides: str,
+) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "restore-root"
+    (root / "release").mkdir(parents=True)
+    (root / "release" / "marker").write_text("failed release\n", encoding="utf-8")
+    (root / "transaction").mkdir()
     command = (
         "set -Eeuo pipefail; "
         f"source {INSTALLER.as_posix()!r}; "
@@ -110,7 +115,7 @@ def _run_active_restore(tmp_path: Path) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
-        env=_environment(tmp_path),
+        env=_environment(tmp_path, **overrides),
         check=False,
     )
 
@@ -126,6 +131,22 @@ def test_active_rollback_stops_new_service_before_starting_restored_unit(
     stop = commands.index("stop alt-install-execution.service")
     start = commands.index("start alt-install-execution.service")
     assert stop < start
+
+
+@pytest.mark.skipif(BASH is None, reason="rollback command test requires Bash")
+def test_active_rollback_stop_failure_keeps_failed_release_recoverable(
+    tmp_path: Path,
+) -> None:
+    result = _run_active_restore(
+        tmp_path,
+        INSTALLER_SYSTEMCTL_FAIL_ONCE="stop",
+    )
+
+    assert result.returncode != 0
+    assert (tmp_path / "restore-root" / "release" / "marker").is_file()
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
+    assert "stop alt-install-execution.service" in commands
+    assert "start alt-install-execution.service" not in commands
 
 
 @pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")

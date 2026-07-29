@@ -171,8 +171,14 @@ install_execution_api_restore_activation() {
         systemctl disable "${INSTALL_EXECUTION_API_UNIT}" || true
     fi
     if [[ ${INSTALL_EXECUTION_WAS_ACTIVE:-0} == 1 ]]; then
-        systemctl stop "${INSTALL_EXECUTION_API_UNIT}" || true
-        systemctl start "${INSTALL_EXECUTION_API_UNIT}" || true
+        if ! systemctl stop "${INSTALL_EXECUTION_API_UNIT}"; then
+            install_execution_api_error "Execution API rollback could not stop failed service"
+            return 1
+        fi
+        if ! systemctl start "${INSTALL_EXECUTION_API_UNIT}"; then
+            install_execution_api_error "Execution API rollback could not start restored service"
+            return 1
+        fi
     else
         systemctl stop "${INSTALL_EXECUTION_API_UNIT}" || true
     fi
