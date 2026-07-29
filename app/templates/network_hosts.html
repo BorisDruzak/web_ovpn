@@ -50,7 +50,7 @@
       <tr>
         <td class="mono">{{ host.ip }}</td>
         <td class="mono">{{ host.mac or "-" }}</td>
-        <td>{{ host.display_name or host.hostname or "-" }}</td>
+        <td>{{ host.manual_name or host.display_name or host.hostname or "-" }}</td>
         <td>
           <span class="badge muted">{{ device_type_labels.get(host.device_type, host.device_type or "-") }}</span>
           {% if host.device_confidence %}<span class="muted">{{ host.device_confidence }}%</span>{% endif %}

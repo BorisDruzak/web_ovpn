@@ -70,7 +70,7 @@ def _vpn_ip(row: dict[str, Any]) -> str:
 
 
 def _display_name(row: dict[str, Any]) -> str:
-    return str(row.get("manual_name") or row.get("display_name") or row.get("hostname") or row.get("common_name") or row.get("name") or row.get("ip") or "")
+    return str(row.get("display_name") or row.get("hostname") or row.get("common_name") or row.get("name") or row.get("ip") or "")
 
 
 def _public_availability(value: object) -> dict[str, Any] | None:

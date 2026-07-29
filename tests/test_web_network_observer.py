@@ -463,7 +463,7 @@ def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch
 
     assert page.status_code == 200
     assert "Все IP и устройства" in page.text
-    assert "pc-buh-01" in page.text
+    assert "Finance workstation" in page.text
     assert "alpha" in page.text
     assert "Обычная сеть" in page.text
     assert "ПК" in page.text
