@@ -401,6 +401,15 @@ def test_harness_allows_the_tcg_boot_budget() -> None:
     assert "for _ in $(seq 1 1200); do" in harness
 
 
+def test_harness_preserves_boot_failure_diagnostics() -> None:
+    harness = HARNESS.read_text(encoding="utf-8")
+
+    assert 'qmp-screendump \\' in harness
+    assert '--socket "$qmp_socket"' in harness
+    assert '"$variant_evidence/boot-failure.ppm"' in harness
+    assert '"$variant_evidence/boot-failure-console.log"' in harness
+
+
 def _write_variant_summary(
     path: Path,
     variant: str,
