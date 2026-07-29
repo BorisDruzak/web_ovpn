@@ -247,7 +247,7 @@ install_session_api_capture_systemd_state() {
         active:0)
             INSTALL_SESSION_WAS_ACTIVE=1
             ;;
-        inactive:3|unknown:3|unknown:4)
+        inactive:3|inactive:4|unknown:3|unknown:4)
             INSTALL_SESSION_WAS_ACTIVE=0
             ;;
         *)

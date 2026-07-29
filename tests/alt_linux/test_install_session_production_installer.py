@@ -181,6 +181,20 @@ def test_installer_activates_only_the_isolated_unit(tmp_path: Path) -> None:
     )
 
 
+def test_installer_accepts_absent_unit_systemd_state(tmp_path: Path) -> None:
+    sandbox = InstallSessionInstallerSandbox.create_clean_host(tmp_path)
+
+    result = sandbox.run_install(
+        INSTALL_SESSION_IS_ENABLED_STATUS="not-found",
+        INSTALL_SESSION_IS_ENABLED_RC="4",
+        INSTALL_SESSION_IS_ACTIVE_STATUS="inactive",
+        INSTALL_SESSION_IS_ACTIVE_RC="4",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sandbox.service_status() == ("enabled", "active")
+
+
 def test_clean_host_storage_is_created_for_service_user(tmp_path: Path) -> None:
     sandbox = InstallSessionInstallerSandbox.create(tmp_path)
 
