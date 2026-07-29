@@ -244,7 +244,7 @@ def test_activation_failure_restores_preexisting_v2_runtime(
     assert expected_error in result.stderr
     assert str(current.resolve()) == old_target
     assert (tmp_path / "host-root" / "etc" / "systemd" / "system" / "alt-install-execution.service").read_bytes() == old_unit
-    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "enabled active\\n"
+    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "enabled active\n"
 
 
 @pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
@@ -265,7 +265,7 @@ def test_activation_failure_restores_clean_host_absence(
     root = tmp_path / "host-root"
     assert not (root / "opt" / "alt-install-execution-api" / "current").exists()
     assert not (root / "etc" / "systemd" / "system" / "alt-install-execution.service").exists()
-    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "disabled inactive\\n"
+    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "disabled inactive\n"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="systemd unit verification requires Linux")
