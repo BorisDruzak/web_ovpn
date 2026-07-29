@@ -154,13 +154,14 @@ def _collect_bucket(
     targets: tuple[ProbeTarget, ...], executor: ProbeExecutor
 ) -> tuple[tuple[ProbeTarget, AvailabilityResult] | None, str]:
     """Run one /24-equivalent with at most 64 submitted address jobs."""
-    deadline = executor.now() + 90
-    pending = iter(targets)
     futures: dict[Future[AvailabilityResult], ProbeTarget] = {}
     completed: list[tuple[ProbeTarget, AvailabilityResult]] = []
-    pool = ThreadPoolExecutor(max_workers=64)
+    pool: ThreadPoolExecutor | None = None
     failed = ""
     try:
+        deadline = executor.now() + 90
+        pending = iter(targets)
+        pool = ThreadPoolExecutor(max_workers=64)
         exhausted = False
         while futures or not exhausted:
             while not exhausted and len(futures) < 64 and executor.now() < deadline:
@@ -192,10 +193,19 @@ def _collect_bucket(
             if executor.now() >= deadline and (futures or not exhausted):
                 failed = "deadline_exceeded"
                 break
+    except Exception:
+        failed = "executor_error"
     finally:
         for future in futures:
-            future.cancel()
-        pool.shutdown(wait=not failed, cancel_futures=True)
+            try:
+                future.cancel()
+            except Exception:
+                failed = "executor_error"
+        if pool is not None:
+            try:
+                pool.shutdown(wait=not failed, cancel_futures=True)
+            except Exception:
+                failed = "executor_error"
     if failed:
         return None, failed
     return tuple(completed), ""
@@ -283,8 +293,7 @@ def collect_availability(
         for cidr, results in sorted(results_by_cidr.items())
     ]
     try:
-        for run in runs:
-            save_availability_run(conn, run)
+        save_availability_runs(conn, tuple(runs))
     except (sqlite3.Error, ValueError):
         return _failed_collection(
             conn, targets_by_cidr, started=started, finished=finished, error_class="context_unavailable",
@@ -392,37 +401,58 @@ def _active_result_changed(old: AvailabilityResult | None, new: AvailabilityResu
     return (old.state, old.method) != (new.state, new.method)
 
 
-def save_availability_run(conn: sqlite3.Connection, run: AvailabilityRun) -> int:
-    """Persist one completed run and atomically publish only complete successful CIDR results."""
+def _validated_run(
+    conn: sqlite3.Connection, run: AvailabilityRun
+) -> tuple[AvailabilityRun, int, str, str, str, tuple[AvailabilityResult, ...]]:
     revision_id, cidr, network = _active_context_revision_for_cidr(conn, run.cidr)
     started_at, finished_at, results = _validate_run(run, network)
+    return run, revision_id, cidr, started_at, finished_at, results
+
+
+def _insert_validated_run(
+    conn: sqlite3.Connection,
+    validated: tuple[AvailabilityRun, int, str, str, str, tuple[AvailabilityResult, ...]],
+) -> int:
+    run, revision_id, cidr, started_at, finished_at, results = validated
+    run_id = int(conn.execute(
+        """INSERT INTO availability_runs
+           (context_revision_id, cidr, started_at, finished_at, status, target_count, completed_target_count, error_class)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (revision_id, cidr, started_at, finished_at, run.status, run.target_count, run.completed_target_count, _sanitize_reason(run.error_class)),
+    ).lastrowid)
+    if run.status == "success":
+        old_rows = _current_rows(conn, cidr)
+        new_rows = {result.ip: result for result in results}
+        for ip in sorted(set(old_rows) | set(new_rows)):
+            old, new = old_rows.get(ip), new_rows.get(ip)
+            if _active_result_changed(old, new):
+                _insert_change_event(conn, run_id=run_id, ip=ip, old=old, new=new, observed_at=finished_at)
+        conn.execute("DELETE FROM availability_results WHERE cidr = ?", (cidr,))
+        conn.executemany(
+            """INSERT INTO availability_results
+               (cidr, ip, run_id, active_state, active_method, checked_at, failure_class)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [(cidr, result.ip, run_id, result.state, result.method or "", result.checked_at, result.failure_class) for result in results],
+        )
+    return run_id
+
+
+def save_availability_runs(conn: sqlite3.Connection, runs: tuple[AvailabilityRun, ...]) -> tuple[int, ...]:
+    """Atomically publish all successful CIDR runs from one collection, or none of them."""
+    validated = tuple(_validated_run(conn, run) for run in runs)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        run_id = int(conn.execute(
-            """INSERT INTO availability_runs
-               (context_revision_id, cidr, started_at, finished_at, status, target_count, completed_target_count, error_class)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (revision_id, cidr, started_at, finished_at, run.status, run.target_count, run.completed_target_count, _sanitize_reason(run.error_class)),
-        ).lastrowid)
-        if run.status == "success":
-            old_rows = _current_rows(conn, cidr)
-            new_rows = {result.ip: result for result in results}
-            for ip in sorted(set(old_rows) | set(new_rows)):
-                old, new = old_rows.get(ip), new_rows.get(ip)
-                if _active_result_changed(old, new):
-                    _insert_change_event(conn, run_id=run_id, ip=ip, old=old, new=new, observed_at=finished_at)
-            conn.execute("DELETE FROM availability_results WHERE cidr = ?", (cidr,))
-            conn.executemany(
-                """INSERT INTO availability_results
-                   (cidr, ip, run_id, active_state, active_method, checked_at, failure_class)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                [(cidr, result.ip, run_id, result.state, result.method or "", result.checked_at, result.failure_class) for result in results],
-            )
+        run_ids = tuple(_insert_validated_run(conn, run) for run in validated)
         conn.commit()
+        return run_ids
     except Exception:
         conn.rollback()
         raise
-    return run_id
+
+
+def save_availability_run(conn: sqlite3.Connection, run: AvailabilityRun) -> int:
+    """Persist one completed run and atomically publish only complete successful CIDR results."""
+    return save_availability_runs(conn, (run,))[0]
 
 
 def current_availability_results(conn: sqlite3.Connection, cidr: str) -> dict[str, AvailabilityResult]:

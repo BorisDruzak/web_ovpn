@@ -144,6 +144,59 @@ def test_deadline_failure_keeps_current_results_and_persists_no_partial_success(
     assert [tuple(row) for row in conn.execute("SELECT status FROM availability_runs ORDER BY id")] == [("success",), ("failed",)]
 
 
+def test_second_cidr_persistence_failure_rolls_back_every_current_result(conn):
+    """A later CIDR storage error must not leave the first CIDR published under a failed collection."""
+    from netctl.availability import ProbeExecutor, collect_availability
+
+    conn.execute(
+        """
+        CREATE TRIGGER reject_second_availability_result
+        BEFORE INSERT ON availability_results
+        WHEN NEW.cidr = '198.51.100.0/30'
+        BEGIN SELECT RAISE(ABORT, 'second cidr persistence failure'); END
+        """
+    )
+    executor = ProbeExecutor(lambda _ip: True, lambda _ip, _port: False, lambda: 0.0)
+
+    collection = collect_availability(conn, executor, now=lambda: NEW)
+
+    assert collection.status == "failed"
+    assert collection.error_class == "context_unavailable"
+    assert [tuple(row) for row in conn.execute("SELECT cidr, ip FROM availability_results ORDER BY cidr, ip")] == []
+    assert [tuple(row) for row in conn.execute("SELECT cidr, status FROM availability_runs ORDER BY id")] == [
+        ("192.0.2.0/30", "failed"),
+        ("198.51.100.0/30", "failed"),
+    ]
+
+
+def test_submit_failure_returns_sanitized_executor_error_and_persists_failed_run(conn, monkeypatch):
+    """A pool submit error must fail closed instead of escaping through the recovery CLI."""
+    import netctl.availability as availability
+
+    class SubmitFailurePool:
+        def __init__(self, *, max_workers):
+            assert max_workers == 64
+
+        def submit(self, *_args):
+            raise OSError("internal pool detail")
+
+        def shutdown(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(availability, "ThreadPoolExecutor", SubmitFailurePool)
+    executor = availability.ProbeExecutor(lambda _ip: True, lambda _ip, _port: False, lambda: 0.0)
+
+    collection = availability.collect_availability(conn, executor, now=lambda: NEW)
+
+    assert collection.status == "failed"
+    assert collection.error_class == "executor_error"
+    assert collection.summary["completed"] == 0
+    assert conn.execute("SELECT count(*) FROM availability_results").fetchone()[0] == 0
+    assert [tuple(row) for row in conn.execute("SELECT status, error_class FROM availability_runs")] == [
+        ("failed", "executor_error"),
+    ]
+
+
 def test_availability_collect_publishes_only_completed_canonical_targets(conn):
     """Publishing a result for a probe-only address would create unverified network inventory."""
     from netctl.availability import ProbeExecutor, collect_availability
