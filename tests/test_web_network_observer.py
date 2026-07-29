@@ -826,6 +826,58 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     assert "stale host" not in invalid.text
 
 
+@pytest.mark.parametrize(
+    ("state", "reason", "expected"),
+    [
+        ("stale", "run_stale", "данные устарели"),
+        ("not_monitored", "not_monitored", "не мониторится"),
+    ],
+)
+def test_network_host_detail_sanitizes_summary_and_availability_status(
+    tmp_path,
+    monkeypatch,
+    state,
+    reason,
+    expected,
+):
+    """The host summary must not bypass the public availability-state presentation."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    host = {
+        "ip": "192.168.99.48",
+        "display_name": "archive host",
+        "status": "stale",
+        "availability": {"state": state, "reason": reason},
+    }
+
+    def fake_netctl(request, args, timeout=None):
+        if args == ["hosts", "inspect", "192.168.99.48"]:
+            return {"host": host, "observations": []}, None
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}, None
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    monkeypatch.setattr(
+        app.main,
+        "cli_call",
+        lambda request, args, timeout=None: (
+            {"connected": []} if args[0] == "connected" else {"clients": []},
+            None,
+        ),
+    )
+    login(client)
+
+    detail = client.get("/network/hosts/192.168.99.48")
+
+    assert detail.status_code == 200
+    summary_status = detail.text.split("<dt>Статус</dt><dd>", 1)[1].split("</dd>", 1)[0]
+    availability_status = detail.text.split("<dt>Состояние</dt><dd>", 1)[1].split("</dd>", 1)[0]
+    assert summary_status == expected
+    assert availability_status == expected
+
+
 def test_network_dashboard_renders_availability_counts_and_run_health(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     import app.main
@@ -932,7 +984,7 @@ def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeyp
     assert listed.status_code == api_detail.status_code == page_detail.status_code == 200
     assert listed.json()["data"]["hosts"][0]["status"] == "connected"
     assert api_detail.json()["data"]["host"]["status"] == "connected"
-    assert "connected" in page_detail.text
+    assert "<dt>Статус</dt><dd>online · ICMP</dd>" in page_detail.text
     assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"
     assert "socket timeout" not in api_detail.text
     assert "socket timeout" not in page_detail.text
