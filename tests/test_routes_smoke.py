@@ -270,6 +270,10 @@ def test_generate_batch_from_csv_runs_sync_after_success(tmp_path, monkeypatch):
 
         form = client.get("/clients/new")
         assert 'enctype="multipart/form-data"' in form.text
+        assert 'setControls("batch-input"' in form.text
+        assert 'setControls("router-options"' in form.text
+        assert 'function syncClientFormModes()' in form.text
+        assert 'clientType.value = "user"' in form.text
         csrf = form.text.split('name="csrf_token" value="')[1].split('"')[0]
         created = client.post(
             "/clients/new",
