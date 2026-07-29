@@ -65,6 +65,10 @@ from datetime import datetime, timezone
 args = sys.argv[1:]
 cmd = args[1:]
 collected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+invoked_cli_path = __import__("os").environ.get("NETCTL_INVOKED_CLI_PATH")
+if invoked_cli_path:
+    with open(invoked_cli_path, "a", encoding="utf-8") as invoked_cli:
+        invoked_cli.write(" ".join(cmd) + "\\n")
 if cmd[:2] == ["hosts", "list"]:
     print(json.dumps({"status": "ok", "hosts": [
         {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:01", "hostname": "pc-buh-01", "display_name": "desktop pc-buh-01", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:01", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": "2026-07-03T12:00:00Z"},
@@ -163,6 +167,7 @@ def make_client(tmp_path, monkeypatch):
     monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
     monkeypatch.setenv("NETCTL_PATH", str(make_fake_netctl(tmp_path / "netctl")))
     monkeypatch.setenv("NETCTL_USE_SUDO", "0")
+    monkeypatch.setenv("NETCTL_INVOKED_CLI_PATH", str(tmp_path / "netctl-invoked-cli.txt"))
     monkeypatch.setenv("NETWORK_OBSERVER_ENABLED", "1")
     monkeypatch.setenv("OUT_DIR", str(tmp_path))
     monkeypatch.setenv("SHARE_OUT_DIR", str(tmp_path))
@@ -179,7 +184,7 @@ def make_client(tmp_path, monkeypatch):
     return TestClient(app.main.app), {"Authorization": f"Bearer {token}"}
 
 
-def login(client: TestClient) -> None:
+def login(client: TestClient) -> str:
     page = client.get("/login")
     csrf = page.text.split('name="csrf_token" value="')[1].split('"')[0]
     response = client.post(
@@ -188,6 +193,7 @@ def login(client: TestClient) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
+    return csrf
 
 
 def write_path_evidence(tmp_path: Path, monkeypatch) -> None:
@@ -510,6 +516,21 @@ def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_
     assert "Raw JSON" not in page.text
 
 
+def test_network_asset_name_update_persists_manual_name_for_authenticated_user(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    csrf_token = login(client)
+
+    saved = client.post(
+        "/network/assets/mac:AA:BB:CC:DD:EE:01/name",
+        data={"name": "РђСЂС…РёРІРЅС‹Р№ РџРљ", "csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+
+    assert saved.status_code == 303
+    invoked_cli = (tmp_path / "netctl-invoked-cli.txt").read_text(encoding="utf-8")
+    assert "assets set-name --asset-key mac:AA:BB:CC:DD:EE:01 --name РђСЂС…РёРІРЅС‹Р№ РџРљ" in invoked_cli
+
+
 def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
@@ -528,6 +549,17 @@ def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_pa
     assert stale.status_code == 200
     assert "РўРѕРїРѕР»РѕРіРёСЏ: РЅСѓР¶РЅРѕ РѕР±РЅРѕРІР»РµРЅРёРµ" in stale.text
     assert "Р’Р»РѕР¶РµРЅРёСЏ: РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅС‹" in stale.text
+
+
+def test_network_asset_card_renders_readable_cyrillic_freshness_and_confirmed_copy(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
+
+    assert "\u0422\u043e\u043f\u043e\u043b\u043e\u0433\u0438\u044f: \u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u043e" in page.text
+    assert "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u043e" in page.text
+    assert "\u0420\u045e\u0420\u0455\u0420\u0457\u0420\u0455\u0420\u00bb\u0420\u0455\u0420\u0456\u0420\u0451\u0421\u040f" not in page.text
 
 
 def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
