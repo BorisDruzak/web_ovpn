@@ -136,14 +136,19 @@ rollout_v2_restore() {
         failures+=(activation_restore_skipped)
         activation_restored=0
     fi
-    if ((stopped == 1 && pointer_restored == 1)) &&
-       [[ -n ${ROLLOUT_V2_NEW_RELEASE:-} ]]; then
+    if [[ -n ${ROLLOUT_V2_NEW_RELEASE:-} ]]; then
         case "$ROLLOUT_V2_NEW_RELEASE" in
             "$ROLLOUT_V2_RELEASES"/*)
                 if [[ "$ROLLOUT_V2_NEW_RELEASE" != \
                     "${ROLLOUT_V2_OLD_CURRENT:-}" ]]; then
-                    if ! rm -rf -- "$ROLLOUT_V2_NEW_RELEASE"; then
-                        failures+=(staged_runtime_remove)
+                    if ((stopped == 1 && pointer_restored == 1 &&
+                         unit_restored == 1 && reload_succeeded == 1 &&
+                         activation_restored == 1)); then
+                        if ! rm -rf -- "$ROLLOUT_V2_NEW_RELEASE"; then
+                            failures+=(staged_runtime_remove)
+                        fi
+                    else
+                        failures+=(staged_runtime_remove_skipped)
                     fi
                 fi
                 ;;

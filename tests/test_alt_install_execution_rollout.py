@@ -441,6 +441,18 @@ esac
 """,
         )
         self._fake_command(
+            "install",
+            """if [[ ${ROLLOUT_INSTALL_UNIT_RESTORE_FAIL:-0} == 1 ]]; then
+  for argument in "$@"; do
+    if [[ "$argument" == */.alt-v2-rollout.*/unit ]]; then
+      exit 1
+    fi
+  done
+fi
+exec /usr/bin/install "$@"
+""",
+        )
+        self._fake_command(
             "systemctl",
             """state="$ROLLOUT_ROOT/run/service-state"
 unit="$ROLLOUT_ROOT/etc/systemd/system/alt-install-execution.service"
@@ -460,6 +472,7 @@ case "${1:-}" in
       mv "$state.new" "$state"
     fi ;;
   disable)
+    [[ ${ROLLOUT_SYSTEMCTL_DISABLE_FAIL:-0} != 1 ]] || exit 1
     if [[ ${2:-} == --now ]]; then
       printf 'disabled inactive\n' > "$state"
     else
@@ -471,7 +484,8 @@ case "${1:-}" in
     [[ ${ROLLOUT_SYSTEMCTL_STOP_FAIL:-0} != 1 ]] || exit 1
     sed -E 's/ [^ ]+$/ inactive/' "$state" > "$state.new"
     mv "$state.new" "$state" ;;
-  daemon-reload) ;;
+  daemon-reload)
+    [[ ${ROLLOUT_SYSTEMCTL_DAEMON_RELOAD_FAIL:-0} != 1 ]] || exit 1 ;;
   *) exit 2 ;;
 esac
 """,
@@ -923,6 +937,45 @@ def test_rollback_failure_is_reported_and_preserves_live_staged_runtime(
         command.startswith("systemctl start ")
         for command in sandbox.commands()
     )
+    assert not sandbox.receipt.exists()
+
+
+@pytest.mark.parametrize(
+    ("failure_override", "expected_failure"),
+    (
+        ("ROLLOUT_INSTALL_UNIT_RESTORE_FAIL", "unit_restore"),
+        ("ROLLOUT_SYSTEMCTL_DAEMON_RELOAD_FAIL", "daemon_reload"),
+        ("ROLLOUT_SYSTEMCTL_DISABLE_FAIL", "disable_restore"),
+    ),
+)
+def test_rollback_prerequisite_failure_retains_staged_runtime_and_snapshot(
+    tmp_path: Path,
+    failure_override: str,
+    expected_failure: str,
+) -> None:
+    sandbox = RolloutSandbox(tmp_path)
+    sandbox._write(
+        "/etc/systemd/system/alt-install-execution.service",
+        "[Service]\nExecStart=/old/v2/runtime\n",
+    )
+
+    completed = sandbox.run(
+        health_state="starting",
+        overrides={failure_override: "1"},
+    )
+
+    assert completed.returncode == 70
+    assert "rollback failed" in completed.stderr.lower()
+    assert expected_failure in completed.stderr
+    assert "staged_runtime_remove_skipped" in completed.stderr
+    assert sandbox.destination(
+        "/opt/alt-install-execution-api/releases/new-release"
+    ).exists()
+    snapshots = list(
+        sandbox.destination("/run").glob(".alt-v2-rollout.*")
+    )
+    assert len(snapshots) == 1
+    assert (snapshots[0] / "unit").is_file()
     assert not sandbox.receipt.exists()
 
 
