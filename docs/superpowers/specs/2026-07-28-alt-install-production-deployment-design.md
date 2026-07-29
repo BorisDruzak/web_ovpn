@@ -47,7 +47,7 @@ root-owned Ed25519 private key          public-key JSON
          atomic Proxmox local:iso publication
                         |
                         v
-           VM 114 UEFI dry-run acceptance
+ generic-OVMF disposable QEMU UEFI dry-run acceptance
 ```
 
 The controller is the sole holder of private signing material.  The Proxmox
@@ -157,12 +157,14 @@ order:
    runtime in place;
 4. installs and health-checks `alt-install-session.service` on `:18090`;
 5. invokes PR5b with the exact merged commit and records its release index;
-6. runs VM 114's UEFI signed-plan dry-run acceptance against the production
-   listener; and
+6. runs the canonical generic-OVMF disposable QEMU signed-plan dry-run
+   acceptance on `pve2` against the production listener; and
 7. records a non-secret rollout receipt containing commit, backup ID, release
    ID, key ID, ISO SHA-256, unit status, and QEMU evidence path.
 
-Any failed gate stops before the next mutation.  Rollback restores the staged
+Any failed gate stops before the next mutation.  VM 114 is an optional
+Proxmox-template compatibility probe and is not a release blocker: its
+firmware/template state must not be changed to force a pass.  Rollback restores the staged
 controller runtime and stops the new service.  It does not restore session
 state over a newer state and it does not delete an ISO release automatically.
 
@@ -182,5 +184,7 @@ state over a newer state and it does not delete an ISO release automatically.
 The deployment chain is complete only when all three PRs are merged with green
 CI, the controller's health endpoint and unit hardening pass, the signing key
 metadata is correct without exposing secret bytes, the named ISO is verified
-in `pve2` storage, and VM 114 emits the signed-plan dry-run PASS line with
-QMP and backing-image evidence of zero target writes.
+in `pve2` storage, and canonical generic-OVMF disposable QEMU acceptance emits
+the signed-plan dry-run PASS line with QMP and backing-image evidence of zero
+target writes.  VM 114 compatibility evidence is retained separately when it
+is available.
