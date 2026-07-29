@@ -322,13 +322,39 @@ def test_socket_connector_preserves_allowlisted_target_negative(
         def settimeout(self, timeout):
             assert timeout == 1
 
-        def connect_ex(self, address):
+        def connect(self, address):
             assert address == ("192.0.2.1", 443)
-            return negative_errno
+            raise OSError(negative_errno, "negative target result")
 
     monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: RefusedSocket())
     monkeypatch.setattr(socket, "create_connection", lambda *_args, **_kwargs: RefusedSocket())
     assert SocketConnector()("192.0.2.1", 443) is False
+
+
+def test_socket_connector_waits_for_a_bounded_tcp_connection(monkeypatch):
+    """A non-blocking connect_ex can report EAGAIN before the TCP handshake finishes."""
+    import socket
+    from netctl.availability import SocketConnector
+
+    calls = []
+
+    class ConnectedSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, timeout):
+            assert timeout == 1
+
+        def connect(self, address):
+            calls.append(address)
+
+    monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: ConnectedSocket())
+
+    assert SocketConnector()("192.0.2.1", 443) is True
+    assert calls == [("192.0.2.1", 443)]
 
 
 def test_socket_connector_propagates_socket_lifecycle_oserror(monkeypatch):
@@ -350,7 +376,7 @@ def test_socket_connector_propagates_socket_lifecycle_oserror(monkeypatch):
         SocketConnector()("192.0.2.1", 443)
 
 
-def test_socket_connector_rejects_connect_ex_infrastructure_errno(monkeypatch):
+def test_socket_connector_rejects_infrastructure_errno(monkeypatch):
     """A local network failure must not be published as a negative target result."""
     import socket
     from netctl.availability import SocketConnector
@@ -365,9 +391,9 @@ def test_socket_connector_rejects_connect_ex_infrastructure_errno(monkeypatch):
         def settimeout(self, timeout):
             assert timeout == 1
 
-        def connect_ex(self, address):
+        def connect(self, address):
             assert address == ("192.0.2.1", 443)
-            return errno.ENETDOWN
+            raise OSError(errno.ENETDOWN, "local network failure")
 
     monkeypatch.setattr(
         socket,
@@ -478,8 +504,8 @@ def test_socket_infrastructure_errno_fails_collection_without_replacing_current(
         def settimeout(self, _timeout):
             return None
 
-        def connect_ex(self, _address):
-            return errno.ENETDOWN
+        def connect(self, _address):
+            raise OSError(errno.ENETDOWN, "local network failure")
 
     monkeypatch.setattr(
         availability.socket,

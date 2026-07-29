@@ -102,12 +102,15 @@ class SocketConnector:
             raise ValueError("TCP target must be IPv4")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
             probe_socket.settimeout(1)
-            result = probe_socket.connect_ex((str(address), port))
-            if result == 0:
-                return True
-            if result in TARGET_NEGATIVE_CONNECT_ERRNOS:
+            try:
+                probe_socket.connect((str(address), port))
+            except TimeoutError:
                 return False
-            raise OSError(result, "TCP probe executor failure")
+            except OSError as exc:
+                if exc.errno in TARGET_NEGATIVE_CONNECT_ERRNOS:
+                    return False
+                raise
+        return True
 
 
 def default_probe_executor() -> ProbeExecutor:
