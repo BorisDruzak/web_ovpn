@@ -40,6 +40,16 @@ def _observed_targets(conn, *, seen_at: str) -> None:
            VALUES (?, 'unknown', 'seen', ?, ?, 'test', '{}')""",
         [(ip, seen_at, seen_at) for ip in ("192.0.2.1", "192.0.2.2", "198.51.100.1", "198.51.100.2")],
     )
+    conn.executemany(
+        """INSERT INTO arp_entries (ip, mac, complete, last_seen_at)
+           VALUES (?, ?, 1, ?)""",
+        [
+            ("192.0.2.1", "AA:BB:CC:DD:EE:01", seen_at),
+            ("192.0.2.2", "AA:BB:CC:DD:EE:02", seen_at),
+            ("198.51.100.1", "AA:BB:CC:DD:EE:03", seen_at),
+            ("198.51.100.2", "AA:BB:CC:DD:EE:04", seen_at),
+        ],
+    )
     conn.commit()
 
 
@@ -102,6 +112,11 @@ def test_availability_targets_include_recent_hosts_management_and_forced_history
            VALUES (?, 'management-host', 'active', ?, 'management-hash', ?)""",
         (revision, json.dumps({"id": "management-host", "management_ip": "192.0.2.2"}), revision),
     )
+    conn.execute(
+        """INSERT INTO arp_entries (ip, mac, complete, last_seen_at)
+           VALUES ('192.0.2.1', 'AA:BB:CC:DD:EE:01', 1, ?)""",
+        (NOW,),
+    )
     set_force_monitor(conn, "192.0.2.3", enabled=True, now=NOW)
 
     targets = availability_targets(conn, load_active_availability_segments(conn), now=NOW)
@@ -119,7 +134,33 @@ def test_availability_targets_never_expand_every_usable_address(conn):
     from netctl.context_classifier import load_active_availability_segments
 
     _set_segment(conn, "availability-a")
-    _projection_host(conn, ip="192.0.2.1")
+    _projection_host(conn, ip="192.0.2.1", mac="AA:BB:CC:DD:EE:01")
+    conn.execute(
+        """INSERT INTO arp_entries (ip, mac, complete, last_seen_at)
+           VALUES ('192.0.2.1', 'AA:BB:CC:DD:EE:01', 1, ?)""",
+        (NOW,),
+    )
+    conn.commit()
+
+    targets = availability_targets(conn, load_active_availability_segments(conn), now=NOW)
+
+    assert [target.ip for target in targets] == ["192.0.2.1"]
+
+
+def test_availability_targets_ignore_fresh_host_rows_without_raw_mac_evidence(conn):
+    """Placeholder ARP rows must not turn an entire CIDR into probe targets."""
+    from netctl.availability import availability_targets
+    from netctl.context_classifier import load_active_availability_segments
+
+    _set_segment(conn, "availability-a")
+    _projection_host(conn, ip="192.0.2.1", mac="AA:BB:CC:DD:EE:01")
+    _projection_host(conn, ip="192.0.2.2", mac=None)
+    conn.execute(
+        """INSERT INTO arp_entries (ip, mac, complete, last_seen_at)
+           VALUES ('192.0.2.1', 'AA:BB:CC:DD:EE:01', 1, ?)""",
+        (NOW,),
+    )
+    conn.commit()
 
     targets = availability_targets(conn, load_active_availability_segments(conn), now=NOW)
 

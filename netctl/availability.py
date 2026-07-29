@@ -214,7 +214,28 @@ def availability_targets(
     candidates = {
         str(row["ip"])
         for row in conn.execute(
-            "SELECT ip FROM network_hosts WHERE last_seen_at >= ?", (cutoff,)
+            """
+            SELECT ip
+            FROM arp_entries
+            WHERE last_seen_at >= ? AND complete = 1 AND trim(coalesce(mac, '')) <> ''
+            UNION
+            SELECT ip
+            FROM dhcp_leases
+            WHERE last_seen_at >= ? AND trim(coalesce(mac, '')) <> ''
+            UNION
+            SELECT hosts.ip
+            FROM bridge_hosts AS bridge
+            JOIN network_hosts AS hosts
+              ON lower(replace(bridge.mac, ':', '')) = lower(replace(hosts.mac, ':', ''))
+            WHERE bridge.last_seen_at >= ? AND trim(coalesce(bridge.mac, '')) <> ''
+            UNION
+            SELECT hosts.ip
+            FROM current_switch_fdb AS fdb
+            JOIN network_hosts AS hosts
+              ON lower(replace(fdb.mac, ':', '')) = lower(replace(hosts.mac, ':', ''))
+            WHERE fdb.last_seen_at >= ? AND trim(coalesce(fdb.mac, '')) <> ''
+            """,
+            (cutoff, cutoff, cutoff, cutoff),
         )
     }
     candidates.update(
