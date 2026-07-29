@@ -157,6 +157,8 @@ class InstallSessionRepository:
         owner: tuple[int, int] | None = None,
     ) -> None:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
@@ -641,8 +643,72 @@ class InstallSessionRepository:
                     child.unlink()
                 temporary.rmdir()
 
-    def _validated_execution_directory(self, session_id: str) -> Path:
-        directory = self.directory(session_id) / "execution-0001"
+    def _read_execution_regular_bytes(self, path: Path) -> bytes:
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if not stat.S_ISREG(before.st_mode):
+            raise self._invalid(
+                "Install execution revision contains a non-regular file"
+            )
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision file cannot be opened safely"
+            ) from exc
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+            ):
+                raise self._invalid(
+                    "Install execution revision file changed during safe open"
+                )
+            if (
+                os.name != "nt"
+                and stat.S_IMODE(opened.st_mode) != 0o600
+            ):
+                raise self._invalid(
+                    "Install execution revision permissions are invalid"
+                )
+            if not 1 <= opened.st_size <= _MAX_EXECUTION_FILE_BYTES:
+                raise self._invalid(
+                    "Install execution revision file size is invalid"
+                )
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_EXECUTION_FILE_BYTES:
+                    raise self._invalid(
+                        "Install execution revision file size is invalid"
+                    )
+                chunks.append(chunk)
+            if size != opened.st_size:
+                raise self._invalid(
+                    "Install execution revision file changed during read"
+                )
+            return b"".join(chunks)
+        finally:
+            os.close(descriptor)
+
+    def _read_execution_snapshot_at(
+        self, directory: Path
+    ) -> dict[str, bytes]:
         try:
             metadata = directory.lstat()
         except OSError as exc:
@@ -663,27 +729,12 @@ class InstallSessionRepository:
             raise self._invalid(
                 "Install execution revision filenames are invalid"
             )
-        for child in children.values():
-            child_metadata = child.lstat()
-            if not stat.S_ISREG(child_metadata.st_mode):
-                raise self._invalid(
-                    "Install execution revision contains a non-regular file"
-                )
-            if (
-                os.name != "nt"
-                and stat.S_IMODE(child_metadata.st_mode) != 0o600
-            ):
-                raise self._invalid(
-                    "Install execution revision permissions are invalid"
-                )
-            if not 1 <= child_metadata.st_size <= _MAX_EXECUTION_FILE_BYTES:
-                raise self._invalid(
-                    "Install execution revision file size is invalid"
-                )
+        snapshot = {
+            name: self._read_execution_regular_bytes(children[name])
+            for name in _EXECUTION_ALL_FILES
+        }
         try:
-            digest_raw = self._read_regular_bytes(
-                children[_EXECUTION_DIGEST_FILE]
-            )
+            digest_raw = snapshot[_EXECUTION_DIGEST_FILE]
             digest_document = json.loads(digest_raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise self._invalid(
@@ -699,7 +750,7 @@ class InstallSessionRepository:
             or digest_raw
             != self._execution_digest_bytes(
                 {
-                    name: self._read_regular_bytes(children[name])
+                    name: snapshot[name]
                     for name in EXECUTION_BUNDLE_FILES
                 }
             )
@@ -707,7 +758,16 @@ class InstallSessionRepository:
             raise self._invalid(
                 "Install execution digest metadata is invalid"
             )
-        return directory
+        return {
+            name: snapshot[name] for name in EXECUTION_BUNDLE_FILES
+        }
+
+    def _read_execution_snapshot(
+        self, session_id: str
+    ) -> dict[str, bytes]:
+        return self._read_execution_snapshot_at(
+            self.directory(session_id) / "execution-0001"
+        )
 
     def read_execution_file(self, session_id: str, filename: str) -> bytes:
         if filename not in EXECUTION_BUNDLE_FILES:
@@ -719,24 +779,71 @@ class InstallSessionRepository:
     def read_execution_files(
         self, session_id: str
     ) -> dict[str, bytes]:
-        directory = self._validated_execution_directory(session_id)
-        return {
-            name: self._read_regular_bytes(directory / name)
-            for name in EXECUTION_BUNDLE_FILES
-        }
+        return self._read_execution_snapshot(session_id)
 
     def has_execution_publication(self, session_id: str) -> bool:
         path = self.directory(session_id) / "execution-0001"
         return path.exists() or path.is_symlink()
 
-    def discard_partial_execution(self, session_id: str) -> None:
-        directory = self._validated_execution_directory(session_id)
+    def discard_partial_execution(
+        self,
+        session_id: str,
+        *,
+        expected_files: Mapping[str, bytes] | None = None,
+    ) -> None:
+        session_directory = self.directory(session_id)
+        directory = session_directory / "execution-0001"
+        quarantine = session_directory / (
+            f".execution-0001.{secrets.token_hex(4)}.discard"
+        )
         try:
+            os.replace(directory, quarantine)
+            self._fsync_directory(session_directory)
+            snapshot = self._read_execution_snapshot_at(quarantine)
+            if (
+                expected_files is not None
+                and (
+                    set(expected_files) != set(EXECUTION_BUNDLE_FILES)
+                    or any(
+                        not isinstance(expected_files[name], bytes)
+                        or snapshot[name] != expected_files[name]
+                        for name in EXECUTION_BUNDLE_FILES
+                    )
+                )
+            ):
+                raise self._invalid(
+                    "Install execution revision changed before reconciliation"
+                )
             for name in _EXECUTION_ALL_FILES:
-                (directory / name).unlink()
-            directory.rmdir()
-            self._fsync_directory(directory.parent)
+                (quarantine / name).unlink()
+            quarantine.rmdir()
+            self._fsync_directory(session_directory)
+        except ControlError:
+            if quarantine.exists() or quarantine.is_symlink():
+                try:
+                    if directory.exists() or directory.is_symlink():
+                        raise self._failed(
+                            "Install execution reconciliation destination changed"
+                        )
+                    os.replace(quarantine, directory)
+                    self._fsync_directory(session_directory)
+                except ControlError:
+                    raise
+                except OSError as exc:
+                    raise self._failed(
+                        "Install execution reconciliation cannot be restored"
+                    ) from exc
+            raise
         except OSError as exc:
+            if quarantine.exists() or quarantine.is_symlink():
+                try:
+                    if not directory.exists() and not directory.is_symlink():
+                        os.replace(quarantine, directory)
+                        self._fsync_directory(session_directory)
+                except (ControlError, OSError):
+                    raise self._failed(
+                        "Install execution reconciliation cannot be restored"
+                    ) from exc
             raise self._failed(
                 "Incomplete install execution cannot be removed"
             ) from exc

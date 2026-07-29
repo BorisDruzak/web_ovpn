@@ -35,6 +35,7 @@ from alt_deploy.install_session_repository import InstallSessionRepository
 from alt_deploy.install_session_service import InstallSessionService
 from alt_deploy import install_renderer as renderer_module
 from alt_deploy import install_execution as execution_module
+from alt_deploy import install_session_repository as repository_module
 from alt_deploy.install_renderer import RendererSecrets
 
 
@@ -308,6 +309,125 @@ def test_cancel_before_authorize_is_terminal_without_publishing(
         )
 
 
+def test_cancel_preserves_a_status_bound_execution_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    service = _execution_service(settings, repository, tmp_path)
+    _authorize(service, repository, session_id, approved, plan_sha256)
+    manifest_before = repository.read_execution_file(
+        session_id, "execution-manifest.json"
+    )
+
+    cancelled = service.cancel(
+        session_id, reason="Cancel the bound execution"
+    )
+
+    assert cancelled["execution"]["state"] == "cancelled"
+    assert repository.read_execution_file(
+        session_id, "execution-manifest.json"
+    ) == manifest_before
+
+
+def _leave_durable_execution_orphan(
+    service: ExecutionAuthorizationService,
+    repository: InstallSessionRepository,
+    session_id: str,
+    approved: dict[str, object],
+    plan_sha256: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replace_status = repository.replace_status
+
+    def uncertain_status_commit(
+        target_session_id: str,
+        status: object,
+        **kwargs: object,
+    ) -> None:
+        execution = (
+            status.get("execution") if isinstance(status, dict) else None
+        )
+        if (
+            isinstance(execution, dict)
+            and execution.get("state") == "authorized"
+        ):
+            raise ControlError(
+                "install_session_status_commit_uncertain",
+                "Install session status replacement is durable-uncertain",
+                6,
+            )
+        replace_status(target_session_id, status, **kwargs)
+
+    monkeypatch.setattr(
+        repository, "replace_status", uncertain_status_commit
+    )
+    with pytest.raises(
+        ControlError, match="durable-uncertain"
+    ):
+        _authorize(
+            service, repository, session_id, approved, plan_sha256
+        )
+    monkeypatch.setattr(repository, "replace_status", replace_status)
+
+
+def test_cancel_reconciles_a_valid_durable_execution_orphan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    service = _execution_service(settings, repository, tmp_path)
+    _leave_durable_execution_orphan(
+        service,
+        repository,
+        session_id,
+        approved,
+        plan_sha256,
+        monkeypatch,
+    )
+    assert repository.has_execution_publication(session_id)
+    assert "execution" not in repository.load_status(session_id)
+
+    cancelled = service.cancel(
+        session_id, reason="Cancel after uncertain authorization commit"
+    )
+
+    assert cancelled["execution"]["state"] == "cancelled"
+    assert not repository.has_execution_publication(session_id)
+
+
+def test_cancel_fails_closed_on_an_unsafe_durable_execution_orphan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    service = _execution_service(settings, repository, tmp_path)
+    _leave_durable_execution_orphan(
+        service,
+        repository,
+        session_id,
+        approved,
+        plan_sha256,
+        monkeypatch,
+    )
+    execution = settings.install_sessions_dir / session_id / "execution-0001"
+    (execution / "unexpected").write_bytes(b"unsafe\n")
+
+    with pytest.raises(ControlError, match="execution"):
+        service.cancel(
+            session_id, reason="Must not conceal unsafe orphan"
+        )
+
+    assert repository.has_execution_publication(session_id)
+    assert "execution" not in repository.load_status(session_id)
+
+
 def test_claim_marks_an_expired_authorization_terminal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -363,6 +483,53 @@ def test_repository_rejects_extra_or_tampered_execution_files(
     (execution / "vm-profile.scm").write_bytes(b"tampered\n")
     with pytest.raises(ControlError, match="digest"):
         repository.read_execution_file(session_id, "vm-profile.scm")
+
+
+def test_repository_never_reopens_a_bundle_file_after_digest_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    _authorize(
+        _execution_service(settings, repository, tmp_path),
+        repository,
+        session_id,
+        approved,
+        plan_sha256,
+    )
+    victim = (
+        settings.install_sessions_dir
+        / session_id
+        / "execution-0001"
+        / "vm-profile.scm"
+    )
+    verified_bytes = victim.read_bytes()
+    replacement = tmp_path / "replacement-vm-profile.scm"
+    replacement.write_bytes(b"unverified replacement\n")
+    original_open = repository_module.os.open
+    original_replace = repository_module.os.replace
+    victim_opens = 0
+
+    def replace_before_second_open(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+    ) -> int:
+        nonlocal victim_opens
+        if Path(path) == victim:
+            victim_opens += 1
+            if victim_opens == 2:
+                original_replace(replacement, victim)
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr(repository_module.os, "open", replace_before_second_open)
+
+    files = repository.read_execution_files(session_id)
+
+    assert victim_opens == 1
+    assert files["vm-profile.scm"] == verified_bytes
 
 
 def test_authorize_rejects_an_archive_with_an_extra_member(
@@ -432,6 +599,103 @@ def test_authorize_rejects_stale_preflight_and_non_root(
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("plan_sha256", "0" * 64),
+        ("inventory_sha256", "0" * 64),
+        ("disk_fingerprint_value", "sha256:" + "0" * 64),
+        ("confirm_target", "/dev/vdb"),
+    ],
+)
+def test_authorize_rejects_each_mismatched_acknowledgement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    replacement: str,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    plan = json.loads(repository.read_revision_file(session_id, "plan.json"))
+    arguments = {
+        "plan_sha256": plan_sha256,
+        "inventory_sha256": approved["inventory_sha256"],
+        "disk_fingerprint_value": plan["target_disk"]["fingerprint"],
+        "confirm_target": "/dev/vda",
+    }
+    arguments[field] = replacement
+
+    with pytest.raises(ControlError) as error:
+        _execution_service(
+            settings, repository, tmp_path
+        ).authorize(
+            session_id,
+            **arguments,
+            reason="Reject mismatched acknowledgement",
+        )
+
+    assert error.value.code == "execution_plan_mismatch"
+    assert not repository.has_execution_publication(session_id)
+    assert "execution" not in repository.load_status(session_id)
+
+
+@pytest.mark.parametrize("member_kind", ["hardlink", "fifo", "duplicate"])
+def test_authorize_rejects_unsafe_or_duplicate_archive_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member_kind: str,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    path = tmp_path / f"pkg-groups-{member_kind}.tar"
+    expected_members = ["groups.json"]
+    with tarfile.open(path, "w") as archive:
+        content = b'{"groups":["base"]}\n'
+        regular = tarfile.TarInfo("groups.json")
+        regular.mode = 0o644
+        regular.size = len(content)
+        archive.addfile(regular, io.BytesIO(content))
+        unsafe = tarfile.TarInfo(
+            "groups.json" if member_kind == "duplicate" else "unsafe"
+        )
+        if member_kind == "hardlink":
+            unsafe.type = tarfile.LNKTYPE
+            unsafe.linkname = "groups.json"
+            expected_members.append("unsafe")
+        elif member_kind == "fifo":
+            unsafe.type = tarfile.FIFOTYPE
+            expected_members.append("unsafe")
+        else:
+            unsafe.mode = 0o644
+            unsafe.size = len(content)
+        archive.addfile(
+            unsafe,
+            io.BytesIO(content) if member_kind == "duplicate" else None,
+        )
+    archive_bytes = path.read_bytes()
+    archives = _release_archives(tmp_path)
+    archives["pkg-groups.tar"] = ReleaseArchiveSource(
+        path=path,
+        sha256=hashlib.sha256(archive_bytes).hexdigest(),
+        members=tuple(expected_members),
+    )
+    service = ExecutionAuthorizationService(
+        settings,
+        repository=repository,
+        clock=lambda: "2026-07-29T12:02:00+00:00",
+        euid=lambda: 0,
+        release_archives=archives,
+        secrets_provider=_renderer_secrets,
+    )
+
+    with pytest.raises(ControlError, match="archive"):
+        _authorize(service, repository, session_id, approved, plan_sha256)
+
+    assert not repository.has_execution_publication(session_id)
+
+
 def test_yescrypt_values_exist_only_inside_autoinstall(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -473,6 +737,44 @@ def test_yescrypt_values_exist_only_inside_autoinstall(
     )
     assert root_hash.decode() not in serialized
     assert admin_hash.decode() not in serialized
+    digest_metadata = (
+        settings.install_sessions_dir
+        / session_id
+        / "execution-0001"
+        / "execution-digests.json"
+    ).read_bytes()
+    assert root_hash not in digest_metadata
+    assert admin_hash not in digest_metadata
+
+
+def test_execution_error_serialization_redacts_secret_provider_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    secret = _renderer_secrets().root_yescrypt_hash
+
+    def fail_with_sensitive_context() -> RendererSecrets:
+        raise ValueError(secret)
+
+    service = ExecutionAuthorizationService(
+        settings,
+        repository=repository,
+        clock=lambda: "2026-07-29T12:02:00+00:00",
+        euid=lambda: 0,
+        release_archives=_release_archives(tmp_path),
+        secrets_provider=fail_with_sensitive_context,
+    )
+
+    with pytest.raises(ControlError) as error:
+        _authorize(service, repository, session_id, approved, plan_sha256)
+
+    serialized = json.dumps(error.value.to_dict(), sort_keys=True)
+    assert secret not in serialized
+    assert error.value.code == "execution_secrets_invalid"
+    assert not repository.has_execution_publication(session_id)
 
 
 def test_repository_forbids_mutating_execution_binding_or_shape(
@@ -568,6 +870,65 @@ def test_authorize_verifies_the_approved_plan_signature_before_rendering(
             session_id,
             approved,
             hashlib.sha256(tampered).hexdigest(),
+        )
+
+    assert not repository.has_execution_publication(session_id)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_key",
+        "noncanonical",
+        "unknown_field",
+        "missing_created_at",
+        "invalid_created_at",
+    ],
+)
+def test_authorize_strictly_parses_the_stored_plan_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    signature_path = (
+        settings.install_sessions_dir
+        / session_id
+        / "revision-0001"
+        / "plan-signature.json"
+    )
+    raw = signature_path.read_bytes()
+    document = json.loads(raw)
+    if mutation == "duplicate_key":
+        raw = b'{"algorithm":"ed25519",' + raw[1:]
+    elif mutation == "noncanonical":
+        raw += b" "
+    elif mutation == "unknown_field":
+        document["unexpected"] = True
+        raw = (
+            json.dumps(document, ensure_ascii=True, sort_keys=True) + "\n"
+        ).encode("utf-8")
+    elif mutation == "missing_created_at":
+        del document["created_at"]
+        raw = (
+            json.dumps(document, ensure_ascii=True, sort_keys=True) + "\n"
+        ).encode("utf-8")
+    else:
+        document["created_at"] = "not-a-timestamp"
+        raw = (
+            json.dumps(document, ensure_ascii=True, sort_keys=True) + "\n"
+        ).encode("utf-8")
+    signature_path.write_bytes(raw)
+
+    with pytest.raises(ControlError, match="signature"):
+        _authorize(
+            _execution_service(settings, repository, tmp_path),
+            repository,
+            session_id,
+            approved,
+            plan_sha256,
         )
 
     assert not repository.has_execution_publication(session_id)

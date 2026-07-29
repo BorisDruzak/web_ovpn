@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import io
@@ -8,7 +9,7 @@ import os
 import re
 import stat
 import tarfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
@@ -163,14 +164,32 @@ class ExecutionAuthorizationService:
 
     def _verify_published_plan_signature(
         self,
+        session_id: str,
         raw: bytes,
         expected_sha256: str,
+        expected_created_at: str,
     ) -> None:
         try:
             signature_raw = self.repository.read_revision_file(
-                json.loads(raw)["session_id"], "plan-signature.json"
+                session_id, "plan-signature.json"
             )
-            signature = json.loads(signature_raw.decode("utf-8"))
+            if not 1 <= len(signature_raw) <= 16 * 1024:
+                raise ValueError
+
+            def strict_object(
+                pairs: list[tuple[str, object]],
+            ) -> dict[str, object]:
+                result: dict[str, object] = {}
+                for name, value in pairs:
+                    if name in result:
+                        raise ValueError
+                    result[name] = value
+                return result
+
+            signature = json.loads(
+                signature_raw.decode("utf-8"),
+                object_pairs_hook=strict_object,
+            )
             if not isinstance(signature, dict) or set(signature) != {
                 "schema_version",
                 "algorithm",
@@ -184,9 +203,26 @@ class ExecutionAuthorizationService:
             encoded = signature["signature_b64"]
             if not isinstance(encoded, str):
                 raise ValueError
-            import base64
-
             raw_signature = base64.b64decode(encoded, validate=True)
+            created_at = signature["created_at"]
+            if (
+                not isinstance(created_at, str)
+                or created_at != expected_created_at
+                or self._timestamp(created_at).isoformat() != created_at
+                or len(raw_signature) != 64
+                or base64.b64encode(raw_signature).decode("ascii")
+                != encoded
+                or signature_raw
+                != (
+                    json.dumps(
+                        signature,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            ):
+                raise ValueError
             verifier = load_public_verifier(
                 self.settings.install_signing_public_key
             )
@@ -246,7 +282,9 @@ class ExecutionAuthorizationService:
             raise self._error(
                 "execution_plan_mismatch", "Execution plan identity differs"
             )
-        self._verify_published_plan_signature(raw, plan_sha256)
+        self._verify_published_plan_signature(
+            session_id, raw, plan_sha256, plan.approved_at
+        )
         target = plan.target_disk
         if (
             plan.inventory_sha256 != inventory_sha256
@@ -451,6 +489,85 @@ class ExecutionAuthorizationService:
             ),
         }
 
+    def _verify_signed_execution_files(
+        self,
+        files: Mapping[str, bytes],
+    ) -> ExecutionManifestV1:
+        if set(files) != {
+            "execution-manifest.json",
+            "execution-manifest-signature.json",
+            "autoinstall.scm",
+            "vm-profile.scm",
+            "pkg-groups.tar",
+            "install-scripts.tar",
+        }:
+            raise ValueError("Execution bundle file set is invalid")
+        manifest_bytes = files["execution-manifest.json"]
+        signature_bytes = files["execution-manifest-signature.json"]
+        manifest = parse_execution_manifest_bytes(manifest_bytes)
+        signature = parse_execution_signature_bytes(signature_bytes)
+        verifier = load_public_verifier(
+            self.settings.install_signing_public_key
+        )
+        if not verify_execution_manifest_signature(
+            verifier, manifest_bytes, signature
+        ):
+            raise ValueError("Execution bundle signature is invalid")
+        for name, metadata in manifest.artifacts.items():
+            artifact = files[name]
+            if (
+                len(artifact) != metadata["size_bytes"]
+                or hashlib.sha256(artifact).hexdigest()
+                != metadata["sha256"]
+            ):
+                raise ValueError("Execution artifact binding is invalid")
+        return manifest
+
+    def _reconcile_execution_orphan(
+        self,
+        status: dict[str, object],
+    ) -> None:
+        session_id = str(status["session_id"])
+        if not self.repository.has_execution_publication(session_id):
+            return
+        try:
+            files = self.repository.read_execution_files(session_id)
+            manifest = self._verify_signed_execution_files(files)
+            plan_raw = self.repository.read_revision_file(
+                session_id, "plan.json"
+            )
+            plan = parse_execution_plan_bytes(plan_raw)
+            plan_digest = hashlib.sha256(plan_raw).hexdigest()
+            self._verify_published_plan_signature(
+                session_id,
+                plan_raw,
+                plan_digest,
+                plan.approved_at,
+            )
+            if (
+                manifest.session_id != session_id
+                or manifest.plan_sha256 != plan_digest
+                or manifest.inventory_sha256
+                != status.get("inventory_sha256")
+                or manifest.inventory_sha256 != plan.inventory_sha256
+                or manifest.target_disk != plan.target_disk["path"]
+                or manifest.disk_fingerprint
+                != plan.target_disk["fingerprint"]
+                or manifest.profile_id != plan.profile_id
+                or manifest.profile_version != plan.profile_version
+                or manifest.iso_id != plan.iso_id
+                or manifest.iso_sha256 != plan.iso_sha256
+            ):
+                raise ValueError("Execution orphan binding is invalid")
+            self.repository.discard_partial_execution(
+                session_id, expected_files=files
+            )
+        except (ControlError, KeyError, TypeError, ValueError):
+            raise self._error(
+                "execution_orphan_invalid",
+                "Install execution orphan is invalid",
+            ) from None
+
     def authorize(
         self,
         session_id: str,
@@ -494,8 +611,7 @@ class ExecutionAuthorizationService:
             self._validate_preflight(
                 status, plan_approved_at=plan.approved_at, now=now
             )
-            if self.repository.has_execution_publication(session_id):
-                self.repository.discard_partial_execution(session_id)
+            self._reconcile_execution_orphan(status)
             artifacts = self._bundle_artifacts(plan)
             expires_at = min(
                 plan_expiry, now + timedelta(minutes=5)
@@ -581,7 +697,9 @@ class ExecutionAuthorizationService:
                     and exc.code
                     != "install_session_status_commit_uncertain"
                 ):
-                    self.repository.discard_partial_execution(session_id)
+                    self.repository.discard_partial_execution(
+                        session_id, expected_files=files
+                    )
                 raise
             return ExecutionAuthorizationResult(
                 manifest=manifest,
@@ -709,6 +827,7 @@ class ExecutionAuthorizationService:
                     }
                 )
             elif execution is None:
+                self._reconcile_execution_orphan(status)
                 next_execution = self._cancelled_before_authorization(
                     now=now.isoformat(), reason=reason_text
                 )
@@ -733,19 +852,8 @@ class ExecutionAuthorizationService:
         execution = status["execution"]
         try:
             files = self.repository.read_execution_files(session_id)
+            manifest = self._verify_signed_execution_files(files)
             manifest_bytes = files["execution-manifest.json"]
-            signature_bytes = files[
-                "execution-manifest-signature.json"
-            ]
-            manifest = parse_execution_manifest_bytes(manifest_bytes)
-            signature = parse_execution_signature_bytes(signature_bytes)
-            verifier = load_public_verifier(
-                self.settings.install_signing_public_key
-            )
-            if not verify_execution_manifest_signature(
-                verifier, manifest_bytes, signature
-            ):
-                raise ValueError
             if (
                 manifest.session_id != session_id
                 or manifest.plan_sha256 != execution["plan_sha256"]
@@ -765,14 +873,6 @@ class ExecutionAuthorizationService:
                 != execution["manifest_sha256"]
             ):
                 raise ValueError
-            for name, metadata in manifest.artifacts.items():
-                artifact = files[name]
-                if (
-                    len(artifact) != metadata["size_bytes"]
-                    or hashlib.sha256(artifact).hexdigest()
-                    != metadata["sha256"]
-                ):
-                    raise ValueError
         except (ControlError, KeyError, TypeError, ValueError):
             raise self._error(
                 "execution_bundle_invalid",
