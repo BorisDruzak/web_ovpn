@@ -1701,12 +1701,14 @@ def _migration_15(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
-def _migration_16(conn: sqlite3.Connection) -> None:
+def _migration_16(conn: sqlite3.Connection) -> bool | None:
     asset_table = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assets'"
     ).fetchone()
-    if asset_table is not None:
-        conn.execute("ALTER TABLE assets ADD COLUMN manual_name TEXT")
+    if asset_table is None:
+        return False
+    conn.execute("ALTER TABLE assets ADD COLUMN manual_name TEXT")
+    return None
 
 
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
@@ -1743,7 +1745,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         applied_versions = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
         for version, migration in sorted(MIGRATIONS):
             if version not in applied_versions:
-                migration(conn)
+                if migration(conn) is False:
+                    break
                 conn.execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (version, utc_now()),

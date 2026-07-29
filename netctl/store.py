@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import ipaddress
 import sqlite3
+import time
 from typing import Any
 
 from .db import get_source
@@ -206,7 +207,10 @@ def _enrich_hosts_with_dns_ptr(
     if not 1 <= timeout <= 10:
         return
     hosts_by_ip = {str(host["ip"]): host for host in hosts if host.get("ip")}
+    deadline = time.monotonic() + timeout
     for ip in sorted(hosts_by_ip)[:256]:
+        if time.monotonic() >= deadline:
+            break
         try:
             hostname = normalize_ptr_hostname(
                 resolve_ptr_hostname(ip, server=server, timeout_seconds=timeout)

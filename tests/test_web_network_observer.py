@@ -553,6 +553,19 @@ def test_network_asset_card_keeps_manual_name_ip_and_hostname_in_separate_rows(t
     assert 'action="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01/name"' in page.text
 
 
+def test_network_manual_name_replaces_automatic_list_and_card_title(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    host_list = client.get("/network/hosts")
+    asset_page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
+
+    assert "Finance workstation" in host_list.text
+    assert "<title>Finance workstation</title>" in asset_page.text
+    assert "pc-buh-01" in asset_page.text
+    assert "192.168.100.55" in asset_page.text
+
+
 def test_network_asset_name_update_requires_login(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
 

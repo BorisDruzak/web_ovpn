@@ -568,6 +568,30 @@ def test_collect_one_discards_failed_or_unsafe_dns_ptr_results(
     conn.close()
 
 
+def test_dns_ptr_enrichment_uses_one_total_deadline_for_unavailable_resolver(monkeypatch) -> None:
+    """An unavailable resolver must not turn 256 hosts into 256 serial timeouts."""
+    import netctl.store as store
+
+    clock = [0.0]
+    calls: list[str] = []
+    hosts = [{"ip": f"192.0.2.{index}"} for index in range(1, 255)]
+
+    def unavailable(ip: str, *, server: str, timeout_seconds: int) -> None:
+        calls.append(ip)
+        clock[0] += timeout_seconds
+        return None
+
+    monkeypatch.setattr(store, "resolve_ptr_hostname", unavailable)
+    monkeypatch.setattr(store.time, "monotonic", lambda: clock[0])
+
+    store._enrich_hosts_with_dns_ptr(
+        hosts,
+        {"driver_options": {"dns_ptr_server": "192.0.2.53", "dns_ptr_timeout_seconds": 1}},
+    )
+
+    assert calls == ["192.0.2.1"]
+
+
 def write_mock_ipsec_pair_sources(config_path: Path) -> None:
     sources_dir = config_path.parent / "sources.d"
     sources_dir.mkdir(parents=True, exist_ok=True)

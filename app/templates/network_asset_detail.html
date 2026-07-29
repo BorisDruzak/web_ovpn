@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ context.get("asset", {}).get("display_name") or asset_key }}{% endblock %}
-{% block page_title %}{{ context.get("asset", {}).get("display_name") or asset_key }}{% endblock %}
+{% block title %}{{ context.get("asset", {}).get("manual_name") or context.get("asset", {}).get("display_name") or asset_key }}{% endblock %}
+{% block page_title %}{{ context.get("asset", {}).get("manual_name") or context.get("asset", {}).get("display_name") or asset_key }}{% endblock %}
 {% block content %}
 {% set asset = context.get("asset") or {} %}
 {% set network = context.get("network") or {} %}
