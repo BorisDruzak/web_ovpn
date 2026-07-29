@@ -1741,6 +1741,20 @@ def _migration_17(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
+def _migration_18(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE INDEX availability_manual_results_latest_idx
+        ON availability_manual_results(
+          segment_id,
+          ip,
+          checked_at DESC,
+          id DESC
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1759,6 +1773,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (15, _migration_15),
     (16, _migration_16),
     (17, _migration_17),
+    (18, _migration_18),
 )
 
 

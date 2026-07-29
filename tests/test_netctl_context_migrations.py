@@ -122,7 +122,20 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
             *INTENT_TABLES,
         } <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 18)
+            (version,) for version in range(1, 19)
+        ]
+        manual_result_index = conn.execute(
+            "PRAGMA index_xinfo(availability_manual_results_latest_idx)"
+        ).fetchall()
+        assert [
+            (str(row[2]), int(row[3]))
+            for row in manual_result_index
+            if int(row[5]) == 1
+        ] == [
+            ("segment_id", 0),
+            ("ip", 0),
+            ("checked_at", 1),
+            ("id", 1),
         ]
         assert conn.execute("SELECT * FROM context_heads").fetchall() == []
         assert [tuple(row) for row in conn.execute("SELECT id, context_id, sha256 FROM context_revisions").fetchall()] == [
@@ -192,7 +205,7 @@ def test_migration_16_defers_until_a_compatible_assets_table_exists() -> None:
         )
         apply_migrations(conn)
 
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 18))
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 19))
         assert "manual_name" in {row[1] for row in conn.execute("PRAGMA table_info(assets)")}
     finally:
         conn.close()
@@ -220,7 +233,7 @@ def test_migration_16_records_an_existing_manual_name_column_without_altering() 
 
         apply_migrations(conn)
 
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 18))
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 19))
         assert "manual_name" in {row[1] for row in conn.execute("PRAGMA table_info(assets)")}
     finally:
         conn.close()

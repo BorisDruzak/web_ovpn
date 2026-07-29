@@ -400,6 +400,40 @@ def test_observations_refresh_runs_fixed_collect_all_then_reconcile_under_one_lo
         parser.parse_args(["observations", "refresh", "--source", "router"])
 
 
+def test_observations_refresh_acquires_lock_before_stateful_connection_prepare(
+    tmp_path,
+):
+    """A rejected refresh must not sync configured sources before owning the collection lock."""
+    import netctl.cli as cli
+    from netctl.collect_lock import CollectLock
+    from netctl.db import connect, get_source
+
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    config_path = tmp_path / "netctl.yaml"
+    write_mock_source(config_path)
+    args = cli.build_parser().parse_args(
+        [
+            "--db",
+            db_url,
+            "--config",
+            str(config_path),
+            "observations",
+            "refresh",
+        ]
+    )
+
+    with CollectLock(db_url):
+        rc, payload = cli.dispatch(args)
+
+    conn = connect(db_url)
+    try:
+        assert get_source(conn, "mock-main") is None
+    finally:
+        conn.close()
+    assert rc == 1
+    assert payload["message"] == "collection already running"
+
+
 def test_retention_cleanup_defaults_to_a_non_destructive_thirty_day_preview(monkeypatch):
     """Dropping the dry-run default or 30-day restriction could prune history accidentally."""
     import netctl.cli as cli
@@ -1813,7 +1847,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     assert data["status"] == "ok"
     summary = data["runtime_identity"]
     assert summary["schema_migration_versions"] == [
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
     ]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1

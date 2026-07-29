@@ -628,9 +628,10 @@ def cmd_reconcile(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 def cmd_observations(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.observations_command == "list":
         return cmd_table(args, "host_observations", "observations")
-    conn = prepare_conn(args)
+    conn = None
     try:
         with CollectLock(args.db):
+            conn = prepare_conn(args)
             rc, results = collect_all_locked(conn, args)
             if rc != 0:
                 return rc, ok(
@@ -658,7 +659,8 @@ def cmd_observations(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     except RuntimeError as exc:
         return 1, err(str(exc))
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
