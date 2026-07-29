@@ -56,12 +56,16 @@
           {% if host.device_confidence %}<span class="muted">{{ host.device_confidence }}%</span>{% endif %}
         </td>
         <td><span class="badge {{ host.category|status_class }}">{{ category_labels.get(host.category, host.category) }}</span></td>
-        <td><span class="badge {{ host.status|status_class }}">{{ host.status }}</span></td>
+        <td>
+          <a href="/network/hosts/{{ host.ip }}" title="Открыть доступность устройства">
+            <span class="badge {{ host.status|status_class }}">{{ availability_status_label(host) }}</span>
+          </a>
+        </td>
         {% if host.availability %}
-        <td>{{ host.availability.active_method or "-" }}{% if host.availability.checked_at %} · {{ host.availability.checked_at }}{% endif %}</td>
-        <td>{{ (host.availability.passive_evidence or [])|join(", ") or (host.availability.reason|replace("_", " ") if host.availability.reason else "-") }}</td>
+        <td>{{ availability_method_label(host.availability.active_method) or "-" }}{% if host.availability.checked_at %} · {{ host.availability.checked_at }}{% endif %}</td>
+        <td>{{ availability_evidence_label(host.availability.passive_evidence) or availability_reason_label(host.availability.reason) or "-" }}</td>
         {% else %}
-        <td>not monitored</td><td>not monitored</td>
+        <td>не мониторится (not monitored)</td><td>не мониторится (not monitored)</td>
         {% endif %}
         <td>
           {% for source in host.sources %}

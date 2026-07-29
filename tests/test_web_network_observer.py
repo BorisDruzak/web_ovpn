@@ -486,7 +486,7 @@ def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path,
 
     assert page.status_code == 200
     assert 'href="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01"' in page.text
-    assert 'href="/network/hosts/192.168.100.55"' not in page.text
+    assert 'href="/network/hosts/192.168.100.55"' in page.text
     all_hosts = client.get("/network/hosts")
     assert 'href="/network/assets/legacy-host%3Adesk%3Fold"' in all_hosts.text
     assert 'href="/network/hosts/192.168.50.10"' in all_hosts.text
@@ -923,6 +923,275 @@ def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeyp
     assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"
     assert "socket timeout" not in api_detail.text
     assert "socket timeout" not in page_detail.text
+
+
+def test_monitoring_page_renders_only_canonical_read_only_segment_context(tmp_path, monkeypatch):
+    """Making canonical CIDR/context editable would let the browser redefine network intent."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    login(client)
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (
+            {
+                "segments": [
+                    {
+                        "segment_id": "office",
+                        "cidr": "192.168.99.0/24",
+                        "site": "hq",
+                        "category": "local_device",
+                        "enabled": True,
+                        "tcp_ports": [443],
+                        "interval_minutes": 10,
+                    }
+                ]
+            },
+            None,
+        )
+        if args == ["availability", "settings"]
+        else pytest.fail(f"unexpected netctl call: {args}"),
+    )
+
+    page = client.get("/network/monitoring")
+
+    assert page.status_code == 200
+    assert "Настройки доступности" in page.text
+    assert "192.168.99.0/24" in page.text
+    assert "hq" in page.text
+    assert 'action="/network/monitoring/office"' in page.text
+    assert 'name="cidr"' not in page.text
+    assert 'name="site"' not in page.text
+    assert 'name="category"' not in page.text
+
+
+def test_monitoring_settings_posts_fixed_canonical_segment_and_audits(tmp_path, monkeypatch):
+    """A browser field must not be able to replace the canonical segment identity or CIDR."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        return {"setting": {"segment_id": "office"}}, None
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+
+    response = client.post(
+        "/network/monitoring/office",
+        data={
+            "enabled": "true",
+            "tcp_ports": "443",
+            "interval_minutes": "10",
+            "cidr": "203.0.113.0/24",
+            "site": "forged",
+            "category": "wan",
+            "csrf_token": csrf,
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/network/monitoring"
+    assert calls == [
+        (
+            [
+                "availability",
+                "set-segment",
+                "--segment-id",
+                "office",
+                "--enabled",
+                "true",
+                "--tcp-port",
+                "443",
+                "--interval-minutes",
+                "10",
+            ],
+            60,
+        )
+    ]
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audit = db.query(WebAuditLog).filter_by(action="network-availability-settings").one()
+    assert audit.actor == "admin"
+    assert audit.target_client == "office"
+    assert audit.result == "ok"
+    assert "203.0.113.0/24" not in audit.message
+
+
+def test_manual_check_uses_url_ip_audits_and_rate_limits(tmp_path, monkeypatch):
+    """A repeated accepted probe could bypass the five-minute public action budget."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+
+    def fake_netctl(request, args, timeout=None):
+        calls.append((args, timeout))
+        return {"result": {"ip": "192.168.99.44"}}, None
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+
+    first = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        data={"csrf_token": csrf, "ip": "203.0.113.77", "tcp_port": "22"},
+        follow_redirects=False,
+    )
+    second = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    flash_page = client.get(second.headers["location"])
+
+    assert first.status_code == second.status_code == 303
+    assert first.headers["location"] == second.headers["location"] == "/network/hosts/192.168.99.44"
+    assert [call for call in calls if call[0][:2] == ["availability", "probe"]] == [
+        (["availability", "probe", "--ip", "192.168.99.44"], 60)
+    ]
+    assert "через 5 минут" in flash_page.text
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audits = db.query(WebAuditLog).filter_by(action="network-host-availability").all()
+    assert [(audit.actor, audit.target_client, audit.result) for audit in audits] == [
+        ("admin", "192.168.99.44", "ok"),
+        ("admin", "192.168.99.44", "denied"),
+    ]
+
+
+def test_observation_refresh_is_independently_throttled_and_uses_fixed_command(tmp_path, monkeypatch):
+    """Observation refresh must not accept a browser-selected source or reuse the probe budget."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (
+            calls.append((args, timeout)) or {"status": "ok"},
+            None,
+        ),
+    )
+
+    probe = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    refresh = client.post(
+        "/network/hosts/192.168.99.44/refresh-observations",
+        data={"csrf_token": csrf, "source": "forged", "ip": "203.0.113.77"},
+        follow_redirects=False,
+    )
+
+    assert probe.status_code == refresh.status_code == 303
+    assert calls == [
+        (["availability", "probe", "--ip", "192.168.99.44"], 60),
+        (["observations", "refresh"], 300),
+    ]
+
+
+def test_network_host_actions_require_login_and_csrf_without_cli_calls(tmp_path, monkeypatch):
+    """Authentication or CSRF regressions must never reach a network action."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    calls = []
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (calls.append(args) or {}, None),
+    )
+
+    anonymous = client.post(
+        "/network/hosts/192.168.99.44/availability-check",
+        follow_redirects=False,
+    )
+    login(client)
+    bad_csrf = client.post(
+        "/network/hosts/192.168.99.44/refresh-observations",
+        data={"csrf_token": "wrong"},
+        follow_redirects=False,
+    )
+
+    assert anonymous.status_code == 303
+    assert anonymous.headers["location"] == "/login"
+    assert bad_csrf.status_code == 400
+    assert calls == []
+
+
+def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(tmp_path, monkeypatch):
+    """Raw reasons or editable action targets would leak internals or widen device controls."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    host = {
+        "ip": "192.168.99.44",
+        "display_name": "Архивный сервер",
+        "status": "online",
+        "sources": ["mikrotik_arp"],
+        "availability": {
+            "state": "online",
+            "active_method": "tcp:443",
+            "checked_at": "2026-07-29T10:00:00Z",
+            "check_origin": "manual",
+            "cidr": "192.168.99.0/24",
+            "passive_evidence": ["arp", "dhcp"],
+            "reason": "active_probe socket timeout must-not-render",
+        },
+    }
+
+    def fake_netctl(request, args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}, None
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {"host": host, "observations": []}, None
+        if args == ["sources", "list"]:
+            return {"sources": []}, None
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    monkeypatch.setattr(
+        app.main,
+        "cli_call",
+        lambda request, args, timeout=None: (
+            {"connected": []} if args[0] == "connected" else {"clients": []},
+            None,
+        ),
+    )
+    login(client)
+
+    listed = client.get("/network/hosts")
+    detail = client.get("/network/hosts/192.168.99.44")
+
+    assert listed.status_code == detail.status_code == 200
+    assert 'href="/network/hosts/192.168.99.44"' in listed.text
+    assert "online · TCP:443" in listed.text
+    assert "Доступность" in detail.text
+    assert "Свежесть наблюдений" in detail.text
+    assert "192.168.99.0/24" in detail.text
+    assert "TCP:443" in detail.text
+    assert "ручная" in detail.text
+    assert "ARP, DHCP" in detail.text
+    assert "active probe" in detail.text
+    assert "socket timeout" not in detail.text
+    availability_form = detail.text.split('action="/network/hosts/192.168.99.44/availability-check"', 1)[1].split("</form>", 1)[0]
+    refresh_form = detail.text.split('action="/network/hosts/192.168.99.44/refresh-observations"', 1)[1].split("</form>", 1)[0]
+    assert 'name="csrf_token"' in availability_form
+    assert 'name="csrf_token"' in refresh_form
+    assert 'name="ip"' not in availability_form + refresh_form
+    assert 'name="cidr"' not in availability_form + refresh_form
+    assert 'name="tcp_port"' not in availability_form + refresh_form
 
 
 def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, monkeypatch):

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Настройки доступности{% endblock %}
+{% block page_title %}Настройки доступности{% endblock %}
+{% block content %}
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+<section class="panel">
+  <p class="muted">
+    Мониторинг настраивается только для IPv4-сегментов из действующего сетевого контекста.
+    Адреса и назначение сегментов здесь доступны только для чтения.
+  </p>
+</section>
+{% for segment in segments %}
+<section class="panel">
+  <h2>{{ segment.segment_id }}</h2>
+  <dl class="details">
+    <dt>CIDR</dt><dd class="mono">{{ segment.cidr }}</dd>
+    <dt>Площадка</dt><dd>{{ segment.site or "-" }}</dd>
+    <dt>Категория</dt><dd>{{ category_labels.get(segment.category, segment.category or "-") }}</dd>
+  </dl>
+  <form method="post" action="/network/monitoring/{{ segment.segment_id|urlencode }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>
+      <input type="checkbox" name="enabled" value="true" {% if segment.enabled %}checked{% endif %}>
+      Включить активную проверку
+    </label>
+    <label>TCP-порты, не более трёх
+      <input name="tcp_ports" value="{{ (segment.tcp_ports or [])|join(', ') }}" placeholder="например, 443">
+    </label>
+    <label>Интервал
+      <select name="interval_minutes">
+        {% for value in [5, 10, 15, 30, 60] %}
+        <option value="{{ value }}" {% if segment.interval_minutes == value %}selected{% endif %}>{{ value }} мин</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="button" type="submit">Сохранить</button>
+  </form>
+</section>
+{% else %}
+{% if not error %}<section class="panel empty">Нет канонических IPv4-сегментов для мониторинга.</section>{% endif %}
+{% endfor %}
+{% endblock %}
