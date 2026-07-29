@@ -19,6 +19,7 @@ AGENT_ROOT = (
 AGENT = AGENT_ROOT / "alt-install-agent"
 STATE = AGENT_ROOT / "lib" / "state.sh"
 TRANSPORT = AGENT_ROOT / "lib" / "transport.sh"
+CONFIG = AGENT_ROOT / "lib" / "config.sh"
 PROTOCOL = AGENT_ROOT / "lib" / "protocol.sh"
 UI = AGENT_ROOT / "lib" / "ui.sh"
 DHCP_HOOK = AGENT_ROOT / "lib" / "dhcp-hook.sh"
@@ -37,6 +38,20 @@ GATE = (
     / "99-alt-install-agent-v1"
 )
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "alt-managed-iso-spike.yml"
+
+
+def test_v1_builder_and_agent_use_an_embedded_controller_contract() -> None:
+    builder = BUILDER.read_text(encoding="utf-8")
+    verifier = VERIFIER.read_text(encoding="utf-8")
+    config = CONFIG.read_text(encoding="utf-8")
+    grub_patch = (ISO_ROOT / "boot-menu" / "grub.cfg.patch").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--controller-url" in builder
+    assert "__ALT_INSTALL_CONTROLLER_URL__" in grub_patch
+    assert "controller_url" in verifier
+    assert "/usr/share/alt-install/controller-url" in config
 
 
 def _bash() -> Path:
@@ -222,6 +237,8 @@ def test_missing_controller_cmdline_uses_fixed_http_default(
         "quiet sosnadmin.mode=agent-v1\n",
         encoding="utf-8",
     )
+    controller_config = tmp_path / "controller-url"
+    controller_config.write_bytes(b"http://192.168.100.17:18089\n")
     completed = _run_bash(
         """
 set -euo pipefail
@@ -229,7 +246,10 @@ source deploy/alt-linux/install-agent/v1/lib/config.sh
 config_load
 printf '%s\\n' "$ALT_INSTALL_CONTROLLER"
 """,
-        env={"ALT_INSTALL_CMDLINE_FILE": cmdline.as_posix()},
+        env={
+            "ALT_INSTALL_CMDLINE_FILE": cmdline.as_posix(),
+            "ALT_INSTALL_CONTROLLER_CONFIG": controller_config.as_posix(),
+        },
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -605,6 +625,8 @@ def test_missing_boot_id_enters_terminal_hold(tmp_path: Path) -> None:
         "sosnadmin.controller=http://192.168.100.17:18089\n",
         encoding="utf-8",
     )
+    controller_config = tmp_path / "controller-url"
+    controller_config.write_bytes(b"http://192.168.100.17:18089\n")
 
     completed = _run_bash(
         """
@@ -620,6 +642,7 @@ agent_run
         env={
             "ALT_INSTALL_STATE_ROOT": tmp_path.as_posix() + "/state",
             "ALT_INSTALL_CMDLINE_FILE": cmdline.as_posix(),
+            "ALT_INSTALL_CONTROLLER_CONFIG": controller_config.as_posix(),
             "ALT_INSTALL_BOOT_ID_FILE": (
                 tmp_path / "missing-boot-id"
             ).as_posix(),
@@ -811,7 +834,8 @@ bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
     --source '{source.as_posix()}' \
     --output '{output.as_posix()}' \
     --helper '{helper.as_posix()}' \
-    --build-id test-build
+    --build-id test-build \
+    --controller-url http://192.168.100.17:18089
 """
     )
 
@@ -840,7 +864,8 @@ bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
     --output '{output.as_posix()}' \
     --helper '{helper.as_posix()}' \
     --public-key '{public_key.as_posix()}' \
-    --build-id test-build
+    --build-id test-build \
+    --controller-url http://192.168.100.17:18089
 """
     )
 
@@ -879,6 +904,7 @@ bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
     --helper '{paths["helper"].as_posix()}' \
     --public-key '{paths["public_key"].as_posix()}' \
     --build-id test-build \
+    --controller-url http://192.168.100.17:18089 \
     --force
 """
     )
@@ -906,6 +932,7 @@ bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
     --helper '{helper.as_posix()}' \
     --public-key '{public_key.as_posix()}' \
     --build-id test-build \
+    --controller-url http://192.168.100.17:18089 \
     --force
 """
     )
@@ -941,6 +968,7 @@ bash deploy/alt-linux/iso/agent-v1/build-managed-iso.sh \
     --helper '{helper.as_posix()}' \
     --public-key '{public_key.as_posix()}' \
     --build-id test-build \
+    --controller-url http://192.168.100.17:18089 \
     --force
 """
     )

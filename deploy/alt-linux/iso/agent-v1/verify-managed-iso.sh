@@ -67,7 +67,7 @@ from pathlib import Path
 manifest_path, iso, initrd, root = map(Path, sys.argv[1:])
 document = json.loads(manifest_path.read_text(encoding="utf-8"))
 expected_fields = {
-    "build_id", "format", "helper_sha256", "managed_initrd_sha256",
+    "build_id", "controller_url", "format", "helper_sha256", "managed_initrd_sha256",
     "managed_iso_sha256", "payload_manifest_sha256", "public_key_id",
     "public_key_sha256", "source_iso_sha256",
 }
@@ -75,6 +75,10 @@ if set(document) != expected_fields:
     raise SystemExit("build manifest fields are invalid")
 if document["format"] != "alt-install-agent-managed-iso-v1":
     raise SystemExit("build manifest format is invalid")
+if document["controller_url"] not in {
+    "http://192.168.100.17:18089", "http://192.168.100.17:18090"
+}:
+    raise SystemExit("controller URL is invalid")
 build_id = document["build_id"]
 if (
     not isinstance(build_id, str)
@@ -166,7 +170,7 @@ for library in config.sh network.sh protocol.sh state.sh transport.sh ui.sh; do
     mode_is 644 \
         "$workdir/initrd/usr/libexec/alt-install-agent-lib/lib/$library"
 done
-for asset in build-id managed_iso_size_bytes payload.sha256 public-key.json source_iso.json; do
+for asset in build-id controller-url managed_iso_size_bytes payload.sha256 public-key.json source_iso.json; do
     mode_is 644 "$workdir/initrd/usr/share/alt-install/$asset"
 done
 
@@ -193,7 +197,7 @@ grep -Fqx '    exec /usr/libexec/alt-install-agent' \
     "$workdir/initrd/lib/initrd/post/network-up/99-alt-install-agent-v1" ||
     die 'Initrd gate action is invalid'
 
-python3 - "$manifest" "$workdir/grub.cfg" "$workdir/isolinux.cfg" <<'PY'
+python3 - "$manifest" "$workdir/grub.cfg" "$workdir/isolinux.cfg" "$workdir/initrd/usr/share/alt-install/controller-url" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -201,6 +205,9 @@ from pathlib import Path
 manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 grub = Path(sys.argv[2]).read_text(encoding="utf-8")
 isolinux = Path(sys.argv[3]).read_text(encoding="utf-8")
+controller_url = Path(sys.argv[4]).read_text(encoding="ascii")
+if controller_url != manifest["controller_url"] + "\n":
+    raise SystemExit("embedded controller URL does not match")
 start = grub.find('menuentry "Signed-plan preflight [DRY RUN]"')
 end = grub.find("\n}", start)
 if start < 0 or end < 0:
@@ -208,7 +215,7 @@ if start < 0 or end < 0:
 block = grub[start:end]
 expected = (
     "sosnadmin.mode=agent-v1 "
-    "sosnadmin.controller=http://192.168.100.17:18089 "
+    f"sosnadmin.controller={manifest['controller_url']} "
     f"sosnadmin.build={manifest['build_id']}"
 )
 if expected not in block:
