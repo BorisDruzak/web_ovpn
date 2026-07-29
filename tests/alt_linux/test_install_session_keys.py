@@ -449,6 +449,13 @@ def test_initializer_cli_prints_only_public_metadata(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module.Settings, "from_env", lambda: settings)
+    monkeypatch.setattr(
+        module,
+        "ensure_install_session_keypair",
+        lambda configured: ensure_install_session_keypair(
+            configured, euid=lambda: 0
+        ),
+    )
 
     assert module.main() == 0
 

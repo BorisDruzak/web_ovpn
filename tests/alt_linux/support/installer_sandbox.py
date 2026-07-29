@@ -668,12 +668,14 @@ fi
             "args=(\"$@\")\n"
             "target=${args[${#args[@]}-2]}\n"
             "link=${args[${#args[@]}-1]}\n"
-            "windows_link=$(cygpath -w \"$link\")\n"
+            "if command -v cygpath >/dev/null 2>&1; then\n"
+            "  link=$(cygpath -w \"$link\")\n"
+            "fi\n"
             "exec "
             + shlex.quote(Path(sys.executable).as_posix())
             + " -c 'import os, sys; os.symlink("
             "sys.argv[1], sys.argv[2], target_is_directory=True)' "
-            '"$target" "$windows_link"\n',
+            '"$target" "$link"\n',
         )
         self._fake_script("readlink", "exec /usr/bin/readlink \"$@\"\n")
 
