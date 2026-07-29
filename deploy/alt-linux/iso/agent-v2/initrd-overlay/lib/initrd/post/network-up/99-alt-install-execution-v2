@@ -1,0 +1,10 @@
+#!/bin/bash
+set -eu
+
+cmdline_file=${ALT_INSTALL_CMDLINE_FILE:-/proc/cmdline}
+agent=${ALT_INSTALL_EXECUTION_AGENT:-/usr/libexec/alt-install-agent-v2/alt-install-execution-agent}
+
+if grep -Fqw 'sosnadmin.mode=agent-v2' "$cmdline_file"; then
+    export ALT_INSTALL_V1_AGENT_ROOT=${ALT_INSTALL_V1_AGENT_ROOT:-/usr/libexec/alt-install-agent-lib}
+    exec "$agent"
+fi
