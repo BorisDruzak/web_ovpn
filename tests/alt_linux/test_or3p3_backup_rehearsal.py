@@ -26,6 +26,38 @@ def test_rehearsal_never_writes_production_paths(tmp_path: Path) -> None:
     assert summary.rehearsed is True
 
 
+def test_rehearsal_accepts_ready_registration_awaiting_assignment(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    machine_id = "a" * 32
+    registration = sandbox.settings.registration_root / "ready" / (
+        machine_id + ".json"
+    )
+    registration.parent.mkdir(parents=True, exist_ok=True)
+    registration.write_text(
+        json.dumps(
+            {
+                "machine_key": machine_id,
+                "uuid": machine_id,
+                "status": "awaiting_assignment",
+                "registration_id": "reg-" + "b" * 32,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    registration.chmod(0o600)
+    backup_id = sandbox.repository().create().backup_id
+    sandbox.repository().verify(backup_id, write_evidence=True)
+
+    result = sandbox.rehearsal_service().rehearse(backup_id)
+
+    assert result.rehearsal_passed is True
+
+
 def test_failed_rehearsal_preserves_private_tree(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     sandbox.seed_complete_controller()
