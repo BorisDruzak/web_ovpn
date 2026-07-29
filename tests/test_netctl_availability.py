@@ -9,6 +9,165 @@ OLD = "2026-06-01T00:00:00Z"
 NEW = "2026-07-01T00:00:00Z"
 
 
+def availability_segment(cidr: str, *, ports: tuple[int, ...] = ()):
+    """Build literal canonical-policy input for collector behavior tests."""
+    from ipaddress import ip_network
+    from netctl.context_classifier import SegmentRule
+
+    return SegmentRule("availability-test", ip_network(cidr), "unknown", "", True, ports)
+
+
+class FakeExecutor:
+    """External probe boundary only; collector and storage stay real."""
+
+    def __init__(self, *, icmp=None, tcp=None, clock=None):
+        self.icmp = icmp or {}
+        self.tcp = tcp or {}
+        self.calls = []
+        self.now = clock or (lambda: 0.0)
+
+    def ping(self, ip):
+        self.calls.append(("icmp", ip))
+        return self.icmp.get(ip, False)
+
+    def connect(self, ip, port):
+        self.calls.append(("tcp", ip, port))
+        return self.tcp.get((ip, port), False)
+
+
+def test_target_expansion_deduplicates_overlap_and_excludes_ipv4_network_and_broadcast():
+    """Using the broad policy for an overlap would probe TCP ports not authorized for that host."""
+    from netctl.availability import expand_targets
+
+    targets = expand_targets((
+        availability_segment("192.0.2.0/30", ports=(443,)),
+        availability_segment("192.0.2.2/31", ports=(22,)),
+    ))
+
+    assert [(target.ip, target.tcp_ports) for target in targets] == [
+        ("192.0.2.1", (443,)),
+        ("192.0.2.2", (22,)),
+        ("192.0.2.3", (22,)),
+    ]
+
+
+def test_tcp_is_attempted_only_after_icmp_failure_and_first_success_wins():
+    """Trying TCP before ICMP or after a success would violate the bounded probe policy."""
+    from netctl.availability import ProbeTarget, probe_target
+
+    executor = FakeExecutor(
+        icmp={"192.0.2.1": False},
+        tcp={("192.0.2.1", 22): False, ("192.0.2.1", 443): True},
+    )
+
+    result = probe_target(ProbeTarget("192.0.2.1", (22, 443), "192.0.2.0/30"), executor)
+
+    assert result.active_method == "tcp:443"
+    assert executor.calls == [
+        ("icmp", "192.0.2.1"),
+        ("tcp", "192.0.2.1", 22),
+        ("tcp", "192.0.2.1", 443),
+    ]
+
+
+def test_subprocess_ping_uses_fixed_numeric_argv_without_a_shell(monkeypatch):
+    """Interpolating the address into a shell command would turn a probe into command execution."""
+    import subprocess
+    from netctl.availability import SubprocessPing
+
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert SubprocessPing()("192.0.2.1") is True
+    assert calls == [
+        (["ping", "-n", "-c", "1", "-W", "1", "192.0.2.1"],
+         {"shell": False, "capture_output": True, "text": True, "timeout": 2, "check": False})
+    ]
+
+
+def test_bucket_never_constructs_more_than_64_worker_threads(monkeypatch):
+    """Increasing worker capacity would make an approved /24 an unbounded load spike."""
+    import concurrent.futures
+    import netctl.availability as availability
+
+    workers = []
+
+    class RecordingPool:
+        def __init__(self, *, max_workers):
+            workers.append(max_workers)
+
+        def submit(self, fn, *args):
+            future = concurrent.futures.Future()
+            future.set_result(fn(*args))
+            return future
+
+        def shutdown(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(availability, "ThreadPoolExecutor", RecordingPool)
+    targets = tuple(
+        availability.ProbeTarget(f"192.0.2.{index}", (), "192.0.2.0/24")
+        for index in range(1, 66)
+    )
+    executor = availability.ProbeExecutor(lambda _ip: True, lambda _ip, _port: False, lambda: 0.0)
+
+    _, error = availability._collect_bucket(targets, executor)
+
+    assert error == ""
+    assert workers == [64]
+
+
+def test_deadline_failure_keeps_current_results_and_persists_no_partial_success(conn, monkeypatch):
+    """A deadline after the first address must not replace the previous complete CIDR state."""
+    from netctl.availability import AvailabilityResult, AvailabilityRun, ProbeExecutor, collect_availability, current_availability_results, save_availability_run
+
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30", started=OLD, finished=OLD,
+            results=[AvailabilityResult("192.0.2.1", "reachable", "icmp"), AvailabilityResult("192.0.2.2", "reachable", "icmp")],
+        ),
+    )
+    clock_values = iter((0.0, 91.0))
+    executor = ProbeExecutor(lambda _ip: True, lambda _ip, _port: True, lambda: next(clock_values, 91.0))
+
+    collection = collect_availability(conn, executor, now=lambda: NEW)
+
+    assert collection.status == "failed"
+    assert collection.error_class == "deadline_exceeded"
+    assert current_availability_results(conn, "192.0.2.0/30")["192.0.2.1"].state == "reachable"
+    assert [tuple(row) for row in conn.execute("SELECT status FROM availability_runs ORDER BY id")] == [("success",), ("failed",)]
+
+
+def test_availability_collect_publishes_only_completed_canonical_targets(conn):
+    """Publishing a result for a probe-only address would create unverified network inventory."""
+    from netctl.availability import ProbeExecutor, collect_availability
+
+    executor = FakeExecutor(icmp={"192.0.2.1": True, "192.0.2.2": False})
+    collection = collect_availability(
+        conn,
+        ProbeExecutor(executor.ping, executor.connect, executor.now),
+        now=lambda: NEW,
+    )
+
+    assert collection.status == "success"
+    assert collection.summary == {"targets": 4, "completed": 4, "reachable": 1, "unreachable": 3}
+    assert [tuple(row) for row in conn.execute(
+        "SELECT ip, active_state FROM availability_results ORDER BY cidr, ip"
+    )] == [
+        ("192.0.2.1", "reachable"),
+        ("192.0.2.2", "unreachable"),
+        ("198.51.100.1", "unreachable"),
+        ("198.51.100.2", "unreachable"),
+    ]
+    assert conn.execute("SELECT count(*) FROM network_hosts").fetchone()[0] == 0
+
+
 @pytest.fixture
 def conn(tmp_path):
     from netctl.db import connect

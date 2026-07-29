@@ -53,6 +53,10 @@ def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
         return 0, {"source": source_name}
 
     monkeypatch.setattr(cli, "collect_one", collect)
+    monkeypatch.setattr(
+        cli, "collect_availability",
+        lambda *_args, **_kwargs: __import__("netctl.availability", fromlist=["AvailabilityCollection"]).AvailabilityCollection("success", (), {}),
+    )
     monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {"switch": {"status": "partial"}})
     monkeypatch.setattr(
         cli,
@@ -76,6 +80,65 @@ def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
     assert payload["reconciliation"]["attachment_run_id"] == 22
     assert watermarks[0] is watermarks[1]
     assert watermarks[0] == payload["reconciliation"]["source_watermark"]
+
+
+def test_collect_all_runs_availability_only_after_every_enabled_source_succeeds(monkeypatch):
+    """A failed source must prevent availability from publishing a mixed collection snapshot."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    calls = []
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "router", "enabled": True}, {"name": "switch", "enabled": True}))
+    monkeypatch.setattr(cli, "collect_one", lambda _conn, _args, name: (1 if name == "switch" else 0, {"source": name}))
+    monkeypatch.setattr(cli, "collect_availability", lambda *_args, **_kwargs: calls.append("availability"))
+
+    rc, payload = cli.dispatch(parser.parse_args(["collect", "all"]))
+
+    assert rc == 1
+    assert calls == []
+    assert payload["results"] == [{"source": "router"}, {"source": "switch"}]
+
+
+def test_availability_collect_returns_only_sanitized_collection_fields(monkeypatch):
+    """Passing raw probe errors through this recovery command could disclose operating-system details."""
+    import netctl.cli as cli
+    from netctl.availability import AvailabilityCollection
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(cli, "availability_source_health", lambda _conn: True)
+    monkeypatch.setattr(
+        cli,
+        "collect_availability",
+        lambda _conn, _executor, *, now: AvailabilityCollection("failed", (), {"targets": 0, "completed": 0}, "executor_error"),
+    )
+
+    rc, payload = cli.dispatch(parser.parse_args(["availability", "collect"]))
+
+    assert rc == 1
+    assert payload == {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
+
+
+def test_availability_collect_fails_closed_before_probing_an_unhealthy_source(monkeypatch):
+    """A recovery probe against stale source state could publish misleading availability."""
+    import netctl.cli as cli
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(cli, "availability_source_health", lambda _conn: False)
+    monkeypatch.setattr(cli, "collect_availability", lambda *_args, **_kwargs: pytest.fail("probe must not run"))
+
+    rc, payload = cli.dispatch(parser.parse_args(["availability", "collect"]))
+
+    assert rc == 1
+    assert payload == {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
 
 
 def test_retention_cleanup_defaults_to_a_non_destructive_thirty_day_preview(monkeypatch):
@@ -169,6 +232,10 @@ def test_collect_all_reconciles_after_a_partial_snmp_result(monkeypatch):
     monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
     monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "switch", "enabled": True},))
     monkeypatch.setattr(cli, "collect_one", lambda *_args: (0, {"status": "partial"}))
+    monkeypatch.setattr(
+        cli, "collect_availability",
+        lambda *_args, **_kwargs: __import__("netctl.availability", fromlist=["AvailabilityCollection"]).AvailabilityCollection("success", (), {}),
+    )
     monkeypatch.setattr(cli, "collection_source_watermark", lambda _conn: {})
     monkeypatch.setattr(cli, "reconcile_topology", lambda *_args: calls.append("topology") or {"run_id": 1})
     monkeypatch.setattr(cli, "reconcile_attachments", lambda *_args: calls.append("attachments") or {"run_id": 2})
@@ -1288,7 +1355,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     assert rc == 0
     assert data["status"] == "ok"
     summary = data["runtime_identity"]
-    assert summary["schema_migration_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    assert summary["schema_migration_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1
     assert summary["counts"]["current_ip_observations"] >= 1

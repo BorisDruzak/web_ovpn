@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .collect_lock import CollectLock
+from .availability import AvailabilityCollection, collect_availability, default_probe_executor
 from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
@@ -401,6 +402,49 @@ def collect_all_locked(
     return rc, results
 
 
+def availability_source_health(conn) -> bool:
+    """Direct recovery probes require every enabled source to have a healthy collection state."""
+    try:
+        return all(
+            str(source.get("last_status") or "") in {"ok", "success", "partial"}
+            for source in list_sources(conn)
+            if source.get("enabled")
+        )
+    except (sqlite3.Error, AttributeError):
+        return False
+
+
+def _availability_payload(collection: AvailabilityCollection) -> dict[str, Any]:
+    return {
+        "status": collection.status,
+        "runs": [
+            {
+                "cidr": run.cidr,
+                "status": run.status,
+                "target_count": run.target_count,
+                "completed_target_count": run.completed_target_count,
+            }
+            for run in collection.runs
+        ],
+        "summary": collection.summary,
+    }
+
+
+def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    conn = prepare_conn(args)
+    try:
+        with CollectLock(args.db):
+            if not availability_source_health(conn):
+                return 1, {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
+            collection = collect_availability(conn, default_probe_executor(), now=utc_now)
+            payload = _availability_payload(collection)
+            return (0 if collection.status == "success" else 1), payload
+    except RuntimeError as exc:
+        return 1, err(str(exc))
+    finally:
+        conn.close()
+
+
 def collection_source_watermark(conn) -> dict[str, object]:
     """Return a deterministic, non-secret record of collection freshness."""
     rows = conn.execute(
@@ -458,6 +502,12 @@ def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         with CollectLock(args.db):
             if args.source == "all":
                 rc, results = collect_all_locked(conn, args)
+                if rc == 0:
+                    collection = collect_availability(conn, default_probe_executor(), now=utc_now)
+                    availability = _availability_payload(collection)
+                    results.append({"availability": availability})
+                    if collection.status != "success":
+                        rc = 1
                 if args.reconcile:
                     if rc != 0:
                         return rc, ok(results=results, reconciliation_skipped="collection_failed")
@@ -1318,6 +1368,9 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("source")
     collect.add_argument("--include-connections", action="store_true")
     collect.add_argument("--reconcile", action="store_true")
+    availability = sub.add_parser("availability")
+    availability_sub = availability.add_subparsers(dest="availability_command", required=True)
+    availability_sub.add_parser("collect")
     sub.add_parser("reconcile")
 
     retention = sub.add_parser("retention")
@@ -1562,6 +1615,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_sources(args)
     if args.command == "collect":
         return cmd_collect(args)
+    if args.command == "availability":
+        return cmd_availability(args)
     if args.command == "reconcile":
         return cmd_reconcile(args)
     if args.command == "retention":

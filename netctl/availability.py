@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import ipaddress
 import sqlite3
+import socket
+import subprocess
+import time
+from collections.abc import Callable
+from typing import Any
 
 from .context_classifier import load_active_availability_segments
 
@@ -15,6 +21,99 @@ class AvailabilityResult:
     method: str | None
     checked_at: str | None = None
     failure_class: str = ""
+
+    @property
+    def active_state(self) -> str:
+        return self.state
+
+    @property
+    def active_method(self) -> str | None:
+        return self.method
+
+
+@dataclass(frozen=True)
+class ProbeTarget:
+    ip: str
+    tcp_ports: tuple[int, ...]
+    cidr: str
+
+
+@dataclass(frozen=True)
+class ProbeExecutor:
+    ping: Callable[[str], bool]
+    connect: Callable[[str, int], bool]
+    now: Callable[[], float]
+
+
+@dataclass(frozen=True)
+class AvailabilityCollection:
+    status: str
+    runs: tuple[AvailabilityRun, ...]
+    summary: dict[str, int]
+    error_class: str = ""
+
+
+class SubprocessPing:
+    """One bounded Linux ICMP probe with no shell interpretation."""
+
+    def __call__(self, ip: str) -> bool:
+        address = ipaddress.ip_address(ip)
+        if address.version != 4:
+            raise ValueError("ping target must be IPv4")
+        try:
+            result = subprocess.run(
+                ["ping", "-n", "-c", "1", "-W", "1", str(address)],
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+
+
+class SocketConnector:
+    """One bounded TCP probe; the successful socket is never retained."""
+
+    def __call__(self, ip: str, port: int) -> bool:
+        try:
+            with socket.create_connection((ip, port), timeout=1):
+                return True
+        except OSError:
+            return False
+
+
+def default_probe_executor() -> ProbeExecutor:
+    return ProbeExecutor(SubprocessPing(), SocketConnector(), time.monotonic)
+
+
+def expand_targets(segments: tuple[Any, ...]) -> tuple[ProbeTarget, ...]:
+    """Expand only canonical IPv4 hosts, assigning overlap to the most-specific rule."""
+    ordered = sorted(segments, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))
+    targets: dict[str, ProbeTarget] = {}
+    for rule in ordered:
+        network = rule.network
+        if network.version != 4:
+            raise ValueError("availability cidr must be IPv4")
+        cidr = str(network)
+        ports = tuple(rule.availability_tcp_ports)
+        for address in network.hosts():
+            ip = str(address)
+            if ip not in targets:
+                targets[ip] = ProbeTarget(ip, ports, cidr)
+    return tuple(targets[ip] for ip in sorted(targets, key=lambda value: int(ipaddress.ip_address(value))))
+
+
+def probe_target(target: ProbeTarget, executor: ProbeExecutor) -> AvailabilityResult:
+    """ICMP wins; TCP is only a bounded fallback after ICMP failure."""
+    if executor.ping(target.ip):
+        return AvailabilityResult(target.ip, "reachable", "icmp")
+    for port in target.tcp_ports:
+        if executor.connect(target.ip, port):
+            return AvailabilityResult(target.ip, "reachable", f"tcp:{port}")
+    return AvailabilityResult(target.ip, "unreachable", None, failure_class="unreachable")
 
 
 @dataclass(frozen=True)
@@ -36,6 +135,165 @@ class AvailabilityRun:
     @classmethod
     def failed(cls, cidr: str, *, started: str, error_class: str, finished: str | None = None, target_count: int = 0, completed_target_count: int = 0) -> AvailabilityRun:
         return cls(cidr, started, finished or started, "failed", target_count, completed_target_count, (), error_class)
+
+
+def _collection_timestamp(now: Callable[[], str | datetime]) -> str:
+    value = now()
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError("collection clock must be UTC")
+        return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return str(value)
+
+
+def _bucket_key(target: ProbeTarget) -> str:
+    return str(ipaddress.ip_network(f"{target.ip}/24", strict=False))
+
+
+def _collect_bucket(
+    targets: tuple[ProbeTarget, ...], executor: ProbeExecutor
+) -> tuple[tuple[ProbeTarget, AvailabilityResult] | None, str]:
+    """Run one /24-equivalent with at most 64 submitted address jobs."""
+    deadline = executor.now() + 90
+    pending = iter(targets)
+    futures: dict[Future[AvailabilityResult], ProbeTarget] = {}
+    completed: list[tuple[ProbeTarget, AvailabilityResult]] = []
+    pool = ThreadPoolExecutor(max_workers=64)
+    failed = ""
+    try:
+        exhausted = False
+        while futures or not exhausted:
+            while not exhausted and len(futures) < 64 and executor.now() < deadline:
+                try:
+                    target = next(pending)
+                except StopIteration:
+                    exhausted = True
+                    break
+                futures[pool.submit(probe_target, target, executor)] = target
+            if not futures:
+                if exhausted:
+                    break
+                failed = "deadline_exceeded"
+                break
+            timeout = max(0.0, deadline - executor.now())
+            done, _ = wait(tuple(futures), timeout=timeout, return_when=FIRST_COMPLETED)
+            if not done:
+                failed = "deadline_exceeded"
+                break
+            for future in done:
+                target = futures.pop(future)
+                try:
+                    completed.append((target, future.result()))
+                except Exception:
+                    failed = "executor_error"
+                    break
+            if failed:
+                break
+            if executor.now() >= deadline and (futures or not exhausted):
+                failed = "deadline_exceeded"
+                break
+    finally:
+        for future in futures:
+            future.cancel()
+        pool.shutdown(wait=not failed, cancel_futures=True)
+    if failed:
+        return None, failed
+    return tuple(completed), ""
+
+
+def _failed_collection(
+    conn: sqlite3.Connection,
+    targets_by_cidr: dict[str, list[ProbeTarget]],
+    *,
+    started: str,
+    finished: str,
+    error_class: str,
+    total_targets: int | None = None,
+) -> AvailabilityCollection:
+    runs: list[AvailabilityRun] = []
+    for cidr, targets in sorted(targets_by_cidr.items()):
+        run = AvailabilityRun.failed(
+            cidr, started=started, finished=finished, error_class=error_class,
+            target_count=len(targets), completed_target_count=0,
+        )
+        try:
+            save_availability_run(conn, run)
+        except (sqlite3.Error, ValueError):
+            # Context validity is the persistence boundary; never invent a fallback CIDR.
+            continue
+        runs.append(run)
+    return AvailabilityCollection(
+        "failed", tuple(runs),
+        {"targets": total_targets if total_targets is not None else sum(len(items) for items in targets_by_cidr.values()), "completed": 0, "reachable": 0, "unreachable": 0},
+        error_class,
+    )
+
+
+def collect_availability(
+    conn: sqlite3.Connection,
+    executor: ProbeExecutor,
+    *,
+    now: Callable[[], str | datetime],
+) -> AvailabilityCollection:
+    """Collect canonical availability atomically: incomplete probes never publish current state."""
+    started = _collection_timestamp(now)
+    try:
+        segments = load_active_availability_segments(conn)
+        if not segments:
+            return AvailabilityCollection("failed", (), {"targets": 0, "completed": 0, "reachable": 0, "unreachable": 0}, "context_unavailable")
+        targets = expand_targets(segments)
+    except (sqlite3.Error, ValueError):
+        return AvailabilityCollection("failed", (), {"targets": 0, "completed": 0, "reachable": 0, "unreachable": 0}, "context_unavailable")
+
+    targets_by_cidr: dict[str, list[ProbeTarget]] = {str(segment.network): [] for segment in segments}
+    for target in targets:
+        targets_by_cidr[target.cidr].append(target)
+    buckets: dict[str, list[ProbeTarget]] = {}
+    for target in targets:
+        buckets.setdefault(_bucket_key(target), []).append(target)
+    completed: list[tuple[ProbeTarget, AvailabilityResult]] = []
+    error_class = ""
+    failed_cidrs: set[str] = set()
+    for key in sorted(buckets, key=lambda value: int(ipaddress.ip_network(value).network_address)):
+        bucket_results, error_class = _collect_bucket(tuple(buckets[key]), executor)
+        if error_class:
+            failed_cidrs = {target.cidr for target in buckets[key]}
+            break
+        assert bucket_results is not None
+        completed.extend(bucket_results)
+    finished = _collection_timestamp(now)
+    if error_class:
+        return _failed_collection(
+            conn,
+            {cidr: targets_by_cidr[cidr] for cidr in failed_cidrs},
+            started=started,
+            finished=finished,
+            error_class=error_class,
+            total_targets=len(targets),
+        )
+
+    results_by_cidr: dict[str, list[AvailabilityResult]] = {cidr: [] for cidr in targets_by_cidr}
+    for target, result in completed:
+        results_by_cidr[target.cidr].append(result)
+    runs = [
+        AvailabilityRun.success(
+            cidr, started=started, finished=finished, results=sorted(results, key=lambda item: int(ipaddress.ip_address(item.ip))),
+            target_count=len(targets_by_cidr[cidr]),
+        )
+        for cidr, results in sorted(results_by_cidr.items())
+    ]
+    try:
+        for run in runs:
+            save_availability_run(conn, run)
+    except (sqlite3.Error, ValueError):
+        return _failed_collection(
+            conn, targets_by_cidr, started=started, finished=finished, error_class="context_unavailable",
+        )
+    reachable = sum(result.state == "reachable" for _, result in completed)
+    return AvailabilityCollection(
+        "success", tuple(runs),
+        {"targets": len(targets), "completed": len(completed), "reachable": reachable, "unreachable": len(completed) - reachable},
+    )
 
 
 def _utc_timestamp(value: str, *, field: str) -> str:
