@@ -100,8 +100,17 @@ def availability_method_label(value: object) -> str:
 def availability_evidence_label(value: object, separator: str = ", ") -> str:
     if not isinstance(value, list):
         return ""
-    labels = {"arp": "ARP", "dhcp": "DHCP", "bridge": "bridge"}
-    return separator.join(labels.get(str(item).lower(), str(item)) for item in value if str(item))
+    labels = {
+        "mikrotik_arp": "ARP",
+        "mikrotik_dhcp": "DHCP",
+        "mikrotik_bridge": "bridge",
+        "snmp_fdb": "FDB",
+    }
+    return separator.join(
+        labels[key]
+        for item in value
+        if (key := str(item).lower()) in labels
+    )
 
 
 def availability_reason_label(value: object) -> str:
@@ -126,10 +135,10 @@ def availability_origin_label(value: object) -> str:
 
 def availability_status_label(host: object) -> str:
     if not isinstance(host, dict):
-        return "не мониторится (not monitored)"
+        return "не мониторится"
     availability = host.get("availability")
     if not isinstance(availability, dict):
-        return "не мониторится (not monitored)"
+        return "не мониторится"
     state = str(availability.get("state") or host.get("status") or "").lower()
     method = availability_method_label(availability.get("active_method"))
     evidence = availability_evidence_label(availability.get("passive_evidence"), "/")
@@ -139,7 +148,11 @@ def availability_status_label(host: object) -> str:
         return f"seen · {evidence}" if evidence else "seen"
     if state == "offline":
         return "offline"
-    return state or "не мониторится (not monitored)"
+    if state == "not_monitored":
+        return "не мониторится"
+    if state == "stale":
+        return "данные устарели"
+    return "не мониторится"
 
 
 templates.env.globals["csrf_token"] = csrf_token
@@ -1881,7 +1894,19 @@ async def network_host_availability_check(
 ):
     user = require_user(request, db)
     await verify_csrf(request)
-    valid_ip = canonical_host_ipv4(ip)
+    try:
+        valid_ip = canonical_host_ipv4(ip)
+    except HTTPException:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-availability",
+            "error",
+            "invalid IPv4 host target",
+            target_client=ip[:180],
+        )
+        raise
     target_path = quote(valid_ip, safe="")
     permit = acquire_network_action(
         db,
@@ -1931,7 +1956,19 @@ async def network_host_observation_refresh(
 ):
     user = require_user(request, db)
     await verify_csrf(request)
-    valid_ip = canonical_host_ipv4(ip)
+    try:
+        valid_ip = canonical_host_ipv4(ip)
+    except HTTPException:
+        write_audit(
+            db,
+            request,
+            user,
+            "network-host-observation-refresh",
+            "error",
+            "invalid IPv4 host target",
+            target_client=ip[:180],
+        )
+        raise
     target_path = quote(valid_ip, safe="")
     permit = acquire_network_action(
         db,

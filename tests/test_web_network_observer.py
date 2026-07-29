@@ -778,9 +778,19 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     hosts = [
         {
             "ip": "192.168.99.46", "display_name": "stale host", "status": "stale",
-            "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "run_failed socket timeout"},
+            "availability": {
+                "state": "stale",
+                "active_method": "icmp",
+                "checked_at": "2026-07-29T10:00:00Z",
+                "reason": "run_failed socket timeout",
+            },
         },
-        {"ip": "192.168.99.47", "display_name": "unmonitored host", "status": "seen", "availability": None},
+        {
+            "ip": "192.168.99.47",
+            "display_name": "unmonitored host",
+            "status": "stale",
+            "availability": {"state": "not_monitored", "reason": "not_monitored"},
+        },
     ]
 
     def fake_netctl(request, args, timeout=None):
@@ -808,7 +818,10 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     assert "socket timeout" not in page.text
     assert "run_failed" in detail.text
     assert "socket timeout" not in detail.text
-    assert "not monitored" in all_hosts.text
+    assert "данные устарели" in page.text
+    assert "не мониторится" in all_hosts.text
+    assert "not_monitored" not in all_hosts.text
+    assert ">stale<" not in page.text
     assert 'value="unexpected"' not in invalid.text
     assert "stale host" not in invalid.text
 
@@ -1067,6 +1080,35 @@ def test_manual_check_uses_url_ip_audits_and_rate_limits(tmp_path, monkeypatch):
     ]
 
 
+def test_network_action_throttle_accepts_only_one_concurrent_session(tmp_path, monkeypatch):
+    """Two simultaneous database sessions must not both acquire the same action budget."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    make_client(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.models import utcnow
+    from app.network_actions import acquire_network_action
+
+    barrier = Barrier(2)
+    now = utcnow()
+
+    def attempt() -> bool:
+        with get_sessionmaker()() as db:
+            barrier.wait(timeout=5)
+            return acquire_network_action(
+                db,
+                "admin",
+                "network-host-availability",
+                now,
+            ).accepted
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        accepted = list(pool.map(lambda _: attempt(), range(2)))
+
+    assert sorted(accepted) == [False, True]
+
+
 def test_observation_refresh_is_independently_throttled_and_uses_fixed_command(tmp_path, monkeypatch):
     """Observation refresh must not accept a browser-selected source or reuse the probe budget."""
     client, _ = make_client(tmp_path, monkeypatch)
@@ -1130,6 +1172,53 @@ def test_network_host_actions_require_login_and_csrf_without_cli_calls(tmp_path,
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    ("route_suffix", "ip", "action"),
+    [
+        ("availability-check", "not-an-ip", "network-host-availability"),
+        ("availability-check", "192.168.099.44", "network-host-availability"),
+        ("refresh-observations", "not-an-ip", "network-host-observation-refresh"),
+        ("refresh-observations", "192.168.099.44", "network-host-observation-refresh"),
+    ],
+)
+def test_authenticated_host_actions_audit_invalid_ip_without_cli(
+    tmp_path,
+    monkeypatch,
+    route_suffix,
+    ip,
+    action,
+):
+    """Invalid URL targets must remain 404s while leaving an authenticated audit trail."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    csrf = login(client)
+    calls = []
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (calls.append(args) or {}, None),
+    )
+
+    response = client.post(
+        f"/network/hosts/{ip}/{route_suffix}",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert calls == []
+    from app.db import session_scope
+    from app.models import WebAuditLog
+
+    with session_scope() as db:
+        audit = db.query(WebAuditLog).filter_by(action=action).one()
+    assert audit.actor == "admin"
+    assert audit.result == "error"
+    assert audit.message == "invalid IPv4 host target"
+    assert audit.target_client == ip
+
+
 def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(tmp_path, monkeypatch):
     """Raw reasons or editable action targets would leak internals or widen device controls."""
     client, _ = make_client(tmp_path, monkeypatch)
@@ -1146,7 +1235,12 @@ def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(t
             "checked_at": "2026-07-29T10:00:00Z",
             "check_origin": "manual",
             "cidr": "192.168.99.0/24",
-            "passive_evidence": ["arp", "dhcp"],
+            "passive_evidence": [
+                "mikrotik_arp",
+                "mikrotik_dhcp",
+                "mikrotik_bridge",
+                "snmp_fdb",
+            ],
             "reason": "active_probe socket timeout must-not-render",
         },
     }
@@ -1182,7 +1276,9 @@ def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(t
     assert "192.168.99.0/24" in detail.text
     assert "TCP:443" in detail.text
     assert "ручная" in detail.text
-    assert "ARP, DHCP" in detail.text
+    assert "ARP, DHCP, bridge, FDB" in detail.text
+    evidence_row = detail.text.split("<dt>Пассивные признаки</dt><dd>", 1)[1].split("</dd>", 1)[0]
+    assert evidence_row == "ARP, DHCP, bridge, FDB"
     assert "active probe" in detail.text
     assert "socket timeout" not in detail.text
     availability_form = detail.text.split('action="/network/hosts/192.168.99.44/availability-check"', 1)[1].split("</form>", 1)[0]
