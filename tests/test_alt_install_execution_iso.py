@@ -613,6 +613,36 @@ def test_verifier_streams_large_files_and_detects_split_private_key_marker(
     assert "secret-like" in completed.stderr
 
 
+def test_verifier_detects_long_private_key_label_across_chunk_boundary(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "initrd"
+    leaked = root / "opt" / "bootstrap" / "archive-long-label.bin"
+    leaked.parent.mkdir(parents=True)
+    chunk_boundary = 16 * 64 * 1024
+    preamble = b"-----BEGIN " + (b"A" * 65) + b" "
+    prefix = b"x" * (chunk_boundary - len(preamble) - 8)
+    leaked.write_bytes(prefix + preamble + b"PRIVATE KEY-----\nsecret\n")
+    assert leaked.stat().st_size > 1024 * 1024
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "secret-like" in completed.stderr
+
+
 def test_managed_iso_publication_never_leaves_iso_without_sidecar(
     tmp_path: Path,
 ) -> None:

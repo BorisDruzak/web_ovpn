@@ -33,10 +33,8 @@ ALLOWED_PUBLIC_MATERIAL = {
     "usr/share/alt-install/public-key.json",
 }
 SCAN_CHUNK_SIZE = 64 * 1024
-SCAN_OVERLAP_SIZE = 128
-PRIVATE_KEY_MARKER = re.compile(
-    rb"-----BEGIN [A-Z0-9 ]{0,64}PRIVATE KEY-----"
-)
+PRIVATE_KEY_SUFFIX = b"PRIVATE KEY-----"
+SCAN_OVERLAP_SIZE = len(PRIVATE_KEY_SUFFIX) - 1
 
 
 class ContractError(ValueError):
@@ -228,7 +226,7 @@ def _contains_private_key_marker(path: Path) -> bool:
         with path.open("rb") as stream:
             while chunk := stream.read(SCAN_CHUNK_SIZE):
                 window = overlap + chunk.upper()
-                if PRIVATE_KEY_MARKER.search(window):
+                if PRIVATE_KEY_SUFFIX in window:
                     return True
                 overlap = window[-SCAN_OVERLAP_SIZE:]
     except OSError as exc:
