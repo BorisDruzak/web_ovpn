@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VERIFIER = ROOT / "deploy" / "verify_netctl_systemd.py"
 FIXTURE = ROOT / "tests" / "fixtures" / "systemd" / "netctl-retention.properties"
 MULTIPLE_CALENDAR_FIXTURE = ROOT / "tests" / "fixtures" / "systemd" / "netctl-retention-multiple-calendar.properties"
+AVAILABILITY_FIXTURE = ROOT / "tests" / "fixtures" / "systemd" / "netctl-availability.properties"
 
 
 def test_installer_installs_and_enables_retention_only_after_systemd_verification(tmp_path: Path) -> None:
@@ -67,11 +68,23 @@ def test_systemd_verifier_expects_hardened_read_only_availability_recovery() -> 
         "ProtectHome": "yes",
     }
     assert verifier["EXPECTED_PROPERTIES"]["netctl-availability.timer"] == {
-        "TimersMonotonic": ("OnBootSec=3min", "OnUnitActiveSec=5min"),
+        "TimersMonotonic": ("OnBootUSec=3min", "OnUnitActiveUSec=5min"),
         "AccuracyUSec": "30s",
         "Persistent": "yes",
         "Unit": "netctl-availability.service",
     }
+
+
+def test_systemd_verifier_accepts_captured_availability_timer_dbus_properties() -> None:
+    """Linux exposes monotonic timers as *USec DBus properties, not unit-file names."""
+    verifier = runpy.run_path(str(VERIFIER))
+    properties = verifier["parse_show_properties"](AVAILABILITY_FIXTURE.read_text(encoding="utf-8"))
+    expected = verifier["EXPECTED_PROPERTIES"]["netctl-availability.timer"]["TimersMonotonic"]
+
+    assert expected == ("OnBootUSec=3min", "OnUnitActiveUSec=5min")
+    assert verifier["property_matches"](
+        "TimersMonotonic", properties["TimersMonotonic"], expected
+    ) is True
 
 
 def test_systemd_show_property_parser_reads_retention_hardening_and_schedule() -> None:
