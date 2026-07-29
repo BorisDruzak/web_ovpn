@@ -120,7 +120,7 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
             *INTENT_TABLES,
         } <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 15)
+            (version,) for version in range(1, 16)
         ]
         assert conn.execute("SELECT * FROM context_heads").fetchall() == []
         assert [tuple(row) for row in conn.execute("SELECT id, context_id, sha256 FROM context_revisions").fetchall()] == [
@@ -130,5 +130,36 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
         assert [tuple(row) for row in conn.execute("SELECT id, host_id, ip FROM host_observations").fetchall()] == [(41, 31, "10.0.0.31")]
         assert [tuple(row) for row in conn.execute("SELECT id, ip, hostname FROM dhcp_leases").fetchall()] == [(51, "10.0.0.31", "legacy-host")]
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_migration_15_adds_availability_schema_after_a_preexisting_version_14(tmp_path: Path) -> None:
+    """Production may already use version 14 for an unrelated migration."""
+    from netctl.db import connect
+
+    db_path = tmp_path / "preexisting-14.sqlite"
+    create_pre_pr_1b_database(db_path)
+    legacy = sqlite3.connect(db_path)
+    try:
+        legacy.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+        legacy.executemany(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, '2026-07-28T11:02:00Z')",
+            [(version,) for version in range(1, 15)],
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    conn = connect(f"sqlite:///{db_path.as_posix()}")
+    try:
+        table_names = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+        assert {"availability_runs", "availability_results", "availability_result_events"} <= table_names
+        assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
+            (version,) for version in range(1, 16)
+        ]
     finally:
         conn.close()

@@ -1654,6 +1654,10 @@ def _migration_13(conn: sqlite3.Connection) -> None:
 
 
 def _migration_14(conn: sqlite3.Connection) -> None:
+    """Reserve the historical production version without coupling it to availability schema."""
+
+
+def _migration_15(conn: sqlite3.Connection) -> None:
     for statement in """
         CREATE TABLE availability_runs (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1712,6 +1716,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (12, _migration_12),
     (13, _migration_13),
     (14, _migration_14),
+    (15, _migration_15),
 )
 
 

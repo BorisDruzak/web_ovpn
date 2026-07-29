@@ -39,7 +39,7 @@ unapproved scan output in the deployment record.
    Do not enable the recovery timer until the installed systemd verifier has
    passed. The installer performs this verification before `enable --now`.
 
-4. Verify the migration ledger through version 14 and database integrity.
+4. Verify the migration ledger through version 15 and database integrity.
 
    ```bash
    sudo sqlite3 /var/lib/netctl/netctl.sqlite \
@@ -47,7 +47,7 @@ unapproved scan output in the deployment record.
    sudo sqlite3 /var/lib/netctl/netctl.sqlite 'PRAGMA integrity_check;'
    ```
 
-   The ledger must be `1,2,3,4,5,6,7,8,9,10,11,12,13,14`, with no duplicate
+   The ledger must be `1,2,3,4,5,6,7,8,9,10,11,12,13,14,15`, with no duplicate
    versions, and integrity must be `ok`.
 
 5. Validate and import the approved canonical context. Use the approved YAML,
