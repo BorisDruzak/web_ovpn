@@ -23,6 +23,7 @@ for path in (CONTROL_ROOT, API_ROOT):
 from alt_deploy.config import Settings
 from alt_deploy.install_session_repository import InstallSessionRepository
 from install_session_api import create_install_session_server
+import install_session_server as server_module
 
 
 def _request(
@@ -52,6 +53,70 @@ def _create_payload(
     nonce: str = "A" * 43,
 ) -> dict[str, object]:
     return {"create_nonce": nonce, "inventory": inventory}
+
+
+def _settings_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
+    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
+    monkeypatch.setenv(
+        "ALT_DEPLOY_INSTALL_PROFILE_ROOT",
+        str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"),
+    )
+    return Settings.from_env()
+
+
+@contextmanager
+def running(server: object):
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_health_is_constant_and_does_not_create_session_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings_in(tmp_path, monkeypatch)
+    server = create_install_session_server(
+        settings, listen_address="127.0.0.1", listen_port=0
+    )
+
+    with running(server):
+        status, body = _request(server, "GET", "/health")
+
+    assert (status, body) == (
+        200,
+        {"schema_version": 1, "service": "alt-install-session", "status": "ok"},
+    )
+    assert not settings.install_sessions_dir.exists()
+
+
+def test_production_entry_point_uses_explicit_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: dict[str, object] = {}
+
+    class FakeServer:
+        def serve_forever(self) -> None:
+            return
+
+        def server_close(self) -> None:
+            return
+
+    monkeypatch.setattr(
+        server_module,
+        "create_install_session_server",
+        lambda settings, **kwargs: called.update(kwargs) or FakeServer(),
+    )
+
+    assert server_module.main(
+        ["--listen-address", "192.168.100.17", "--listen-port", "18090"]
+    ) == 0
+    assert called == {"listen_address": "192.168.100.17", "listen_port": 18090}
 
 
 def test_api_creates_session_and_requires_its_bearer_credential(

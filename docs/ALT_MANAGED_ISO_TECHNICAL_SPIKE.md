@@ -22,6 +22,8 @@ managed menu entry or agent.
 This PR changes neither controller runtime nor `/srv/alt-deploy` or
 `/var/lib/alt-deploy`. The fixture is a rootless Python process on port `18089`;
 plain HTTP at this address is a test-only boundary, not a production protocol.
+The separate production-listener boundary is documented in
+[`alt-install-session-api-pr5a.md`](runbooks/alt-install-session-api-pr5a.md).
 
 ## Build and static verification
 

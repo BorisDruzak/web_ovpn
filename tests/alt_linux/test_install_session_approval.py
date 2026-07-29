@@ -22,6 +22,7 @@ from alt_deploy.install_inventory import parse_inventory
 from alt_deploy.install_session_approval import InstallSessionApprovalService
 from alt_deploy.install_session_repository import InstallSessionRepository
 from alt_deploy.install_session_service import InstallSessionService
+from alt_deploy.install_session_keys import ensure_install_session_keypair
 from alt_deploy.install_session_signing import public_key_metadata
 
 
@@ -29,28 +30,15 @@ def test_root_approval_publishes_signed_first_revision(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    key_path = tmp_path / "install-plan-ed25519.pem"
-    private_key = Ed25519PrivateKey.generate()
-    key_path.write_bytes(
-        private_key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-    )
-    key_path.chmod(0o600)
-    public_key_path = tmp_path / "install-plan-ed25519.pub"
-    public_key_path.write_text(
-        json.dumps(public_key_metadata(private_key.public_key())),
-        encoding="utf-8",
-    )
-    public_key_path.chmod(0o644)
+    key_path = tmp_path / "secrets" / "install-plan-ed25519.pem"
+    public_key_path = tmp_path / "etc" / "install-plan-ed25519.pub"
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_PROFILE_ROOT", str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SIGNING_PRIVATE_KEY", str(key_path))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SIGNING_PUBLIC_KEY", str(public_key_path))
     settings = Settings.from_env()
+    ensure_install_session_keypair(settings, euid=lambda: 0)
     repository = InstallSessionRepository(settings)
     payload = json.loads((FIXTURE_ROOT / "inventory-disk-100g.json").read_text(encoding="utf-8"))
     created = InstallSessionService(
@@ -123,7 +111,14 @@ def test_failed_approval_removes_partial_artifacts_and_can_retry(
     ))
     key_path.chmod(0o600)
     public_key_path = tmp_path / "install-plan-ed25519.pub"
-    public_key_path.write_text(json.dumps(public_key_metadata(private_key.public_key())), encoding="utf-8")
+    public_key_path.write_bytes(
+        json.dumps(
+            public_key_metadata(private_key.public_key()),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
     public_key_path.chmod(0o644)
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
@@ -186,7 +181,14 @@ def test_status_fsync_failure_preserves_an_already_published_plan(
     ))
     key_path.chmod(0o600)
     public_key_path = tmp_path / "install-plan-ed25519.pub"
-    public_key_path.write_text(json.dumps(public_key_metadata(private_key.public_key())), encoding="utf-8")
+    public_key_path.write_bytes(
+        json.dumps(
+            public_key_metadata(private_key.public_key()),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
     public_key_path.chmod(0o644)
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
