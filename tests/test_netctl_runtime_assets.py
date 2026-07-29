@@ -6,6 +6,12 @@ from typing import Any
 import pytest
 
 
+def _all_migration_versions() -> list[int]:
+    from netctl.migrations import MIGRATIONS
+
+    return [version for version, _ in MIGRATIONS]
+
+
 @pytest.fixture
 def pr_1b_database(tmp_path: Path) -> str:
     """Create the schema a PR 1B deployment has before runtime-asset migration 2."""
@@ -289,7 +295,7 @@ def test_connect_enables_runtime_identity_pragmas(pr_1b_database: str) -> None:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 14))
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == _all_migration_versions()
     finally:
         conn.close()
 
@@ -1760,7 +1766,7 @@ def test_migration_3_is_applied_once_and_reopen_is_idempotent(
 
     reopened = connect(pr_1b_database)
     try:
-        assert first_state["versions"] == list(range(1, 14))
+        assert first_state["versions"] == _all_migration_versions()
         assert reopened.execute(
             "SELECT COUNT(*) FROM schema_migrations WHERE version = 3"
         ).fetchone()[0] == 1
@@ -1862,7 +1868,7 @@ def test_migration_4_is_applied_once_and_reopen_is_idempotent(
             for row in reopened.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 14))
+        ] == _all_migration_versions()
         assert reopened.execute(
             "SELECT status FROM runtime_identity_findings WHERE finding_key = 'legacy-identity-conflict:1'"
         ).fetchone()[0] == "acknowledged"
@@ -2321,7 +2327,7 @@ def test_migration_3_rollback_is_atomic_and_reopen_succeeds(
             for row in reopened.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 14))
+        ] == _all_migration_versions()
         assert reopened.execute(
             "SELECT is_current FROM ip_observations"
         ).fetchone()[0] == 0
@@ -2478,7 +2484,7 @@ def test_migration_2_rollback_after_partial_copy_and_reopen_is_idempotent(
     finally:
         first_success.close()
 
-    assert first_success_state["versions"] == list(range(1, 14))
+    assert first_success_state["versions"] == _all_migration_versions()
     assert first_success_state["counts"] == {
         "asset_intent_bindings": 0,
         "asset_interfaces": 1,

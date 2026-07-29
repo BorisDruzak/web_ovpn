@@ -15,13 +15,14 @@ PATH_FACT_TABLES = {
 
 
 def test_migration_12_creates_read_only_path_fact_schema(tmp_path: Path) -> None:
+    from netctl import migrations
     from netctl.db import connect
 
     conn = connect(f"sqlite:///{(tmp_path / 'path-facts.sqlite').as_posix()}")
     try:
         tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert PATH_FACT_TABLES <= tables
-        assert [int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 14))
+        assert [int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == [version for version, _ in migrations.MIGRATIONS]
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(router_filter_rules)")}
         assert {"source_id", "rule_key", "chain", "position", "disabled", "action", "src_cidr", "dst_cidr", "comment", "observed_at", "collector_run_id", "unsupported_matchers_json"} <= columns
     finally:

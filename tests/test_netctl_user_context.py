@@ -23,12 +23,14 @@ def _db(tmp_path: Path) -> sqlite3.Connection:
 
 
 def test_migration_10_creates_user_context_schema(tmp_path: Path) -> None:
+    from netctl import migrations
+
     conn = _db(tmp_path)
     try:
         tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         versions = [int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
         assert USER_CONTEXT_TABLES <= tables
-        assert versions == list(range(1, 14))
+        assert versions == [version for version, _ in migrations.MIGRATIONS]
     finally:
         conn.close()
 

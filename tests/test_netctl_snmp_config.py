@@ -86,6 +86,7 @@ def test_legacy_migrations_are_immutable() -> None:
 
 
 def test_migration_5_creates_switch_schema_once(tmp_path: Path) -> None:
+    from netctl import migrations
     from netctl.db import connect
 
     db_url = _db_url(tmp_path / "netctl.sqlite")
@@ -96,7 +97,7 @@ def test_migration_5_creates_switch_schema_once(tmp_path: Path) -> None:
             for row in conn.execute(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
-        ] == list(range(1, 14))
+        ] == [version for version, _ in migrations.MIGRATIONS]
         assert SWITCH_TABLES <= _table_names(conn)
         assert "driver_options_json" in {
             row[1] for row in conn.execute("PRAGMA table_info(network_sources)")
