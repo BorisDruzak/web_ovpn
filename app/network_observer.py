@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 NETWORK_FILTERS = [
@@ -52,6 +53,12 @@ DEVICE_TYPE_LABELS = {
 }
 HOST_STATUS_FILTERS = frozenset({"current", "all", "online", "seen", "offline", "stale", "connected"})
 CURRENT_HOST_STATUSES = frozenset({"online", "seen", "connected"})
+SEEN_WITHIN_WINDOWS = {
+    "1h": timedelta(hours=1),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
 _PUBLIC_AVAILABILITY_REASONS = frozenset({
     "active_probe", "passive_evidence", "active_negative_no_passive_evidence", "missing_run",
     "run_failed", "run_stale", "missing_result", "openvpn_management", "not_monitored",
@@ -201,6 +208,9 @@ def filter_unified_hosts(rows: list[dict[str, Any]], params: dict[str, str]) -> 
     network = params.get("network") or "all"
     has_hostname = params.get("has_hostname") or ""
     has_mac = params.get("has_mac") or ""
+    seen_within = params.get("seen_within") or "all"
+    if seen_within not in {*SEEN_WITHIN_WINDOWS, "all"}:
+        seen_within = "24h"
     result = rows
     if category == "all":
         result = [row for row in result if row.get("category") != "noise"]
@@ -218,8 +228,23 @@ def filter_unified_hosts(rows: list[dict[str, Any]], params: dict[str, str]) -> 
         ]
     if category != "all":
         result = [row for row in result if row.get("category") == category]
+    if seen_within != "all":
+        cutoff = datetime.now(UTC) - SEEN_WITHIN_WINDOWS[seen_within]
+        def observed_since(row: dict[str, Any]) -> bool:
+            raw_seen = str(row.get("last_seen_at") or "")
+            if not raw_seen:
+                # Legacy and OpenVPN-only rows without a timestamp retain their current view;
+                # malformed supplied timestamps remain historical-only.
+                return row.get("status") in CURRENT_HOST_STATUSES
+            try:
+                observed = datetime.fromisoformat(raw_seen.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            return observed.tzinfo is not None and cutoff <= observed.astimezone(UTC) <= datetime.now(UTC)
+        result = [row for row in result if observed_since(row)]
     if status == "current":
-        result = [row for row in result if row.get("status") in CURRENT_HOST_STATUSES]
+        # The default list is defined by fresh observation, not an inferred active state.
+        pass
     elif status != "all":
         result = [row for row in result if row.get("status") == status]
     if source != "all":

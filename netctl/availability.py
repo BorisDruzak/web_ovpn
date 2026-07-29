@@ -179,6 +179,27 @@ def set_force_monitor(
     return {"ip": normalized, "enabled": enabled, "enabled_at": timestamp if enabled else "", "updated_at": timestamp}
 
 
+def force_monitor_state(conn: sqlite3.Connection, ip: str) -> dict[str, object]:
+    """Return public persisted force-monitor state for one normalized IPv4 address."""
+    address = ipaddress.ip_address(ip)
+    if address.version != 4:
+        raise ValueError("force monitor requires IPv4")
+    normalized = str(address)
+    row = conn.execute(
+        """SELECT enabled, enabled_at, updated_at FROM availability_force_monitors
+           WHERE ip = ?""",
+        (normalized,),
+    ).fetchone()
+    if row is None:
+        return {"ip": normalized, "enabled": False, "enabled_at": "", "updated_at": ""}
+    return {
+        "ip": normalized,
+        "enabled": bool(row["enabled"]),
+        "enabled_at": str(row["enabled_at"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
 def availability_targets(
     conn: sqlite3.Connection,
     segments: tuple[Any, ...],
@@ -915,9 +936,17 @@ def _availability_payload(
     }
 
 
+def _attach_force_monitor(projected: dict[str, Any], state: dict[str, object]) -> dict[str, Any]:
+    availability = projected.get("availability")
+    if isinstance(availability, dict):
+        availability["force_monitor"] = state
+    return projected
+
+
 def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *, now: str | datetime) -> dict[str, Any]:
     """Derive the public host status from current active and passive evidence."""
     projected = dict(host)
+    force_monitor = force_monitor_state(conn, str(host["ip"]))
     rule = monitored_rule_for_ip(conn, str(host["ip"]))
     if bool(host.get("openvpn_connected")):
         projected["status"] = "connected"
@@ -928,7 +957,7 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
             )
             if rule is not None else None
         )
-        return projected
+        return _attach_force_monitor(projected, force_monitor)
     timestamp = _as_utc(now)
     if timestamp is None:
         raise ValueError("now must be a UTC timestamp")
@@ -949,7 +978,7 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
             passive_evidence=evidence,
             reason="not_monitored",
         )
-        return projected
+        return _attach_force_monitor(projected, force_monitor)
 
     cidr = str(rule.network)
     freshness = timedelta(minutes=rule.availability_interval_minutes * 2)
@@ -1010,7 +1039,7 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
             checked_at=checked_at, run_status=run_status, passive_evidence=[], reason="active_probe",
             check_origin=check_origin,
         )
-        return projected
+        return _attach_force_monitor(projected, force_monitor)
     if reason:
         projected["status"] = "stale"
         projected["availability"] = _availability_payload(
@@ -1018,7 +1047,7 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
             run_status=run_status, passive_evidence=[], reason=reason,
             check_origin=check_origin,
         )
-        return projected
+        return _attach_force_monitor(projected, force_monitor)
     if evidence:
         projected["status"] = "seen"
         projected["availability"] = _availability_payload(
@@ -1026,11 +1055,11 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
             run_status=run_status, passive_evidence=evidence, reason="passive_evidence",
             check_origin=check_origin,
         )
-        return projected
+        return _attach_force_monitor(projected, force_monitor)
     projected["status"] = "offline"
     projected["availability"] = _availability_payload(
         state="offline", cidr=cidr, active_method=None, checked_at=checked_at,
         run_status=run_status, passive_evidence=[], reason="active_negative_no_passive_evidence",
         check_origin=check_origin,
     )
-    return projected
+    return _attach_force_monitor(projected, force_monitor)
