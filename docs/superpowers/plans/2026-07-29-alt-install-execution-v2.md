@@ -55,7 +55,7 @@ Expected: missing V2 settings and TLS module.
 
 - [ ] **Step 3: Implement the smallest secure listener**
 
-Add separate V2 address, port, TLS-root, CA, certificate and private-key settings. Create and validate material using no-follow file descriptors: TLS 1.3 minimum, server certificate IP SAN `192.168.100.17`, root-only key `0600`, public certificate `0644`. The service runs as `altserver`, has the same systemd hardening as V1, reads only its runtime and TLS key, and does not alter V1.
+Add separate V2 address, port, TLS-root, CA, certificate and private-key settings. Create and validate material using no-follow file descriptors: TLS 1.3 minimum, server certificate IP SAN `192.168.100.17`, root-only key `0600`, public certificate `0644`. The service runs as `altserver`, uses systemd 255 `LoadCredential=execution-tls-key:<root-key-path>` and `%d/execution-tls-key` rather than reading the root-owned key path, has the same hardening as V1, and does not alter V1.
 
 - [ ] **Step 4: Verify**
 
@@ -371,4 +371,3 @@ git commit -m "feat(alt-install): gate execution rollout and pilot"
 - **Spec coverage:** Tasks 1--3 implement TLS, root authorization, state and API; Tasks 4--5 implement relay and ISO; Task 6 proves write boundaries/postflight; Task 7 adds rollout and pilot gates.
 - **No placeholders:** every task has named files, interfaces, test code, commands, expected output and a commit.
 - **Compatibility:** V1 uses a separate service/port/menu and remains no-write throughout.
-

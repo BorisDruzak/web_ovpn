@@ -75,6 +75,13 @@ is created and subsequently used only over TLS.  This is server-authenticated
 TLS rather than mTLS: the random Bearer credential is the client capability,
 and TLS protects its issue and use.
 
+The TLS private key is root-owned `0600` at rest.  The controller runs systemd
+255, so `alt-install-execution.service` uses
+`LoadCredential=execution-tls-key:<root-owned-key-path>` and reads only the
+per-service read-only credential copy through `%d/execution-tls-key`.  The
+unit continues to run as `altserver`; it never receives access to the
+root-owned key path itself and does not run the HTTP handler as root.
+
 The rendered execution bundle may contain yescrypt hashes.  It is therefore
 not written to Git, the release manifest, status JSON, audit receipt, shell
 arguments, or service logs.  On the controller it is a regular `0600` file in
