@@ -17,6 +17,14 @@ def _path_env(name: str, default: str) -> Path:
     return Path(os.environ.get(name, default)).expanduser()
 
 
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -46,6 +54,11 @@ class Settings:
     server_draft_results_dir: Path
     server_draft_private_dir: Path
     observer_public_key_path: Path
+    endpoint_platform_enabled: bool
+    endpoint_platform_base_url: str
+    endpoint_platform_token_file: Path
+    endpoint_platform_ca_file: Path
+    endpoint_platform_timeout_seconds: float
     download_ttl_minutes: int
     session_cookie_name: str
 
@@ -96,6 +109,17 @@ def get_settings() -> Settings:
         observer_public_key_path=_path_env(
             "OBSERVER_PUBLIC_KEY_PATH", "/etc/openvpn-web/server-observer.pub"
         ),
+        endpoint_platform_enabled=_bool_env("ENDPOINT_PLATFORM_ENABLED", False),
+        endpoint_platform_base_url=os.environ.get(
+            "ENDPOINT_PLATFORM_BASE_URL", "https://endpoint.sosnadmin.local"
+        ),
+        endpoint_platform_token_file=_path_env(
+            "ENDPOINT_PLATFORM_TOKEN_FILE", "/etc/openvpn-web/endpoint-platform.token"
+        ),
+        endpoint_platform_ca_file=_path_env(
+            "ENDPOINT_PLATFORM_CA_FILE", "/etc/openvpn-web/endpoint-platform-ca.pem"
+        ),
+        endpoint_platform_timeout_seconds=_positive_float_env("ENDPOINT_PLATFORM_TIMEOUT_SECONDS", 5.0),
         download_ttl_minutes=int(os.environ.get("DOWNLOAD_TOKEN_TTL_MINUTES", "15")),
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
     )
