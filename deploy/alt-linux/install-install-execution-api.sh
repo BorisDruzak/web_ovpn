@@ -171,6 +171,7 @@ install_execution_api_restore_activation() {
         systemctl disable "${INSTALL_EXECUTION_API_UNIT}" || true
     fi
     if [[ ${INSTALL_EXECUTION_WAS_ACTIVE:-0} == 1 ]]; then
+        systemctl stop "${INSTALL_EXECUTION_API_UNIT}" || true
         systemctl start "${INSTALL_EXECUTION_API_UNIT}" || true
     else
         systemctl stop "${INSTALL_EXECUTION_API_UNIT}" || true

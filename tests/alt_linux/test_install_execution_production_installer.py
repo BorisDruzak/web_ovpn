@@ -89,6 +89,45 @@ def _run(tmp_path: Path, *, listener: str = "", **overrides: str) -> subprocess.
     )
 
 
+def _run_active_restore(tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    root = tmp_path / "restore-root"
+    command = (
+        "set -Eeuo pipefail; "
+        f"source {INSTALLER.as_posix()!r}; "
+        f"INSTALL_EXECUTION_CURRENT={str(root / 'current')!r}; "
+        f"INSTALL_EXECUTION_UNIT_PATH={str(root / 'unit')!r}; "
+        f"INSTALL_EXECUTION_TRANSACTION_DIR={str(root / 'transaction')!r}; "
+        f"INSTALL_EXECUTION_RELEASE_PATH={str(root / 'release')!r}; "
+        "INSTALL_EXECUTION_OLD_CURRENT_TARGET=; "
+        "INSTALL_EXECUTION_HAD_UNIT=0; "
+        "INSTALL_EXECUTION_WAS_ENABLED=1; "
+        "INSTALL_EXECUTION_WAS_ACTIVE=1; "
+        "INSTALL_EXECUTION_TRANSACTION_ACTIVE=1; "
+        "install_execution_api_restore_activation"
+    )
+    return subprocess.run(
+        [BASH, "-c", command],
+        text=True,
+        capture_output=True,
+        cwd=REPO_ROOT,
+        env=_environment(tmp_path),
+        check=False,
+    )
+
+
+@pytest.mark.skipif(BASH is None, reason="rollback command test requires Bash")
+def test_active_rollback_stops_new_service_before_starting_restored_unit(
+    tmp_path: Path,
+) -> None:
+    result = _run_active_restore(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
+    stop = commands.index("stop alt-install-execution.service")
+    start = commands.index("start alt-install-execution.service")
+    assert stop < start
+
+
 @pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
 def test_installer_stages_only_v2_runtime_generates_tls_and_activates_unit(
     tmp_path: Path,
