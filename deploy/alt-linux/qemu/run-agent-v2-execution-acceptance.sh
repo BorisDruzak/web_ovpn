@@ -8,7 +8,7 @@ readonly pass_line='PASS: root-authorized install wrote only the disposable targ
 
 usage() {
     printf '%s\n' \
-        'Usage: run-agent-v2-execution-acceptance.sh --iso <V2-ISO> --ovmf-code <OVMF_CODE.fd> --ovmf-vars <OVMF_VARS.fd> --timeline <ROOT-TIMELINE.json> --postflight <AUTHENTICATED-POSTFLIGHT.json> [--evidence-dir <DIR>]' \
+        'Usage: run-agent-v2-execution-acceptance.sh --iso <V2-ISO> --ovmf-code <OVMF_CODE.fd> --ovmf-vars <OVMF_VARS.fd> --controller-credential-key <KEY> [--evidence-dir <DIR>]' \
         '       run-agent-v2-execution-acceptance.sh --check-prerequisites' \
         '       run-agent-v2-execution-acceptance.sh --exercise-storage-contract' \
         '       run-agent-v2-execution-acceptance.sh --describe-safety-contract' >&2
@@ -25,7 +25,7 @@ check_prerequisites() {
     local required=(
         qemu-system-x86_64 qemu-img python3 bash xorriso cpio socat
         sha256sum mktemp readlink id ip dnsmasq grep cp chmod mkdir
-        date sleep seq dirname rm stat sed tail kill
+        date sleep seq dirname rm stat sed tail kill awk
     )
     for command in "${required[@]}"; do
         if ! command -v "$command" >/dev/null 2>&1; then
@@ -156,8 +156,7 @@ fi
 iso=
 ovmf_code=
 ovmf_vars=
-timeline=
-postflight=
+controller_credential_key=
 evidence_root=
 while (($#)); do
     case "$1" in
@@ -176,14 +175,9 @@ while (($#)); do
             ovmf_vars=$2
             shift 2
             ;;
-        --timeline)
+        --controller-credential-key)
             (($# >= 2)) || usage
-            timeline=$2
-            shift 2
-            ;;
-        --postflight)
-            (($# >= 2)) || usage
-            postflight=$2
+            controller_credential_key=$2
             shift 2
             ;;
         --evidence-dir)
@@ -197,14 +191,16 @@ while (($#)); do
     esac
 done
 [[ -n "$iso" && -n "$ovmf_code" && -n "$ovmf_vars" &&
-    -n "$timeline" && -n "$postflight" ]] || usage
+    -n "$controller_credential_key" ]] || usage
 check_prerequisites || exit 1
 
 script_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$script_root/../../.." && pwd -P)
 support="$script_root/agent_v2_test_api.py"
+execution_server="$repo_root/deploy/alt-linux/api/install_execution_server.py"
 iso_verifier="$repo_root/deploy/alt-linux/iso/agent-v2/verify-managed-iso.sh"
-for path in "$iso" "$ovmf_code" "$ovmf_vars" "$support" "$iso_verifier"; do
+for path in "$iso" "$ovmf_code" "$ovmf_vars" "$support" "$iso_verifier" \
+    "$execution_server" "$controller_credential_key"; do
     [[ -f "$path" && -r "$path" && ! -L "$path" ]] ||
         die "Required regular file is unreadable: $path"
 done
@@ -238,13 +234,33 @@ case "$workdir" in
 esac
 
 qemu_pid=
+qemu_starttime=
 dnsmasq_pid=
+dnsmasq_starttime=
+execution_server_pid=
+execution_server_starttime=
 tap_name="aiv2$(( $$ % 100000 ))"
 tap_created=0
+ownership_record="$evidence/resource-ownership.json"
+
+process_starttime() {
+    local pid=$1
+    [[ "$pid" =~ ^[1-9][0-9]*$ && -r "/proc/$pid/stat" ]] ||
+        return 1
+    awk '{print $22}' "/proc/$pid/stat"
+}
+
+owned_process_alive() {
+    local pid=$1 expected=$2 observed
+    observed=$(process_starttime "$pid") || return 1
+    [[ "$observed" == "$expected" ]] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
 
 stop_qemu() {
     local qmp_socket=${1:-}
-    if [[ -n "$qemu_pid" ]] && kill -0 "$qemu_pid" 2>/dev/null; then
+    if [[ -n "$qemu_pid" ]] &&
+        owned_process_alive "$qemu_pid" "$qemu_starttime"; then
         if [[ -n "$qmp_socket" && -S "$qmp_socket" ]]; then
             python3 "$support" qmp-command \
                 --socket "$qmp_socket" --execute quit >/dev/null 2>&1 ||
@@ -255,39 +271,62 @@ stop_qemu() {
         wait "$qemu_pid" 2>/dev/null || true
     fi
     qemu_pid=
+    qemu_starttime=
 }
 
 cleanup() {
+    local current_ifindex=
     stop_qemu
+    if [[ -n "$execution_server_pid" ]] &&
+        owned_process_alive \
+            "$execution_server_pid" "$execution_server_starttime"; then
+        kill "$execution_server_pid" 2>/dev/null || true
+        wait "$execution_server_pid" 2>/dev/null || true
+    fi
     if [[ -n "$dnsmasq_pid" ]] &&
-        kill -0 "$dnsmasq_pid" 2>/dev/null; then
+        owned_process_alive "$dnsmasq_pid" "$dnsmasq_starttime"; then
         kill "$dnsmasq_pid" 2>/dev/null || true
         wait "$dnsmasq_pid" 2>/dev/null || true
     fi
-    if ((tap_created == 1)) &&
-        [[ "$tap_name" == aiv2+([0-9]) ]] &&
-        [[ -e "/sys/class/net/$tap_name" ]]; then
+    if ((tap_created == 1)) && [[ -e "/sys/class/net/$tap_name/ifindex" ]]; then
+        current_ifindex=$(<"/sys/class/net/$tap_name/ifindex")
+    fi
+    if ((tap_created == 1)) && [[ -n "$current_ifindex" ]] &&
+        python3 "$support" verify-resource-ownership \
+            --record "$ownership_record" \
+            --workdir "$workdir" \
+            --tap-name "$tap_name" \
+            --tap-ifindex "$current_ifindex" >/dev/null 2>&1; then
         ip link set "$tap_name" down 2>/dev/null || true
         ip tuntap del dev "$tap_name" mode tap 2>/dev/null || true
+        rm -rf -- "$workdir"
+    elif ((tap_created == 0)); then
+        case "$workdir" in
+            "$evidence_root"/.alt-agent-v2-qemu-work.*)
+                rm -rf -- "$workdir"
+                ;;
+        esac
+    else
+        printf '%s\n' \
+            'agent-v2-qemu: cleanup ownership changed; preserving resources' >&2
     fi
-    case "$workdir" in
-        "$evidence_root"/.alt-agent-v2-qemu-work.*)
-            rm -rf -- "$workdir"
-            ;;
-    esac
 }
 shopt -s extglob
 trap cleanup EXIT
 
 prepare_storage
-(
-    cd -- "$workdir"
-    sha256sum target.qcow2
-) >"$evidence/target.before.sha256"
-(
-    cd -- "$workdir"
-    sha256sum sentinel.qcow2
-) >"$evidence/sentinel.before.sha256"
+state_dir="$workdir/run-state"
+mkdir -m 0700 -- "$state_dir"
+vm_instance_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+python3 "$support" create-run \
+    --state-dir "$state_dir" \
+    --iso "$(readlink -f -- "$iso")" \
+    --target "$target" \
+    --sentinel "$sentinel" \
+    --vm-instance-id "$vm_instance_id" >/dev/null ||
+    die 'Run trust state creation failed'
+sha256sum "$target" >"$evidence/target.initial.sha256"
+sha256sum "$sentinel" >"$evidence/sentinel.initial.sha256"
 cp -- "$ovmf_vars" "$workdir/OVMF_VARS.fd"
 
 [[ ! -e "/sys/class/net/$tap_name" ]] ||
@@ -298,6 +337,13 @@ tap_created=1
 ip address add 192.168.100.17/24 dev "$tap_name" ||
     die 'Harness TAP address assignment failed'
 ip link set "$tap_name" up || die 'Harness TAP activation failed'
+tap_ifindex=$(<"/sys/class/net/$tap_name/ifindex")
+python3 "$support" record-resource-ownership \
+    --record "$ownership_record" \
+    --workdir "$workdir" \
+    --tap-name "$tap_name" \
+    --tap-ifindex "$tap_ifindex" ||
+    die 'Harness creation identity recording failed'
 dnsmasq \
     --keep-in-foreground \
     --bind-interfaces \
@@ -310,12 +356,24 @@ dnsmasq \
     --conf-file= \
     >"$workdir/dnsmasq.log" 2>&1 &
 dnsmasq_pid=$!
+dnsmasq_starttime=$(process_starttime "$dnsmasq_pid") ||
+    die 'Harness DHCP process identity recording failed'
+python3 "$execution_server" \
+    --listen-address 192.168.100.17 \
+    --listen-port 18092 \
+    --credential-key "$controller_credential_key" \
+    --acceptance-state-dir "$state_dir" \
+    >"$workdir/execution-server.log" 2>&1 &
+execution_server_pid=$!
+execution_server_starttime=$(process_starttime "$execution_server_pid") ||
+    die 'Harness execution service identity recording failed'
 
 wait_for_socket() {
     local socket_path=$1 seconds=$2 elapsed
     for ((elapsed = 0; elapsed < seconds; elapsed++)); do
         [[ -S "$socket_path" ]] && return 0
-        [[ -n "$qemu_pid" ]] && kill -0 "$qemu_pid" 2>/dev/null ||
+        [[ -n "$qemu_pid" ]] &&
+            owned_process_alive "$qemu_pid" "$qemu_starttime" ||
             return 1
         sleep 1
     done
@@ -328,7 +386,8 @@ wait_for_line() {
         if [[ -f "$log_path" ]] && grep -Fq -- "$pattern" "$log_path"; then
             return 0
         fi
-        [[ -n "$qemu_pid" ]] && kill -0 "$qemu_pid" 2>/dev/null ||
+        [[ -n "$qemu_pid" ]] &&
+            owned_process_alive "$qemu_pid" "$qemu_starttime" ||
             return 1
         sleep 1
     done
@@ -354,12 +413,19 @@ launch_qemu() {
     local qmp_socket="$workdir/$phase.qmp.sock"
     local console="$workdir/$phase.console.log"
     local -a media=()
+    local -a postflight_channel=()
     [[ -z "$boot_iso" ]] ||
         media=(-drive "media=cdrom,readonly=on,file=$boot_iso")
+    [[ "$phase" != postflight ]] ||
+        postflight_channel=(
+            -device virtio-serial-pci
+            -chardev "socket,id=postflight,path=$workdir/postflight.channel.sock,server=on,wait=off"
+            -device "virtserialport,chardev=postflight,name=alt.install.postflight"
+        )
     qemu-system-x86_64 \
         -machine q35,accel=kvm:tcg \
         -m 4096 \
-        -uuid 22222222-3333-4444-5555-666666666662 \
+        -uuid "$vm_instance_id" \
         -smbios type=1,manufacturer=QEMU,product=Standard-PC,serial=agent-v2-execution \
         -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
         -drive "if=pflash,format=raw,file=$workdir/OVMF_VARS.fd" \
@@ -368,6 +434,7 @@ launch_qemu() {
         -drive "$sentinel_drive" \
         -device virtio-blk-pci,drive=sentinel,serial=ALT-QEMU-SENTINEL \
         "${media[@]}" \
+        "${postflight_channel[@]}" \
         -netdev tap,id=agent-net,ifname="$tap_name",script=no,downscript=no \
         -device virtio-net-pci,netdev=agent-net,mac=52:54:00:12:34:62 \
         -boot order="$([[ -n "$boot_iso" ]] && printf d || printf c)",menu=on \
@@ -376,6 +443,8 @@ launch_qemu() {
         -display none \
         >"$workdir/$phase.qemu.log" 2>&1 &
     qemu_pid=$!
+    qemu_starttime=$(process_starttime "$qemu_pid") ||
+        die "$phase QEMU process identity recording failed"
     wait_for_socket "$qmp_socket" 60 ||
         die "$phase QMP socket did not become available"
 }
@@ -387,8 +456,26 @@ wait_for_line "$workdir/install.console.log" \
     die 'Guest never proved its pre-authorization execution hold'
 python3 "$support" qmp-query \
     --socket "$install_qmp" \
+    --output "$evidence/initial.qmp.jsonl" ||
+    die 'Initial pre-authorization QMP capture failed'
+python3 "$support" create-authorization-request \
+    --state-dir "$state_dir" ||
+    die 'Controller-owned authorization request was unavailable'
+python3 "$support" qmp-query \
+    --socket "$install_qmp" \
     --output "$evidence/before-authorization.qmp.jsonl" ||
-    die 'Pre-authorization QMP capture failed'
+    die 'Immediate pre-authorization QMP capture failed'
+sha256sum "$target" >"$evidence/target.before-authorization.sha256"
+sha256sum "$sentinel" >"$evidence/sentinel.before-authorization.sha256"
+python3 "$support" authorize-execution \
+    --state-dir "$state_dir" \
+    --initial-qmp "$evidence/initial.qmp.jsonl" \
+    --before-authorization-qmp "$evidence/before-authorization.qmp.jsonl" \
+    --initial-target-sha "$evidence/target.initial.sha256" \
+    --before-authorization-target-sha "$evidence/target.before-authorization.sha256" \
+    --initial-sentinel-sha "$evidence/sentinel.initial.sha256" \
+    --before-authorization-sentinel-sha "$evidence/sentinel.before-authorization.sha256" ||
+    die 'Real root execution authorization failed'
 
 wait_for_line "$workdir/install.console.log" \
     'ALT install execution: verified_handoff' 900 ||
@@ -400,34 +487,56 @@ python3 "$support" qmp-query \
     --socket "$install_qmp" \
     --output "$evidence/after-install.qmp.jsonl" ||
     die 'Post-install QMP capture failed'
+python3 "$support" attest-controller-history \
+    --state-dir "$state_dir" ||
+    die 'Controller execution history attestation failed'
 stop_qemu "$install_qmp"
 
 postflight_qmp="$workdir/postflight.qmp.sock"
 launch_qemu '' postflight
-wait_for_private_root_evidence "$postflight" 1200 ||
-    die 'Authenticated postflight evidence did not become available'
-wait_for_private_root_evidence "$timeline" 60 ||
-    die 'Completed root authorization timeline did not become available'
+python3 "$support" qmp-boot-query \
+    --socket "$postflight_qmp" \
+    --output "$evidence/postflight-boot.qmp.jsonl" ||
+    die 'Target-only postflight boot identity capture failed'
+python3 "$support" issue-postflight-challenge \
+    --state-dir "$state_dir" \
+    --qmp "$evidence/postflight-boot.qmp.jsonl" ||
+    die 'Fresh postflight boot challenge failed'
+for _attempt in $(seq 1 120); do
+    [[ -S "$workdir/postflight.channel.sock" ]] || {
+        sleep 1
+        continue
+    }
+    socat -u "FILE:$state_dir/postflight-delivery.json" \
+        "UNIX-CONNECT:$workdir/postflight.channel.sock" &&
+        break
+    sleep 1
+done
+for _attempt in $(seq 1 1200); do
+    if python3 "$support" attest-installed \
+        --state-dir "$state_dir" >/dev/null 2>&1; then
+        installed_attested=1
+        break
+    fi
+    sleep 1
+done
+[[ "${installed_attested:-0}" == 1 ]] ||
+    die 'Authenticated first-boot postflight was not installed'
 stop_qemu "$postflight_qmp"
 
-(
-    cd -- "$workdir"
-    sha256sum target.qcow2
-) >"$evidence/target.after.sha256"
-(
-    cd -- "$workdir"
-    sha256sum sentinel.qcow2
-) >"$evidence/sentinel.after.sha256"
-cp -- "$timeline" "$evidence/authorization-timeline.json"
-cp -- "$postflight" "$evidence/postflight.json"
+sha256sum "$target" >"$evidence/target.after.sha256"
+sha256sum "$sentinel" >"$evidence/sentinel.after.sha256"
 printf 'evidence_dir=%s\n' "$evidence"
 python3 "$support" finalize-evidence \
-    --before-qmp "$evidence/before-authorization.qmp.jsonl" \
-    --after-qmp "$evidence/after-install.qmp.jsonl" \
-    --target-before-sha "$evidence/target.before.sha256" \
-    --target-after-sha "$evidence/target.after.sha256" \
-    --sentinel-before-sha "$evidence/sentinel.before.sha256" \
-    --sentinel-after-sha "$evidence/sentinel.after.sha256" \
-    --timeline "$evidence/authorization-timeline.json" \
-    --postflight "$evidence/postflight.json" \
+    --state-dir "$state_dir" \
+    --initial-qmp "$evidence/initial.qmp.jsonl" \
+    --before-authorization-qmp "$evidence/before-authorization.qmp.jsonl" \
+    --after-install-qmp "$evidence/after-install.qmp.jsonl" \
+    --postflight-boot-qmp "$evidence/postflight-boot.qmp.jsonl" \
+    --initial-target-sha "$evidence/target.initial.sha256" \
+    --before-authorization-target-sha "$evidence/target.before-authorization.sha256" \
+    --after-target-sha "$evidence/target.after.sha256" \
+    --initial-sentinel-sha "$evidence/sentinel.initial.sha256" \
+    --before-authorization-sentinel-sha "$evidence/sentinel.before-authorization.sha256" \
+    --after-sentinel-sha "$evidence/sentinel.after.sha256" \
     --output "$evidence/acceptance-receipt.json"

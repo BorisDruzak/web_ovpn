@@ -1,121 +1,114 @@
 # ALT V2 disposable OVMF execution acceptance
 
 This is the destructive-execution acceptance gate for the V2 managed ISO.
-It is intentionally limited to a harness-created generic-OVMF guest. It has
-no option for an existing disk, block device, Proxmox VM, controller
-deployment, or VM 114.
+It is limited to a harness-created generic-OVMF guest. It has no option for
+an existing disk, block device, Proxmox VM, controller deployment, or VM 114.
 
-## Safety boundary
+## Safety and trust boundary
 
-The harness creates:
+The harness creates one 64 GiB writable qcow2 target exposed as `/dev/vda`,
+one 8 MiB read-only qcow2 sentinel, a copied OVMF variable store, a unique
+TAP, and a private work directory. The first boot includes the verified V2
+ISO; the postflight boot has no ISO drive.
 
-- one 64 GiB writable qcow2 target, exposed to the guest as `/dev/vda`;
-- one 8 MiB qcow2 sentinel, attached with `readonly=on`;
-- one copied OVMF variable store;
-- one process-local QEMU instance at a time;
-- one uniquely named TAP and its `dnsmasq` process;
-- one private temporary directory.
+At run creation, the harness creates:
 
-Cleanup validates the harness prefixes before removing its QEMU process, DHCP
-process, TAP, or temporary directory. Caller-supplied ISO, OVMF firmware,
-timeline, postflight report, and evidence root are never removed.
+- an unpredictable 256-bit run ID and 256-bit challenge;
+- a per-run Ed25519 key pair;
+- the QEMU UUID;
+- canonical ISO, target, and sentinel paths;
+- SHA-256 and device/inode/size identities for all three artifacts.
 
-The installation boot includes the verified V2 ISO. The postflight boot
-starts the same target and sentinel without any ISO drive. The harness does
-not generate or publish an ISO and does not deploy a controller.
+Every QMP transcript must contain the exact request IDs and exact
+`query-block` `inserted.file` paths. SHA records must name those same
+canonical files and retain their device/inode creation identity.
 
-## Required external inputs
+Cleanup records the work-directory device/inode and TAP name/ifindex
+immediately after creation. It removes the TAP and directory only if those
+identities still match. A replacement is preserved for investigation.
 
-The ISO must already have passed
-`deploy/alt-linux/iso/agent-v2/verify-managed-iso.sh`. The root-only local
-acceptance controller must write two regular, root-owned mode `0600` files:
+## Authorization sequence
 
-1. an ordered authorization timeline after the real
-   `authorize-execution` operation for exactly `/dev/vda`;
-2. an authenticated postflight result from the no-ISO target boot.
+The harness does not accept timeline, authorization, session, target, or
+postflight files from its caller.
 
-The timeline has this exact schema:
+1. The guest reaches its pre-authorization hold.
+2. QMP and SHA evidence are captured with every target and sentinel write
+   counter at zero.
+3. `create-authorization-request` reads the one local controller session in
+   `plan_published`/`preflight_ready`, hashes its immutable `plan.json`, and
+   writes the exact `/dev/vda` request under the private run state.
+4. A second immediate QMP and SHA capture must still show zero writes and
+   unchanged files.
+5. As real root, the support program calls the production
+   `alt_deploy.cli.main` `authorize-execution` command with the exact derived
+   plan, inventory, disk fingerprint, session, and `/dev/vda` values.
+6. The returned execution ID and `authorized` state are checked against the
+   authoritative repository and signed as attestation 1.
+7. The authenticated V2 TLS service records the single-use
+   `claimed -> handoff_started -> installer_started` transitions. Their
+   persisted timestamps are signed as attestations 2 through 4.
 
-```json
-{
-  "schema_version": 1,
-  "session_id": "install-YYYYMMDDThhmmssZ-1234abcd",
-  "target_disk": "/dev/vda",
-  "operator_uid": 0,
-  "waiting_for_authorization_at": "UTC ISO timestamp",
-  "preflight_ready_at": "UTC ISO timestamp",
-  "root_authorized_at": "UTC ISO timestamp",
-  "execution_claimed_at": "UTC ISO timestamp",
-  "verified_handoff_at": "UTC ISO timestamp",
-  "installer_completed_at": "UTC ISO timestamp",
-  "postflight_authenticated_at": "UTC ISO timestamp"
-}
-```
+Console milestones are only liveness cues. They cannot authorize execution
+or satisfy the receipt.
 
-Every timestamp must be strictly later than the preceding one. The postflight
-document has the exact keys `schema_version`, `session_id`, `authenticated`,
-`boot_source`, `state`, and `reported_at`; accepted values are
-`authenticated=true`, `boot_source=target-without-iso`, and
-`state=installed`.
+## Authenticated target-only postflight
 
-The local acceptance integration must emit these serial milestones only after
-the corresponding real conditions:
+The held `install-scripts.tar` installs a one-shot first-boot service and the
+public execution CA into the target. The postflight QEMU process exposes a
+virtio serial port named `alt.install.postflight`.
 
-```text
-terminal=execution_pending
-ALT install execution: verified_handoff
-ALT install execution: installer_completed
-```
+After QEMU is running, the harness queries QMP `query-status`, `query-uuid`,
+and `query-block`. The response IDs must be exact, the UUID must match this
+run, target and sentinel files must match, and no ISO/removable medium may be
+inserted. Only then does the harness generate a fresh nonce and sign
+attestation 5. It sends that delivery document over the live virtio port.
 
-The first line is captured before execution authorization. The latter two
-mean the signed bundle and repeated disk preflight completed, the relay was
-ready, handoff was durably recorded, and the stock installer completed.
+The newly booted installed system adds its kernel boot ID and UTC timestamp,
+then posts the exact document to the real TLS
+`/execution/postflight` endpoint. The server verifies the per-run Ed25519
+chain and consumes the nonce once before making the real
+`installer_started -> installed` transition. Replays, stale prior-run
+documents, wrong UUIDs, wrong challenges, and pre-existing files fail
+closed. The final repository state and authenticated boot identity become
+attestation 6.
 
 ## Running
 
-First inspect the host without creating anything:
+Inspect the host without creating resources:
 
 ```bash
 deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh \
   --check-prerequisites
 ```
 
-The check enumerates every missing command, Python capability, and real-root
-requirement. It prints no PASS line when anything is absent.
-
-On a dedicated Linux acceptance host:
+On a dedicated Linux acceptance host with a locally prepared V2 install
+session and controller settings:
 
 ```bash
 sudo deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh \
   --iso /acceptance/alt-kworkstation-11.4-agent-v2.iso \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
   --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
-  --timeline /run/alt-v2-acceptance/authorization-timeline.json \
-  --postflight /run/alt-v2-acceptance/postflight.json \
+  --controller-credential-key /run/alt-deploy/execution-credential.key \
   --evidence-dir /var/lib/alt-v2-acceptance
 ```
 
-Do not use a workstation with an existing `192.168.100.17/24` test network.
-The command deliberately has no caller-supplied target or TAP argument.
+Do not use a host with an existing `192.168.100.17/24` test network. The
+command deliberately has no caller-supplied target, TAP, session,
+authorization request, timeline, or postflight result.
 
-## Receipt and acceptance rule
+## Receipt rule
 
-`agent_v2_test_api.py finalize-evidence` parses both QMP block graphs, not
-console summaries. Acceptance requires:
+`finalize-evidence` accepts only the six-entry signed run chain. It also
+rechecks the initial, immediate-before-authorization, after-install, and
+target-only boot QMP transcripts plus all bound SHA records.
 
-- target and sentinel counters are zero before authorization;
-- the target is writable and has positive QMP `wr_bytes` after installation;
-- the target qcow2 SHA-256 changes;
-- the sentinel is QMP-confirmed read-only at both captures;
-- every sentinel graph counter stays zero and its SHA-256 is unchanged;
-- the timeline is exact, root-authorized, and strictly ordered;
-- postflight is authenticated, reports `installed`, and comes from the
-  target-only boot.
-
-The non-secret receipt contains only the session ID, target path, timestamps,
-selected QMP write bytes, read-only flags, before/after SHA-256 values, and
-postflight result. It contains no Bearer credential, password/hash, signing
-private key, or TLS private key.
+PASS requires zero target and sentinel writes through authorization,
+positive target writes after installation, zero sentinel writes at every
+graph level, a changed target SHA, an unchanged sentinel SHA, and the
+authenticated no-ISO `installed` transition for the same run, VM, session,
+controller execution, boot nonce, and boot ID.
 
 The only successful terminal line is:
 
@@ -123,12 +116,7 @@ The only successful terminal line is:
 PASS: root-authorized install wrote only the disposable target; authenticated postflight installed
 ```
 
-Contract tests do not constitute this acceptance. Save the receipt and PASS
-line only from a completed Linux/OVMF run.
-
-## Current host result
-
-The Windows development host cannot run the acceptance. Its prerequisite
-check reports the absent QEMU/ISO tooling and the real-root/TAP requirement.
-No ISO was generated, no QEMU guest was started, no controller was deployed,
-and no execution PASS is claimed here.
+Contract tests do not constitute this acceptance. The Windows development
+host cannot provide KVM/QEMU, Linux root/TAP, or AF_UNIX prerequisites. No
+ISO was generated, no guest was started, no controller was deployed, and no
+execution PASS is claimed by the implementation tests.

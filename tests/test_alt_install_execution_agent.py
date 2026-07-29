@@ -82,6 +82,9 @@ helper_disk_preflight() {{
 protocol_handoff_started() {{
     printf 'handoff-must-not-run\\n' >> '{actions.as_posix()}'
 }}
+protocol_installer_started() {{
+    printf 'installer-must-not-run\\n' >> '{actions.as_posix()}'
+}}
 start_execution_relay() {{
     printf 'relay-must-not-run\\n' >> '{actions.as_posix()}'
 }}
@@ -111,6 +114,7 @@ protocol_claim_execution() {{ record claim; }}
 helper_verify_plan() {{ record verify-plan; }}
 helper_disk_preflight() {{ record disk-preflight; }}
 protocol_handoff_started() {{ record handoff-started; }}
+protocol_installer_started() {{ record installer-started; }}
 start_execution_relay() {{ record serve-execution-metadata; }}
 agent_run
 """
@@ -126,6 +130,7 @@ agent_run
         "disk-preflight",
         "serve-execution-metadata",
         "handoff-started",
+        "installer-started",
     ]
 
 
@@ -199,6 +204,9 @@ helper_disk_preflight() {{ :; }}
 protocol_handoff_started() {{
     printf 'handoff-started\\n' >> '{actions.as_posix()}'
 }}
+protocol_installer_started() {{
+    printf 'installer-started\\n' >> '{actions.as_posix()}'
+}}
 agent_run
 printf 'agent-returned\\n' >> '{actions.as_posix()}'
 """
@@ -215,6 +223,7 @@ printf 'agent-returned\\n' >> '{actions.as_posix()}'
         "relay-started",
         "relay-bound",
         "handoff-started",
+        "installer-started",
         "agent-returned",
     ]
 
@@ -241,6 +250,9 @@ helper_verify_plan() {{ :; }}
 helper_disk_preflight() {{ :; }}
 protocol_handoff_started() {{
     printf 'handoff-must-not-run\\n' >> '{actions.as_posix()}'
+}}
+protocol_installer_started() {{
+    printf 'installer-must-not-run\\n' >> '{actions.as_posix()}'
 }}
 agent_run
 """
@@ -269,6 +281,7 @@ agent_run
         ("verify-plan", "plan_verification_failed"),
         ("disk-preflight", "disk_preflight_failed"),
         ("handoff-started", "handoff_record_failed"),
+        ("installer-started", "installer_record_failed"),
         ("serve-execution-metadata", "relay_failed"),
     ],
 )
@@ -291,6 +304,7 @@ protocol_claim_execution() {{ run_action claim; }}
 helper_verify_plan() {{ run_action verify-plan; }}
 helper_disk_preflight() {{ run_action disk-preflight; }}
 protocol_handoff_started() {{ run_action handoff-started; }}
+protocol_installer_started() {{ run_action installer-started; }}
 start_execution_relay() {{ run_action serve-execution-metadata; }}
 agent_run
 """

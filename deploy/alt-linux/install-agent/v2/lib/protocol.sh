@@ -49,7 +49,7 @@ execution_protocol_post() {
     local -a arguments
 
     case "$action:$expected_state" in
-        claim:claimed|handoff-started:handoff_started) ;;
+        claim:claimed|handoff-started:handoff_started|installer-started:installer_started) ;;
         *) return 1 ;;
     esac
     session=$(execution_session_id) || return 1
@@ -122,4 +122,8 @@ protocol_claim_execution() {
 
 protocol_handoff_started() {
     execution_protocol_post handoff-started handoff_started
+}
+
+protocol_installer_started() {
+    execution_protocol_post installer-started installer_started
 }

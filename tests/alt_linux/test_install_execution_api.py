@@ -49,6 +49,8 @@ class _ClaimService:
     def __init__(self) -> None:
         self.claimed: list[str] = []
         self.handoffs: list[str] = []
+        self.installers: list[str] = []
+        self.postflights: list[str] = []
 
     def claim(self, session_id: str) -> dict[str, object]:
         if self.claimed:
@@ -69,6 +71,28 @@ class _ClaimService:
             )
         self.handoffs.append(session_id)
         return {"execution": {"state": "handoff_started"}}
+
+    def installer_started(self, session_id: str) -> dict[str, object]:
+        if self.handoffs != [session_id] or self.installers:
+            raise ControlError(
+                "execution_installer_conflict",
+                "Install execution installer cannot be recorded",
+                4,
+            )
+        self.installers.append(session_id)
+        return {"execution": {"state": "installer_started"}}
+
+    def postflight_installed(
+        self, session_id: str
+    ) -> dict[str, object]:
+        if self.installers != [session_id] or self.postflights:
+            raise ControlError(
+                "execution_postflight_conflict",
+                "Install execution postflight cannot be recorded",
+                4,
+            )
+        self.postflights.append(session_id)
+        return {"execution": {"state": "installed"}}
 
 
 def _settings_in(
@@ -452,6 +476,100 @@ def test_handoff_started_route_is_contiguous_single_use_and_bodyless(
     assert replay[0] == 409
     assert query[0] == 404
     assert claims.handoffs == [SESSION_ID]
+
+
+def test_installer_started_and_signed_postflight_are_real_state_transitions(
+    tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
+) -> None:
+    old_server, material, claims, settings = tls_server
+    old_server.server_close()
+    expected = {
+        "boot_attestation": "A" * 86,
+        "boot_id": "11111111-2222-3333-4444-555555555555",
+        "boot_nonce": "B" * 43,
+        "challenge": "C" * 43,
+        "reported_at": "2026-07-29T12:23:00+00:00",
+        "run_id": "run-" + "d" * 64,
+        "schema_version": 1,
+        "vm_instance_id": "22222222-3333-4444-5555-666666666662",
+    }
+    verified: list[tuple[str, dict[str, object]]] = []
+
+    def verify_postflight(
+        session_id: str, document: dict[str, object]
+    ) -> bool:
+        verified.append((session_id, document))
+        return document == expected
+
+    server = create_execution_tls_server(
+        settings,
+        material,
+        listen_port=0,
+        postflight_verifier=verify_postflight,
+    )
+    root = f"/v2/install-sessions/{SESSION_ID}/execution"
+    encoded = json.dumps(expected).encode("utf-8")
+    stale = json.dumps(expected | {"boot_nonce": "Z" * 43}).encode(
+        "utf-8"
+    )
+
+    with _running(server):
+        assert _request(
+            server, material, "POST", f"{root}/claim", bearer=CREDENTIAL
+        )[0] == 200
+        assert _request(
+            server,
+            material,
+            "POST",
+            f"{root}/handoff-started",
+            bearer=CREDENTIAL,
+        )[0] == 200
+        installer = _request(
+            server,
+            material,
+            "POST",
+            f"{root}/installer-started",
+            bearer=CREDENTIAL,
+        )
+        stale_result = _request(
+            server,
+            material,
+            "POST",
+            f"{root}/postflight",
+            body=stale,
+        )
+        accepted = _request(
+            server,
+            material,
+            "POST",
+            f"{root}/postflight",
+            body=encoded,
+        )
+        replay = _request(
+            server,
+            material,
+            "POST",
+            f"{root}/postflight",
+            body=encoded,
+        )
+
+    assert json.loads(installer[2]) == {
+        "execution": {"state": "installer_started"},
+        "status": "ok",
+    }
+    assert stale_result[0] == 403
+    assert json.loads(accepted[2]) == {
+        "execution": {"state": "installed"},
+        "status": "ok",
+    }
+    assert replay[0] == 409
+    assert claims.installers == [SESSION_ID]
+    assert claims.postflights == [SESSION_ID]
+    assert verified == [
+        (SESSION_ID, expected | {"boot_nonce": "Z" * 43}),
+        (SESSION_ID, expected),
+        (SESSION_ID, expected),
+    ]
 
 
 def test_reads_require_a_current_execution_authorization(

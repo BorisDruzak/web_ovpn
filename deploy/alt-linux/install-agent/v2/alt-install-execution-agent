@@ -143,6 +143,10 @@ agent_run() {
         stop_execution_relay
         terminal_hold handoff_record_failed
     fi
+    if ! protocol_installer_started; then
+        stop_execution_relay
+        terminal_hold installer_record_failed
+    fi
 }
 
 if [[ "${ALT_INSTALL_AGENT_LIBRARY_ONLY:-0}" != 1 ]]; then

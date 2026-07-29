@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,9 +42,16 @@ _CLAIM_PATH_RE = re.compile(
 _HANDOFF_PATH_RE = re.compile(
     rf"^/v2/install-sessions/({_SESSION_ID})/execution/handoff-started$"
 )
+_INSTALLER_STARTED_PATH_RE = re.compile(
+    rf"^/v2/install-sessions/({_SESSION_ID})/execution/installer-started$"
+)
+_POSTFLIGHT_PATH_RE = re.compile(
+    rf"^/v2/install-sessions/({_SESSION_ID})/execution/postflight$"
+)
 _MAX_MANIFEST_BYTES = 1024 * 1024
 _MAX_SIGNATURE_BYTES = 16 * 1024
 _MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+_MAX_POSTFLIGHT_BYTES = 4096
 
 
 def _http_status(exc: ControlError) -> int:
@@ -64,6 +73,9 @@ def create_execution_tls_server(
     *,
     listen_port: int | None = None,
     credential_key_path: Path | None = None,
+    postflight_verifier: (
+        Callable[[str, dict[str, object]], bool] | None
+    ) = None,
 ) -> ThreadingHTTPServer:
     repository = InstallSessionRepository(settings)
     execution = ExecutionAuthorizationService(
@@ -220,6 +232,8 @@ def create_execution_tls_server(
                 _ARTIFACT_PATH_RE,
                 _CLAIM_PATH_RE,
                 _HANDOFF_PATH_RE,
+                _INSTALLER_STARTED_PATH_RE,
+                _POSTFLIGHT_PATH_RE,
             ):
                 match = pattern.fullmatch(path)
                 if match is not None:
@@ -307,11 +321,114 @@ def create_execution_tls_server(
                 return
             claim_match = _CLAIM_PATH_RE.fullmatch(self.path)
             handoff_match = _HANDOFF_PATH_RE.fullmatch(self.path)
-            match = claim_match or handoff_match
+            installer_match = _INSTALLER_STARTED_PATH_RE.fullmatch(
+                self.path
+            )
+            postflight_match = _POSTFLIGHT_PATH_RE.fullmatch(self.path)
+            match = (
+                claim_match
+                or handoff_match
+                or installer_match
+                or postflight_match
+            )
             if match is None:
                 self._reject_method()
                 return
             session_id = match.group(1)
+            if postflight_match is not None:
+                if postflight_verifier is None:
+                    self._error(404, "not_found")
+                    return
+                if self.headers.get("Transfer-Encoding"):
+                    self._error(400, "postflight_body_invalid")
+                    return
+                try:
+                    content_length = int(
+                        self.headers.get("Content-Length", "0")
+                    )
+                except ValueError:
+                    self._error(400, "postflight_body_invalid")
+                    return
+                if not 1 <= content_length <= _MAX_POSTFLIGHT_BYTES:
+                    self._error(400, "postflight_body_invalid")
+                    return
+                raw = self.rfile.read(content_length)
+
+                def strict_object(
+                    pairs: list[tuple[str, object]],
+                ) -> dict[str, object]:
+                    result: dict[str, object] = {}
+                    for name, value in pairs:
+                        if name in result:
+                            raise ValueError
+                        result[name] = value
+                    return result
+
+                try:
+                    document = json.loads(
+                        raw.decode("utf-8"),
+                        object_pairs_hook=strict_object,
+                    )
+                except (
+                    UnicodeDecodeError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ):
+                    self._error(400, "postflight_body_invalid")
+                    return
+                if (
+                    not isinstance(document, dict)
+                    or set(document)
+                    != {
+                        "boot_attestation",
+                        "boot_id",
+                        "boot_nonce",
+                        "challenge",
+                        "reported_at",
+                        "run_id",
+                        "schema_version",
+                        "vm_instance_id",
+                    }
+                    or document.get("schema_version") != 1
+                    or type(document.get("schema_version")) is not int
+                ):
+                    self._error(400, "postflight_body_invalid")
+                    return
+                try:
+                    verified = postflight_verifier(
+                        session_id, document
+                    )
+                except Exception:
+                    verified = False
+                if verified is not True:
+                    self._error(
+                        403, "postflight_attestation_forbidden"
+                    )
+                    return
+                try:
+                    updated = execution.postflight_installed(
+                        session_id
+                    )
+                except ControlError as exc:
+                    self._error(_http_status(exc), exc.code)
+                    return
+                execution_status = updated.get("execution")
+                if (
+                    not isinstance(execution_status, dict)
+                    or execution_status.get("state") != "installed"
+                ):
+                    self._error(
+                        500, "execution_transition_invalid"
+                    )
+                    return
+                self._send_json(
+                    200,
+                    {
+                        "status": "ok",
+                        "execution": {"state": "installed"},
+                    },
+                )
+                return
             if not self._authorize(session_id):
                 return
             if self.headers.get("Transfer-Encoding"):
@@ -331,7 +448,11 @@ def create_execution_tls_server(
                 updated = (
                     execution.claim(session_id)
                     if claim_match is not None
-                    else execution.handoff_started(session_id)
+                    else (
+                        execution.handoff_started(session_id)
+                        if handoff_match is not None
+                        else execution.installer_started(session_id)
+                    )
                 )
             except ControlError as exc:
                 self._error(_http_status(exc), exc.code)
@@ -345,7 +466,11 @@ def create_execution_tls_server(
             expected_state = (
                 "claimed"
                 if claim_match is not None
-                else "handoff_started"
+                else (
+                    "handoff_started"
+                    if handoff_match is not None
+                    else "installer_started"
+                )
             )
             if state != expected_state:
                 self._error(500, "execution_transition_invalid")
@@ -381,6 +506,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--listen-address", required=True)
     parser.add_argument("--listen-port", required=True, type=int)
     parser.add_argument("--credential-key", required=True)
+    parser.add_argument(
+        "--acceptance-state-dir",
+        type=Path,
+        help="Enable the disposable-QEMU signed postflight verifier",
+    )
     parsed = parser.parse_args(argv)
     if parsed.listen_address != INSTALL_EXECUTION_LISTEN_ADDRESS:
         parser.error("listen address must be 192.168.100.17")
@@ -393,11 +523,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         parser.error("configured V2 listener does not match fixed endpoint")
     material = load_execution_tls_material(settings)
+    verifier = None
+    if parsed.acceptance_state_dir is not None:
+        qemu_root = (
+            Path(__file__).resolve().parents[1] / "qemu"
+        )
+        sys.path.insert(0, str(qemu_root))
+        from agent_v2_test_api import verify_postflight_document
+
+        verifier = functools.partial(
+            verify_postflight_document,
+            parsed.acceptance_state_dir.resolve(strict=True),
+        )
     server = create_execution_tls_server(
         settings,
         material,
         listen_port=parsed.listen_port,
         credential_key_path=Path(parsed.credential_key),
+        postflight_verifier=verifier,
     )
     try:
         server.serve_forever()

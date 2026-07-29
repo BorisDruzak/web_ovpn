@@ -2,165 +2,140 @@
 
 ## Result
 
-Implemented the Task 6 acceptance harness and evidence gate without starting
-QEMU, generating an ISO, deploying a controller, contacting Proxmox, or
-writing any real target.
+Implemented the disposable QEMU execution contract and the review fixes
+without starting QEMU, generating an ISO, deploying a controller, contacting
+Proxmox, or writing a real target.
 
-The implementation adds:
+The executable acceptance path now:
 
-- `run-agent-v2-execution-acceptance.sh`
-  - has no target, block-device, Proxmox VM, controller, or TAP input;
-  - creates a 64 GiB writable qcow2 target and 8 MiB read-only qcow2
-    sentinel;
-  - attaches them as distinct QMP devices named `target` and `sentinel`;
-  - captures both devices before authorization and after stock-installer
-    completion;
-  - boots installation with the verified V2 ISO, then boots the same target
-    without an ISO for postflight;
-  - requires root-owned mode `0600` authorization/postflight evidence;
-  - creates and validates ownership of its QEMU process, DHCP process, TAP,
-    copied OVMF variables, and temporary directory before cleanup.
-- `agent_v2_test_api.py`
-  - captures bounded `query-blockstats` plus `query-block` transcripts over
-    QMP;
-  - reconstructs and validates both complete reported qcow2 graphs;
-  - rejects any target write before authorization, any sentinel graph write,
-    a writable sentinel, a read-only target, missing target writes, unchanged
-    target SHA-256, or changed sentinel SHA-256;
-  - strictly validates the exact root-authorization timeline and
-    authenticated no-ISO postflight schema;
-  - writes one exclusive non-secret receipt and prints the PASS line only
-    after every gate succeeds.
-- `tests/test_alt_install_execution_qemu.py`
-  - exercises the verifier through its CLI with real JSON/SHA files;
-  - mutation-tests the write, topology, hash, timeline, and authentication
-    gates;
-  - executes the shell prerequisite, safety-description, argument-rejection,
-    disposable-storage, and cleanup interfaces.
-- `docs/verification/alt-install-execution-v2-qemu.md`
-  - documents the generic-OVMF-only scope, exact schemas, execution sequence,
-    ownership boundary, receipt, invocation, and distinction between contract
-    tests and an actual accepted QEMU run.
+- creates a per-run Ed25519 trust anchor, unpredictable run/challenge, QEMU
+  UUID, and exact ISO/target/sentinel path, SHA, and file identities;
+- derives the only authorization request from the one authoritative local
+  `plan_published`/`preflight_ready` controller session;
+- captures initial and immediate-before-authorization QMP/SHA evidence and
+  requires all target and sentinel graph writes to remain zero;
+- invokes the production root `alt_deploy.cli.main authorize-execution`
+  command with exact derived arguments and checks its execution ID plus the
+  persisted `authorized` state;
+- records real authenticated
+  `claimed -> handoff_started -> installer_started -> installed`
+  controller transitions;
+- boots the target without the ISO, proves its running QMP UUID/block
+  identity, then issues a fresh signed single-use boot nonce;
+- installs a minimal first-boot reporter through `install-scripts.tar`; the
+  reporter sends its real kernel boot ID through the V2 TLS postflight API;
+- accepts PASS only from the exact six-entry signed run/session/controller
+  chain and the four bound QMP/SHA evidence phases;
+- records work-directory device/inode and TAP name/ifindex at creation and
+  refuses cleanup if either creation identity changes.
+
+The old caller-supplied `--timeline` and `--postflight` route was removed.
+Console prefixes are no longer evidence or authorization.
 
 ## TDD evidence
 
-The first required focused run was executed after adding the tests and before
-either production file existed:
+Initial Task 6 red:
 
 ```text
 pytest tests/test_alt_install_execution_qemu.py -q
 17 failed, 1 error
 ```
 
-The setup error and all failures were the expected missing
-`agent_v2_test_api.py` and
-`run-agent-v2-execution-acceptance.sh` interfaces.
-
-The first verifier slice then passed:
+Review-fix red slices:
 
 ```text
-pytest tests/test_alt_install_execution_qemu.py -q -k 'evidence or receipt'
-11 passed, 7 deselected
+pytest tests/test_alt_install_execution_qemu.py -q -k \
+  'run_state or bound_qmp or bound_sha or signed_chain or authorization_boundary or cleanup_rejects or root_authorization'
+7 failed
+
+pytest --noconftest \
+  tests/alt_linux/test_install_execution.py::test_installer_and_postflight_are_contiguous_single_use_transitions \
+  tests/alt_linux/test_install_execution_api.py::test_installer_started_and_signed_postflight_are_real_state_transitions -q
+2 failed
+
+pytest tests/test_alt_install_execution_agent.py -q
+3 failed, 10 passed
 ```
 
-Final focused verification:
+The failures were the expected missing run trust state, exact QMP/SHA
+bindings, real installer/postflight transitions, and installer-started agent
+protocol call.
+
+Review-fix green:
 
 ```text
 pytest tests/test_alt_install_execution_qemu.py -q
-18 passed
+20 passed
+
+pytest --noconftest \
+  tests/alt_linux/test_install_session_cli.py \
+  tests/alt_linux/test_install_execution.py \
+  tests/alt_linux/test_install_execution_api.py -q
+56 passed, 5 skipped
+
+pytest tests/test_alt_install_execution_agent.py -q
+13 passed
 ```
 
-Pytest emitted only the repository's existing `pytest-asyncio` default-loop-
-scope deprecation warning.
+The skips are existing POSIX/root-only cases on Windows. Pytest emitted only
+the repository's existing `pytest-asyncio` loop-scope deprecation warning.
 
 Static verification:
 
 ```text
-bash -n deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh
+python -m py_compile <changed Python files>
 exit 0
 
-python -m py_compile \
-  deploy/alt-linux/qemu/agent_v2_test_api.py \
-  tests/test_alt_install_execution_qemu.py
-exit 0
-
-ruff check \
-  deploy/alt-linux/qemu/agent_v2_test_api.py \
-  tests/test_alt_install_execution_qemu.py
+ruff check <changed production and focused test files>
 All checks passed!
+
+bash -n <changed shell files>
+exit 0
 
 git diff --check
 exit 0
 ```
 
-## Host prerequisite evidence
-
-The required command was run on this Windows development host:
-
-```text
-deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh --check-prerequisites
-
-Missing required command: qemu-system-x86_64
-Missing required command: qemu-img
-Missing required command: xorriso
-Missing required command: cpio
-Missing required command: socat
-Missing required command: ip
-Missing required command: dnsmasq
-Required Python cryptography/AF_UNIX support is unavailable
-Real root execution is required for execution authorization and TAP ownership
-exit 1
-```
-
-The check enumerated all observed missing prerequisites and printed neither
-the prerequisites-available line nor the execution PASS line.
-
 ## Specification self-review
 
-Verdict: **PASS for the acceptance contract; no execution acceptance
+Verdict: **PASS for the implementation contract; no QEMU execution PASS
 claimed.**
 
-- The only disk eligible for writes is a harness-created qcow2 exposed as
-  `/dev/vda`.
-- The sentinel is independently attached `readonly=on`, independently
-  identified in QMP, graph-checked at both snapshots, and hash-checked.
-- Zero writes are required before the root-authorization timeline; positive
-  target writes are required after installer completion.
-- The timeline binds operator UID `0`, `/dev/vda`, the canonical session ID,
-  and strictly ordered waiting, preflight, authorization, claim, verified
-  handoff, installer, and authenticated-postflight events.
-- The postflight must be authenticated, `installed`, and identified as
-  `target-without-iso`.
-- The receipt contains no credential, password/hash, Bearer value, private
-  key, or private material.
-- VM 114, caller targets, Proxmox and controller deployment are outside the
-  CLI and outside the evidence schema.
-- The host gate failed honestly; no PASS receipt was produced.
+- C1: the root boundary is the production CLI, after two immediate,
+  exact-identity, zero-write QMP/SHA snapshots; execution ID and state are
+  persisted in signed evidence.
+- C2: every run has unpredictable trust material and exact
+  ISO/VM/target/sentinel/controller bindings. The actual no-ISO QMP boot
+  precedes nonce generation. The real first-boot component and TLS API
+  consume it once; stale or replayed evidence is rejected.
+- I3: QMP response IDs, `inserted.file`, canonical SHA filenames, and
+  device/inode file identities are exact.
+- I4: cleanup uses recorded work-directory device/inode and TAP ifindex, not
+  a name prefix alone; replacements are preserved.
+- There is no CLI route for an existing disk, infrastructure VM, Proxmox, VM
+  114, an arbitrary authorization request, a caller timeline, or a caller
+  postflight result.
 
 ## Quality and safety self-review
 
 Verdict: **PASS**
 
-- Tests assert behavior at CLI/filesystem boundaries rather than grepping
-  implementation text.
-- QMP evidence is bounded, duplicate-device evidence is rejected, mandatory
-  counters and parent/backing topology are required, and every write counter
-  is type/range checked.
-- JSON parsing rejects duplicate keys and exact-schema mutations.
-- Receipt creation is exclusive and refuses overwrite.
-- The shell contract test proves both disposable images are created only
-  below one private temporary directory and that validated cleanup removes
-  it.
-- Runtime cleanup targets only the recorded process IDs, an `aiv2<digits>`
-  TAP that exists, and the validated `.alt-agent-v2-qemu-work.*` directory.
-- Caller evidence and firmware/ISO inputs are never deleted.
+- Bounded strict JSON rejects duplicate keys and ambiguous evidence.
+- Per-run signatures bind sequence, previous-attestation digest, UTC
+  timestamps, run, challenge, key ID, controller execution, VM, boot nonce,
+  and boot ID.
+- QMP requires exact response IDs and checks all target/sentinel graph write
+  counters; nested sentinel writes fail.
+- The receipt is exclusive and contains no Bearer credential, password/hash,
+  TLS key, or attestation private key.
+- The API's postflight verifier is disabled in normal service startup and is
+  enabled only with the harness-owned acceptance state directory.
+- Cleanup preserves resources when ownership identity cannot be proven.
 
-## Remaining acceptance work
+## Remaining external acceptance work
 
-An actual accepted run still requires a dedicated Linux/root host with the
-listed QEMU, OVMF, TAP/DHCP, ISO verification, and AF_UNIX prerequisites; a
-previously built and verified V2 ISO; and the local root-only acceptance
-controller integration that emits the documented serial milestones and
-root-owned timeline/postflight documents. None of those external
-preconditions exists on this host, so this task makes no claim that ALT was
-installed in QEMU.
+An actual accepted run still requires a dedicated Linux/root host with QEMU,
+OVMF, TAP/DHCP, AF_UNIX, the held release archives containing the reporter, a
+previously built verified V2 ISO, and a locally prepared V2 session. Those
+preconditions are absent on this Windows host, so no QEMU run or PASS receipt
+was produced.

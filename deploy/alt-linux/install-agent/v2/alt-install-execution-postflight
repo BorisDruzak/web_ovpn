@@ -1,0 +1,114 @@
+#!/usr/bin/python3
+"""One-shot authenticated report from the freshly booted installed system."""
+
+from __future__ import annotations
+
+import json
+import re
+import ssl
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import NoReturn
+from urllib.request import Request, urlopen
+from uuid import UUID
+
+
+PORT = Path("/dev/virtio-ports/alt.install.postflight")
+CA = Path("/etc/alt-install/execution-ca.pem")
+MAXIMUM = 64 * 1024
+SESSION_RE = re.compile(r"install-\d{8}T\d{6}Z-[0-9a-f]{8}")
+NONCE_RE = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+def fail(message: str) -> NoReturn:
+    print(f"alt-install-postflight: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def main() -> int:
+    with PORT.open("rb", buffering=0) as stream:
+        raw = stream.read(MAXIMUM + 1)
+    if not 1 <= len(raw) <= MAXIMUM:
+        fail("challenge is absent or oversized")
+    try:
+        delivery = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("challenge is invalid")
+    if (
+        not isinstance(delivery, dict)
+        or set(delivery)
+        != {
+            "boot_attestation",
+            "boot_nonce",
+            "challenge",
+            "controller_url",
+            "run_id",
+            "schema_version",
+            "session_id",
+            "vm_instance_id",
+        }
+        or delivery.get("schema_version") != 1
+        or delivery.get("controller_url")
+        != "https://192.168.100.17:18092"
+        or not isinstance(delivery.get("session_id"), str)
+        or not SESSION_RE.fullmatch(delivery["session_id"])
+        or not isinstance(delivery.get("boot_nonce"), str)
+        or not NONCE_RE.fullmatch(delivery["boot_nonce"])
+    ):
+        fail("challenge binding is invalid")
+    try:
+        UUID(str(delivery["vm_instance_id"]))
+        boot_id = str(
+            UUID(
+                Path("/proc/sys/kernel/random/boot_id")
+                .read_text(encoding="ascii")
+                .strip()
+            )
+        )
+    except (OSError, UnicodeDecodeError, ValueError):
+        fail("boot identity is unavailable")
+    document = {
+        "boot_attestation": delivery["boot_attestation"],
+        "boot_id": boot_id,
+        "boot_nonce": delivery["boot_nonce"],
+        "challenge": delivery["challenge"],
+        "reported_at": datetime.now(timezone.utc).isoformat(),
+        "run_id": delivery["run_id"],
+        "schema_version": 1,
+        "vm_instance_id": delivery["vm_instance_id"],
+    }
+    body = (
+        json.dumps(
+            document,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("ascii")
+    request = Request(
+        (
+            f"{delivery['controller_url']}/v2/install-sessions/"
+            f"{delivery['session_id']}/execution/postflight"
+        ),
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    context = ssl.create_default_context(cafile=str(CA))
+    with urlopen(request, context=context, timeout=15) as response:
+        response_body = response.read(4097)
+        if response.status != 200 or len(response_body) > 4096:
+            fail("controller rejected postflight")
+        result = json.loads(response_body.decode("utf-8"))
+    if result != {
+        "execution": {"state": "installed"},
+        "status": "ok",
+    }:
+        fail("controller response is invalid")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

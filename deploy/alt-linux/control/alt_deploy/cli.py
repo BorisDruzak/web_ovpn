@@ -309,6 +309,9 @@ def _execution_result(
     return {
         "status": "ok",
         "session": {
+            "execution_id": (
+                f"{session_id}:execution-{int(execution['revision']):04d}"
+            ),
             "session_id": session_id,
             "execution_state": state,
         },

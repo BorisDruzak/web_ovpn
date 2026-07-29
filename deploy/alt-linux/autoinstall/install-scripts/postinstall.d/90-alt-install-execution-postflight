@@ -1,0 +1,22 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+target_root=${ALT_INSTALL_TARGET_ROOT:-${DESTDIR:-${1:-}}}
+[[ "$target_root" == /* && "$target_root" != / ]] || {
+    printf '%s\n' 'postflight installer: target root is required' >&2
+    exit 1
+}
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+reporter="$source_root/payload/alt-install-execution-postflight"
+ca_source=/etc/alt-install/execution-ca.pem
+[[ -f "$reporter" && ! -L "$reporter" ]] || exit 1
+[[ -f "$ca_source" && ! -L "$ca_source" ]] || exit 1
+
+install -D -m 0755 -- "$reporter" \
+    "$target_root/usr/libexec/alt-install-execution-postflight"
+install -D -m 0644 -- "$ca_source" \
+    "$target_root/etc/alt-install/execution-ca.pem"
+install -D -m 0644 -- "$source_root/payload/alt-install-execution-postflight.service" \
+    "$target_root/etc/systemd/system/alt-install-execution-postflight.service"
+systemctl --root "$target_root" enable \
+    alt-install-execution-postflight.service >/dev/null

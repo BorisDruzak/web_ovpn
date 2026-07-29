@@ -1173,3 +1173,77 @@ class ExecutionAuthorizationService:
                 session_id, updated, allow_execution=True
             )
             return updated
+
+    def installer_started(self, session_id: str) -> dict[str, object]:
+        lock = nullcontext() if os.name == "nt" else __import__(
+            "alt_deploy.locks", fromlist=["exclusive_lock"]
+        ).exclusive_lock(self.settings.install_sessions_lock)
+        with lock:
+            status = self.repository.load_status(session_id)
+            execution = status.get("execution")
+            if (
+                status.get("state") != "plan_published"
+                or not isinstance(execution, dict)
+            ):
+                raise self._error(
+                    "execution_installer_conflict",
+                    "Install execution installer cannot be recorded",
+                )
+            validate_execution_status(execution)
+            if execution.get("state") != "handoff_started":
+                raise self._error(
+                    "execution_installer_conflict",
+                    "Install execution installer cannot be recorded",
+                )
+            self._verify_claim_bundle(status)
+            now = self._now().isoformat()
+            updated = deepcopy(status)
+            next_execution = dict(updated["execution"])
+            next_execution.update(
+                {
+                    "state": "installer_started",
+                    "installer_started_at": now,
+                }
+            )
+            updated["execution"] = next_execution
+            updated["updated_at"] = now
+            self.repository.replace_status(
+                session_id, updated, allow_execution=True
+            )
+            return updated
+
+    def postflight_installed(
+        self, session_id: str
+    ) -> dict[str, object]:
+        lock = nullcontext() if os.name == "nt" else __import__(
+            "alt_deploy.locks", fromlist=["exclusive_lock"]
+        ).exclusive_lock(self.settings.install_sessions_lock)
+        with lock:
+            status = self.repository.load_status(session_id)
+            execution = status.get("execution")
+            if (
+                status.get("state") != "plan_published"
+                or not isinstance(execution, dict)
+            ):
+                raise self._error(
+                    "execution_postflight_conflict",
+                    "Install execution postflight cannot be recorded",
+                )
+            validate_execution_status(execution)
+            if execution.get("state") != "installer_started":
+                raise self._error(
+                    "execution_postflight_conflict",
+                    "Install execution postflight cannot be recorded",
+                )
+            now = self._now().isoformat()
+            updated = deepcopy(status)
+            next_execution = dict(updated["execution"])
+            next_execution.update(
+                {"state": "installed", "installed_at": now}
+            )
+            updated["execution"] = next_execution
+            updated["updated_at"] = now
+            self.repository.replace_status(
+                session_id, updated, allow_execution=True
+            )
+            return updated

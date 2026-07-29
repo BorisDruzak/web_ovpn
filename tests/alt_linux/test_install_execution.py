@@ -511,6 +511,33 @@ def test_handoff_started_is_contiguous_and_single_use(
         service.handoff_started(session_id)
 
 
+def test_installer_and_postflight_are_contiguous_single_use_transitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    service = _execution_service(settings, repository, tmp_path)
+    _authorize(
+        service, repository, session_id, approved, plan_sha256
+    )
+    service.claim(session_id)
+    with pytest.raises(ControlError, match="installer"):
+        service.installer_started(session_id)
+    service.handoff_started(session_id)
+
+    installer = service.installer_started(session_id)
+    assert installer["execution"]["state"] == "installer_started"
+    with pytest.raises(ControlError, match="installer"):
+        service.installer_started(session_id)
+
+    installed = service.postflight_installed(session_id)
+    assert installed["execution"]["state"] == "installed"
+    with pytest.raises(ControlError, match="postflight"):
+        service.postflight_installed(session_id)
+
+
 def test_cancel_before_authorize_is_terminal_without_publishing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
