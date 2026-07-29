@@ -148,7 +148,14 @@ def prepare_fixture(state_dir: Path) -> None:
     _write_new(paths["private_key"], private_bytes, mode=0o600)
     _write_new(
         paths["public_key"],
-        _json_bytes(public_key_metadata(private_key.public_key())),
+        (
+            json.dumps(
+                public_key_metadata(private_key.public_key()),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8"),
         mode=0o644,
     )
     _replace_private_json(paths["events"], {"events": []})
@@ -800,6 +807,29 @@ def qmp_command(socket_path: Path, execute: str) -> None:
         client.close()
 
 
+def qmp_screendump(socket_path: Path, output: Path) -> None:
+    if output.exists() or not output.parent.is_dir():
+        _fail("QMP screendump output path is unavailable")
+    client, stream, transcript = _qmp_connect(socket_path)
+    try:
+        request = {
+            "execute": "screendump",
+            "arguments": {"filename": str(output)},
+            "id": "screendump",
+        }
+        stream.write((json.dumps(request) + "\r\n").encode("ascii"))
+        response = _qmp_receive(
+            stream, transcript, expected_id="screendump"
+        )
+        if "error" in response:
+            _fail("QMP screendump failed")
+    finally:
+        stream.close()
+        client.close()
+    if not output.is_file() or output.stat().st_size == 0:
+        _fail("QMP screendump did not create an image")
+
+
 def _receive_exact(client: socket.socket, size: int) -> bytes:
     result = bytearray()
     while len(result) < size:
@@ -892,6 +922,10 @@ def _parser() -> argparse.ArgumentParser:
 
     vnc = commands.add_parser("vnc-send-s")
     vnc.add_argument("--socket", type=Path, required=True)
+
+    screendump = commands.add_parser("qmp-screendump")
+    screendump.add_argument("--socket", type=Path, required=True)
+    screendump.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -935,6 +969,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             qmp_command(arguments.socket, arguments.execute)
         elif arguments.command == "vnc-send-s":
             vnc_send_s(arguments.socket)
+        elif arguments.command == "qmp-screendump":
+            qmp_screendump(arguments.socket, arguments.output)
         else:
             _fail("Unknown fixture command")
     except (AcceptanceError, RuntimeError) as exc:
