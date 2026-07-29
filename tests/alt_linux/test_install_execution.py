@@ -2,14 +2,17 @@ from __future__ import annotations
 
 # ruff: noqa: E402
 
+import atexit
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import tarfile
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -39,15 +42,44 @@ from alt_deploy import install_session_repository as repository_module
 from alt_deploy.install_renderer import RendererSecrets
 
 
+def test_root_execution_fixture_base_is_safe(tmp_path: Path) -> None:
+    base = _root_safe_install_fixture_base(tmp_path)
+
+    assert base.is_dir()
+    if os.name == "posix" and os.geteuid() == 0:
+        assert base.stat().st_uid == 0
+        assert base.stat().st_gid == 0
+        assert all(
+            parent.stat().st_uid == 0 and parent.stat().st_gid == 0
+            for parent in (base, *base.parents)
+        )
+
+
+def _root_safe_install_fixture_base(tmp_path: Path) -> Path:
+    if os.name != "posix" or os.geteuid() != 0:
+        return tmp_path
+
+    root_home = Path("/root")
+    root_home_metadata = root_home.stat()
+    if root_home_metadata.st_uid != 0 or root_home_metadata.st_gid != 0:
+        raise RuntimeError("root-owned fixture base is unavailable")
+    base = Path(tempfile.mkdtemp(prefix="alt-install-execution-", dir=root_home))
+    os.chown(base, 0, 0)
+    base.chmod(0o700)
+    atexit.register(shutil.rmtree, base, ignore_errors=True)
+    return base
+
+
 def _approved_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Settings, InstallSessionRepository, str, dict[str, object], str]:
+    fixture_base = _root_safe_install_fixture_base(tmp_path)
     monkeypatch.setenv(
-        "ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions")
+        "ALT_DEPLOY_INSTALL_SESSIONS", str(fixture_base / "sessions")
     )
     monkeypatch.setenv(
-        "ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock")
+        "ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(fixture_base / "sessions.lock")
     )
     monkeypatch.setenv(
         "ALT_DEPLOY_INSTALL_PROFILE_ROOT",
@@ -55,11 +87,11 @@ def _approved_session(
     )
     monkeypatch.setenv(
         "ALT_DEPLOY_INSTALL_SIGNING_PRIVATE_KEY",
-        str(tmp_path / "secrets" / "plan.pem"),
+        str(fixture_base / "secrets" / "plan.pem"),
     )
     monkeypatch.setenv(
         "ALT_DEPLOY_INSTALL_SIGNING_PUBLIC_KEY",
-        str(tmp_path / "etc" / "plan.pub"),
+        str(fixture_base / "etc" / "plan.pub"),
     )
     settings = Settings.from_env()
     ensure_install_session_keypair(settings, euid=lambda: 0)
