@@ -274,9 +274,12 @@ def test_generate_batch_from_csv_runs_sync_after_success(tmp_path, monkeypatch):
         assert 'setControls("router-options"' in form.text
         assert 'function syncClientFormModes()' in form.text
         assert 'clientType.value = "user"' in form.text
+        assert '<label class="client-form-mode">Режим' in form.text
         stylesheet = client.get("/static/app.css")
         assert "label[hidden]" in stylesheet.text
         assert "display: none" in stylesheet.text
+        assert ".client-form-mode" in stylesheet.text
+        assert "grid-column: 1 / -1" in stylesheet.text
         csrf = form.text.split('name="csrf_token" value="')[1].split('"')[0]
         created = client.post(
             "/clients/new",
