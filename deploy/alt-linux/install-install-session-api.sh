@@ -4,6 +4,8 @@ set -Eeuo pipefail
 INSTALL_SESSION_API_ADDRESS=192.168.100.17
 INSTALL_SESSION_API_PORT=18090
 INSTALL_SESSION_API_UNIT=alt-install-session.service
+INSTALL_SESSION_API_HEALTH_ATTEMPTS=5
+INSTALL_SESSION_API_HEALTH_RETRY_SECONDS=1
 
 install_session_api_error() {
     printf '%s\n' "$*" >&2
@@ -61,10 +63,67 @@ for key in ("manifest_sha256", "verification_sha256"):
 ' "${backup_id}"
 }
 
-install_session_api_exact_socket_is_occupied() {
-    ss -H -ltn | awk \
+install_session_api_acquire_installer_lock() {
+    local root_prefix=$1
+    local lock_directory="${root_prefix}/run/lock"
+    local lock_path="${lock_directory}/alt-install-session-installer.lock"
+    local metadata
+
+    install_session_api_require_safe_path \
+        "${root_prefix}" "/run/lock/alt-install-session-installer.lock" ||
+        return 1
+    install -d -o root -g root -m 0755 "${lock_directory}"
+    if [[ ! -e ${lock_path} ]]; then
+        install -o root -g root -m 0600 /dev/null "${lock_path}"
+    elif [[ ! -f ${lock_path} || -L ${lock_path} ]]; then
+        install_session_api_error "Installer lock is not a regular file"
+        return 1
+    fi
+    chown root:root "${lock_path}"
+    chmod 0600 "${lock_path}"
+    metadata=$(stat -c '%U %G %a' "${lock_path}") || {
+        install_session_api_error "Installer lock metadata cannot be inspected"
+        return 1
+    }
+    if [[ ${metadata} != "root root 600" ]]; then
+        install_session_api_error "Installer lock metadata is unsafe"
+        return 1
+    fi
+    exec {INSTALL_SESSION_INSTALLER_LOCK_FD}<>"${lock_path}"
+    if ! flock --exclusive --nonblock \
+        "${INSTALL_SESSION_INSTALLER_LOCK_FD}"; then
+        install_session_api_error \
+            "Another install session API installer is running"
+        exec {INSTALL_SESSION_INSTALLER_LOCK_FD}>&-
+        return 1
+    fi
+}
+
+install_session_api_release_installer_lock() {
+    if [[ -n ${INSTALL_SESSION_INSTALLER_LOCK_FD:-} ]]; then
+        exec {INSTALL_SESSION_INSTALLER_LOCK_FD}>&-
+    fi
+}
+
+install_session_api_exact_socket_status() {
+    local listeners
+    local awk_status
+
+    if ! listeners=$(ss -H -ltn); then
+        return 2
+    fi
+    if printf '%s\n' "${listeners}" | awk \
         -v endpoint="${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}" \
         '$4 == endpoint { occupied = 1 } END { exit !occupied }'
+    then
+        return 0
+    else
+        awk_status=$?
+    fi
+    if (( awk_status == 1 )); then
+        return 1
+    fi
+    return 2
 }
 
 install_session_api_atomic_pointer() {
@@ -75,6 +134,158 @@ install_session_api_atomic_pointer() {
     rm -f -- "${temporary}"
     ln -s -- "${target}" "${temporary}"
     mv -Tf -- "${temporary}" "${link_path}"
+}
+
+install_session_api_atomic_regular_file() {
+    local source=$1
+    local destination=$2
+    local owner=$3
+    local group=$4
+    local mode=$5
+    local temporary="${destination}.new-$$"
+
+    rm -f -- "${temporary}"
+    install -o "${owner}" -g "${group}" -m "${mode}" \
+        "${source}" "${temporary}"
+    if [[ ! -f ${temporary} || -L ${temporary} ]]; then
+        install_session_api_error "Atomic file staging is not regular"
+        rm -f -- "${temporary}"
+        return 1
+    fi
+    mv -Tf -- "${temporary}" "${destination}"
+}
+
+install_session_api_capture_systemd_state() {
+    local enabled_status
+    local enabled_rc
+    local active_status
+    local active_rc
+
+    if enabled_status=$(systemctl is-enabled \
+        "${INSTALL_SESSION_API_UNIT}" 2>/dev/null)
+    then
+        enabled_rc=0
+    else
+        enabled_rc=$?
+    fi
+    case "${enabled_status}:${enabled_rc}" in
+        enabled:0)
+            INSTALL_SESSION_WAS_ENABLED=1
+            ;;
+        disabled:1|not-found:1|not-found:4)
+            INSTALL_SESSION_WAS_ENABLED=0
+            ;;
+        *)
+            install_session_api_error \
+                "Install session API service state inspection failed"
+            return 1
+            ;;
+    esac
+
+    if active_status=$(systemctl is-active \
+        "${INSTALL_SESSION_API_UNIT}" 2>/dev/null)
+    then
+        active_rc=0
+    else
+        active_rc=$?
+    fi
+    case "${active_status}:${active_rc}" in
+        active:0)
+            INSTALL_SESSION_WAS_ACTIVE=1
+            ;;
+        inactive:3|unknown:3|unknown:4)
+            INSTALL_SESSION_WAS_ACTIVE=0
+            ;;
+        *)
+            install_session_api_error \
+                "Install session API service state inspection failed"
+            return 1
+            ;;
+    esac
+}
+
+install_session_api_prepare_storage() {
+    local root_prefix=$1
+    local sessions="${root_prefix}/var/lib/alt-deploy/install-sessions"
+    local sessions_lock="${root_prefix}/var/lib/alt-deploy/install-sessions.lock"
+    local metadata
+
+    install_session_api_require_safe_path \
+        "${root_prefix}" "/var/lib/alt-deploy/install-sessions" ||
+        return 1
+    install_session_api_require_safe_path \
+        "${root_prefix}" "/var/lib/alt-deploy/install-sessions.lock" ||
+        return 1
+    if [[ -e ${sessions} && ! -d ${sessions} ]]; then
+        install_session_api_error "Install session storage is not a directory"
+        return 1
+    fi
+    install -d -o altserver -g altserver -m 0700 "${sessions}"
+    if [[ ! -e ${sessions_lock} ]]; then
+        install -o altserver -g altserver -m 0600 \
+            /dev/null "${sessions_lock}"
+    elif [[ ! -f ${sessions_lock} || -L ${sessions_lock} ]]; then
+        install_session_api_error "Install session lock is not a regular file"
+        return 1
+    fi
+    chown altserver:altserver "${sessions}" "${sessions_lock}"
+    chmod 0700 "${sessions}"
+    chmod 0600 "${sessions_lock}"
+
+    metadata=$(stat -c '%U %G %a' "${sessions}") || return 1
+    if [[ ${metadata} != "altserver altserver 700" ]]; then
+        install_session_api_error "Install session storage metadata is unsafe"
+        return 1
+    fi
+    metadata=$(stat -c '%U %G %a' "${sessions_lock}") || return 1
+    if [[ ${metadata} != "altserver altserver 600" ]]; then
+        install_session_api_error "Install session lock metadata is unsafe"
+        return 1
+    fi
+}
+
+install_session_api_health_is_exact() {
+    local health
+
+    if ! health=$(curl --fail --silent --show-error \
+        --noproxy '*' \
+        --max-time 5 \
+        "http://${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}/health")
+    then
+        return 1
+    fi
+    printf '%s\n' "${health}" | python3 -c '
+import json
+import sys
+
+expected = {
+    "schema_version": 1,
+    "service": "alt-install-session",
+    "status": "ok",
+}
+try:
+    value = json.load(sys.stdin)
+except (json.JSONDecodeError, UnicodeError):
+    raise SystemExit(1)
+if value != expected:
+    raise SystemExit(1)
+'
+}
+
+install_session_api_wait_for_health() {
+    local attempt
+
+    for ((attempt = 1;
+         attempt <= INSTALL_SESSION_API_HEALTH_ATTEMPTS;
+         attempt++)); do
+        if install_session_api_health_is_exact; then
+            return 0
+        fi
+        if (( attempt < INSTALL_SESSION_API_HEALTH_ATTEMPTS )); then
+            sleep "${INSTALL_SESSION_API_HEALTH_RETRY_SECONDS}"
+        fi
+    done
+    return 1
 }
 
 install_session_api_restore_activation() {
@@ -98,9 +309,10 @@ install_session_api_restore_activation() {
         fi
 
         if [[ ${INSTALL_SESSION_HAD_UNIT:-0} == 1 ]]; then
-            install -o root -g root -m 0644 \
+            install_session_api_atomic_regular_file \
                 "${INSTALL_SESSION_UNIT_BACKUP}" \
-                "${INSTALL_SESSION_UNIT_PATH}" || true
+                "${INSTALL_SESSION_UNIT_PATH}" \
+                root root 0644 || true
         else
             rm -f -- "${INSTALL_SESSION_UNIT_PATH}" || true
         fi
@@ -186,7 +398,7 @@ install_session_api_install() {
     local release_id
     local stage
     local rehearsal
-    local health
+    local socket_status
 
     if [[ ! ${rollback_backup_id} =~ ^backup-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]]; then
         install_session_api_error "Invalid rollback backup ID"
@@ -205,16 +417,37 @@ install_session_api_install() {
         install_session_api_error "Invalid rollback rehearsal status"
         return 1
     fi
-    if install_session_api_exact_socket_is_occupied; then
-        install_session_api_error \
-            "Listener already occupies ${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}"
-        return 1
+    if install_session_api_exact_socket_status; then
+        socket_status=0
+    else
+        socket_status=$?
     fi
+    case ${socket_status} in
+        0)
+            install_session_api_error \
+                "Listener already occupies ${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}"
+            return 1
+            ;;
+        1) ;;
+        *)
+            install_session_api_error \
+                "Install session API socket inspection failed"
+            return 1
+            ;;
+    esac
 
     install_session_api_require_safe_path \
         "${root_prefix}" "/opt/alt-install-session-api/releases" || return 1
     install_session_api_require_safe_path \
         "${root_prefix}" "/etc/systemd/system" || return 1
+    if [[ -L ${unit_path} ]]; then
+        install_session_api_error \
+            "Service unit destination must not be a symlink"
+        return 1
+    fi
+    install_session_api_require_safe_path \
+        "${root_prefix}" \
+        "/etc/systemd/system/${INSTALL_SESSION_API_UNIT}" || return 1
 
     script_dir=$(
         cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
@@ -294,7 +527,12 @@ install_session_api_install() {
         install_session_api_abandon_stage
         return 1
     fi
-    if [[ -f ${unit_path} ]]; then
+    if [[ -L ${unit_path} ]]; then
+        install_session_api_error \
+            "Service unit destination must not be a symlink"
+        install_session_api_abandon_stage
+        return 1
+    elif [[ -f ${unit_path} ]]; then
         cp -- "${unit_path}" "${INSTALL_SESSION_UNIT_BACKUP}"
         INSTALL_SESSION_HAD_UNIT=1
     elif [[ -e ${unit_path} ]]; then
@@ -302,11 +540,13 @@ install_session_api_install() {
         install_session_api_abandon_stage
         return 1
     fi
-    if systemctl is-enabled --quiet "${INSTALL_SESSION_API_UNIT}"; then
-        INSTALL_SESSION_WAS_ENABLED=1
+    if ! install_session_api_capture_systemd_state; then
+        install_session_api_abandon_stage
+        return 1
     fi
-    if systemctl is-active --quiet "${INSTALL_SESSION_API_UNIT}"; then
-        INSTALL_SESSION_WAS_ACTIVE=1
+    if ! install_session_api_prepare_storage "${root_prefix}"; then
+        install_session_api_abandon_stage
+        return 1
     fi
 
     INSTALL_SESSION_TRANSACTION_ACTIVE=1
@@ -324,9 +564,9 @@ install_session_api_install() {
             "Install session API current pointer activation failed"
         install_session_api_restore_activation 1
     fi
-    if ! install -o root -g root -m 0644 \
+    if ! install_session_api_atomic_regular_file \
         "${alt_root}/systemd/${INSTALL_SESSION_API_UNIT}" \
-        "${unit_path}"; then
+        "${unit_path}" root root 0644; then
         install_session_api_error "Install session API unit installation failed"
         install_session_api_restore_activation 1
     fi
@@ -339,29 +579,7 @@ install_session_api_install() {
         install_session_api_restore_activation 1
     fi
 
-    if ! health=$(curl --fail --silent --show-error \
-        --max-time 5 \
-        "http://${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}/health")
-    then
-        install_session_api_error "Install session API health validation failed"
-        install_session_api_restore_activation 1
-    fi
-    if ! printf '%s\n' "${health}" | python3 -c '
-import json
-import sys
-
-expected = {
-    "schema_version": 1,
-    "service": "alt-install-session",
-    "status": "ok",
-}
-try:
-    value = json.load(sys.stdin)
-except (json.JSONDecodeError, UnicodeError):
-    raise SystemExit(1)
-if value != expected:
-    raise SystemExit(1)
-'; then
+    if ! install_session_api_wait_for_health; then
         install_session_api_error "Install session API health validation failed"
         install_session_api_restore_activation 1
     fi
@@ -373,6 +591,7 @@ if value != expected:
 
 install_session_api_main() {
     local root_prefix=$1
+    local result
     shift
 
     case ${1:-} in
@@ -382,7 +601,17 @@ install_session_api_main() {
                     "usage: install-install-session-api.sh --rollback"
                 return 2
             fi
-            install_session_api_rollback "${root_prefix}"
+            if ! install_session_api_acquire_installer_lock \
+                "${root_prefix}"; then
+                return 1
+            fi
+            if install_session_api_rollback "${root_prefix}"; then
+                result=0
+            else
+                result=$?
+            fi
+            install_session_api_release_installer_lock
+            return "${result}"
             ;;
         --rollback-backup-id)
             if (( $# != 2 )) || [[ -z ${2:-} ]]; then
@@ -390,7 +619,17 @@ install_session_api_main() {
                     "usage: install-install-session-api.sh --rollback-backup-id BACKUP_ID"
                 return 2
             fi
-            install_session_api_install "${root_prefix}" "$2"
+            if ! install_session_api_acquire_installer_lock \
+                "${root_prefix}"; then
+                return 1
+            fi
+            if install_session_api_install "${root_prefix}" "$2"; then
+                result=0
+            else
+                result=$?
+            fi
+            install_session_api_release_installer_lock
+            return "${result}"
             ;;
         *)
             install_session_api_error \

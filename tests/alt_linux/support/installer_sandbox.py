@@ -354,6 +354,7 @@ exit 2
 @dataclass
 class InstallSessionInstallerSandbox(InstallerSandbox):
     service_state: Path
+    health_counter: Path
 
     @staticmethod
     def _bash_path(path: Path) -> str:
@@ -369,6 +370,7 @@ class InstallSessionInstallerSandbox(InstallerSandbox):
             fake_bin=tmp_path / "install-session-fake-bin",
             command_log=tmp_path / "install-session-commands.jsonl",
             service_state=tmp_path / "install-session-service-state",
+            health_counter=tmp_path / "install-session-health-counter",
         )
         sandbox.root.mkdir()
         sandbox.fake_bin.mkdir()
@@ -423,10 +425,21 @@ action=${1:-}
 unit=${@: -1}
 case "$action" in
   is-enabled)
-    [[ $unit == alt-install-session.service && $enabled == enabled ]]
+    status=${INSTALL_SESSION_IS_ENABLED_STATUS:-$enabled}
+    printf '%s\n' "$status"
+    if [[ -n ${INSTALL_SESSION_IS_ENABLED_RC+x} ]]; then
+      exit "$INSTALL_SESSION_IS_ENABLED_RC"
+    fi
+    [[ $unit == alt-install-session.service && $status == enabled ]]
     ;;
   is-active)
-    [[ $unit == alt-install-session.service && $active == active ]]
+    status=${INSTALL_SESSION_IS_ACTIVE_STATUS:-$active}
+    printf '%s\n' "$status"
+    if [[ -n ${INSTALL_SESSION_IS_ACTIVE_RC+x} ]]; then
+      exit "$INSTALL_SESSION_IS_ACTIVE_RC"
+    fi
+    [[ $unit == alt-install-session.service && $status == active ]] && exit 0
+    exit 3
     ;;
   enable)
     [[ $unit == alt-install-session.service ]] || exit 90
@@ -464,12 +477,33 @@ esac
         )
         self._fake_script(
             "ss",
+            "if [[ ${INSTALL_SESSION_SS_RC:-0} != 0 ]]; then\n"
+            "  exit \"$INSTALL_SESSION_SS_RC\"\n"
+            "fi\n"
             "printf '%s' \"${INSTALL_SESSION_SS_OUTPUT:-}\"\n",
         )
         self._fake_script(
+            "awk",
+            "if [[ -n ${INSTALL_SESSION_AWK_RC+x} ]]; then\n"
+            "  exit \"$INSTALL_SESSION_AWK_RC\"\n"
+            "fi\n"
+            "exec /usr/bin/awk \"$@\"\n",
+        )
+        self._fake_script(
             "curl",
+            "counter_file=${INSTALL_SESSION_HEALTH_COUNTER:?}\n"
+            "count=0\n"
+            "[[ -f $counter_file ]] && count=$(<\"$counter_file\")\n"
+            "count=$((count + 1))\n"
+            "printf '%s\\n' \"$count\" > \"$counter_file\"\n"
             "if [[ ${INSTALL_SESSION_HEALTH_RC:-0} != 0 ]]; then\n"
             "  exit \"${INSTALL_SESSION_HEALTH_RC}\"\n"
+            "fi\n"
+            "if (( count <= ${INSTALL_SESSION_HEALTH_FAILS_BEFORE_SUCCESS:-0} )); then\n"
+            "  printf '%s\\n' "
+            "'{\"schema_version\":1,\"service\":"
+            "\"alt-install-session\",\"status\":\"starting\"}'\n"
+            "  exit 0\n"
             "fi\n"
             "if [[ -n ${INSTALL_SESSION_HEALTH_PAYLOAD+x} ]]; then\n"
             "  printf '%s\\n' \"$INSTALL_SESSION_HEALTH_PAYLOAD\"\n"
@@ -478,6 +512,45 @@ esac
             "'{\"schema_version\":1,\"service\":"
             "\"alt-install-session\",\"status\":\"ok\"}'\n"
             "fi\n",
+        )
+        self._fake_script(
+            "flock",
+            "exit \"${INSTALL_SESSION_FLOCK_RC:-0}\"\n",
+        )
+        self._fake_script("sleep", "exit 0\n")
+        self._fake_script(
+            "stat",
+            r'''if [[ ${1:-} == -c && ${2:-} == '%U %G %a' ]]; then
+  path=${@: -1}
+  case "$path" in
+    */alt-install-session-installer.lock)
+      [[ ${INSTALL_SESSION_INSTALLER_LOCK_STAT_UNSAFE:-0} == 1 ]] &&
+        printf 'root root 666\n' ||
+        printf 'root root 600\n'
+      ;;
+    */install-sessions.lock)
+      [[ ${INSTALL_SESSION_STORAGE_STAT_UNSAFE:-0} == 1 ]] &&
+        printf 'root root 644\n' ||
+        printf 'altserver altserver 600\n'
+      ;;
+    */install-sessions)
+      [[ ${INSTALL_SESSION_STORAGE_STAT_UNSAFE:-0} == 1 ]] &&
+        printf 'root root 755\n' ||
+        printf 'altserver altserver 700\n'
+      ;;
+    *) exec /usr/bin/stat "$@" ;;
+  esac
+  exit 0
+fi
+if [[ ${1:-} == -c && ${2:-} == '%u %g %a' ]]; then
+  exec /usr/bin/stat "$@"
+fi
+if [[ ${INSTALLER_STAT_UNSAFE:-0} == 1 ]]; then
+  printf '644 root root\n'
+else
+  printf '600 altserver altserver\n'
+fi
+''',
         )
         self._fake_script("mv", "exec /bin/mv \"$@\"\n")
         self._fake_script(
@@ -498,7 +571,10 @@ esac
         environment = super().environment(
             INSTALL_SESSION_SERVICE_STATE=self._bash_path(
                 self.service_state
-            )
+            ),
+            INSTALL_SESSION_HEALTH_COUNTER=self._bash_path(
+                self.health_counter
+            ),
         )
         environment["PATH"] = (
             f"{self._bash_path(self.fake_bin)}:{os.environ['PATH']}"
