@@ -12,11 +12,15 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QEMU_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "qemu"
 SUPPORT = QEMU_ROOT / "agent_v1_test_api.py"
 HARNESS = QEMU_ROOT / "run-agent-v1-dry-run-acceptance.sh"
+CONTROL_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "control"
+sys.path.insert(0, str(CONTROL_ROOT))
+
+from alt_deploy.install_session_signing import load_public_verifier
+
 PASS_LINE = (
     "PASS: signed plan verified; disk preflight passed; no target writes"
 )
@@ -369,6 +373,16 @@ def test_fixture_prepare_generates_an_ephemeral_matching_ed25519_keypair(
         assert public_path.stat().st_mode & 0o777 == 0o644
 
 
+def test_fixture_prepare_writes_a_canonical_public_key(tmp_path: Path) -> None:
+    state = tmp_path / "fixture"
+    state.mkdir()
+
+    completed = _support_command("prepare", "--state-dir", str(state))
+
+    assert completed.returncode == 0, completed.stderr
+    load_public_verifier(state / "install-plan-ed25519.pub")
+
+
 def test_fixture_approval_gate_rejects_a_non_root_process() -> None:
     specification = importlib.util.spec_from_file_location(
         "agent_v1_test_api", SUPPORT
@@ -399,6 +413,16 @@ def test_harness_allows_the_tcg_boot_budget() -> None:
     harness = HARNESS.read_text(encoding="utf-8")
 
     assert "for _ in $(seq 1 1200); do" in harness
+
+
+def test_harness_uses_qmp_before_vnc_for_the_managed_boot_hotkey() -> None:
+    harness = HARNESS.read_text(encoding="utf-8")
+
+    loop_start = harness.index("for _ in $(seq 1 1200); do")
+    hotkey_block = harness[loop_start : harness.index("sleep 1", loop_start)]
+    qmp_hotkey = "qmp-command"
+    vnc_hotkey = 'vnc-send-s --socket "$vnc_socket"'
+    assert hotkey_block.index(qmp_hotkey) < hotkey_block.index(vnc_hotkey)
 
 
 def test_harness_preserves_boot_failure_diagnostics() -> None:

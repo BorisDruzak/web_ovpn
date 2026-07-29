@@ -148,7 +148,14 @@ def prepare_fixture(state_dir: Path) -> None:
     _write_new(paths["private_key"], private_bytes, mode=0o600)
     _write_new(
         paths["public_key"],
-        _json_bytes(public_key_metadata(private_key.public_key())),
+        (
+            json.dumps(
+                public_key_metadata(private_key.public_key()),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8"),
         mode=0o644,
     )
     _replace_private_json(paths["events"], {"events": []})

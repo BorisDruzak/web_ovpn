@@ -468,10 +468,10 @@ run_variant() {
         fi
         kill -0 "$qemu_pid" 2>/dev/null ||
             die "$variant QEMU exited before the agent started"
-        python3 "$support" vnc-send-s --socket "$vnc_socket" \
+        python3 "$support" qmp-command \
+            --socket "$qmp_socket" --execute send-key \
             >/dev/null 2>&1 ||
-            python3 "$support" qmp-command \
-                --socket "$qmp_socket" --execute send-key \
+            python3 "$support" vnc-send-s --socket "$vnc_socket" \
                 >/dev/null 2>&1 ||
             true
         sleep 1
