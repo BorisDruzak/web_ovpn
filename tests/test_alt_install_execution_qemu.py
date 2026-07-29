@@ -417,12 +417,14 @@ def test_harness_uses_run_owned_authorization_and_postflight_chain() -> None:
     ]
 
 
-def test_harness_cleanup_has_no_check_then_raw_signal_or_failed_netns_wait() -> None:
+def test_harness_cleanup_uses_only_identity_bound_process_termination() -> None:
     source = HARNESS.read_text(encoding="utf-8")
     cleanup_source = source[
         source.index("stop_qemu() {") : source.index("shopt -s extglob")
     ]
 
+    assert "qmp-command" not in cleanup_source
+    assert "--execute quit" not in cleanup_source
     for pid_name in (
         "qemu_pid",
         "execution_server_pid",

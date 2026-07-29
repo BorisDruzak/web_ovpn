@@ -321,3 +321,109 @@ held release archives containing the reporter, a previously built verified
 V2 ISO, and a locally prepared V2 session. That real-QEMU proof is the
 remaining external platform gate. Those preconditions are absent on this
 Windows host, so no QEMU run or PASS receipt was produced or simulated.
+
+## Fifth review hardening
+
+The fifth review round removes the remaining socket-directed cleanup path.
+`stop_qemu` no longer sends `qmp-command quit` to a pathname before checking
+the recorded process identity. Install and postflight QEMU cleanup now use
+only `stop-owned-process`: it opens the pidfd, validates the recorded
+`/proc/<pid>/stat` start time after anchoring, signals through the pidfd, and
+waits on that descriptor for at most five seconds. A replaced QMP socket is
+therefore never a cleanup target, and a reused PID still fails closed without
+being signaled.
+
+### Fifth review TDD evidence
+
+Baseline focused tests:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py -q -k \
+  "harness_cleanup_has_no_check_then_raw_signal_or_failed_netns_wait or \
+  owned_process_cleanup_cannot_signal_a_reused_process"
+..                                                                       [100%]
+2 passed, 33 deselected in 0.32s
+```
+
+Red after adding the QMP-cleanup regression:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py -q -k \
+  "harness_cleanup_uses_only_identity_bound_process_termination"
+F                                                                        [100%]
+E       assert 'qmp-command' not in cleanup_source
+1 failed, 34 deselected in 0.47s
+```
+
+Focused green after removing socket-directed cleanup:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py -q -k \
+  "harness_cleanup_uses_only_identity_bound_process_termination or \
+  owned_process_cleanup_cannot_signal_a_reused_process"
+..                                                                       [100%]
+2 passed, 33 deselected in 0.34s
+```
+
+Full relevant verification:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py -q
+..............s....................                                      [100%]
+34 passed, 1 skipped in 6.40s
+
+pytest tests/test_alt_install_execution_agent.py -q
+.............                                                            [100%]
+13 passed in 3.95s
+
+pytest tests/test_alt_install_execution_iso.py -q
+..............................                                           [100%]
+30 passed in 17.90s
+
+pytest --noconftest \
+  tests/alt_linux/test_install_session_cli.py \
+  tests/alt_linux/test_install_execution.py \
+  tests/alt_linux/test_install_execution_api.py -q
+......s..................................sss................             [100%]
+56 passed, 5 skipped in 11.19s
+```
+
+The skips are the existing platform-gated POSIX/root cases. Pytest emitted
+only the repository's existing `pytest-asyncio` loop-scope deprecation
+warning.
+
+Static verification:
+
+```text
+python -m py_compile tests/test_alt_install_execution_qemu.py
+exit 0
+
+ruff check tests/test_alt_install_execution_qemu.py
+All checks passed!
+
+bash -n deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh
+exit 0
+
+git diff --check
+exit 0
+```
+
+Prerequisite reporting on the Windows development host:
+
+```text
+bash deploy/alt-linux/qemu/run-agent-v2-execution-acceptance.sh \
+  --check-prerequisites
+agent-v2-qemu: Missing required command: qemu-system-x86_64
+agent-v2-qemu: Missing required command: qemu-img
+agent-v2-qemu: Missing required command: xorriso
+agent-v2-qemu: Missing required command: cpio
+agent-v2-qemu: Missing required command: socat
+agent-v2-qemu: Missing required command: ip
+agent-v2-qemu: Missing required command: dnsmasq
+agent-v2-qemu: Missing required command: unshare
+agent-v2-qemu: Required Python cryptography/AF_UNIX/netns support is unavailable
+agent-v2-qemu: Real root execution is required for execution authorization and TAP ownership
+exit 1
+```
+
+No acceptance PASS was claimed or emitted.

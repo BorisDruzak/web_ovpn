@@ -309,13 +309,7 @@ stop_recorded_process() {
 }
 
 stop_qemu() {
-    local qmp_socket=${1:-}
     [[ -n "$qemu_pid" ]] || return 0
-    if [[ -n "$qmp_socket" && -S "$qmp_socket" ]]; then
-        python3 "$support" qmp-command \
-            --socket "$qmp_socket" --execute quit >/dev/null 2>&1 ||
-            true
-    fi
     if stop_recorded_process \
         "$qemu_pid" "$qemu_starttime" "QEMU process"; then
         qemu_pid=
@@ -583,7 +577,7 @@ python3 "$support" qmp-query \
 python3 "$support" attest-controller-history \
     --state-dir "$state_dir" ||
     die 'Controller execution history attestation failed'
-stop_qemu "$install_qmp"
+stop_qemu
 
 postflight_qmp="$workdir/postflight.qmp.sock"
 launch_qemu '' postflight
@@ -615,7 +609,7 @@ for _attempt in $(seq 1 1200); do
 done
 [[ "${installed_attested:-0}" == 1 ]] ||
     die 'Authenticated first-boot postflight was not installed'
-stop_qemu "$postflight_qmp"
+stop_qemu
 
 sha256sum "$target" >"$evidence/target.after.sha256"
 sha256sum "$sentinel" >"$evidence/sentinel.after.sha256"
