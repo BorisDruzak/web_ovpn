@@ -5,12 +5,22 @@
 {% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
 
 <section class="panel">
-  <form method="post" action="/clients/new" class="form grid-form">
+  <form method="post" action="/clients/new" enctype="multipart/form-data" class="form grid-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>Режим
+      <select name="creation_mode"><option value="single">Один клиент</option><option value="bulk">Массовое создание</option></select>
+    </label>
     <label>
       Client name
       <input name="client" required pattern="[A-Za-z0-9._-]+" value="{{ form_values.client if form_values else '' }}">
     </label>
+    <label>Список имён (через запятую или с новой строки)<textarea name="client_names"></textarea></label>
+    <label>CSV со столбцом client_name<input type="file" name="clients_csv" accept=".csv,text/csv"></label>
+    <label>Доступ
+      <select name="access_mode"><option value="template">Шаблон</option><option value="custom">Свои сети</option></select>
+    </label>
+    <label>Произвольные CIDR<textarea name="custom_cidrs" placeholder="192.168.100.12/32"></textarea></label>
+    <label class="checkbox"><input type="checkbox" name="dns" value="1"> DNS/DOMAIN для своих сетей</label>
     <label>
       Профиль
       <select name="profile" required>
@@ -55,6 +65,7 @@
 {% if result %}
 <section class="panel">
   <h2>Результат</h2>
+  {% if requested_count %}<p>{{ result.generated_count or 0 }} / {{ requested_count }}</p>{% endif %}
   <dl class="details">
     <dt>Статус</dt><dd>{{ result.status or '-' }}</dd>
     <dt>Клиент</dt><dd>{{ result.client or '-' }}</dd>
@@ -100,6 +111,7 @@
     {% endif %}
   </div>
   {% endif %}
+  {% if result.download_url %}<p><a class="button primary" href="{{ result.download_url }}">Скачать ZIP с .ovpn</a></p>{% endif %}
 </section>
 {% endif %}
 {% endblock %}

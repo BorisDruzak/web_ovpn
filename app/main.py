@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,8 @@ from .auth import authenticate_user, csrf_token, current_user, require_user, ver
 from .auto_sync import force_client_sync, maybe_client_sync
 from .config import get_settings
 from .db import get_db, init_db
-from .download_tokens import assert_allowed_file, consume_download_token
+from .client_batch import ClientBatchInputError, create_batch_zip, parse_batch_client_names, parse_custom_cidrs
+from .download_tokens import assert_allowed_file, consume_download_token, create_download_token
 from .models import (
     ServerDraft,
     ServerDraftCheckOutbox,
@@ -832,30 +834,86 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
     await verify_csrf(request)
     form = await request.form()
     action = str(form.get("action") or "preview")
-    client = require_client_name(str(form.get("client") or "").strip())
-    profile = str(form.get("profile") or "").strip()
-    vpn_ip = str(form.get("vpn_ip") or "").strip()
-    client_type = str(form.get("client_type") or "user").strip()
-    remote_lan_cidr = str(form.get("remote_lan_cidr") or "").strip()
-    create_server_route = bool(form.get("create_server_route"))
+    if action not in {"preview", "generate"}:
+        raise HTTPException(status_code=400, detail="invalid action")
+    creation_mode = str(form.get("creation_mode") or "single")
+    access_mode = str(form.get("access_mode") or "template")
+    template = str(form.get("template") or form.get("profile") or "").strip()
     comment = str(form.get("comment") or "").strip()
+    client_type = str(form.get("client_type") or "user").strip()
+    if creation_mode == "single" and client_type != "user":
+        client = require_client_name(str(form.get("client") or "").strip())
+        args = [action, client, template, str(form.get("vpn_ip") or "").strip(), "--client-type", client_type]
+        remote_lan_cidr = str(form.get("remote_lan_cidr") or "").strip()
+        if remote_lan_cidr:
+            args.extend(["--remote-lan", remote_lan_cidr])
+        if form.get("create_server_route"):
+            args.append("--create-server-route")
+        if comment:
+            args.extend(["--comment", comment])
+        profiles_data, profiles_error = cli_call(request, ["profiles"])
+        result, error = cli_call(request, args, timeout=180 if action == "generate" else 60)
+        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error or profiles_error, "result": result, "form_values": {"client": client, "profile": template, "comment": comment}}, db)
+    upload = form.get("clients_csv")
+    csv_bytes = await upload.read() if creation_mode == "bulk" and getattr(upload, "filename", "") else None
+    try:
+        names = parse_batch_client_names(
+            str(form.get("client_names") or "") if creation_mode == "bulk" else str(form.get("client") or ""),
+            csv_bytes,
+        )
+        cidrs = parse_custom_cidrs(str(form.get("custom_cidrs") or "")) if access_mode == "custom" else []
+        if access_mode not in {"template", "custom"} or (access_mode == "template" and not template):
+            raise ClientBatchInputError("select an access mode")
+    except ClientBatchInputError as exc:
+        profiles_data, _ = cli_call(request, ["profiles"])
+        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": str(exc)}, db, status_code=400)
     profiles_data, profiles_error = cli_call(request, ["profiles"])
-    args = [action, client, profile]
-    if vpn_ip:
-        args.append(vpn_ip)
-    args.extend(["--client-type", client_type])
-    if remote_lan_cidr:
-        args.extend(["--remote-lan", remote_lan_cidr])
-    if create_server_route:
-        args.append("--create-server-route")
-    if action == "generate":
+    if access_mode == "custom":
+        network_data, network_error = cli_call(request, ["networks", "list"])
+        if network_error:
+            return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": network_error}, db, status_code=400)
+        existing_cidrs = {
+            str(row.get("cidr"))
+            for row in network_data.get("networks", [])
+            if isinstance(row, dict) and row.get("cidr")
+        }
+        for cidr in cidrs:
+            if cidr in existing_cidrs:
+                continue
+            _, error = cli_call(request, ["networks", "add", cidr, "--tag", "custom-route", "--no-nat", "--comment", "added from client creation"], timeout=60)
+            if error:
+                return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error}, db, status_code=400)
+    args = ["generate-batch"]
+    for name in names:
+        args.extend(["--client", name])
+    if access_mode == "template":
+        args.extend(["--template", template])
+    else:
+        for cidr in cidrs:
+            args.extend(["--cidr", cidr])
+        if form.get("dns") == "1":
+            args.append("--dns")
+    if comment:
         args.extend(["--comment", comment])
+    if action == "preview":
+        args.append("--dry-run")
     if action not in {"preview", "generate"}:
         raise HTTPException(status_code=400, detail="Недопустимое действие")
-    result, error = cli_call(request, args, timeout=180 if action == "generate" else 60)
+    result, error = cli_call(request, args, timeout=300 if action == "generate" else 60)
     sync_error = None
     if action == "generate" and not error:
-        _, sync_error = force_client_sync(db, request, user, f"after generate {client}", action="auto-sync")
+        _, sync_error = force_client_sync(db, request, user, f"after generate batch {len(names)}", action="auto-sync")
+        if not sync_error:
+            try:
+                paths = [Path(str(row["ovpn_path"])) for row in result.get("clients", []) if isinstance(row, dict)]
+                archive = create_batch_zip(paths, get_settings().archive_dir / "batches", get_settings().out_dir)
+                token, _ = create_download_token(
+                    client_name=f"batch-{uuid.uuid4().hex}", file_path=archive, file_type="ovpn-zip",
+                    created_by=user.username, expires_at=utcnow() + timedelta(minutes=get_settings().download_ttl_minutes),
+                )
+                result["download_url"] = f"/download/{token}"
+            except (ClientBatchInputError, OSError, ValueError, KeyError) as exc:
+                sync_error = str(exc)
         if sync_error:
             add_flash(request, "bad", f"Профиль создан, но автосинхронизация не прошла: {sync_error}")
         else:
@@ -864,10 +922,10 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
         db,
         request,
         user,
-        f"client-{action}",
+        f"client-batch-{action}",
         "error" if error else "ok",
-        error or f"profile={profile} vpn_ip={vpn_ip}",
-        target_client=client,
+        error or f"count={len(names)} mode={access_mode}",
+        target_client=names[0],
     )
     return render(
         request,
@@ -876,13 +934,10 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             "profiles": profiles_list(profiles_data),
             "error": error or profiles_error or sync_error,
             "result": result,
+            "requested_count": len(names),
             "form_values": {
-                "client": client,
-                "profile": profile,
-                "vpn_ip": vpn_ip,
-                "client_type": client_type,
-                "remote_lan_cidr": remote_lan_cidr,
-                "create_server_route": create_server_route,
+                "client": names[0] if len(names) == 1 else "",
+                "profile": template,
                 "comment": comment,
             },
         },

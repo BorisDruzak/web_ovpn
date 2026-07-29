@@ -270,4 +270,3 @@ git commit -m "docs: document batch VPN client generation"
 
 - The plan covers optional comments, arbitrary catalogue CIDRs, template/custom exclusivity, CSV/list input, five names producing five profiles, preflight, ZIP delivery, and the legacy script boundary.
 - All layers use generate-batch and never return or audit OVPN private material.
-
