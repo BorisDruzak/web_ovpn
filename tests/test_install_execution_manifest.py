@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +17,7 @@ if str(CONTROL_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTROL_ROOT))
 
 from alt_deploy.install_execution_manifest import (
+    ExecutionManifestV1,
     build_execution_manifest,
     canonical_execution_manifest_bytes,
     sign_execution_manifest,
@@ -56,8 +59,10 @@ def test_manifest_is_canonical_signed_and_binds_every_execution_artifact() -> No
     private = Ed25519PrivateKey.generate()
     signature = sign_execution_manifest(private, encoded)
 
-    assert json.loads(encoded) == manifest
-    assert manifest["artifacts"]["pkg-groups.tar"] == {
+    assert isinstance(manifest, ExecutionManifestV1)
+    manifest_document = manifest.to_dict()
+    assert json.loads(encoded) == manifest_document
+    assert manifest_document["artifacts"]["pkg-groups.tar"] == {
         "sha256": hashlib.sha256(artifacts["pkg-groups.tar"]).hexdigest(),
         "size_bytes": len(artifacts["pkg-groups.tar"]),
     }

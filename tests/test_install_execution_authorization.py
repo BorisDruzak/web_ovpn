@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+# ruff: noqa: E402
+
+from collections.abc import Callable
 import hashlib
+import io
 import json
 from pathlib import Path
 import sys
+import tarfile
 
 import pytest
 
@@ -16,9 +21,13 @@ if str(CONTROL_ROOT) not in sys.path:
 
 from alt_deploy.config import Settings
 from alt_deploy.errors import ControlError
-from alt_deploy.install_execution import ExecutionAuthorizationService
+from alt_deploy.install_execution import (
+    ExecutionAuthorizationService,
+    ReleaseArchiveSource,
+)
 from alt_deploy.install_fingerprint import disk_fingerprint
 from alt_deploy.install_inventory import parse_inventory
+from alt_deploy.install_renderer import RendererSecrets
 from alt_deploy.install_session_approval import InstallSessionApprovalService
 from alt_deploy.install_session_keys import ensure_install_session_keypair
 from alt_deploy.install_session_repository import InstallSessionRepository
@@ -57,7 +66,7 @@ def _approved_session(
         status = repository.load_status(created.session_id)
         status["agent_status"] = {
             "agent_version": "2.0.0",
-            "boot_id": "fixture-boot",
+            "boot_id": status["agent_boot_id"],
             "reported_stage": "preflight_ready",
             "schema_version": 1,
             "sent_at": "2026-07-29T12:01:30+00:00",
@@ -68,15 +77,71 @@ def _approved_session(
     return settings, repository, created.session_id, approved, hashlib.sha256(plan_bytes).hexdigest()
 
 
+def _release_archive(
+    path: Path,
+    member_name: str,
+    member_content: bytes,
+) -> ReleaseArchiveSource:
+    with tarfile.open(path, "w") as archive:
+        member = tarfile.TarInfo(member_name)
+        member.mode = 0o644
+        member.size = len(member_content)
+        archive.addfile(member, io.BytesIO(member_content))
+    content = path.read_bytes()
+    return ReleaseArchiveSource(
+        path=path,
+        sha256=hashlib.sha256(content).hexdigest(),
+        members=(member_name,),
+    )
+
+
+def _renderer_secrets() -> RendererSecrets:
+    return RendererSecrets(
+        root_yescrypt_hash=(
+            "$y$j9T$execution-root$abcdefghijklmnopqrstuv"
+        ),
+        admin_yescrypt_hash=(
+            "$y$j9T$execution-admin$abcdefghijklmnopqrstuv"
+        ),
+    )
+
+
+def _execution_service(
+    settings: Settings,
+    repository: InstallSessionRepository,
+    tmp_path: Path,
+    *,
+    clock: Callable[[], str] = lambda: "2026-07-29T12:02:00+00:00",
+) -> ExecutionAuthorizationService:
+    return ExecutionAuthorizationService(
+        settings,
+        repository=repository,
+        clock=clock,
+        euid=lambda: 0,
+        release_archives={
+            "pkg-groups.tar": _release_archive(
+                tmp_path / "pkg-groups.tar",
+                "groups.json",
+                b'{"groups":["base"]}\n',
+            ),
+            "install-scripts.tar": _release_archive(
+                tmp_path / "install-scripts.tar",
+                "postinstall.sh",
+                b"#!/bin/sh\nexit 0\n",
+            ),
+        },
+        secrets_provider=_renderer_secrets,
+    )
+
+
 def test_root_execution_authorization_is_bound_to_preflight_plan_and_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings, repository, session_id, approved, plan_sha256 = _approved_session(
         tmp_path, monkeypatch, preflight=True
     )
-    execution = ExecutionAuthorizationService(
-        settings, repository=repository,
-        clock=lambda: "2026-07-29T12:02:00+00:00", euid=lambda: 0,
+    result = _execution_service(
+        settings, repository, tmp_path
     ).authorize(
         session_id,
         plan_sha256=plan_sha256,
@@ -88,18 +153,22 @@ def test_root_execution_authorization_is_bound_to_preflight_plan_and_disk(
         reason="Authorize exactly this disposable target",
     )
 
-    assert execution["execution"]["state"] == "authorized"
-    assert execution["execution"]["plan_sha256"] == plan_sha256
-    assert execution["execution"]["target_disk"] == "/dev/vda"
-    assert execution["execution"]["expires_at"] == "2026-07-29T12:07:00+00:00"
+    execution = result.status["execution"]
+    assert result.manifest.target_disk == "/dev/vda"
+    assert execution["state"] == "authorized"
+    assert execution["plan_sha256"] == plan_sha256
+    assert execution["target_disk"] == "/dev/vda"
+    assert execution["expires_at"] == "2026-07-29T12:07:00+00:00"
     with pytest.raises(ControlError, match="already authorized"):
-        ExecutionAuthorizationService(
-            settings, repository=repository,
-            clock=lambda: "2026-07-29T12:02:01+00:00", euid=lambda: 0,
+        _execution_service(
+            settings,
+            repository,
+            tmp_path,
+            clock=lambda: "2026-07-29T12:02:01+00:00",
         ).authorize(
             session_id, plan_sha256=plan_sha256,
             inventory_sha256=approved["inventory_sha256"],
-            disk_fingerprint_value=execution["execution"]["disk_fingerprint"],
+            disk_fingerprint_value=execution["disk_fingerprint"],
             confirm_target="/dev/vda", reason="Second execution authorization",
         )
 
@@ -112,9 +181,8 @@ def test_execution_authorization_refuses_a_plan_without_preflight(
     )
 
     with pytest.raises(ControlError, match="preflight"):
-        ExecutionAuthorizationService(
-            settings, repository=repository,
-            clock=lambda: "2026-07-29T12:02:00+00:00", euid=lambda: 0,
+        _execution_service(
+            settings, repository, tmp_path
         ).authorize(
             session_id, plan_sha256=plan_sha256,
             inventory_sha256=approved["inventory_sha256"],
