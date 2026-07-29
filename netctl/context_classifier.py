@@ -29,6 +29,8 @@ class SegmentRule:
     network: Network
     observer_category: str
     site: str
+    availability_monitoring: bool = False
+    availability_tcp_ports: tuple[int, ...] = ()
 
 
 def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
@@ -77,6 +79,28 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
             site = value.get("site", "")
             if not isinstance(site, str):
                 raise ValueError("site must be a string when present")
+            availability_monitoring = value.get("availability_monitoring", False)
+            if not isinstance(availability_monitoring, bool):
+                raise ValueError("availability_monitoring must be a boolean")
+            has_availability_tcp_ports = "availability_tcp_ports" in value
+            availability_tcp_ports_value = value.get("availability_tcp_ports", [])
+            if not isinstance(availability_tcp_ports_value, list):
+                raise ValueError("availability_tcp_ports must be a list")
+            if not availability_monitoring and has_availability_tcp_ports:
+                raise ValueError("availability_tcp_ports requires availability_monitoring to be true")
+            if len(availability_tcp_ports_value) > 3:
+                raise ValueError("availability_tcp_ports must contain at most 3 ports")
+            if any(
+                not isinstance(port, int) or isinstance(port, bool)
+                for port in availability_tcp_ports_value
+            ):
+                raise ValueError("availability_tcp_ports must contain integers")
+            if any(port < 1 or port > 65535 for port in availability_tcp_ports_value):
+                raise ValueError("availability_tcp_ports must contain ports in 1..65535")
+            if len(set(availability_tcp_ports_value)) != len(availability_tcp_ports_value):
+                raise ValueError("availability_tcp_ports must not contain duplicates")
+            if availability_monitoring and network.version != 4:
+                raise ValueError("availability monitoring requires an IPv4 cidr")
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise ValueError(f"malformed active segment {segment_id}: {exc}") from exc
         rules.append(
@@ -85,9 +109,16 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
                 network=network,
                 observer_category=category,
                 site=site,
+                availability_monitoring=availability_monitoring,
+                availability_tcp_ports=tuple(sorted(availability_tcp_ports_value)),
             )
         )
     return sorted(rules, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))
+
+
+def load_active_availability_segments(conn: sqlite3.Connection) -> tuple[SegmentRule, ...]:
+    rules = load_active_segment_rules(conn)
+    return tuple(rule for rule in rules if rule.availability_monitoring)
 
 
 def match_segment_rule(ip: str, *, rules: list[SegmentRule]) -> SegmentRule | None:

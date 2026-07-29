@@ -289,6 +289,123 @@ def test_malformed_active_segment_is_rejected(tmp_path):
         conn.close()
 
 
+def test_active_availability_segments_are_ipv4_and_have_bounded_tcp_ports(tmp_path):
+    from netctl.context_classifier import load_active_availability_segments
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(
+            conn,
+            [
+                {
+                    "id": "m-arhiv-lan",
+                    "cidr": "192.168.99.0/24",
+                    "observer_category": "site_device",
+                    "availability_monitoring": True,
+                    "availability_tcp_ports": [22, 443],
+                }
+            ],
+        )
+
+        assert [
+            (rule.network.with_prefixlen, rule.availability_tcp_ports)
+            for rule in load_active_availability_segments(conn)
+        ] == [("192.168.99.0/24", (22, 443))]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "segment, reason",
+    [
+        (
+            {"id": "v6", "cidr": "2001:db8::/64", "availability_monitoring": True},
+            "availability monitoring requires an IPv4 cidr",
+        ),
+        (
+            {
+                "id": "too-many",
+                "cidr": "192.0.2.0/24",
+                "availability_monitoring": True,
+                "availability_tcp_ports": [22, 80, 443, 8443],
+            },
+            "availability_tcp_ports must contain at most 3 ports",
+        ),
+        (
+            {"id": "monitoring-string", "cidr": "192.0.2.0/24", "availability_monitoring": "true"},
+            "availability_monitoring must be a boolean",
+        ),
+        (
+            {
+                "id": "ports-string",
+                "cidr": "192.0.2.0/24",
+                "availability_monitoring": True,
+                "availability_tcp_ports": "443",
+            },
+            "availability_tcp_ports must be a list",
+        ),
+        (
+            {
+                "id": "ports-without-monitoring",
+                "cidr": "192.0.2.0/24",
+                "availability_monitoring": False,
+                "availability_tcp_ports": [443],
+            },
+            "availability_tcp_ports requires availability_monitoring to be true",
+        ),
+        (
+            {
+                "id": "duplicate-port",
+                "cidr": "192.0.2.0/24",
+                "availability_monitoring": True,
+                "availability_tcp_ports": [443, 443],
+            },
+            "availability_tcp_ports must not contain duplicates",
+        ),
+        (
+            {
+                "id": "bool-port",
+                "cidr": "192.0.2.0/24",
+                "availability_monitoring": True,
+                "availability_tcp_ports": [True],
+            },
+            "availability_tcp_ports must contain integers",
+        ),
+        (
+            {
+                "id": "low-port",
+                "cidr": "192.0.2.0/24",
+                "availability_monitoring": True,
+                "availability_tcp_ports": [0],
+            },
+            "availability_tcp_ports must contain ports in 1..65535",
+        ),
+        (
+            {
+                "id": "high-port",
+                "cidr": "192.0.2.0/24",
+                "availability_monitoring": True,
+                "availability_tcp_ports": [65536],
+            },
+            "availability_tcp_ports must contain ports in 1..65535",
+        ),
+    ],
+)
+def test_invalid_availability_segment_fails_closed(segment, reason, tmp_path):
+    from netctl.context_classifier import load_active_availability_segments
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(conn, [segment])
+
+        with pytest.raises(ValueError, match=reason):
+            load_active_availability_segments(conn)
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("category", ["unapproved", " local_device", "local_device "])
 def test_invalid_active_category_aborts_collection_without_writes(tmp_path, category):
     from netctl.db import connect
