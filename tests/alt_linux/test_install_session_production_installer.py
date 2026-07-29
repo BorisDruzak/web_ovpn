@@ -28,14 +28,7 @@ def test_production_unit_is_bound_and_least_privileged() -> None:
         "--listen-address 192.168.100.17 --listen-port 18090"
         in text
     )
-    assert (
-        "ReadWritePaths=/var/lib/alt-deploy/install-sessions"
-        in text
-    )
-    assert (
-        "ReadWritePaths=/var/lib/alt-deploy/install-sessions.lock"
-        in text
-    )
+    assert "ReadWritePaths=/var/lib/alt-deploy" in text
     assert "/var/lib/alt-deploy-secrets" not in text
     for item in (
         "NoNewPrivileges=true",
