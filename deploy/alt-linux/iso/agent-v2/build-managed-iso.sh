@@ -69,6 +69,7 @@ v2_library_names=(config.sh protocol.sh ui.sh)
 source_contract="$root/../manifests/alt-kworkstation-11.4-install-x86_64.json"
 source_identity="$v1_iso_root/manifests/source_iso.json"
 build_inputs="$v1_iso_root/lib/build-inputs.sh"
+publish_library="$root/lib/publish.sh"
 output_manifest="${output_iso}.build-manifest.json"
 
 command -v readlink >/dev/null ||
@@ -87,6 +88,8 @@ input_assets=(
     "$source_identity"
     "$root/build-managed-iso.sh"
     "$root/verify-managed-iso.sh"
+    "$root/verify-contract.py"
+    "$publish_library"
     "$build_inputs"
     "$root/../inspect-upstream-iso.sh"
     "$root/boot-menu/grub.cfg.patch"
@@ -126,12 +129,15 @@ done
     die 'Sidecar already exists'
 
 for command in xorriso cpio gzip patch sha256sum mktemp python3 \
-    df stat install find sort sed mv chmod awk grep mkdir rm cat wc; do
+    df stat install find sort sed mv chmod awk grep mkdir rm cat wc \
+    flock; do
     command -v "$command" >/dev/null ||
         die "Missing required command: $command"
 done
 # shellcheck source=../agent-v1/lib/build-inputs.sh
 source "$build_inputs"
+# shellcheck source=lib/publish.sh
+source "$publish_library"
 
 output_dir=$(cd -- "$(dirname -- "$output_iso")" && pwd -P)
 source_size=$(stat -c '%s' "$source_iso")
@@ -417,12 +423,11 @@ manifest.write_text(
 )
 PY
 
-mv -n -- "$tmp_output" "$output_iso"
-[[ -f "$output_iso" && ! -e "$tmp_output" ]] ||
-    die 'ISO publication refused an unsafe replacement'
-if ! mv -n -- "$tmp_manifest" "$output_manifest" ||
-    [[ -e "$tmp_manifest" ]]; then
-    rm -f -- "$output_iso"
-    die 'Sidecar publication refused an unsafe replacement'
-fi
+lock_file="$output_dir/.alt-agent-v2-publish.lock"
+exec {publish_lock_fd}>"$lock_file"
+flock -x "$publish_lock_fd" ||
+    die 'Cannot lock managed ISO publication'
+publish_managed_iso \
+    "$tmp_output" "$tmp_manifest" "$output_iso" "$output_manifest" ||
+    die 'Managed ISO transaction refused an unsafe replacement'
 printf 'managed_iso=%s\n' "$output_iso"

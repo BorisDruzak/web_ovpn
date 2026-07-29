@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 import subprocess
+import sys
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +15,8 @@ BUILDER = ISO_ROOT / "build-managed-iso.sh"
 VERIFIER = ISO_ROOT / "verify-managed-iso.sh"
 GRUB_PATCH = ISO_ROOT / "boot-menu" / "grub.cfg.patch"
 ISOLINUX_PATCH = ISO_ROOT / "boot-menu" / "isolinux.cfg.patch"
+VERIFY_CONTRACT = ISO_ROOT / "verify-contract.py"
+PUBLISH_LIBRARY = ISO_ROOT / "lib" / "publish.sh"
 GATE = (
     ISO_ROOT
     / "initrd-overlay"
@@ -67,6 +73,11 @@ def _original_file_from_patch(patch: Path) -> str:
             original_line += 1
         elif not line.startswith("+"):
             in_hunk = False
+    if patch.name == "grub.cfg.patch" and 84 not in original:
+        # The exact upstream file closes its BIOS-only hard-disk menu block
+        # between the second and third diff hunks. Preserve that real scope in
+        # the compact reconstructed fixture.
+        original[84] = "fi"
     maximum = max(original)
     return "\n".join(
         original.get(number, f"# untouched upstream line {number}")
@@ -114,6 +125,101 @@ def build_v2_fixture(tmp_path: Path) -> Path:
 
 def extract(fixture: Path, iso_path: str) -> str:
     return (fixture / iso_path.lstrip("/")).read_text(encoding="utf-8")
+
+
+def _menu_contract_fixture(tmp_path: Path) -> dict[str, Path]:
+    fixture = build_v2_fixture(tmp_path)
+    grub = fixture / "boot" / "grub" / "grub.cfg"
+    build_id = "release-20260729T120000Z-deadbee"
+    controller = "https://192.168.100.17:18092"
+    grub.write_text(
+        grub.read_text(encoding="utf-8")
+        .replace("__ALT_INSTALL_BUILD_ID__", build_id)
+        .replace("__ALT_INSTALL_EXECUTION_CONTROLLER_URL__", controller),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "build_id": build_id,
+                "controller_url": controller,
+            }
+        ),
+        encoding="utf-8",
+    )
+    v1_controller = tmp_path / "controller-url"
+    v2_controller = tmp_path / "execution-controller-url"
+    v1_controller.write_text(
+        "http://192.168.100.17:18090\n", encoding="ascii"
+    )
+    v2_controller.write_text(f"{controller}\n", encoding="ascii")
+    return {
+        "manifest": manifest,
+        "grub": grub,
+        "isolinux": fixture / "syslinux" / "isolinux.cfg",
+        "v1_controller": v1_controller,
+        "v2_controller": v2_controller,
+    }
+
+
+def _run_menu_contract(
+    tmp_path: Path, fixture: dict[str, Path]
+) -> subprocess.CompletedProcess[str]:
+    if VERIFY_CONTRACT.is_file():
+        command = [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "menu",
+            "--manifest",
+            str(fixture["manifest"]),
+            "--grub",
+            str(fixture["grub"]),
+            "--isolinux",
+            str(fixture["isolinux"]),
+            "--v1-controller",
+            str(fixture["v1_controller"]),
+            "--v2-controller",
+            str(fixture["v2_controller"]),
+        ]
+    else:
+        blocks = re.findall(
+            r"<<'PY'\n(.*?)\nPY",
+            VERIFIER.read_text(encoding="utf-8"),
+            flags=re.DOTALL,
+        )
+        legacy = tmp_path / "legacy-menu-contract.py"
+        legacy.write_text(blocks[-1], encoding="utf-8")
+        command = [
+            sys.executable,
+            str(legacy),
+            str(fixture["manifest"]),
+            str(fixture["grub"]),
+            str(fixture["isolinux"]),
+            str(fixture["v1_controller"]),
+            str(fixture["v2_controller"]),
+        ]
+    return subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _move_v2_entry_outside_uefi_guard(grub: str) -> str:
+    title = 'menuentry "Signed-plan installation [ROOT APPROVAL REQUIRED]"'
+    start = grub.index(title)
+    end = grub.index("\n}", start) + 2
+    entry = grub[start:end]
+    without_entry = grub[:start] + grub[end:]
+    return (
+        without_entry
+        + '\nif [ "fixture" = "fixture" ]; then\n'
+        + entry
+        + "\nfi\n"
+    )
 
 
 def _builder_inputs(tmp_path: Path) -> dict[str, Path]:
@@ -218,6 +324,322 @@ def test_v2_menu_is_uefi_only_non_default_and_preserves_v1(
         v1_fixture, "/syslinux/isolinux.cfg"
     )
     assert "default harddisk" in isolinux
+
+
+def test_verifier_rejects_appended_direct_controller_curl(
+    tmp_path: Path,
+) -> None:
+    fixture = _menu_contract_fixture(tmp_path)
+    valid = _run_menu_contract(tmp_path, fixture)
+    assert valid.returncode == 0, valid.stderr
+    grub = fixture["grub"]
+    grub.write_text(
+        grub.read_text(encoding="utf-8").replace(
+            "ai curl=http://127.0.0.1:18192",
+            "ai curl=http://127.0.0.1:18192 "
+            "curl=https://192.168.100.17:18092",
+        ),
+        encoding="utf-8",
+    )
+
+    tampered = _run_menu_contract(tmp_path, fixture)
+
+    assert tampered.returncode != 0
+    assert "kernel command line" in tampered.stderr
+
+
+@pytest.mark.parametrize(
+    ("original", "tampered"),
+    [
+        ("lowmem quiet", "lowmem debug quiet"),
+        ("ip=dhcp console=ttyS0,115200", "ip=dhcp ip=none console=ttyS0,115200"),
+        ("ip=dhcp console=ttyS0,115200", "console=ttyS0,115200 ip=dhcp"),
+    ],
+)
+def test_verifier_rejects_noncanonical_kernel_network_tokens(
+    tmp_path: Path, original: str, tampered: str
+) -> None:
+    fixture = _menu_contract_fixture(tmp_path)
+    fixture["grub"].write_text(
+        fixture["grub"].read_text(encoding="utf-8").replace(
+            original, tampered
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_menu_contract(tmp_path, fixture)
+
+    assert completed.returncode != 0
+    assert "kernel command line" in completed.stderr
+
+
+def test_verifier_rejects_v2_entry_moved_to_an_arbitrary_if_scope(
+    tmp_path: Path,
+) -> None:
+    fixture = _menu_contract_fixture(tmp_path)
+    fixture["grub"].write_text(
+        _move_v2_entry_outside_uefi_guard(
+            fixture["grub"].read_text(encoding="utf-8")
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_menu_contract(tmp_path, fixture)
+
+    assert completed.returncode != 0
+    assert "UEFI" in completed.stderr
+
+
+def test_verifier_rejects_v2_entry_without_matching_uefi_close(
+    tmp_path: Path,
+) -> None:
+    fixture = _menu_contract_fixture(tmp_path)
+    grub = fixture["grub"].read_text(encoding="utf-8")
+    entry = grub.index(
+        'menuentry "Signed-plan installation [ROOT APPROVAL REQUIRED]"'
+    )
+    closing = grub.index("\nfi\n", entry)
+    fixture["grub"].write_text(
+        grub[:closing] + "\n" + grub[closing + len("\nfi\n") :],
+        encoding="utf-8",
+    )
+
+    completed = _run_menu_contract(tmp_path, fixture)
+
+    assert completed.returncode != 0
+    assert "UEFI" in completed.stderr
+
+
+def test_verifier_rejects_v2_entry_in_uefi_else_branch(
+    tmp_path: Path,
+) -> None:
+    fixture = _menu_contract_fixture(tmp_path)
+    grub = fixture["grub"].read_text(encoding="utf-8")
+    entry = grub.index(
+        'menuentry "Signed-plan installation [ROOT APPROVAL REQUIRED]"'
+    )
+    fixture["grub"].write_text(
+        grub[:entry] + "else\n" + grub[entry:],
+        encoding="utf-8",
+    )
+
+    completed = _run_menu_contract(tmp_path, fixture)
+
+    assert completed.returncode != 0
+    assert "UEFI" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "set default=alt-agent-v2",
+        'set default="alt-agent-v2"',
+        "set default=2",
+        "set default=saved",
+        "default=alt-agent-v2",
+        "set saved_entry=alt-agent-v2",
+    ],
+)
+def test_verifier_rejects_every_additional_default_selector(
+    tmp_path: Path, selector: str
+) -> None:
+    fixture = _menu_contract_fixture(tmp_path)
+    fixture["grub"].write_text(
+        fixture["grub"].read_text(encoding="utf-8")
+        + f"\n{selector}\n",
+        encoding="utf-8",
+    )
+
+    completed = _run_menu_contract(tmp_path, fixture)
+
+    assert completed.returncode != 0
+    assert "default" in completed.stderr
+
+
+def test_verifier_pins_source_digest_independently_of_embedded_pair(
+    tmp_path: Path,
+) -> None:
+    pinned = (
+        "2529f98bca03a652709434a6a17cd4aac5df20c0793927abdf"
+        "784e8f9388243a"
+    )
+    manifest = tmp_path / "manifest.json"
+    source = tmp_path / "source_iso.json"
+    manifest.write_text(
+        json.dumps({"source_iso_sha256": pinned}), encoding="utf-8"
+    )
+    source.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "iso_id": "alt-kworkstation-11.4-install-x86_64",
+                "iso_sha256": pinned,
+            }
+        ),
+        encoding="utf-8",
+    )
+    valid = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "source",
+            "--manifest",
+            str(manifest),
+            "--source-identity",
+            str(source),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert valid.returncode == 0, valid.stderr
+
+    redefined = "1" * 64
+    manifest.write_text(
+        json.dumps({"source_iso_sha256": redefined}), encoding="utf-8"
+    )
+    source.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "iso_id": "alt-kworkstation-11.4-install-x86_64",
+                "iso_sha256": redefined,
+            }
+        ),
+        encoding="utf-8",
+    )
+    tampered = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "source",
+            "--manifest",
+            str(manifest),
+            "--source-identity",
+            str(source),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert tampered.returncode != 0
+    assert "pinned" in tampered.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative", "content"),
+    [
+        ("opt/bootstrap/controller-private.key", "secret-key-material"),
+        ("root/session-credential.json", "{}"),
+        ("var/lib/install/install-secret", "secret"),
+        ("tmp/execution-token", "token"),
+        (
+            "opt/bootstrap/material.pem",
+            "-----BEGIN PRIVATE KEY-----\nAAAA\n"
+            "-----END PRIVATE KEY-----\n",
+        ),
+    ],
+)
+def test_verifier_scans_for_secret_like_files_outside_managed_roots(
+    tmp_path: Path, relative: str, content: str
+) -> None:
+    root = tmp_path / "initrd"
+    root.mkdir()
+    valid = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert valid.returncode == 0, valid.stderr
+    leaked = root / relative
+    leaked.parent.mkdir(parents=True)
+    leaked.write_text(content, encoding="utf-8")
+
+    tampered = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert tampered.returncode != 0
+    assert "secret-like" in tampered.stderr
+
+
+def test_managed_iso_publication_never_leaves_iso_without_sidecar(
+    tmp_path: Path,
+) -> None:
+    success = tmp_path / "success"
+    success.mkdir()
+    staged_iso = success / "staged.iso"
+    staged_sidecar = success / "staged.json"
+    output = success / "managed.iso"
+    sidecar = success / "managed.iso.build-manifest.json"
+    staged_iso.write_bytes(b"iso")
+    staged_sidecar.write_bytes(b"manifest")
+    published = subprocess.run(
+        [
+            str(_bash()),
+            "-c",
+            f"source '{PUBLISH_LIBRARY.as_posix()}'; "
+            f"publish_managed_iso '{staged_iso.as_posix()}' "
+            f"'{staged_sidecar.as_posix()}' '{output.as_posix()}' "
+            f"'{sidecar.as_posix()}'",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert published.returncode == 0, published.stderr
+    assert output.read_bytes() == b"iso"
+    assert sidecar.read_bytes() == b"manifest"
+
+    failure = tmp_path / "failure"
+    failure.mkdir()
+    staged_iso = failure / "staged.iso"
+    staged_sidecar = failure / "staged.json"
+    output = failure / "managed.iso"
+    sidecar = failure / "managed.iso.build-manifest.json"
+    staged_iso.write_bytes(b"iso")
+    staged_sidecar.write_bytes(b"manifest")
+    sidecar.write_bytes(b"injected-sidecar-conflict")
+    rejected = subprocess.run(
+        [
+            str(_bash()),
+            "-c",
+            f"source '{PUBLISH_LIBRARY.as_posix()}'; "
+            f"publish_managed_iso '{staged_iso.as_posix()}' "
+            f"'{staged_sidecar.as_posix()}' '{output.as_posix()}' "
+            f"'{sidecar.as_posix()}'",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert rejected.returncode != 0
+    assert not output.exists()
+    assert sidecar.read_bytes() == b"injected-sidecar-conflict"
 
 
 def test_v2_builder_rejects_every_controller_except_fixed_tls_endpoint(
@@ -331,6 +753,8 @@ def test_v2_iso_contract_embeds_only_public_identity_material() -> None:
     assert "Managed ISO size fixed point did not converge" in builder
     assert "sha256sum -c" in verifier
     assert "stat -c '%a'" in verifier
+    assert "verify-contract.py" in verifier
+    assert "publish_managed_iso" in builder
 
 
 def test_release_builder_adds_v2_only_by_explicit_opt_in() -> None:
@@ -343,3 +767,4 @@ def test_release_builder_adds_v2_only_by_explicit_opt_in() -> None:
     assert "alt-kworkstation-11.4-agent-v2-$release_id.iso" in release
     assert "https://192.168.100.17:18092" in release
     assert "http://192.168.100.17:18090" in release
+    assert "publish_managed_iso" in release

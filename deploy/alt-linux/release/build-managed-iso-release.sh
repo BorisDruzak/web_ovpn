@@ -121,13 +121,22 @@ else
     bash "$checkout/deploy/alt-linux/iso/agent-v2/build-managed-iso.sh" --source "$source_iso" --output "$staged_iso" --helper "$helper" --public-key "$public_snapshot" --ca-certificate "$ca_snapshot" --build-id "release-$release_id" --controller-url "$v2_controller_url"
     bash "$checkout/deploy/alt-linux/iso/agent-v2/verify-managed-iso.sh" --iso "$staged_iso"
 fi
-mv -n -- "$staged_iso" "$output"
-[[ -f "$output" && ! -e "$staged_iso" ]] || die 'ISO publication failed'
-mv -n -- "$staged_iso.build-manifest.json" "$sidecar"
-[[ -f "$sidecar" && ! -e "$staged_iso.build-manifest.json" ]] || die 'Sidecar publication failed'
 if [[ "$agent_version" == agent-v1 ]]; then
+    mv -n -- "$staged_iso" "$output"
+    [[ -f "$output" && ! -e "$staged_iso" ]] ||
+        die 'ISO publication failed'
+    mv -n -- "$staged_iso.build-manifest.json" "$sidecar"
+    [[ -f "$sidecar" &&
+        ! -e "$staged_iso.build-manifest.json" ]] ||
+        die 'Sidecar publication failed'
     mv -f -- "$staged_index" "$index"
     printf 'release_iso=%s\nrelease_index=%s\n' "$output" "$index"
 else
+    # shellcheck source=../iso/agent-v2/lib/publish.sh
+    source "$checkout/deploy/alt-linux/iso/agent-v2/lib/publish.sh"
+    publish_managed_iso \
+        "$staged_iso" "$staged_iso.build-manifest.json" \
+        "$output" "$sidecar" ||
+        die 'V2 release transaction failed'
     printf 'release_iso=%s\nrelease_sidecar=%s\n' "$output" "$sidecar"
 fi

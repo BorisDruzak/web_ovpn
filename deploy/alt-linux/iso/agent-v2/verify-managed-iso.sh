@@ -24,6 +24,10 @@ done
 [[ -n "$iso" && -r "$iso" ]] || usage
 manifest=${manifest:-${iso}.build-manifest.json}
 [[ -r "$manifest" ]] || die 'Build manifest is not readable'
+root=$(cd -- "$(dirname -- "$0")" && pwd -P)
+contract="$root/verify-contract.py"
+[[ -f "$contract" && ! -L "$contract" ]] ||
+    die 'Verification contract is unreadable'
 for command in xorriso gzip cpio sha256sum mktemp python3 stat grep \
     find sort mkdir rm; do
     command -v "$command" >/dev/null ||
@@ -56,6 +60,13 @@ payload="$workdir/initrd/usr/share/alt-install/payload.sha256"
     cd "$workdir/initrd"
     sha256sum -c usr/share/alt-install/payload.sha256 >/dev/null
 ) || die 'Payload checksum verification failed'
+python3 "$contract" source \
+    --manifest "$manifest" \
+    --source-identity \
+    "$workdir/initrd/usr/share/alt-install/source_iso.json" ||
+    die 'Pinned source identity verification failed'
+python3 "$contract" scan --root "$workdir/initrd" ||
+    die 'Extracted payload secret scan failed'
 
 python3 - "$manifest" "$iso" "$workdir/initrd.img" \
     "$workdir/initrd" <<'PY'
@@ -334,67 +345,14 @@ grep -Fqx \
 grep -Fqx '    exec "$agent"' "$v2_gate" ||
     die 'V2 initrd execution target is invalid'
 
-python3 - "$manifest" "$workdir/grub.cfg" "$workdir/isolinux.cfg" \
+python3 "$contract" menu \
+    --manifest "$manifest" \
+    --grub "$workdir/grub.cfg" \
+    --isolinux "$workdir/isolinux.cfg" \
+    --v1-controller \
     "$workdir/initrd/usr/share/alt-install/controller-url" \
-    "$workdir/initrd/usr/share/alt-install/execution-controller-url" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-grub = Path(sys.argv[2]).read_text(encoding="utf-8")
-isolinux = Path(sys.argv[3]).read_text(encoding="utf-8")
-v1_controller = Path(sys.argv[4]).read_text(encoding="ascii")
-v2_controller = Path(sys.argv[5]).read_text(encoding="ascii")
-if v1_controller != "http://192.168.100.17:18090\n":
-    raise SystemExit("embedded V1 controller URL changed")
-if v2_controller != manifest["controller_url"] + "\n":
-    raise SystemExit("embedded V2 controller URL does not match")
-title = 'menuentry "Signed-plan installation [ROOT APPROVAL REQUIRED]"'
-if grub.count(title) != 1:
-    raise SystemExit("V2 menu entry count is invalid")
-start = grub.index(title)
-efi_start = grub.rfind(
-    'if [ "$grub_platform" = "efi" ]; then', 0, start
-)
-efi_end = grub.find("\nfi\n", start)
-if efi_start < 0 or efi_end < 0:
-    raise SystemExit("V2 menu entry is not UEFI-only")
-entry = grub[start:efi_end]
-expected_line = (
-    "  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE "
-    "root=bootchain bootchain=fg,altboot stagename=live "
-    "ramdisk_size=4497433 lowmem quiet splash lang=$lang "
-    "ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v2 "
-    f"sosnadmin.controller={manifest['controller_url']} "
-    f"sosnadmin.build={manifest['build_id']} "
-    "systemd.unit=install2.target ai curl=http://127.0.0.1:18192"
-)
-if expected_line not in entry or entry.count("\n  linux ") != 1:
-    raise SystemExit("V2 kernel command line is invalid")
-for required in (
-    'menuentry "Normal ALT installation"',
-    'menuentry "Signed-plan preflight [DRY RUN]"',
-    "sosnadmin.mode=agent-v1 "
-    "sosnadmin.controller=http://192.168.100.17:18090",
-):
-    if required not in grub:
-        raise SystemExit("normal or V1 menu contract changed")
-if (
-    grub.count("sosnadmin.mode=agent-v2") != 1
-    or grub.count("systemd.unit=install2.target") != 1
-    or grub.count("ai curl=http://127.0.0.1:18192") != 1
-    or "curl=http://192.168.100.17" in grub
-    or "set default=harddisk" not in grub
-    or "set default=alt-agent-v2" in grub
-):
-    raise SystemExit("V2 menu safety contract is invalid")
-if (
-    "default harddisk" not in isolinux
-    or "agent-v2" in isolinux
-    or "install2.target" in isolinux
-):
-    raise SystemExit("BIOS menu must remain non-execution")
-PY
+    --v2-controller \
+    "$workdir/initrd/usr/share/alt-install/execution-controller-url" ||
+    die 'Boot menu contract verification failed'
 
 printf 'managed_iso_verified=true\n'
