@@ -53,6 +53,7 @@ def _write_qmp(
     sentinel_file: str = "sentinel.qcow2",
     include_response_ids: bool = True,
     swap_inserted_files: bool = False,
+    install_iso_file: str | None = None,
 ) -> None:
     def statistics(
         device: str,
@@ -85,6 +86,46 @@ def _write_qmp(
             },
         }
 
+    block_devices = [
+        {
+            "device": "target",
+            "inserted": {
+                "backing_file_depth": 0,
+                "drv": "qcow2",
+                "file": (
+                    sentinel_file
+                    if swap_inserted_files
+                    else target_file
+                ),
+                "ro": target_read_only,
+            },
+        },
+        {
+            "device": "sentinel",
+            "inserted": {
+                "backing_file_depth": 0,
+                "drv": "qcow2",
+                "file": (
+                    target_file
+                    if swap_inserted_files
+                    else sentinel_file
+                ),
+                "ro": sentinel_read_only,
+            },
+        },
+    ]
+    if install_iso_file is not None:
+        block_devices.append(
+            {
+                "device": "install-iso",
+                "inserted": {
+                    "drv": "raw",
+                    "file": install_iso_file,
+                    "ro": True,
+                },
+                "removable": True,
+            }
+        )
     messages = [
         {"QMP": {"version": {"qemu": {"major": 9, "minor": 0, "micro": 0}}}},
         {
@@ -103,34 +144,7 @@ def _write_qmp(
             **({"id": "blockstats"} if include_response_ids else {}),
         },
         {
-            "return": [
-                {
-                    "device": "target",
-                    "inserted": {
-                        "backing_file_depth": 0,
-                        "drv": "qcow2",
-                        "file": (
-                            sentinel_file
-                            if swap_inserted_files
-                            else target_file
-                        ),
-                        "ro": target_read_only,
-                    },
-                },
-                {
-                    "device": "sentinel",
-                    "inserted": {
-                        "backing_file_depth": 0,
-                        "drv": "qcow2",
-                        "file": (
-                            target_file
-                            if swap_inserted_files
-                            else sentinel_file
-                        ),
-                        "ro": sentinel_read_only,
-                    },
-                },
-            ],
+            "return": block_devices,
             **({"id": "block"} if include_response_ids else {}),
         },
     ]
@@ -331,18 +345,33 @@ def test_harness_uses_run_owned_authorization_and_postflight_chain() -> None:
     assert "--timeline" not in source
     assert "--postflight <" not in source
     assert "create-authorization-request" in source
-    assert source.index("--output \"$evidence/initial.qmp.jsonl\"") < (
+    assert source.index("--phase pending") < (
         source.index("create-authorization-request")
     )
     assert source.index("create-authorization-request") < source.index(
-        "--output \"$evidence/before-authorization.qmp.jsonl\""
+        "--phase before-authorization"
     )
     assert source.index(
-        "--output \"$evidence/before-authorization.qmp.jsonl\""
+        "--phase before-authorization"
     ) < source.index("authorize-execution")
     assert "issue-postflight-challenge" in source
     assert "--acceptance-state-dir \"$state_dir\"" in source
-    assert "verify-resource-ownership" in source
+    assert "capture-authorization-boundary" in source
+    assert "--observed-at" in source
+    assert "verify-run-iso" in source
+    assert "export-public-evidence" in source
+    assert "remove-owned-workdir" in source
+    assert "delete-owned-tap" in source
+    assert 'rm -rf -- "$workdir"' not in source
+    assert 'ip tuntap del dev "$tap_name"' not in source
+    workdir_created = source.index(
+        'workdir=$(mktemp -d "$evidence_root/.alt-agent-v2-qemu-work.'
+    )
+    ownership_recorded = source.index("record-workdir-ownership")
+    assert workdir_created < ownership_recorded
+    assert "prepare_storage" not in source[
+        workdir_created:ownership_recorded
+    ]
 
 
 def test_harness_exercises_disposable_target_and_sentinel_cleanup(
@@ -468,6 +497,63 @@ def test_bound_qmp_rejects_response_or_inserted_file_relabeling(
         module.read_bound_qmp_snapshot(qmp, state)
 
 
+def test_install_boundary_binds_current_iso_identity_and_qmp_cdrom(
+    tmp_path: Path,
+) -> None:
+    state, manifest = _create_run_state(tmp_path)
+    module = _support_module()
+    qmp = tmp_path / "install.qmp.jsonl"
+    _write_qmp(
+        qmp,
+        target_write_bytes=0,
+        sentinel_write_bytes=0,
+        target_file=manifest["artifacts"]["target"]["canonical_path"],
+        sentinel_file=manifest["artifacts"]["sentinel"]["canonical_path"],
+        install_iso_file=manifest["iso"]["canonical_path"],
+    )
+
+    module.verify_run_iso(state)
+    module.read_bound_qmp_snapshot(qmp, state, require_iso=True)
+
+    iso = Path(manifest["iso"]["canonical_path"])
+    original = iso.read_bytes()
+    iso.write_bytes(original + b"-mutated")
+    with pytest.raises(module.AcceptanceError, match="ISO"):
+        module.read_bound_qmp_snapshot(qmp, state, require_iso=True)
+
+    iso.write_bytes(original)
+    replacement = tmp_path / "replacement.iso"
+    replacement.write_bytes(original)
+    iso.unlink()
+    replacement.replace(iso)
+    with pytest.raises(module.AcceptanceError, match="ISO"):
+        module.read_bound_qmp_snapshot(qmp, state, require_iso=True)
+
+
+def test_install_boundary_rejects_missing_or_relabelled_iso_qmp(
+    tmp_path: Path,
+) -> None:
+    state, manifest = _create_run_state(tmp_path)
+    module = _support_module()
+    qmp = tmp_path / "install.qmp.jsonl"
+    common = {
+        "target_write_bytes": 0,
+        "sentinel_write_bytes": 0,
+        "target_file": manifest["artifacts"]["target"]["canonical_path"],
+        "sentinel_file": manifest["artifacts"]["sentinel"]["canonical_path"],
+    }
+    _write_qmp(qmp, **common)
+    with pytest.raises(module.AcceptanceError, match="ISO"):
+        module.read_bound_qmp_snapshot(qmp, state, require_iso=True)
+    _write_qmp(
+        qmp,
+        **common,
+        install_iso_file=str(tmp_path / "other.iso"),
+    )
+    with pytest.raises(module.AcceptanceError, match="ISO"):
+        module.read_bound_qmp_snapshot(qmp, state, require_iso=True)
+
+
 def test_bound_sha_rejects_relabel_and_replaced_file_identity(
     tmp_path: Path,
 ) -> None:
@@ -542,7 +628,8 @@ def test_signed_chain_rejects_stale_postflight_from_another_run(
 def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     tmp_path: Path,
 ) -> None:
-    state, manifest = _create_run_state(tmp_path)
+    workdir = tmp_path / "work"
+    state, manifest = _create_run_state(workdir)
     module = _support_module()
     target = Path(manifest["artifacts"]["target"]["canonical_path"])
     sentinel = Path(
@@ -719,6 +806,25 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     assert result["controller"]["state"] == "installed"
     assert result["postflight"]["iso_attached"] is False
     assert result["run"]["run_id"] == manifest["run_id"]
+    public_evidence = tmp_path / "public-evidence"
+    module.export_public_evidence(
+        state,
+        receipt=receipt,
+        output=public_evidence,
+        euid=lambda: 0,
+    )
+    assert not (
+        public_evidence / "attestation-private.pem"
+    ).exists()
+    ownership = module.workdir_ownership(workdir)
+    module.remove_owned_workdir(ownership, workdir)
+    assert not workdir.exists()
+    verified = module.verify_public_evidence(
+        public_evidence, euid=lambda: 0
+    )
+    assert verified["receipt"]["result"] == "pass"
+    assert verified["chain"][-1]["event"] == "acceptance_evidence"
+    assert verified["chain"][-2]["event"] == "installed"
 
 
 @pytest.mark.parametrize("mutation", ["wrong_vm", "iso_attached"])
@@ -811,6 +917,63 @@ def test_authorization_request_is_derived_from_unique_controller_preflight(
     ) == request
 
 
+def test_authorization_boundary_captures_qmp_and_sha_as_one_signed_unit(
+    tmp_path: Path,
+) -> None:
+    state, manifest = _create_run_state(tmp_path / "run")
+    module = _support_module()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    calls: list[str] = []
+    timestamps = iter(
+        (
+            "2026-07-29T12:01:31+00:00",
+            "2026-07-29T12:01:32+00:00",
+        )
+    )
+
+    def capture(_socket: Path, output: Path) -> None:
+        calls.append("qmp")
+        _write_qmp(
+            output,
+            target_write_bytes=0,
+            sentinel_write_bytes=0,
+            target_file=manifest["artifacts"]["target"][
+                "canonical_path"
+            ],
+            sentinel_file=manifest["artifacts"]["sentinel"][
+                "canonical_path"
+            ],
+            install_iso_file=manifest["iso"]["canonical_path"],
+        )
+
+    boundary = module.capture_authorization_boundary(
+        state,
+        socket_path=tmp_path / "qmp.sock",
+        evidence_dir=evidence,
+        phase="pending",
+        qmp_capture=capture,
+        clock=lambda: next(timestamps),
+    )
+
+    assert calls == ["qmp"]
+    assert boundary["phase"] == "pending"
+    assert boundary["capture_started_at"] < boundary["captured_at"]
+    assert boundary["iso"]["sha256"] == manifest["iso"]["sha256"]
+    assert boundary["target"]["sha256"] == manifest["artifacts"][
+        "target"
+    ]["initial_sha256"]
+    assert boundary["sentinel"]["sha256"] == manifest["artifacts"][
+        "sentinel"
+    ]["initial_sha256"]
+    loaded = module.read_authorization_boundary(
+        state,
+        evidence / "pending-boundary.json",
+        expected_phase="pending",
+    )
+    assert loaded == boundary
+
+
 def test_cleanup_rejects_replaced_workdir_and_tap_ifindex(
     tmp_path: Path,
 ) -> None:
@@ -844,6 +1007,70 @@ def test_cleanup_rejects_replaced_workdir_and_tap_ifindex(
             tap_name="aiv21234",
             tap_ifindex=91,
         )
+
+
+def test_cleanup_before_tap_uses_recorded_workdir_identity(
+    tmp_path: Path,
+) -> None:
+    module = _support_module()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "partial").write_text("partial", encoding="utf-8")
+    ownership = module.workdir_ownership(workdir)
+
+    module.remove_owned_workdir(ownership, workdir)
+
+    assert not workdir.exists()
+
+
+def test_cleanup_refuses_workdir_replacement_race_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    module = _support_module()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    (workdir / "original").write_text("original", encoding="utf-8")
+    ownership = module.workdir_ownership(workdir)
+    moved = tmp_path / "moved-original"
+
+    def replace_after_open() -> None:
+        workdir.rename(moved)
+        workdir.mkdir()
+        (workdir / "replacement").write_text(
+            "must survive", encoding="utf-8"
+        )
+
+    with pytest.raises(module.AcceptanceError, match="identity changed"):
+        module.remove_owned_workdir(
+            ownership,
+            workdir,
+            before_final_remove=replace_after_open,
+        )
+
+    assert (workdir / "replacement").read_text(
+        encoding="utf-8"
+    ) == "must survive"
+
+
+def test_tap_cleanup_deletes_only_the_recorded_ifindex() -> None:
+    module = _support_module()
+    ownership = module.tap_ownership(
+        tap_name="aiv21234", tap_ifindex=91
+    )
+    deleted: list[int] = []
+    with pytest.raises(module.AcceptanceError, match="TAP"):
+        module.delete_owned_tap(
+            ownership,
+            identity_reader=lambda _name: 92,
+            delete_by_ifindex=deleted.append,
+        )
+    assert deleted == []
+    module.delete_owned_tap(
+        ownership,
+        identity_reader=lambda _name: 91,
+        delete_by_ifindex=deleted.append,
+    )
+    assert deleted == [91]
 
 
 def test_root_authorization_checks_two_zero_write_snapshots_then_calls_cli(

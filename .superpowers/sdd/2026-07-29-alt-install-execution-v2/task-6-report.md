@@ -32,6 +32,28 @@ The executable acceptance path now:
 The old caller-supplied `--timeline` and `--postflight` route was removed.
 Console prefixes are no longer evidence or authorization.
 
+## Second review hardening
+
+The second review round additionally:
+
+- captures two ordered, signed authorization-boundary documents, each from
+  one contemporaneous QMP query followed by exact target/sentinel SHA
+  measurements, and requires the root observation plus controller
+  authorization to follow those documents;
+- reaches the real production CLI/service/repository by default in a
+  non-injected POSIX integration test;
+- binds the install ISO's canonical path, device, inode, size, and SHA-256 at
+  run creation, rechecks them immediately before QEMU, and requires the exact
+  read-only `install-iso` QMP device in both authorization boundaries;
+- records work-directory ownership immediately after `mktemp` and performs
+  cleanup through stable directory descriptors; TAP cleanup is bound to the
+  recorded kernel ifindex and uses netlink instead of a reused name;
+- writes the receipt and root-owned public proof outside the disposable work
+  directory. A seventh signed attestation seals the six-entry transition
+  chain, receipt, public key, manifest, and raw evidence hashes. The package
+  is independently verifiable after work-directory cleanup and contains no
+  private key or controller credential.
+
 ## TDD evidence
 
 Initial Task 6 red:
@@ -96,22 +118,56 @@ git diff --check
 exit 0
 ```
 
+Second review red:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py -q -k \
+  'install_boundary or authorization_boundary_captures or cleanup_before_tap \
+  or replacement_race or tap_cleanup or signed_no_iso or harness_uses'
+8 failed, 18 deselected
+```
+
+Second review green:
+
+```text
+pytest tests/test_alt_install_execution_qemu.py \
+  tests/test_alt_install_execution_agent.py -q
+39 passed
+
+pytest --noconftest \
+  tests/alt_linux/test_install_session_cli.py \
+  tests/alt_linux/test_install_execution.py \
+  tests/alt_linux/test_install_execution_api.py -q
+56 passed, 5 skipped
+```
+
+The new non-injected production CLI integration is POSIX-only because the
+production repository locking implementation requires `fcntl`; it is
+collected for Linux CI and is skipped on this Windows development host.
+
 ## Specification self-review
 
 Verdict: **PASS for the implementation contract; no QEMU execution PASS
 claimed.**
 
-- C1: the root boundary is the production CLI, after two immediate,
-  exact-identity, zero-write QMP/SHA snapshots; execution ID and state are
-  persisted in signed evidence.
+- C1: the root boundary is the real production CLI/service/repository path,
+  after two ordered signed, exact-identity, zero-write QMP/SHA boundary
+  documents; a caller-independent observation time and the controller
+  authorization time are persisted in signed evidence and must be
+  contemporaneous.
 - C2: every run has unpredictable trust material and exact
-  ISO/VM/target/sentinel/controller bindings. The actual no-ISO QMP boot
-  precedes nonce generation. The real first-boot component and TLS API
-  consume it once; stale or replayed evidence is rejected.
+  ISO/VM/target/sentinel/controller bindings. The ISO identity is reverified
+  immediately before QEMU and against the exact QMP CD-ROM. The actual no-ISO
+  QMP boot precedes nonce generation. The real first-boot component and TLS
+  API consume it once; stale or replayed evidence is rejected.
 - I3: QMP response IDs, `inserted.file`, canonical SHA filenames, and
   device/inode file identities are exact.
-- I4: cleanup uses recorded work-directory device/inode and TAP ifindex, not
-  a name prefix alone; replacements are preserved.
+- I4: work-directory ownership is recorded immediately after creation and
+  cleanup walks stable directory descriptors; TAP cleanup uses the recorded
+  kernel ifindex. Name/path replacements are preserved.
+- I5: the public, non-secret proof has an exclusive hash-linked index and a
+  seventh Ed25519 seal. It remains independently verifiable after private
+  work-directory cleanup.
 - There is no CLI route for an existing disk, infrastructure VM, Proxmox, VM
   114, an arbitrary authorization request, a caller timeline, or a caller
   postflight result.
@@ -126,8 +182,8 @@ Verdict: **PASS**
   and boot ID.
 - QMP requires exact response IDs and checks all target/sentinel graph write
   counters; nested sentinel writes fail.
-- The receipt is exclusive and contains no Bearer credential, password/hash,
-  TLS key, or attestation private key.
+- The receipt and public evidence package are exclusive and contain no
+  Bearer credential, password/hash, TLS key, or attestation private key.
 - The API's postflight verifier is disabled in normal service startup and is
   enabled only with the harness-owned acceptance state directory.
 - Cleanup preserves resources when ownership identity cannot be proven.

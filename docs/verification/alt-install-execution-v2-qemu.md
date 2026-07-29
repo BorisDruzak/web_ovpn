@@ -19,7 +19,11 @@ At run creation, the harness creates:
 - canonical ISO, target, and sentinel paths;
 - SHA-256 and device/inode/size identities for all three artifacts.
 
-Every QMP transcript must contain the exact request IDs and exact
+Immediately before the install QEMU process starts, the harness rechecks the
+ISO's canonical path, device, inode, size, and SHA-256 against the run
+manifest. Install-boot QMP evidence must contain exactly one read-only,
+removable `install-iso` device whose `inserted.file` is that same canonical
+path. Every QMP transcript must contain the exact request IDs and exact
 `query-block` `inserted.file` paths. SHA records must name those same
 canonical files and retain their device/inode creation identity.
 
@@ -33,16 +37,21 @@ The harness does not accept timeline, authorization, session, target, or
 postflight files from its caller.
 
 1. The guest reaches its pre-authorization hold.
-2. QMP and SHA evidence are captured with every target and sentinel write
-   counter at zero.
+2. One ordered, signed QMP and SHA boundary document is captured with every
+   target and sentinel write counter at zero and the exact install ISO
+   attached.
 3. `create-authorization-request` reads the one local controller session in
    `plan_published`/`preflight_ready`, hashes its immutable `plan.json`, and
    writes the exact `/dev/vda` request under the private run state.
-4. A second immediate QMP and SHA capture must still show zero writes and
-   unchanged files.
-5. As real root, the support program calls the production
+4. A second ordered, signed boundary document is captured immediately before
+   authorization. It must still show zero writes, unchanged target and
+   sentinel files, and the exact install ISO.
+5. As real root, the support program records a fresh UTC observation and
+   calls the production
    `alt_deploy.cli.main` `authorize-execution` command with the exact derived
-   plan, inventory, disk fingerprint, session, and `/dev/vda` values.
+   plan, inventory, disk fingerprint, session, and `/dev/vda` values. The
+   controller's authorization time must be contemporaneous with that
+   observation and strictly after both boundary documents.
 6. The returned execution ID and `authorized` state are checked against the
    authoritative repository and signed as attestation 1.
 7. The authenticated V2 TLS service records the single-use
@@ -100,9 +109,21 @@ authorization request, timeline, or postflight result.
 
 ## Receipt rule
 
-`finalize-evidence` accepts only the six-entry signed run chain. It also
-rechecks the initial, immediate-before-authorization, after-install, and
-target-only boot QMP transcripts plus all bound SHA records.
+`finalize-evidence` accepts only the six controller/boot attestations and
+rechecks both ordered authorization-boundary documents, the after-install
+evidence, and the target-only boot QMP transcript plus all bound SHA records.
+It writes an exclusive receipt outside the private work directory but does
+not emit PASS.
+
+`export-public-evidence` then creates a separate root-owned `0700` evidence
+directory. It copies only the public key, run manifest, receipt, selected raw
+QMP/SHA evidence, and attestations. Every file is `0600`. A seventh signed
+attestation seals the receipt and the exact hashes of the exported evidence;
+the public index links to that seal. The exporter independently verifies the
+complete package before it emits the sole PASS line. The verifier rejects
+private keys, credentials, extra files, changed permissions or ownership,
+broken hash links, and invalid signatures. The package remains verifiable
+after the private work directory is safely removed.
 
 PASS requires zero target and sentinel writes through authorization,
 positive target writes after installation, zero sentinel writes at every

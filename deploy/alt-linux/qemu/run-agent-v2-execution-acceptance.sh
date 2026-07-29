@@ -97,7 +97,11 @@ prepare_storage() {
 cleanup_storage_contract() {
     case "$contract_workdir" in
         "$contract_root"/.alt-agent-v2-storage-contract.*)
-            rm -rf -- "$contract_workdir"
+            rm -f -- \
+                "$contract_workdir/target.qcow2" \
+                "$contract_workdir/sentinel.qcow2" \
+                "$contract_workdir/qemu-img.log"
+            rmdir -- "$contract_workdir" 2>/dev/null || true
             ;;
     esac
 }
@@ -211,6 +215,8 @@ for path in "$iso" "$ovmf_code" "$ovmf_vars"; do
 done
 bash "$iso_verifier" --iso "$iso" >/dev/null ||
     die 'V2 managed ISO verification failed'
+iso=$(readlink -f -- "$iso") ||
+    die 'Cannot resolve verified V2 ISO'
 
 evidence_root=${evidence_root:-"$PWD/acceptance"}
 mkdir -p -- "$evidence_root"
@@ -224,7 +230,22 @@ esac
 run_id="agent-v2-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 evidence="$evidence_root/$run_id"
 mkdir -m 0755 -- "$evidence"
+workdir_ownership_record="$evidence/workdir-ownership.json"
+early_workdir_cleanup() {
+    if [[ -n "$workdir" &&
+        -f "$workdir_ownership_record" &&
+        ! -L "$workdir_ownership_record" ]]; then
+        python3 "$support" remove-owned-workdir \
+            --record "$workdir_ownership_record" \
+            --workdir "$workdir" >/dev/null 2>&1 || true
+    fi
+}
+trap early_workdir_cleanup EXIT
 workdir=$(mktemp -d "$evidence_root/.alt-agent-v2-qemu-work.XXXXXX")
+python3 "$support" record-workdir-ownership \
+    --record "$workdir_ownership_record" \
+    --workdir "$workdir" ||
+    die 'Harness work directory identity recording failed'
 chmod 0700 -- "$workdir"
 workdir=$(readlink -f -- "$workdir") ||
     die 'Cannot resolve QEMU work directory'
@@ -241,7 +262,7 @@ execution_server_pid=
 execution_server_starttime=
 tap_name="aiv2$(( $$ % 100000 ))"
 tap_created=0
-ownership_record="$evidence/resource-ownership.json"
+tap_ownership_record="$evidence/tap-ownership.json"
 
 process_starttime() {
     local pid=$1
@@ -275,7 +296,6 @@ stop_qemu() {
 }
 
 cleanup() {
-    local current_ifindex=
     stop_qemu
     if [[ -n "$execution_server_pid" ]] &&
         owned_process_alive \
@@ -288,27 +308,29 @@ cleanup() {
         kill "$dnsmasq_pid" 2>/dev/null || true
         wait "$dnsmasq_pid" 2>/dev/null || true
     fi
-    if ((tap_created == 1)) && [[ -e "/sys/class/net/$tap_name/ifindex" ]]; then
-        current_ifindex=$(<"/sys/class/net/$tap_name/ifindex")
+    if ((tap_created == 1)); then
+        if [[ -f "$tap_ownership_record" && ! -L "$tap_ownership_record" ]]; then
+            python3 "$support" delete-owned-tap \
+                --record "$tap_ownership_record" >/dev/null 2>&1 || {
+                printf '%s\n' \
+                    'agent-v2-qemu: TAP identity changed; preserving TAP' >&2
+            }
+        else
+            printf '%s\n' \
+                'agent-v2-qemu: TAP identity absent; preserving TAP' >&2
+        fi
     fi
-    if ((tap_created == 1)) && [[ -n "$current_ifindex" ]] &&
-        python3 "$support" verify-resource-ownership \
-            --record "$ownership_record" \
-            --workdir "$workdir" \
-            --tap-name "$tap_name" \
-            --tap-ifindex "$current_ifindex" >/dev/null 2>&1; then
-        ip link set "$tap_name" down 2>/dev/null || true
-        ip tuntap del dev "$tap_name" mode tap 2>/dev/null || true
-        rm -rf -- "$workdir"
-    elif ((tap_created == 0)); then
-        case "$workdir" in
-            "$evidence_root"/.alt-agent-v2-qemu-work.*)
-                rm -rf -- "$workdir"
-                ;;
-        esac
+    if [[ -f "$workdir_ownership_record" &&
+        ! -L "$workdir_ownership_record" ]]; then
+        python3 "$support" remove-owned-workdir \
+            --record "$workdir_ownership_record" \
+            --workdir "$workdir" >/dev/null 2>&1 || {
+            printf '%s\n' \
+                'agent-v2-qemu: workdir identity changed; preserving workdir' >&2
+        }
     else
         printf '%s\n' \
-            'agent-v2-qemu: cleanup ownership changed; preserving resources' >&2
+            'agent-v2-qemu: workdir identity absent; preserving workdir' >&2
     fi
 }
 shopt -s extglob
@@ -325,8 +347,6 @@ python3 "$support" create-run \
     --sentinel "$sentinel" \
     --vm-instance-id "$vm_instance_id" >/dev/null ||
     die 'Run trust state creation failed'
-sha256sum "$target" >"$evidence/target.initial.sha256"
-sha256sum "$sentinel" >"$evidence/sentinel.initial.sha256"
 cp -- "$ovmf_vars" "$workdir/OVMF_VARS.fd"
 
 [[ ! -e "/sys/class/net/$tap_name" ]] ||
@@ -334,16 +354,15 @@ cp -- "$ovmf_vars" "$workdir/OVMF_VARS.fd"
 ip tuntap add dev "$tap_name" mode tap user "$(id -u)" ||
     die 'Harness TAP creation failed'
 tap_created=1
+tap_ifindex=$(<"/sys/class/net/$tap_name/ifindex")
+python3 "$support" record-tap-ownership \
+    --record "$tap_ownership_record" \
+    --tap-name "$tap_name" \
+    --tap-ifindex "$tap_ifindex" ||
+    die 'Harness TAP creation identity recording failed'
 ip address add 192.168.100.17/24 dev "$tap_name" ||
     die 'Harness TAP address assignment failed'
 ip link set "$tap_name" up || die 'Harness TAP activation failed'
-tap_ifindex=$(<"/sys/class/net/$tap_name/ifindex")
-python3 "$support" record-resource-ownership \
-    --record "$ownership_record" \
-    --workdir "$workdir" \
-    --tap-name "$tap_name" \
-    --tap-ifindex "$tap_ifindex" ||
-    die 'Harness creation identity recording failed'
 dnsmasq \
     --keep-in-foreground \
     --bind-interfaces \
@@ -414,8 +433,15 @@ launch_qemu() {
     local console="$workdir/$phase.console.log"
     local -a media=()
     local -a postflight_channel=()
-    [[ -z "$boot_iso" ]] ||
-        media=(-drive "media=cdrom,readonly=on,file=$boot_iso")
+    if [[ -n "$boot_iso" ]]; then
+        python3 "$support" verify-run-iso \
+            --state-dir "$state_dir" >/dev/null ||
+            die 'Run ISO identity changed before QEMU launch'
+        media=(
+            -drive "id=install-iso,if=none,media=cdrom,format=raw,readonly=on,file=$boot_iso"
+            -device "ide-cd,drive=install-iso"
+        )
+    fi
     [[ "$phase" != postflight ]] ||
         postflight_channel=(
             -device virtio-serial-pci
@@ -454,27 +480,27 @@ launch_qemu "$iso" install
 wait_for_line "$workdir/install.console.log" \
     'terminal=execution_pending' 1200 ||
     die 'Guest never proved its pre-authorization execution hold'
-python3 "$support" qmp-query \
+python3 "$support" capture-authorization-boundary \
+    --state-dir "$state_dir" \
     --socket "$install_qmp" \
-    --output "$evidence/initial.qmp.jsonl" ||
-    die 'Initial pre-authorization QMP capture failed'
+    --evidence-dir "$evidence" \
+    --phase pending ||
+    die 'Pending authorization boundary capture failed'
 python3 "$support" create-authorization-request \
     --state-dir "$state_dir" ||
     die 'Controller-owned authorization request was unavailable'
-python3 "$support" qmp-query \
+python3 "$support" capture-authorization-boundary \
+    --state-dir "$state_dir" \
     --socket "$install_qmp" \
-    --output "$evidence/before-authorization.qmp.jsonl" ||
-    die 'Immediate pre-authorization QMP capture failed'
-sha256sum "$target" >"$evidence/target.before-authorization.sha256"
-sha256sum "$sentinel" >"$evidence/sentinel.before-authorization.sha256"
+    --evidence-dir "$evidence" \
+    --phase before-authorization ||
+    die 'Immediate authorization boundary capture failed'
+authorization_observed_at=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
 python3 "$support" authorize-execution \
     --state-dir "$state_dir" \
-    --initial-qmp "$evidence/initial.qmp.jsonl" \
-    --before-authorization-qmp "$evidence/before-authorization.qmp.jsonl" \
-    --initial-target-sha "$evidence/target.initial.sha256" \
-    --before-authorization-target-sha "$evidence/target.before-authorization.sha256" \
-    --initial-sentinel-sha "$evidence/sentinel.initial.sha256" \
-    --before-authorization-sentinel-sha "$evidence/sentinel.before-authorization.sha256" ||
+    --pending-boundary "$evidence/pending-boundary.json" \
+    --before-authorization-boundary "$evidence/before-authorization-boundary.json" \
+    --observed-at "$authorization_observed_at" ||
     die 'Real root execution authorization failed'
 
 wait_for_line "$workdir/install.console.log" \
@@ -529,14 +555,30 @@ sha256sum "$sentinel" >"$evidence/sentinel.after.sha256"
 printf 'evidence_dir=%s\n' "$evidence"
 python3 "$support" finalize-evidence \
     --state-dir "$state_dir" \
-    --initial-qmp "$evidence/initial.qmp.jsonl" \
+    --initial-qmp "$evidence/pending.qmp.jsonl" \
     --before-authorization-qmp "$evidence/before-authorization.qmp.jsonl" \
     --after-install-qmp "$evidence/after-install.qmp.jsonl" \
     --postflight-boot-qmp "$evidence/postflight-boot.qmp.jsonl" \
-    --initial-target-sha "$evidence/target.initial.sha256" \
-    --before-authorization-target-sha "$evidence/target.before-authorization.sha256" \
+    --initial-target-sha "$evidence/pending.target.sha256" \
+    --before-authorization-target-sha "$evidence/before-authorization.target.sha256" \
     --after-target-sha "$evidence/target.after.sha256" \
-    --initial-sentinel-sha "$evidence/sentinel.initial.sha256" \
-    --before-authorization-sentinel-sha "$evidence/sentinel.before-authorization.sha256" \
+    --initial-sentinel-sha "$evidence/pending.sentinel.sha256" \
+    --before-authorization-sentinel-sha "$evidence/before-authorization.sentinel.sha256" \
     --after-sentinel-sha "$evidence/sentinel.after.sha256" \
     --output "$evidence/acceptance-receipt.json"
+python3 "$support" export-public-evidence \
+    --state-dir "$state_dir" \
+    --receipt "$evidence/acceptance-receipt.json" \
+    --output "$evidence/public-evidence" \
+    --evidence "pending-boundary.json=$evidence/pending-boundary.json" \
+    --evidence "pending.qmp.jsonl=$evidence/pending.qmp.jsonl" \
+    --evidence "pending.target.sha256=$evidence/pending.target.sha256" \
+    --evidence "pending.sentinel.sha256=$evidence/pending.sentinel.sha256" \
+    --evidence "before-authorization-boundary.json=$evidence/before-authorization-boundary.json" \
+    --evidence "before-authorization.qmp.jsonl=$evidence/before-authorization.qmp.jsonl" \
+    --evidence "before-authorization.target.sha256=$evidence/before-authorization.target.sha256" \
+    --evidence "before-authorization.sentinel.sha256=$evidence/before-authorization.sentinel.sha256" \
+    --evidence "after-install.qmp.jsonl=$evidence/after-install.qmp.jsonl" \
+    --evidence "postflight-boot.qmp.jsonl=$evidence/postflight-boot.qmp.jsonl" \
+    --evidence "target.after.sha256=$evidence/target.after.sha256" \
+    --evidence "sentinel.after.sha256=$evidence/sentinel.after.sha256"

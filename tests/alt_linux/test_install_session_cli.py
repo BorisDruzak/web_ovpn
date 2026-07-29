@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import importlib.util
 import json
+import os
 import sys
 from datetime import datetime as real_datetime
 from pathlib import Path
@@ -354,11 +356,213 @@ def test_authorize_execution_reaches_real_service_with_held_release(
 
     assert result == 0
     assert json.loads(output.getvalue())["session"] == {
+        "execution_id": f"{session_id}:execution-0001",
         "session_id": session_id,
         "execution_state": "authorized",
     }
     assert repository.load_status(session_id)["execution"]["state"] == (
         "authorized"
+    )
+
+
+def test_qemu_authorization_cli_reaches_real_production_service_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from test_install_execution import (
+        _approved_session,
+        _publish_held_release_contract,
+        _renderer_secrets,
+    )
+
+    settings, repository, session_id, approved, plan_sha256 = (
+        _approved_session(tmp_path, monkeypatch)
+    )
+    release_root = tmp_path / "held-release-qemu"
+    _publish_held_release_contract(release_root)
+    object.__setattr__(
+        settings, "install_execution_release_root", release_root
+    )
+    plan = json.loads(
+        repository.read_revision_file(session_id, "plan.json")
+    )
+    qemu_support_path = (
+        REPO_ROOT / "deploy" / "alt-linux" / "qemu"
+        / "agent_v2_test_api.py"
+    )
+    specification = importlib.util.spec_from_file_location(
+        "agent_v2_real_cli_integration", qemu_support_path
+    )
+    assert specification and specification.loader
+    support = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(support)
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls, timezone: object) -> real_datetime:
+            return real_datetime.fromisoformat(
+                "2026-07-29T12:02:00+00:00"
+            )
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(cli_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        cli_module.Settings,
+        "from_env",
+        classmethod(lambda _cls: settings),
+    )
+    monkeypatch.setattr(
+        cli_module.ExecutionAuthorizationService,
+        "_vault_secrets",
+        lambda _service: _renderer_secrets(),
+    )
+    run_root = tmp_path / "qemu-run"
+    run_root.mkdir()
+    state = run_root / "state"
+    state.mkdir()
+    iso = run_root / "managed.iso"
+    target = run_root / "target.qcow2"
+    sentinel = run_root / "sentinel.qcow2"
+    iso.write_bytes(b"verified-iso")
+    target.write_bytes(b"target")
+    sentinel.write_bytes(b"sentinel")
+    manifest = support.create_run_state(
+        state,
+        iso=iso,
+        target=target,
+        sentinel=sentinel,
+        vm_instance_id="22222222-3333-4444-5555-666666666662",
+    )
+    evidence = tmp_path / "qemu-evidence"
+    evidence.mkdir()
+
+    def qmp_capture(_socket: Path, output_path: Path) -> None:
+        messages = [
+            {"QMP": {"version": {"qemu": {"major": 9}}}},
+            {"id": "capabilities", "return": {}},
+            {
+                "id": "blockstats",
+                "return": [
+                    {
+                        "device": name,
+                        "parent": {
+                            "stats": {
+                                "wr_bytes": 0,
+                                "wr_operations": 0,
+                            }
+                        },
+                        "stats": {
+                            "wr_bytes": 0,
+                            "wr_operations": 0,
+                        },
+                    }
+                    for name in ("target", "sentinel")
+                ],
+            },
+            {
+                "id": "block",
+                "return": [
+                    {
+                        "device": name,
+                        "inserted": {
+                            "backing_file_depth": 0,
+                            "drv": "qcow2",
+                            "file": manifest["artifacts"][name][
+                                "canonical_path"
+                            ],
+                            "ro": name == "sentinel",
+                        },
+                    }
+                    for name in ("target", "sentinel")
+                ]
+                + [
+                    {
+                        "device": "install-iso",
+                        "inserted": {
+                            "drv": "raw",
+                            "file": manifest["iso"]["canonical_path"],
+                            "ro": True,
+                        },
+                        "removable": True,
+                    }
+                ],
+            },
+        ]
+        output_path.write_text(
+            "".join(
+                json.dumps(message, sort_keys=True) + "\n"
+                for message in messages
+            ),
+            encoding="utf-8",
+        )
+
+    pending_times = iter(
+        (
+            "2026-07-29T12:01:31+00:00",
+            "2026-07-29T12:01:32+00:00",
+        )
+    )
+    before_times = iter(
+        (
+            "2026-07-29T12:01:58+00:00",
+            "2026-07-29T12:01:59+00:00",
+        )
+    )
+    pending = support.capture_authorization_boundary(
+        state,
+        socket_path=tmp_path / "pending.sock",
+        evidence_dir=evidence,
+        phase="pending",
+        qmp_capture=qmp_capture,
+        clock=lambda: next(pending_times),
+    )
+    before = support.capture_authorization_boundary(
+        state,
+        socket_path=tmp_path / "before.sock",
+        evidence_dir=evidence,
+        phase="before-authorization",
+        qmp_capture=qmp_capture,
+        clock=lambda: next(before_times),
+    )
+    request = support.create_authorization_request(state)
+    assert request == {
+        "disk_fingerprint": plan["target_disk"]["fingerprint"],
+        "inventory_sha256": approved["inventory_sha256"],
+        "plan_sha256": plan_sha256,
+        "session_id": session_id,
+        "target_disk": "/dev/vda",
+    }
+
+    result = support.main(
+        [
+            "authorize-execution",
+            "--state-dir",
+            str(state),
+            "--pending-boundary",
+            str(evidence / "pending-boundary.json"),
+            "--before-authorization-boundary",
+            str(evidence / "before-authorization-boundary.json"),
+            "--observed-at",
+            "2026-07-29T12:02:00+00:00",
+        ]
+    )
+
+    assert pending["phase"] == "pending"
+    assert before["phase"] == "before-authorization"
+    assert result == 0
+    execution = repository.load_status(session_id)["execution"]
+    assert execution["state"] == "authorized"
+    attestation = json.loads(
+        (
+            state / "attestations" / "01-authorization.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert attestation["payload"]["controller"] == {
+        "execution_id": f"{session_id}:execution-0001",
+        "state": "authorized",
+    }
+    assert attestation["payload"]["authorization_observed_at"] == (
+        "2026-07-29T12:02:00+00:00"
     )
 
 

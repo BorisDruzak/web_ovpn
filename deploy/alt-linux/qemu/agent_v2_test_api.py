@@ -12,8 +12,9 @@ import re
 import secrets
 import socket
 import stat
+import struct
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, NoReturn, Sequence
@@ -331,6 +332,8 @@ def load_attestation_chain(state_dir: Path) -> list[dict[str, object]]:
         "03-handoff_started.json",
         "04-installer_started.json",
         "05-postflight_boot.json",
+        "06-installed.json",
+        "07-acceptance_evidence.json",
     )
     try:
         paths = sorted(directory.iterdir())
@@ -342,7 +345,6 @@ def load_attestation_chain(state_dir: Path) -> list[dict[str, object]]:
         list(expected_names[:length])
         for length in range(1, len(expected_names) + 1)
     ]
-    allowed_names.append([*expected_names, "06-installed.json"])
     if [path.name for path in paths] not in allowed_names:
         _fail("Run attestation set is incomplete or ambiguous")
     chain = [_read_json(path) for path in paths]
@@ -373,6 +375,26 @@ def _load_run_manifest(state_dir: Path) -> dict[str, object]:
     ):
         _fail("Run manifest is invalid")
     return manifest
+
+
+def verify_run_iso(state_dir: Path) -> dict[str, object]:
+    manifest = _load_run_manifest(state_dir)
+    binding = manifest.get("iso")
+    if not isinstance(binding, dict):
+        _fail("Run ISO binding is invalid")
+    try:
+        canonical, metadata = _canonical_regular(
+            Path(str(binding["canonical_path"]))
+        )
+    except (KeyError, TypeError):
+        _fail("Run ISO binding is invalid")
+    if (
+        str(canonical) != binding.get("canonical_path")
+        or _file_identity(metadata) != binding.get("file_identity")
+        or _sha256_file(canonical) != binding.get("sha256")
+    ):
+        _fail("Run ISO identity or SHA-256 changed")
+    return binding
 
 
 def _qmp_responses(path: Path) -> dict[str, dict[str, object]]:
@@ -412,6 +434,8 @@ def _qmp_responses(path: Path) -> dict[str, dict[str, object]]:
 def read_bound_qmp_snapshot(
     path: Path,
     state_dir: Path,
+    *,
+    require_iso: bool = False,
 ) -> dict[str, dict[str, object]]:
     manifest = _load_run_manifest(state_dir)
     responses = _qmp_responses(path)
@@ -435,6 +459,25 @@ def read_bound_qmp_snapshot(
             or files.get(name) != binding.get("canonical_path")
         ):
             _fail(f"QMP {name} inserted file binding is invalid")
+    if require_iso:
+        iso = verify_run_iso(state_dir)
+        install_iso = [
+            item
+            for item in inserted
+            if isinstance(item, dict)
+            and item.get("device") == "install-iso"
+        ]
+        if len(install_iso) != 1:
+            _fail("QMP install ISO evidence is missing or ambiguous")
+        iso_item = install_iso[0]
+        iso_inserted = iso_item.get("inserted")
+        if (
+            not isinstance(iso_inserted, dict)
+            or iso_inserted.get("file") != iso.get("canonical_path")
+            or iso_inserted.get("ro") is not True
+            or iso_item.get("removable") is not True
+        ):
+            _fail("QMP install ISO inserted file binding is invalid")
     return result
 
 
@@ -623,6 +666,235 @@ def verify_attestation_chain(
         previous_time = observed
 
 
+def _write_bound_sha_record(
+    output: Path,
+    state_dir: Path,
+    artifact: str,
+) -> dict[str, object]:
+    manifest = _load_run_manifest(state_dir)
+    binding = manifest["artifacts"][artifact]
+    if not isinstance(binding, dict):
+        _fail("Boundary artifact binding is invalid")
+    canonical, metadata = _canonical_regular(
+        Path(str(binding["canonical_path"]))
+    )
+    expected_identity = binding.get("file_identity")
+    current_identity = _file_identity(metadata)
+    if (
+        not isinstance(expected_identity, dict)
+        or current_identity != expected_identity
+    ):
+        _fail(f"Boundary {artifact} creation identity changed")
+    digest = _sha256_file(canonical)
+    _write_new(
+        output,
+        f"{digest}  {canonical}\n".encode("ascii"),
+        mode=0o600,
+    )
+    return {
+        "file_identity": current_identity,
+        "record_path": str(output.resolve(strict=True)),
+        "sha256": digest,
+    }
+
+
+def capture_authorization_boundary(
+    state_dir: Path,
+    *,
+    socket_path: Path,
+    evidence_dir: Path,
+    phase: str,
+    qmp_capture: Callable[[Path, Path], None] | None = None,
+    clock: Callable[[], str] = lambda: datetime.now(
+        timezone.utc
+    ).isoformat(),
+) -> dict[str, object]:
+    if phase not in {"pending", "before-authorization"}:
+        _fail("Authorization boundary phase is invalid")
+    try:
+        evidence_root = evidence_dir.resolve(strict=True)
+    except OSError as exc:
+        raise AcceptanceError(
+            "Authorization evidence directory is unavailable"
+        ) from exc
+    if not evidence_root.is_dir() or evidence_dir.is_symlink():
+        _fail("Authorization evidence directory is unsafe")
+    started_at = clock()
+    _parse_timestamp(started_at, field="capture_started_at")
+    qmp_path = evidence_root / f"{phase}.qmp.jsonl"
+    (qmp_capture or qmp_query)(socket_path, qmp_path)
+    os.chmod(qmp_path, 0o600)
+    snapshot = read_bound_qmp_snapshot(
+        qmp_path, state_dir, require_iso=True
+    )
+    if any(
+        not _all_writes_zero(snapshot[name]["graph"])
+        for name in ("target", "sentinel")
+    ):
+        _fail(f"QMP writes occurred at {phase} boundary")
+    target = _write_bound_sha_record(
+        evidence_root / f"{phase}.target.sha256",
+        state_dir,
+        "target",
+    )
+    sentinel = _write_bound_sha_record(
+        evidence_root / f"{phase}.sentinel.sha256",
+        state_dir,
+        "sentinel",
+    )
+    iso = dict(verify_run_iso(state_dir))
+    captured_at = clock()
+    started = _parse_timestamp(
+        started_at, field="capture_started_at"
+    )
+    captured = _parse_timestamp(captured_at, field="captured_at")
+    if captured <= started:
+        _fail("Authorization boundary timestamp order is invalid")
+    manifest = _load_run_manifest(state_dir)
+    unsigned = {
+        "capture_started_at": started_at,
+        "captured_at": captured_at,
+        "challenge": manifest["challenge"],
+        "iso": iso,
+        "phase": phase,
+        "qmp": {
+            "path": str(qmp_path.resolve(strict=True)),
+            "sha256": hashlib.sha256(
+                _read_bytes(qmp_path)
+            ).hexdigest(),
+        },
+        "run_id": manifest["run_id"],
+        "schema_version": 1,
+        "sentinel": sentinel,
+        "target": target,
+        "trust_anchor_key_id": manifest["trust_anchor_key_id"],
+    }
+    signature = _private_attestation_key(state_dir).sign(
+        _attestation_unsigned(unsigned)
+    )
+    document = {
+        **unsigned,
+        "signature_b64": base64.b64encode(signature).decode("ascii"),
+    }
+    _write_new(
+        evidence_root / f"{phase}-boundary.json",
+        _json_bytes(document),
+        mode=0o600,
+    )
+    return document
+
+
+def read_authorization_boundary(
+    state_dir: Path,
+    path: Path,
+    *,
+    expected_phase: str,
+) -> dict[str, object]:
+    if expected_phase not in {"pending", "before-authorization"}:
+        _fail("Authorization boundary phase is invalid")
+    expected_path = (
+        path.parent.resolve(strict=True)
+        / f"{expected_phase}-boundary.json"
+    )
+    try:
+        actual_path = path.resolve(strict=True)
+    except OSError as exc:
+        raise AcceptanceError(
+            "Authorization boundary is unavailable"
+        ) from exc
+    if actual_path != expected_path:
+        _fail("Authorization boundary path is invalid")
+    document = _read_json(actual_path)
+    manifest = _load_run_manifest(state_dir)
+    signature_b64 = document.get("signature_b64")
+    unsigned = dict(document)
+    unsigned.pop("signature_b64", None)
+    if (
+        set(document)
+        != {
+            "capture_started_at",
+            "captured_at",
+            "challenge",
+            "iso",
+            "phase",
+            "qmp",
+            "run_id",
+            "schema_version",
+            "sentinel",
+            "signature_b64",
+            "target",
+            "trust_anchor_key_id",
+        }
+        or document.get("schema_version") != 1
+        or document.get("phase") != expected_phase
+        or document.get("run_id") != manifest["run_id"]
+        or document.get("challenge") != manifest["challenge"]
+        or document.get("trust_anchor_key_id")
+        != manifest["trust_anchor_key_id"]
+        or not isinstance(signature_b64, str)
+    ):
+        _fail("Authorization boundary binding is invalid")
+    try:
+        public = serialization.load_pem_public_key(
+            _read_bytes(
+                state_dir / "attestation-public.pem",
+                maximum=16 * 1024,
+            )
+        )
+        if not isinstance(public, Ed25519PublicKey):
+            raise ValueError
+        public.verify(
+            base64.b64decode(signature_b64, validate=True),
+            _attestation_unsigned(unsigned),
+        )
+    except (InvalidSignature, TypeError, ValueError):
+        _fail("Authorization boundary signature is invalid")
+    started = _parse_timestamp(
+        document.get("capture_started_at"),
+        field="capture_started_at",
+    )
+    captured = _parse_timestamp(
+        document.get("captured_at"), field="captured_at"
+    )
+    if captured <= started:
+        _fail("Authorization boundary timestamp order is invalid")
+    parent = actual_path.parent
+    qmp = document.get("qmp")
+    if not isinstance(qmp, dict):
+        _fail("Authorization boundary QMP binding is invalid")
+    qmp_path = parent / f"{expected_phase}.qmp.jsonl"
+    if (
+        qmp.get("path") != str(qmp_path.resolve(strict=True))
+        or qmp.get("sha256")
+        != hashlib.sha256(_read_bytes(qmp_path)).hexdigest()
+    ):
+        _fail("Authorization boundary QMP binding is invalid")
+    snapshot = read_bound_qmp_snapshot(
+        qmp_path, state_dir, require_iso=True
+    )
+    if any(
+        not _all_writes_zero(snapshot[name]["graph"])
+        for name in ("target", "sentinel")
+    ):
+        _fail(f"QMP writes occurred at {expected_phase} boundary")
+    for artifact in ("target", "sentinel"):
+        item = document.get(artifact)
+        record = parent / f"{expected_phase}.{artifact}.sha256"
+        if (
+            not isinstance(item, dict)
+            or item.get("record_path")
+            != str(record.resolve(strict=True))
+            or item.get("sha256")
+            != read_bound_sha256_record(record, state_dir, artifact)
+        ):
+            _fail(
+                f"Authorization boundary {artifact} binding is invalid"
+            )
+    if document.get("iso") != verify_run_iso(state_dir):
+        _fail("Authorization boundary ISO binding is invalid")
+    return document
+
+
 def resource_ownership(
     workdir: Path,
     *,
@@ -671,6 +943,271 @@ def verify_resource_ownership(
         or current["tap_ifindex"] != ownership.get("tap_ifindex")
     ):
         _fail("Harness TAP creation identity changed")
+
+
+def workdir_ownership(workdir: Path) -> dict[str, object]:
+    try:
+        canonical = workdir.resolve(strict=True)
+        metadata = canonical.stat()
+        parent = canonical.parent.resolve(strict=True)
+        parent_metadata = parent.stat()
+    except OSError as exc:
+        raise AcceptanceError(
+            "Harness work directory is unavailable"
+        ) from exc
+    if (
+        not canonical.is_dir()
+        or workdir.is_symlink()
+        or canonical.name in {"", ".", ".."}
+    ):
+        _fail("Harness work directory creation identity is invalid")
+    return {
+        "parent": str(parent),
+        "parent_device": parent_metadata.st_dev,
+        "parent_inode": parent_metadata.st_ino,
+        "schema_version": 1,
+        "workdir": str(canonical),
+        "workdir_device": metadata.st_dev,
+        "workdir_inode": metadata.st_ino,
+        "workdir_name": canonical.name,
+    }
+
+
+def _verify_workdir_identity(
+    ownership: dict[str, object], workdir: Path
+) -> None:
+    if (
+        set(ownership)
+        != {
+            "parent",
+            "parent_device",
+            "parent_inode",
+            "schema_version",
+            "workdir",
+            "workdir_device",
+            "workdir_inode",
+            "workdir_name",
+        }
+        or ownership.get("schema_version") != 1
+        or workdir_ownership(workdir) != ownership
+    ):
+        _fail("Harness work directory identity changed")
+
+
+def _empty_directory_fd(descriptor: int) -> None:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    for name in os.listdir(descriptor):
+        metadata = os.stat(
+            name, dir_fd=descriptor, follow_symlinks=False
+        )
+        if stat.S_ISDIR(metadata.st_mode):
+            child = os.open(
+                name,
+                os.O_RDONLY | directory | nofollow,
+                dir_fd=descriptor,
+            )
+            try:
+                _empty_directory_fd(child)
+            finally:
+                os.close(child)
+            os.rmdir(name, dir_fd=descriptor)
+        else:
+            os.unlink(name, dir_fd=descriptor)
+
+
+def _empty_directory_path(path: Path) -> None:
+    for child in path.iterdir():
+        metadata = child.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            _empty_directory_path(child)
+            child.rmdir()
+        else:
+            child.unlink()
+
+
+def remove_owned_workdir(
+    ownership: dict[str, object],
+    workdir: Path,
+    *,
+    before_final_remove: Callable[[], None] | None = None,
+) -> None:
+    _verify_workdir_identity(ownership, workdir)
+    if os.name == "posix":
+        parent = Path(str(ownership["parent"]))
+        parent_descriptor = os.open(
+            parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        child_descriptor = -1
+        try:
+            parent_metadata = os.fstat(parent_descriptor)
+            if (
+                parent_metadata.st_dev
+                != ownership["parent_device"]
+                or parent_metadata.st_ino
+                != ownership["parent_inode"]
+            ):
+                _fail("Harness work directory parent identity changed")
+            child_descriptor = os.open(
+                str(ownership["workdir_name"]),
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_descriptor,
+            )
+            child_metadata = os.fstat(child_descriptor)
+            if (
+                child_metadata.st_dev
+                != ownership["workdir_device"]
+                or child_metadata.st_ino
+                != ownership["workdir_inode"]
+            ):
+                _fail("Harness work directory identity changed")
+            if before_final_remove is not None:
+                before_final_remove()
+            current = os.stat(
+                str(ownership["workdir_name"]),
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                current.st_dev != ownership["workdir_device"]
+                or current.st_ino != ownership["workdir_inode"]
+            ):
+                _fail("Harness work directory identity changed")
+            _empty_directory_fd(child_descriptor)
+            current = os.stat(
+                str(ownership["workdir_name"]),
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                current.st_dev != ownership["workdir_device"]
+                or current.st_ino != ownership["workdir_inode"]
+            ):
+                _fail("Harness work directory identity changed")
+            os.close(child_descriptor)
+            child_descriptor = -1
+            os.rmdir(
+                str(ownership["workdir_name"]),
+                dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            raise AcceptanceError(
+                "Harness work directory cleanup failed closed"
+            ) from exc
+        finally:
+            if child_descriptor >= 0:
+                os.close(child_descriptor)
+            os.close(parent_descriptor)
+        return
+    if before_final_remove is not None:
+        before_final_remove()
+    _verify_workdir_identity(ownership, workdir)
+    _empty_directory_path(workdir)
+    _verify_workdir_identity(ownership, workdir)
+    workdir.rmdir()
+
+
+def tap_ownership(
+    *, tap_name: str, tap_ifindex: int
+) -> dict[str, object]:
+    if (
+        not re.fullmatch(r"aiv2[0-9]{1,10}", tap_name)
+        or type(tap_ifindex) is not int
+        or tap_ifindex < 1
+    ):
+        _fail("Harness TAP creation identity is invalid")
+    return {
+        "schema_version": 1,
+        "tap_ifindex": tap_ifindex,
+        "tap_name": tap_name,
+    }
+
+
+def _tap_ifindex(tap_name: str) -> int:
+    try:
+        value = (
+            Path("/sys/class/net")
+            .joinpath(tap_name, "ifindex")
+            .read_text(encoding="ascii")
+            .strip()
+        )
+        if not value.isdecimal():
+            raise ValueError
+        return int(value)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise AcceptanceError(
+            "Harness TAP identity is unavailable"
+        ) from exc
+
+
+def _delete_link_by_ifindex(ifindex: int) -> None:
+    if not hasattr(socket, "AF_NETLINK"):
+        _fail("Netlink TAP deletion is unavailable")
+    request = 1
+    acknowledge = 4
+    delete_link = 17
+    sequence = secrets.randbits(31) or 1
+    info = struct.pack(
+        "=BBHiII", socket.AF_UNSPEC, 0, 0, ifindex, 0, 0xFFFFFFFF
+    )
+    header = struct.pack(
+        "=IHHII",
+        16 + len(info),
+        delete_link,
+        request | acknowledge,
+        sequence,
+        0,
+    )
+    client = socket.socket(
+        socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE
+    )
+    client.settimeout(5)
+    try:
+        client.bind((0, 0))
+        client.sendto(header + info, (0, 0))
+        response = client.recv(4096)
+    except OSError as exc:
+        raise AcceptanceError("Harness TAP deletion failed") from exc
+    finally:
+        client.close()
+    if len(response) < 20:
+        _fail("Harness TAP deletion response is invalid")
+    _length, message_type, _flags, observed_sequence, _pid = (
+        struct.unpack_from("=IHHII", response)
+    )
+    error = struct.unpack_from("=i", response, 16)[0]
+    if (
+        message_type != 2
+        or observed_sequence != sequence
+        or error != 0
+    ):
+        _fail("Harness TAP deletion failed")
+
+
+def delete_owned_tap(
+    ownership: dict[str, object],
+    *,
+    identity_reader: Callable[[str], int] = _tap_ifindex,
+    delete_by_ifindex: Callable[[int], None] = _delete_link_by_ifindex,
+) -> None:
+    if (
+        set(ownership)
+        != {"schema_version", "tap_ifindex", "tap_name"}
+        or ownership.get("schema_version") != 1
+        or not isinstance(ownership.get("tap_name"), str)
+        or type(ownership.get("tap_ifindex")) is not int
+    ):
+        _fail("Harness TAP ownership record is invalid")
+    tap_name = str(ownership["tap_name"])
+    tap_ifindex = int(ownership["tap_ifindex"])
+    if identity_reader(tap_name) != tap_ifindex:
+        _fail("Harness TAP creation identity changed")
+    delete_by_ifindex(tap_ifindex)
 
 
 def create_authorization_request(
@@ -742,13 +1279,15 @@ def invoke_root_execution_authorization(
     state_dir: Path,
     *,
     request_path: Path,
-    initial_qmp: Path,
-    before_authorization_qmp: Path,
-    initial_target_sha: Path,
-    before_authorization_target_sha: Path,
-    initial_sentinel_sha: Path,
-    before_authorization_sentinel_sha: Path,
     observed_at: str,
+    pending_boundary: Path | None = None,
+    before_authorization_boundary: Path | None = None,
+    initial_qmp: Path | None = None,
+    before_authorization_qmp: Path | None = None,
+    initial_target_sha: Path | None = None,
+    before_authorization_target_sha: Path | None = None,
+    initial_sentinel_sha: Path | None = None,
+    before_authorization_sentinel_sha: Path | None = None,
     cli: Callable[..., int] = control_cli_main,
     status_loader: Callable[[str], dict[str, object]] = controller_status,
     revision_loader: Callable[
@@ -760,6 +1299,9 @@ def invoke_root_execution_authorization(
 ) -> dict[str, object]:
     if euid() != 0:
         _fail("Real root execution authorization is required")
+    authorization_observed = _parse_timestamp(
+        observed_at, field="authorization_observed_at"
+    )
     manifest = _load_run_manifest(state_dir)
     expected_request_path = (
         state_dir.resolve(strict=True) / "authorization-request.json"
@@ -829,6 +1371,96 @@ def invoke_root_execution_authorization(
         != request["disk_fingerprint"]
     ):
         _fail("Controller pre-authorization state is invalid")
+    boundary_payload: dict[str, object] = {}
+    if (
+        pending_boundary is not None
+        or before_authorization_boundary is not None
+    ):
+        if (
+            pending_boundary is None
+            or before_authorization_boundary is None
+            or any(
+                item is not None
+                for item in (
+                    initial_qmp,
+                    before_authorization_qmp,
+                    initial_target_sha,
+                    before_authorization_target_sha,
+                    initial_sentinel_sha,
+                    before_authorization_sentinel_sha,
+                )
+            )
+        ):
+            _fail("Authorization boundary selection is ambiguous")
+        pending = read_authorization_boundary(
+            state_dir,
+            pending_boundary,
+            expected_phase="pending",
+        )
+        immediate_boundary = read_authorization_boundary(
+            state_dir,
+            before_authorization_boundary,
+            expected_phase="before-authorization",
+        )
+        pending_captured = _parse_timestamp(
+            pending["captured_at"], field="pending_captured_at"
+        )
+        immediate_started = _parse_timestamp(
+            immediate_boundary["capture_started_at"],
+            field="before_authorization_started_at",
+        )
+        immediate_captured = _parse_timestamp(
+            immediate_boundary["captured_at"],
+            field="before_authorization_captured_at",
+        )
+        if not (
+            pending_captured < immediate_started
+            < immediate_captured
+            <= authorization_observed
+        ):
+            _fail("Authorization boundary timeline is invalid")
+        initial_qmp = Path(str(pending["qmp"]["path"]))
+        before_authorization_qmp = Path(
+            str(immediate_boundary["qmp"]["path"])
+        )
+        initial_target_sha = Path(
+            str(pending["target"]["record_path"])
+        )
+        before_authorization_target_sha = Path(
+            str(immediate_boundary["target"]["record_path"])
+        )
+        initial_sentinel_sha = Path(
+            str(pending["sentinel"]["record_path"])
+        )
+        before_authorization_sentinel_sha = Path(
+            str(immediate_boundary["sentinel"]["record_path"])
+        )
+        boundary_payload = {
+            "before_authorization_boundary_sha256": hashlib.sha256(
+                _read_bytes(before_authorization_boundary)
+            ).hexdigest(),
+            "pending_boundary_sha256": hashlib.sha256(
+                _read_bytes(pending_boundary)
+            ).hexdigest(),
+        }
+    elif any(
+        item is None
+        for item in (
+            initial_qmp,
+            before_authorization_qmp,
+            initial_target_sha,
+            before_authorization_target_sha,
+            initial_sentinel_sha,
+            before_authorization_sentinel_sha,
+        )
+    ):
+        _fail("Authorization boundary evidence is incomplete")
+    assert initial_qmp is not None
+    assert before_authorization_qmp is not None
+    assert initial_target_sha is not None
+    assert before_authorization_target_sha is not None
+    assert initial_sentinel_sha is not None
+    assert before_authorization_sentinel_sha is not None
     initial = read_bound_qmp_snapshot(initial_qmp, state_dir)
     immediate = read_bound_qmp_snapshot(
         before_authorization_qmp, state_dir
@@ -849,16 +1481,10 @@ def invoke_root_execution_authorization(
         before_authorization_target_sha, state_dir, "target"
     )
     initial_sentinel = read_bound_sha256_record(
-        initial_sentinel_sha,
-        state_dir,
-        "sentinel",
-        require_current_bytes=False,
+        initial_sentinel_sha, state_dir, "sentinel"
     )
     immediate_sentinel = read_bound_sha256_record(
-        before_authorization_sentinel_sha,
-        state_dir,
-        "sentinel",
-        require_current_bytes=False,
+        before_authorization_sentinel_sha, state_dir, "sentinel"
     )
     if (
         initial_target != immediate_target
@@ -902,6 +1528,15 @@ def invoke_root_execution_authorization(
     )
     after_status = status_loader(str(request["session_id"]))
     execution = after_status.get("execution")
+    try:
+        authorized_at = _parse_timestamp(
+            execution.get("authorized_at")
+            if isinstance(execution, dict)
+            else None,
+            field="authorized_at",
+        )
+    except AcceptanceError:
+        _fail("Controller execution authorization response is invalid")
     if (
         not isinstance(response, dict)
         or set(response) != {"status", "session"}
@@ -921,13 +1556,14 @@ def invoke_root_execution_authorization(
         or execution.get("disk_fingerprint")
         != request["disk_fingerprint"]
         or execution.get("target_disk") != "/dev/vda"
-        or (
-            observed_at is not None
-            and execution.get("authorized_at") != observed_at
-        )
+        or authorized_at < authorization_observed
+        or authorized_at - authorization_observed
+        > timedelta(seconds=30)
     ):
         _fail("Controller execution authorization response is invalid")
     payload = {
+        **boundary_payload,
+        "authorization_observed_at": observed_at,
         "before_authorization_qmp_sha256": hashlib.sha256(
             _read_bytes(before_authorization_qmp)
         ).hexdigest(),
@@ -1544,7 +2180,243 @@ def finalize_signed_evidence(
         },
     }
     _write_new(output, _json_bytes(receipt))
+
+
+def _copy_public_file(source: Path, output: Path) -> str:
+    content = _read_bytes(source)
+    _write_new(output, content, mode=0o600)
+    return hashlib.sha256(content).hexdigest()
+
+
+def export_public_evidence(
+    state_dir: Path,
+    *,
+    receipt: Path,
+    output: Path,
+    evidence_files: dict[str, Path] | None = None,
+    observed_at: str | None = None,
+    euid: Callable[[], int] = lambda: getattr(
+        os, "geteuid", lambda: -1
+    )(),
+) -> dict[str, object]:
+    if euid() != 0:
+        _fail("Root is required to export acceptance evidence")
+    chain = load_attestation_chain(state_dir)
+    if len(chain) != 6 or chain[-1].get("event") != "installed":
+        _fail("Acceptance transition chain is incomplete")
+    receipt_document = _read_json(receipt)
+    manifest = _load_run_manifest(state_dir)
+    if (
+        receipt_document.get("result") != "pass"
+        or receipt_document.get("attestation_chain_sha256")
+        != attestation_sha256(chain[-1])
+        or receipt_document.get("run", {}).get("run_id")
+        != manifest["run_id"]
+    ):
+        _fail("Acceptance receipt chain binding is invalid")
+    sources = evidence_files or {}
+    if any(
+        not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", name)
+        for name in sources
+    ):
+        _fail("Public evidence name is invalid")
+    if len(sources) != len(set(sources)):
+        _fail("Public evidence names are ambiguous")
+    try:
+        if output.exists() or output.is_symlink():
+            _fail("Refusing to overwrite public evidence")
+        output.mkdir(mode=0o700)
+        os.chmod(output, 0o700)
+        (output / "attestations").mkdir(mode=0o700)
+        (output / "evidence").mkdir(mode=0o700)
+        os.chmod(output / "attestations", 0o700)
+        os.chmod(output / "evidence", 0o700)
+    except OSError as exc:
+        raise AcceptanceError(
+            "Public evidence directory cannot be created"
+        ) from exc
+    evidence_sha256: dict[str, str] = {}
+    for name, source in sorted(sources.items()):
+        evidence_sha256[name] = hashlib.sha256(
+            _read_bytes(source)
+        ).hexdigest()
+    public_key = state_dir / "attestation-public.pem"
+    manifest_path = state_dir / "run-manifest.json"
+    seal = issue_attestation(
+        state_dir,
+        event="acceptance_evidence",
+        sequence=7,
+        payload={
+            "evidence_sha256": evidence_sha256,
+            "manifest_sha256": hashlib.sha256(
+                _read_bytes(manifest_path)
+            ).hexdigest(),
+            "public_key_sha256": hashlib.sha256(
+                _read_bytes(public_key)
+            ).hexdigest(),
+            "receipt_sha256": hashlib.sha256(
+                _read_bytes(receipt)
+            ).hexdigest(),
+        },
+        observed_at=(
+            observed_at
+            or datetime.now(timezone.utc).isoformat()
+        ),
+        previous_sha256=attestation_sha256(chain[-1]),
+    )
+    store_attestation(state_dir, seal)
+    _copy_public_file(
+        manifest_path, output / "run-manifest.json"
+    )
+    _copy_public_file(
+        public_key, output / "attestation-public.pem"
+    )
+    _copy_public_file(
+        receipt, output / "acceptance-receipt.json"
+    )
+    for attestation_path in sorted(
+        (state_dir / "attestations").iterdir()
+    ):
+        _copy_public_file(
+            attestation_path,
+            output / "attestations" / attestation_path.name,
+        )
+    for name, source in sorted(sources.items()):
+        _copy_public_file(source, output / "evidence" / name)
+    index = {
+        "evidence_sha256": evidence_sha256,
+        "final_attestation_sha256": attestation_sha256(seal),
+        "manifest_sha256": seal["payload"]["manifest_sha256"],
+        "public_key_sha256": seal["payload"]["public_key_sha256"],
+        "receipt_sha256": seal["payload"]["receipt_sha256"],
+        "run_id": manifest["run_id"],
+        "schema_version": 1,
+    }
+    _write_new(
+        output / "evidence-index.json",
+        _json_bytes(index),
+        mode=0o600,
+    )
+    verify_public_evidence(output, euid=euid)
     print(PASS_LINE)
+    return index
+
+
+def verify_public_evidence(
+    evidence_dir: Path,
+    *,
+    euid: Callable[[], int] = lambda: getattr(
+        os, "geteuid", lambda: -1
+    )(),
+) -> dict[str, object]:
+    if euid() != 0:
+        _fail("Root is required to verify acceptance evidence")
+    try:
+        root = evidence_dir.resolve(strict=True)
+    except OSError as exc:
+        raise AcceptanceError(
+            "Public evidence directory is unavailable"
+        ) from exc
+    if (
+        not root.is_dir()
+        or evidence_dir.is_symlink()
+        or any("private" in path.name.casefold() for path in root.rglob("*"))
+    ):
+        _fail("Public evidence directory is unsafe")
+    if {path.name for path in root.iterdir()} != {
+        "acceptance-receipt.json",
+        "attestation-public.pem",
+        "attestations",
+        "evidence",
+        "evidence-index.json",
+        "run-manifest.json",
+    }:
+        _fail("Public evidence file set is invalid")
+    paths = [
+        root,
+        root / "attestations",
+        root / "evidence",
+        *[path for path in root.rglob("*") if path.is_file()],
+    ]
+    for path in paths:
+        metadata = path.stat()
+        expected_mode = 0o700 if path.is_dir() else 0o600
+        if (
+            os.name == "posix"
+            and stat.S_IMODE(metadata.st_mode) != expected_mode
+        ):
+            _fail("Public evidence permissions are invalid")
+        if os.name == "posix" and metadata.st_uid != 0:
+            _fail("Public evidence owner is invalid")
+        if path.is_file():
+            content = _read_bytes(path)
+            if (
+                b"PRIVATE KEY-----" in content
+                or b"Bearer " in content
+                or b'"credential"' in content
+            ):
+                _fail("Public evidence contains private material")
+    manifest = _load_run_manifest(root)
+    chain = load_attestation_chain(root)
+    if (
+        len(chain) != 7
+        or chain[-1].get("event") != "acceptance_evidence"
+    ):
+        _fail("Public acceptance evidence seal is absent")
+    seal_payload = chain[-1].get("payload")
+    if not isinstance(seal_payload, dict):
+        _fail("Public acceptance evidence seal is invalid")
+    index = _read_json(root / "evidence-index.json")
+    receipt_path = root / "acceptance-receipt.json"
+    receipt = _read_json(receipt_path)
+    if (
+        index.get("schema_version") != 1
+        or index.get("run_id") != manifest["run_id"]
+        or index.get("final_attestation_sha256")
+        != attestation_sha256(chain[-1])
+        or index.get("manifest_sha256")
+        != hashlib.sha256(
+            _read_bytes(root / "run-manifest.json")
+        ).hexdigest()
+        or index.get("public_key_sha256")
+        != hashlib.sha256(
+            _read_bytes(root / "attestation-public.pem")
+        ).hexdigest()
+        or index.get("receipt_sha256")
+        != hashlib.sha256(_read_bytes(receipt_path)).hexdigest()
+        or index.get("evidence_sha256")
+        != seal_payload.get("evidence_sha256")
+        or index.get("manifest_sha256")
+        != seal_payload.get("manifest_sha256")
+        or index.get("public_key_sha256")
+        != seal_payload.get("public_key_sha256")
+        or index.get("receipt_sha256")
+        != seal_payload.get("receipt_sha256")
+        or receipt.get("result") != "pass"
+        or receipt.get("attestation_chain_sha256")
+        != attestation_sha256(chain[5])
+        or receipt.get("run", {}).get("run_id") != manifest["run_id"]
+    ):
+        _fail("Public acceptance evidence hash linkage is invalid")
+    evidence_hashes = seal_payload.get("evidence_sha256")
+    if not isinstance(evidence_hashes, dict):
+        _fail("Public evidence hash set is invalid")
+    actual_names = {
+        path.name for path in (root / "evidence").iterdir()
+    }
+    if actual_names != set(evidence_hashes):
+        _fail("Public evidence file set is invalid")
+    for name, expected_sha256 in evidence_hashes.items():
+        if (
+            not isinstance(name, str)
+            or not isinstance(expected_sha256, str)
+            or hashlib.sha256(
+                _read_bytes(root / "evidence" / name)
+            ).hexdigest()
+            != expected_sha256
+        ):
+            _fail("Public evidence file hash is invalid")
+    return {"chain": chain, "index": index, "receipt": receipt}
 
 
 def _qmp_receive(
@@ -1943,26 +2815,30 @@ def build_parser() -> argparse.ArgumentParser:
         "authorize-execution", allow_abbrev=False
     )
     authorize.add_argument("--state-dir", required=True, type=Path)
-    authorize.add_argument("--initial-qmp", required=True, type=Path)
     authorize.add_argument(
-        "--before-authorization-qmp", required=True, type=Path
+        "--pending-boundary", required=True, type=Path
     )
     authorize.add_argument(
-        "--initial-target-sha", required=True, type=Path
-    )
-    authorize.add_argument(
-        "--before-authorization-target-sha",
+        "--before-authorization-boundary",
         required=True,
         type=Path,
     )
-    authorize.add_argument(
-        "--initial-sentinel-sha", required=True, type=Path
+    authorize.add_argument("--observed-at", required=True)
+    capture = commands.add_parser(
+        "capture-authorization-boundary", allow_abbrev=False
     )
-    authorize.add_argument(
-        "--before-authorization-sentinel-sha",
+    capture.add_argument("--state-dir", required=True, type=Path)
+    capture.add_argument("--socket", required=True, type=Path)
+    capture.add_argument("--evidence-dir", required=True, type=Path)
+    capture.add_argument(
+        "--phase",
         required=True,
-        type=Path,
+        choices=("pending", "before-authorization"),
     )
+    verify_iso = commands.add_parser(
+        "verify-run-iso", allow_abbrev=False
+    )
+    verify_iso.add_argument("--state-dir", required=True, type=Path)
     history = commands.add_parser(
         "attest-controller-history", allow_abbrev=False
     )
@@ -1987,6 +2863,39 @@ def build_parser() -> argparse.ArgumentParser:
         ownership.add_argument("--workdir", required=True, type=Path)
         ownership.add_argument("--tap-name", required=True)
         ownership.add_argument("--tap-ifindex", required=True, type=int)
+    record_workdir = commands.add_parser(
+        "record-workdir-ownership", allow_abbrev=False
+    )
+    record_workdir.add_argument("--record", required=True, type=Path)
+    record_workdir.add_argument("--workdir", required=True, type=Path)
+    remove_workdir = commands.add_parser(
+        "remove-owned-workdir", allow_abbrev=False
+    )
+    remove_workdir.add_argument("--record", required=True, type=Path)
+    remove_workdir.add_argument("--workdir", required=True, type=Path)
+    record_tap = commands.add_parser(
+        "record-tap-ownership", allow_abbrev=False
+    )
+    record_tap.add_argument("--record", required=True, type=Path)
+    record_tap.add_argument("--tap-name", required=True)
+    record_tap.add_argument("--tap-ifindex", required=True, type=int)
+    delete_tap = commands.add_parser(
+        "delete-owned-tap", allow_abbrev=False
+    )
+    delete_tap.add_argument("--record", required=True, type=Path)
+    export = commands.add_parser(
+        "export-public-evidence", allow_abbrev=False
+    )
+    export.add_argument("--state-dir", required=True, type=Path)
+    export.add_argument("--receipt", required=True, type=Path)
+    export.add_argument("--output", required=True, type=Path)
+    export.add_argument(
+        "--evidence", action="append", default=[], metavar="NAME=PATH"
+    )
+    verify_public = commands.add_parser(
+        "verify-public-evidence", allow_abbrev=False
+    )
+    verify_public.add_argument("--evidence-dir", required=True, type=Path)
     finalize = commands.add_parser(
         "finalize-evidence", allow_abbrev=False
     )
@@ -2051,23 +2960,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "create-authorization-request":
             request = create_authorization_request(arguments.state_dir)
             print(f"session_id={request['session_id']}")
+        elif arguments.command == "capture-authorization-boundary":
+            boundary = capture_authorization_boundary(
+                arguments.state_dir,
+                socket_path=arguments.socket,
+                evidence_dir=arguments.evidence_dir,
+                phase=arguments.phase,
+            )
+            print(f"boundary_phase={boundary['phase']}")
+        elif arguments.command == "verify-run-iso":
+            verify_run_iso(arguments.state_dir)
+            print("run_iso=verified")
         elif arguments.command == "authorize-execution":
             attestation = invoke_root_execution_authorization(
                 arguments.state_dir,
                 request_path=(
                     arguments.state_dir / "authorization-request.json"
                 ),
-                initial_qmp=arguments.initial_qmp,
-                before_authorization_qmp=(
-                    arguments.before_authorization_qmp
-                ),
-                initial_target_sha=arguments.initial_target_sha,
-                before_authorization_target_sha=(
-                    arguments.before_authorization_target_sha
-                ),
-                initial_sentinel_sha=arguments.initial_sentinel_sha,
-                before_authorization_sentinel_sha=(
-                    arguments.before_authorization_sentinel_sha
+                observed_at=arguments.observed_at,
+                pending_boundary=arguments.pending_boundary,
+                before_authorization_boundary=(
+                    arguments.before_authorization_boundary
                 ),
             )
             store_attestation(arguments.state_dir, attestation)
@@ -2115,6 +3028,54 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tap_ifindex=arguments.tap_ifindex,
             )
             print("resource_ownership=verified")
+        elif arguments.command == "record-workdir-ownership":
+            _write_new(
+                arguments.record,
+                _json_bytes(workdir_ownership(arguments.workdir)),
+                mode=0o600,
+            )
+            print("workdir_ownership=recorded")
+        elif arguments.command == "remove-owned-workdir":
+            remove_owned_workdir(
+                _read_json(arguments.record), arguments.workdir
+            )
+            print("workdir=removed")
+        elif arguments.command == "record-tap-ownership":
+            _write_new(
+                arguments.record,
+                _json_bytes(
+                    tap_ownership(
+                        tap_name=arguments.tap_name,
+                        tap_ifindex=arguments.tap_ifindex,
+                    )
+                ),
+                mode=0o600,
+            )
+            print("tap_ownership=recorded")
+        elif arguments.command == "delete-owned-tap":
+            delete_owned_tap(_read_json(arguments.record))
+            print("tap=deleted")
+        elif arguments.command == "export-public-evidence":
+            evidence_files: dict[str, Path] = {}
+            for item in arguments.evidence:
+                if (
+                    not isinstance(item, str)
+                    or item.count("=") != 1
+                ):
+                    _fail("Public evidence argument is invalid")
+                name, raw_path = item.split("=", 1)
+                if name in evidence_files:
+                    _fail("Public evidence argument is duplicated")
+                evidence_files[name] = Path(raw_path)
+            export_public_evidence(
+                arguments.state_dir,
+                receipt=arguments.receipt,
+                output=arguments.output,
+                evidence_files=evidence_files,
+            )
+        elif arguments.command == "verify-public-evidence":
+            verify_public_evidence(arguments.evidence_dir)
+            print("public_evidence=verified")
         elif arguments.command == "finalize-evidence":
             finalize_signed_evidence(
                 arguments.state_dir,
