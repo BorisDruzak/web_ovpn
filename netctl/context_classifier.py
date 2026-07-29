@@ -74,6 +74,11 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
             cidr = value.get("cidr")
             if not isinstance(cidr, str) or not cidr.strip():
                 raise ValueError("cidr must be a non-empty string")
+            availability_monitoring = value.get("availability_monitoring", False)
+            if not isinstance(availability_monitoring, bool):
+                raise ValueError("availability_monitoring must be a boolean")
+            if availability_monitoring and cidr != cidr.strip():
+                raise ValueError("availability cidr must be canonical")
             network = ipaddress.ip_network(cidr, strict=False)
             category = value.get("observer_category", "unknown")
             if category not in OBSERVER_CATEGORIES:
@@ -81,9 +86,6 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
             site = value.get("site", "")
             if not isinstance(site, str):
                 raise ValueError("site must be a string when present")
-            availability_monitoring = value.get("availability_monitoring", False)
-            if not isinstance(availability_monitoring, bool):
-                raise ValueError("availability_monitoring must be a boolean")
             has_availability_tcp_ports = "availability_tcp_ports" in value
             availability_tcp_ports_value = value.get("availability_tcp_ports", [])
             if not isinstance(availability_tcp_ports_value, list):
@@ -104,10 +106,8 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
             if availability_monitoring and network.version != 4:
                 raise ValueError("availability monitoring requires an IPv4 cidr")
             if availability_monitoring:
-                try:
-                    ipaddress.ip_network(cidr, strict=True)
-                except ValueError as exc:
-                    raise ValueError("availability cidr must be a strict network") from exc
+                if cidr != network.with_prefixlen:
+                    raise ValueError("availability cidr must be canonical")
                 if network.prefixlen < MIN_AVAILABILITY_PREFIXLEN:
                     raise ValueError(
                         f"availability cidr must be at least /{MIN_AVAILABILITY_PREFIXLEN}"

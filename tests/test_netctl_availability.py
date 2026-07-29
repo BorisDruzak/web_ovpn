@@ -301,8 +301,14 @@ def test_subprocess_ping_preserves_negative_reply_but_rejects_infrastructure_fai
         SubprocessPing()("192.0.2.1")
 
 
-def test_socket_connector_preserves_connect_negative_but_propagates_socket_oserror(monkeypatch):
-    """connect_ex refusal is an address negative; socket lifecycle OSError is a run failure."""
+@pytest.mark.parametrize(
+    "negative_errno",
+    (errno.ECONNREFUSED, errno.ETIMEDOUT, errno.EHOSTUNREACH),
+)
+def test_socket_connector_preserves_allowlisted_target_negative(
+    monkeypatch, negative_errno
+):
+    """A refused, timed-out, or host-unreachable target is an ordinary negative probe."""
     import socket
     from netctl.availability import SocketConnector
 
@@ -318,11 +324,17 @@ def test_socket_connector_preserves_connect_negative_but_propagates_socket_oserr
 
         def connect_ex(self, address):
             assert address == ("192.0.2.1", 443)
-            return errno.ECONNREFUSED
+            return negative_errno
 
     monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: RefusedSocket())
     monkeypatch.setattr(socket, "create_connection", lambda *_args, **_kwargs: RefusedSocket())
     assert SocketConnector()("192.0.2.1", 443) is False
+
+
+def test_socket_connector_propagates_socket_lifecycle_oserror(monkeypatch):
+    """Failing to allocate the probe socket is an executor failure."""
+    import socket
+    from netctl.availability import SocketConnector
 
     monkeypatch.setattr(
         socket,
@@ -336,6 +348,37 @@ def test_socket_connector_preserves_connect_negative_but_propagates_socket_oserr
     )
     with pytest.raises(OSError):
         SocketConnector()("192.0.2.1", 443)
+
+
+def test_socket_connector_rejects_connect_ex_infrastructure_errno(monkeypatch):
+    """A local network failure must not be published as a negative target result."""
+    import socket
+    from netctl.availability import SocketConnector
+
+    class InfrastructureFailureSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, timeout):
+            assert timeout == 1
+
+        def connect_ex(self, address):
+            assert address == ("192.0.2.1", 443)
+            return errno.ENETDOWN
+
+    monkeypatch.setattr(
+        socket,
+        "socket",
+        lambda *_args, **_kwargs: InfrastructureFailureSocket(),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        SocketConnector()("192.0.2.1", 443)
+
+    assert exc_info.value.errno == errno.ENETDOWN
 
 
 def test_bucket_never_constructs_more_than_64_worker_threads(monkeypatch):
@@ -390,6 +433,87 @@ def test_deadline_failure_keeps_current_results_and_persists_no_partial_success(
     assert collection.error_class == "deadline_exceeded"
     assert current_availability_results(conn, "192.0.2.0/30")["192.0.2.1"].state == "reachable"
     assert [tuple(row) for row in conn.execute("SELECT status FROM availability_runs ORDER BY id")] == [("success",), ("failed",)]
+
+
+def test_socket_infrastructure_errno_fails_collection_without_replacing_current(conn, monkeypatch):
+    """A local TCP failure must preserve the last complete current state."""
+    import netctl.availability as availability
+
+    conn.execute(
+        "UPDATE intent_segments SET canonical_json = ? WHERE stable_id = 'availability-a'",
+        (
+            json.dumps(
+                {
+                    "id": "availability-a",
+                    "cidr": "192.0.2.0/30",
+                    "availability_monitoring": True,
+                    "availability_tcp_ports": [443],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+    )
+    conn.commit()
+    availability.save_availability_run(
+        conn,
+        availability.AvailabilityRun.success(
+            "192.0.2.0/30",
+            started=OLD,
+            finished=OLD,
+            results=[
+                availability.AvailabilityResult("192.0.2.1", "reachable", "icmp"),
+                availability.AvailabilityResult("192.0.2.2", "reachable", "icmp"),
+            ],
+        ),
+    )
+
+    class InfrastructureFailureSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+        def connect_ex(self, _address):
+            return errno.ENETDOWN
+
+    monkeypatch.setattr(
+        availability.socket,
+        "socket",
+        lambda *_args, **_kwargs: InfrastructureFailureSocket(),
+    )
+    executor = availability.ProbeExecutor(
+        lambda _ip: False,
+        availability.SocketConnector(),
+        lambda: 0.0,
+    )
+
+    collection = availability.collect_availability(conn, executor, now=lambda: NEW)
+
+    assert collection.status == "failed"
+    assert collection.error_class == "executor_error"
+    assert {
+        ip: (result.state, result.method)
+        for ip, result in availability.current_availability_results(
+            conn, "192.0.2.0/30"
+        ).items()
+    } == {
+        "192.0.2.1": ("reachable", "icmp"),
+        "192.0.2.2": ("reachable", "icmp"),
+    }
+    assert [
+        tuple(row)
+        for row in conn.execute(
+            """SELECT status, error_class
+               FROM availability_runs
+               WHERE cidr = '192.0.2.0/30'
+               ORDER BY id"""
+        )
+    ] == [("success", ""), ("failed", "executor_error")]
 
 
 def test_second_cidr_persistence_failure_rolls_back_every_current_result(conn):

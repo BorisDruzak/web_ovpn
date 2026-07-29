@@ -396,7 +396,39 @@ def test_active_availability_segments_are_ipv4_and_have_bounded_tcp_ports(tmp_pa
                 "cidr": "192.0.2.1/24",
                 "availability_monitoring": True,
             },
-            "availability cidr must be a strict network",
+            "availability cidr must be canonical",
+        ),
+        (
+            {
+                "id": "leading-zero-prefix",
+                "cidr": "192.0.2.0/024",
+                "availability_monitoring": True,
+            },
+            "availability cidr must be canonical",
+        ),
+        (
+            {
+                "id": "dotted-netmask",
+                "cidr": "192.0.2.0/255.255.255.0",
+                "availability_monitoring": True,
+            },
+            "availability cidr must be canonical",
+        ),
+        (
+            {
+                "id": "leading-whitespace",
+                "cidr": " 192.0.2.0/24",
+                "availability_monitoring": True,
+            },
+            "availability cidr must be canonical",
+        ),
+        (
+            {
+                "id": "trailing-whitespace",
+                "cidr": "192.0.2.0/24 ",
+                "availability_monitoring": True,
+            },
+            "availability cidr must be canonical",
         ),
         (
             {

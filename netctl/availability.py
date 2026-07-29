@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+import errno
 import ipaddress
 import sqlite3
 import socket
@@ -19,6 +20,13 @@ COLLECTOR_INTERVAL = timedelta(minutes=5)
 AVAILABILITY_INTERVAL = timedelta(minutes=5)
 PASSIVE_EVIDENCE_FRESHNESS = COLLECTOR_INTERVAL * 2
 AVAILABILITY_FRESHNESS = AVAILABILITY_INTERVAL * 2
+TARGET_NEGATIVE_CONNECT_ERRNOS = frozenset(
+    {
+        errno.ECONNREFUSED,
+        errno.ETIMEDOUT,
+        errno.EHOSTUNREACH,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -94,7 +102,12 @@ class SocketConnector:
             raise ValueError("TCP target must be IPv4")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
             probe_socket.settimeout(1)
-            return probe_socket.connect_ex((str(address), port)) == 0
+            result = probe_socket.connect_ex((str(address), port))
+            if result == 0:
+                return True
+            if result in TARGET_NEGATIVE_CONNECT_ERRNOS:
+                return False
+            raise OSError(result, "TCP probe executor failure")
 
 
 def default_probe_executor() -> ProbeExecutor:
