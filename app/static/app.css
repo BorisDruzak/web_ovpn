@@ -249,6 +249,10 @@ label {
   font-weight: 650;
 }
 
+label[hidden] {
+  display: none;
+}
+
 .checkbox {
   display: flex;
   align-items: center;
