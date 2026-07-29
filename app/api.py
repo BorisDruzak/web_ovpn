@@ -22,7 +22,7 @@ from .db import get_db
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
 from .models import NetworkChangeIdempotency, utcnow
-from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts
+from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .vpnctl_client import VpnctlError, run_vpnctl
@@ -1125,7 +1125,20 @@ def api_network_hosts(
 
 @router.get("/network/hosts/{ip}")
 def api_network_host_detail(ip: str, actor: str = Depends(require_api_actor)):
-    return api_response(call_netctl(["hosts", "inspect", ip]))
+    data = call_netctl(["hosts", "inspect", ip])
+    source_host = data.get("host")
+    if not isinstance(source_host, dict):
+        return api_response(data)
+    connected = call_vpnctl(["connected", "--source", "auto"])
+    clients = call_vpnctl(["list"])
+    rows = merge_unified_hosts(
+        [source_host],
+        network_list_from(connected, "connected"),
+        network_list_from(clients, "clients"),
+    )
+    public_data = dict(data)
+    public_data["host"] = rows[0] if rows else normalize_netctl_host(source_host)
+    return api_response(public_data)
 
 
 @router.get("/network/sources")

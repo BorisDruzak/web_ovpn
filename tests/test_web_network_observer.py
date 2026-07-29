@@ -633,6 +633,58 @@ def test_openvpn_merge_copies_availability_without_mutating_netctl_row():
     assert source["availability"]["reason"] == "active_probe"
 
 
+def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    import app.api
+    import app.main
+
+    host = {
+        "ip": "192.168.99.44", "display_name": "vpn workstation", "status": "online",
+        "availability": {
+            "active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z",
+            "reason": "active_probe socket timeout",
+        },
+    }
+    connected = [{"common_name": "alpha", "virtual_address": "192.168.99.44"}]
+
+    def api_netctl(args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {"host": host, "observations": []}
+        raise AssertionError(args)
+
+    def page_netctl(request, args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}, None
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {"host": host, "observations": []}, None
+        if args == ["sources", "list"]:
+            return {"sources": []}, None
+        raise AssertionError(args)
+
+    def api_vpnctl(args, timeout=None):
+        return {"connected": connected} if args[0] == "connected" else {"clients": []}
+
+    monkeypatch.setattr(app.api, "call_netctl", api_netctl)
+    monkeypatch.setattr(app.api, "call_vpnctl", api_vpnctl)
+    monkeypatch.setattr(app.main, "net_cli_call", page_netctl)
+    monkeypatch.setattr(app.main, "cli_call", lambda request, args, timeout=None: (api_vpnctl(args), None))
+    login(client)
+
+    listed = client.get("/api/v1/network/hosts", headers=headers)
+    api_detail = client.get("/api/v1/network/hosts/192.168.99.44", headers=headers)
+    page_detail = client.get("/network/hosts/192.168.99.44")
+
+    assert listed.status_code == api_detail.status_code == page_detail.status_code == 200
+    assert listed.json()["data"]["hosts"][0]["status"] == "connected"
+    assert api_detail.json()["data"]["host"]["status"] == "connected"
+    assert "connected" in page_detail.text
+    assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"
+    assert "socket timeout" not in api_detail.text
+    assert "socket timeout" not in page_detail.text
+
+
 def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
