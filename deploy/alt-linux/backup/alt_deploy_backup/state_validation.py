@@ -31,6 +31,13 @@ _CANONICAL_STAGES = (
 _STAGE_INDEX = {stage: index for index, stage in enumerate(_CANONICAL_STAGES)}
 _JOB_STATES = frozenset({"queued", "running", "successful", "failed"})
 _REGISTRATION_STATES = ("pending", "ready", "failed")
+_REGISTRATION_PAYLOAD_STATES = {
+    "pending": frozenset({"pending"}),
+    # A successful preflight moves the record to the ready directory while
+    # preserving its workflow status until assignment is made.
+    "ready": frozenset({"ready", "awaiting_assignment"}),
+    "failed": frozenset({"failed"}),
+}
 _ARCHIVE_PHASES = frozenset(
     {"prepared", "copied", "committed", "cleaned", "aborted"}
 )
@@ -291,7 +298,7 @@ class StateValidator:
                 if (
                     not machine_key
                     or not machine_uuid
-                    or status != state
+                    or status not in _REGISTRATION_PAYLOAD_STATES[state]
                     or path.stem not in {machine_key, machine_uuid}
                     or (
                         generation
