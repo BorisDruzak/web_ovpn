@@ -102,6 +102,68 @@ def test_collect_all_runs_availability_only_after_every_enabled_source_succeeds(
     assert payload["results"] == [{"source": "router"}, {"source": "switch"}]
 
 
+def test_collect_all_reconciles_when_auxiliary_availability_collection_fails(monkeypatch):
+    """Availability failure must not overturn successful source collection or skip reconciliation."""
+    import netctl.cli as cli
+    from netctl.availability import AvailabilityCollection
+
+    parser = cli.build_parser()
+    conn = type("Connection", (), {"close": lambda self: None})()
+    calls = []
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
+    monkeypatch.setattr(cli, "list_sources", lambda _conn: ({"name": "router", "enabled": True},))
+    monkeypatch.setattr(cli, "collect_one", lambda _conn, _args, name: (0, {"source": name}))
+    monkeypatch.setattr(
+        cli,
+        "collect_availability",
+        lambda *_args, **_kwargs: AvailabilityCollection(
+            "failed", (), {"targets": 2, "completed": 0, "reachable": 0, "unreachable": 0}, "executor_error"
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "reconcile_current_locked",
+        lambda _conn, _observed_at: calls.append("reconcile") or {"topology_run_id": 11, "attachment_run_id": 22},
+    )
+
+    rc, payload = cli.dispatch(parser.parse_args(["collect", "all", "--reconcile"]))
+
+    assert rc == 0
+    assert calls == ["reconcile"]
+    assert payload["reconciliation"]["attachment_run_id"] == 22
+    assert payload["results"][-1] == {
+        "availability": {
+            "status": "failed",
+            "runs": [],
+            "summary": {"targets": 2, "completed": 0, "reachable": 0, "unreachable": 0},
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("sources", "expected"),
+    [
+        ([], False),
+        ([{"enabled": False, "last_status": "ok", "last_collect_at": "2026-07-29T11:59:00Z"}], False),
+        ([{"enabled": True, "last_status": "partial", "last_collect_at": "2026-07-29T11:59:00Z"}], False),
+        ([{"enabled": True, "last_status": "error", "last_collect_at": "2026-07-29T11:59:00Z"}], False),
+        ([{"enabled": True, "last_status": "ok", "last_collect_at": "2026-07-29T11:49:59Z"}], False),
+        ([{"enabled": True, "last_status": "ok", "last_collect_at": "2026-07-29T12:01:00Z"}], False),
+        ([{"enabled": True, "last_status": "ok", "last_collect_at": "2026-07-29T11:50:00Z"}], True),
+        ([{"enabled": True, "last_status": "success", "last_collect_at": "2026-07-29T12:00:00Z"}], True),
+    ],
+)
+def test_availability_source_health_requires_nonempty_successful_fresh_sources(monkeypatch, sources, expected):
+    """Vacuous, partial, failed, stale, or future source state must fail recovery probing closed."""
+    import netctl.cli as cli
+
+    monkeypatch.setattr(cli, "list_sources", lambda _conn: sources)
+    monkeypatch.setattr(cli, "utc_now", lambda: "2026-07-29T12:00:00Z")
+
+    assert cli.availability_source_health(object()) is expected
+
+
 def test_availability_collect_returns_only_sanitized_collection_fields(monkeypatch):
     """Passing raw probe errors through this recovery command could disclose operating-system details."""
     import netctl.cli as cli

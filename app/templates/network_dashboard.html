@@ -25,6 +25,28 @@
   <div class="metric"><span>ViPNet transit</span><strong>{{ summary.vipnet_transit or 0 }}</strong></div>
   <div class="metric"><span>Видели ранее</span><strong>{{ summary.seen or 0 }}</strong></div>
 </section>
+<section class="metrics">
+  <div class="metric"><span>Offline</span><strong>{{ summary.offline or 0 }}</strong></div>
+  <div class="metric"><span>Stale</span><strong>{{ summary.stale or 0 }}</strong></div>
+  <div class="metric"><span>Failed / incomplete runs</span><strong>{{ availability.failed_or_incomplete_count or 0 }}</strong></div>
+</section>
+<section class="table-wrap">
+  <h2>Availability monitoring</h2>
+  <table>
+    <thead><tr><th>CIDR</th><th>Last successful run</th><th>Completed targets</th></tr></thead>
+    <tbody>
+      {% for run in availability.last_successful_runs or [] %}
+      <tr>
+        <td class="mono">{{ run.cidr }}</td>
+        <td>{{ run.finished_at or "never" }}</td>
+        <td>{{ run.completed_target_count or 0 }} / {{ run.target_count or 0 }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="empty">No monitored CIDRs.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
 <section id="vpn-runtime-card" class="table-wrap" data-runtime-health-url="/network/runtime-health">
   <h2>VPN Runtime</h2>
   <p class="muted" data-runtime-health-state>Loading status...</p>

@@ -76,20 +76,25 @@ class SubprocessPing:
                 timeout=2,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("ping_executor_error") from exc
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
             return False
-        return result.returncode == 0
+        raise RuntimeError("ping_executor_error")
 
 
 class SocketConnector:
     """One bounded TCP probe; the successful socket is never retained."""
 
     def __call__(self, ip: str, port: int) -> bool:
-        try:
-            with socket.create_connection((ip, port), timeout=1):
-                return True
-        except OSError:
-            return False
+        address = ipaddress.ip_address(ip)
+        if address.version != 4:
+            raise ValueError("TCP target must be IPv4")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+            probe_socket.settimeout(1)
+            return probe_socket.connect_ex((str(address), port)) == 0
 
 
 def default_probe_executor() -> ProbeExecutor:
@@ -501,30 +506,84 @@ def _passive_evidence(conn: sqlite3.Connection, *, ip: str, mac: str | None, now
     if not mac:
         return []
     evidence: list[str] = []
-    for row in conn.execute("SELECT mac, complete, last_seen_at FROM arp_entries WHERE ip = ?", (ip,)):
-        if bool(row["complete"]) and normalize_mac(row["mac"]) == mac and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS):
+    for row in conn.execute(
+        """SELECT entries.mac, entries.complete, entries.last_seen_at,
+                  sources.enabled AS source_enabled, sources.last_status AS source_status,
+                  sources.last_collect_at AS source_collected_at
+           FROM arp_entries AS entries
+           JOIN network_sources AS sources ON sources.id = entries.source_id
+           WHERE entries.ip = ?""",
+        (ip,),
+    ):
+        if (
+            bool(row["complete"])
+            and normalize_mac(row["mac"]) == mac
+            and _healthy_passive_source(row, now=now)
+            and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+        ):
             evidence.append("mikrotik_arp")
             break
-    for row in conn.execute("SELECT mac, status, last_seen_at FROM dhcp_leases WHERE ip = ?", (ip,)):
-        if (str(row["status"] or "").lower() in {"bound", "online"} and normalize_mac(row["mac"]) == mac
-                and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)):
+    for row in conn.execute(
+        """SELECT leases.mac, leases.status, leases.last_seen_at,
+                  sources.enabled AS source_enabled, sources.last_status AS source_status,
+                  sources.last_collect_at AS source_collected_at
+           FROM dhcp_leases AS leases
+           JOIN network_sources AS sources ON sources.id = leases.source_id
+           WHERE leases.ip = ?""",
+        (ip,),
+    ):
+        if (
+            str(row["status"] or "").lower() in {"bound", "online"}
+            and normalize_mac(row["mac"]) == mac
+            and _healthy_passive_source(row, now=now)
+            and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+        ):
             evidence.append("mikrotik_dhcp")
             break
-    for row in conn.execute("SELECT mac, last_seen_at FROM bridge_hosts"):
-        if normalize_mac(row["mac"]) == mac and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS):
+    for row in conn.execute(
+        """SELECT hosts.mac, hosts.last_seen_at,
+                  sources.enabled AS source_enabled, sources.last_status AS source_status,
+                  sources.last_collect_at AS source_collected_at
+           FROM bridge_hosts AS hosts
+           JOIN network_sources AS sources ON sources.id = hosts.source_id"""
+    ):
+        if (
+            normalize_mac(row["mac"]) == mac
+            and _healthy_passive_source(row, now=now)
+            and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+        ):
             evidence.append("mikrotik_bridge")
             break
     for row in conn.execute(
-        """SELECT f.mac, f.last_seen_at
+        """SELECT f.mac, f.last_seen_at,
+                  sources.enabled AS source_enabled, sources.last_status AS source_status,
+                  sources.last_collect_at AS source_collected_at
            FROM current_switch_fdb AS f
            JOIN switch_collection_runs AS runs
              ON runs.id = f.collector_run_id AND runs.source_id = f.source_id
+           JOIN network_sources AS sources ON sources.id = f.source_id
            WHERE runs.status = 'success' AND lower(f.status) NOT IN ('self', 'mgmt')"""
     ):
-        if normalize_mac(row["mac"]) == mac and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS):
+        if (
+            normalize_mac(row["mac"]) == mac
+            and _healthy_passive_source(row, now=now)
+            and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+        ):
             evidence.append("snmp_fdb")
             break
     return evidence
+
+
+def _healthy_passive_source(row: sqlite3.Row, *, now: datetime) -> bool:
+    return (
+        bool(row["source_enabled"])
+        and str(row["source_status"] or "") in {"ok", "success"}
+        and _fresh_at(
+            row["source_collected_at"],
+            now=now,
+            budget=PASSIVE_EVIDENCE_FRESHNESS,
+        )
+    )
 
 
 def _availability_payload(*, state: str, cidr: str, active_method: str | None, checked_at: str | None,

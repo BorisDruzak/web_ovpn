@@ -1551,7 +1551,12 @@ def network_dashboard(request: Request, db: Session = Depends(get_db)):
     return render(
         request,
         "network_dashboard.html",
-        {"summary": summary, "sources": dashboard_data.get("sources", []), "error": dashboard_error or connected_error},
+        {
+            "summary": summary,
+            "sources": dashboard_data.get("sources", []),
+            "availability": dashboard_data.get("availability", {}),
+            "error": dashboard_error or connected_error,
+        },
         db,
     )
 
@@ -1571,8 +1576,13 @@ def network_path_detail(role: str, request: Request, db: Session = Depends(get_d
     return render(request, "network_path_detail.html", {"path": path}, db)
 
 
-def unified_network_rows(request: Request) -> tuple[list[dict[str, Any]], str | None]:
-    hosts_data, hosts_error = net_cli_call(request, ["hosts", "list"])
+def unified_network_rows(
+    request: Request, *, status: str = "current"
+) -> tuple[list[dict[str, Any]], str | None]:
+    netctl_args = ["hosts", "list"]
+    if status in {"all", "offline", "stale"}:
+        netctl_args.extend(["--status", "all"])
+    hosts_data, hosts_error = net_cli_call(request, netctl_args)
     connected_data, connected_error = cli_call(request, ["connected", "--source", "auto"])
     clients_data, clients_error = cli_call(request, ["list"])
     rows = merge_unified_hosts(
@@ -1598,12 +1608,19 @@ def validate_runtime_asset_key(value: object) -> str:
 @app.get("/network/hosts", response_class=HTMLResponse)
 def network_hosts(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
-    rows, error = unified_network_rows(request)
     requested_status = request.query_params.get("status")
+    selected_status = (
+        requested_status
+        if requested_status in HOST_STATUS_FILTERS
+        else ""
+        if requested_status is not None
+        else "current"
+    )
+    rows, error = unified_network_rows(request, status=selected_status)
     filters = {
         "q": request.query_params.get("q") or "",
         "category": request.query_params.get("category") or "all",
-        "status": requested_status if requested_status in HOST_STATUS_FILTERS else "" if requested_status is not None else "current",
+        "status": selected_status,
         "source": request.query_params.get("source") or "all",
         "network": request.query_params.get("network") or "all",
         "has_hostname": request.query_params.get("has_hostname") or "",

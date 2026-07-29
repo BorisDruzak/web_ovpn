@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 
 import pytest
@@ -10,7 +11,7 @@ NEW = "2026-07-01T00:00:00Z"
 NOW = "2026-07-29T12:00:00Z"
 
 
-def _projection_segment(conn, cidr: str = "192.0.2.0/24") -> None:
+def _projection_segment(conn, cidr: str = "203.0.113.0/24") -> None:
     """Add one approved monitored segment without changing collector fixtures."""
     revision = conn.execute("SELECT id FROM context_revisions WHERE context_id = 'availability-test'").fetchone()[0]
     conn.execute(
@@ -21,7 +22,7 @@ def _projection_segment(conn, cidr: str = "192.0.2.0/24") -> None:
     )
 
 
-def _projection_host(conn, *, ip: str = "192.0.2.8", mac: str | None = None, status: str = "online") -> dict:
+def _projection_host(conn, *, ip: str = "203.0.113.8", mac: str | None = None, status: str = "online") -> dict:
     conn.execute(
         """INSERT INTO network_hosts
            (ip, mac, category, status, first_seen_at, last_seen_at, last_source, tags_json)
@@ -31,7 +32,7 @@ def _projection_host(conn, *, ip: str = "192.0.2.8", mac: str | None = None, sta
     return dict(conn.execute("SELECT * FROM network_hosts WHERE ip = ?", (ip,)).fetchone())
 
 
-def _negative_projection_run(conn, ip: str = "192.0.2.8") -> None:
+def _negative_projection_run(conn, ip: str = "203.0.113.8") -> None:
     from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run
 
     _projection_segment(conn)
@@ -39,27 +40,46 @@ def _negative_projection_run(conn, ip: str = "192.0.2.8") -> None:
     save_availability_run(
         conn,
         AvailabilityRun.success(
-            "192.0.2.0/24", started=NOW, finished=NOW,
+            "203.0.113.0/24", started=NOW, finished=NOW,
             results=[AvailabilityResult(ip, "unreachable", None)],
             target_count=1,
         ),
     )
 
 
-def _fresh_passive(conn, source: str, *, ip: str, mac: str) -> None:
+def _fresh_passive(conn, source: str, *, ip: str, mac: str) -> int:
+    source_id = conn.execute(
+        """INSERT INTO network_sources
+           (name, driver, host, port, username, secret_ref, enabled, created_at, updated_at,
+            last_collect_at, last_status)
+           VALUES (?, ?, '192.0.2.254', ?, '', '', 1, ?, ?, ?, ?)""",
+        (
+            f"{source}-projection",
+            "snmp_switch" if source == "snmp_fdb" else "mikrotik_api",
+            161 if source == "snmp_fdb" else 8729,
+            NOW,
+            NOW,
+            NOW,
+            "success" if source == "snmp_fdb" else "ok",
+        ),
+    ).lastrowid
     if source == "mikrotik_arp":
-        conn.execute("INSERT INTO arp_entries (ip, mac, complete, last_seen_at) VALUES (?, ?, 1, ?)", (ip, mac, NOW))
+        conn.execute(
+            "INSERT INTO arp_entries (source_id, ip, mac, complete, last_seen_at) VALUES (?, ?, ?, 1, ?)",
+            (source_id, ip, mac, NOW),
+        )
     elif source == "mikrotik_dhcp":
-        conn.execute("INSERT INTO dhcp_leases (ip, mac, status, last_seen_at) VALUES (?, ?, 'bound', ?)", (ip, mac, NOW))
+        conn.execute(
+            "INSERT INTO dhcp_leases (source_id, ip, mac, status, last_seen_at) VALUES (?, ?, ?, 'bound', ?)",
+            (source_id, ip, mac, NOW),
+        )
     elif source == "mikrotik_bridge":
-        conn.execute("INSERT INTO bridge_hosts (mac, bridge, interface, last_seen_at) VALUES (?, 'bridge', 'ether2', ?)", (mac, NOW))
+        conn.execute(
+            """INSERT INTO bridge_hosts (source_id, mac, bridge, interface, last_seen_at)
+               VALUES (?, ?, 'bridge', 'ether2', ?)""",
+            (source_id, mac, NOW),
+        )
     elif source == "snmp_fdb":
-        source_id = conn.execute(
-            """INSERT INTO network_sources
-               (name, driver, host, port, username, secret_ref, enabled, created_at, updated_at)
-               VALUES ('switch-projection', 'snmp_switch', '192.0.2.254', 161, '', '', 1, ?, ?)""",
-            (NOW, NOW),
-        ).lastrowid
         run_id = conn.execute(
             """INSERT INTO switch_collection_runs (source_id, started_at, finished_at, status, outcomes_json)
                VALUES (?, ?, ?, 'success', '{}')""",
@@ -73,6 +93,7 @@ def _fresh_passive(conn, source: str, *, ip: str, mac: str) -> None:
         )
     else:
         raise AssertionError(source)
+    return int(source_id)
 
 
 def test_complete_arp_without_mac_is_not_online_or_seen(conn):
@@ -101,6 +122,26 @@ def test_fresh_valid_mac_passive_evidence_yields_seen_after_negative_probe(conn,
     assert availability["availability"]["passive_evidence"] == [passive_source]
 
 
+@pytest.mark.parametrize("passive_source", ("mikrotik_arp", "mikrotik_dhcp", "mikrotik_bridge", "snmp_fdb"))
+@pytest.mark.parametrize("unhealthy_state", ("failed", "stale"))
+def test_unhealthy_passive_source_cannot_yield_seen(conn, passive_source, unhealthy_state):
+    """A fresh row cannot substitute for the current source collection being healthy and fresh."""
+    from netctl.availability import project_host_availability
+
+    host = _projection_host(conn, mac="AA:BB:CC:DD:EE:08")
+    _negative_projection_run(conn, host["ip"])
+    source_id = _fresh_passive(conn, passive_source, ip=host["ip"], mac=host["mac"])
+    if unhealthy_state == "failed":
+        conn.execute("UPDATE network_sources SET last_status = 'error' WHERE id = ?", (source_id,))
+    else:
+        conn.execute("UPDATE network_sources SET last_collect_at = ? WHERE id = ?", (OLD, source_id))
+
+    projected = project_host_availability(conn, host, now=NOW)
+
+    assert projected["status"] == "offline"
+    assert projected["availability"]["passive_evidence"] == []
+
+
 def test_missing_or_failed_current_run_is_stale_not_offline(conn):
     """Classifying missing or failed scans as offline would mistake collector failure for endpoint failure."""
     from netctl.availability import AvailabilityRun, project_host_availability, save_availability_run
@@ -110,7 +151,7 @@ def test_missing_or_failed_current_run_is_stale_not_offline(conn):
     conn.commit()
     assert project_host_availability(conn, host, now=NOW)["status"] == "stale"
 
-    save_availability_run(conn, AvailabilityRun.failed("192.0.2.0/24", started=NOW, finished=NOW, error_class="deadline_exceeded"))
+    save_availability_run(conn, AvailabilityRun.failed("203.0.113.0/24", started=NOW, finished=NOW, error_class="deadline_exceeded"))
     assert project_host_availability(conn, host, now=NOW)["status"] == "stale"
 
 
@@ -229,6 +270,72 @@ def test_subprocess_ping_uses_fixed_numeric_argv_without_a_shell(monkeypatch):
         (["ping", "-n", "-c", "1", "-W", "1", "192.0.2.1"],
          {"shell": False, "capture_output": True, "text": True, "timeout": 2, "check": False})
     ]
+
+
+def test_subprocess_ping_preserves_negative_reply_but_rejects_infrastructure_failure(monkeypatch):
+    """Only ping's documented no-reply exit may become an ordinary negative address result."""
+    import subprocess
+    from netctl.availability import SubprocessPing
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, stdout="", stderr=""),
+    )
+    assert SubprocessPing()("192.0.2.1") is False
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 2, stdout="", stderr="unusable"),
+    )
+    with pytest.raises(RuntimeError, match="ping_executor_error"):
+        SubprocessPing()("192.0.2.1")
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ping missing")),
+    )
+    with pytest.raises(OSError):
+        SubprocessPing()("192.0.2.1")
+
+
+def test_socket_connector_preserves_connect_negative_but_propagates_socket_oserror(monkeypatch):
+    """connect_ex refusal is an address negative; socket lifecycle OSError is a run failure."""
+    import socket
+    from netctl.availability import SocketConnector
+
+    class RefusedSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, timeout):
+            assert timeout == 1
+
+        def connect_ex(self, address):
+            assert address == ("192.0.2.1", 443)
+            return errno.ECONNREFUSED
+
+    monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: RefusedSocket())
+    monkeypatch.setattr(socket, "create_connection", lambda *_args, **_kwargs: RefusedSocket())
+    assert SocketConnector()("192.0.2.1", 443) is False
+
+    monkeypatch.setattr(
+        socket,
+        "socket",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("socket resources exhausted")),
+    )
+    monkeypatch.setattr(
+        socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("socket resources exhausted")),
+    )
+    with pytest.raises(OSError):
+        SocketConnector()("192.0.2.1", 443)
 
 
 def test_bucket_never_constructs_more_than_64_worker_threads(monkeypatch):
@@ -360,6 +467,61 @@ def test_availability_collect_publishes_only_completed_canonical_targets(conn):
         ("198.51.100.2", "unreachable"),
     ]
     assert conn.execute("SELECT count(*) FROM network_hosts").fetchone()[0] == 0
+
+
+def test_dashboard_includes_availability_counts_last_success_and_failure_health(conn, monkeypatch):
+    """The dashboard must expose historical status and run health instead of only current hosts."""
+    import netctl.store as store
+    from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run
+
+    _projection_host(conn, ip="192.0.2.1")
+    _projection_host(conn, ip="198.51.100.1")
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30",
+            started=NOW,
+            finished=NOW,
+            results=[
+                AvailabilityResult("192.0.2.1", "unreachable", None),
+                AvailabilityResult("192.0.2.2", "unreachable", None),
+            ],
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.failed(
+            "198.51.100.0/30",
+            started=NOW,
+            finished=NOW,
+            error_class="executor_error",
+            target_count=2,
+        ),
+    )
+    monkeypatch.setattr(store, "utc_now", lambda: NOW)
+
+    dashboard = store.dashboard_summary(conn)
+
+    assert dashboard["summary"]["offline"] == 1
+    assert dashboard["summary"]["stale"] == 1
+    assert dashboard["availability"] == {
+        "failed_or_incomplete_count": 1,
+        "last_successful_runs": [
+            {
+                "cidr": "192.0.2.0/30",
+                "finished_at": NOW,
+                "target_count": 2,
+                "completed_target_count": 2,
+            },
+            {
+                "cidr": "198.51.100.0/30",
+                "finished_at": None,
+                "target_count": 0,
+                "completed_target_count": 0,
+            },
+        ],
+    }
 
 
 @pytest.fixture

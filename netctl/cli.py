@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from .collect_lock import CollectLock
-from .availability import AvailabilityCollection, collect_availability, default_probe_executor
+from .availability import (
+    PASSIVE_EVIDENCE_FRESHNESS,
+    AvailabilityCollection,
+    collect_availability,
+    default_probe_executor,
+)
 from .attachment_reconcile import reconcile_attachments
 from .config import DEFAULT_CONFIG, DEFAULT_DB_URL, load_secrets, normalize_source, validate_source_yaml_scalars, write_source_yaml
 from .context import context_summary, load_context_bytes, load_schema, normalise_import_entities, validate_context, validate_import_semantics
@@ -405,12 +410,24 @@ def collect_all_locked(
 def availability_source_health(conn) -> bool:
     """Direct recovery probes require every enabled source to have a healthy collection state."""
     try:
-        return all(
-            str(source.get("last_status") or "") in {"ok", "success", "partial"}
-            for source in list_sources(conn)
-            if source.get("enabled")
-        )
-    except (sqlite3.Error, AttributeError):
+        sources = [
+            source for source in list_sources(conn) if source.get("enabled")
+        ]
+        now = _parse_utc(utc_now())
+        if not sources or now is None:
+            return False
+        for source in sources:
+            collected = _parse_utc(str(source.get("last_collect_at") or ""))
+            if (
+                str(source.get("last_status") or "") not in {"ok", "success"}
+                or collected is None
+                or not timedelta(0)
+                <= now - collected
+                <= PASSIVE_EVIDENCE_FRESHNESS
+            ):
+                return False
+        return True
+    except (sqlite3.Error, AttributeError, TypeError):
         return False
 
 
@@ -503,11 +520,18 @@ def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             if args.source == "all":
                 rc, results = collect_all_locked(conn, args)
                 if rc == 0:
-                    collection = collect_availability(conn, default_probe_executor(), now=utc_now)
-                    availability = _availability_payload(collection)
+                    try:
+                        collection = collect_availability(
+                            conn, default_probe_executor(), now=utc_now
+                        )
+                        availability = _availability_payload(collection)
+                    except Exception:
+                        availability = {
+                            "status": "failed",
+                            "runs": [],
+                            "summary": {"targets": 0, "completed": 0},
+                        }
                     results.append({"availability": availability})
-                    if collection.status != "success":
-                        rc = 1
                 if args.reconcile:
                     if rc != 0:
                         return rc, ok(results=results, reconciliation_skipped="collection_failed")

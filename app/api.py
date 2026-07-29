@@ -1100,7 +1100,10 @@ def api_network_hosts(
     has_hostname: str = Query(default=""),
     has_mac: str = Query(default=""),
 ):
-    net_hosts = call_netctl(["hosts", "list"])
+    netctl_args = ["hosts", "list"]
+    if status in {"all", "offline", "stale"}:
+        netctl_args.extend(["--status", "all"])
+    net_hosts = call_netctl(netctl_args)
     connected = call_vpnctl(["connected", "--source", "auto"])
     clients = call_vpnctl(["list"])
     rows = merge_unified_hosts(

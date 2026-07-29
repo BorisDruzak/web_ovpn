@@ -6,7 +6,12 @@ import sqlite3
 from typing import Any
 
 from .db import get_source
-from .context_classifier import SegmentRule, legacy_segment_rules, load_active_segment_rules
+from .context_classifier import (
+    SegmentRule,
+    legacy_segment_rules,
+    load_active_availability_segments,
+    load_active_segment_rules,
+)
 from .availability import project_host_availability
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
 from .path_facts import save_path_facts
@@ -722,4 +727,45 @@ def dashboard_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "unknown": sum(1 for host in hosts if host.get("category") == "unknown"),
     }
     sources = [dict(row) for row in conn.execute("SELECT name, driver, host, site, role, enabled, last_collect_at, last_status, last_error FROM network_sources ORDER BY name").fetchall()]
-    return {"summary": summary, "sources": sources}
+    monitored_cidrs = sorted(
+        (str(rule.network) for rule in load_active_availability_segments(conn)),
+        key=lambda value: int(ipaddress.ip_network(value).network_address),
+    )
+    last_successful_runs: list[dict[str, Any]] = []
+    for cidr in monitored_cidrs:
+        row = conn.execute(
+            """SELECT finished_at, target_count, completed_target_count
+               FROM availability_runs
+               WHERE cidr = ? AND status = 'success'
+               ORDER BY finished_at DESC, id DESC LIMIT 1""",
+            (cidr,),
+        ).fetchone()
+        last_successful_runs.append(
+            {
+                "cidr": cidr,
+                "finished_at": str(row["finished_at"]) if row is not None else None,
+                "target_count": int(row["target_count"]) if row is not None else 0,
+                "completed_target_count": (
+                    int(row["completed_target_count"]) if row is not None else 0
+                ),
+            }
+        )
+    failed_or_incomplete_count = 0
+    if monitored_cidrs:
+        placeholders = ", ".join("?" for _ in monitored_cidrs)
+        failed_or_incomplete_count = int(
+            conn.execute(
+                f"""SELECT count(*) FROM availability_runs
+                    WHERE cidr IN ({placeholders})
+                      AND (status != 'success' OR completed_target_count != target_count)""",
+                monitored_cidrs,
+            ).fetchone()[0]
+        )
+    return {
+        "summary": summary,
+        "sources": sources,
+        "availability": {
+            "failed_or_incomplete_count": failed_or_incomplete_count,
+            "last_successful_runs": last_successful_runs,
+        },
+    }

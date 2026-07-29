@@ -557,23 +557,39 @@ def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_pa
         {"ip": "192.168.99.46", "status": "stale", "availability": {"reason": "run_failed socket timeout"}},
     ]
 
+    netctl_calls = []
+
     def fake_netctl(args, timeout=None):
-        assert args == ["hosts", "list"]
-        return {"hosts": hosts}
+        netctl_calls.append(args)
+        if args == ["hosts", "list"]:
+            return {"hosts": [host for host in hosts if host["status"] in {"online", "seen"}]}
+        if args == ["hosts", "list", "--status", "all"]:
+            return {"hosts": hosts}
+        raise AssertionError(args)
 
     monkeypatch.setattr(app.api, "call_netctl", fake_netctl)
     monkeypatch.setattr(app.api, "call_vpnctl", lambda args, timeout=None: {"connected": []} if args[0] == "connected" else {"clients": []})
 
     current = client.get("/api/v1/network/hosts", headers=headers)
+    all_hosts = client.get("/api/v1/network/hosts?status=all", headers=headers)
     offline = client.get("/api/v1/network/hosts?status=offline", headers=headers)
     stale = client.get("/api/v1/network/hosts?status=stale", headers=headers)
     invalid = client.get("/api/v1/network/hosts?status=unexpected", headers=headers)
 
     assert [host["ip"] for host in current.json()["data"]["hosts"]] == ["192.168.99.44", "192.168.99.45"]
+    assert [host["ip"] for host in all_hosts.json()["data"]["hosts"]] == [
+        "192.168.99.2", "192.168.99.44", "192.168.99.45", "192.168.99.46",
+    ]
     assert [host["ip"] for host in offline.json()["data"]["hosts"]] == ["192.168.99.2"]
     assert stale.json()["data"]["hosts"][0]["availability"]["reason"] == "run_failed"
     assert "socket timeout" not in stale.text
     assert invalid.status_code == 422
+    assert netctl_calls == [
+        ["hosts", "list"],
+        ["hosts", "list", "--status", "all"],
+        ["hosts", "list", "--status", "all"],
+        ["hosts", "list", "--status", "all"],
+    ]
 
 
 def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp_path, monkeypatch):
@@ -590,6 +606,8 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
 
     def fake_netctl(request, args, timeout=None):
         if args == ["hosts", "list"]:
+            return {"hosts": [hosts[1]]}, None
+        if args == ["hosts", "list", "--status", "all"]:
             return {"hosts": hosts}, None
         if args == ["sources", "list"]:
             return {"sources": []}, None
@@ -614,6 +632,49 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     assert "not monitored" in all_hosts.text
     assert 'value="unexpected"' not in invalid.text
     assert "stale host" not in invalid.text
+
+
+def test_network_dashboard_renders_availability_counts_and_run_health(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    login(client)
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (
+            {
+                "summary": {"online": 1, "seen": 2, "offline": 3, "stale": 4},
+                "sources": [],
+                "availability": {
+                    "failed_or_incomplete_count": 2,
+                    "last_successful_runs": [
+                        {
+                            "cidr": "192.168.99.0/24",
+                            "finished_at": "2026-07-29T10:00:00Z",
+                            "completed_target_count": 254,
+                            "target_count": 254,
+                        }
+                    ],
+                },
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        app.main,
+        "cli_call",
+        lambda request, args, timeout=None: ({"connected": []}, None),
+    )
+
+    page = client.get("/network/dashboard")
+
+    assert page.status_code == 200
+    assert "Offline</span><strong>3" in page.text
+    assert "Stale</span><strong>4" in page.text
+    assert "Failed / incomplete runs</span><strong>2" in page.text
+    assert "192.168.99.0/24" in page.text
+    assert "2026-07-29T10:00:00Z" in page.text
 
 
 def test_openvpn_merge_copies_availability_without_mutating_netctl_row():

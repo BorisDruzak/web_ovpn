@@ -8,6 +8,8 @@ from typing import Any
 
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+MIN_AVAILABILITY_PREFIXLEN = 24
+MAX_AVAILABILITY_TARGETS = 4096
 OBSERVER_CATEGORIES: frozenset[str] = frozenset(
     {
         "local_device",
@@ -101,6 +103,15 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
                 raise ValueError("availability_tcp_ports must not contain duplicates")
             if availability_monitoring and network.version != 4:
                 raise ValueError("availability monitoring requires an IPv4 cidr")
+            if availability_monitoring:
+                try:
+                    ipaddress.ip_network(cidr, strict=True)
+                except ValueError as exc:
+                    raise ValueError("availability cidr must be a strict network") from exc
+                if network.prefixlen < MIN_AVAILABILITY_PREFIXLEN:
+                    raise ValueError(
+                        f"availability cidr must be at least /{MIN_AVAILABILITY_PREFIXLEN}"
+                    )
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise ValueError(f"malformed active segment {segment_id}: {exc}") from exc
         rules.append(
@@ -118,7 +129,22 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
 
 def load_active_availability_segments(conn: sqlite3.Connection) -> tuple[SegmentRule, ...]:
     rules = load_active_segment_rules(conn)
-    return tuple(rule for rule in rules if rule.availability_monitoring)
+    monitored = tuple(rule for rule in rules if rule.availability_monitoring)
+    target_count = 0
+    for index, rule in enumerate(monitored):
+        for previous in monitored[:index]:
+            if rule.network.overlaps(previous.network):
+                raise ValueError("availability cidrs must not overlap")
+        target_count += (
+            rule.network.num_addresses
+            if rule.network.prefixlen >= 31
+            else rule.network.num_addresses - 2
+        )
+        if target_count > MAX_AVAILABILITY_TARGETS:
+            raise ValueError(
+                f"availability target limit {MAX_AVAILABILITY_TARGETS} exceeded"
+            )
+    return monitored
 
 
 def match_segment_rule(ip: str, *, rules: list[SegmentRule]) -> SegmentRule | None:

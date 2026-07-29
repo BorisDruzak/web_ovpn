@@ -390,6 +390,22 @@ def test_active_availability_segments_are_ipv4_and_have_bounded_tcp_ports(tmp_pa
             },
             "availability_tcp_ports must contain ports in 1..65535",
         ),
+        (
+            {
+                "id": "host-bits",
+                "cidr": "192.0.2.1/24",
+                "availability_monitoring": True,
+            },
+            "availability cidr must be a strict network",
+        ),
+        (
+            {
+                "id": "too-broad",
+                "cidr": "192.0.2.0/23",
+                "availability_monitoring": True,
+            },
+            "availability cidr must be at least /24",
+        ),
     ],
 )
 def test_invalid_availability_segment_fails_closed(segment, reason, tmp_path):
@@ -401,6 +417,57 @@ def test_invalid_availability_segment_fails_closed(segment, reason, tmp_path):
         _activate_segments(conn, [segment])
 
         with pytest.raises(ValueError, match=reason):
+            load_active_availability_segments(conn)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "segments",
+    [
+        [
+            {"id": "duplicate-a", "cidr": "192.0.2.0/24", "availability_monitoring": True},
+            {"id": "duplicate-b", "cidr": "192.0.2.0/24", "availability_monitoring": True},
+        ],
+        [
+            {"id": "overlap-a", "cidr": "192.0.2.0/24", "availability_monitoring": True},
+            {"id": "overlap-b", "cidr": "192.0.2.0/25", "availability_monitoring": True},
+        ],
+    ],
+)
+def test_ambiguous_duplicate_or_overlapping_availability_scopes_fail_closed(tmp_path, segments):
+    """Multiple policies for one target make the authorized probe scope ambiguous."""
+    from netctl.context_classifier import load_active_availability_segments
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(conn, segments)
+        with pytest.raises(ValueError, match="availability cidrs must not overlap"):
+            load_active_availability_segments(conn)
+    finally:
+        conn.close()
+
+
+def test_availability_target_limit_is_checked_without_expanding_addresses(tmp_path):
+    """Many individually safe networks must be rejected before their host iterators are materialized."""
+    from netctl.context_classifier import load_active_availability_segments
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(
+            conn,
+            [
+                {
+                    "id": f"segment-{index}",
+                    "cidr": f"10.{index}.0.0/24",
+                    "availability_monitoring": True,
+                }
+                for index in range(17)
+            ],
+        )
+        with pytest.raises(ValueError, match="availability target limit 4096"):
             load_active_availability_segments(conn)
     finally:
         conn.close()
