@@ -309,9 +309,118 @@ def test_active_availability_segments_are_ipv4_and_have_bounded_tcp_ports(tmp_pa
         )
 
         assert [
-            (rule.network.with_prefixlen, rule.availability_tcp_ports)
+            (
+                rule.network.with_prefixlen,
+                rule.availability_tcp_ports,
+                rule.availability_interval_minutes,
+            )
             for rule in load_active_availability_segments(conn)
-        ] == [("192.168.99.0/24", (22, 443))]
+        ] == [("192.168.99.0/24", (22, 443), 5)]
+    finally:
+        conn.close()
+
+
+def test_setting_enables_only_known_ipv4_segment_without_storing_cidr(tmp_path):
+    """A persisted override must identify its canonical target by stable ID alone."""
+    from netctl.availability_settings import (
+        list_availability_settings,
+        load_active_availability_segments,
+        set_availability_setting,
+    )
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(
+            conn,
+            [
+                {"id": "office", "cidr": "192.0.2.0/24"},
+                {"id": "vpn", "cidr": "2001:db8::/64"},
+            ],
+        )
+
+        setting = set_availability_setting(
+            conn, "office", enabled=True, tcp_ports=(443,), interval_minutes=10
+        )
+
+        assert setting["segment_id"] == "office"
+        assert "cidr" not in setting
+        assert list_availability_settings(conn) == [setting]
+        assert "cidr" not in {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(availability_segment_settings)")
+        }
+        assert [
+            (
+                str(rule.network),
+                rule.availability_tcp_ports,
+                rule.availability_interval_minutes,
+            )
+            for rule in load_active_availability_segments(conn)
+        ] == [("192.0.2.0/24", (443,), 10)]
+    finally:
+        conn.close()
+
+
+def test_setting_rejects_unknown_ipv6_and_invalid_interval(tmp_path):
+    """A setting may only target a current canonical IPv4 segment with an allowed cadence."""
+    from netctl.availability_settings import set_availability_setting
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(conn, [{"id": "ipv6", "cidr": "2001:db8::/64"}])
+
+        with pytest.raises(ValueError, match="active IPv4 segment"):
+            set_availability_setting(
+                conn, "ipv6", enabled=True, tcp_ports=(), interval_minutes=5
+            )
+        with pytest.raises(ValueError, match="interval"):
+            set_availability_setting(
+                conn, "missing", enabled=True, tcp_ports=(), interval_minutes=7
+            )
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "ports",
+    [(), (22,), (22, 443, 8443)],
+)
+def test_setting_accepts_up_to_three_unique_valid_tcp_ports(tmp_path, ports):
+    """The override must retain the collector's existing bounded TCP fallback policy."""
+    from netctl.availability_settings import set_availability_setting
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(conn, [{"id": "office", "cidr": "192.0.2.0/24"}])
+
+        setting = set_availability_setting(
+            conn, "office", enabled=False, tcp_ports=ports, interval_minutes=5
+        )
+
+        assert setting["tcp_ports"] == ports
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "ports",
+    [(22, 80, 443, 8443), (443, 443), (0,), (65536,), (True,)],
+)
+def test_setting_rejects_invalid_tcp_ports(tmp_path, ports):
+    """Unbounded, duplicate, boolean, or out-of-range ports must not reach persistence."""
+    from netctl.availability_settings import set_availability_setting
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    try:
+        _activate_segments(conn, [{"id": "office", "cidr": "192.0.2.0/24"}])
+
+        with pytest.raises(ValueError, match="tcp_ports"):
+            set_availability_setting(
+                conn, "office", enabled=True, tcp_ports=ports, interval_minutes=5
+            )
     finally:
         conn.close()
 

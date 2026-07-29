@@ -1713,6 +1713,34 @@ def _migration_16(conn: sqlite3.Connection) -> bool | None:
     return None
 
 
+def _migration_17(conn: sqlite3.Connection) -> None:
+    for statement in """
+        CREATE TABLE availability_segment_settings (
+          segment_id TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+          tcp_ports_json TEXT NOT NULL DEFAULT '[]',
+          interval_minutes INTEGER NOT NULL CHECK (
+            interval_minutes IN (5, 10, 15, 30, 60)
+          ),
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE availability_manual_results (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          segment_id TEXT NOT NULL,
+          ip TEXT NOT NULL,
+          requested_at TEXT NOT NULL,
+          checked_at TEXT NOT NULL,
+          active_state TEXT NOT NULL CHECK (
+            active_state IN ('reachable', 'unreachable')
+          ),
+          active_method TEXT NOT NULL DEFAULT '',
+          failure_class TEXT NOT NULL DEFAULT ''
+        );
+        """.split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1730,6 +1758,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (14, _migration_14),
     (15, _migration_15),
     (16, _migration_16),
+    (17, _migration_17),
 )
 
 

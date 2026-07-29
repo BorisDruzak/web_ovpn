@@ -33,6 +33,7 @@ class SegmentRule:
     site: str
     availability_monitoring: bool = False
     availability_tcp_ports: tuple[int, ...] = ()
+    availability_interval_minutes: int = 5
 
 
 def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
@@ -128,10 +129,18 @@ def load_active_segment_rules(conn: sqlite3.Connection) -> list[SegmentRule]:
 
 
 def load_active_availability_segments(conn: sqlite3.Connection) -> tuple[SegmentRule, ...]:
-    rules = load_active_segment_rules(conn)
+    from .availability_settings import resolve_availability_segment_rules
+
+    rules = resolve_availability_segment_rules(conn, load_active_segment_rules(conn))
     monitored = tuple(rule for rule in rules if rule.availability_monitoring)
     target_count = 0
     for index, rule in enumerate(monitored):
+        if rule.network.version != 4:
+            raise ValueError("availability monitoring requires an IPv4 cidr")
+        if rule.network.prefixlen < MIN_AVAILABILITY_PREFIXLEN:
+            raise ValueError(
+                f"availability cidr must be at least /{MIN_AVAILABILITY_PREFIXLEN}"
+            )
         for previous in monitored[:index]:
             if rule.network.overlaps(previous.network):
                 raise ValueError("availability cidrs must not overlap")

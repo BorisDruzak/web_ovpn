@@ -117,10 +117,12 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
             "availability_runs",
             "availability_results",
             "availability_result_events",
+            "availability_segment_settings",
+            "availability_manual_results",
             *INTENT_TABLES,
         } <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 17)
+            (version,) for version in range(1, 18)
         ]
         assert conn.execute("SELECT * FROM context_heads").fetchall() == []
         assert [tuple(row) for row in conn.execute("SELECT id, context_id, sha256 FROM context_revisions").fetchall()] == [
@@ -190,7 +192,7 @@ def test_migration_16_defers_until_a_compatible_assets_table_exists() -> None:
         )
         apply_migrations(conn)
 
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 17))
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 18))
         assert "manual_name" in {row[1] for row in conn.execute("PRAGMA table_info(assets)")}
     finally:
         conn.close()
@@ -218,7 +220,7 @@ def test_migration_16_records_an_existing_manual_name_column_without_altering() 
 
         apply_migrations(conn)
 
-        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 17))
+        assert [row[0] for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version")] == list(range(1, 18))
         assert "manual_name" in {row[1] for row in conn.execute("PRAGMA table_info(assets)")}
     finally:
         conn.close()
