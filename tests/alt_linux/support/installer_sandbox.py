@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ALT_ROOT = REPO_ROOT / "deploy" / "alt-linux"
 LIBRARY_PATH = ALT_ROOT / "install-control-plane-lib.sh"
 PUBLIC_INSTALLER = ALT_ROOT / "install-control-plane.sh"
+INSTALL_SESSION_INSTALLER = ALT_ROOT / "install-install-session-api.sh"
 DEFAULT_ROLLBACK_BACKUP_ID = "backup-20260722T120000Z-11111111"
 
 
@@ -219,8 +221,12 @@ exit 2
             {
                 "PATH": f"{self.fake_bin}:{environment['PATH']}",
                 "INSTALLER_COMMAND_LOG": str(self.command_log),
-                "ALT_DEPLOY_BACKUP_EXPECTED_ROOT_UID": str(os.getuid()),
-                "ALT_DEPLOY_BACKUP_EXPECTED_ROOT_GID": str(os.getgid()),
+                "ALT_DEPLOY_BACKUP_EXPECTED_ROOT_UID": str(
+                    getattr(os, "getuid", lambda: 0)()
+                ),
+                "ALT_DEPLOY_BACKUP_EXPECTED_ROOT_GID": str(
+                    getattr(os, "getgid", lambda: 0)()
+                ),
                 "INSTALLER_JOBS_JSON": json.dumps(
                     {
                         "status": "ok",
@@ -343,3 +349,245 @@ exit 2
                 if command[1].startswith("rollout-"):
                     mutations.append(command)
         return mutations
+
+
+@dataclass
+class InstallSessionInstallerSandbox(InstallerSandbox):
+    service_state: Path
+
+    @staticmethod
+    def _bash_path(path: Path) -> str:
+        rendered = path.resolve().as_posix()
+        if len(rendered) >= 3 and rendered[1:3] == ":/":
+            return f"/{rendered[0].lower()}/{rendered[3:]}"
+        return rendered
+
+    @classmethod
+    def create(cls, tmp_path: Path) -> "InstallSessionInstallerSandbox":
+        sandbox = cls(
+            root=tmp_path / "install-session-root",
+            fake_bin=tmp_path / "install-session-fake-bin",
+            command_log=tmp_path / "install-session-commands.jsonl",
+            service_state=tmp_path / "install-session-service-state",
+        )
+        sandbox.root.mkdir()
+        sandbox.fake_bin.mkdir()
+        sandbox._seed_runtime_state()
+        sandbox._install_fakes()
+        sandbox._install_backup_tool_fake()
+        sandbox._seed_install_session_state()
+        return sandbox
+
+    def _seed_install_session_state(self) -> None:
+        private_key = self._write(
+            "/var/lib/alt-deploy-secrets/install-plan-ed25519.pem",
+            "fixture-install-signing-private-key\n",
+        )
+        private_key.chmod(0o600)
+        public_key = self._write(
+            "/etc/alt-deploy/install-plan-ed25519.pub",
+            '{"fixture":"install-signing-public-key"}\n',
+        )
+        public_key.chmod(0o644)
+        previous = self.destination(
+            "/opt/alt-install-session-api/releases/existing-release"
+        )
+        previous.mkdir(parents=True)
+        (previous / "marker").write_text("existing\n", encoding="utf-8")
+        current = self.destination("/opt/alt-install-session-api/current")
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.symlink_to(
+            self._bash_path(previous), target_is_directory=True
+        )
+        unit = self.destination(
+            "/etc/systemd/system/alt-install-session.service"
+        )
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text("[Service]\nExecStart=/existing\n", encoding="utf-8")
+        self.service_state.write_bytes(b"enabled active\n")
+
+    def _install_fakes(self) -> None:
+        super()._install_fakes()
+        self._fake_script(
+            "python3",
+            "if [[ ${1:-} == -c ]]; then exec "
+            + shlex.quote(Path(sys.executable).as_posix())
+            + " \"$@\"; fi\n"
+            "exit \"${INSTALL_SESSION_KEY_INIT_RC:-0}\"\n",
+        )
+        self._fake_script(
+            "systemctl",
+            r'''state_file=${INSTALL_SESSION_SERVICE_STATE:?}
+read -r enabled active < "$state_file"
+action=${1:-}
+unit=${@: -1}
+case "$action" in
+  is-enabled)
+    [[ $unit == alt-install-session.service && $enabled == enabled ]]
+    ;;
+  is-active)
+    [[ $unit == alt-install-session.service && $active == active ]]
+    ;;
+  enable)
+    [[ $unit == alt-install-session.service ]] || exit 90
+    enabled=enabled
+    if [[ " $* " == *" --now "* ]]; then
+      active=active
+      if [[ ${INSTALL_SESSION_ACTIVATION_RC:-0} != 0 ]]; then
+        active=inactive
+        printf '%s %s\n' "$enabled" "$active" > "$state_file"
+        exit "${INSTALL_SESSION_ACTIVATION_RC}"
+      fi
+    fi
+    printf '%s %s\n' "$enabled" "$active" > "$state_file"
+    ;;
+  disable)
+    [[ $unit == alt-install-session.service ]] || exit 90
+    enabled=disabled
+    [[ " $* " == *" --now "* ]] && active=inactive
+    printf '%s %s\n' "$enabled" "$active" > "$state_file"
+    ;;
+  start)
+    [[ $unit == alt-install-session.service ]] || exit 90
+    active=active
+    printf '%s %s\n' "$enabled" "$active" > "$state_file"
+    ;;
+  stop)
+    [[ $unit == alt-install-session.service ]] || exit 90
+    active=inactive
+    printf '%s %s\n' "$enabled" "$active" > "$state_file"
+    ;;
+  daemon-reload) ;;
+  *) exit 0 ;;
+esac
+''',
+        )
+        self._fake_script(
+            "ss",
+            "printf '%s' \"${INSTALL_SESSION_SS_OUTPUT:-}\"\n",
+        )
+        self._fake_script(
+            "curl",
+            "if [[ ${INSTALL_SESSION_HEALTH_RC:-0} != 0 ]]; then\n"
+            "  exit \"${INSTALL_SESSION_HEALTH_RC}\"\n"
+            "fi\n"
+            "if [[ -n ${INSTALL_SESSION_HEALTH_PAYLOAD+x} ]]; then\n"
+            "  printf '%s\\n' \"$INSTALL_SESSION_HEALTH_PAYLOAD\"\n"
+            "else\n"
+            "  printf '%s\\n' "
+            "'{\"schema_version\":1,\"service\":"
+            "\"alt-install-session\",\"status\":\"ok\"}'\n"
+            "fi\n",
+        )
+        self._fake_script("mv", "exec /bin/mv \"$@\"\n")
+        self._fake_script(
+            "ln",
+            "args=(\"$@\")\n"
+            "target=${args[${#args[@]}-2]}\n"
+            "link=${args[${#args[@]}-1]}\n"
+            "windows_link=$(cygpath -w \"$link\")\n"
+            "exec "
+            + shlex.quote(Path(sys.executable).as_posix())
+            + " -c 'import os, sys; os.symlink("
+            "sys.argv[1], sys.argv[2], target_is_directory=True)' "
+            '"$target" "$windows_link"\n',
+        )
+        self._fake_script("readlink", "exec /usr/bin/readlink \"$@\"\n")
+
+    def environment(self, **overrides: str) -> dict[str, str]:
+        environment = super().environment(
+            INSTALL_SESSION_SERVICE_STATE=self._bash_path(
+                self.service_state
+            )
+        )
+        environment["PATH"] = (
+            f"{self._bash_path(self.fake_bin)}:{os.environ['PATH']}"
+        )
+        environment["INSTALLER_COMMAND_LOG"] = self._bash_path(
+            self.command_log
+        )
+        environment.update(overrides)
+        return environment
+
+    def run_install(
+        self,
+        *,
+        rollback_backup_id: str = DEFAULT_ROLLBACK_BACKUP_ID,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
+        command = (
+            "set -Eeuo pipefail; "
+            f"export PATH={json.dumps(self._bash_path(self.fake_bin))}:"
+            '"/usr/bin:/bin"; '
+            f"source {json.dumps(self._bash_path(INSTALL_SESSION_INSTALLER))}; "
+            "install_session_api_main "
+            f"{json.dumps(self._bash_path(self.root))} "
+            f"--rollback-backup-id {json.dumps(rollback_backup_id)}"
+        )
+        bash = shutil.which("bash") or "/bin/bash"
+        return subprocess.run(
+            [bash, "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=REPO_ROOT,
+            env=self.environment(**overrides),
+        )
+
+    def run_rollback(
+        self,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess[str]:
+        command = (
+            "set -Eeuo pipefail; "
+            f"export PATH={json.dumps(self._bash_path(self.fake_bin))}:"
+            '"/usr/bin:/bin"; '
+            f"source {json.dumps(self._bash_path(INSTALL_SESSION_INSTALLER))}; "
+            "install_session_api_main "
+            f"{json.dumps(self._bash_path(self.root))} --rollback"
+        )
+        bash = shutil.which("bash") or "/bin/bash"
+        return subprocess.run(
+            [bash, "-c", command],
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=REPO_ROOT,
+            env=self.environment(**overrides),
+        )
+
+    def current_target(self) -> str:
+        target = os.readlink(
+            self.destination("/opt/alt-install-session-api/current")
+        )
+        rendered = target.replace("\\", "/")
+        if rendered.startswith("//?/") and len(rendered) >= 7:
+            drive = rendered[4].lower()
+            rendered = f"/{drive}/{rendered[7:]}"
+        return rendered
+
+    def unit_text(self) -> str:
+        return self.destination(
+            "/etc/systemd/system/alt-install-session.service"
+        ).read_text(encoding="utf-8")
+
+    def service_status(self) -> tuple[str, str]:
+        enabled, active = self.service_state.read_text(
+            encoding="utf-8"
+        ).split()
+        return enabled, active
+
+    def protected_snapshot(self) -> dict[str, bytes]:
+        result = super().protected_snapshot()
+        for root in (
+            self.destination("/var/lib/alt-deploy-secrets"),
+            self.destination("/etc/alt-deploy"),
+        ):
+            if not root.exists():
+                continue
+            for path in sorted(root.rglob("*")):
+                if path.is_file():
+                    result[str(path.relative_to(self.root))] = (
+                        path.read_bytes()
+                    )
+        return result

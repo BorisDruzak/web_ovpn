@@ -1,0 +1,37 @@
+[Unit]
+Description=ALT install session API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=altserver
+Group=altserver
+Environment=PYTHONPATH=/opt/alt-install-session-api/current/control
+Environment=ALT_DEPLOY_INSTALL_PROFILE_ROOT=/opt/alt-install-session-api/current/autoinstall/profiles
+ExecStart=/usr/bin/python3 /opt/alt-install-session-api/current/api/install_session_server.py --listen-address 192.168.100.17 --listen-port 18090
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/alt-deploy/install-sessions
+ReadWritePaths=/var/lib/alt-deploy/install-sessions.lock
+
+[Install]
+WantedBy=multi-user.target
