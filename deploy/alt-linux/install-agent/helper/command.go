@@ -45,6 +45,18 @@ func runCommand(ctx context.Context, arguments []string, stdout, stderr io.Write
 		result, err = runVerifyPlanCommand(arguments[1:], dependencies)
 	case "disk-preflight":
 		result, err = runDiskPreflightCommand(ctx, arguments[1:], dependencies)
+	case "download-execution-bundle":
+		result, err = runDownloadExecutionBundleCommand(
+			ctx, arguments[1:],
+		)
+	case "verify-execution-bundle":
+		result, err = runVerifyExecutionBundleCommand(
+			arguments[1:], dependencies,
+		)
+	case "serve-execution-metadata":
+		result, err = runServeExecutionMetadataCommand(
+			ctx, arguments[1:], dependencies,
+		)
 	default:
 		err = contractError("usage_invalid", "command is unknown")
 	}
@@ -169,6 +181,173 @@ func runDiskPreflightCommand(ctx context.Context, arguments []string, dependenci
 	return map[string]any{
 		"command": "disk-preflight", "disk_path": preflight.DiskPath,
 		"disk_fingerprint": preflight.DiskFingerprint, "weak_disk_identity": preflight.WeakDiskIdentity,
+	}, nil
+}
+
+func runDownloadExecutionBundleCommand(
+	ctx context.Context,
+	arguments []string,
+) (map[string]any, error) {
+	flags := flag.NewFlagSet(
+		"download-execution-bundle", flag.ContinueOnError,
+	)
+	flags.SetOutput(io.Discard)
+	manifestURL := flags.String("manifest", "", "")
+	destination := flags.String("destination", "", "")
+	caPath := flags.String("ca-certificate", "", "")
+	credentialPath := flags.String("credential-file", "", "")
+	if err := flags.Parse(arguments); err != nil ||
+		flags.NArg() != 0 ||
+		*manifestURL == "" ||
+		*destination == "" ||
+		*caPath == "" ||
+		*credentialPath == "" {
+		return nil, contractError(
+			"usage_invalid",
+			"download-execution-bundle arguments are invalid",
+		)
+	}
+	caCertificate, err := readRegularBoundedFile(*caPath)
+	if err != nil {
+		return nil, err
+	}
+	credential, err := readRegularBoundedFile(*credentialPath)
+	if err != nil {
+		return nil, err
+	}
+	result, err := DownloadExecutionBundle(
+		ctx,
+		DownloadExecutionBundleInput{
+			ManifestURL:   *manifestURL,
+			Destination:   *destination,
+			CACertificate: caCertificate,
+			Credential:    string(credential),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"command":    "download-execution-bundle",
+		"session_id": result.SessionID,
+	}, nil
+}
+
+func runVerifyExecutionBundleCommand(
+	arguments []string,
+	dependencies commandDependencies,
+) (map[string]any, error) {
+	flags := flag.NewFlagSet(
+		"verify-execution-bundle", flag.ContinueOnError,
+	)
+	flags.SetOutput(io.Discard)
+	manifestPath := flags.String("manifest", "", "")
+	planPath := flags.String("plan", "", "")
+	inventoryPath := flags.String("inventory", "", "")
+	publicKeyPath := flags.String("public-key", "", "")
+	sessionID := flags.String("session", "", "")
+	if err := flags.Parse(arguments); err != nil ||
+		flags.NArg() != 0 ||
+		*manifestPath == "" ||
+		*planPath == "" ||
+		*inventoryPath == "" ||
+		*publicKeyPath == "" ||
+		*sessionID == "" {
+		return nil, contractError(
+			"usage_invalid",
+			"verify-execution-bundle arguments are invalid",
+		)
+	}
+	if dependencies.now == nil {
+		return nil, contractError(
+			"internal_error",
+			"verification dependency is unavailable",
+		)
+	}
+	plan, err := readRegularBoundedFile(*planPath)
+	if err != nil {
+		return nil, err
+	}
+	inventory, err := readRegularBoundedFile(*inventoryPath)
+	if err != nil {
+		return nil, err
+	}
+	publicKey, err := readRegularBoundedFile(*publicKeyPath)
+	if err != nil {
+		return nil, err
+	}
+	verified, err := VerifyExecutionBundle(
+		VerifyExecutionBundleInput{
+			ManifestPath: *manifestPath,
+			Plan:         plan,
+			Inventory:    inventory,
+			PublicKey:    publicKey,
+			SessionID:    *sessionID,
+			Now:          dependencies.now(),
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"command":          "verify-execution-bundle",
+		"session_id":       verified.SessionID,
+		"plan_sha256":      verified.PlanSHA256,
+		"inventory_sha256": verified.InventorySHA256,
+		"target_disk":      verified.TargetDisk,
+		"disk_fingerprint": verified.DiskFingerprint,
+		"expires_at":       verified.ExpiresAt.Format(time.RFC3339),
+	}, nil
+}
+
+func runServeExecutionMetadataCommand(
+	ctx context.Context,
+	arguments []string,
+	dependencies commandDependencies,
+) (map[string]any, error) {
+	flags := flag.NewFlagSet(
+		"serve-execution-metadata", flag.ContinueOnError,
+	)
+	flags.SetOutput(io.Discard)
+	directory := flags.String("directory", "", "")
+	port := flags.Int("port", 0, "")
+	deadlineText := flags.String("deadline", "", "")
+	if err := flags.Parse(arguments); err != nil ||
+		flags.NArg() != 0 ||
+		*directory == "" ||
+		*port != executionRelayPort ||
+		*deadlineText == "" {
+		return nil, contractError(
+			"usage_invalid",
+			"serve-execution-metadata arguments are invalid",
+		)
+	}
+	deadline, err := time.Parse(time.RFC3339, *deadlineText)
+	if err != nil {
+		return nil, contractError(
+			"usage_invalid",
+			"serve-execution-metadata deadline is invalid",
+		)
+	}
+	if dependencies.now == nil ||
+		!dependencies.now().Before(deadline) {
+		return nil, contractError(
+			"execution_expired",
+			"execution relay deadline is expired",
+		)
+	}
+	if err := ServeExecutionMetadata(
+		ctx,
+		ServeExecutionMetadataInput{
+			Directory: *directory,
+			Port:      *port,
+			Deadline:  deadline,
+		},
+	); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"command": "serve-execution-metadata",
 	}, nil
 }
 

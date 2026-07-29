@@ -1124,3 +1124,52 @@ class ExecutionAuthorizationService:
                 session_id, updated, allow_execution=True
             )
             return updated
+
+    def handoff_started(self, session_id: str) -> dict[str, object]:
+        lock = nullcontext() if os.name == "nt" else __import__(
+            "alt_deploy.locks", fromlist=["exclusive_lock"]
+        ).exclusive_lock(self.settings.install_sessions_lock)
+        with lock:
+            status = self.repository.load_status(session_id)
+            if status.get("state") in {"cancelled", "expired"}:
+                raise self._error(
+                    "execution_session_terminal",
+                    "Execution session is terminal",
+                )
+            if status.get("state") != "plan_published":
+                raise self._error(
+                    "execution_plan_unavailable",
+                    "Execution plan is not published",
+                )
+            execution = status.get("execution")
+            if not isinstance(execution, dict):
+                raise self._error(
+                    "execution_not_authorized",
+                    "Execution is not authorized",
+                )
+            validate_execution_status(execution)
+            if execution.get("state") != "claimed":
+                raise self._error(
+                    "execution_handoff_conflict",
+                    "Install execution handoff cannot be recorded",
+                )
+            now = self._now()
+            if self._expire_execution(session_id, status, now):
+                raise self._error(
+                    "execution_expired", "Execution authorization expired"
+                )
+            self._verify_claim_bundle(status)
+            updated = deepcopy(status)
+            next_execution = dict(updated["execution"])
+            next_execution.update(
+                {
+                    "state": "handoff_started",
+                    "handoff_started_at": now.isoformat(),
+                }
+            )
+            updated["execution"] = next_execution
+            updated["updated_at"] = now.isoformat()
+            self.repository.replace_status(
+                session_id, updated, allow_execution=True
+            )
+            return updated

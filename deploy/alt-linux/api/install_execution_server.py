@@ -27,6 +27,9 @@ _SESSION_ID = r"install-\d{8}T\d{6}Z-[0-9a-f]{8}"
 _MANIFEST_PATH_RE = re.compile(
     rf"^/v2/install-sessions/({_SESSION_ID})/execution/manifest$"
 )
+_MANIFEST_SIGNATURE_PATH_RE = re.compile(
+    rf"^/v2/install-sessions/({_SESSION_ID})/execution/manifest-signature$"
+)
 _ARTIFACT_PATH_RE = re.compile(
     rf"^/v2/install-sessions/({_SESSION_ID})/execution/artifacts/"
     r"(autoinstall\.scm|vm-profile\.scm|pkg-groups\.tar|install-scripts\.tar)$"
@@ -34,7 +37,11 @@ _ARTIFACT_PATH_RE = re.compile(
 _CLAIM_PATH_RE = re.compile(
     rf"^/v2/install-sessions/({_SESSION_ID})/execution/claim$"
 )
+_HANDOFF_PATH_RE = re.compile(
+    rf"^/v2/install-sessions/({_SESSION_ID})/execution/handoff-started$"
+)
 _MAX_MANIFEST_BYTES = 1024 * 1024
+_MAX_SIGNATURE_BYTES = 16 * 1024
 _MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 
@@ -209,8 +216,10 @@ def create_execution_tls_server(
                 return None
             for pattern in (
                 _MANIFEST_PATH_RE,
+                _MANIFEST_SIGNATURE_PATH_RE,
                 _ARTIFACT_PATH_RE,
                 _CLAIM_PATH_RE,
+                _HANDOFF_PATH_RE,
             ):
                 match = pattern.fullmatch(path)
                 if match is not None:
@@ -249,8 +258,11 @@ def create_execution_tls_server(
                 )
                 return
             manifest_match = _MANIFEST_PATH_RE.fullmatch(self.path)
+            signature_match = _MANIFEST_SIGNATURE_PATH_RE.fullmatch(
+                self.path
+            )
             artifact_match = _ARTIFACT_PATH_RE.fullmatch(self.path)
-            match = manifest_match or artifact_match
+            match = manifest_match or signature_match or artifact_match
             if match is None:
                 self._reject_method()
                 return
@@ -263,7 +275,11 @@ def create_execution_tls_server(
             filename = (
                 "execution-manifest.json"
                 if manifest_match is not None
-                else match.group(2)
+                else (
+                    "execution-manifest-signature.json"
+                    if signature_match is not None
+                    else match.group(2)
+                )
             )
             self._stream_execution(
                 session_id,
@@ -271,11 +287,16 @@ def create_execution_tls_server(
                 maximum=(
                     _MAX_MANIFEST_BYTES
                     if manifest_match is not None
-                    else _MAX_ARTIFACT_BYTES
+                    else (
+                        _MAX_SIGNATURE_BYTES
+                        if signature_match is not None
+                        else _MAX_ARTIFACT_BYTES
+                    )
                 ),
                 content_type=(
                     "application/json; charset=utf-8"
                     if manifest_match is not None
+                    or signature_match is not None
                     else "application/octet-stream"
                 ),
             )
@@ -284,7 +305,9 @@ def create_execution_tls_server(
             if "?" in self.path or len(self.path) > 4096:
                 self._error(404, "not_found")
                 return
-            match = _CLAIM_PATH_RE.fullmatch(self.path)
+            claim_match = _CLAIM_PATH_RE.fullmatch(self.path)
+            handoff_match = _HANDOFF_PATH_RE.fullmatch(self.path)
+            match = claim_match or handoff_match
             if match is None:
                 self._reject_method()
                 return
@@ -305,24 +328,33 @@ def create_execution_tls_server(
                 self._error(400, "claim_body_forbidden")
                 return
             try:
-                claimed = execution.claim(session_id)
+                updated = (
+                    execution.claim(session_id)
+                    if claim_match is not None
+                    else execution.handoff_started(session_id)
+                )
             except ControlError as exc:
                 self._error(_http_status(exc), exc.code)
                 return
-            execution_status = claimed.get("execution")
+            execution_status = updated.get("execution")
             state = (
                 execution_status.get("state")
                 if isinstance(execution_status, dict)
                 else None
             )
-            if state != "claimed":
-                self._error(500, "execution_claim_invalid")
+            expected_state = (
+                "claimed"
+                if claim_match is not None
+                else "handoff_started"
+            )
+            if state != expected_state:
+                self._error(500, "execution_transition_invalid")
                 return
             self._send_json(
                 200,
                 {
                     "status": "ok",
-                    "execution": {"state": "claimed"},
+                    "execution": {"state": expected_state},
                 },
             )
 

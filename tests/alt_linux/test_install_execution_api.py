@@ -48,6 +48,7 @@ MANIFEST = b'{"schema_version":1,"session_id":"' + SESSION_ID.encode("ascii") + 
 class _ClaimService:
     def __init__(self) -> None:
         self.claimed: list[str] = []
+        self.handoffs: list[str] = []
 
     def claim(self, session_id: str) -> dict[str, object]:
         if self.claimed:
@@ -58,6 +59,16 @@ class _ClaimService:
             )
         self.claimed.append(session_id)
         return {"execution": {"state": "claimed"}}
+
+    def handoff_started(self, session_id: str) -> dict[str, object]:
+        if self.claimed != [session_id] or self.handoffs:
+            raise ControlError(
+                "execution_handoff_conflict",
+                "Install execution handoff cannot be recorded",
+                4,
+            )
+        self.handoffs.append(session_id)
+        return {"execution": {"state": "handoff_started"}}
 
 
 def _settings_in(
@@ -260,6 +271,42 @@ def test_manifest_route_requires_the_session_bearer_and_is_no_store(
     assert status_path.read_bytes() == status_before
 
 
+def test_manifest_signature_route_is_exact_authenticated_and_no_store(
+    tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
+) -> None:
+    server, material, _claims, _settings = tls_server
+    root = f"/v2/install-sessions/{SESSION_ID}/execution"
+    path = f"{root}/manifest-signature"
+
+    with _running(server):
+        missing = _request(server, material, "GET", path)
+        accepted = _request(
+            server, material, "GET", path, bearer=CREDENTIAL
+        )
+        query = _request(
+            server,
+            material,
+            "GET",
+            path + "?download=1",
+            bearer=CREDENTIAL,
+        )
+        alias = _request(
+            server,
+            material,
+            "GET",
+            root + "/execution-manifest-signature.json",
+            bearer=CREDENTIAL,
+        )
+
+    assert missing[0] == 401
+    assert accepted[0] == 200
+    assert accepted[2] == b'{"signature":"opaque"}\n'
+    assert accepted[1]["Cache-Control"] == "no-store"
+    assert accepted[1]["Content-Length"] == str(len(accepted[2]))
+    assert query[0] == 404
+    assert alias[0] == 404
+
+
 def test_artifact_route_accepts_only_four_literal_expected_names(
     tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
 ) -> None:
@@ -355,6 +402,56 @@ def test_claim_route_is_single_use_and_rejects_request_bodies(
         and "Location" not in response[1]
         for response in (with_body, first, second)
     )
+
+
+def test_handoff_started_route_is_contiguous_single_use_and_bodyless(
+    tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
+) -> None:
+    server, material, claims, _settings = tls_server
+    root = f"/v2/install-sessions/{SESSION_ID}/execution"
+    claim_path = f"{root}/claim"
+    path = f"{root}/handoff-started"
+
+    with _running(server):
+        before_claim = _request(
+            server, material, "POST", path, bearer=CREDENTIAL
+        )
+        claimed = _request(
+            server, material, "POST", claim_path, bearer=CREDENTIAL
+        )
+        with_body = _request(
+            server,
+            material,
+            "POST",
+            path,
+            bearer=CREDENTIAL,
+            body=b"{}",
+        )
+        first = _request(
+            server, material, "POST", path, bearer=CREDENTIAL
+        )
+        replay = _request(
+            server, material, "POST", path, bearer=CREDENTIAL
+        )
+        query = _request(
+            server,
+            material,
+            "POST",
+            path + "?again=1",
+            bearer=CREDENTIAL,
+        )
+
+    assert before_claim[0] == 409
+    assert claimed[0] == 200
+    assert with_body[0] == 400
+    assert first[0] == 200
+    assert json.loads(first[2]) == {
+        "execution": {"state": "handoff_started"},
+        "status": "ok",
+    }
+    assert replay[0] == 409
+    assert query[0] == 404
+    assert claims.handoffs == [SESSION_ID]
 
 
 def test_reads_require_a_current_execution_authorization(

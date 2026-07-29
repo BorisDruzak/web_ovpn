@@ -485,6 +485,32 @@ def test_claim_is_single_use_and_preserves_root_plan_approval(
         service.claim(session_id)
 
 
+def test_handoff_started_is_contiguous_and_single_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings, repository, session_id, approved, plan_sha256 = _approved_session(
+        tmp_path, monkeypatch
+    )
+    service = _execution_service(settings, repository, tmp_path)
+    _authorize(service, repository, session_id, approved, plan_sha256)
+
+    with pytest.raises(ControlError, match="handoff"):
+        service.handoff_started(session_id)
+    service.claim(session_id)
+
+    handed_off = service.handoff_started(session_id)
+
+    assert handed_off["state"] == "plan_published"
+    assert handed_off["execution"]["state"] == "handoff_started"
+    assert (
+        handed_off["execution"]["handoff_started_at"]
+        == "2026-07-29T12:02:00+00:00"
+    )
+    with pytest.raises(ControlError, match="handoff"):
+        service.handoff_started(session_id)
+
+
 def test_cancel_before_authorize_is_terminal_without_publishing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
