@@ -1702,7 +1702,11 @@ def _migration_15(conn: sqlite3.Connection) -> None:
 
 
 def _migration_16(conn: sqlite3.Connection) -> None:
-    conn.execute("ALTER TABLE assets ADD COLUMN manual_name TEXT")
+    asset_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'assets'"
+    ).fetchone()
+    if asset_table is not None:
+        conn.execute("ALTER TABLE assets ADD COLUMN manual_name TEXT")
 
 
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (

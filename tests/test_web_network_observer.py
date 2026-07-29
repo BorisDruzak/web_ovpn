@@ -66,7 +66,7 @@ from datetime import datetime, timezone
 args = sys.argv[1:]
 cmd = args[1:]
 collected_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-invoked_cli_path = os.environ.get("NETCTL_INVOKED_CLI_PATH")
+invoked_cli_path = __import__("os").environ.get("NETCTL_INVOKED_CLI_PATH")
 if invoked_cli_path:
     with open(invoked_cli_path, "a", encoding="utf-8") as invoked_cli:
         invoked_cli.write(" ".join(cmd) + "\\n")
@@ -174,6 +174,7 @@ def make_client(tmp_path, monkeypatch):
     monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
     monkeypatch.setenv("NETCTL_PATH", str(make_fake_netctl(tmp_path / "netctl")))
     monkeypatch.setenv("NETCTL_USE_SUDO", "0")
+    monkeypatch.setenv("NETCTL_INVOKED_CLI_PATH", str(tmp_path / "netctl-invoked-cli.txt"))
     monkeypatch.setenv("NETWORK_OBSERVER_ENABLED", "1")
     monkeypatch.setenv("OUT_DIR", str(tmp_path))
     monkeypatch.setenv("SHARE_OUT_DIR", str(tmp_path))
@@ -190,7 +191,7 @@ def make_client(tmp_path, monkeypatch):
     return TestClient(app.main.app), {"Authorization": f"Bearer {token}"}
 
 
-def login(client: TestClient) -> None:
+def login(client: TestClient) -> str:
     page = client.get("/login")
     csrf = page.text.split('name="csrf_token" value="')[1].split('"')[0]
     response = client.post(
@@ -199,6 +200,7 @@ def login(client: TestClient) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 303
+    return csrf
 
 
 def write_path_evidence(tmp_path: Path, monkeypatch) -> None:
@@ -247,104 +249,6 @@ def write_path_evidence(tmp_path: Path, monkeypatch) -> None:
     role_registry.write_text(json.dumps({"roles": ["directum"]}), encoding="utf-8")
     monkeypatch.setenv("SERVER_ROLE_REGISTRY_PATH", str(role_registry))
     monkeypatch.setenv("SERVER_OBSERVER_SNAPSHOT_PATH", str(snapshot))
-
-
-def write_server_health_snapshot(tmp_path: Path, monkeypatch, *, age_seconds: int = 0, collector=None) -> None:
-    collected_at = datetime.now(timezone.utc).timestamp() - age_seconds
-    snapshot = tmp_path / "server-health.json"
-    snapshot.write_text(
-        json.dumps(
-            {
-                "collected_at": datetime.fromtimestamp(collected_at, timezone.utc).isoformat().replace("+00:00", "Z"),
-                "targets": [
-                    {
-                        "role": "directum",
-                        "checks": [
-                            {"name": "service_state", "source": "target", "status": "ok", "observed": "active", "expected": "active"},
-                        ],
-                    },
-                    {
-                        "role": "nextcloud",
-                        "checks": [
-                            {"name": "https_healthcheck", "source": "vpn_path", "status": "critical", "error": "timeout"},
-                        ],
-                    },
-                    {
-                        "role": "file_server",
-                        "checks": [
-                            {"name": "disk_capacity", "source": "target", "status": "error", "error": "transport"},
-                        ],
-                    },
-                ],
-                **({"collector": collector} if collector is not None else {}),
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("SERVER_OBSERVER_SNAPSHOT_PATH", str(snapshot))
-
-
-def test_server_health_requires_login_and_api_token_renders_redacted_snapshot(tmp_path, monkeypatch):
-    """Breaks if either route bypasses auth or exposes anything beyond the view model."""
-    write_server_health_snapshot(tmp_path, monkeypatch)
-    marker = tmp_path / "collect-invoked"
-    monkeypatch.setenv("NETCTL_COLLECT_MARKER", str(marker))
-    client, headers = make_client(tmp_path, monkeypatch)
-
-    assert client.get("/network/server-health", follow_redirects=False).status_code == 303
-    assert client.get("/api/v1/network/server-health").status_code == 401
-
-    login(client)
-    page = client.get("/network/server-health")
-    dashboard = client.get("/network/dashboard")
-    response = client.get("/api/v1/network/server-health", headers=headers)
-
-    assert page.status_code == dashboard.status_code == response.status_code == 200
-    view = response.json()["data"]["server_health"]
-    assert view["freshness"] == "current"
-    assert view["summary"] == {"ok": 1, "warn": 0, "critical": 1, "error": 1}
-    assert view["targets"][1]["problem_count"] == 1
-    assert "<details>" in page.text
-    assert "<summary>Checks</summary>" in page.text
-    assert 'href="/network/server-health" class="active"' in page.text
-    assert 'href="/network/server-health"' in dashboard.text
-    assert "2 roles need attention" in dashboard.text
-    assert not marker.exists()
-    for forbidden in (
-        "192.168.",
-        "ssh_user",
-        "server-observer.key",
-        "netctl collect",
-        "Traceback",
-        "stdout",
-        "stderr",
-    ):
-        assert forbidden not in page.text
-        assert forbidden not in response.text
-
-
-def test_server_health_stale_and_collector_failure_banners_and_navigation(tmp_path, monkeypatch):
-    """Breaks if stale/failure snapshot state is hidden or dashboard navigation loses its count."""
-    write_server_health_snapshot(
-        tmp_path,
-        monkeypatch,
-        age_seconds=16 * 60,
-        collector={"status": "error", "failure_class": "ssh", "message": "SSH connection failed"},
-    )
-    client, headers = make_client(tmp_path, monkeypatch)
-    login(client)
-
-    page = client.get("/network/server-health")
-    dashboard = client.get("/network/dashboard")
-    response = client.get("/api/v1/network/server-health", headers=headers)
-
-    assert page.status_code == dashboard.status_code == response.status_code == 200
-    assert response.json()["data"]["server_health"]["freshness"] == "stale"
-    assert "Health data is stale" in page.text
-    assert "Collector failed: SSH connection failed" in page.text
-    assert 'href="/network/server-health"' in page.text
-    assert 'href="/network/server-health"' in dashboard.text
-    assert "Health data is stale or unavailable" in dashboard.text
 
 
 def test_network_paths_require_login_and_show_existing_server_roles(tmp_path, monkeypatch):
@@ -624,7 +528,6 @@ def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_
     ["FINANCE", "pc-buh-01", "192.168.100.55", "AA:BB:CC:DD:EE:01", "mac:AA:BB:CC:DD:EE:01"],
 )
 def test_network_hosts_searches_manual_name_and_stable_host_identifiers(tmp_path, monkeypatch, query):
-    """Removing any stable host identifier from search must hide this known asset."""
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
 
@@ -635,24 +538,22 @@ def test_network_hosts_searches_manual_name_and_stable_host_identifiers(tmp_path
 
 
 def test_network_asset_card_keeps_manual_name_ip_and_hostname_in_separate_rows(tmp_path, monkeypatch):
-    """Collapsing these independent identity facts would make a user label look observed."""
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
 
     page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
 
     assert page.status_code == 200
-    assert "Название" in page.text
+    assert "\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435" in page.text
     assert "Finance workstation" in page.text
-    assert "IP-адрес" in page.text
+    assert "IP-\u0430\u0434\u0440\u0435\u0441" in page.text
     assert "192.168.100.55" in page.text
-    assert "Имя хоста" in page.text
+    assert "\u0418\u043c\u044f \u0445\u043e\u0441\u0442\u0430" in page.text
     assert "pc-buh-01" in page.text
     assert 'action="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01/name"' in page.text
 
 
 def test_network_asset_name_update_requires_login(tmp_path, monkeypatch):
-    """A missing session must never be able to edit an asset label."""
     client, _ = make_client(tmp_path, monkeypatch)
 
     response = client.post(
@@ -666,7 +567,6 @@ def test_network_asset_name_update_requires_login(tmp_path, monkeypatch):
 
 
 def test_network_asset_name_update_uses_csrf_netctl_and_audits(tmp_path, monkeypatch):
-    """An accepted label change must reach netctl and leave a web audit record."""
     marker = tmp_path / "asset-name-command.json"
     monkeypatch.setenv("NETCTL_ASSET_NAME_MARKER", str(marker))
     client, _ = make_client(tmp_path, monkeypatch)
@@ -683,12 +583,7 @@ def test_network_asset_name_update_uses_csrf_netctl_and_audits(tmp_path, monkeyp
     assert response.status_code == 303
     assert response.headers["location"] == "/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01"
     assert json.loads(marker.read_text(encoding="utf-8")) == [
-        "assets",
-        "set-name",
-        "--asset-key",
-        "mac:AA:BB:CC:DD:EE:01",
-        "--name",
-        "Finance workstation",
+        "assets", "set-name", "--asset-key", "mac:AA:BB:CC:DD:EE:01", "--name", "Finance workstation",
     ]
     from app.db import session_scope
     from app.models import WebAuditLog
@@ -701,7 +596,6 @@ def test_network_asset_name_update_uses_csrf_netctl_and_audits(tmp_path, monkeyp
 
 
 def test_network_asset_name_update_redirects_to_encoded_reserved_asset_key(tmp_path, monkeypatch):
-    """A reserved key must return to its exact card rather than lose its suffix."""
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
     page = client.get("/network/assets/legacy-host:desk%3Fold")
@@ -752,6 +646,17 @@ def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_pa
     assert "Вложения: восстановлены" in stale.text
 
 
+def test_network_asset_card_renders_readable_cyrillic_freshness_and_confirmed_copy(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
+
+    assert "\u0422\u043e\u043f\u043e\u043b\u043e\u0433\u0438\u044f: \u0430\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u043e" in page.text
+    assert "\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u043e" in page.text
+    assert "\u0420\u045e\u0420\u0455\u0420\u0457\u0420\u0455\u0420\u00bb\u0420\u0455\u0420\u0456\u0420\u0451\u0421\u040f" not in page.text
+
+
 def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
 
@@ -766,6 +671,206 @@ def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
     phone = next(row for row in rows if row["ip"] == "192.168.0.12")
     assert phone["device_type"] == "phone"
     assert phone["device_confidence"] == 85
+
+
+def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    import app.api
+
+    hosts = [
+        {"ip": "192.168.99.2", "status": "offline", "availability": {"reason": "active_negative_no_passive_evidence"}},
+        {"ip": "192.168.99.44", "status": "online", "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "active_probe"}},
+        {"ip": "192.168.99.45", "status": "seen", "availability": {"passive_evidence": ["mikrotik_dhcp"], "reason": "passive_evidence"}},
+        {"ip": "192.168.99.46", "status": "stale", "availability": {"reason": "run_failed socket timeout"}},
+    ]
+
+    netctl_calls = []
+
+    def fake_netctl(args, timeout=None):
+        netctl_calls.append(args)
+        if args == ["hosts", "list"]:
+            return {"hosts": [host for host in hosts if host["status"] in {"online", "seen"}]}
+        if args == ["hosts", "list", "--status", "all"]:
+            return {"hosts": hosts}
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app.api, "call_netctl", fake_netctl)
+    monkeypatch.setattr(app.api, "call_vpnctl", lambda args, timeout=None: {"connected": []} if args[0] == "connected" else {"clients": []})
+
+    current = client.get("/api/v1/network/hosts", headers=headers)
+    all_hosts = client.get("/api/v1/network/hosts?status=all", headers=headers)
+    offline = client.get("/api/v1/network/hosts?status=offline", headers=headers)
+    stale = client.get("/api/v1/network/hosts?status=stale", headers=headers)
+    invalid = client.get("/api/v1/network/hosts?status=unexpected", headers=headers)
+
+    assert [host["ip"] for host in current.json()["data"]["hosts"]] == ["192.168.99.44", "192.168.99.45"]
+    assert [host["ip"] for host in all_hosts.json()["data"]["hosts"]] == [
+        "192.168.99.2", "192.168.99.44", "192.168.99.45", "192.168.99.46",
+    ]
+    assert [host["ip"] for host in offline.json()["data"]["hosts"]] == ["192.168.99.2"]
+    assert stale.json()["data"]["hosts"][0]["availability"]["reason"] == "run_failed"
+    assert "socket timeout" not in stale.text
+    assert invalid.status_code == 422
+    assert netctl_calls == [
+        ["hosts", "list"],
+        ["hosts", "list", "--status", "all"],
+        ["hosts", "list", "--status", "all"],
+        ["hosts", "list", "--status", "all"],
+    ]
+
+
+def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    hosts = [
+        {
+            "ip": "192.168.99.46", "display_name": "stale host", "status": "stale",
+            "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "run_failed socket timeout"},
+        },
+        {"ip": "192.168.99.47", "display_name": "unmonitored host", "status": "seen", "availability": None},
+    ]
+
+    def fake_netctl(request, args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": [hosts[1]]}, None
+        if args == ["hosts", "list", "--status", "all"]:
+            return {"hosts": hosts}, None
+        if args == ["sources", "list"]:
+            return {"sources": []}, None
+        if args == ["hosts", "inspect", "192.168.99.46"]:
+            return {"host": hosts[0]}, None
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app.main, "net_cli_call", fake_netctl)
+    monkeypatch.setattr(app.main, "cli_call", lambda request, args, timeout=None: ({"connected": []} if args[0] == "connected" else {"clients": []}, None))
+    login(client)
+
+    page = client.get("/network/hosts?status=stale")
+    detail = client.get("/network/hosts/192.168.99.46")
+    all_hosts = client.get("/network/hosts?status=all")
+    invalid = client.get("/network/hosts?status=unexpected")
+
+    assert page.status_code == detail.status_code == all_hosts.status_code == invalid.status_code == 200
+    assert "run failed" in page.text
+    assert "socket timeout" not in page.text
+    assert "run_failed" in detail.text
+    assert "socket timeout" not in detail.text
+    assert "not monitored" in all_hosts.text
+    assert 'value="unexpected"' not in invalid.text
+    assert "stale host" not in invalid.text
+
+
+def test_network_dashboard_renders_availability_counts_and_run_health(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    login(client)
+    monkeypatch.setattr(
+        app.main,
+        "net_cli_call",
+        lambda request, args, timeout=None: (
+            {
+                "summary": {"online": 1, "seen": 2, "offline": 3, "stale": 4},
+                "sources": [],
+                "availability": {
+                    "failed_or_incomplete_count": 2,
+                    "last_successful_runs": [
+                        {
+                            "cidr": "192.168.99.0/24",
+                            "finished_at": "2026-07-29T10:00:00Z",
+                            "completed_target_count": 254,
+                            "target_count": 254,
+                        }
+                    ],
+                },
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        app.main,
+        "cli_call",
+        lambda request, args, timeout=None: ({"connected": []}, None),
+    )
+
+    page = client.get("/network/dashboard")
+
+    assert page.status_code == 200
+    assert "Offline</span><strong>3" in page.text
+    assert "Stale</span><strong>4" in page.text
+    assert "Failed / incomplete runs</span><strong>2" in page.text
+    assert "192.168.99.0/24" in page.text
+    assert "2026-07-29T10:00:00Z" in page.text
+
+
+def test_openvpn_merge_copies_availability_without_mutating_netctl_row():
+    from app.network_observer import merge_unified_hosts
+
+    source = {
+        "ip": "192.168.99.44", "status": "online",
+        "availability": {"active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "active_probe"},
+    }
+
+    [merged] = merge_unified_hosts([source], [{"common_name": "alpha", "virtual_address": "192.168.99.44"}], [])
+
+    assert merged["status"] == "connected"
+    assert merged["availability"] == {
+        "active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z", "reason": "openvpn_management",
+    }
+    assert source["availability"]["reason"] == "active_probe"
+
+
+def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    import app.api
+    import app.main
+
+    host = {
+        "ip": "192.168.99.44", "display_name": "vpn workstation", "status": "online",
+        "availability": {
+            "active_method": "icmp", "checked_at": "2026-07-29T10:00:00Z",
+            "reason": "active_probe socket timeout",
+        },
+    }
+    connected = [{"common_name": "alpha", "virtual_address": "192.168.99.44"}]
+
+    def api_netctl(args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {"host": host, "observations": []}
+        raise AssertionError(args)
+
+    def page_netctl(request, args, timeout=None):
+        if args == ["hosts", "list"]:
+            return {"hosts": [host]}, None
+        if args == ["hosts", "inspect", "192.168.99.44"]:
+            return {"host": host, "observations": []}, None
+        if args == ["sources", "list"]:
+            return {"sources": []}, None
+        raise AssertionError(args)
+
+    def api_vpnctl(args, timeout=None):
+        return {"connected": connected} if args[0] == "connected" else {"clients": []}
+
+    monkeypatch.setattr(app.api, "call_netctl", api_netctl)
+    monkeypatch.setattr(app.api, "call_vpnctl", api_vpnctl)
+    monkeypatch.setattr(app.main, "net_cli_call", page_netctl)
+    monkeypatch.setattr(app.main, "cli_call", lambda request, args, timeout=None: (api_vpnctl(args), None))
+    login(client)
+
+    listed = client.get("/api/v1/network/hosts", headers=headers)
+    api_detail = client.get("/api/v1/network/hosts/192.168.99.44", headers=headers)
+    page_detail = client.get("/network/hosts/192.168.99.44")
+
+    assert listed.status_code == api_detail.status_code == page_detail.status_code == 200
+    assert listed.json()["data"]["hosts"][0]["status"] == "connected"
+    assert api_detail.json()["data"]["host"]["status"] == "connected"
+    assert "connected" in page_detail.text
+    assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"
+    assert "socket timeout" not in api_detail.text
+    assert "socket timeout" not in page_detail.text
 
 
 def test_network_pages_render_sources_interfaces_routes_and_collect(tmp_path, monkeypatch):

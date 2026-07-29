@@ -159,7 +159,7 @@ def test_migration_15_adds_availability_schema_after_a_preexisting_version_14(tm
         }
         assert {"availability_runs", "availability_results", "availability_result_events"} <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 16)
+            (version,) for version in range(1, 17)
         ]
     finally:
         conn.close()
