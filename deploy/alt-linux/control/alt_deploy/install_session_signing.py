@@ -15,6 +15,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 
+def _is_actual_root() -> bool:
+    return (
+        os.name != "nt"
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+    )
+
+
 def _read_regular_file(
     path: Path,
     *,
@@ -35,7 +43,7 @@ def _read_regular_file(
             raise ValueError("Install signing key is not a regular file")
         if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != mode:
             raise ValueError("Install signing key permissions are invalid")
-        if root_owned and os.name != "nt" and (
+        if root_owned and _is_actual_root() and (
             metadata.st_uid != 0 or metadata.st_gid != 0
         ):
             raise ValueError("Install signing key ownership is invalid")

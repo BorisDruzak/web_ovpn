@@ -179,6 +179,58 @@ def test_existing_pair_with_unsafe_private_directory_metadata_is_rejected(
     ("loader", "mode"),
     (("private", 0o600), ("public", 0o644)),
 )
+def test_signing_loaders_allow_runner_owned_keys_outside_actual_root_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    loader: str,
+    mode: int,
+) -> None:
+    import alt_deploy.install_session_signing as signing
+
+    private = Ed25519PrivateKey.generate()
+    path = tmp_path / ("private.pem" if loader == "private" else "public.json")
+    if loader == "private":
+        path.write_bytes(
+            private.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        load = load_private_signer
+    else:
+        path.write_bytes(
+            json.dumps(
+                public_key_metadata(private.public_key()),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+        load = load_public_verifier
+    path.chmod(mode)
+    real_fstat = signing.os.fstat
+
+    def runner_owned_fstat(descriptor: int) -> object:
+        metadata = real_fstat(descriptor)
+        return types.SimpleNamespace(
+            st_mode=stat.S_IFREG | mode,
+            st_uid=1001,
+            st_gid=1001,
+            st_size=metadata.st_size,
+        )
+
+    monkeypatch.setattr(signing.os, "name", "posix")
+    monkeypatch.setattr(signing.os, "geteuid", lambda: 1001, raising=False)
+    monkeypatch.setattr(signing.os, "fstat", runner_owned_fstat)
+
+    assert load(path)
+
+
+@pytest.mark.parametrize(
+    ("loader", "mode"),
+    (("private", 0o600), ("public", 0o644)),
+)
 def test_signing_loaders_reject_non_root_group(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

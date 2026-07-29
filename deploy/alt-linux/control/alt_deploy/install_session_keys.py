@@ -20,6 +20,14 @@ from .install_session_signing import (
 _EUID: Callable[[], int] = getattr(os, "geteuid", lambda: 0)
 
 
+def _is_actual_root() -> bool:
+    return (
+        os.name != "nt"
+        and hasattr(os, "geteuid")
+        and os.geteuid() == 0
+    )
+
+
 def _lstat(path: Path, *, description: str) -> os.stat_result | None:
     try:
         metadata = path.lstat()
@@ -53,7 +61,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _require_root_owner(metadata: os.stat_result, *, description: str) -> None:
-    if os.name != "nt" and (metadata.st_uid != 0 or metadata.st_gid != 0):
+    if _is_actual_root() and (metadata.st_uid != 0 or metadata.st_gid != 0):
         raise ValueError(f"Install signing {description} ownership is invalid")
 
 
@@ -93,7 +101,7 @@ def _ensure_root_directory(path: Path, *, mode: int, description: str) -> None:
             raise ValueError("Install signing key directory cannot be created") from exc
         else:
             try:
-                if os.name != "nt":
+                if _is_actual_root():
                     os.chown(path, 0, 0)
                 os.chmod(path, mode)
             except OSError as exc:
@@ -128,7 +136,7 @@ def _create_regular_exclusive(path: Path, content: bytes, *, mode: int) -> None:
         raise ValueError("Install signing key cannot be created") from exc
     try:
         try:
-            if os.name != "nt":
+            if _is_actual_root():
                 os.fchown(descriptor, 0, 0)
             os.fchmod(descriptor, mode)
         except AttributeError:
