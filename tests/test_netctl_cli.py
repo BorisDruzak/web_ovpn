@@ -331,29 +331,6 @@ def test_collect_all_reconciles_when_auxiliary_availability_collection_fails(mon
     }
 
 
-@pytest.mark.parametrize(
-    ("sources", "expected"),
-    [
-        ([], False),
-        ([{"enabled": False, "last_status": "ok", "last_collect_at": "2026-07-29T11:59:00Z"}], False),
-        ([{"enabled": True, "last_status": "partial", "last_collect_at": "2026-07-29T11:59:00Z"}], False),
-        ([{"enabled": True, "last_status": "error", "last_collect_at": "2026-07-29T11:59:00Z"}], False),
-        ([{"enabled": True, "last_status": "ok", "last_collect_at": "2026-07-29T11:49:59Z"}], False),
-        ([{"enabled": True, "last_status": "ok", "last_collect_at": "2026-07-29T12:01:00Z"}], False),
-        ([{"enabled": True, "last_status": "ok", "last_collect_at": "2026-07-29T11:50:00Z"}], True),
-        ([{"enabled": True, "last_status": "success", "last_collect_at": "2026-07-29T12:00:00Z"}], True),
-    ],
-)
-def test_availability_source_health_requires_nonempty_successful_fresh_sources(monkeypatch, sources, expected):
-    """Vacuous, partial, failed, stale, or future source state must fail recovery probing closed."""
-    import netctl.cli as cli
-
-    monkeypatch.setattr(cli, "list_sources", lambda _conn: sources)
-    monkeypatch.setattr(cli, "utc_now", lambda: "2026-07-29T12:00:00Z")
-
-    assert cli.availability_source_health(object()) is expected
-
-
 def test_availability_collect_returns_only_sanitized_collection_fields(monkeypatch):
     """Passing raw probe errors through this recovery command could disclose operating-system details."""
     import netctl.cli as cli
@@ -363,7 +340,6 @@ def test_availability_collect_returns_only_sanitized_collection_fields(monkeypat
     conn = type("Connection", (), {"close": lambda self: None})()
     monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
     monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
-    monkeypatch.setattr(cli, "availability_source_health", lambda _conn: True)
     monkeypatch.setattr(
         cli,
         "collect_due_availability",
@@ -376,21 +352,26 @@ def test_availability_collect_returns_only_sanitized_collection_fields(monkeypat
     assert payload == {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
 
 
-def test_availability_collect_fails_closed_before_probing_an_unhealthy_source(monkeypatch):
-    """A recovery probe against stale source state could publish misleading availability."""
+def test_availability_collect_runs_active_probe_despite_partial_passive_source(monkeypatch):
+    """Partial FDB telemetry must not suppress independent ICMP/TCP evidence."""
     import netctl.cli as cli
 
     parser = cli.build_parser()
     conn = type("Connection", (), {"close": lambda self: None})()
     monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
     monkeypatch.setattr(cli, "CollectLock", lambda _db: nullcontext())
-    monkeypatch.setattr(cli, "availability_source_health", lambda _conn: False)
-    monkeypatch.setattr(cli, "collect_due_availability", lambda *_args, **_kwargs: pytest.fail("probe must not run"))
+    monkeypatch.setattr(
+        cli,
+        "collect_due_availability",
+        lambda *_args, **_kwargs: __import__("netctl.availability", fromlist=["AvailabilityCollection"]).AvailabilityCollection(
+            "success", (), {"targets": 1, "completed": 1}
+        ),
+    )
 
     rc, payload = cli.dispatch(parser.parse_args(["availability", "collect"]))
 
-    assert rc == 1
-    assert payload == {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
+    assert rc == 0
+    assert payload == {"status": "success", "runs": [], "summary": {"targets": 1, "completed": 1}}
 
 
 def test_availability_parsers_accept_only_canonical_settings_and_one_ip():

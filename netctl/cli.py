@@ -414,30 +414,6 @@ def collect_all_locked(
     return rc, results
 
 
-def availability_source_health(conn) -> bool:
-    """Direct recovery probes require every enabled source to have a healthy collection state."""
-    try:
-        sources = [
-            source for source in list_sources(conn) if source.get("enabled")
-        ]
-        now = _parse_utc(utc_now())
-        if not sources or now is None:
-            return False
-        for source in sources:
-            collected = _parse_utc(str(source.get("last_collect_at") or ""))
-            if (
-                str(source.get("last_status") or "") not in {"ok", "success"}
-                or collected is None
-                or not timedelta(0)
-                <= now - collected
-                <= PASSIVE_EVIDENCE_FRESHNESS
-            ):
-                return False
-        return True
-    except (sqlite3.Error, AttributeError, TypeError):
-        return False
-
-
 def _availability_payload(collection: AvailabilityCollection) -> dict[str, Any]:
     return {
         "status": collection.status,
@@ -512,8 +488,6 @@ def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 }
             )
         with CollectLock(args.db):
-            if not availability_source_health(conn):
-                return 1, {"status": "failed", "runs": [], "summary": {"targets": 0, "completed": 0}}
             collection = collect_due_availability(
                 conn,
                 default_probe_executor(),
