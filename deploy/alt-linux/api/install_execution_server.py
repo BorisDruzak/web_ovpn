@@ -10,7 +10,7 @@ from alt_deploy.config import Settings
 from alt_deploy.install_tls import (
     TLSMaterial,
     create_execution_server_context,
-    ensure_execution_tls_material,
+    load_execution_tls_material,
 )
 
 
@@ -64,7 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settings = Settings.from_env()
     if parsed.listen_address != settings.install_execution_listen_address:
         parser.error("listen address does not match configured V2 address")
-    material = ensure_execution_tls_material(settings)
+    material = load_execution_tls_material(settings)
     server = create_execution_tls_server(
         settings,
         material,

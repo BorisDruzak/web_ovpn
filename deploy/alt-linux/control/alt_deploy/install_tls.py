@@ -40,6 +40,32 @@ def _validate_path(path: Path, *, mode: int, description: str) -> None:
         raise ValueError(f"Execution TLS {description} ownership is invalid")
 
 
+def _read_regular_file(path: Path, *, mode: int, description: str) -> bytes:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"Execution TLS {description} cannot be opened") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"Execution TLS {description} is not a regular file")
+        if os.name != "nt" and stat.S_IMODE(metadata.st_mode) != mode:
+            raise ValueError(f"Execution TLS {description} permissions are invalid")
+        if _is_root() and (metadata.st_uid != 0 or metadata.st_gid != 0):
+            raise ValueError(f"Execution TLS {description} ownership is invalid")
+        data = bytearray()
+        while chunk := os.read(descriptor, 65536):
+            data.extend(chunk)
+        return bytes(data)
+    finally:
+        os.close(descriptor)
+
+
 def _ensure_directory(path: Path, *, mode: int) -> None:
     if path.exists():
         metadata = path.lstat()
@@ -153,14 +179,16 @@ def _build_material(address: str) -> tuple[bytes, bytes, bytes, bytes]:
     )
 
 
-def _validate_material(material: TLSMaterial, address: str) -> None:
+def _validate_public_material(material: TLSMaterial, address: str) -> None:
     _validate_path(material.ca_certificate, mode=0o644, description="CA certificate")
     _validate_path(material.server_certificate, mode=0o644, description="server certificate")
-    _validate_path(material.server_private_key, mode=0o600, description="server private key")
     try:
-        ca = x509.load_pem_x509_certificate(material.ca_certificate.read_bytes())
-        server = x509.load_pem_x509_certificate(material.server_certificate.read_bytes())
-        key = serialization.load_pem_private_key(material.server_private_key.read_bytes(), password=None)
+        ca = x509.load_pem_x509_certificate(_read_regular_file(
+            material.ca_certificate, mode=0o644, description="CA certificate"
+        ))
+        server = x509.load_pem_x509_certificate(_read_regular_file(
+            material.server_certificate, mode=0o644, description="server certificate"
+        ))
         names = server.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
     except (OSError, ValueError, x509.ExtensionNotFound) as exc:
         raise ValueError("Execution TLS material is invalid") from exc
@@ -168,8 +196,33 @@ def _validate_material(material: TLSMaterial, address: str) -> None:
         raise ValueError("Execution TLS certificate chain is invalid")
     if address not in {str(item.value) for item in names if isinstance(item, x509.IPAddress)}:
         raise ValueError("Execution TLS certificate listener identity is invalid")
+
+
+def _validate_material(material: TLSMaterial, address: str) -> None:
+    _validate_public_material(material, address)
+    _validate_path(material.server_private_key, mode=0o600, description="server private key")
+    try:
+        key = serialization.load_pem_private_key(_read_regular_file(
+            material.server_private_key, mode=0o600, description="server private key"
+        ), password=None)
+        server = x509.load_pem_x509_certificate(_read_regular_file(
+            material.server_certificate, mode=0o644, description="server certificate"
+        ))
+    except (OSError, ValueError) as exc:
+        raise ValueError("Execution TLS material is invalid") from exc
     if key.public_key().public_numbers() != server.public_key().public_numbers():
         raise ValueError("Execution TLS private key does not match certificate")
+
+
+def load_execution_tls_material(settings: Settings) -> TLSMaterial:
+    """Load public TLS material for the unprivileged systemd service."""
+    material = TLSMaterial(
+        ca_certificate=settings.install_execution_ca_certificate,
+        server_certificate=settings.install_execution_server_certificate,
+        server_private_key=settings.install_execution_server_private_key,
+    )
+    _validate_public_material(material, settings.install_execution_listen_address)
+    return material
 
 
 def ensure_execution_tls_material(settings: Settings) -> TLSMaterial:
@@ -184,7 +237,16 @@ def ensure_execution_tls_material(settings: Settings) -> TLSMaterial:
         material.server_private_key,
         material.server_certificate,
     )
-    exists = [path.exists() for path in paths]
+    exists = []
+    for path in paths:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            exists.append(False)
+        except OSError as exc:
+            raise ValueError("Execution TLS material cannot be inspected") from exc
+        else:
+            exists.append(True)
     if any(exists) and not all(exists):
         raise ValueError("Execution TLS material is incomplete")
     if not any(exists):
