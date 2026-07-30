@@ -34,7 +34,7 @@ contract="$root/verify-contract.py"
 python3 "$contract" source-iso --source "$source_iso" ||
     die 'Source ISO verification failed'
 for command in xorriso gzip cpio sha256sum mktemp python3 stat grep \
-    find sort mkdir rm; do
+    find sort mkdir readlink rm; do
     command -v "$command" >/dev/null ||
         die "Missing required command: $command"
 done
@@ -337,11 +337,17 @@ for asset in build-id controller-url execution-ca.pem \
 done
 
 initrd_command() {
-    local command="$1" directory candidate
+    local command="$1" directory candidate resolved
     for directory in bin sbin usr/bin usr/sbin; do
         candidate="$workdir/initrd/$directory/$command"
-        if [[ -f "$candidate" && ! -L "$candidate" &&
-            -x "$candidate" ]]; then
+        [[ -f "$candidate" && -x "$candidate" ]] || continue
+        resolved=$(readlink -f -- "$candidate") || continue
+        case "$resolved" in
+            "$workdir/initrd"/*) ;;
+            *) continue ;;
+        esac
+        if [[ -f "$resolved" && ! -L "$resolved" &&
+            -x "$resolved" ]]; then
             return 0
         fi
     done
