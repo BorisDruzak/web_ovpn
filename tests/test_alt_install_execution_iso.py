@@ -584,6 +584,81 @@ def test_verifier_scans_for_secret_like_files_outside_managed_roots(
     assert "secret-like" in tampered.stderr
 
 
+def test_verifier_allows_pinned_upstream_passwd_but_rejects_injected_secret(
+    tmp_path: Path,
+) -> None:
+    """The pinned ALT initrd's account database is not V2 payload."""
+    root = tmp_path / "initrd"
+    passwd = root / "etc" / "passwd"
+    passwd.parent.mkdir(parents=True)
+    passwd.write_text("root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8")
+
+    valid = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert valid.returncode == 0, valid.stderr
+    leaked = root / "opt" / "bootstrap" / "execution-token"
+    leaked.parent.mkdir(parents=True)
+    leaked.write_text("token", encoding="utf-8")
+    tampered = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert tampered.returncode != 0
+    assert "secret-like" in tampered.stderr
+
+
+def test_verifier_scans_pinned_upstream_passwd_content_for_private_key(
+    tmp_path: Path,
+) -> None:
+    """The filename exception must not hide a replaced account database."""
+    root = tmp_path / "initrd"
+    passwd = root / "etc" / "passwd"
+    passwd.parent.mkdir(parents=True)
+    passwd.write_text(
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "secret-like" in completed.stderr
+
+
 def test_verifier_streams_large_files_and_detects_split_private_key_marker(
     tmp_path: Path,
 ) -> None:

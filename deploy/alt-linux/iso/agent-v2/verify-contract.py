@@ -32,6 +32,9 @@ ALLOWED_PUBLIC_MATERIAL = {
     "usr/share/alt-install/execution-ca.pem",
     "usr/share/alt-install/public-key.json",
 }
+# This file belongs to the pinned ALT 11.4 source initrd, not the V2 overlay.
+# The complete source ISO digest is independently fixed by validate_source().
+PINNED_UPSTREAM_SYSTEM_FILES = {"etc/passwd"}
 SCAN_CHUNK_SIZE = 64 * 1024
 PRIVATE_KEY_SUFFIX = b"PRIVATE KEY-----"
 SCAN_OVERLAP_SIZE = len(PRIVATE_KEY_SUFFIX) - 1
@@ -246,7 +249,10 @@ def scan_secret_like_files(root: Path) -> None:
         if relative in ALLOWED_PUBLIC_MATERIAL:
             continue
         name = path.name.lower()
-        if SUSPICIOUS_NAME.search(name):
+        if (
+            relative not in PINNED_UPSTREAM_SYSTEM_FILES
+            and SUSPICIOUS_NAME.search(name)
+        ):
             raise ContractError(
                 f"secret-like payload filename is forbidden: {relative}"
             )
