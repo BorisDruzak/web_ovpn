@@ -2447,6 +2447,11 @@ def finalize_signed_evidence(
                 "after_sha256": after_target,
             },
         },
+        "authorization": {
+            "disk_fingerprint": request["disk_fingerprint"],
+            "inventory_sha256": request["inventory_sha256"],
+            "plan_sha256": request["plan_sha256"],
+        },
         "attestation_chain_sha256": attestation_sha256(chain[-1]),
         "controller": {
             "execution_id": controller["execution_id"],
@@ -2797,10 +2802,43 @@ def _replay_public_acceptance(
         _fail("Public authorization semantic hash binding is invalid")
     request = authorization.get("request")
     controller = authorization.get("controller")
+    receipt_authorization = receipt.get("authorization")
     if (
         not isinstance(request, dict)
+        or set(request)
+        != {
+            "disk_fingerprint",
+            "inventory_sha256",
+            "plan_sha256",
+            "session_id",
+            "target_disk",
+        }
         or not isinstance(controller, dict)
+        or not isinstance(receipt_authorization, dict)
+        or set(receipt_authorization)
+        != {
+            "disk_fingerprint",
+            "inventory_sha256",
+            "plan_sha256",
+        }
+        or not isinstance(request.get("session_id"), str)
+        or not SESSION_ID_RE.fullmatch(str(request["session_id"]))
         or request.get("target_disk") != "/dev/vda"
+        or authorization.get("target_disk") != request["target_disk"]
+        or not isinstance(request.get("plan_sha256"), str)
+        or not SHA256_RE.fullmatch(str(request["plan_sha256"]))
+        or not isinstance(request.get("inventory_sha256"), str)
+        or not SHA256_RE.fullmatch(str(request["inventory_sha256"]))
+        or not isinstance(request.get("disk_fingerprint"), str)
+        or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(request["disk_fingerprint"])
+        )
+        or receipt_authorization
+        != {
+            "disk_fingerprint": request["disk_fingerprint"],
+            "inventory_sha256": request["inventory_sha256"],
+            "plan_sha256": request["plan_sha256"],
+        }
         or controller
         != {
             "execution_id": (

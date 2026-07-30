@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -21,18 +22,22 @@ def _fake_command(directory: Path, name: str, body: str) -> None:
 
 def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dict[str, str]:
     fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
+    fake_bin.mkdir(exist_ok=True)
     command_log = tmp_path / "commands.log"
     service_state = tmp_path / "service-state"
     service_state.write_text(
         overrides.get("INSTALLER_SERVICE_INITIAL_STATE", "disabled inactive") + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     _fake_command(
         fake_bin,
         "systemctl",
         "printf '%s\\n' \"$*\" >> \"${INSTALLER_COMMAND_LOG:?}\"\n"
         "action=${1:-}\n"
+        "if [[ ${INSTALLER_SYSTEMCTL_FAIL_ALWAYS:-} == \"$action\" ]]; then\n"
+        "  exit 92\n"
+        "fi\n"
         "if [[ ${INSTALLER_SYSTEMCTL_FAIL_ONCE:-} == \"$action\" && ! -e ${INSTALLER_SYSTEMCTL_FAIL_MARKER:?} ]]; then\n"
         "  : > \"${INSTALLER_SYSTEMCTL_FAIL_MARKER}\"\n"
         "  exit 91\n"
@@ -40,11 +45,23 @@ def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dic
         "case \"$action\" in\n"
         "  is-enabled) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; [[ $enabled == enabled ]] ;;\n"
         "  is-active) read -r _ active < \"${INSTALLER_SERVICE_STATE:?}\"; [[ $active == active ]] ;;\n"
+        "  show)\n"
+        "    [[ ${2:-} == --property=MainPID && ${3:-} == --value ]] || exit 90\n"
+        "    printf '%s\\n' \"${INSTALLER_SERVICE_MAIN_PID:-4242}\"\n"
+        "    ;;\n"
         "  daemon-reload) exit 0 ;;\n"
-        "  enable) printf 'enabled active\\n' > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
-        "  disable) printf 'disabled inactive\\n' > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
+        "  enable)\n"
+        "    read -r _ active < \"${INSTALLER_SERVICE_STATE:?}\"\n"
+        "    [[ ${2:-} == --now ]] && active=active\n"
+        "    printf 'enabled %s\\n' \"$active\" > \"${INSTALLER_SERVICE_STATE:?}\"\n"
+        "    ;;\n"
+        "  disable)\n"
+        "    read -r _ active < \"${INSTALLER_SERVICE_STATE:?}\"\n"
+        "    printf 'disabled %s\\n' \"$active\" > \"${INSTALLER_SERVICE_STATE:?}\"\n"
+        "    ;;\n"
         "  start) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; printf '%s active\\n' \"$enabled\" > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
         "  stop) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; printf '%s inactive\\n' \"$enabled\" > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
+        "  restart) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; printf '%s active\\n' \"$enabled\" > \"${INSTALLER_SERVICE_STATE:?}\" ;;\n"
         "  *) exit 90 ;;\n"
         "esac\n",
     )
@@ -93,16 +110,18 @@ def _run_active_restore(
     tmp_path: Path, **overrides: str,
 ) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "restore-root"
-    (root / "release").mkdir(parents=True)
-    (root / "release" / "marker").write_text("failed release\n", encoding="utf-8")
-    (root / "transaction").mkdir()
+    release = root / "releases" / "failed"
+    transaction = root / "releases" / ".transaction-test"
+    release.mkdir(parents=True)
+    (release / "marker").write_text("failed release\n", encoding="utf-8")
+    transaction.mkdir()
     command = (
         "set -Eeuo pipefail; "
         f"source {INSTALLER.as_posix()!r}; "
-        f"INSTALL_EXECUTION_CURRENT={str(root / 'current')!r}; "
-        f"INSTALL_EXECUTION_UNIT_PATH={str(root / 'unit')!r}; "
-        f"INSTALL_EXECUTION_TRANSACTION_DIR={str(root / 'transaction')!r}; "
-        f"INSTALL_EXECUTION_RELEASE_PATH={str(root / 'release')!r}; "
+        f"INSTALL_EXECUTION_CURRENT={(root / 'current').as_posix()!r}; "
+        f"INSTALL_EXECUTION_UNIT_PATH={(root / 'unit').as_posix()!r}; "
+        f"INSTALL_EXECUTION_TRANSACTION_DIR={transaction.as_posix()!r}; "
+        f"INSTALL_EXECUTION_RELEASE_PATH={release.as_posix()!r}; "
         "INSTALL_EXECUTION_OLD_CURRENT_TARGET=; "
         "INSTALL_EXECUTION_HAD_UNIT=0; "
         "INSTALL_EXECUTION_WAS_ENABLED=1; "
@@ -116,6 +135,156 @@ def _run_active_restore(
         capture_output=True,
         cwd=REPO_ROOT,
         env=_environment(tmp_path, **overrides),
+        check=False,
+    )
+
+
+def _run_restore(
+    tmp_path: Path,
+    *,
+    prior_runtime: bool,
+    prior_unit: bool,
+    was_enabled: bool,
+    was_active: bool,
+    fail_pointer: bool = False,
+    fail_unit: bool = False,
+    **overrides: str,
+) -> subprocess.CompletedProcess[str]:
+    root = tmp_path / "restore-root"
+    old_release = root / "releases" / "old"
+    failed_release = root / "releases" / "failed"
+    transaction = root / "releases" / ".transaction-test"
+    failed_release.mkdir(parents=True)
+    transaction.mkdir()
+    (failed_release / "marker").write_text("failed release\n", encoding="utf-8")
+    (transaction / "marker").write_text("recovery\n", encoding="utf-8")
+    current = root / "current"
+    current.symlink_to(failed_release, target_is_directory=True)
+    old_target = ""
+    if prior_runtime:
+        old_release.mkdir()
+        (old_release / "marker").write_text("old release\n", encoding="utf-8")
+        old_target = str(old_release)
+    old_target_shell = Path(old_target).as_posix() if old_target else ""
+    unit = root / "unit"
+    unit.write_text("new unit\n", encoding="utf-8")
+    unit_backup = transaction / "unit.backup"
+    if prior_unit:
+        unit_backup.write_text("old unit\n", encoding="utf-8")
+    portable_atomic_overrides = ""
+    if os.name == "nt":
+        portable_atomic_overrides = (
+            "install_execution_api_atomic_pointer() { "
+            "python -c 'import os,sys; p=sys.argv[1]; t=sys.argv[2]; "
+            "n=p+\".test-new\"; "
+            "os.path.lexists(n) and os.unlink(n); "
+            "os.symlink(t,n,target_is_directory=True); "
+            "os.path.lexists(p) and os.unlink(p); os.replace(n,p)' "
+            "\"$1\" \"$2\"; }; "
+            "install_execution_api_atomic_regular_file() { "
+            "cp -- \"$1\" \"$2\"; }; "
+        )
+    command = (
+        "set -Eeuo pipefail; "
+        f"source {INSTALLER.as_posix()!r}; "
+        + portable_atomic_overrides
+        + (
+            "install_execution_api_atomic_pointer() { return 93; }; "
+            if fail_pointer
+            else ""
+        )
+        + (
+            "install_execution_api_atomic_regular_file() { return 94; }; "
+            if fail_unit
+            else ""
+        )
+        + f"INSTALL_EXECUTION_CURRENT={current.as_posix()!r}; "
+        + f"INSTALL_EXECUTION_UNIT_PATH={unit.as_posix()!r}; "
+        + f"INSTALL_EXECUTION_TRANSACTION_DIR={transaction.as_posix()!r}; "
+        + f"INSTALL_EXECUTION_RELEASE_PATH={failed_release.as_posix()!r}; "
+        + f"INSTALL_EXECUTION_UNIT_BACKUP={unit_backup.as_posix()!r}; "
+        + f"INSTALL_EXECUTION_OLD_CURRENT_TARGET={old_target_shell!r}; "
+        + f"INSTALL_EXECUTION_HAD_UNIT={int(prior_unit)}; "
+        + f"INSTALL_EXECUTION_WAS_ENABLED={int(was_enabled)}; "
+        + f"INSTALL_EXECUTION_WAS_ACTIVE={int(was_active)}; "
+        + "INSTALL_EXECUTION_TRANSACTION_ACTIVE=1; "
+        + "install_execution_api_restore_activation"
+    )
+    initial_state = (
+        f"{'enabled' if was_enabled else 'disabled'} "
+        f"{'active' if was_active else 'inactive'}"
+    )
+    return subprocess.run(
+        [BASH, "-c", command],
+        text=True,
+        capture_output=True,
+        cwd=REPO_ROOT,
+        env=_environment(
+            tmp_path,
+            INSTALLER_SERVICE_INITIAL_STATE=initial_state,
+            **overrides,
+        ),
+        check=False,
+    )
+
+
+def _run_listener_admission(
+    tmp_path: Path,
+    *,
+    listener: str,
+    service_state: str = "enabled active",
+    main_pid: str = "4242",
+    health_fail: str = "0",
+) -> subprocess.CompletedProcess[str]:
+    root = tmp_path / "listener-root"
+    release = root / "opt" / "alt-install-execution-api" / "releases" / "old"
+    release.mkdir(parents=True)
+    current = release.parent.parent / "current"
+    current.symlink_to(release, target_is_directory=True)
+    unit = root / "etc" / "systemd" / "system" / "alt-install-execution.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text(
+        (
+            REPO_ROOT
+            / "deploy"
+            / "alt-linux"
+            / "systemd"
+            / "alt-install-execution.service"
+        ).read_text(encoding="utf-8").replace("\r\n", "\n"),
+        encoding="utf-8",
+        newline="\n",
+    )
+    ca = root / "etc" / "alt-deploy" / "install-execution-ca.pem"
+    ca.parent.mkdir(parents=True)
+    ca.write_text("test CA\n", encoding="utf-8")
+    command = (
+        "set -Eeuo pipefail; "
+        f"source {INSTALLER.as_posix()!r}; "
+        "python3() { \"${INSTALLER_TEST_PYTHON:?}\" \"$@\"; }; "
+        "curl() { "
+        "if [[ ${INSTALLER_HEALTH_FAIL:-0} == 1 ]]; then "
+        "printf '%s\\n' "
+        "'{\"schema_version\":1,\"service\":\"alt-install-execution\","
+        "\"status\":\"starting\"}'; "
+        "else printf '%s\\n' "
+        "'{\"schema_version\":1,\"service\":\"alt-install-execution\","
+        "\"status\":\"ok\"}'; fi; }; "
+        f"install_execution_api_listener_allows_install {root.as_posix()!r} "
+        f"{current.as_posix()!r} {unit.as_posix()!r}"
+    )
+    return subprocess.run(
+        [BASH, "-c", command],
+        text=True,
+        capture_output=True,
+        cwd=REPO_ROOT,
+        env=_environment(
+            tmp_path,
+            listener=listener,
+            INSTALLER_SERVICE_INITIAL_STATE=service_state,
+            INSTALLER_SERVICE_MAIN_PID=main_pid,
+            INSTALLER_HEALTH_FAIL=health_fail,
+            INSTALLER_TEST_PYTHON=Path(sys.executable).as_posix(),
+        ),
         check=False,
     )
 
@@ -143,10 +312,194 @@ def test_active_rollback_stop_failure_keeps_failed_release_recoverable(
     )
 
     assert result.returncode != 0
-    assert (tmp_path / "restore-root" / "release" / "marker").is_file()
+    assert (
+        tmp_path
+        / "restore-root"
+        / "releases"
+        / "failed"
+        / "marker"
+    ).is_file()
     commands = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
     assert "stop alt-install-execution.service" in commands
     assert "start alt-install-execution.service" not in commands
+
+
+@pytest.mark.skipif(BASH is None, reason="rollback command test requires Bash")
+@pytest.mark.parametrize(
+    ("failure", "restore_options", "overrides"),
+    (
+        (
+            "service_stop",
+            {"prior_runtime": True, "prior_unit": True, "was_enabled": True, "was_active": True},
+            {"INSTALLER_SYSTEMCTL_FAIL_ALWAYS": "stop"},
+        ),
+        (
+            "runtime_pointer_restore",
+            {
+                "prior_runtime": True,
+                "prior_unit": True,
+                "was_enabled": True,
+                "was_active": True,
+                "fail_pointer": True,
+            },
+            {},
+        ),
+        (
+            "unit_restore",
+            {
+                "prior_runtime": True,
+                "prior_unit": True,
+                "was_enabled": True,
+                "was_active": True,
+                "fail_unit": True,
+            },
+            {},
+        ),
+        (
+            "daemon_reload",
+            {"prior_runtime": True, "prior_unit": True, "was_enabled": True, "was_active": True},
+            {"INSTALLER_SYSTEMCTL_FAIL_ALWAYS": "daemon-reload"},
+        ),
+        (
+            "enable_restore",
+            {"prior_runtime": True, "prior_unit": True, "was_enabled": True, "was_active": True},
+            {"INSTALLER_SYSTEMCTL_FAIL_ALWAYS": "enable"},
+        ),
+        (
+            "disable_restore",
+            {"prior_runtime": False, "prior_unit": False, "was_enabled": False, "was_active": False},
+            {"INSTALLER_SYSTEMCTL_FAIL_ALWAYS": "disable"},
+        ),
+    ),
+)
+def test_rollback_prerequisite_failure_retains_recovery_state_and_never_restarts(
+    tmp_path: Path,
+    failure: str,
+    restore_options: dict[str, bool],
+    overrides: dict[str, str],
+) -> None:
+    result = _run_restore(tmp_path, **restore_options, **overrides)
+
+    assert result.returncode != 0
+    assert failure in result.stderr
+    root = tmp_path / "restore-root"
+    assert (root / "releases" / "failed" / "marker").is_file()
+    assert (root / "releases" / ".transaction-test" / "marker").is_file()
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
+    assert "start alt-install-execution.service" not in commands
+
+
+@pytest.mark.skipif(BASH is None, reason="rollback command test requires Bash")
+@pytest.mark.parametrize(
+    ("prior_runtime", "prior_unit", "was_enabled", "was_active", "expected_state"),
+    (
+        (False, False, False, False, "disabled inactive\n"),
+        (True, True, True, True, "enabled active\n"),
+        (True, True, True, False, "enabled inactive\n"),
+    ),
+)
+def test_rollback_restores_clean_active_and_inactive_host_semantics(
+    tmp_path: Path,
+    prior_runtime: bool,
+    prior_unit: bool,
+    was_enabled: bool,
+    was_active: bool,
+    expected_state: str,
+) -> None:
+    result = _run_restore(
+        tmp_path,
+        prior_runtime=prior_runtime,
+        prior_unit=prior_unit,
+        was_enabled=was_enabled,
+        was_active=was_active,
+    )
+
+    assert result.returncode == 0, result.stderr
+    root = tmp_path / "restore-root"
+    assert not (root / "releases" / "failed").exists()
+    assert not (root / "releases" / ".transaction-test").exists()
+    if prior_runtime:
+        assert (root / "current").resolve() == root / "releases" / "old"
+    else:
+        assert not (root / "current").exists()
+    if prior_unit:
+        assert (root / "unit").read_text(encoding="utf-8") == "old unit\n"
+    else:
+        assert not (root / "unit").exists()
+    assert (tmp_path / "service-state").read_text(encoding="utf-8") == expected_state
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
+    assert commands[0] == "stop alt-install-execution.service"
+    if was_active:
+        assert commands[-1] == "start alt-install-execution.service"
+    else:
+        assert "start alt-install-execution.service" not in commands
+
+
+@pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")
+def test_installer_admits_only_healthy_listener_owned_by_managed_v2_service(
+    tmp_path: Path,
+) -> None:
+    result = _run_listener_admission(
+        tmp_path,
+        listener=(
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n'
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")
+@pytest.mark.parametrize(
+    ("listener", "service_state", "main_pid", "health_fail"),
+    (
+        (
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=7777,fd=3))\n',
+            "enabled active",
+            "4242",
+            "0",
+        ),
+        (
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n',
+            "enabled inactive",
+            "4242",
+            "0",
+        ),
+        (
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n',
+            "enabled active",
+            "4242",
+            "1",
+        ),
+        (
+            'LISTEN 0 128 0.0.0.0:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n',
+            "enabled active",
+            "4242",
+            "0",
+        ),
+    ),
+)
+def test_installer_rejects_unverified_or_foreign_v2_listener(
+    tmp_path: Path,
+    listener: str,
+    service_state: str,
+    main_pid: str,
+    health_fail: str,
+) -> None:
+    result = _run_listener_admission(
+        tmp_path,
+        listener=listener,
+        service_state=service_state,
+        main_pid=main_pid,
+        health_fail=health_fail,
+    )
+
+    assert result.returncode != 0
 
 
 @pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
@@ -171,7 +524,47 @@ def test_installer_stages_only_v2_runtime_generates_tls_and_activates_unit(
     assert (tmp_path / "service-state").read_text(encoding="utf-8") == "enabled active\n"
     commands = (tmp_path / "commands.log").read_text(encoding="utf-8")
     assert "daemon-reload" in commands
-    assert "enable --now alt-install-execution.service" in commands
+    assert "enable alt-install-execution.service" in commands
+    assert "restart alt-install-execution.service" in commands
+
+
+@pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
+def test_installer_verified_rerun_restarts_owned_v2_service_on_new_release(
+    tmp_path: Path,
+) -> None:
+    current, _old_unit, old_target = _seed_prior_v2_runtime(tmp_path)
+    unit = (
+        tmp_path
+        / "host-root"
+        / "etc"
+        / "systemd"
+        / "system"
+        / "alt-install-execution.service"
+    )
+    unit.write_bytes(
+        (
+            REPO_ROOT
+            / "deploy"
+            / "alt-linux"
+            / "systemd"
+            / "alt-install-execution.service"
+        ).read_bytes()
+    )
+
+    result = _run(
+        tmp_path,
+        listener=(
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n'
+        ),
+        INSTALLER_SERVICE_INITIAL_STATE="enabled active",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(current.resolve()) != old_target
+    assert Path(old_target).is_dir()
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
+    assert "restart alt-install-execution.service" in commands
 
 
 @pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")

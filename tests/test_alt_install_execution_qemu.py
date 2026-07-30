@@ -247,6 +247,80 @@ def _reseal_public_evidence(module, state: Path, evidence: Path) -> None:
     index_path.write_bytes(module._json_bytes(index))
 
 
+def _resign_public_authorization_request(
+    module,
+    state: Path,
+    evidence: Path,
+    mutate,
+) -> None:
+    attestation_dir = evidence / "attestations"
+    previous_sha256 = None
+    resigned: list[dict[str, object]] = []
+    for sequence, path in enumerate(sorted(attestation_dir.iterdir())[:6], start=1):
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        payload = existing["payload"]
+        if sequence == 1:
+            payload = dict(payload)
+            request = dict(payload["request"])
+            mutate(request)
+            payload["request"] = request
+        replacement = module.issue_attestation(
+            state,
+            event=existing["event"],
+            sequence=sequence,
+            payload=payload,
+            observed_at=existing["observed_at"],
+            previous_sha256=previous_sha256,
+        )
+        path.write_bytes(module._json_bytes(replacement))
+        resigned.append(replacement)
+        previous_sha256 = module.attestation_sha256(replacement)
+
+    receipt_path = evidence / "acceptance-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["attestation_chain_sha256"] = module.attestation_sha256(resigned[-1])
+    receipt_path.write_bytes(module._json_bytes(receipt))
+
+    for filename in (
+        "postflight-delivery.json",
+        "authenticated-postflight.json",
+    ):
+        postflight_path = evidence / "evidence" / filename
+        postflight = json.loads(postflight_path.read_text(encoding="utf-8"))
+        postflight["boot_attestation"] = resigned[4]
+        postflight_path.write_bytes(module._json_bytes(postflight))
+
+    seal_path = attestation_dir / "07-acceptance_evidence.json"
+    existing_seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    seal_payload = dict(existing_seal["payload"])
+    evidence_hashes = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (evidence / "evidence").iterdir()
+    }
+    seal_payload["evidence_sha256"] = evidence_hashes
+    seal_payload["receipt_sha256"] = hashlib.sha256(
+        receipt_path.read_bytes()
+    ).hexdigest()
+    replacement_seal = module.issue_attestation(
+        state,
+        event="acceptance_evidence",
+        sequence=7,
+        payload=seal_payload,
+        observed_at=existing_seal["observed_at"],
+        previous_sha256=previous_sha256,
+    )
+    seal_path.write_bytes(module._json_bytes(replacement_seal))
+
+    index_path = evidence / "evidence-index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["final_attestation_sha256"] = module.attestation_sha256(
+        replacement_seal
+    )
+    index["receipt_sha256"] = seal_payload["receipt_sha256"]
+    index["evidence_sha256"] = evidence_hashes
+    index_path.write_bytes(module._json_bytes(index))
+
+
 def _support_module():
     specification = importlib.util.spec_from_file_location(
         "agent_v2_test_api_under_test", SUPPORT
@@ -1088,6 +1162,39 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     assert verified["receipt"]["result"] == "pass"
     assert verified["chain"][-1]["event"] == "acceptance_evidence"
     assert verified["chain"][-2]["event"] == "installed"
+
+    authorization_mutations = (
+        ("missing-plan", lambda value: value.pop("plan_sha256")),
+        ("extra-key", lambda value: value.__setitem__("unexpected", "value")),
+        (
+            "changed-plan",
+            lambda value: value.__setitem__("plan_sha256", "a" * 64),
+        ),
+        (
+            "changed-inventory",
+            lambda value: value.__setitem__("inventory_sha256", "b" * 64),
+        ),
+        (
+            "changed-fingerprint",
+            lambda value: value.__setitem__(
+                "disk_fingerprint", "sha256:" + "e" * 64
+            ),
+        ),
+    )
+    for name, mutate in authorization_mutations:
+        mutated = tmp_path / f"semantic-authorization-{name}"
+        shutil.copytree(public_evidence, mutated)
+        _resign_public_authorization_request(
+            module,
+            state,
+            mutated,
+            mutate,
+        )
+        with pytest.raises(
+            module.AcceptanceError,
+            match="authorization semantic controller binding",
+        ):
+            module.verify_public_evidence(mutated, euid=lambda: 0)
 
     postflight_mutations = (
         ("postflight-delivery.json", "schema_version", 2),
