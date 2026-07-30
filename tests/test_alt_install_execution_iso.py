@@ -146,6 +146,12 @@ def _menu_contract_fixture(tmp_path: Path) -> dict[str, Path]:
         .replace("__ALT_INSTALL_EXECUTION_CONTROLLER_URL__", controller),
         encoding="utf-8",
     )
+    grub.write_text(
+        grub.read_text(encoding="utf-8")
+        + '\nmenuentry "Upstream installer" {\n'
+        + '  linux /boot/vmlinuz systemd.unit=install2.target\n}\n',
+        encoding="utf-8",
+    )
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
         json.dumps(

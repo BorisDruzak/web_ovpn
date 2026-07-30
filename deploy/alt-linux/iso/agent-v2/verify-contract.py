@@ -223,7 +223,6 @@ def validate_menu(
             raise ContractError("normal or V1 menu contract changed")
     if (
         grub.count("sosnadmin.mode=agent-v2") != 1
-        or grub.count("systemd.unit=install2.target") != 1
         or grub.count("curl=http://127.0.0.1:18192") != 1
         or re.search(r"(?<!ai )\bcurl=", grub)
     ):
