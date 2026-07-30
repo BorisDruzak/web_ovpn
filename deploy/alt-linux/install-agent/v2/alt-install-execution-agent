@@ -177,11 +177,19 @@ stop_execution_relay() {
     ALT_INSTALL_RELAY_PID=
 }
 
+wait_for_execution_bundle() {
+    protocol_download_execution_bundle && return 0
+    printf 'terminal=execution_pending\n'
+    until protocol_download_execution_bundle; do
+        "$ALT_INSTALL_SLEEP" 3
+    done
+}
+
 agent_run() {
     config_load || terminal_hold configuration_failed
     state_init || terminal_hold state_failed
     bootstrap_v1_preflight || terminal_hold preflight_bootstrap_failed
-    protocol_download_execution_bundle || terminal_hold execution_pending
+    wait_for_execution_bundle
     helper_verify_execution_bundle ||
         terminal_hold execution_verification_failed
     protocol_claim_execution || terminal_hold execution_claim_failed

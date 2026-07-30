@@ -60,45 +60,61 @@ terminal_hold() {{ printf 'terminal=%s\\n' "$1"; exit 97; }}
 """
 
 
-def test_agent_holds_without_execution_authorization(tmp_path: Path) -> None:
+def test_agent_retries_execution_bundle_after_authorization(
+    tmp_path: Path,
+) -> None:
     actions = tmp_path / "actions"
     completed = _run_bash(
         _library_agent_script(
             f"""
+attempt=0
 protocol_download_execution_bundle() {{
-    printf 'download-rejected\\n' >> '{actions.as_posix()}'
-    return 1
+    attempt=$((attempt + 1))
+    if [[ "$attempt" == 1 ]]; then
+        printf 'download-rejected\\n' >> '{actions.as_posix()}'
+        return 1
+    fi
+    printf 'download-authorized\\n' >> '{actions.as_posix()}'
 }}
 helper_verify_execution_bundle() {{
-    printf 'verify-must-not-run\\n' >> '{actions.as_posix()}'
+    printf 'verify-execution-bundle\\n' >> '{actions.as_posix()}'
 }}
 protocol_claim_execution() {{
-    printf 'claim-must-not-run\\n' >> '{actions.as_posix()}'
+    printf 'claim\\n' >> '{actions.as_posix()}'
 }}
 helper_verify_plan() {{
-    printf 'plan-must-not-run\\n' >> '{actions.as_posix()}'
+    printf 'plan\\n' >> '{actions.as_posix()}'
 }}
 helper_disk_preflight() {{
-    printf 'preflight-must-not-run\\n' >> '{actions.as_posix()}'
+    printf 'disk-preflight\\n' >> '{actions.as_posix()}'
 }}
 protocol_handoff_started() {{
-    printf 'handoff-must-not-run\\n' >> '{actions.as_posix()}'
+    printf 'handoff\\n' >> '{actions.as_posix()}'
 }}
 protocol_installer_started() {{
-    printf 'installer-must-not-run\\n' >> '{actions.as_posix()}'
+    printf 'installer\\n' >> '{actions.as_posix()}'
 }}
 start_execution_relay() {{
-    printf 'relay-must-not-run\\n' >> '{actions.as_posix()}'
+    printf 'relay\\n' >> '{actions.as_posix()}'
 }}
 agent_run
 """
-        )
+        ),
+        env={"ALT_INSTALL_SLEEP": "true"},
     )
 
-    assert completed.returncode == 97
+    assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "terminal=execution_pending"
     assert actions.read_text(encoding="utf-8").splitlines() == [
-        "download-rejected"
+        "download-rejected",
+        "download-authorized",
+        "verify-execution-bundle",
+        "claim",
+        "plan",
+        "disk-preflight",
+        "relay",
+        "handoff",
+        "installer",
     ]
 
 
