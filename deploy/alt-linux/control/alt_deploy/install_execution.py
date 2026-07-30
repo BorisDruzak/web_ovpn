@@ -72,7 +72,6 @@ class ReleaseArchiveSource:
             or not _SHA256_RE.fullmatch(self.sha256)
             or not isinstance(self.members, tuple)
             or not self.members
-            or len(set(self.members)) != len(self.members)
             or any(
                 not isinstance(name, str)
                 or not _ARCHIVE_MEMBER_RE.fullmatch(name)
@@ -235,7 +234,6 @@ def load_execution_release_archives(
                 or not _SHA256_RE.fullmatch(entry["sha256"])
                 or not isinstance(entry.get("members"), list)
                 or not entry["members"]
-                or len(set(entry["members"])) != len(entry["members"])
                 or any(
                     not isinstance(member, str)
                     or not _ARCHIVE_MEMBER_RE.fullmatch(member)
@@ -618,12 +616,34 @@ class ExecutionAuthorizationService:
             ) from None
         if (
             tuple(member.name for member in members) != source.members
-            or any(not (member.isfile() or member.isdir()) for member in members)
         ):
             raise ExecutionAuthorizationService._error(
                 "execution_archive_invalid",
                 "Execution release archive is invalid",
             )
+        seen_paths: set[str] = set()
+        seen_regular: set[str] = set()
+        for member in members:
+            if member.isdir() or member.isfile():
+                if member.name in seen_paths:
+                    raise ExecutionAuthorizationService._error(
+                        "execution_archive_invalid",
+                        "Execution release archive is invalid",
+                    )
+                seen_paths.add(member.name)
+                if member.isfile():
+                    seen_regular.add(member.name)
+            elif (
+                member.islnk()
+                and member.linkname == member.name
+                and member.name in seen_regular
+            ):
+                continue
+            else:
+                raise ExecutionAuthorizationService._error(
+                    "execution_archive_invalid",
+                    "Execution release archive is invalid",
+                )
         return content
 
     def _bundle_artifacts(self, plan: Any) -> dict[str, bytes]:

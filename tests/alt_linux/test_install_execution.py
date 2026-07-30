@@ -250,6 +250,59 @@ def test_release_manifest_loads_fixed_digest_and_member_pinned_archives(
     assert loaded == expected
 
 
+def test_release_manifest_accepts_vendor_self_hardlink(
+    tmp_path: Path,
+) -> None:
+    loader = getattr(
+        execution_module, "load_execution_release_archives", None
+    )
+    assert callable(loader), "secure release-held archive loader is missing"
+    root = _root_safe_install_fixture_base(tmp_path) / "held-release"
+    _publish_held_release_contract(root)
+    archive_path = root / "pkg-groups.tar"
+    archive_path.chmod(0o600)
+    content = b'{"groups":["base"]}\n'
+    with tarfile.open(archive_path, "w") as archive:
+        regular = tarfile.TarInfo("groups.json")
+        regular.mode = 0o644
+        regular.size = len(content)
+        archive.addfile(regular, io.BytesIO(content))
+        self_link = tarfile.TarInfo("groups.json")
+        self_link.type = tarfile.LNKTYPE
+        self_link.linkname = "groups.json"
+        archive.addfile(self_link)
+    manifest_path = root / "manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["archives"]["pkg-groups.tar"] = {
+        "members": ["groups.json", "groups.json"],
+        "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+    }
+    manifest_path.chmod(0o600)
+    manifest_path.write_bytes(
+        (
+            json.dumps(
+                document,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    archive_path.chmod(0o444)
+    manifest_path.chmod(0o444)
+    settings = replace(
+        Settings.from_env(), install_execution_release_root=root
+    )
+
+    loaded = loader(settings)
+
+    assert loaded["pkg-groups.tar"].members == (
+        "groups.json",
+        "groups.json",
+    )
+
+
 def test_execution_release_root_has_no_environment_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
