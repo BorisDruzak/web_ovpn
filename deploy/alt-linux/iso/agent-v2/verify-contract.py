@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import stat
 import sys
 from typing import Any
 
@@ -258,8 +259,20 @@ def _matches_source_entry(path: Path, source_path: Path) -> bool:
             and source_path.is_symlink()
             and path.readlink() == source_path.readlink()
         )
-    if not path.is_file() or not source_path.is_file():
+    try:
+        path_stat = path.stat(follow_symlinks=False)
+        source_stat = source_path.stat(follow_symlinks=False)
+    except OSError:
         return False
+    if stat.S_IFMT(path_stat.st_mode) != stat.S_IFMT(source_stat.st_mode):
+        return False
+    if not path.is_file() or not source_path.is_file():
+        return (
+            stat.S_IMODE(path_stat.st_mode) == stat.S_IMODE(source_stat.st_mode)
+            and path_stat.st_rdev == source_stat.st_rdev
+            and path_stat.st_uid == source_stat.st_uid
+            and path_stat.st_gid == source_stat.st_gid
+        )
     try:
         with path.open("rb") as candidate, source_path.open("rb") as source:
             while True:

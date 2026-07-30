@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -620,6 +621,36 @@ def test_verifier_ignores_private_key_marker_in_unchanged_source_file(
         candidate = directory / relative
         candidate.parent.mkdir(parents=True)
         candidate.write_bytes(content)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+            "--source-root",
+            str(source_root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo"), reason="POSIX FIFO support is required"
+)
+def test_verifier_ignores_unchanged_source_fifo(tmp_path: Path) -> None:
+    root = tmp_path / "initrd"
+    source_root = tmp_path / "source-initrd"
+    for directory in (root, source_root):
+        entry = directory / ".initrd" / "rdshell"
+        entry.parent.mkdir(parents=True)
+        os.mkfifo(entry)
 
     completed = subprocess.run(
         [
