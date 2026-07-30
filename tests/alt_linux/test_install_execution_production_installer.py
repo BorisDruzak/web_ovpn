@@ -12,12 +12,42 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALLER = REPO_ROOT / "deploy" / "alt-linux" / "install-install-execution-api.sh"
 BASH = shutil.which("bash")
+MANAGED_PROCESS_ARGUMENTS = (
+    "/usr/bin/python3",
+    "/opt/alt-install-execution-api/current/api/install_execution_server.py",
+    "--listen-address",
+    "192.168.100.17",
+    "--listen-port",
+    "18092",
+    "--credential-key",
+    "/run/credentials/alt-install-execution.service/execution-tls-key",
+)
 
 
 def _fake_command(directory: Path, name: str, body: str) -> None:
     path = directory / name
     path.write_text("#!/bin/bash\nset -Eeuo pipefail\n" + body, encoding="utf-8")
     path.chmod(0o755)
+
+
+def _seed_process_identity(
+    root: Path,
+    *,
+    main_pid: str,
+    arguments: tuple[str, ...] | None = MANAGED_PROCESS_ARGUMENTS,
+    executable: bool = True,
+) -> None:
+    python = root / "usr" / "bin" / "python3"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_text("test interpreter\n", encoding="utf-8")
+    process = root / "proc" / main_pid
+    process.mkdir(parents=True, exist_ok=True)
+    if executable:
+        (process / "exe").symlink_to(os.path.relpath(python, start=process))
+    if arguments is not None:
+        (process / "cmdline").write_bytes(
+            b"\0".join(item.encode("utf-8") for item in arguments) + b"\0"
+        )
 
 
 def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dict[str, str]:
@@ -104,6 +134,11 @@ def _run(tmp_path: Path, *, listener: str = "", **overrides: str) -> subprocess.
         / "system"
         / "alt-install-execution.service"
     )
+    if listener:
+        _seed_process_identity(
+            root,
+            main_pid=overrides.get("INSTALLER_SERVICE_MAIN_PID", "4242"),
+        )
     command = (
         "set -Eeuo pipefail; "
         f"source {INSTALLER.as_posix()!r}; "
@@ -258,6 +293,9 @@ def _run_listener_admission(
     health_fail: str = "0",
     unit_suffix: str = "",
     drop_in_exec_start: str | None = None,
+    process_arguments: tuple[str, ...] | None = MANAGED_PROCESS_ARGUMENTS,
+    process_executable: bool = True,
+    daemon_reload_before_admission: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "listener-root"
     release = root / "opt" / "alt-install-execution-api" / "releases" / "old"
@@ -295,6 +333,12 @@ def _run_listener_admission(
     ca = root / "etc" / "alt-deploy" / "install-execution-ca.pem"
     ca.parent.mkdir(parents=True)
     ca.write_text("test CA\n", encoding="utf-8")
+    _seed_process_identity(
+        root,
+        main_pid=main_pid,
+        arguments=process_arguments,
+        executable=process_executable,
+    )
     command = (
         "set -Eeuo pipefail; "
         f"source {INSTALLER.as_posix()!r}; "
@@ -307,7 +351,12 @@ def _run_listener_admission(
         "else printf '%s\\n' "
         "'{\"schema_version\":1,\"service\":\"alt-install-execution\","
         "\"status\":\"ok\"}'; fi; }; "
-        f"install_execution_api_listener_allows_install {root.as_posix()!r} "
+        + (
+            "systemctl daemon-reload; "
+            if daemon_reload_before_admission
+            else ""
+        )
+        + f"install_execution_api_listener_allows_install {root.as_posix()!r} "
         f"{current.as_posix()!r} {unit.as_posix()!r}"
     )
     return subprocess.run(
@@ -490,6 +539,60 @@ def test_installer_admits_only_healthy_listener_owned_by_managed_v2_service(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")
+def test_installer_rejects_foreign_override_process_after_unit_restore_and_reload(
+    tmp_path: Path,
+) -> None:
+    foreign_arguments = (
+        "/usr/bin/python3",
+        "/opt/foreign/health-compatible.py",
+        *MANAGED_PROCESS_ARGUMENTS[2:],
+    )
+
+    result = _run_listener_admission(
+        tmp_path,
+        listener=(
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n'
+        ),
+        process_arguments=foreign_arguments,
+        daemon_reload_before_admission=True,
+    )
+
+    assert result.returncode != 0
+    assert "process is not the canonical managed invocation" in result.stderr
+    commands = (tmp_path / "commands.log").read_text(encoding="utf-8").splitlines()
+    assert "daemon-reload" in commands
+
+
+@pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")
+@pytest.mark.parametrize(
+    ("process_arguments", "process_executable"),
+    (
+        (None, True),
+        (MANAGED_PROCESS_ARGUMENTS, False),
+        ((*MANAGED_PROCESS_ARGUMENTS, "--foreign-extra"), True),
+    ),
+)
+def test_installer_rejects_unreadable_or_ambiguous_managed_process_identity(
+    tmp_path: Path,
+    process_arguments: tuple[str, ...] | None,
+    process_executable: bool,
+) -> None:
+    result = _run_listener_admission(
+        tmp_path,
+        listener=(
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n'
+        ),
+        process_arguments=process_arguments,
+        process_executable=process_executable,
+    )
+
+    assert result.returncode != 0
+    assert "process is not the canonical managed invocation" in result.stderr
 
 
 @pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")

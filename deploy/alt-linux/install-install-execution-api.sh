@@ -89,6 +89,50 @@ install_execution_api_unit_is_managed() {
     fi
 }
 
+install_execution_api_process_is_managed() {
+    local root_prefix=$1
+    local main_pid=$2
+    local proc_root="${root_prefix}/proc"
+    local expected_python="${root_prefix}/usr/bin/python3"
+    local process_dir="${proc_root}/${main_pid}"
+    local canonical_python
+    local process_python
+    local last_byte
+    local index
+    local -a arguments
+    local -a expected_arguments=(
+        "/usr/bin/python3"
+        "/opt/alt-install-execution-api/current/api/install_execution_server.py"
+        "--listen-address"
+        "${INSTALL_EXECUTION_API_ADDRESS}"
+        "--listen-port"
+        "${INSTALL_EXECUTION_API_PORT}"
+        "--credential-key"
+        "/run/credentials/${INSTALL_EXECUTION_API_UNIT}/execution-tls-key"
+    )
+
+    if [[ ! -L ${process_dir}/exe || ! -r ${process_dir}/cmdline ]]; then
+        return 1
+    fi
+    if ! canonical_python=$(readlink -e -- "${expected_python}") ||
+       ! process_python=$(readlink -e -- "${process_dir}/exe") ||
+       [[ ${process_python} != "${canonical_python}" ]]; then
+        return 1
+    fi
+    if ! mapfile -d '' -t arguments < "${process_dir}/cmdline" ||
+       ! last_byte=$(tail -c 1 -- "${process_dir}/cmdline" |
+           od -An -t u1) ||
+       [[ ! ${last_byte} =~ ^[[:space:]]*0[[:space:]]*$ ]] ||
+       ((${#arguments[@]} != ${#expected_arguments[@]})); then
+        return 1
+    fi
+    for index in "${!expected_arguments[@]}"; do
+        if [[ ${arguments[index]} != "${expected_arguments[index]}" ]]; then
+            return 1
+        fi
+    done
+}
+
 install_execution_api_owned_listener_is_healthy() {
     local root_prefix=$1
     local current=$2
@@ -98,6 +142,7 @@ install_execution_api_owned_listener_is_healthy() {
     local canonical_releases
     local current_target
     local main_pid
+    local confirmed_main_pid
     local endpoint
     local line
     local pid_tokens
@@ -144,6 +189,15 @@ install_execution_api_owned_listener_is_healthy() {
        (( main_pid <= 1 )); then
         install_execution_api_error \
             "Occupied V2 listener managed unit PID is invalid"
+        return 1
+    fi
+    if ! install_execution_api_process_is_managed \
+        "${root_prefix}" "${main_pid}" ||
+       ! confirmed_main_pid=$(systemctl show --property=MainPID --value \
+           "${INSTALL_EXECUTION_API_UNIT}") ||
+       [[ ${confirmed_main_pid} != "${main_pid}" ]]; then
+        install_execution_api_error \
+            "Occupied V2 listener process is not the canonical managed invocation"
         return 1
     fi
     while IFS= read -r line; do

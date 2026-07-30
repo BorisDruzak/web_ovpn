@@ -178,3 +178,96 @@ git diff --check
 ```
 
 All exited successfully.
+
+## Final live-process identity fix (2026-07-30)
+
+### Status and behavior
+
+Repeat-run occupied-listener admission now binds systemd's live `MainPID` to
+the canonical managed V2 invocation. The process executable from
+`/proc/<MainPID>/exe` must resolve to the same executable as
+`/usr/bin/python3`, and `/proc/<MainPID>/cmdline` must be NUL-terminated and
+contain exactly the packaged interpreter, server path, listen address, listen
+port, and expanded credential-key arguments. A second `MainPID` read must
+remain identical after process inspection.
+
+This rejects a health-compatible foreign process that was started by an old
+override and remains alive after the override is removed, the canonical unit
+is restored, and systemd is daemon-reloaded without a restart. Missing
+executable or cmdline state and extra process arguments also fail closed. The
+genuine managed listener and verified upgrade flow remain admissible.
+
+The change is confined to V2 listener admission. V1 paths and services are
+untouched. No deployment, service activation, QEMU run, push, or production
+network change was performed.
+
+### TDD evidence
+
+RED, before live-process identity validation:
+
+```text
+python -m pytest --noconftest \
+  tests/alt_linux/test_install_execution_production_installer.py -q \
+  -k "foreign_override_process_after_unit_restore_and_reload or \
+      unreadable_or_ambiguous_managed_process_identity or \
+      admits_only_healthy"
+
+4 failed, 1 passed, 29 deselected in 3.80s
+```
+
+The canonical managed-process positive control passed, while the restored-unit
+foreign process and all unreadable or ambiguous process identities were
+incorrectly admitted.
+
+GREEN, after live-process identity validation:
+
+```text
+python -m pytest --noconftest \
+  tests/alt_linux/test_install_execution_production_installer.py -q \
+  -k "foreign_override_process_after_unit_restore_and_reload or \
+      unreadable_or_ambiguous_managed_process_identity or \
+      admits_only_healthy or verified_rerun"
+
+5 passed, 1 skipped, 28 deselected in 3.28s
+```
+
+The skip is the existing Linux-only upgrade test on Windows.
+
+### Verification
+
+Fresh local Windows installer module:
+
+```text
+python -m pytest --noconftest \
+  tests/alt_linux/test_install_execution_production_installer.py -q
+
+22 passed, 12 skipped in 9.80s
+```
+
+The skips are the existing Linux/POSIX-gated production installer cases.
+
+Fresh authoritative temporary Linux-root archive run on
+`altserver-100-17`:
+
+```text
+sudo -n python3 -m pytest --noconftest \
+  tests/alt_linux/test_install_execution_production_installer.py -q
+
+34 passed in 5.44s
+```
+
+The temporary remote tree/archive and local archive were removed after the
+run. This was test-only extraction under `/tmp`, not deployment.
+
+Static checks:
+
+```text
+bash -n deploy/alt-linux/install-install-execution-api.sh
+python -m py_compile \
+  tests/alt_linux/test_install_execution_production_installer.py
+python -m ruff check \
+  tests/alt_linux/test_install_execution_production_installer.py
+git diff --check
+```
+
+All exited successfully.
