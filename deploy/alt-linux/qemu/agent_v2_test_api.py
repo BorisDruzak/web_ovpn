@@ -4091,23 +4091,23 @@ def qmp_command(socket_path: Path, execute: str) -> None:
         client.close()
 
 
-def qmp_send_preflight_hotkey(socket_path: Path) -> None:
-    """Select the ISO's fixed signed-preflight boot entry through QMP."""
+def qmp_send_v2_execution_hotkey(socket_path: Path) -> None:
+    """Select the fixed V2 entry, which performs its own V1 preflight."""
     client, stream, _transcript = _qmp_connect(socket_path)
     try:
         request = {
             "execute": "send-key",
             "arguments": {
-                "keys": [{"type": "qcode", "data": "s"}],
+                "keys": [{"type": "qcode", "data": "x"}],
             },
-            "id": "preflight-hotkey",
+            "id": "v2-execution-hotkey",
         }
         stream.write((json.dumps(request) + "\r\n").encode("ascii"))
         response = _qmp_receive(
-            stream, _transcript, expected_id="preflight-hotkey"
+            stream, _transcript, expected_id="v2-execution-hotkey"
         )
         if "error" in response:
-            _fail("QMP signed-preflight hotkey failed")
+            _fail("QMP V2 execution hotkey failed")
     finally:
         stream.close()
         client.close()
@@ -4278,10 +4278,10 @@ def build_parser() -> argparse.ArgumentParser:
     command = commands.add_parser("qmp-command", allow_abbrev=False)
     command.add_argument("--socket", required=True, type=Path)
     command.add_argument("--execute", required=True)
-    preflight_hotkey = commands.add_parser(
-        "qmp-send-preflight-hotkey", allow_abbrev=False
+    v2_execution_hotkey = commands.add_parser(
+        "qmp-send-v2-execution-hotkey", allow_abbrev=False
     )
-    preflight_hotkey.add_argument("--socket", required=True, type=Path)
+    v2_execution_hotkey.add_argument("--socket", required=True, type=Path)
     return parser
 
 
@@ -4472,8 +4472,8 @@ def main(
             qmp_query(arguments.socket, arguments.output)
         elif arguments.command == "qmp-boot-query":
             qmp_boot_query(arguments.socket, arguments.output)
-        elif arguments.command == "qmp-send-preflight-hotkey":
-            qmp_send_preflight_hotkey(arguments.socket)
+        elif arguments.command == "qmp-send-v2-execution-hotkey":
+            qmp_send_v2_execution_hotkey(arguments.socket)
         else:
             qmp_command(arguments.socket, arguments.execute)
         return 0

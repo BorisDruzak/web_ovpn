@@ -510,19 +510,21 @@ def test_harness_uses_run_owned_authorization_and_postflight_chain() -> None:
     ]
 
 
-def test_harness_selects_the_signed_preflight_menu_before_waiting_for_v1() -> None:
+def test_harness_selects_the_v2_boot_menu_before_waiting_for_v1() -> None:
     source = HARNESS.read_text(encoding="utf-8")
+    support = SUPPORT.read_text(encoding="utf-8")
 
-    hotkey = 'qmp-send-preflight-hotkey'
+    hotkey = 'qmp-send-v2-execution-hotkey'
     waiting = "'ALT install agent: waiting_for_approval'"
     assert hotkey in source
     assert source.index(hotkey) < source.index(waiting)
     assert (
         'for _ in $(seq 1 1200); do\n'
-        '    python3 "$support" qmp-send-preflight-hotkey \\\n'
+        '    python3 "$support" qmp-send-v2-execution-hotkey \\\n'
         '        --socket "$install_qmp" >/dev/null 2>&1 || true\n'
         in source
     )
+    assert '"data": "x"' in support
 
 
 def test_harness_cleanup_uses_only_identity_bound_process_termination() -> None:

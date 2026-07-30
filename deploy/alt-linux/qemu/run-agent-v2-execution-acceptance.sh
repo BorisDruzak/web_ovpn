@@ -592,7 +592,7 @@ install_qmp="$workdir/install.qmp.sock"
 launch_qemu "$iso" install
 preflight_ready=0
 for _ in $(seq 1 1200); do
-    python3 "$support" qmp-send-preflight-hotkey \
+    python3 "$support" qmp-send-v2-execution-hotkey \
         --socket "$install_qmp" >/dev/null 2>&1 || true
     if [[ -f "$workdir/install.console.log" ]] &&
         grep -Fq 'ALT install agent: waiting_for_approval' \
