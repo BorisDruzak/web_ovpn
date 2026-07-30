@@ -78,6 +78,42 @@ def controller_statuses() -> list[dict[str, object]]:
     return InstallSessionRepository(Settings.from_env()).list_statuses()
 
 
+def controller_execution_release_check() -> None:
+    """Verify root-held release inputs without publishing an execution."""
+    from alt_deploy.config import Settings
+    from alt_deploy.install_execution import load_execution_release_archives
+
+    load_execution_release_archives(Settings.from_env())
+
+
+def controller_execution_secrets_check() -> None:
+    """Verify the V2 vault schema without exposing any secret material."""
+    from alt_deploy.config import Settings
+    from alt_deploy.install_renderer import RendererSecrets
+    from alt_deploy.vault import (
+        VaultHealthChecker,
+        extract_execution_password_hashes,
+    )
+
+    decrypted = VaultHealthChecker(Settings.from_env())._decrypt()
+    if decrypted is None:
+        raise ValueError("Execution vault is unavailable")
+    RendererSecrets(**extract_execution_password_hashes(decrypted))
+
+
+def verify_controller_execution_inputs(
+    *,
+    release_check: Callable[[], None] = controller_execution_release_check,
+    secrets_check: Callable[[], None] = controller_execution_secrets_check,
+) -> None:
+    """Fail before QEMU resource creation if controller V2 inputs are absent."""
+    try:
+        release_check()
+        secrets_check()
+    except Exception as exc:
+        raise AcceptanceError("Controller execution inputs are invalid") from exc
+
+
 PASS_LINE = (
     "PASS: root-authorized install wrote only the disposable target; "
     "authenticated postflight installed"
@@ -4312,6 +4348,9 @@ def build_parser() -> argparse.ArgumentParser:
         "qmp-send-v2-execution-hotkey", allow_abbrev=False
     )
     v2_execution_hotkey.add_argument("--socket", required=True, type=Path)
+    execution_inputs = commands.add_parser(
+        "check-controller-execution-inputs", allow_abbrev=False
+    )
     return parser
 
 
@@ -4339,6 +4378,9 @@ def main(
                 vm_instance_id=arguments.vm_instance_id,
             )
             print(f"run_id={manifest['run_id']}")
+        elif arguments.command == "check-controller-execution-inputs":
+            verify_controller_execution_inputs()
+            print("controller_execution_inputs=ready")
         elif arguments.command == "capture-preflight-session-baseline":
             capture_preflight_session_baseline(arguments.state_dir)
             print("preflight_baseline=captured")

@@ -418,6 +418,28 @@ def test_prerequisite_check_enumerates_missing_tools_without_acceptance(
     assert PASS_LINE not in completed.stdout
 
 
+def test_controller_execution_input_check_fails_before_qemu_resources() -> None:
+    module = _support_module()
+
+    with pytest.raises(
+        module.AcceptanceError,
+        match="Controller execution inputs are invalid",
+    ):
+        module.verify_controller_execution_inputs(
+            release_check=lambda: None,
+            secrets_check=lambda: (_ for _ in ()).throw(ValueError()),
+        )
+
+
+def test_controller_execution_input_check_accepts_ready_inputs() -> None:
+    module = _support_module()
+
+    module.verify_controller_execution_inputs(
+        release_check=lambda: None,
+        secrets_check=lambda: None,
+    )
+
+
 @pytest.mark.parametrize(
     "argument",
     [

@@ -215,6 +215,8 @@ for path in "$iso" "$source_iso" "$ovmf_code" "$ovmf_vars" "$support" "$iso_veri
     [[ -f "$path" && -r "$path" && ! -L "$path" ]] ||
         die "Required regular file is unreadable: $path"
 done
+python3 "$support" check-controller-execution-inputs >/dev/null ||
+    die 'Controller execution inputs are unavailable'
 for path in "$iso" "$source_iso" "$ovmf_code" "$ovmf_vars"; do
     case "$path" in
         *,*) die "Input paths containing commas are unsupported: $path" ;;
