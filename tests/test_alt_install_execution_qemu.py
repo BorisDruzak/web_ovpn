@@ -2319,3 +2319,102 @@ def test_root_authorization_refuses_nonroot_and_second_snapshot_writes(
         module.invoke_root_execution_authorization(
             state, **common, euid=lambda: 0
         )
+
+
+def test_root_authorization_reports_safe_controller_error_code(
+    tmp_path: Path,
+) -> None:
+    state, manifest = _create_run_state(tmp_path)
+    initial = tmp_path / "initial.qmp.jsonl"
+    before = tmp_path / "before.qmp.jsonl"
+    qmp_arguments = {
+        "target_write_bytes": 0,
+        "sentinel_write_bytes": 0,
+        "target_file": manifest["artifacts"]["target"]["canonical_path"],
+        "sentinel_file": manifest["artifacts"]["sentinel"]["canonical_path"],
+    }
+    _write_qmp(initial, **qmp_arguments)
+    _write_qmp(before, **qmp_arguments)
+    records: dict[str, Path] = {}
+    for phase in ("initial", "before"):
+        for artifact in ("target", "sentinel"):
+            record = tmp_path / f"{phase}-{artifact}.sha256"
+            binding = manifest["artifacts"][artifact]
+            _write_sha(
+                record,
+                binding["initial_sha256"],
+                binding["canonical_path"],
+            )
+            records[f"{phase}_{artifact}"] = record
+    module = _support_module()
+    plan_bytes = json.dumps(
+        {
+            "target_disk": {
+                "fingerprint": "sha256:" + "d" * 64,
+                "path": "/dev/vda",
+            }
+        },
+        sort_keys=True,
+    ).encode()
+    approved = {
+        "disk_fingerprint": "sha256:" + "d" * 64,
+        "inventory_sha256": "c" * 64,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "session_id": "install-20260729T120000Z-a1b2c3d4",
+        "target_disk": "/dev/vda",
+    }
+    request = state / "authorization-request.json"
+    request.write_text(
+        json.dumps(
+            {
+                **approved,
+                "preflight_approval_attestation_sha256": (
+                    _write_preflight_approval(module, state, approved)
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def rejected_cli(
+        _arguments: list[str], *, stdout: StringIO, stderr: StringIO
+    ) -> int:
+        stdout.write(
+            json.dumps(
+                {
+                    "status": "error",
+                    "error": {
+                        "code": "execution_inputs_unavailable",
+                        "message": "Execution release inputs are unavailable",
+                    },
+                }
+            )
+            + "\n"
+        )
+        return 4
+
+    with pytest.raises(
+        module.AcceptanceError,
+        match="execution_inputs_unavailable",
+    ):
+        module.invoke_root_execution_authorization(
+            state,
+            request_path=request,
+            initial_qmp=initial,
+            before_authorization_qmp=before,
+            initial_target_sha=records["initial_target"],
+            before_authorization_target_sha=records["before_target"],
+            initial_sentinel_sha=records["initial_sentinel"],
+            before_authorization_sentinel_sha=records["before_sentinel"],
+            observed_at="2026-07-29T12:02:00+00:00",
+            cli=rejected_cli,
+            status_loader=lambda _session_id: {
+                "agent_status": {"reported_stage": "preflight_ready"},
+                "disk_fingerprint": approved["disk_fingerprint"],
+                "inventory_sha256": approved["inventory_sha256"],
+                "session_id": approved["session_id"],
+                "state": "plan_published",
+            },
+            revision_loader=lambda _session, _filename: plan_bytes,
+            euid=lambda: 0,
+        )

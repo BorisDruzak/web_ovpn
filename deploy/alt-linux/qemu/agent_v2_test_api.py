@@ -1944,6 +1944,24 @@ def create_authorization_request(
     return request
 
 
+def _controller_authorization_error_code(output: str) -> str | None:
+    """Return only a bounded machine error code from a failed controller CLI."""
+    try:
+        response = json.loads(output, object_pairs_hook=_strict_object)
+        error = response["error"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    code = error.get("code") if isinstance(error, dict) else None
+    if (
+        not isinstance(response, dict)
+        or response.get("status") != "error"
+        or not isinstance(code, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code)
+    ):
+        return None
+    return code
+
+
 def invoke_root_execution_authorization(
     state_dir: Path,
     *,
@@ -2209,7 +2227,10 @@ def invoke_root_execution_authorization(
     ]
     result = cli(arguments, stdout=stdout, stderr=stderr)
     if result != 0 or stderr.getvalue():
-        _fail("Controller execution authorization failed")
+        code = _controller_authorization_error_code(stdout.getvalue())
+        if code is None:
+            _fail("Controller execution authorization failed")
+        _fail(f"Controller execution authorization failed [{code}]")
     try:
         response = json.loads(
             stdout.getvalue(), object_pairs_hook=_strict_object
