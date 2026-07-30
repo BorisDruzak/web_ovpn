@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -32,9 +33,6 @@ ALLOWED_PUBLIC_MATERIAL = {
     "usr/share/alt-install/execution-ca.pem",
     "usr/share/alt-install/public-key.json",
 }
-# This file belongs to the pinned ALT 11.4 source initrd, not the V2 overlay.
-# The complete source ISO digest is independently fixed by validate_source().
-PINNED_UPSTREAM_SYSTEM_FILES = {"etc/passwd"}
 SCAN_CHUNK_SIZE = 64 * 1024
 PRIVATE_KEY_SUFFIX = b"PRIVATE KEY-----"
 SCAN_OVERLAP_SIZE = len(PRIVATE_KEY_SUFFIX) - 1
@@ -74,6 +72,20 @@ def validate_source(manifest_path: Path, source_identity_path: Path) -> None:
         or source["iso_sha256"] != PINNED_SOURCE_SHA256
     ):
         raise ContractError("embedded source ISO identity is not pinned")
+
+
+def validate_source_iso(source_path: Path) -> None:
+    if not source_path.is_file() or source_path.is_symlink():
+        raise ContractError("source ISO is unreadable")
+    digest = hashlib.sha256()
+    try:
+        with source_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(SCAN_CHUNK_SIZE), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise ContractError("source ISO is unreadable") from exc
+    if digest.hexdigest() != PINNED_SOURCE_SHA256:
+        raise ContractError("source ISO digest is not pinned")
 
 
 def _if_scope_at(
@@ -239,20 +251,53 @@ def _contains_private_key_marker(path: Path) -> bool:
     return False
 
 
-def scan_secret_like_files(root: Path) -> None:
+def _matches_source_entry(path: Path, source_path: Path) -> bool:
+    if path.is_symlink() or source_path.is_symlink():
+        return (
+            path.is_symlink()
+            and source_path.is_symlink()
+            and path.readlink() == source_path.readlink()
+        )
+    if not path.is_file() or not source_path.is_file():
+        return False
+    try:
+        with path.open("rb") as candidate, source_path.open("rb") as source:
+            while True:
+                candidate_chunk = candidate.read(SCAN_CHUNK_SIZE)
+                source_chunk = source.read(SCAN_CHUNK_SIZE)
+                if candidate_chunk != source_chunk:
+                    return False
+                if not candidate_chunk:
+                    return True
+    except OSError as exc:
+        raise ContractError(
+            f"cannot compare extracted payload file: {path.name}"
+        ) from exc
+
+
+def scan_secret_like_files(root: Path, source_root: Path | None = None) -> None:
     if not root.is_dir() or root.is_symlink():
         raise ContractError("extracted initrd root is invalid")
+    if source_root is not None and (
+        not source_root.is_dir() or source_root.is_symlink()
+    ):
+        raise ContractError("extracted source initrd root is invalid")
     for path in root.rglob("*"):
         if path.is_dir() and not path.is_symlink():
             continue
         relative = path.relative_to(root).as_posix()
+        if source_root is not None and _matches_source_entry(
+            path, source_root / relative
+        ):
+            continue
         if relative in ALLOWED_PUBLIC_MATERIAL:
             continue
+        if path.is_symlink() or not path.is_file():
+            raise ContractError(
+                f"modified payload entry is not a regular file: {relative}"
+            )
         name = path.name.lower()
-        if (
-            relative not in PINNED_UPSTREAM_SYSTEM_FILES
-            and SUSPICIOUS_NAME.search(name)
-        ):
+        if SUSPICIOUS_NAME.search(name):
             raise ContractError(
                 f"secret-like payload filename is forbidden: {relative}"
             )
@@ -276,8 +321,11 @@ def _parser() -> argparse.ArgumentParser:
     source = commands.add_parser("source")
     source.add_argument("--manifest", type=Path, required=True)
     source.add_argument("--source-identity", type=Path, required=True)
+    source_iso = commands.add_parser("source-iso")
+    source_iso.add_argument("--source", type=Path, required=True)
     scan = commands.add_parser("scan")
     scan.add_argument("--root", type=Path, required=True)
+    scan.add_argument("--source-root", type=Path)
     return parser
 
 
@@ -294,8 +342,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "source":
             validate_source(args.manifest, args.source_identity)
+        elif args.command == "source-iso":
+            validate_source_iso(args.source)
         else:
-            scan_secret_like_files(args.root)
+            scan_secret_like_files(args.root, args.source_root)
     except ContractError as exc:
         print(f"verify-contract: {exc}", file=sys.stderr)
         return 1

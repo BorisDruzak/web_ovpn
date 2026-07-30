@@ -529,6 +529,30 @@ def test_verifier_pins_source_digest_independently_of_embedded_pair(
     assert "pinned" in tampered.stderr
 
 
+def test_verifier_rejects_unpinned_source_iso_for_delta_comparison(
+    tmp_path: Path,
+) -> None:
+    source_iso = tmp_path / "comparison.iso"
+    source_iso.write_bytes(b"crafted-comparison-iso")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "source-iso",
+            "--source",
+            str(source_iso),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "source ISO digest is not pinned" in completed.stderr
+
+
 @pytest.mark.parametrize(
     ("relative", "content"),
     [
@@ -584,14 +608,52 @@ def test_verifier_scans_for_secret_like_files_outside_managed_roots(
     assert "secret-like" in tampered.stderr
 
 
+def test_verifier_ignores_private_key_marker_in_unchanged_source_file(
+    tmp_path: Path,
+) -> None:
+    """Only V2 changes, not pinned upstream binaries, are secret-scanned."""
+    root = tmp_path / "initrd"
+    source_root = tmp_path / "source-initrd"
+    relative = Path("usr/lib64/libgio-2.0.so.0.8400.4")
+    content = b"binary\x00-----BEGIN PRIVATE KEY-----\x00data"
+    for directory in (root, source_root):
+        candidate = directory / relative
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(content)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY_CONTRACT),
+            "scan",
+            "--root",
+            str(root),
+            "--source-root",
+            str(source_root),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_verifier_allows_pinned_upstream_passwd_but_rejects_injected_secret(
     tmp_path: Path,
 ) -> None:
     """The pinned ALT initrd's account database is not V2 payload."""
     root = tmp_path / "initrd"
+    source_root = tmp_path / "source-initrd"
     passwd = root / "etc" / "passwd"
     passwd.parent.mkdir(parents=True)
     passwd.write_text("root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8")
+    source_passwd = source_root / "etc" / "passwd"
+    source_passwd.parent.mkdir(parents=True)
+    source_passwd.write_text(
+        "root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8"
+    )
 
     valid = subprocess.run(
         [
@@ -600,6 +662,8 @@ def test_verifier_allows_pinned_upstream_passwd_but_rejects_injected_secret(
             "scan",
             "--root",
             str(root),
+            "--source-root",
+            str(source_root),
         ],
         cwd=REPO_ROOT,
         check=False,
@@ -618,6 +682,8 @@ def test_verifier_allows_pinned_upstream_passwd_but_rejects_injected_secret(
             "scan",
             "--root",
             str(root),
+            "--source-root",
+            str(source_root),
         ],
         cwd=REPO_ROOT,
         check=False,
@@ -634,11 +700,17 @@ def test_verifier_scans_pinned_upstream_passwd_content_for_private_key(
 ) -> None:
     """The filename exception must not hide a replaced account database."""
     root = tmp_path / "initrd"
+    source_root = tmp_path / "source-initrd"
     passwd = root / "etc" / "passwd"
     passwd.parent.mkdir(parents=True)
     passwd.write_text(
         "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n",
         encoding="utf-8",
+    )
+    source_passwd = source_root / "etc" / "passwd"
+    source_passwd.parent.mkdir(parents=True)
+    source_passwd.write_text(
+        "root:x:0:0:root:/root:/bin/bash\n", encoding="utf-8"
     )
 
     completed = subprocess.run(
@@ -648,6 +720,8 @@ def test_verifier_scans_pinned_upstream_passwd_content_for_private_key(
             "scan",
             "--root",
             str(root),
+            "--source-root",
+            str(source_root),
         ],
         cwd=REPO_ROOT,
         check=False,

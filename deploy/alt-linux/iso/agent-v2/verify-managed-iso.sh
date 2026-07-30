@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
     printf '%s\n' \
-        'Usage: verify-managed-iso.sh --iso <ISO> [--manifest <JSON>]' >&2
+        'Usage: verify-managed-iso.sh --iso <ISO> --source <ISO> [--manifest <JSON>]' >&2
     exit 2
 }
 
@@ -14,20 +14,25 @@ die() {
 
 iso=
 manifest=
+source_iso=
 while (($#)); do
     case "$1" in
         --iso) (($# >= 2)) || usage; iso="$2"; shift 2 ;;
+        --source) (($# >= 2)) || usage; source_iso="$2"; shift 2 ;;
         --manifest) (($# >= 2)) || usage; manifest="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
 [[ -n "$iso" && -r "$iso" ]] || usage
+[[ -n "$source_iso" && -r "$source_iso" ]] || usage
 manifest=${manifest:-${iso}.build-manifest.json}
 [[ -r "$manifest" ]] || die 'Build manifest is not readable'
 root=$(cd -- "$(dirname -- "$0")" && pwd -P)
 contract="$root/verify-contract.py"
 [[ -f "$contract" && ! -L "$contract" ]] ||
     die 'Verification contract is unreadable'
+python3 "$contract" source-iso --source "$source_iso" ||
+    die 'Source ISO verification failed'
 for command in xorriso gzip cpio sha256sum mktemp python3 stat grep \
     find sort mkdir rm; do
     command -v "$command" >/dev/null ||
@@ -47,10 +52,17 @@ xorriso -osirrox on -indev "$iso" \
     -extract /boot/initrd.img "$workdir/initrd.img" \
     -extract /boot/grub/grub.cfg "$workdir/grub.cfg" \
     -extract /syslinux/isolinux.cfg "$workdir/isolinux.cfg" >/dev/null
+xorriso -osirrox on -indev "$source_iso" \
+    -extract /boot/initrd.img "$workdir/source-initrd.img" >/dev/null
 mkdir -p "$workdir/initrd"
 (
     cd "$workdir/initrd"
     gzip -dc "$workdir/initrd.img" | cpio -idmu --quiet
+)
+mkdir -p "$workdir/source-initrd"
+(
+    cd "$workdir/source-initrd"
+    gzip -dc "$workdir/source-initrd.img" | cpio -idmu --quiet
 )
 
 payload="$workdir/initrd/usr/share/alt-install/payload.sha256"
@@ -65,7 +77,8 @@ python3 "$contract" source \
     --source-identity \
     "$workdir/initrd/usr/share/alt-install/source_iso.json" ||
     die 'Pinned source identity verification failed'
-python3 "$contract" scan --root "$workdir/initrd" ||
+python3 "$contract" scan --root "$workdir/initrd" \
+    --source-root "$workdir/source-initrd" ||
     die 'Extracted payload secret scan failed'
 
 python3 - "$manifest" "$iso" "$workdir/initrd.img" \

@@ -8,7 +8,7 @@ readonly pass_line='PASS: root-authorized install wrote only the disposable targ
 
 usage() {
     printf '%s\n' \
-        'Usage: run-agent-v2-execution-acceptance.sh --iso <V2-ISO> --ovmf-code <OVMF_CODE.fd> --ovmf-vars <OVMF_VARS.fd> --controller-credential-key <KEY> [--evidence-dir <DIR>]' \
+        'Usage: run-agent-v2-execution-acceptance.sh --iso <V2-ISO> --source-iso <ALT-ISO> --ovmf-code <OVMF_CODE.fd> --ovmf-vars <OVMF_VARS.fd> --controller-credential-key <KEY> [--evidence-dir <DIR>]' \
         '       run-agent-v2-execution-acceptance.sh --check-prerequisites' \
         '       run-agent-v2-execution-acceptance.sh --exercise-storage-contract' \
         '       run-agent-v2-execution-acceptance.sh --describe-safety-contract' >&2
@@ -158,6 +158,7 @@ if (($# == 1)) && [[ "$1" == --describe-safety-contract ]]; then
 fi
 
 iso=
+source_iso=
 ovmf_code=
 ovmf_vars=
 controller_credential_key=
@@ -167,6 +168,11 @@ while (($#)); do
         --iso)
             (($# >= 2)) || usage
             iso=$2
+            shift 2
+            ;;
+        --source-iso)
+            (($# >= 2)) || usage
+            source_iso=$2
             shift 2
             ;;
         --ovmf-code)
@@ -194,7 +200,7 @@ while (($#)); do
             ;;
     esac
 done
-[[ -n "$iso" && -n "$ovmf_code" && -n "$ovmf_vars" &&
+[[ -n "$iso" && -n "$source_iso" && -n "$ovmf_code" && -n "$ovmf_vars" &&
     -n "$controller_credential_key" ]] || usage
 check_prerequisites || exit 1
 
@@ -203,17 +209,17 @@ repo_root=$(cd -- "$script_root/../../.." && pwd -P)
 support="$script_root/agent_v2_test_api.py"
 execution_server="$repo_root/deploy/alt-linux/api/install_execution_server.py"
 iso_verifier="$repo_root/deploy/alt-linux/iso/agent-v2/verify-managed-iso.sh"
-for path in "$iso" "$ovmf_code" "$ovmf_vars" "$support" "$iso_verifier" \
+for path in "$iso" "$source_iso" "$ovmf_code" "$ovmf_vars" "$support" "$iso_verifier" \
     "$execution_server" "$controller_credential_key"; do
     [[ -f "$path" && -r "$path" && ! -L "$path" ]] ||
         die "Required regular file is unreadable: $path"
 done
-for path in "$iso" "$ovmf_code" "$ovmf_vars"; do
+for path in "$iso" "$source_iso" "$ovmf_code" "$ovmf_vars"; do
     case "$path" in
         *,*) die "Input paths containing commas are unsupported: $path" ;;
     esac
 done
-iso_verification=$(bash "$iso_verifier" --iso "$iso") ||
+iso_verification=$(bash "$iso_verifier" --iso "$iso" --source "$source_iso") ||
     die 'V2 managed ISO verification failed'
 grep -Fxq 'managed_iso_verified=true' <<<"$iso_verification" ||
     die 'V2 managed ISO verifier result is invalid'

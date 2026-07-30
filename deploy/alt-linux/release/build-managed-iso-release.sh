@@ -119,7 +119,8 @@ if [[ "$agent_version" == agent-v1 ]]; then
     python3 "$contract" update-index --index "$index" --sidecar "$staged_iso.build-manifest.json" --release-id "$release_id" --commit "$source_commit" --created-at "$created_at" --output "$staged_index" || die 'Release index validation failed'
 else
     bash "$checkout/deploy/alt-linux/iso/agent-v2/build-managed-iso.sh" --source "$source_iso" --output "$staged_iso" --helper "$helper" --public-key "$public_snapshot" --ca-certificate "$ca_snapshot" --build-id "release-$release_id" --controller-url "$v2_controller_url"
-    bash "$checkout/deploy/alt-linux/iso/agent-v2/verify-managed-iso.sh" --iso "$staged_iso"
+    bash "$checkout/deploy/alt-linux/iso/agent-v2/verify-managed-iso.sh" \
+        --iso "$staged_iso" --source "$source_iso"
 fi
 if [[ "$agent_version" == agent-v1 ]]; then
     mv -n -- "$staged_iso" "$output"
