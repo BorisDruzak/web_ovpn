@@ -45,3 +45,20 @@ config_load() {
     [[ "$ALT_INSTALL_CONTROLLER" == http://* ]] || return 1
     export ALT_INSTALL_MODE ALT_INSTALL_CONTROLLER
 }
+
+config_load_v2_preflight() {
+    local embedded_controller=
+    local -a controller_lines=()
+
+    ALT_INSTALL_MODE=$(cmdline_value sosnadmin.mode) || return 1
+    [[ "$ALT_INSTALL_MODE" == 'agent-v2' ]] || return 1
+    [[ -f "$ALT_INSTALL_CONTROLLER_CONFIG" &&
+        ! -L "$ALT_INSTALL_CONTROLLER_CONFIG" ]] || return 1
+    mapfile -t controller_lines < "$ALT_INSTALL_CONTROLLER_CONFIG"
+    ((${#controller_lines[@]} == 1)) || return 1
+    embedded_controller=${controller_lines[0]}
+    [[ "$embedded_controller" == 'http://192.168.100.17:18090' ]] ||
+        return 1
+    ALT_INSTALL_CONTROLLER=$embedded_controller
+    export ALT_INSTALL_MODE ALT_INSTALL_CONTROLLER
+}

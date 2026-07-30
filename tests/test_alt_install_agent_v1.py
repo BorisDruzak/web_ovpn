@@ -256,6 +256,58 @@ printf '%s\\n' "$ALT_INSTALL_CONTROLLER"
     assert completed.stdout.strip() == "http://192.168.100.17:18089"
 
 
+def test_v2_preflight_uses_the_pinned_v1_controller(
+    tmp_path: Path,
+) -> None:
+    cmdline = tmp_path / "cmdline"
+    cmdline.write_text(
+        "quiet sosnadmin.mode=agent-v2 "
+        "sosnadmin.controller=https://192.168.100.17:18092\n",
+        encoding="utf-8",
+    )
+    controller_config = tmp_path / "controller-url"
+    controller_config.write_bytes(b"http://192.168.100.17:18090\n")
+
+    completed = _run_bash(
+        """
+set -euo pipefail
+source deploy/alt-linux/install-agent/v1/lib/config.sh
+config_load_v2_preflight
+printf '%s\\n' "$ALT_INSTALL_CONTROLLER"
+""",
+        env={
+            "ALT_INSTALL_CMDLINE_FILE": cmdline.as_posix(),
+            "ALT_INSTALL_CONTROLLER_CONFIG": controller_config.as_posix(),
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "http://192.168.100.17:18090"
+
+
+def test_v2_preflight_rejects_an_unpinned_v1_controller(
+    tmp_path: Path,
+) -> None:
+    cmdline = tmp_path / "cmdline"
+    cmdline.write_text("quiet sosnadmin.mode=agent-v2\n", encoding="utf-8")
+    controller_config = tmp_path / "controller-url"
+    controller_config.write_bytes(b"http://192.168.100.99:18090\n")
+
+    completed = _run_bash(
+        """
+set -euo pipefail
+source deploy/alt-linux/install-agent/v1/lib/config.sh
+config_load_v2_preflight
+""",
+        env={
+            "ALT_INSTALL_CMDLINE_FILE": cmdline.as_posix(),
+            "ALT_INSTALL_CONTROLLER_CONFIG": controller_config.as_posix(),
+        },
+    )
+
+    assert completed.returncode != 0
+
+
 def test_create_nonce_is_32_bytes_in_url_safe_form(tmp_path: Path) -> None:
     completed = _run_bash(
         """
