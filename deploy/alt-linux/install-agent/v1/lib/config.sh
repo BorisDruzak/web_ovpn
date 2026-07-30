@@ -1,7 +1,7 @@
 #!/bin/bash
 
-readonly ALT_INSTALL_CONTROLLER_DEFAULT='http://192.168.100.17:18089'
 ALT_INSTALL_CMDLINE_FILE=${ALT_INSTALL_CMDLINE_FILE:-/proc/cmdline}
+ALT_INSTALL_CONTROLLER_CONFIG=${ALT_INSTALL_CONTROLLER_CONFIG:-/usr/share/alt-install/controller-url}
 ALT_INSTALL_HELPER=${ALT_INSTALL_HELPER:-/usr/libexec/alt-install-helper}
 ALT_INSTALL_PUBLIC_KEY=${ALT_INSTALL_PUBLIC_KEY:-/usr/share/alt-install/public-key.json}
 ALT_INSTALL_SOURCE_ISO=${ALT_INSTALL_SOURCE_ISO:-/usr/share/alt-install/source_iso.json}
@@ -22,14 +22,23 @@ cmdline_value() {
 }
 
 config_load() {
-    local configured_controller=
+    local configured_controller= embedded_controller=
+    local -a controller_lines=()
     ALT_INSTALL_MODE=$(cmdline_value sosnadmin.mode) || return 1
     [[ "$ALT_INSTALL_MODE" == 'agent-v1' ]] || return 1
+    [[ -f "$ALT_INSTALL_CONTROLLER_CONFIG" && ! -L "$ALT_INSTALL_CONTROLLER_CONFIG" ]] || return 1
+    mapfile -t controller_lines < "$ALT_INSTALL_CONTROLLER_CONFIG"
+    ((${#controller_lines[@]} == 1)) || return 1
+    embedded_controller=${controller_lines[0]}
+    case "$embedded_controller" in
+        http://192.168.100.17:18089|http://192.168.100.17:18090) ;;
+        *) return 1 ;;
+    esac
     configured_controller=$(cmdline_value sosnadmin.controller) || true
     if [[ -z "$configured_controller" ]]; then
-        ALT_INSTALL_CONTROLLER=$ALT_INSTALL_CONTROLLER_DEFAULT
+        ALT_INSTALL_CONTROLLER=$embedded_controller
     else
-        [[ "$configured_controller" == "$ALT_INSTALL_CONTROLLER_DEFAULT" ]] ||
+        [[ "$configured_controller" == "$embedded_controller" ]] ||
             return 1
         ALT_INSTALL_CONTROLLER=$configured_controller
     fi

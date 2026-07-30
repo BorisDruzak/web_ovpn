@@ -328,6 +328,7 @@ bash "$builder" \
     --helper "$helper" \
     --public-key "$fixture_state/install-plan-ed25519.pub" \
     --build-id "$build_id" \
+    --controller-url http://192.168.100.17:18089 \
     >"$workdir/build.log" 2>&1 ||
     die 'Managed ISO build failed'
 bash "$verifier" --iso "$managed_iso" \
@@ -387,6 +388,19 @@ stop_qemu() {
         wait "$qemu_pid" 2>/dev/null || true
     fi
     qemu_pid=
+}
+
+capture_boot_failure() {
+    local qmp_socket=$1 console=$2 variant_evidence=$3
+
+    python3 "$support" qmp-screendump \
+        --socket "$qmp_socket" \
+        --output "$variant_evidence/boot-failure.ppm" >/dev/null 2>&1 || true
+    if [[ -f "$console" ]]; then
+        tail -200 "$console" |
+            sed -E 's/(Authorization: |Bearer )[A-Za-z0-9._-]+/\1[REDACTED]/g' \
+            >"$variant_evidence/boot-failure-console.log"
+    fi
 }
 
 run_variant() {
@@ -455,16 +469,18 @@ run_variant() {
         fi
         kill -0 "$qemu_pid" 2>/dev/null ||
             die "$variant QEMU exited before the agent started"
-        python3 "$support" vnc-send-s --socket "$vnc_socket" \
+        python3 "$support" qmp-command \
+            --socket "$qmp_socket" --execute send-key \
             >/dev/null 2>&1 ||
-            python3 "$support" qmp-command \
-                --socket "$qmp_socket" --execute send-key \
+            python3 "$support" vnc-send-s --socket "$vnc_socket" \
                 >/dev/null 2>&1 ||
             true
         sleep 1
     done
-    ((booted == 1)) ||
+    if ((booted != 1)); then
+        capture_boot_failure "$qmp_socket" "$console" "$variant_evidence"
         die "$variant guest did not reach waiting_for_approval"
+    fi
     wait_for_exact_line "$console" \
         'PASS: signed plan verified; disk preflight passed; no target writes' \
         600 ||

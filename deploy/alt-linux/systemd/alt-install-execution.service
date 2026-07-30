@@ -1,0 +1,40 @@
+[Unit]
+Description=ALT install execution V2 API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=altserver
+Group=altserver
+Environment=PYTHONPATH=/opt/alt-install-execution-api/current/control
+Environment=ALT_DEPLOY_INSTALL_EXECUTION_LISTEN_ADDRESS=192.168.100.17
+Environment=ALT_DEPLOY_INSTALL_EXECUTION_LISTEN_PORT=18092
+Environment=ALT_DEPLOY_INSTALL_EXECUTION_CA_CERTIFICATE=/etc/alt-deploy/install-execution-ca.pem
+Environment=ALT_DEPLOY_INSTALL_EXECUTION_SERVER_CERTIFICATE=/etc/alt-deploy/install-execution-server.pem
+LoadCredential=execution-tls-key:/var/lib/alt-deploy-secrets/install-execution-server.pem
+ExecStart=/usr/bin/python3 /opt/alt-install-execution-api/current/api/install_execution_server.py --listen-address 192.168.100.17 --listen-port 18092 --credential-key %d/execution-tls-key
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadWritePaths=/var/lib/alt-deploy
+
+[Install]
+WantedBy=multi-user.target

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import secrets
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,33 @@ SESSION_ID_RE = re.compile(
     r"^install-\d{8}T\d{6}Z-[0-9a-f]{8}$"
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+EXECUTION_BUNDLE_FILES: tuple[str, ...] = (
+    "execution-manifest.json",
+    "execution-manifest-signature.json",
+    "autoinstall.scm",
+    "vm-profile.scm",
+    "pkg-groups.tar",
+    "install-scripts.tar",
+)
+_EXECUTION_DIGEST_FILE = "execution-digests.json"
+_EXECUTION_ALL_FILES = frozenset(
+    (*EXECUTION_BUNDLE_FILES, _EXECUTION_DIGEST_FILE)
+)
+_MAX_EXECUTION_FILE_BYTES = 64 * 1024 * 1024
+_MAX_EXECUTION_DIGEST_BYTES = 16 * 1024
+
+
+@dataclass
+class ExecutionFileSnapshot:
+    descriptor: int
+    length: int
+    sha256: str
+    manifest_sha256: str
+
+    def read(self, size: int = 64 * 1024) -> bytes:
+        if type(size) is not int or not 1 <= size <= 1024 * 1024:
+            raise ValueError("Execution stream read size is invalid")
+        return os.read(self.descriptor, size)
 
 
 class InstallSessionRepository:
@@ -143,6 +173,8 @@ class InstallSessionRepository:
         owner: tuple[int, int] | None = None,
     ) -> None:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
@@ -302,6 +334,7 @@ class InstallSessionRepository:
         status: Mapping[str, object],
         *,
         allow_lifecycle: bool = False,
+        allow_execution: bool = False,
     ) -> None:
         directory = self.directory(session_id)
         if status.get("session_id") != session_id:
@@ -325,6 +358,24 @@ class InstallSessionRepository:
                 code="install_session_lifecycle_update_forbidden",
                 message="Install session lifecycle requires stage manager",
                 exit_code=4,
+            )
+        current_execution = current.get("execution")
+        next_execution = status.get("execution")
+        if current_execution != next_execution:
+            if not allow_execution:
+                raise ControlError(
+                    code="install_execution_update_forbidden",
+                    message=(
+                        "Install execution lifecycle requires execution service"
+                    ),
+                    exit_code=4,
+                )
+            from .install_session_state import (
+                validate_execution_transition,
+            )
+
+            validate_execution_transition(
+                current_execution, next_execution
             )
         destination = directory / "status.json"
         temporary = directory / (
@@ -537,3 +588,417 @@ class InstallSessionRepository:
             (directory / name).exists() or (directory / name).is_symlink()
             for name in ("approval.json", "revision-0001")
         )
+
+    @staticmethod
+    def _execution_digest_bytes(
+        files: Mapping[str, bytes],
+    ) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "files": {
+                        name: hashlib.sha256(files[name]).hexdigest()
+                        for name in EXECUTION_BUNDLE_FILES
+                    },
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            + b"\n"
+        )
+
+    def publish_execution(
+        self,
+        session_id: str,
+        *,
+        files: Mapping[str, bytes],
+    ) -> None:
+        if set(files) != set(EXECUTION_BUNDLE_FILES) or any(
+            not isinstance(files[name], bytes)
+            or not 1 <= len(files[name]) <= _MAX_EXECUTION_FILE_BYTES
+            for name in EXECUTION_BUNDLE_FILES
+        ):
+            raise self._invalid("Install execution bundle is invalid")
+        directory = self.directory(session_id)
+        destination = directory / "execution-0001"
+        if destination.exists() or destination.is_symlink():
+            raise ControlError(
+                code="install_execution_conflict",
+                message="Install execution revision already exists",
+                exit_code=4,
+            )
+        temporary = directory / (
+            f".execution-0001.{secrets.token_hex(4)}.tmp"
+        )
+        owner = self._service_owner()
+        try:
+            self._make_private_directory(temporary, owner=owner)
+            for name in EXECUTION_BUNDLE_FILES:
+                self._create_file(
+                    temporary / name, files[name], owner=owner
+                )
+            self._create_file(
+                temporary / _EXECUTION_DIGEST_FILE,
+                self._execution_digest_bytes(files),
+                owner=owner,
+            )
+            self._fsync_directory(temporary)
+            os.replace(temporary, destination)
+            self._fsync_directory(directory)
+        except ControlError:
+            raise
+        except OSError as exc:
+            raise self._failed(
+                "Install execution revision cannot be published"
+            ) from exc
+        finally:
+            if temporary.exists() and not temporary.is_symlink():
+                for child in temporary.iterdir():
+                    child.unlink()
+                temporary.rmdir()
+
+    def _open_execution_regular(
+        self,
+        path: Path,
+        *,
+        maximum_size: int = _MAX_EXECUTION_FILE_BYTES,
+    ) -> tuple[int, os.stat_result]:
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if not stat.S_ISREG(before.st_mode):
+            raise self._invalid(
+                "Install execution revision contains a non-regular file"
+            )
+        flags = os.O_RDONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path, flags)
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision file cannot be opened safely"
+            ) from exc
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+            ):
+                raise self._invalid(
+                    "Install execution revision file changed during safe open"
+                )
+            if (
+                os.name != "nt"
+                and stat.S_IMODE(opened.st_mode) != 0o600
+            ):
+                raise self._invalid(
+                    "Install execution revision permissions are invalid"
+                )
+            if not 1 <= opened.st_size <= maximum_size:
+                raise self._invalid(
+                    "Install execution revision file size is invalid"
+                )
+            return descriptor, opened
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def _read_execution_regular_bytes(
+        self,
+        path: Path,
+        *,
+        maximum_size: int = _MAX_EXECUTION_FILE_BYTES,
+    ) -> bytes:
+        descriptor, opened = self._open_execution_regular(
+            path, maximum_size=maximum_size
+        )
+        try:
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > maximum_size:
+                    raise self._invalid(
+                        "Install execution revision file size is invalid"
+                    )
+                chunks.append(chunk)
+            if size != opened.st_size:
+                raise self._invalid(
+                    "Install execution revision file changed during read"
+                )
+            return b"".join(chunks)
+        finally:
+            os.close(descriptor)
+
+    def _execution_digest_document(
+        self, directory: Path
+    ) -> dict[str, str]:
+        raw = self._read_execution_regular_bytes(
+            directory / _EXECUTION_DIGEST_FILE,
+            maximum_size=_MAX_EXECUTION_DIGEST_BYTES,
+        )
+
+        def strict_object(
+            pairs: list[tuple[str, object]],
+        ) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError
+                result[key] = value
+            return result
+
+        try:
+            document = json.loads(
+                raw.decode("utf-8"),
+                object_pairs_hook=strict_object,
+            )
+            if (
+                not isinstance(document, dict)
+                or set(document) != {"schema_version", "files"}
+                or type(document.get("schema_version")) is not int
+                or document.get("schema_version") != 1
+                or not isinstance(document.get("files"), dict)
+                or set(document["files"]) != set(EXECUTION_BUNDLE_FILES)
+                or any(
+                    not isinstance(value, str)
+                    or not _SHA256_RE.fullmatch(value)
+                    for value in document["files"].values()
+                )
+                or raw
+                != (
+                    json.dumps(
+                        document,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    + b"\n"
+                )
+            ):
+                raise ValueError
+            return dict(document["files"])
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise self._invalid(
+                "Install execution digest metadata is invalid"
+            ) from None
+
+    def _read_execution_snapshot_at(
+        self, directory: Path
+    ) -> dict[str, bytes]:
+        try:
+            metadata = directory.lstat()
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise self._invalid(
+                "Install execution revision is not a directory"
+            )
+        try:
+            children = {child.name: child for child in directory.iterdir()}
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if set(children) != _EXECUTION_ALL_FILES:
+            raise self._invalid(
+                "Install execution revision filenames are invalid"
+            )
+        snapshot = {
+            name: self._read_execution_regular_bytes(children[name])
+            for name in _EXECUTION_ALL_FILES
+        }
+        try:
+            digest_raw = snapshot[_EXECUTION_DIGEST_FILE]
+            digest_document = json.loads(digest_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise self._invalid(
+                "Install execution digest metadata is invalid"
+            ) from exc
+        if (
+            not isinstance(digest_document, dict)
+            or set(digest_document) != {"schema_version", "files"}
+            or type(digest_document.get("schema_version")) is not int
+            or digest_document.get("schema_version") != 1
+            or not isinstance(digest_document.get("files"), dict)
+            or set(digest_document["files"]) != set(EXECUTION_BUNDLE_FILES)
+            or digest_raw
+            != self._execution_digest_bytes(
+                {
+                    name: snapshot[name]
+                    for name in EXECUTION_BUNDLE_FILES
+                }
+            )
+        ):
+            raise self._invalid(
+                "Install execution digest metadata is invalid"
+            )
+        return {
+            name: snapshot[name] for name in EXECUTION_BUNDLE_FILES
+        }
+
+    def _read_execution_snapshot(
+        self, session_id: str
+    ) -> dict[str, bytes]:
+        return self._read_execution_snapshot_at(
+            self.directory(session_id) / "execution-0001"
+        )
+
+    def read_execution_file(self, session_id: str, filename: str) -> bytes:
+        with self.open_execution_file(session_id, filename) as snapshot:
+            chunks: list[bytes] = []
+            while True:
+                chunk = snapshot.read()
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+
+    @contextmanager
+    def open_execution_file(
+        self, session_id: str, filename: str
+    ) -> Iterator[ExecutionFileSnapshot]:
+        if filename not in EXECUTION_BUNDLE_FILES:
+            raise self._invalid(
+                "Install execution revision filename is invalid"
+            )
+        directory = self.directory(session_id) / "execution-0001"
+        try:
+            metadata = directory.lstat()
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise self._invalid(
+                "Install execution revision is not a directory"
+            )
+        try:
+            children = {child.name: child for child in directory.iterdir()}
+        except OSError as exc:
+            raise self._invalid(
+                "Install execution revision cannot be inspected"
+            ) from exc
+        if set(children) != _EXECUTION_ALL_FILES:
+            raise self._invalid(
+                "Install execution revision filenames are invalid"
+            )
+        digests = self._execution_digest_document(directory)
+        descriptor, opened = self._open_execution_regular(
+            children[filename]
+        )
+        try:
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_EXECUTION_FILE_BYTES:
+                    raise self._invalid(
+                        "Install execution revision file size is invalid"
+                    )
+                digest.update(chunk)
+            actual_sha256 = digest.hexdigest()
+            if (
+                size != opened.st_size
+                or actual_sha256 != digests[filename]
+            ):
+                raise self._invalid(
+                    "Install execution revision digest is invalid"
+                )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            yield ExecutionFileSnapshot(
+                descriptor=descriptor,
+                length=size,
+                sha256=actual_sha256,
+                manifest_sha256=digests["execution-manifest.json"],
+            )
+        finally:
+            os.close(descriptor)
+
+    def read_execution_files(
+        self, session_id: str
+    ) -> dict[str, bytes]:
+        return self._read_execution_snapshot(session_id)
+
+    def has_execution_publication(self, session_id: str) -> bool:
+        path = self.directory(session_id) / "execution-0001"
+        return path.exists() or path.is_symlink()
+
+    def discard_partial_execution(
+        self,
+        session_id: str,
+        *,
+        expected_files: Mapping[str, bytes] | None = None,
+    ) -> None:
+        session_directory = self.directory(session_id)
+        directory = session_directory / "execution-0001"
+        quarantine = session_directory / (
+            f".execution-0001.{secrets.token_hex(4)}.discard"
+        )
+        try:
+            os.replace(directory, quarantine)
+            self._fsync_directory(session_directory)
+            snapshot = self._read_execution_snapshot_at(quarantine)
+            if (
+                expected_files is not None
+                and (
+                    set(expected_files) != set(EXECUTION_BUNDLE_FILES)
+                    or any(
+                        not isinstance(expected_files[name], bytes)
+                        or snapshot[name] != expected_files[name]
+                        for name in EXECUTION_BUNDLE_FILES
+                    )
+                )
+            ):
+                raise self._invalid(
+                    "Install execution revision changed before reconciliation"
+                )
+            for name in _EXECUTION_ALL_FILES:
+                (quarantine / name).unlink()
+            quarantine.rmdir()
+            self._fsync_directory(session_directory)
+        except ControlError:
+            if quarantine.exists() or quarantine.is_symlink():
+                try:
+                    if directory.exists() or directory.is_symlink():
+                        raise self._failed(
+                            "Install execution reconciliation destination changed"
+                        )
+                    os.replace(quarantine, directory)
+                    self._fsync_directory(session_directory)
+                except ControlError:
+                    raise
+                except OSError as exc:
+                    raise self._failed(
+                        "Install execution reconciliation cannot be restored"
+                    ) from exc
+            raise
+        except OSError as exc:
+            if quarantine.exists() or quarantine.is_symlink():
+                try:
+                    if not directory.exists() and not directory.is_symlink():
+                        os.replace(quarantine, directory)
+                        self._fsync_directory(session_directory)
+                except (ControlError, OSError):
+                    raise self._failed(
+                        "Install execution reconciliation cannot be restored"
+                    ) from exc
+            raise self._failed(
+                "Incomplete install execution cannot be removed"
+            ) from exc

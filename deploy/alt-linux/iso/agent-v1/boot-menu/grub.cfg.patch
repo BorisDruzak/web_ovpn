@@ -51,7 +51,7 @@
 +if [ "$grub_platform" = "efi" ]; then
 +menuentry "Signed-plan preflight [DRY RUN]" --hotkey 's' --id 'alt-agent-v1' {
 +  echo "Loading signed-plan dry-run agent ..."
-+  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot stagename=live ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v1 sosnadmin.controller=http://192.168.100.17:18089 sosnadmin.build=__ALT_INSTALL_BUILD_ID__
++  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot stagename=live ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v1 sosnadmin.controller=__ALT_INSTALL_CONTROLLER_URL__ sosnadmin.build=__ALT_INSTALL_BUILD_ID__
 +  initrd /boot/initrd$KFLAVOUR.img
 +}
 +

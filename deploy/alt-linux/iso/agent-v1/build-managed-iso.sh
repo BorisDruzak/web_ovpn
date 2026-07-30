@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
     printf '%s\n' \
-        'Usage: build-managed-iso.sh --source <ISO> --output <ISO> --helper <BINARY> --public-key <JSON> --build-id <ID> [--force]' >&2
+        'Usage: build-managed-iso.sh --source <ISO> --output <ISO> --helper <BINARY> --public-key <JSON> --build-id <ID> --controller-url <URL> [--force]' >&2
     exit 2
 }
 
@@ -17,6 +17,7 @@ output_iso=
 helper=
 public_key=
 build_id=
+controller_url=
 force=0
 while (($#)); do
     case "$1" in
@@ -25,14 +26,19 @@ while (($#)); do
         --helper) (($# >= 2)) || usage; helper="$2"; shift 2 ;;
         --public-key) (($# >= 2)) || usage; public_key="$2"; shift 2 ;;
         --build-id) (($# >= 2)) || usage; build_id="$2"; shift 2 ;;
+        --controller-url) (($# >= 2)) || usage; controller_url="$2"; shift 2 ;;
         --force) force=1; shift ;;
         *) usage ;;
     esac
 done
 [[ -n "$source_iso" && -n "$output_iso" && -n "$helper" &&
-    -n "$public_key" && -n "$build_id" ]] || usage
+    -n "$public_key" && -n "$build_id" && -n "$controller_url" ]] || usage
 [[ "$build_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] ||
     die 'Build ID is invalid'
+case "$controller_url" in
+    http://192.168.100.17:18089|http://192.168.100.17:18090) ;;
+    *) die 'Controller URL is invalid' ;;
+esac
 [[ -f "$source_iso" && -r "$source_iso" ]] ||
     die 'Source ISO is not readable'
 [[ -f "$helper" && -r "$helper" ]] ||
@@ -187,6 +193,9 @@ install -D -m 0644 "$source_identity" \
     "$workdir/initrd/usr/share/alt-install/source_iso.json"
 install -D -m 0644 "$public_key_snapshot" \
     "$workdir/initrd/usr/share/alt-install/public-key.json"
+printf '%s\n' "$controller_url" > \
+    "$workdir/initrd/usr/share/alt-install/controller-url"
+chmod 0644 "$workdir/initrd/usr/share/alt-install/controller-url"
 printf '%s\n' "$build_id" > "$workdir/build-id"
 chmod 0600 "$workdir/build-id"
 install -D -m 0644 "$workdir/build-id" \
@@ -209,6 +218,7 @@ repack_initrd() {
         usr/libexec/alt-install-agent-lib/lib/transport.sh \
         usr/libexec/alt-install-agent-lib/lib/ui.sh \
         usr/share/alt-install/build-id \
+        usr/share/alt-install/controller-url \
         usr/share/alt-install/managed_iso_size_bytes \
         usr/share/alt-install/public-key.json \
         usr/share/alt-install/source_iso.json \
@@ -231,6 +241,10 @@ sed -i "s/__ALT_INSTALL_BUILD_ID__/$build_id/g" \
     "$workdir/menu/boot/grub/grub.cfg"
 grep -F '__ALT_INSTALL_BUILD_ID__' "$workdir/menu/boot/grub/grub.cfg" \
     >/dev/null && die 'Build ID substitution failed'
+sed -i "s|__ALT_INSTALL_CONTROLLER_URL__|$controller_url|g" \
+    "$workdir/menu/boot/grub/grub.cfg"
+grep -F '__ALT_INSTALL_CONTROLLER_URL__' "$workdir/menu/boot/grub/grub.cfg" \
+    >/dev/null && die 'Controller URL substitution failed'
 
 xorriso -indev "$source_iso" -outdev "$tmp_output" \
     -boot_image any replay \
@@ -258,14 +272,14 @@ mv -f -- "$tmp_final_output" "$tmp_output"
 
 python3 - "$source_iso" "$tmp_output" "$workdir/initrd-agent-v1.img" \
     "$workdir/initrd" "$tmp_manifest" "$build_id" "$public_key_id" \
-    "$public_key_sha256" <<'PY'
+    "$public_key_sha256" "$controller_url" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 source, output, initrd, root, manifest = map(Path, sys.argv[1:6])
-build_id, public_key_id, public_key_sha256 = sys.argv[6:9]
+build_id, public_key_id, public_key_sha256, controller_url = sys.argv[6:10]
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -276,6 +290,7 @@ def sha256(path: Path) -> str:
 
 document = {
     "build_id": build_id,
+    "controller_url": controller_url,
     "format": "alt-install-agent-managed-iso-v1",
     "helper_sha256": sha256(root / "usr/libexec/alt-install-helper"),
     "managed_initrd_sha256": sha256(initrd),

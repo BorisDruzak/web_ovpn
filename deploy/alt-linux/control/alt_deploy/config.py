@@ -37,6 +37,24 @@ class Settings:
     install_signing_public_key: Path = Path(
         "/etc/alt-deploy/install-plan-ed25519.pub"
     )
+    install_execution_release_root: Path = Path(
+        "/srv/alt-deploy/install-execution-release"
+    )
+    install_execution_listen_address: str = "192.168.100.17"
+    install_execution_listen_port: int = 18092
+    install_execution_tls_root: Path = Path("/var/lib/alt-deploy-secrets")
+    install_execution_ca_private_key: Path = Path(
+        "/var/lib/alt-deploy-secrets/install-execution-ca.pem"
+    )
+    install_execution_server_private_key: Path = Path(
+        "/var/lib/alt-deploy-secrets/install-execution-server.pem"
+    )
+    install_execution_ca_certificate: Path = Path(
+        "/etc/alt-deploy/install-execution-ca.pem"
+    )
+    install_execution_server_certificate: Path = Path(
+        "/etc/alt-deploy/install-execution-server.pem"
+    )
 
     @property
     def machine_archives_dir(self) -> Path:
@@ -64,6 +82,12 @@ class Settings:
             os.environ.get(
                 "ALT_DEPLOY_ANSIBLE_PROJECT",
                 "/home/altserver/ansible",
+            )
+        )
+        execution_tls_root = Path(
+            os.environ.get(
+                "ALT_DEPLOY_INSTALL_EXECUTION_TLS_ROOT",
+                "/var/lib/alt-deploy-secrets",
             )
         )
 
@@ -154,4 +178,28 @@ class Settings:
                     "/etc/alt-deploy/install-plan-ed25519.pub",
                 )
             ),
+            install_execution_listen_address=os.environ.get(
+                "ALT_DEPLOY_INSTALL_EXECUTION_LISTEN_ADDRESS",
+                "192.168.100.17",
+            ),
+            install_execution_listen_port=int(os.environ.get(
+                "ALT_DEPLOY_INSTALL_EXECUTION_LISTEN_PORT", "18092"
+            )),
+            install_execution_tls_root=execution_tls_root,
+            install_execution_ca_private_key=Path(os.environ.get(
+                "ALT_DEPLOY_INSTALL_EXECUTION_CA_PRIVATE_KEY",
+                str(execution_tls_root / "install-execution-ca.pem"),
+            )),
+            install_execution_server_private_key=Path(os.environ.get(
+                "ALT_DEPLOY_INSTALL_EXECUTION_SERVER_PRIVATE_KEY",
+                str(execution_tls_root / "install-execution-server.pem"),
+            )),
+            install_execution_ca_certificate=Path(os.environ.get(
+                "ALT_DEPLOY_INSTALL_EXECUTION_CA_CERTIFICATE",
+                "/etc/alt-deploy/install-execution-ca.pem",
+            )),
+            install_execution_server_certificate=Path(os.environ.get(
+                "ALT_DEPLOY_INSTALL_EXECUTION_SERVER_CERTIFICATE",
+                "/etc/alt-deploy/install-execution-server.pem",
+            )),
         )

@@ -28,14 +28,7 @@ def test_production_unit_is_bound_and_least_privileged() -> None:
         "--listen-address 192.168.100.17 --listen-port 18090"
         in text
     )
-    assert (
-        "ReadWritePaths=/var/lib/alt-deploy/install-sessions"
-        in text
-    )
-    assert (
-        "ReadWritePaths=/var/lib/alt-deploy/install-sessions.lock"
-        in text
-    )
+    assert "ReadWritePaths=/var/lib/alt-deploy" in text
     assert "/var/lib/alt-deploy-secrets" not in text
     for item in (
         "NoNewPrivileges=true",
@@ -179,6 +172,20 @@ def test_installer_activates_only_the_isolated_unit(tmp_path: Path) -> None:
             "/opt/alt-install-session-api/releases/existing-release"
         )
     )
+
+
+def test_installer_accepts_absent_unit_systemd_state(tmp_path: Path) -> None:
+    sandbox = InstallSessionInstallerSandbox.create_clean_host(tmp_path)
+
+    result = sandbox.run_install(
+        INSTALL_SESSION_IS_ENABLED_STATUS="not-found",
+        INSTALL_SESSION_IS_ENABLED_RC="4",
+        INSTALL_SESSION_IS_ACTIVE_STATUS="inactive",
+        INSTALL_SESSION_IS_ACTIVE_RC="4",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sandbox.service_status() == ("enabled", "active")
 
 
 def test_clean_host_storage_is_created_for_service_user(tmp_path: Path) -> None:

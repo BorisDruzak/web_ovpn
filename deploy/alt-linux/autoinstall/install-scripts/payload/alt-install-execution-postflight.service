@@ -1,0 +1,13 @@
+[Unit]
+Description=Report authenticated ALT installation postflight
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/dev/virtio-ports/alt.install.postflight
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/alt-install-execution-postflight
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

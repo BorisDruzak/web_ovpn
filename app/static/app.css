@@ -249,6 +249,10 @@ label {
   font-weight: 650;
 }
 
+label[hidden] {
+  display: none;
+}
+
 .checkbox {
   display: flex;
   align-items: center;
@@ -272,6 +276,10 @@ label {
 
 .grid-form {
   grid-template-columns: repeat(2, minmax(220px, 1fr));
+}
+
+.client-form-mode {
+  grid-column: 1 / -1;
 }
 
 .grid-form .form-actions {

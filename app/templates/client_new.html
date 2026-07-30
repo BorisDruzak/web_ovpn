@@ -7,7 +7,7 @@
 <section class="panel">
   <form method="post" action="/clients/new" enctype="multipart/form-data" class="form grid-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label>Режим
+    <label class="client-form-mode">Режим
       <select name="creation_mode"><option value="single">Один клиент</option><option value="bulk">Массовое создание</option></select>
     </label>
     <label data-mode-section="single-input">

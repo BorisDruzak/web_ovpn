@@ -1,0 +1,74 @@
+--- a/boot/grub/grub.cfg
++++ b/boot/grub/grub.cfg
+@@ -15,7 +15,7 @@
+ insmod minicmd
+ insmod normal
+ insmod test
+-set timeout=60
++set timeout=10
+ if [ ! "$lang" ]; then lang=ru_RU; fi
+ if [ -s $pfxfat/grubenv ]; then
+   load_env --file $pfxfat/grubenv
+@@ -68,6 +68,30 @@
+     set color_highlight=black/white
+   fi
+ fi
++if [ "$grub_platform" = "efi" ]; then
++  menuentry "Boot from local disk" --id 'harddisk' {
++    set local_efi=
++    search --no-floppy --file --set=local_efi /EFI/altlinux/shimx64.efi
++    if [ -n "$local_efi" ]; then
++      chainloader ($local_efi)/EFI/altlinux/shimx64.efi
++      boot
++    fi
++    search --no-floppy --file --set=local_efi /EFI/altlinux/grubx64.efi
++    if [ -n "$local_efi" ]; then
++      chainloader ($local_efi)/EFI/altlinux/grubx64.efi
++      boot
++    fi
++    search --no-floppy --file --set=local_efi /EFI/Microsoft/Boot/bootmgfw.efi
++    if [ -n "$local_efi" ]; then
++      chainloader ($local_efi)/EFI/Microsoft/Boot/bootmgfw.efi
++      boot
++    fi
++    echo "No supported local EFI loader found"
++    sleep 3
++    configfile ${prefix}/grub.cfg
++  }
++fi
++
+ if [ "$grub_platform" = "pc" ]; then
+   menuentry $"Boot from hard drive" --id 'harddisk' {
+     insmod part_msdos
+@@ -85 +109 @@
+-menuentry $"Install "'ALT Workstation K 11.4' --hotkey 'i' --id 'linux' {
++menuentry "Normal ALT installation" --hotkey 'i' --id 'linux' {
+@@ -90,6 +114,27 @@
+   initrd /boot/initrd$KFLAVOUR.img
+ }
+-
++
++if [ "$grub_platform" = "efi" ]; then
++menuentry "Signed-plan preflight [DRY RUN]" --hotkey 's' --id 'alt-agent-v1' {
++  echo "Loading signed-plan dry-run agent ..."
++  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot stagename=live ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v1 sosnadmin.controller=http://192.168.100.17:18090 sosnadmin.build=__ALT_INSTALL_BUILD_ID__
++  initrd /boot/initrd$KFLAVOUR.img
++}
++
++menuentry "Signed-plan installation [ROOT APPROVAL REQUIRED]" --hotkey 'x' --id 'alt-agent-v2' {
++  echo "Loading root-authorized signed-plan installer ..."
++  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot stagename=live ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v2 sosnadmin.controller=__ALT_INSTALL_EXECUTION_CONTROLLER_URL__ sosnadmin.build=__ALT_INSTALL_BUILD_ID__ systemd.unit=install2.target ai curl=http://127.0.0.1:18192
++  initrd /boot/initrd$KFLAVOUR.img
++}
++
++menuentry "Dry-run diagnostics" --id 'alt-agent-v1-diagnostics' {
++  echo "Signed-plan preflight only"
++  echo "No target changes are authorized"
++  sleep 3
++  configfile ${prefix}/grub.cfg
++}
++fi
++
+ menuentry $"VNC install (edit to set password)" --id 'vncpasswd' {
+   savedefault
+   echo $"Loading Linux vmlinuz$KFLAVOUR ..."

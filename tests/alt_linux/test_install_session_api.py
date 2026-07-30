@@ -95,6 +95,26 @@ def test_health_is_constant_and_does_not_create_session_state(
     assert not settings.install_sessions_dir.exists()
 
 
+def test_v1_listener_never_routes_or_redirects_v2_execution_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings_in(tmp_path, monkeypatch)
+    server = create_install_session_server(
+        settings, listen_address="127.0.0.1", listen_port=0
+    )
+    path = (
+        "/v2/install-sessions/"
+        "install-20260729T120000Z-a1b2c3d4/execution/manifest"
+    )
+
+    with running(server):
+        status, body = _request(server, "GET", path)
+
+    assert status == 404
+    assert body == {"status": "error", "error": {"code": "not_found"}}
+    assert not settings.install_sessions_dir.exists()
+
+
 def test_production_entry_point_uses_explicit_listener(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

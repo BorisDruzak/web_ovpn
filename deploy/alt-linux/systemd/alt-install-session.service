@@ -30,8 +30,7 @@ MemoryDenyWriteExecute=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_INET AF_INET6
-ReadWritePaths=/var/lib/alt-deploy/install-sessions
-ReadWritePaths=/var/lib/alt-deploy/install-sessions.lock
+ReadWritePaths=/var/lib/alt-deploy
 
 [Install]
 WantedBy=multi-user.target

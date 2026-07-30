@@ -14,6 +14,10 @@ from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
 from .controller_readiness import ControllerReadinessChecker
 from .errors import ControlError
+from .install_execution import (
+    ExecutionAuthorizationService,
+    load_execution_release_archives,
+)
 from .job_reconcile import JobReconciler
 from .job_retention import JobRetentionManager
 from .install_session_approval import InstallSessionApprovalService
@@ -155,7 +159,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("repair",),
     )
 
-    install_sessions = commands.add_parser("install-sessions")
+    install_sessions = commands.add_parser(
+        "install-sessions", allow_abbrev=False
+    )
     install_commands = install_sessions.add_subparsers(
         dest="install_session_command", required=True
     )
@@ -172,6 +178,28 @@ def build_parser() -> argparse.ArgumentParser:
     install_cancel = install_commands.add_parser("cancel")
     install_cancel.add_argument("session_id")
     install_cancel.add_argument("--reason", required=True)
+    install_authorize_execution = install_commands.add_parser(
+        "authorize-execution", allow_abbrev=False
+    )
+    install_authorize_execution.add_argument("session_id")
+    install_authorize_execution.add_argument(
+        "--plan-sha256", required=True
+    )
+    install_authorize_execution.add_argument(
+        "--inventory-sha256", required=True
+    )
+    install_authorize_execution.add_argument(
+        "--disk-fingerprint", required=True
+    )
+    install_authorize_execution.add_argument(
+        "--confirm-target", required=True
+    )
+    install_authorize_execution.add_argument("--reason", required=True)
+    install_cancel_execution = install_commands.add_parser(
+        "cancel-execution", allow_abbrev=False
+    )
+    install_cancel_execution.add_argument("session_id")
+    install_cancel_execution.add_argument("--reason", required=True)
 
     return parser
 
@@ -206,6 +234,88 @@ def _read_request_file(
             ),
             exit_code=4,
         ) from exc
+
+
+_PRIVATE_INSTALL_SESSION_FIELDS = frozenset(
+    {"source_ip", "agent_boot_id", "execution"}
+)
+_SENSITIVE_KEY_PARTS = (
+    "bearer",
+    "credential",
+    "password",
+    "private_key",
+    "secret",
+    "token",
+)
+_SENSITIVE_VALUE_MARKERS = ("$y$", "PRIVATE KEY-----")
+
+
+def _public_value(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _public_value(nested)
+            for key, nested in value.items()
+            if isinstance(key, str)
+            and not any(
+                part in key.casefold() for part in _SENSITIVE_KEY_PARTS
+            )
+        }
+    if isinstance(value, list):
+        return [_public_value(item) for item in value]
+    if isinstance(value, str) and any(
+        marker in value for marker in _SENSITIVE_VALUE_MARKERS
+    ):
+        return "[redacted]"
+    return value
+
+
+def _public_install_session(
+    session: dict[str, object],
+) -> dict[str, object]:
+    return {
+        key: _public_value(value)
+        for key, value in session.items()
+        if key not in _PRIVATE_INSTALL_SESSION_FIELDS
+    }
+
+
+def _require_execution_root() -> None:
+    if getattr(os, "geteuid", lambda: -1)() != 0:
+        raise ControlError(
+            code="execution_root_required",
+            message="Execution command requires root",
+            exit_code=4,
+        )
+
+
+def _execution_result(
+    session_id: str,
+    status: dict[str, object],
+    *,
+    expected_state: str,
+) -> dict[str, object]:
+    execution = status.get("execution")
+    state = (
+        execution.get("state")
+        if isinstance(execution, dict)
+        else None
+    )
+    if state != expected_state:
+        raise ControlError(
+            code="execution_status_invalid",
+            message="Execution command result is invalid",
+            exit_code=6,
+        )
+    return {
+        "status": "ok",
+        "session": {
+            "execution_id": (
+                f"{session_id}:execution-{int(execution['revision']):04d}"
+            ),
+            "session_id": session_id,
+            "execution_state": state,
+        },
+    }
 
 
 def main(
@@ -246,7 +356,7 @@ def main(
         ):
             sessions = InstallSessionRepository(active_settings).list_statuses()
             payload = {"status": "ok", "sessions": [
-                {key: value for key, value in session.items() if key not in {"source_ip", "agent_boot_id"}}
+                _public_install_session(session)
                 for session in sessions
             ]}
 
@@ -255,9 +365,10 @@ def main(
             and parsed.install_session_command == "show"
         ):
             session = InstallSessionRepository(active_settings).load_status(parsed.session_id)
-            payload = {"status": "ok", "session": {
-                key: value for key, value in session.items() if key not in {"source_ip", "agent_boot_id"}
-            }}
+            payload = {
+                "status": "ok",
+                "session": _public_install_session(session),
+            }
 
         elif (
             parsed.command == "install-sessions"
@@ -283,6 +394,46 @@ def main(
             payload = {"status": "ok", "session": InstallSessionApprovalService(
                 active_settings, clock=lambda: datetime.now(timezone.utc).isoformat()
             ).cancel(parsed.session_id, reason=parsed.reason)}
+
+        elif (
+            parsed.command == "install-sessions"
+            and parsed.install_session_command == "authorize-execution"
+        ):
+            _require_execution_root()
+            result = ExecutionAuthorizationService(
+                active_settings,
+                clock=lambda: datetime.now(timezone.utc).isoformat(),
+                release_archives=load_execution_release_archives(
+                    active_settings
+                ),
+            ).authorize(
+                parsed.session_id,
+                plan_sha256=parsed.plan_sha256,
+                inventory_sha256=parsed.inventory_sha256,
+                disk_fingerprint_value=parsed.disk_fingerprint,
+                confirm_target=parsed.confirm_target,
+                reason=parsed.reason,
+            )
+            payload = _execution_result(
+                parsed.session_id,
+                dict(result.status),
+                expected_state="authorized",
+            )
+
+        elif (
+            parsed.command == "install-sessions"
+            and parsed.install_session_command == "cancel-execution"
+        ):
+            _require_execution_root()
+            execution_status = ExecutionAuthorizationService(
+                active_settings,
+                clock=lambda: datetime.now(timezone.utc).isoformat(),
+            ).cancel(parsed.session_id, reason=parsed.reason)
+            payload = _execution_result(
+                parsed.session_id,
+                execution_status,
+                expected_state="cancelled",
+            )
 
         elif (
             parsed.command == "machines"
