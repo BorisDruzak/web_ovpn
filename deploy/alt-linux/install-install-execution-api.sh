@@ -4,6 +4,8 @@ set -Eeuo pipefail
 INSTALL_EXECUTION_API_ADDRESS=192.168.100.17
 INSTALL_EXECUTION_API_PORT=18092
 INSTALL_EXECUTION_API_UNIT=alt-install-execution.service
+INSTALL_EXECUTION_API_READINESS_ATTEMPTS=10
+INSTALL_EXECUTION_API_READINESS_INTERVAL_SECONDS=1
 
 install_execution_api_error() {
     printf '%s\n' "$*" >&2
@@ -309,14 +311,24 @@ ensure_execution_tls_material(Settings.from_env())
 '
 }
 
-install_execution_api_health_is_exact() {
+install_execution_api_probe_exact_health() {
     local root_prefix=$1
     local health
+    local curl_status
 
-    if ! health=$(curl --fail --silent --show-error --noproxy '*' \
+    if health=$(curl --fail --silent --show-error --noproxy '*' \
         --proto '=https' --tlsv1.3 --max-time 5 \
         --cacert "${root_prefix}/etc/alt-deploy/install-execution-ca.pem" \
-        "https://${INSTALL_EXECUTION_API_ADDRESS}:${INSTALL_EXECUTION_API_PORT}/health"); then
+        "https://${INSTALL_EXECUTION_API_ADDRESS}:${INSTALL_EXECUTION_API_PORT}/health")
+    then
+        :
+    else
+        curl_status=$?
+        # A refused connection is the only expected startup race.  TLS,
+        # HTTP, timeout, and response validation failures remain terminal.
+        if (( curl_status == 7 )); then
+            return 75
+        fi
         return 1
     fi
     printf '%s\n' "${health}" | python3 -c '
@@ -329,6 +341,47 @@ except (json.JSONDecodeError, UnicodeError):
     raise SystemExit(1)
 raise SystemExit(value != expected)
 '
+}
+
+install_execution_api_health_is_exact() {
+    local root_prefix=$1
+
+    if install_execution_api_probe_exact_health "${root_prefix}"; then
+        return 0
+    fi
+    return 1
+}
+
+install_execution_api_wait_for_readiness() {
+    local root_prefix=$1
+    local attempt
+    local probe_status
+
+    for ((attempt = 1;
+          attempt <= INSTALL_EXECUTION_API_READINESS_ATTEMPTS;
+          attempt++)); do
+        if install_execution_api_probe_exact_health "${root_prefix}"; then
+            return 0
+        else
+            probe_status=$?
+        fi
+        if (( probe_status != 75 )); then
+            install_execution_api_error \
+                "Execution API readiness returned invalid TLS health"
+            return 1
+        fi
+        if (( attempt == INSTALL_EXECUTION_API_READINESS_ATTEMPTS )); then
+            install_execution_api_error \
+                "Execution API readiness timed out after ${INSTALL_EXECUTION_API_READINESS_ATTEMPTS} connection attempts"
+            return 1
+        fi
+        if ! sleep "${INSTALL_EXECUTION_API_READINESS_INTERVAL_SECONDS}"; then
+            install_execution_api_error \
+                "Execution API readiness retry delay failed"
+            return 1
+        fi
+    done
+    return 1
 }
 
 install_execution_api_capture_systemd_state() {
@@ -597,8 +650,9 @@ install_execution_api_install() {
         install_execution_api_fail_activation "Execution API activation failed"
         return $?
     fi
-    if ! install_execution_api_health_is_exact "${root_prefix}"; then
-        install_execution_api_fail_activation "Execution API TLS health validation failed"
+    if ! install_execution_api_wait_for_readiness "${root_prefix}"; then
+        install_execution_api_fail_activation \
+            "Execution API TLS health readiness failed"
         return $?
     fi
     rm -rf -- "${transaction}"

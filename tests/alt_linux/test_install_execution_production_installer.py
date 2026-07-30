@@ -105,17 +105,32 @@ def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dic
     _fake_command(
         fake_bin,
         "curl",
+        "attempts=0\n"
+        "if [[ -f ${INSTALLER_HEALTH_ATTEMPTS:?} ]]; then\n"
+        "  read -r attempts < \"${INSTALLER_HEALTH_ATTEMPTS:?}\"\n"
+        "fi\n"
+        "attempts=$((attempts + 1))\n"
+        "printf '%s\\n' \"$attempts\" > \"${INSTALLER_HEALTH_ATTEMPTS:?}\"\n"
+        "if (( attempts <= ${INSTALLER_HEALTH_CONNECT_FAILURES:-0} )); then\n"
+        "  exit 7\n"
+        "fi\n"
         "if [[ ${INSTALLER_HEALTH_FAIL:-0} == 1 ]]; then\n"
         "  printf '%s\\n' '{\"schema_version\":1,\"service\":\"alt-install-execution\",\"status\":\"starting\"}'\n"
         "else\n"
         "  printf '%s\\n' '{\"schema_version\":1,\"service\":\"alt-install-execution\",\"status\":\"ok\"}'\n"
         "fi\n",
     )
+    _fake_command(
+        fake_bin,
+        "sleep",
+        "printf 'sleep %s\\n' \"$*\" >> \"${INSTALLER_COMMAND_LOG:?}\"\n",
+    )
     environment = os.environ.copy()
     environment.update(
         {
             "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
             "INSTALLER_COMMAND_LOG": str(command_log),
+            "INSTALLER_HEALTH_ATTEMPTS": str(tmp_path / "health-attempts"),
             "INSTALLER_SERVICE_STATE": str(service_state),
             "INSTALLER_SS_OUTPUT": listener,
             "INSTALLER_SYSTEMCTL_FAIL_MARKER": str(tmp_path / "systemctl-failed"),
@@ -714,6 +729,50 @@ def test_installer_stages_only_v2_runtime_generates_tls_and_activates_unit(
     assert "daemon-reload" in commands
     assert "enable alt-install-execution.service" in commands
     assert "restart alt-install-execution.service" in commands
+
+
+@pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
+def test_installer_waits_for_delayed_v2_tls_readiness(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, INSTALLER_HEALTH_CONNECT_FAILURES="2")
+
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "health-attempts").read_text(encoding="utf-8") == "3\n"
+    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "enabled active\n"
+
+
+@pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
+def test_installer_readiness_timeout_restores_preexisting_v2_runtime(
+    tmp_path: Path,
+) -> None:
+    current, old_unit, old_target = _seed_prior_v2_runtime(tmp_path)
+    root = tmp_path / "host-root"
+    v1 = root / "opt" / "alt-install-session-api" / "v1-sentinel"
+    v1.parent.mkdir(parents=True)
+    v1.write_text("unchanged\n", encoding="utf-8")
+
+    result = _run(
+        tmp_path,
+        INSTALLER_HEALTH_CONNECT_FAILURES="100",
+        INSTALLER_SERVICE_INITIAL_STATE="enabled active",
+    )
+
+    assert result.returncode != 0
+    assert "readiness" in result.stderr.lower()
+    assert (tmp_path / "health-attempts").read_text(encoding="utf-8") == "10\n"
+    assert str(current.resolve()) == old_target
+    assert (
+        root / "etc" / "systemd" / "system" / "alt-install-execution.service"
+    ).read_bytes() == old_unit
+    assert {
+        path.name
+        for path in (
+            root / "opt" / "alt-install-execution-api" / "releases"
+        ).iterdir()
+    } == {"old"}
+    assert (tmp_path / "service-state").read_text(encoding="utf-8") == "enabled active\n"
+    assert v1.read_text(encoding="utf-8") == "unchanged\n"
 
 
 @pytest.mark.skipif(os.name == "nt" or BASH is None, reason="production installer test requires Linux Bash utilities")
