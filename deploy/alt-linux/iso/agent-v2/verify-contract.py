@@ -211,7 +211,7 @@ def validate_menu(
         raise ContractError("V2 kernel command line or menu body is invalid")
 
     defaults = _default_assignments(lines)
-    if defaults != ["set default=harddisk"]:
+    if defaults != ['set default="${saved_entry}"', "set default=harddisk"]:
         raise ContractError("GRUB default selector is invalid")
     for required in (
         'menuentry "Normal ALT installation"',

@@ -119,9 +119,16 @@ def build_v2_fixture(tmp_path: Path) -> Path:
     assert VERIFIER.is_file()
     assert GRUB_PATCH.is_file()
     assert ISOLINUX_PATCH.is_file()
-    return _apply_menu_patches(
+    fixture = _apply_menu_patches(
         tmp_path / "iso", GRUB_PATCH, ISOLINUX_PATCH
     )
+    grub = fixture / "boot" / "grub" / "grub.cfg"
+    grub.write_text(
+        'set default="${saved_entry}"\n'
+        + grub.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    return fixture
 
 
 def extract(fixture: Path, iso_path: str) -> str:
