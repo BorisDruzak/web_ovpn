@@ -230,7 +230,9 @@ def validate_menu(
     if (
         "default harddisk" not in isolinux
         or "agent-v2" in isolinux
-        or "install2.target" in isolinux
+        or "sosnadmin.mode=agent-v2" in isolinux
+        or V2_CONTROLLER in isolinux
+        or "curl=http://127.0.0.1:18192" in isolinux
     ):
         raise ContractError("BIOS menu must remain non-execution")
 

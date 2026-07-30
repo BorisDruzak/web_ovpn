@@ -168,10 +168,17 @@ def _menu_contract_fixture(tmp_path: Path) -> dict[str, Path]:
         "http://192.168.100.17:18090\n", encoding="ascii"
     )
     v2_controller.write_text(f"{controller}\n", encoding="ascii")
+    isolinux = fixture / "syslinux" / "isolinux.cfg"
+    isolinux.write_text(
+        isolinux.read_text(encoding="utf-8")
+        + "\nlabel upstream-installer\n"
+        + "  append systemd.unit=install2.target\n",
+        encoding="utf-8",
+    )
     return {
         "manifest": manifest,
         "grub": grub,
-        "isolinux": fixture / "syslinux" / "isolinux.cfg",
+        "isolinux": isolinux,
         "v1_controller": v1_controller,
         "v2_controller": v2_controller,
     }
