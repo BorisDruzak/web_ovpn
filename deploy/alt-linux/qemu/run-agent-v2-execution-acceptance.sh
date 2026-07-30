@@ -590,11 +590,20 @@ launch_qemu() {
 
 install_qmp="$workdir/install.qmp.sock"
 launch_qemu "$iso" install
-python3 "$support" qmp-send-preflight-hotkey \
-    --socket "$install_qmp" ||
-    die 'Signed preflight boot-menu selection failed'
-wait_for_line "$workdir/install.console.log" \
-    'ALT install agent: waiting_for_approval' 1200 ||
+preflight_ready=0
+for _ in $(seq 1 1200); do
+    python3 "$support" qmp-send-preflight-hotkey \
+        --socket "$install_qmp" >/dev/null 2>&1 || true
+    if [[ -f "$workdir/install.console.log" ]] &&
+        grep -Fq 'ALT install agent: waiting_for_approval' \
+            "$workdir/install.console.log"; then
+        preflight_ready=1
+        break
+    fi
+    owned_process_alive "$qemu_pid" "$qemu_starttime" || break
+    sleep 1
+done
+((preflight_ready == 1)) ||
     die 'Guest never reached its V1 signed-plan approval hold'
 python3 "$support" approve-disposable-preflight \
     --state-dir "$state_dir" >/dev/null ||

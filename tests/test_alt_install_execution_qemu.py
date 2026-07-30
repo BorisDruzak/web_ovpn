@@ -517,6 +517,12 @@ def test_harness_selects_the_signed_preflight_menu_before_waiting_for_v1() -> No
     waiting = "'ALT install agent: waiting_for_approval'"
     assert hotkey in source
     assert source.index(hotkey) < source.index(waiting)
+    assert (
+        'for _ in $(seq 1 1200); do\n'
+        '    python3 "$support" qmp-send-preflight-hotkey \\\n'
+        '        --socket "$install_qmp" >/dev/null 2>&1 || true\n'
+        in source
+    )
 
 
 def test_harness_cleanup_uses_only_identity_bound_process_termination() -> None:
