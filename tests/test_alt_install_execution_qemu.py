@@ -363,6 +363,25 @@ def _create_run_state(tmp_path: Path) -> tuple[Path, dict[str, object]]:
     return state, manifest
 
 
+def _write_preflight_approval(module, state: Path, request: dict[str, object]) -> str:
+    attestation = module.issue_attestation(
+        state,
+        event="preflight_approval",
+        sequence=1,
+        payload={
+            "baseline_sha256": "a" * 64,
+            "controller": {"plan_revision": 1, "state": "plan_published"},
+            "request": request,
+        },
+        observed_at="2026-07-29T12:00:00+00:00",
+        previous_sha256=None,
+    )
+    (state / "preflight-approval-attestation.json").write_bytes(
+        module._json_bytes(attestation)
+    )
+    return module.attestation_sha256(attestation)
+
+
 def _bash() -> Path:
     for candidate in (
         shutil.which("bash"),
@@ -827,6 +846,102 @@ def test_bound_sha_rejects_relabel_and_replaced_file_identity(
     _write_sha(record, digest, str(target))
     with pytest.raises(module.AcceptanceError, match="file identity"):
         module.read_bound_sha256_record(record, state, "target")
+
+
+def test_disposable_preflight_approval_binds_one_new_waiting_session(
+    tmp_path: Path,
+) -> None:
+    state, manifest = _create_run_state(tmp_path)
+    module = _support_module()
+    session_id = "install-20260730T120000Z-a1b2c3d4"
+    inventory_sha256 = "a" * 64
+    disk_fingerprint = "sha256:" + "b" * 64
+    waiting = {
+        "session_id": session_id,
+        "state": "awaiting_approval",
+        "inventory_sha256": inventory_sha256,
+        "agent_status": {"reported_stage": "waiting_for_approval"},
+    }
+    plan_bytes = json.dumps(
+        {
+            "target_disk": {
+                "fingerprint": disk_fingerprint,
+                "path": "/dev/vda",
+            }
+        },
+        sort_keys=True,
+    ).encode()
+    approved = {
+        **waiting,
+        "state": "plan_published",
+        "plan_revision": 1,
+    }
+    calls: list[list[str]] = []
+
+    baseline = module.capture_preflight_session_baseline(
+        state, statuses=lambda: []
+    )
+    assert baseline["session_status_sha256"] == {}
+
+    def cli(arguments, *, stdout, stderr) -> int:
+        calls.append(arguments)
+        if arguments[2] == "preview":
+            stdout.write(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "preview": {
+                            "session_id": session_id,
+                            "inventory_sha256": inventory_sha256,
+                            "target_disk": {
+                                "path": "/dev/vda",
+                                "fingerprint": disk_fingerprint,
+                            },
+                        },
+                    }
+                )
+            )
+        else:
+            stdout.write(json.dumps({"status": "ok", "session": approved}))
+        return 0
+
+    attestation = module.approve_disposable_preflight(
+        state,
+        statuses=lambda: [waiting],
+        status_loader=lambda observed: approved
+        if observed == session_id
+        else pytest.fail("unexpected session"),
+        revision_file=lambda observed, filename: plan_bytes
+        if (observed, filename) == (session_id, "plan.json")
+        else pytest.fail("unexpected revision"),
+        cli=cli,
+        euid=lambda: 0,
+        observed_at="2026-07-30T12:00:00+00:00",
+    )
+
+    assert calls == [
+        ["--json", "install-sessions", "preview", session_id],
+        [
+            "--json",
+            "install-sessions",
+            "approve",
+            session_id,
+            "--inventory-sha256",
+            inventory_sha256,
+            "--disk-fingerprint",
+            disk_fingerprint,
+            "--reason",
+            f"Disposable OVMF preflight {manifest['run_id']}",
+        ]
+    ]
+    assert attestation["event"] == "preflight_approval"
+    assert attestation["payload"]["request"] == {
+        "disk_fingerprint": disk_fingerprint,
+        "inventory_sha256": inventory_sha256,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "session_id": session_id,
+        "target_disk": "/dev/vda",
+    }
 
 
 def test_signed_chain_rejects_stale_postflight_from_another_run(
@@ -1381,6 +1496,31 @@ def test_authorization_request_is_derived_from_unique_controller_preflight(
         "session_id": session_id,
         "state": "plan_published",
     }
+    approved_request = {
+        "disk_fingerprint": plan["target_disk"]["fingerprint"],
+        "inventory_sha256": "c" * 64,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "session_id": session_id,
+        "target_disk": "/dev/vda",
+    }
+    preflight = module.issue_attestation(
+        state,
+        event="preflight_approval",
+        sequence=1,
+        payload={
+            "baseline_sha256": "a" * 64,
+            "controller": {
+                "plan_revision": 1,
+                "state": "plan_published",
+            },
+            "request": approved_request,
+        },
+        observed_at="2026-07-29T12:00:00+00:00",
+        previous_sha256=None,
+    )
+    (state / "preflight-approval-attestation.json").write_bytes(
+        module._json_bytes(preflight)
+    )
     request = module.create_authorization_request(
         state,
         statuses=lambda: [status],
@@ -1391,11 +1531,10 @@ def test_authorization_request_is_derived_from_unique_controller_preflight(
         ),
     )
     assert request == {
-        "disk_fingerprint": plan["target_disk"]["fingerprint"],
-        "inventory_sha256": "c" * 64,
-        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
-        "session_id": session_id,
-        "target_disk": "/dev/vda",
+        **approved_request,
+        "preflight_approval_attestation_sha256": (
+            module.attestation_sha256(preflight)
+        ),
     }
     assert json.loads(
         (state / "authorization-request.json").read_text(
@@ -1843,6 +1982,9 @@ def test_authorization_wrapper_reaches_cli_with_same_second_boundary(
         "session_id": "install-20260729T120000Z-a1b2c3d4",
         "target_disk": "/dev/vda",
     }
+    request["preflight_approval_attestation_sha256"] = (
+        _write_preflight_approval(module, state, request)
+    )
     request_path = state / "authorization-request.json"
     request_path.write_text(
         json.dumps(request, sort_keys=True) + "\n", encoding="utf-8"
@@ -1977,6 +2119,7 @@ def test_root_authorization_refuses_nonroot_and_second_snapshot_writes(
                 binding["canonical_path"],
             )
             records[f"{phase}_{artifact}"] = record
+    module = _support_module()
     request = state / "authorization-request.json"
     plan_bytes = json.dumps(
         {
@@ -1987,19 +2130,24 @@ def test_root_authorization_refuses_nonroot_and_second_snapshot_writes(
         },
         sort_keys=True,
     ).encode()
+    approved = {
+        "disk_fingerprint": "sha256:" + "d" * 64,
+        "inventory_sha256": "c" * 64,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "session_id": "install-20260729T120000Z-a1b2c3d4",
+        "target_disk": "/dev/vda",
+    }
     request.write_text(
         json.dumps(
             {
-                "disk_fingerprint": "sha256:" + "d" * 64,
-                "inventory_sha256": "c" * 64,
-                "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
-                "session_id": "install-20260729T120000Z-a1b2c3d4",
-                "target_disk": "/dev/vda",
+                **approved,
+                "preflight_approval_attestation_sha256": (
+                    _write_preflight_approval(module, state, approved)
+                ),
             }
         ),
         encoding="utf-8",
     )
-    module = _support_module()
     common = {
         "request_path": request,
         "initial_qmp": initial,

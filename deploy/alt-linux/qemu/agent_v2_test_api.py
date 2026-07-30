@@ -417,6 +417,284 @@ def create_run_state(
     return manifest
 
 
+def _controller_status_map(
+    statuses: Sequence[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Return uniquely identified controller statuses without guessing IDs."""
+    result: dict[str, dict[str, object]] = {}
+    for status in statuses:
+        session_id = status.get("session_id")
+        if (
+            not isinstance(session_id, str)
+            or not SESSION_ID_RE.fullmatch(session_id)
+            or session_id in result
+        ):
+            _fail("Controller session baseline is invalid")
+        result[session_id] = status
+    return result
+
+
+def capture_preflight_session_baseline(
+    state_dir: Path,
+    *,
+    statuses: Callable[[], list[dict[str, object]]] = controller_statuses,
+) -> dict[str, object]:
+    """Bind the acceptance run to the controller state before guest boot."""
+    current = _controller_status_map(statuses())
+    baseline = {
+        "schema_version": 1,
+        "session_status_sha256": {
+            session_id: hashlib.sha256(_json_bytes(status)).hexdigest()
+            for session_id, status in sorted(current.items())
+        },
+    }
+    _write_new(
+        state_dir.resolve(strict=True) / "preflight-session-baseline.json",
+        _json_bytes(baseline),
+        mode=0o600,
+    )
+    return baseline
+
+
+def _load_preflight_session_baseline(state_dir: Path) -> dict[str, str]:
+    baseline = _read_json(
+        state_dir.resolve(strict=True) / "preflight-session-baseline.json"
+    )
+    entries = baseline.get("session_status_sha256")
+    if (
+        set(baseline) != {"schema_version", "session_status_sha256"}
+        or baseline.get("schema_version") != 1
+        or not isinstance(entries, dict)
+        or any(
+            not isinstance(session_id, str)
+            or not SESSION_ID_RE.fullmatch(session_id)
+            or not isinstance(digest, str)
+            or not SHA256_RE.fullmatch(digest)
+            for session_id, digest in entries.items()
+        )
+    ):
+        _fail("Controller preflight baseline is invalid")
+    return dict(entries)
+
+
+def approve_disposable_preflight(
+    state_dir: Path,
+    *,
+    statuses: Callable[[], list[dict[str, object]]] = controller_statuses,
+    status_loader: Callable[[str], dict[str, object]] = controller_status,
+    revision_file: Callable[[str, str], bytes] = controller_revision_file,
+    cli: Callable[..., int] = control_cli_main,
+    euid: Callable[[], int] = lambda: getattr(
+        os, "geteuid", lambda: -1
+    )(),
+    observed_at: str | None = None,
+) -> dict[str, object]:
+    """Approve only the one new VM session seen after a run-owned baseline."""
+    if euid() != 0:
+        _fail("Real root preflight approval is required")
+    baseline = _load_preflight_session_baseline(state_dir)
+    current = _controller_status_map(statuses())
+    if any(
+        session_id not in current
+        or hashlib.sha256(_json_bytes(current[session_id])).hexdigest()
+        != expected_digest
+        for session_id, expected_digest in baseline.items()
+    ):
+        _fail("Controller sessions changed after the preflight baseline")
+    candidates = [
+        status
+        for session_id, status in current.items()
+        if session_id not in baseline
+    ]
+    if len(candidates) != 1:
+        _fail("Exactly one new controller preflight session is required")
+    before = candidates[0]
+    session_id = str(before["session_id"])
+    agent = before.get("agent_status")
+    inventory_sha256 = before.get("inventory_sha256")
+    if (
+        before.get("state") != "awaiting_approval"
+        or "execution" in before
+        or not isinstance(agent, dict)
+        or agent.get("reported_stage") != "waiting_for_approval"
+        or not isinstance(inventory_sha256, str)
+        or not SHA256_RE.fullmatch(inventory_sha256)
+    ):
+        _fail("New controller preflight session is invalid")
+    manifest = _load_run_manifest(state_dir)
+    stdout = StringIO()
+    stderr = StringIO()
+    preview_result = cli(
+        ["--json", "install-sessions", "preview", session_id],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    if preview_result != 0 or stderr.getvalue():
+        _fail("Controller preflight preview failed")
+    try:
+        preview_response = json.loads(
+            stdout.getvalue(), object_pairs_hook=_strict_object
+        )
+        preview = preview_response["preview"]
+        target_preview = preview["target_disk"]
+        disk_fingerprint = target_preview["fingerprint"]
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        _fail("Controller preflight preview response is invalid")
+    if (
+        not isinstance(preview_response, dict)
+        or preview_response.get("status") != "ok"
+        or not isinstance(preview, dict)
+        or preview.get("session_id") != session_id
+        or preview.get("inventory_sha256") != inventory_sha256
+        or not isinstance(target_preview, dict)
+        or target_preview.get("path") != "/dev/vda"
+        or not isinstance(disk_fingerprint, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", disk_fingerprint)
+    ):
+        _fail("Controller preflight preview response is invalid")
+    stdout = StringIO()
+    stderr = StringIO()
+    result = cli(
+        [
+            "--json",
+            "install-sessions",
+            "approve",
+            session_id,
+            "--inventory-sha256",
+            inventory_sha256,
+            "--disk-fingerprint",
+            disk_fingerprint,
+            "--reason",
+            f"Disposable OVMF preflight {manifest['run_id']}",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    if result != 0 or stderr.getvalue():
+        _fail("Controller preflight approval failed")
+    try:
+        response = json.loads(
+            stdout.getvalue(), object_pairs_hook=_strict_object
+        )
+    except (ValueError, json.JSONDecodeError):
+        _fail("Controller preflight approval response is invalid")
+    after = status_loader(session_id)
+    try:
+        plan_bytes = revision_file(session_id, "plan.json")
+        plan = json.loads(
+            plan_bytes.decode("utf-8"), object_pairs_hook=_strict_object
+        )
+        target = plan["target_disk"]
+    except (
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        _fail("Controller approved preflight plan is invalid")
+    if (
+        not isinstance(response, dict)
+        or response.get("status") != "ok"
+        or not isinstance(response.get("session"), dict)
+        or after.get("state") != "plan_published"
+        or after.get("plan_revision") != 1
+        or "execution" in after
+        or after.get("inventory_sha256") != inventory_sha256
+        or not isinstance(target, dict)
+        or target.get("path") != "/dev/vda"
+        or target.get("fingerprint") != disk_fingerprint
+    ):
+        _fail("Controller preflight approval response is invalid")
+    request = {
+        "disk_fingerprint": disk_fingerprint,
+        "inventory_sha256": inventory_sha256,
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "session_id": session_id,
+        "target_disk": "/dev/vda",
+    }
+    attestation = issue_attestation(
+        state_dir,
+        event="preflight_approval",
+        sequence=1,
+        payload={
+            "baseline_sha256": hashlib.sha256(
+                _json_bytes({
+                    "schema_version": 1,
+                    "session_status_sha256": baseline,
+                })
+            ).hexdigest(),
+            "controller": {"plan_revision": 1, "state": "plan_published"},
+            "request": request,
+        },
+        observed_at=observed_at
+        or datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        previous_sha256=None,
+    )
+    _write_new(
+        state_dir.resolve(strict=True)
+        / "preflight-approval-attestation.json",
+        _json_bytes(attestation),
+        mode=0o600,
+    )
+    return attestation
+
+
+def _load_disposable_preflight_request(
+    state_dir: Path,
+) -> tuple[dict[str, object], str]:
+    """Load the signed, run-owned identity selected before V2 execution."""
+    path = (
+        state_dir.resolve(strict=True)
+        / "preflight-approval-attestation.json"
+    )
+    attestation = _read_json(path)
+    verify_attestation_chain(state_dir, [attestation])
+    payload = attestation.get("payload")
+    if (
+        attestation.get("event") != "preflight_approval"
+        or attestation.get("sequence") != 1
+        or attestation.get("previous_attestation_sha256") is not None
+        or not isinstance(payload, dict)
+        or set(payload) != {"baseline_sha256", "controller", "request"}
+        or not isinstance(payload.get("baseline_sha256"), str)
+        or not SHA256_RE.fullmatch(str(payload["baseline_sha256"]))
+        or payload.get("controller")
+        != {"plan_revision": 1, "state": "plan_published"}
+        or not isinstance(payload.get("request"), dict)
+    ):
+        _fail("Disposable preflight approval attestation is invalid")
+    request = dict(payload["request"])
+    if (
+        set(request)
+        != {
+            "disk_fingerprint",
+            "inventory_sha256",
+            "plan_sha256",
+            "session_id",
+            "target_disk",
+        }
+        or not isinstance(request.get("session_id"), str)
+        or not SESSION_ID_RE.fullmatch(str(request["session_id"]))
+        or not isinstance(request.get("plan_sha256"), str)
+        or not SHA256_RE.fullmatch(str(request["plan_sha256"]))
+        or not isinstance(request.get("inventory_sha256"), str)
+        or not SHA256_RE.fullmatch(str(request["inventory_sha256"]))
+        or not isinstance(request.get("disk_fingerprint"), str)
+        or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(request["disk_fingerprint"])
+        )
+        or request.get("target_disk") != "/dev/vda"
+    ):
+        _fail("Disposable preflight approval request is invalid")
+    return request, hashlib.sha256(_read_bytes(path)).hexdigest()
+
+
 def _attestation_path(state_dir: Path, sequence: int, event: str) -> Path:
     return (
         state_dir.resolve(strict=True)
@@ -1554,26 +1832,15 @@ def create_authorization_request(
     statuses: Callable[[], list[dict[str, object]]] = controller_statuses,
     revision_file: Callable[[str, str], bytes] = controller_revision_file,
 ) -> dict[str, object]:
-    """Derive the authorization request from the one live preflight session."""
-    candidates = []
-    for status in statuses():
-        agent = status.get("agent_status")
-        if (
-            status.get("state") == "plan_published"
-            and "execution" not in status
-            and isinstance(agent, dict)
-            and agent.get("reported_stage") == "preflight_ready"
-        ):
-            candidates.append(status)
-    if len(candidates) != 1:
-        _fail("Exactly one controller preflight session is required")
-    status = candidates[0]
-    session_id = status.get("session_id")
-    if (
-        not isinstance(session_id, str)
-        or not SESSION_ID_RE.fullmatch(session_id)
-    ):
-        _fail("Controller preflight session identity is invalid")
+    """Derive execution authorization only from the signed preflight binding."""
+    approved, preflight_attestation_sha256 = (
+        _load_disposable_preflight_request(state_dir)
+    )
+    session_id = str(approved["session_id"])
+    status = _controller_status_map(statuses()).get(session_id)
+    if status is None:
+        _fail("Approved controller preflight session is unavailable")
+    agent = status.get("agent_status")
     try:
         plan_bytes = revision_file(session_id, "plan.json")
         plan = json.loads(
@@ -1593,20 +1860,22 @@ def create_authorization_request(
         not isinstance(plan, dict)
         or not isinstance(target, dict)
         or target.get("path") != "/dev/vda"
-        or not isinstance(target.get("fingerprint"), str)
-        or not re.fullmatch(
-            r"sha256:[0-9a-f]{64}", str(target["fingerprint"])
-        )
-        or not isinstance(status.get("inventory_sha256"), str)
-        or not SHA256_RE.fullmatch(str(status["inventory_sha256"]))
+        or target.get("fingerprint") != approved["disk_fingerprint"]
+        or status.get("state") != "plan_published"
+        or "execution" in status
+        or not isinstance(agent, dict)
+        or agent.get("reported_stage") != "preflight_ready"
+        or status.get("inventory_sha256") != approved["inventory_sha256"]
+        or hashlib.sha256(plan_bytes).hexdigest()
+        != approved["plan_sha256"]
     ):
         _fail("Controller preflight plan binding is invalid")
     request = {
-        "disk_fingerprint": target["fingerprint"],
-        "inventory_sha256": status["inventory_sha256"],
-        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        **approved,
+        "preflight_approval_attestation_sha256": (
+            preflight_attestation_sha256
+        ),
         "session_id": session_id,
-        "target_disk": "/dev/vda",
     }
     output = state_dir.resolve(strict=True) / "authorization-request.json"
     _write_new(output, _json_bytes(request), mode=0o600)
@@ -1659,6 +1928,7 @@ def invoke_root_execution_authorization(
             "disk_fingerprint",
             "inventory_sha256",
             "plan_sha256",
+            "preflight_approval_attestation_sha256",
             "session_id",
             "target_disk",
         }
@@ -1673,8 +1943,33 @@ def invoke_root_execution_authorization(
             r"sha256:[0-9a-f]{64}", str(request["disk_fingerprint"])
         )
         or request.get("target_disk") != "/dev/vda"
+        or not isinstance(
+            request.get("preflight_approval_attestation_sha256"), str
+        )
+        or not SHA256_RE.fullmatch(
+            str(request["preflight_approval_attestation_sha256"])
+        )
     ):
         _fail("Execution authorization request binding is invalid")
+    approved_preflight, approved_preflight_sha256 = (
+        _load_disposable_preflight_request(state_dir)
+    )
+    if (
+        request["preflight_approval_attestation_sha256"]
+        != approved_preflight_sha256
+        or {
+            name: request[name]
+            for name in (
+                "disk_fingerprint",
+                "inventory_sha256",
+                "plan_sha256",
+                "session_id",
+                "target_disk",
+            )
+        }
+        != approved_preflight
+    ):
+        _fail("Execution authorization preflight binding is invalid")
     before_status = status_loader(str(request["session_id"]))
     agent = before_status.get("agent_status")
     try:
@@ -1776,7 +2071,7 @@ def invoke_root_execution_authorization(
             "before_authorization_boundary_sha256": hashlib.sha256(
                 _read_bytes(before_authorization_boundary)
             ).hexdigest(),
-            "pending_boundary_sha256": hashlib.sha256(
+        "pending_boundary_sha256": hashlib.sha256(
                 _read_bytes(pending_boundary)
             ).hexdigest(),
         }
@@ -1914,6 +2209,9 @@ def invoke_root_execution_authorization(
         "initial_sentinel_sha256": initial_sentinel,
         "initial_target_sha256": initial_target,
         "request": request,
+        "preflight_approval_attestation_sha256": (
+            approved_preflight_sha256
+        ),
         "sentinel_sha256_before_authorization": immediate_sentinel,
         "target_disk": "/dev/vda",
         "target_sha256_before_authorization": immediate_target,
@@ -3750,6 +4048,14 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--target", required=True, type=Path)
     create.add_argument("--sentinel", required=True, type=Path)
     create.add_argument("--vm-instance-id", required=True)
+    baseline = commands.add_parser(
+        "capture-preflight-session-baseline", allow_abbrev=False
+    )
+    baseline.add_argument("--state-dir", required=True, type=Path)
+    approve_preflight = commands.add_parser(
+        "approve-disposable-preflight", allow_abbrev=False
+    )
+    approve_preflight.add_argument("--state-dir", required=True, type=Path)
     authorization_request = commands.add_parser(
         "create-authorization-request", allow_abbrev=False
     )
@@ -3924,6 +4230,18 @@ def main(
                 vm_instance_id=arguments.vm_instance_id,
             )
             print(f"run_id={manifest['run_id']}")
+        elif arguments.command == "capture-preflight-session-baseline":
+            capture_preflight_session_baseline(arguments.state_dir)
+            print("preflight_baseline=captured")
+        elif arguments.command == "approve-disposable-preflight":
+            approve_disposable_preflight(
+                arguments.state_dir,
+                cli=cli,
+                status_loader=status_loader,
+                revision_file=revision_loader,
+                euid=euid,
+            )
+            print("preflight_state=approved")
         elif arguments.command == "create-authorization-request":
             request = create_authorization_request(arguments.state_dir)
             print(f"session_id={request['session_id']}")

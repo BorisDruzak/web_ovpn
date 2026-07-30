@@ -208,9 +208,10 @@ script_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$script_root/../../.." && pwd -P)
 support="$script_root/agent_v2_test_api.py"
 execution_server="$repo_root/deploy/alt-linux/api/install_execution_server.py"
+session_server="$repo_root/deploy/alt-linux/api/install_session_server.py"
 iso_verifier="$repo_root/deploy/alt-linux/iso/agent-v2/verify-managed-iso.sh"
 for path in "$iso" "$source_iso" "$ovmf_code" "$ovmf_vars" "$support" "$iso_verifier" \
-    "$execution_server" "$controller_credential_key"; do
+    "$execution_server" "$session_server" "$controller_credential_key"; do
     [[ -f "$path" && -r "$path" && ! -L "$path" ]] ||
         die "Required regular file is unreadable: $path"
 done
@@ -273,6 +274,8 @@ dnsmasq_pid=
 dnsmasq_starttime=
 execution_server_pid=
 execution_server_starttime=
+session_server_pid=
+session_server_starttime=
 tap_name="aiv2$(( $$ % 100000 ))"
 netns_holder_pid=
 netns_ownership_record="$evidence/network-namespace-ownership.json"
@@ -327,6 +330,12 @@ stop_qemu() {
 
 cleanup() {
     stop_qemu || true
+    if stop_recorded_process \
+        "$session_server_pid" "$session_server_starttime" \
+        "install-session API process"; then
+        session_server_pid=
+        session_server_starttime=
+    fi
     if stop_recorded_process \
         "$execution_server_pid" "$execution_server_starttime" \
         "execution API process"; then
@@ -383,6 +392,9 @@ python3 "$support" create-run \
     --sentinel "$sentinel" \
     --vm-instance-id "$vm_instance_id" >/dev/null ||
     die 'Run trust state creation failed'
+python3 "$support" capture-preflight-session-baseline \
+    --state-dir "$state_dir" >/dev/null ||
+    die 'Controller preflight baseline capture failed'
 run_iso_output=$(python3 "$support" verify-run-iso \
     --state-dir "$state_dir") ||
     die 'Harness-owned run ISO verification failed'
@@ -439,6 +451,19 @@ python3 "$support" run-in-network-namespace \
 dnsmasq_pid=$!
 dnsmasq_starttime=$(process_starttime "$dnsmasq_pid") ||
     die 'Harness DHCP process identity recording failed'
+PYTHONPATH="$repo_root/deploy/alt-linux/control" \
+ALT_DEPLOY_INSTALL_PROFILE_ROOT="$repo_root/deploy/alt-linux/autoinstall/profiles" \
+python3 "$support" run-in-network-namespace \
+    --record "$netns_ownership_record" -- \
+    python3 "$session_server" \
+    --listen-address 192.168.100.17 \
+    --listen-port 18090 \
+    >"$workdir/session-server.log" 2>&1 &
+session_server_pid=$!
+session_server_starttime=$(process_starttime "$session_server_pid") ||
+    die 'Harness install-session service identity recording failed'
+PYTHONPATH="$repo_root/deploy/alt-linux/control" \
+ALT_DEPLOY_INSTALL_PROFILE_ROOT="$repo_root/deploy/alt-linux/autoinstall/profiles" \
 python3 "$support" run-in-network-namespace \
     --record "$netns_ownership_record" -- \
     python3 "$execution_server" \
@@ -450,6 +475,28 @@ python3 "$support" run-in-network-namespace \
 execution_server_pid=$!
 execution_server_starttime=$(process_starttime "$execution_server_pid") ||
     die 'Harness execution service identity recording failed'
+
+wait_for_controller_port() {
+    local port=$1 pid=$2 starttime=$3 seconds=$4 elapsed
+    for ((elapsed = 0; elapsed < seconds; elapsed++)); do
+        if python3 "$support" run-in-network-namespace \
+            --record "$netns_ownership_record" -- \
+            python3 -c \
+            'import socket, sys; connection = socket.create_connection(("192.168.100.17", int(sys.argv[1])), 1); connection.close()' \
+            "$port" >/dev/null 2>&1; then
+            return 0
+        fi
+        owned_process_alive "$pid" "$starttime" || return 1
+        sleep 1
+    done
+    return 1
+}
+wait_for_controller_port 18090 "$session_server_pid" \
+    "$session_server_starttime" 30 ||
+    die 'Harness install-session API did not become available'
+wait_for_controller_port 18092 "$execution_server_pid" \
+    "$execution_server_starttime" 30 ||
+    die 'Harness execution API did not become available'
 
 wait_for_socket() {
     local socket_path=$1 seconds=$2 elapsed
@@ -543,6 +590,12 @@ launch_qemu() {
 
 install_qmp="$workdir/install.qmp.sock"
 launch_qemu "$iso" install
+wait_for_line "$workdir/install.console.log" \
+    'ALT install agent: waiting_for_approval' 1200 ||
+    die 'Guest never reached its V1 signed-plan approval hold'
+python3 "$support" approve-disposable-preflight \
+    --state-dir "$state_dir" >/dev/null ||
+    die 'Real root disposable preflight approval failed'
 wait_for_line "$workdir/install.console.log" \
     'terminal=execution_pending' 1200 ||
     die 'Guest never proved its pre-authorization execution hold'
