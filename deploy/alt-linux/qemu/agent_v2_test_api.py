@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import hashlib
 import json
 import os
@@ -33,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CONTROL_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "control"
 if str(CONTROL_ROOT) not in sys.path:
     sys.path.insert(0, str(CONTROL_ROOT))
+_NAMESPACE_ENTRY_AUTO = object()
 
 
 def control_cli_main(*args: object, **kwargs: object) -> int:
@@ -1483,6 +1485,37 @@ def hold_network_namespace(record: Path) -> None:
         signal.pause()
 
 
+def _enter_network_namespace(
+    descriptor: int,
+    *,
+    os_setns: Callable[[int, int], object] | None | object = (
+        _NAMESPACE_ENTRY_AUTO
+    ),
+    libc_loader: Callable[..., object] = ctypes.CDLL,
+) -> None:
+    """Enter a Linux network namespace on Python 3.11+ as well as 3.12+."""
+    if os_setns is _NAMESPACE_ENTRY_AUTO:
+        candidate = getattr(os, "setns", None)
+        if callable(candidate):
+            os_setns = candidate
+    flags = getattr(os, "CLONE_NEWNET", 0x40000000)
+    try:
+        if callable(os_setns):
+            os_setns(descriptor, flags)
+            return
+        libc = libc_loader(None, use_errno=True)
+        setns = getattr(libc, "setns")
+        setns.argtypes = [ctypes.c_int, ctypes.c_int]
+        setns.restype = ctypes.c_int
+        if setns(descriptor, flags) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+    except (AttributeError, OSError) as exc:
+        raise AcceptanceError(
+            "Harness network namespace entry is unavailable"
+        ) from exc
+
+
 def run_in_owned_network_namespace(
     ownership: dict[str, object], command: Sequence[str]
 ) -> NoReturn:
@@ -1508,9 +1541,7 @@ def run_in_owned_network_namespace(
             or metadata.st_ino != ownership.get("namespace_inode")
         ):
             _fail("Harness network namespace identity changed")
-        if not hasattr(os, "setns"):
-            _fail("Harness network namespace entry is unavailable")
-        os.setns(descriptor, getattr(os, "CLONE_NEWNET", 0))
+        _enter_network_namespace(descriptor)
     finally:
         os.close(descriptor)
     os.execvp(command[0], list(command))

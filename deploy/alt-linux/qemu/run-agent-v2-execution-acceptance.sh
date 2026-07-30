@@ -36,7 +36,7 @@ check_prerequisites() {
     done
     if command -v python3 >/dev/null 2>&1; then
         if ! python3 -c \
-            'import cryptography, os, signal, socket; raise SystemExit(0 if all((hasattr(socket, "AF_UNIX"), hasattr(os, "setns"), hasattr(os, "pidfd_open"), hasattr(signal, "pidfd_send_signal"))) else 1)' \
+            'import cryptography, ctypes, os, signal, socket; raise SystemExit(0 if all((hasattr(socket, "AF_UNIX"), (hasattr(os, "setns") or hasattr(ctypes.CDLL(None), "setns")), hasattr(os, "pidfd_open"), hasattr(signal, "pidfd_send_signal"))) else 1)' \
             >/dev/null 2>&1; then
             printf '%s\n' \
                 'agent-v2-qemu: Required Python cryptography/AF_UNIX/netns support is unavailable' >&2

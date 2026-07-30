@@ -1712,6 +1712,84 @@ def test_network_namespace_cleanup_returns_after_bounded_wait_failure() -> None:
     assert closed == [83]
 
 
+def test_network_namespace_entry_uses_libc_when_python_lacks_setns() -> None:
+    module = _support_module()
+    calls: list[tuple[int, int]] = []
+
+    class FakeSetns:
+        argtypes: object | None = None
+        restype: object | None = None
+
+        def __call__(self, descriptor: int, flags: int) -> int:
+            calls.append((descriptor, flags))
+            return 0
+
+    fake_setns = FakeSetns()
+    module._enter_network_namespace(
+        79,
+        os_setns=None,
+        libc_loader=lambda _name, *, use_errno: type(
+            "Libc", (), {"setns": fake_setns}
+        )(),
+    )
+
+    assert calls == [(79, 0x40000000)]
+    assert fake_setns.argtypes is not None
+    assert fake_setns.restype is not None
+
+
+def test_network_namespace_entry_fails_closed_when_libc_setns_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _support_module()
+
+    class FailingSetns:
+        argtypes: object | None = None
+        restype: object | None = None
+
+        def __call__(self, _descriptor: int, _flags: int) -> int:
+            return -1
+
+    monkeypatch.setattr(module.ctypes, "get_errno", lambda: 1)
+    with pytest.raises(module.AcceptanceError, match="entry is unavailable"):
+        module._enter_network_namespace(
+            79,
+            os_setns=None,
+            libc_loader=lambda _name, *, use_errno: type(
+                "Libc", (), {"setns": FailingSetns()}
+            )(),
+        )
+
+
+def test_network_namespace_entry_can_force_libc_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _support_module()
+    calls: list[tuple[int, int]] = []
+
+    def unexpected_os_setns(_descriptor: int, _flags: int) -> None:
+        pytest.fail("Python os.setns must not be used in forced fallback")
+
+    class FakeSetns:
+        argtypes: object | None = None
+        restype: object | None = None
+
+        def __call__(self, descriptor: int, flags: int) -> int:
+            calls.append((descriptor, flags))
+            return 0
+
+    monkeypatch.setattr(module.os, "setns", unexpected_os_setns, raising=False)
+    module._enter_network_namespace(
+        79,
+        os_setns=None,
+        libc_loader=lambda _name, *, use_errno: type(
+            "Libc", (), {"setns": FakeSetns()}
+        )(),
+    )
+
+    assert calls == [(79, 0x40000000)]
+
+
 def test_authorization_wrapper_reaches_cli_with_same_second_boundary(
     tmp_path: Path,
 ) -> None:
