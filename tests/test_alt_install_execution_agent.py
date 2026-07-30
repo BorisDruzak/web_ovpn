@@ -46,7 +46,8 @@ def _run_bash(
     )
 
 
-def _library_agent_script(body: str) -> str:
+def _library_agent_script(body: str, *, bootstrap: bool = True) -> str:
+    bootstrap_stub = "bootstrap_v1_preflight() { :; }" if bootstrap else ""
     return f"""
 set -euo pipefail
 export ALT_INSTALL_AGENT_LIBRARY_ONLY=1
@@ -54,6 +55,7 @@ source '{AGENT.as_posix()}'
 config_load() {{ :; }}
 state_init() {{ :; }}
 terminal_hold() {{ printf 'terminal=%s\\n' "$1"; exit 97; }}
+{bootstrap_stub}
 {body}
 """
 
@@ -123,6 +125,71 @@ agent_run
 
     assert completed.returncode == 0, completed.stderr
     assert actions.read_text(encoding="utf-8").splitlines() == [
+        "download-execution-bundle",
+        "verify-execution-bundle",
+        "claim",
+        "verify-plan",
+        "disk-preflight",
+        "serve-execution-metadata",
+        "handoff-started",
+        "installer-started",
+    ]
+
+
+def test_agent_bootstraps_v1_preflight_before_execution_bundle(
+    tmp_path: Path,
+) -> None:
+    actions = tmp_path / "actions"
+    boot_id = tmp_path / "boot-id"
+    boot_id.write_text("a1b2c3d4-e5f6-7890-abcd-ef1234567890\n", encoding="utf-8")
+    completed = _run_bash(
+        _library_agent_script(
+            f"""
+record() {{ printf '%s\\n' "$1" >> '{actions.as_posix()}'; }}
+config_load() {{ record execution-config; }}
+config_load_v2_preflight() {{ record preflight-config; }}
+state_init() {{ record state-init; }}
+state_path() {{ printf '/tmp/alt-v2-test-%s\\n' "$1"; }}
+network_prepare() {{ record network; }}
+generate_create_nonce() {{ record nonce; }}
+helper_inventory() {{ record inventory; }}
+protocol_create_session() {{ record create-session; }}
+protocol_heartbeat() {{ record "heartbeat:$1"; }}
+protocol_wait_for_plan() {{ record wait-for-plan; }}
+protocol_download_plan() {{ record download-plan; }}
+helper_verify_plan() {{ record verify-plan; }}
+helper_disk_preflight() {{ record disk-preflight; }}
+protocol_download_execution_bundle() {{ record download-execution-bundle; }}
+helper_verify_execution_bundle() {{ record verify-execution-bundle; }}
+protocol_claim_execution() {{ record claim; }}
+protocol_handoff_started() {{ record handoff-started; }}
+protocol_installer_started() {{ record installer-started; }}
+start_execution_relay() {{ record serve-execution-metadata; }}
+agent_run
+""",
+            bootstrap=False,
+        ),
+        env={"ALT_INSTALL_BOOT_ID_FILE": boot_id.as_posix()},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert actions.read_text(encoding="utf-8").splitlines() == [
+        "execution-config",
+        "state-init",
+        "preflight-config",
+        "network",
+        "nonce",
+        "inventory",
+        "create-session",
+        "heartbeat:agent_started",
+        "heartbeat:inventory_validated",
+        "heartbeat:waiting_for_approval",
+        "wait-for-plan",
+        "download-plan",
+        "heartbeat:plan_downloaded",
+        "verify-plan",
+        "disk-preflight",
+        "heartbeat:preflight_ready",
         "download-execution-bundle",
         "verify-execution-bundle",
         "claim",

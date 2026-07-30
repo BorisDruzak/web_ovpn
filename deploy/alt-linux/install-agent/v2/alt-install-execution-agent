@@ -11,6 +11,7 @@ if [[ -n "${ALT_INSTALL_AGENT_ROOT:-}" ]]; then
 else
     agent_root=$script_root
 fi
+execution_agent_root=$agent_root
 if [[ -n "${ALT_INSTALL_V1_AGENT_ROOT:-}" ]]; then
     v1_agent_root=$ALT_INSTALL_V1_AGENT_ROOT
 elif [[ -d "$script_root/../v1/lib" ]]; then
@@ -18,11 +19,33 @@ elif [[ -d "$script_root/../v1/lib" ]]; then
 else
     v1_agent_root=/usr/libexec/alt-install-agent-v1
 fi
+if [[ -r "$v1_agent_root/alt-install-agent" &&
+    ! -L "$v1_agent_root/alt-install-agent" ]]; then
+    v1_agent_entrypoint=$v1_agent_root/alt-install-agent
+else
+    v1_agent_entrypoint=${ALT_INSTALL_V1_AGENT_ENTRYPOINT:-/usr/libexec/alt-install-agent}
+fi
+
+[[ -f "$v1_agent_entrypoint" && ! -L "$v1_agent_entrypoint" ]] ||
+    exit 1
+v1_library_mode=${ALT_INSTALL_AGENT_LIBRARY_ONLY:-0}
+v1_agent_root_override=${ALT_INSTALL_AGENT_ROOT-}
+v1_agent_root_was_set=${ALT_INSTALL_AGENT_ROOT+x}
+ALT_INSTALL_AGENT_LIBRARY_ONLY=1
+unset ALT_INSTALL_AGENT_ROOT
+# shellcheck source=../v1/alt-install-agent
+source "$v1_agent_entrypoint"
+agent_root=$execution_agent_root
+ALT_INSTALL_AGENT_LIBRARY_ONLY=$v1_library_mode
+if [[ -n "$v1_agent_root_was_set" ]]; then
+    ALT_INSTALL_AGENT_ROOT=$v1_agent_root_override
+else
+    unset ALT_INSTALL_AGENT_ROOT
+fi
+export ALT_INSTALL_AGENT_LIBRARY_ONLY
 
 # shellcheck source=lib/config.sh
 source "$agent_root/lib/config.sh"
-# shellcheck source=../v1/lib/state.sh
-source "$v1_agent_root/lib/state.sh"
 # shellcheck source=lib/protocol.sh
 source "$agent_root/lib/protocol.sh"
 # shellcheck source=lib/ui.sh
@@ -61,6 +84,34 @@ helper_disk_preflight() {
     "$ALT_INSTALL_HELPER" disk-preflight \
         --plan "$(state_path plan.json)" \
         --inventory "$(state_path inventory.json)" >/dev/null
+}
+
+bootstrap_v1_preflight() {
+    local boot_id_file=${ALT_INSTALL_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}
+
+    config_load_v2_preflight || return 1
+    network_prepare || return 1
+    generate_create_nonce || return 1
+    helper_inventory || return 1
+    if [[ -r "$boot_id_file" ]] &&
+        ALT_INSTALL_BOOT_ID=$(tr -d '\r\n' < "$boot_id_file"); then
+        :
+    else
+        return 1
+    fi
+    [[ "$ALT_INSTALL_BOOT_ID" =~ ^[A-Za-z0-9-]{1,128}$ ]] || return 1
+    export ALT_INSTALL_BOOT_ID
+    protocol_create_session "$(state_path inventory.json)" || return 1
+    protocol_heartbeat agent_started || return 1
+    protocol_heartbeat inventory_validated || return 1
+    protocol_heartbeat waiting_for_approval || return 1
+    ui_status waiting_for_approval
+    protocol_wait_for_plan || return 1
+    protocol_download_plan || return 1
+    protocol_heartbeat plan_downloaded || return 1
+    helper_verify_plan || return 1
+    helper_disk_preflight || return 1
+    protocol_heartbeat preflight_ready
 }
 
 start_execution_relay() {
@@ -129,6 +180,7 @@ stop_execution_relay() {
 agent_run() {
     config_load || terminal_hold configuration_failed
     state_init || terminal_hold state_failed
+    bootstrap_v1_preflight || terminal_hold preflight_bootstrap_failed
     protocol_download_execution_bundle || terminal_hold execution_pending
     helper_verify_execution_bundle ||
         terminal_hold execution_verification_failed
