@@ -53,29 +53,40 @@ install_execution_api_exact_socket_status() {
 
 install_execution_api_unit_is_managed() {
     local unit_path=$1
-    local line
-    local -a required_lines=(
-        "User=altserver"
-        "Group=altserver"
-        "Environment=PYTHONPATH=/opt/alt-install-execution-api/current/control"
-        "Environment=ALT_DEPLOY_INSTALL_EXECUTION_LISTEN_ADDRESS=${INSTALL_EXECUTION_API_ADDRESS}"
-        "Environment=ALT_DEPLOY_INSTALL_EXECUTION_LISTEN_PORT=${INSTALL_EXECUTION_API_PORT}"
-        "LoadCredential=execution-tls-key:/var/lib/alt-deploy-secrets/install-execution-server.pem"
-        "ExecStart=/usr/bin/python3 /opt/alt-install-execution-api/current/api/install_execution_server.py --listen-address ${INSTALL_EXECUTION_API_ADDRESS} --listen-port ${INSTALL_EXECUTION_API_PORT} --credential-key %d/execution-tls-key"
-    )
+    local script_dir
+    local expected_unit
+    local fragment_path
+    local drop_in_paths
+    local need_daemon_reload
 
     if [[ ! -f ${unit_path} || -L ${unit_path} ]]; then
         return 1
     fi
-    if grep -Eq '(^|[^0-9])18090([^0-9]|$)|0\.0\.0\.0|\[::\]' \
-        "${unit_path}"; then
+    if ! script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &&
+        pwd -P); then
         return 1
     fi
-    for line in "${required_lines[@]}"; do
-        if ! grep -Fqx -- "${line}" "${unit_path}"; then
-            return 1
-        fi
-    done
+    expected_unit="${script_dir}/systemd/${INSTALL_EXECUTION_API_UNIT}"
+    if [[ ! -f ${expected_unit} || -L ${expected_unit} ]] ||
+       ! cmp -s -- "${expected_unit}" "${unit_path}"; then
+        return 1
+    fi
+    if ! fragment_path=$(systemctl show --property=FragmentPath --value \
+        "${INSTALL_EXECUTION_API_UNIT}") ||
+       [[ ${fragment_path} != "${unit_path}" ]]; then
+        return 1
+    fi
+    if ! drop_in_paths=$(systemctl show --property=DropInPaths --value \
+        "${INSTALL_EXECUTION_API_UNIT}") ||
+       [[ -n ${drop_in_paths} ]]; then
+        return 1
+    fi
+    if ! need_daemon_reload=$(systemctl show \
+        --property=NeedDaemonReload --value \
+        "${INSTALL_EXECUTION_API_UNIT}") ||
+       [[ ${need_daemon_reload} != no ]]; then
+        return 1
+    fi
 }
 
 install_execution_api_owned_listener_is_healthy() {

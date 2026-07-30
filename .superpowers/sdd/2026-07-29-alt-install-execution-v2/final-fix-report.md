@@ -104,3 +104,77 @@ All exited successfully.
 
 No real QEMU/OVMF acceptance PASS or production rollout is claimed. Those
 remain the existing external Task 6/Task 7 gates.
+
+## Final effective-unit identity fix (2026-07-30)
+
+### Status and behavior
+
+The repeat-run occupied-listener admission now fails closed unless the
+installed unit is byte-for-byte identical to the packaged V2 unit and systemd
+reports that exact file as `FragmentPath`, no loaded `DropInPaths`, and
+`NeedDaemonReload=no`. This rejects both a foreign health-compatible
+`ExecStart` drop-in and duplicate reset/override directives appended to the
+base unit. The genuine healthy managed V2 listener remains admissible.
+
+The change is confined to V2 listener admission. V1 paths and services are
+untouched. No deployment, service activation, QEMU run, push, or production
+network change was performed.
+
+### TDD evidence
+
+RED, before the effective-unit identity check:
+
+```text
+python -m pytest --noconftest \
+  tests/alt_linux/test_install_execution_production_installer.py -q \
+  -k "foreign_exec_start or admits_only_healthy"
+
+2 failed, 1 passed, 27 deselected in 2.28s
+```
+
+Both foreign `ExecStart` variants were incorrectly admitted while the healthy
+managed-unit positive control passed.
+
+GREEN, after the identity check:
+
+```text
+3 passed, 27 deselected in 1.74s
+```
+
+### Verification
+
+Fresh local Windows installer module:
+
+```text
+python -m pytest --noconftest \
+  tests/alt_linux/test_install_execution_production_installer.py -q
+
+18 passed, 12 skipped in 6.66s
+```
+
+The skips are the existing Linux/POSIX-gated production installer cases.
+
+Fresh authoritative temporary Linux-root archive run on `altserver-100-17`:
+
+```text
+sudo -n python3 -m pytest --noconftest \
+  tests/alt_linux/test_install_execution_production_installer.py -q
+
+30 passed in 5.76s
+```
+
+The temporary remote tree/archive and local archive were removed after the
+run. This was test-only extraction under `/tmp`, not deployment.
+
+Static checks:
+
+```text
+bash -n deploy/alt-linux/install-install-execution-api.sh
+python -m py_compile \
+  tests/alt_linux/test_install_execution_production_installer.py
+python -m ruff check \
+  tests/alt_linux/test_install_execution_production_installer.py
+git diff --check
+```
+
+All exited successfully.

@@ -46,8 +46,14 @@ def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dic
         "  is-enabled) read -r enabled _ < \"${INSTALLER_SERVICE_STATE:?}\"; [[ $enabled == enabled ]] ;;\n"
         "  is-active) read -r _ active < \"${INSTALLER_SERVICE_STATE:?}\"; [[ $active == active ]] ;;\n"
         "  show)\n"
-        "    [[ ${2:-} == --property=MainPID && ${3:-} == --value ]] || exit 90\n"
-        "    printf '%s\\n' \"${INSTALLER_SERVICE_MAIN_PID:-4242}\"\n"
+        "    [[ ${3:-} == --value ]] || exit 90\n"
+        "    case \"${2:-}\" in\n"
+        "      --property=MainPID) printf '%s\\n' \"${INSTALLER_SERVICE_MAIN_PID:-4242}\" ;;\n"
+        "      --property=FragmentPath) printf '%s\\n' \"${INSTALLER_SERVICE_FRAGMENT_PATH:-}\" ;;\n"
+        "      --property=DropInPaths) printf '%s\\n' \"${INSTALLER_SERVICE_DROP_IN_PATHS:-}\" ;;\n"
+        "      --property=NeedDaemonReload) printf '%s\\n' \"${INSTALLER_SERVICE_NEED_DAEMON_RELOAD:-no}\" ;;\n"
+        "      *) exit 90 ;;\n"
+        "    esac\n"
         "    ;;\n"
         "  daemon-reload) exit 0 ;;\n"
         "  enable)\n"
@@ -91,17 +97,32 @@ def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dic
 
 def _run(tmp_path: Path, *, listener: str = "", **overrides: str) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "host-root"
+    unit = (
+        root
+        / "etc"
+        / "systemd"
+        / "system"
+        / "alt-install-execution.service"
+    )
     command = (
         "set -Eeuo pipefail; "
         f"source {INSTALLER.as_posix()!r}; "
         f"install_execution_api_main {root.as_posix()!r}"
     )
+    environment_overrides = {
+        "INSTALLER_SERVICE_FRAGMENT_PATH": unit.as_posix(),
+        **overrides,
+    }
     return subprocess.run(
         [BASH, "-c", command],
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,
-        env=_environment(tmp_path, listener=listener, **overrides),
+        env=_environment(
+            tmp_path,
+            listener=listener,
+            **environment_overrides,
+        ),
         check=False,
     )
 
@@ -235,6 +256,8 @@ def _run_listener_admission(
     service_state: str = "enabled active",
     main_pid: str = "4242",
     health_fail: str = "0",
+    unit_suffix: str = "",
+    drop_in_exec_start: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "listener-root"
     release = root / "opt" / "alt-install-execution-api" / "releases" / "old"
@@ -250,10 +273,25 @@ def _run_listener_admission(
             / "alt-linux"
             / "systemd"
             / "alt-install-execution.service"
-        ).read_text(encoding="utf-8").replace("\r\n", "\n"),
+        ).read_text(encoding="utf-8").replace("\r\n", "\n")
+        + unit_suffix,
         encoding="utf-8",
         newline="\n",
     )
+    drop_in_paths = ""
+    if drop_in_exec_start is not None:
+        drop_in = Path(f"{unit}.d") / "90-foreign-listener.conf"
+        drop_in.parent.mkdir()
+        drop_in.write_text(
+            (
+                "[Service]\n"
+                "ExecStart=\n"
+                f"ExecStart={drop_in_exec_start}\n"
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        drop_in_paths = str(drop_in)
     ca = root / "etc" / "alt-deploy" / "install-execution-ca.pem"
     ca.parent.mkdir(parents=True)
     ca.write_text("test CA\n", encoding="utf-8")
@@ -282,6 +320,10 @@ def _run_listener_admission(
             listener=listener,
             INSTALLER_SERVICE_INITIAL_STATE=service_state,
             INSTALLER_SERVICE_MAIN_PID=main_pid,
+            INSTALLER_SERVICE_FRAGMENT_PATH=unit.as_posix(),
+            INSTALLER_SERVICE_DROP_IN_PATHS=Path(drop_in_paths).as_posix()
+            if drop_in_paths
+            else "",
             INSTALLER_HEALTH_FAIL=health_fail,
             INSTALLER_TEST_PYTHON=Path(sys.executable).as_posix(),
         ),
@@ -448,6 +490,49 @@ def test_installer_admits_only_healthy_listener_owned_by_managed_v2_service(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")
+def test_installer_rejects_foreign_exec_start_drop_in_on_managed_v2_unit(
+    tmp_path: Path,
+) -> None:
+    result = _run_listener_admission(
+        tmp_path,
+        listener=(
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n'
+        ),
+        drop_in_exec_start=(
+            "/usr/bin/python3 /opt/foreign/health-compatible.py "
+            "--listen-address 192.168.100.17 --listen-port 18092"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "unit is not the managed V2 unit" in result.stderr
+
+
+@pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")
+def test_installer_rejects_duplicate_foreign_exec_start_in_managed_unit_file(
+    tmp_path: Path,
+) -> None:
+    result = _run_listener_admission(
+        tmp_path,
+        listener=(
+            'LISTEN 0 128 192.168.100.17:18092 0.0.0.0:* '
+            'users:(("python3",pid=4242,fd=3))\n'
+        ),
+        unit_suffix=(
+            "\n[Service]\n"
+            "ExecStart=\n"
+            "ExecStart=/usr/bin/python3 "
+            "/opt/foreign/health-compatible.py "
+            "--listen-address 192.168.100.17 --listen-port 18092\n"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "unit is not the managed V2 unit" in result.stderr
 
 
 @pytest.mark.skipif(BASH is None, reason="listener ownership test requires Bash")
