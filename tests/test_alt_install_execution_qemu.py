@@ -1700,6 +1700,48 @@ def test_authorization_boundary_captures_qmp_and_sha_as_one_signed_unit(
     assert loaded == boundary
 
 
+def test_authorization_boundary_excludes_iso_revalidation_from_short_capture_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, manifest = _create_run_state(tmp_path / "run")
+    module = _support_module()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    timestamps = iter(
+        (
+            "2026-07-29T12:01:00+00:00",
+            "2026-07-29T12:01:01+00:00",
+        )
+    )
+
+    def expensive_verify(run_state: Path) -> dict[str, object]:
+        pytest.fail("full ISO hashing must not occur inside the short window")
+
+    def capture(_socket: Path, output: Path) -> None:
+        _write_qmp(
+            output,
+            target_write_bytes=0,
+            sentinel_write_bytes=0,
+            target_file=manifest["artifacts"]["target"]["canonical_path"],
+            sentinel_file=manifest["artifacts"]["sentinel"]["canonical_path"],
+            install_iso_file=manifest["iso"]["canonical_path"],
+        )
+
+    monkeypatch.setattr(module, "verify_run_iso", expensive_verify)
+    boundary = module.capture_authorization_boundary(
+        state,
+        socket_path=tmp_path / "qmp.sock",
+        evidence_dir=evidence,
+        phase="pending",
+        qmp_capture=capture,
+        clock=lambda: next(timestamps),
+    )
+
+    assert boundary["capture_started_at"] == "2026-07-29T12:01:00+00:00"
+    assert boundary["captured_at"] == "2026-07-29T12:01:01+00:00"
+
+
 def test_authorization_boundary_rejects_an_overlong_capture(
     tmp_path: Path,
 ) -> None:

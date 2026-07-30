@@ -825,7 +825,8 @@ def _load_run_manifest(state_dir: Path) -> dict[str, object]:
     return manifest
 
 
-def verify_run_iso(state_dir: Path) -> dict[str, object]:
+def verify_run_iso_identity(state_dir: Path) -> dict[str, object]:
+    """Check the private run ISO path and inode without rereading 10 GiB."""
     manifest = _load_run_manifest(state_dir)
     binding = manifest.get("iso")
     if (
@@ -861,13 +862,21 @@ def verify_run_iso(state_dir: Path) -> dict[str, object]:
         canonical != expected_path
         or str(canonical) != binding.get("canonical_path")
         or _file_identity(metadata) != binding.get("file_identity")
-        or _sha256_file(canonical) != binding.get("sha256")
         or (
             os.name == "posix"
             and stat.S_IMODE(metadata.st_mode) != 0o400
         )
     ):
-        _fail("Run ISO identity or SHA-256 changed")
+        _fail("Run ISO identity changed")
+    return binding
+
+
+def verify_run_iso(state_dir: Path) -> dict[str, object]:
+    """Perform the full content verification outside short QMP windows."""
+    binding = verify_run_iso_identity(state_dir)
+    canonical = Path(str(binding["canonical_path"]))
+    if _sha256_file(canonical) != binding.get("sha256"):
+        _fail("Run ISO SHA-256 changed")
     return binding
 
 
@@ -934,7 +943,7 @@ def read_bound_qmp_snapshot(
         ):
             _fail(f"QMP {name} inserted file binding is invalid")
     if require_iso:
-        iso = verify_run_iso(state_dir)
+        iso = verify_run_iso_identity(state_dir)
         install_iso = [
             item
             for item in inserted
@@ -1259,7 +1268,7 @@ def capture_authorization_boundary(
         state_dir,
         "sentinel",
     )
-    iso = dict(verify_run_iso(state_dir))
+    iso = dict(verify_run_iso_identity(state_dir))
     captured_at = clock()
     started = _parse_timestamp(
         started_at, field="capture_started_at"
