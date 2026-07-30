@@ -441,12 +441,23 @@ def capture_preflight_session_baseline(
 ) -> dict[str, object]:
     """Bind the acceptance run to the controller state before guest boot."""
     current = _controller_status_map(statuses())
+    observed_at = datetime.now(timezone.utc)
+    expiring = {
+        session_id
+        for session_id, status in current.items()
+        if status.get("state") not in {"cancelled", "expired"}
+        and isinstance(status.get("expires_at"), str)
+        and _timestamp_before_or_equal(status["expires_at"], observed_at)
+    }
     baseline = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "known_session_ids": sorted(current),
         "session_status_sha256": {
             session_id: hashlib.sha256(_json_bytes(status)).hexdigest()
             for session_id, status in sorted(current.items())
+            if session_id not in expiring
         },
+        "expiring_session_ids": sorted(expiring),
     }
     _write_new(
         state_dir.resolve(strict=True) / "preflight-session-baseline.json",
@@ -456,15 +467,37 @@ def capture_preflight_session_baseline(
     return baseline
 
 
-def _load_preflight_session_baseline(state_dir: Path) -> dict[str, str]:
+def _timestamp_before_or_equal(value: str, observed_at: datetime) -> bool:
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return timestamp.tzinfo is not None and timestamp <= observed_at
+
+
+def _load_preflight_session_baseline(
+    state_dir: Path,
+) -> tuple[set[str], dict[str, str], set[str]]:
     baseline = _read_json(
         state_dir.resolve(strict=True) / "preflight-session-baseline.json"
     )
     entries = baseline.get("session_status_sha256")
+    known = baseline.get("known_session_ids")
+    expiring = baseline.get("expiring_session_ids")
     if (
-        set(baseline) != {"schema_version", "session_status_sha256"}
-        or baseline.get("schema_version") != 1
+        set(baseline)
+        != {
+            "schema_version",
+            "known_session_ids",
+            "session_status_sha256",
+            "expiring_session_ids",
+        }
+        or baseline.get("schema_version") != 2
+        or not isinstance(known, list)
         or not isinstance(entries, dict)
+        or not isinstance(expiring, list)
+        or len(known) != len(set(known))
+        or len(expiring) != len(set(expiring))
         or any(
             not isinstance(session_id, str)
             or not SESSION_ID_RE.fullmatch(session_id)
@@ -474,7 +507,19 @@ def _load_preflight_session_baseline(state_dir: Path) -> dict[str, str]:
         )
     ):
         _fail("Controller preflight baseline is invalid")
-    return dict(entries)
+    known_ids = set(known)
+    expiring_ids = set(expiring)
+    if (
+        not all(
+            isinstance(session_id, str)
+            and SESSION_ID_RE.fullmatch(session_id)
+            for session_id in known_ids | expiring_ids
+        )
+        or not expiring_ids <= known_ids
+        or set(entries) | expiring_ids != known_ids
+    ):
+        _fail("Controller preflight baseline is invalid")
+    return known_ids, dict(entries), expiring_ids
 
 
 def approve_disposable_preflight(
@@ -492,7 +537,9 @@ def approve_disposable_preflight(
     """Approve only the one new VM session seen after a run-owned baseline."""
     if euid() != 0:
         _fail("Real root preflight approval is required")
-    baseline = _load_preflight_session_baseline(state_dir)
+    known_ids, baseline, expiring_ids = _load_preflight_session_baseline(
+        state_dir
+    )
     current = _controller_status_map(statuses())
     if any(
         session_id not in current
@@ -501,10 +548,16 @@ def approve_disposable_preflight(
         for session_id, expected_digest in baseline.items()
     ):
         _fail("Controller sessions changed after the preflight baseline")
+    if any(
+        session_id not in current
+        or current[session_id].get("state") != "expired"
+        for session_id in expiring_ids
+    ):
+        _fail("Expired controller sessions changed after the preflight baseline")
     candidates = [
         status
         for session_id, status in current.items()
-        if session_id not in baseline
+        if session_id not in known_ids
     ]
     if len(candidates) != 1:
         _fail("Exactly one new controller preflight session is required")
@@ -4038,6 +4091,28 @@ def qmp_command(socket_path: Path, execute: str) -> None:
         client.close()
 
 
+def qmp_send_preflight_hotkey(socket_path: Path) -> None:
+    """Select the ISO's fixed signed-preflight boot entry through QMP."""
+    client, stream, _transcript = _qmp_connect(socket_path)
+    try:
+        request = {
+            "execute": "send-key",
+            "arguments": {
+                "keys": [{"type": "qcode", "data": "s"}],
+            },
+            "id": "preflight-hotkey",
+        }
+        stream.write((json.dumps(request) + "\r\n").encode("ascii"))
+        response = _qmp_receive(
+            stream, _transcript, expected_id="preflight-hotkey"
+        )
+        if "error" in response:
+            _fail("QMP signed-preflight hotkey failed")
+    finally:
+        stream.close()
+        client.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -4203,6 +4278,10 @@ def build_parser() -> argparse.ArgumentParser:
     command = commands.add_parser("qmp-command", allow_abbrev=False)
     command.add_argument("--socket", required=True, type=Path)
     command.add_argument("--execute", required=True)
+    preflight_hotkey = commands.add_parser(
+        "qmp-send-preflight-hotkey", allow_abbrev=False
+    )
+    preflight_hotkey.add_argument("--socket", required=True, type=Path)
     return parser
 
 
@@ -4393,6 +4472,8 @@ def main(
             qmp_query(arguments.socket, arguments.output)
         elif arguments.command == "qmp-boot-query":
             qmp_boot_query(arguments.socket, arguments.output)
+        elif arguments.command == "qmp-send-preflight-hotkey":
+            qmp_send_preflight_hotkey(arguments.socket)
         else:
             qmp_command(arguments.socket, arguments.execute)
         return 0

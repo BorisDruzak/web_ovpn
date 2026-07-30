@@ -510,6 +510,15 @@ def test_harness_uses_run_owned_authorization_and_postflight_chain() -> None:
     ]
 
 
+def test_harness_selects_the_signed_preflight_menu_before_waiting_for_v1() -> None:
+    source = HARNESS.read_text(encoding="utf-8")
+
+    hotkey = 'qmp-send-preflight-hotkey'
+    waiting = "'ALT install agent: waiting_for_approval'"
+    assert hotkey in source
+    assert source.index(hotkey) < source.index(waiting)
+
+
 def test_harness_cleanup_uses_only_identity_bound_process_termination() -> None:
     source = HARNESS.read_text(encoding="utf-8")
     cleanup_source = source[
@@ -942,6 +951,89 @@ def test_disposable_preflight_approval_binds_one_new_waiting_session(
         "session_id": session_id,
         "target_disk": "/dev/vda",
     }
+
+
+def test_disposable_preflight_allows_only_a_preexisting_expired_session_to_change(
+    tmp_path: Path,
+) -> None:
+    """Creation expires stale records, which must not mask the run session."""
+    state, _manifest = _create_run_state(tmp_path)
+    module = _support_module()
+    stale_id = "install-20260729T120000Z-a1b2c3d4"
+    session_id = "install-20260730T120000Z-b1c2d3e4"
+    inventory_sha256 = "a" * 64
+    disk_fingerprint = "sha256:" + "b" * 64
+    stale_before = {
+        "session_id": stale_id,
+        "state": "awaiting_approval",
+        "expires_at": "2026-07-29T12:30:00+00:00",
+    }
+    stale_after = {
+        **stale_before,
+        "state": "expired",
+        "expired_at": "2026-07-30T12:00:00+00:00",
+        "updated_at": "2026-07-30T12:00:00+00:00",
+    }
+    waiting = {
+        "session_id": session_id,
+        "state": "awaiting_approval",
+        "inventory_sha256": inventory_sha256,
+        "agent_status": {"reported_stage": "waiting_for_approval"},
+    }
+    approved = {
+        **waiting,
+        "state": "plan_published",
+        "plan_revision": 1,
+    }
+    plan_bytes = json.dumps(
+        {
+            "target_disk": {
+                "fingerprint": disk_fingerprint,
+                "path": "/dev/vda",
+            }
+        },
+        sort_keys=True,
+    ).encode()
+    module.capture_preflight_session_baseline(
+        state, statuses=lambda: [stale_before]
+    )
+
+    def cli(arguments, *, stdout, stderr) -> int:
+        if arguments[2] == "preview":
+            stdout.write(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "preview": {
+                            "session_id": session_id,
+                            "inventory_sha256": inventory_sha256,
+                            "target_disk": {
+                                "path": "/dev/vda",
+                                "fingerprint": disk_fingerprint,
+                            },
+                        },
+                    }
+                )
+            )
+        else:
+            stdout.write(json.dumps({"status": "ok", "session": approved}))
+        return 0
+
+    attestation = module.approve_disposable_preflight(
+        state,
+        statuses=lambda: [stale_after, waiting],
+        status_loader=lambda observed: approved
+        if observed == session_id
+        else pytest.fail("unexpected session"),
+        revision_file=lambda observed, filename: plan_bytes
+        if (observed, filename) == (session_id, "plan.json")
+        else pytest.fail("unexpected revision"),
+        cli=cli,
+        euid=lambda: 0,
+        observed_at="2026-07-30T12:00:00+00:00",
+    )
+
+    assert attestation["payload"]["request"]["session_id"] == session_id
 
 
 def test_signed_chain_rejects_stale_postflight_from_another_run(
