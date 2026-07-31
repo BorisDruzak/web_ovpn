@@ -60,6 +60,9 @@ class EndpointPlatformServiceClient:
     def list_devices(self) -> Any:
         return self._call(self._client.list_devices)
 
+    def list_agent_network_identities(self) -> Any:
+        return self._call(self._client.list_agent_network_identities)
+
     def get_device(self, device_id: object) -> Any:
         return self._call(self._client.get_device, device_id)
 

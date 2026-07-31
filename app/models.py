@@ -68,6 +68,33 @@ class NetworkActionThrottle(Base):
     last_accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class EndpointAgentNetworkLink(Base):
+    """MAC-free cached Endpoint status for one network inventory asset."""
+
+    __tablename__ = "endpoint_agent_network_links"
+
+    asset_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(36))
+    device_display_name: Mapped[str | None] = mapped_column(String(256))
+    gateway_last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    baseline_collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    profile_summary: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    evidence_kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class EndpointAgentNetworkRefresh(Base):
+    """Singleton freshness and lease state for the cached correlation result."""
+
+    __tablename__ = "endpoint_agent_network_refresh"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+
+
 class DownloadToken(Base):
     __tablename__ = "download_tokens"
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 
 from app.endpoint_agent_network import correlate_endpoint_agents
+from app.endpoint_context_adapter import EndpointContextAdapter
+from app.models import EndpointAgentNetworkLink, EndpointAgentNetworkRefresh
 
 
 def _identity(device_id: str, mac_keys: list[str]) -> dict[str, object]:
@@ -91,3 +93,49 @@ def test_correlation_marks_duplicate_asset_or_agent_mac_as_ambiguous() -> None:
             "evidence_kind": "baseline_interface_mac",
         }
     }
+
+
+def test_endpoint_agent_cache_schema_keeps_only_safe_rendering_metadata() -> None:
+    link_columns = set(EndpointAgentNetworkLink.__table__.columns.keys())
+    refresh_columns = set(EndpointAgentNetworkRefresh.__table__.columns.keys())
+
+    assert {
+        "asset_key", "state", "device_id", "device_display_name",
+        "gateway_last_seen_at", "baseline_collected_at", "profile_summary",
+        "evidence_kind", "calculated_at",
+    } <= link_columns
+    assert {"id", "last_success_at", "lease_expires_at", "last_error_code"} <= refresh_columns
+    assert not ({"mac", "ip", "raw_payload", "token", "error_body"} & link_columns)
+
+
+def test_endpoint_adapter_projects_only_network_identity_fields_needed_for_correlation() -> None:
+    class Client:
+        def close(self) -> None:
+            return None
+
+        def list_agent_network_identities(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "device_identifier": "agent-001",
+                    "display_name": "Office workstation",
+                    "last_seen_at": "2026-07-31T10:00:00Z",
+                    "baseline_collected_at": "2026-07-31T09:00:00Z",
+                    "profiles": [{"profile": "baseline_v1", "collected_at": "2026-07-31T09:00:00Z"}],
+                    "baseline_mac_keys": ["mac-aabbccddeeff"],
+                    "raw_payload": {"token": "must-not-cross"},
+                }
+            ]
+
+    identities = EndpointContextAdapter(Client()).list_agent_network_identities()  # type: ignore[arg-type]
+
+    assert identities == [
+        {
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "display_name": "Office workstation",
+            "last_seen_at": "2026-07-31T10:00:00Z",
+            "baseline_collected_at": "2026-07-31T09:00:00Z",
+            "profiles": [{"profile": "baseline_v1", "collected_at": "2026-07-31T09:00:00Z"}],
+            "baseline_mac_keys": ["mac-aabbccddeeff"],
+        }
+    ]

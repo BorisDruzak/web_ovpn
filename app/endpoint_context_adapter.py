@@ -41,6 +41,25 @@ def _project_collection(value: Any) -> dict[str, Any]:
     )
 
 
+def _project_network_identity(value: Any) -> dict[str, Any]:
+    source = _dump(value)
+    profiles = source.get("profiles")
+    return {
+        "id": source.get("id"),
+        "display_name": source.get("display_name"),
+        "last_seen_at": source.get("last_seen_at"),
+        "baseline_collected_at": source.get("baseline_collected_at"),
+        "profiles": [
+            _pick(profile, ("profile", "collected_at"))
+            for profile in profiles
+            if isinstance(profile, dict)
+        ]
+        if isinstance(profiles, list)
+        else [],
+        "baseline_mac_keys": list(source.get("baseline_mac_keys") or []),
+    }
+
+
 class EndpointContextAdapter:
     """Offer only projections intentionally suitable for the panel API."""
 
@@ -52,6 +71,12 @@ class EndpointContextAdapter:
 
     def list_devices(self) -> list[dict[str, Any]]:
         return [_project_device(device) for device in self._client.list_devices()]
+
+    def list_agent_network_identities(self) -> list[dict[str, Any]]:
+        return [
+            _project_network_identity(identity)
+            for identity in self._client.list_agent_network_identities()
+        ]
 
     def get_device(self, device_id: UUID) -> dict[str, Any]:
         device = _project_device(self._client.get_device(device_id))
