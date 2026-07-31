@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -36,6 +36,7 @@ from .models import (
 )
 from .netctl_client import NetctlError, run_netctl
 from .network_actions import acquire_network_action
+from .endpoint_agent_network import endpoint_agent_refresh_status
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_FILTERS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -1797,6 +1798,7 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
         if requested_status is not None
         else "current"
     )
+
     rows, error = unified_network_rows(request, status=selected_status)
     requested_seen_within = request.query_params.get("seen_within") or "24h"
     filters = {
@@ -1824,6 +1826,12 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
         },
         db,
     )
+
+
+@app.get("/network/endpoint-agent-status")
+def network_endpoint_agent_status(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    require_user(request, db)
+    return JSONResponse(endpoint_agent_refresh_status(db))
 
 
 @app.get("/network/assets/{asset_key}", response_class=HTMLResponse)

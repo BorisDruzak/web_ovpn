@@ -220,3 +220,20 @@ def cached_endpoint_agent_statuses(
         }
         for row in rows
     }
+
+
+def endpoint_agent_refresh_status(
+    db: Session, now: datetime | None = None
+) -> dict[str, str | None]:
+    """Return the small session-page polling projection, without upstream error detail."""
+    refresh = db.get(EndpointAgentNetworkRefresh, 1)
+    if refresh is None or refresh.last_success_at is None:
+        return {"state": "updating", "last_success_at": None}
+    current = _as_utc(now or datetime.now(UTC))
+    if refresh.last_error_code:
+        state = "stale"
+    elif refresh.lease_expires_at is not None and _as_utc(refresh.lease_expires_at) > current:
+        state = "updating"
+    else:
+        state = "ready"
+    return {"state": state, "last_success_at": _timestamp_text(refresh.last_success_at)}
