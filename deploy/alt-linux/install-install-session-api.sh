@@ -593,25 +593,6 @@ install_session_api_install() {
         install_session_api_error "Invalid rollback rehearsal status"
         return 1
     fi
-    if install_session_api_exact_socket_status; then
-        socket_status=0
-    else
-        socket_status=$?
-    fi
-    case ${socket_status} in
-        0)
-            install_session_api_error \
-                "Listener already occupies ${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}"
-            return 1
-            ;;
-        1) ;;
-        *)
-            install_session_api_error \
-                "Install session API socket inspection failed"
-            return 1
-            ;;
-    esac
-
     install_session_api_require_safe_path \
         "${root_prefix}" "/opt/alt-install-session-api/releases" || return 1
     install_session_api_require_safe_path \
@@ -639,6 +620,27 @@ install_session_api_install() {
     INSTALL_SESSION_HAD_UNIT=0
     INSTALL_SESSION_WAS_ENABLED=0
     INSTALL_SESSION_WAS_ACTIVE=0
+    install_session_api_capture_systemd_state || return 1
+    if [[ ${INSTALL_SESSION_WAS_ACTIVE} == 0 ]]; then
+        if install_session_api_exact_socket_status; then
+            socket_status=0
+        else
+            socket_status=$?
+        fi
+        case ${socket_status} in
+            0)
+                install_session_api_error \
+                    "Listener already occupies ${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}"
+                return 1
+                ;;
+            1) ;;
+            *)
+                install_session_api_error \
+                    "Install session API socket inspection failed"
+                return 1
+                ;;
+        esac
+    fi
 
     trap 'install_session_api_restore_activation $?' ERR INT TERM
 
@@ -707,7 +709,6 @@ install_session_api_install() {
         install_session_api_error "Service unit destination is not a regular file"
         install_session_api_abandon_stage
     fi
-    install_session_api_capture_systemd_state
     printf '%s\n' "${source_commit}" > "${stage}/.rollback/source-commit"
 
     chown -R root:root "${stage}"
@@ -727,6 +728,36 @@ install_session_api_install() {
         install_session_api_abandon_stage
     fi
 
+    if [[ ${INSTALL_SESSION_WAS_ACTIVE} == 1 ]]; then
+        if ! systemctl stop "${INSTALL_SESSION_API_UNIT}"; then
+            install_session_api_error "Install session API stop failed"
+            install_session_api_abandon_stage
+        fi
+    fi
+    if install_session_api_exact_socket_status; then
+        socket_status=0
+    else
+        socket_status=$?
+    fi
+    case ${socket_status} in
+        0)
+            install_session_api_error \
+                "Listener already occupies ${INSTALL_SESSION_API_ADDRESS}:${INSTALL_SESSION_API_PORT}"
+            if [[ ${INSTALL_SESSION_WAS_ACTIVE} == 1 ]]; then
+                systemctl start "${INSTALL_SESSION_API_UNIT}" || true
+            fi
+            install_session_api_abandon_stage
+            ;;
+        1) ;;
+        *)
+            install_session_api_error \
+                "Install session API socket inspection failed"
+            if [[ ${INSTALL_SESSION_WAS_ACTIVE} == 1 ]]; then
+                systemctl start "${INSTALL_SESSION_API_UNIT}" || true
+            fi
+            install_session_api_abandon_stage
+            ;;
+    esac
     INSTALL_SESSION_TRANSACTION_ACTIVE=1
     if [[ -n ${INSTALL_SESSION_OLD_CURRENT_TARGET} ]]; then
         if ! install_session_api_atomic_pointer \
