@@ -23,18 +23,13 @@ _TEMPLATE_NAMES = {
 _TEMPLATE_FIELDS = {
     "autoinstall.scm": {
         "admin_yescrypt_hash",
-        "iso_id",
         "network_name",
-        "package_set",
         "root_yescrypt_hash",
-        "target_disk_path",
         "temporary_hostname",
     },
     "vm-profile.scm": {
-        "btrfs_minimum_mib",
-        "filesystem",
-        "swap_mib",
-        "target_disk_path",
+        "btrfs_minimum_kib",
+        "swap_kib",
     },
 }
 _SECRET_RE = re.compile(r"\$y\$[A-Za-z0-9./$=+-]{12,256}")
@@ -289,16 +284,14 @@ def write_install_bundle(bundle: RenderedInstallBundle, destination: Path) -> No
 
 def _substitutions(plan: InstallPlanV1, secrets: RendererSecrets) -> dict[str, str]:
     return {
-        "iso_id": _scheme_string(plan.iso_id),
-        "target_disk_path": _scheme_string(str(plan.target_disk["path"])),
         "network_name": _scheme_string(plan.network_interface["name"]),
         "temporary_hostname": _scheme_string(plan.temporary_hostname),
-        "package_set": _scheme_string(plan.package_set),
         "root_yescrypt_hash": _scheme_string(secrets.root_yescrypt_hash),
         "admin_yescrypt_hash": _scheme_string(secrets.admin_yescrypt_hash),
-        "swap_mib": str(plan.disk_layout["swap_mib"]),
-        "filesystem": _scheme_string(str(plan.disk_layout["filesystem"])),
-        "btrfs_minimum_mib": str(plan.disk_layout["btrfs_minimum_mib"]),
+        "swap_kib": str(plan.disk_layout["swap_mib"] * 1024),
+        "btrfs_minimum_kib": str(
+            plan.disk_layout["btrfs_minimum_mib"] * 1024
+        ),
     }
 
 

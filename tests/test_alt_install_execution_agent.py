@@ -103,8 +103,8 @@ protocol_handoff_started() {{
 protocol_installer_started() {{
     printf 'installer\\n' >> '{actions.as_posix()}'
 }}
-start_execution_relay() {{
-    printf 'relay\\n' >> '{actions.as_posix()}'
+stage_execution_metadata() {{
+    printf 'stage-metadata\\n' >> '{actions.as_posix()}'
 }}
 agent_run
 """
@@ -124,13 +124,13 @@ agent_run
         "claim",
         "plan",
         "disk-preflight",
-        "relay",
+        "stage-metadata",
         "handoff",
         "installer",
     ]
 
 
-def test_agent_repeats_preflight_then_starts_relay_before_handoff(
+def test_agent_repeats_preflight_then_stages_metadata_before_handoff(
     tmp_path: Path,
 ) -> None:
     actions = tmp_path / "actions"
@@ -145,7 +145,7 @@ helper_verify_plan() {{ record verify-plan; }}
 helper_disk_preflight() {{ record disk-preflight; }}
 protocol_handoff_started() {{ record handoff-started; }}
 protocol_installer_started() {{ record installer-started; }}
-start_execution_relay() {{ record serve-execution-metadata; }}
+stage_execution_metadata() {{ record stage-execution-metadata; }}
 agent_run
 """
         )
@@ -158,10 +158,47 @@ agent_run
         "claim",
         "verify-plan",
         "disk-preflight",
-        "serve-execution-metadata",
+        "stage-execution-metadata",
         "handoff-started",
         "installer-started",
     ]
+
+
+def test_agent_stages_all_verified_metadata_before_handoff(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    bundle = state / "execution-bundle"
+    metadata = tmp_path / "metadata"
+    bundle.mkdir(parents=True)
+    expected = {
+        "autoinstall.scm": "autoinstall\n",
+        "vm-profile.scm": "profile\n",
+        "pkg-groups.tar": "groups\n",
+        "install-scripts.tar": "scripts\n",
+    }
+    for name, content in expected.items():
+        (bundle / name).write_text(content, encoding="utf-8")
+    metadata_for_bash = metadata.as_posix()
+    if metadata.drive:
+        metadata_for_bash = (
+            f"/{metadata.drive[0].lower()}{metadata.as_posix()[2:]}"
+        )
+
+    completed = _run_bash(
+        _library_agent_script("stage_execution_metadata"),
+        env={
+            "ALT_INSTALL_STATE_ROOT": state.as_posix(),
+            "ALT_INSTALL_METADATA_ROOT": metadata_for_bash,
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert {
+        path.name: path.read_text(encoding="utf-8")
+        for path in metadata.iterdir()
+    } == expected
+    assert all(not path.is_symlink() for path in metadata.iterdir())
 
 
 def test_postinstall_emits_completion_marker_after_postflight_service_setup() -> None:
@@ -202,7 +239,7 @@ helper_verify_execution_bundle() {{ record verify-execution-bundle; }}
 protocol_claim_execution() {{ record claim; }}
 protocol_handoff_started() {{ record handoff-started; }}
 protocol_installer_started() {{ record installer-started; }}
-start_execution_relay() {{ record serve-execution-metadata; }}
+stage_execution_metadata() {{ record stage-execution-metadata; }}
 agent_run
 """,
             bootstrap=False,
@@ -233,162 +270,9 @@ agent_run
         "claim",
         "verify-plan",
         "disk-preflight",
-        "serve-execution-metadata",
+        "stage-execution-metadata",
         "handoff-started",
         "installer-started",
-    ]
-
-
-def _readiness_helper(
-    tmp_path: Path,
-    *,
-    signal_ready: bool,
-    startup_delay: float,
-) -> tuple[Path, Path]:
-    helper = tmp_path / "alt-install-helper"
-    actions = tmp_path / "readiness-actions"
-    ready_action = (
-        f"""
-sleep {startup_delay}
-printf 'relay-bound\\n' >> '{actions.as_posix()}'
-printf 'ALT_INSTALL_RELAY_READY_V1\\n' > "$ready_file"
-sleep 1
-"""
-        if signal_ready
-        else f"""
-sleep {startup_delay}
-printf 'relay-failed\\n' >> '{actions.as_posix()}'
-exit 1
-"""
-    )
-    helper.write_text(
-        f"""#!/bin/bash
-set -eu
-[[ "$1" == serve-execution-metadata ]]
-printf 'relay-started\\n' >> '{actions.as_posix()}'
-shift
-ready_file=
-while (($#)); do
-    if [[ "$1" == --ready-file ]]; then
-        ready_file=$2
-        shift 2
-    else
-        shift
-    fi
-done
-[[ -n "$ready_file" ]]
-{ready_action}
-""",
-        encoding="utf-8",
-        newline="\n",
-    )
-    helper.chmod(0o755)
-    return helper, actions
-
-
-def test_agent_waits_for_delayed_post_bind_readiness_before_handoff(
-    tmp_path: Path,
-) -> None:
-    helper, actions = _readiness_helper(
-        tmp_path, signal_ready=True, startup_delay=0.35
-    )
-    state = tmp_path / "state"
-    state.mkdir()
-    (state / "execution-verification.json").write_text(
-        '{"expires_at":"2099-01-01T00:00:00Z"}',
-        encoding="utf-8",
-    )
-    initrd_functions = tmp_path / "initrd-sh-functions"
-    initrd_functions.write_text(
-        f"""omit_pid() {{
-    printf 'relay-protected:%s\\n' "$1" >> '{actions.as_posix()}'
-}}
-""",
-        encoding="utf-8",
-        newline="\n",
-    )
-    completed = _run_bash(
-        _library_agent_script(
-            f"""
-protocol_download_execution_bundle() {{ :; }}
-helper_verify_execution_bundle() {{ :; }}
-protocol_claim_execution() {{ :; }}
-helper_verify_plan() {{ :; }}
-helper_disk_preflight() {{ :; }}
-protocol_handoff_started() {{
-    printf 'handoff-started\\n' >> '{actions.as_posix()}'
-}}
-protocol_installer_started() {{
-    printf 'installer-started\\n' >> '{actions.as_posix()}'
-}}
-agent_run
-printf 'agent-returned\\n' >> '{actions.as_posix()}'
-"""
-        ),
-        env={
-            "ALT_INSTALL_STATE_ROOT": state.as_posix(),
-            "ALT_INSTALL_HELPER": helper.as_posix(),
-            "ALT_INSTALL_INITRD_FUNCTIONS": initrd_functions.as_posix(),
-            "ALT_INSTALL_RELAY_READY_TIMEOUT": "2",
-            "ALT_INSTALL_RELAY_POLL_INTERVAL": "0.05",
-        },
-    )
-    assert completed.returncode == 0, completed.stderr
-    recorded = actions.read_text(encoding="utf-8").splitlines()
-    assert recorded[:2] == [
-        "relay-started",
-        "relay-bound",
-    ]
-    assert recorded[2].startswith("relay-protected:")
-    assert recorded[3:] == [
-        "handoff-started",
-        "installer-started",
-        "agent-returned",
-    ]
-
-
-def test_relay_exit_before_readiness_holds_without_handoff(
-    tmp_path: Path,
-) -> None:
-    helper, actions = _readiness_helper(
-        tmp_path, signal_ready=False, startup_delay=0.2
-    )
-    state = tmp_path / "state"
-    state.mkdir()
-    (state / "execution-verification.json").write_text(
-        '{"expires_at":"2099-01-01T00:00:00Z"}',
-        encoding="utf-8",
-    )
-    completed = _run_bash(
-        _library_agent_script(
-            f"""
-protocol_download_execution_bundle() {{ :; }}
-helper_verify_execution_bundle() {{ :; }}
-protocol_claim_execution() {{ :; }}
-helper_verify_plan() {{ :; }}
-helper_disk_preflight() {{ :; }}
-protocol_handoff_started() {{
-    printf 'handoff-must-not-run\\n' >> '{actions.as_posix()}'
-}}
-protocol_installer_started() {{
-    printf 'installer-must-not-run\\n' >> '{actions.as_posix()}'
-}}
-agent_run
-"""
-        ),
-        env={
-            "ALT_INSTALL_STATE_ROOT": state.as_posix(),
-            "ALT_INSTALL_HELPER": helper.as_posix(),
-            "ALT_INSTALL_RELAY_READY_TIMEOUT": "2",
-            "ALT_INSTALL_RELAY_POLL_INTERVAL": "0.05",
-        },
-    )
-
-    assert completed.returncode == 97
-    assert completed.stdout.strip() == "terminal=relay_failed"
-    assert actions.read_text(encoding="utf-8").splitlines() == [
-        "relay-started",
-        "relay-failed",
     ]
 
 
@@ -401,7 +285,7 @@ agent_run
         ("disk-preflight", "disk_preflight_failed"),
         ("handoff-started", "handoff_record_failed"),
         ("installer-started", "installer_record_failed"),
-        ("serve-execution-metadata", "relay_failed"),
+        ("stage-execution-metadata", "metadata_staging_failed"),
     ],
 )
 def test_agent_failure_before_return_is_terminal_and_stops_progress(
@@ -424,7 +308,7 @@ helper_verify_plan() {{ run_action verify-plan; }}
 helper_disk_preflight() {{ run_action disk-preflight; }}
 protocol_handoff_started() {{ run_action handoff-started; }}
 protocol_installer_started() {{ run_action installer-started; }}
-start_execution_relay() {{ run_action serve-execution-metadata; }}
+stage_execution_metadata() {{ run_action stage-execution-metadata; }}
 agent_run
 """
         )

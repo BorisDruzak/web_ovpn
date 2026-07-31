@@ -57,7 +57,7 @@
 +
 +menuentry "Signed-plan installation [ROOT APPROVAL REQUIRED]" --hotkey 'x' --id 'alt-agent-v2' {
 +  echo "Loading root-authorized signed-plan installer ..."
-+  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot automatic=method:disk,uuid:$ROOT_UUID stagename=live ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v2 sosnadmin.controller=__ALT_INSTALL_EXECUTION_CONTROLLER_URL__ sosnadmin.build=__ALT_INSTALL_BUILD_ID__ systemd.unit=install2.target ai curl=http://127.0.0.1:18192
++  linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE root=bootchain bootchain=fg,altboot automatic=method:disk,uuid:$ROOT_UUID stagename=live ramdisk_size=4497433 lowmem quiet splash lang=$lang ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v2 sosnadmin.controller=__ALT_INSTALL_EXECUTION_CONTROLLER_URL__ sosnadmin.build=__ALT_INSTALL_BUILD_ID__ systemd.unit=install2.target ai
 +  initrd /boot/initrd$KFLAVOUR.img
 +}
 +

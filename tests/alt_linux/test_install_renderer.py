@@ -62,6 +62,12 @@ def test_renderer_returns_repeatable_utf8_artifacts() -> None:
     assert tuple(first.files) == ("autoinstall.scm", "vm-profile.scm", "sha256sums")
     assert first.files["autoinstall.scm"].endswith(b"\n")
     assert b"enp6s18" in first.files["autoinstall.scm"]
+    assert b'("/sysconfig-base/language" action "write" lang ("ru_RU"))' in first.files["autoinstall.scm"]
+    assert b'("/sysconfig-base/kbd" language ("ru_RU") action "write" layout "alt_sh_toggle")' in first.files["autoinstall.scm"]
+    assert b'("/evms/profiles/standard-office-v1"' in first.files["autoinstall.scm"]
+    assert b'("/root/change_password"' in first.files["autoinstall.scm"]
+    assert b'("/users/create_account"' in first.files["autoinstall.scm"]
+    assert b'"/sosnadmin/install-plan"' not in first.files["autoinstall.scm"]
     assert b"plan_hash" not in first.files["autoinstall.scm"]
     assert first.files["sha256sums"].splitlines()[0].endswith(b"  autoinstall.scm")
     assert first.files["sha256sums"].splitlines()[1].endswith(b"  vm-profile.scm")

@@ -51,18 +51,6 @@ source "$agent_root/lib/protocol.sh"
 # shellcheck source=lib/ui.sh
 source "$agent_root/lib/ui.sh"
 
-ALT_INSTALL_RELAY_PID=
-ALT_INSTALL_INITRD_FUNCTIONS=${ALT_INSTALL_INITRD_FUNCTIONS:-/usr/bin/initrd-sh-functions}
-
-protect_execution_relay() {
-    [[ -f "$ALT_INSTALL_INITRD_FUNCTIONS" &&
-        ! -L "$ALT_INSTALL_INITRD_FUNCTIONS" ]] || return 1
-    # shellcheck disable=SC1090
-    source "$ALT_INSTALL_INITRD_FUNCTIONS"
-    type -t omit_pid >/dev/null || return 1
-    omit_pid "$ALT_INSTALL_RELAY_PID"
-}
-
 helper_verify_execution_bundle() {
     local result temporary
     result=$(state_path execution-verification.json) || return 1
@@ -124,76 +112,29 @@ bootstrap_v1_preflight() {
     protocol_heartbeat preflight_ready
 }
 
-start_execution_relay() {
-    local verification deadline relay_pid ready_file ready_content ready_size
-    local stop_at
-    verification=$(state_path execution-verification.json) || return 1
-    deadline=$(execution_json_string "$verification" expires_at) || return 1
-    [[ "$deadline" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] || return 1
-    [[ "$ALT_INSTALL_RELAY_READY_TIMEOUT" =~ ^[0-9]+$ &&
-        "$ALT_INSTALL_RELAY_READY_TIMEOUT" -ge 1 &&
-        "$ALT_INSTALL_RELAY_READY_TIMEOUT" -le 60 ]] || return 1
-    [[ "$ALT_INSTALL_RELAY_POLL_INTERVAL" =~ ^0\.[0-9]+$ ]] || return 1
-    ready_file=$(state_path relay-ready) || return 1
-    state_remove relay-ready
-    [[ ! -e "$ready_file" && ! -L "$ready_file" ]] || return 1
-
-    "$ALT_INSTALL_HELPER" serve-execution-metadata \
-        --directory "$ALT_INSTALL_STATE_ROOT/execution-bundle" \
-        --port 18192 \
-        --deadline "$deadline" \
-        --ready-file "$ready_file" >/dev/null 2>&1 &
-    relay_pid=$!
-    stop_at=$((SECONDS + ALT_INSTALL_RELAY_READY_TIMEOUT))
-    while ((SECONDS < stop_at)); do
-        if [[ -f "$ready_file" && ! -L "$ready_file" ]]; then
-            ready_content=$(<"$ready_file")
-            ready_size=$(wc -c < "$ready_file")
-            if [[ "$ready_size" == 27 &&
-                "$ready_content" == ALT_INSTALL_RELAY_READY_V1 ]] &&
-                kill -0 "$relay_pid" 2>/dev/null; then
-                ALT_INSTALL_RELAY_PID=$relay_pid
-                break
-            fi
-            break
-        fi
-        if ! kill -0 "$relay_pid" 2>/dev/null; then
-            break
-        fi
-        "$ALT_INSTALL_SLEEP" "$ALT_INSTALL_RELAY_POLL_INTERVAL"
+stage_execution_metadata() {
+    local source_root metadata_root name source temporary
+    source_root="$ALT_INSTALL_STATE_ROOT/execution-bundle"
+    metadata_root=${ALT_INSTALL_METADATA_ROOT:-/tmp/metadata}
+    [[ "$metadata_root" == /* && "$metadata_root" != / ]] || return 1
+    [[ -d "$source_root" && ! -L "$source_root" ]] || return 1
+    if [[ -e "$metadata_root" ]]; then
+        [[ -d "$metadata_root" && ! -L "$metadata_root" ]] || return 1
+    else
+        umask 077
+        mkdir -p -- "$metadata_root" || return 1
+        chmod 0700 -- "$metadata_root" || return 1
+    fi
+    for name in autoinstall.scm vm-profile.scm pkg-groups.tar install-scripts.tar; do
+        source="$source_root/$name"
+        [[ -f "$source" && ! -L "$source" ]] || return 1
+        temporary="$metadata_root/.${name}.tmp.$$"
+        rm -f -- "$temporary"
+        umask 077
+        cp -- "$source" "$temporary" || return 1
+        chmod 0600 -- "$temporary" || return 1
+        mv -f -- "$temporary" "$metadata_root/$name" || return 1
     done
-    if [[ "$ALT_INSTALL_RELAY_PID" != "$relay_pid" ]]; then
-        kill "$relay_pid" 2>/dev/null || true
-        wait "$relay_pid" || true
-        state_remove relay-ready
-        return 1
-    fi
-    # The upstream initrd kills unmarked background processes before entering
-    # install2.  Keep the bound loopback-only relay alive for cp-metadata.
-    if ! protect_execution_relay; then
-        kill "$relay_pid" 2>/dev/null || true
-        wait "$relay_pid" || true
-        state_remove relay-ready
-        ALT_INSTALL_RELAY_PID=
-        return 1
-    fi
-    if ! state_write relay-pid "$relay_pid"; then
-        kill "$relay_pid" 2>/dev/null || true
-        wait "$relay_pid" || true
-        state_remove relay-ready
-        ALT_INSTALL_RELAY_PID=
-        return 1
-    fi
-}
-
-stop_execution_relay() {
-    if [[ -n "$ALT_INSTALL_RELAY_PID" ]]; then
-        kill "$ALT_INSTALL_RELAY_PID" 2>/dev/null || true
-        wait "$ALT_INSTALL_RELAY_PID" || true
-    fi
-    state_remove relay-pid
-    state_remove relay-ready
-    ALT_INSTALL_RELAY_PID=
 }
 
 wait_for_execution_bundle() {
@@ -217,13 +158,11 @@ agent_run() {
     # preflight immediately before the irreversible handoff transition.
     helper_verify_plan || terminal_hold plan_verification_failed
     helper_disk_preflight || terminal_hold disk_preflight_failed
-    start_execution_relay || terminal_hold relay_failed
+    stage_execution_metadata || terminal_hold metadata_staging_failed
     if ! protocol_handoff_started; then
-        stop_execution_relay
         terminal_hold handoff_record_failed
     fi
     if ! protocol_installer_started; then
-        stop_execution_relay
         terminal_hold installer_record_failed
     fi
     printf '%s\n' 'ALT install execution: verified_handoff'

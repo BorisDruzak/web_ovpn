@@ -1,15 +1,71 @@
 ; Generated from immutable InstallPlan V1.  Do not edit generated output.
-("/sosnadmin/install-plan"
+; The commands below are native Alterator autoinstall forms.  Keep the
+; execution plan binding in the signed manifest rather than inventing an
+; unsupported Alterator route in this file.
+
+; Language and keyboard must be configured before the graphical installer
+; starts, otherwise it stops at the first interactive page.
+("/sysconfig-base/language" action "write" lang ("ru_RU"))
+("/sysconfig-base/kbd" language ("ru_RU") action "write" layout "alt_sh_toggle")
+
+; Yekaterinburg timezone, hardware clock in UTC.
+("/datetime-installer"
  action "write"
- iso_id "$iso_id"
- target_disk "$target_disk_path"
- network_interface "$network_name"
- temporary_hostname "$temporary_hostname"
- package_set "$package_set")
-"/root/change_password"
+ commit #t
+ name "Asia"
+ zone "Asia/Yekaterinburg"
+ utc #t)
+
+; The signed plan supplies the unique route-capable interface and temporary
+; hostname.  DHCP is the only supported network policy for this profile.
+("/net-eth" action "write" reset #t)
+("/net-eth"
+ action "write"
+ name "$network_name"
+ ipv "4"
+ ipv_enabled #t
+ controlled "NetworkManager"
+ configuration "dhcp"
+ default ""
+ search ""
+ dns ""
+ computer_name "$temporary_hostname")
+("/net-eth" action "write" commit #t)
+
+; Apply the generated standard-office disk profile.  The V2 agent has already
+; verified the signed target disk immediately before this handoff.
+("/evms/control" action "write" control open installer #t)
+("/evms/control" action "write" control update)
+("/evms/profiles/standard-office-v1"
+ action apply
+ commit #f
+ clearall #t
+ exclude ())
+("/evms/control" action "write" control commit)
+("/evms/control" action "write" control close)
+
+; Install the exact package groups released with this execution bundle.
+("pkg-install-init" action "write")
+("/pkg-install" action "write" lists "kworkstation/kde" auto #t)
+("/preinstall" action "write")
+
+; UEFI bootloader.
+("/grub"
+ action "write"
+ device "efi"
+ passwd #f
+ passwd_1 "*"
+ passwd_2 "*")
+
+("/root/change_password"
  iscrypted #t
- passwd_1 "$root_yescrypt_hash"
-"/users/create_account"
+ passwd_1 "$root_yescrypt_hash")
+
+("/users/create_account"
  new_name "sosnadmin"
+ real_name "sosnadmin"
+ allow_su #t
+ auto #f
  iscrypted #t
  passwd_1 "$admin_yescrypt_hash"
+ autologin #f)

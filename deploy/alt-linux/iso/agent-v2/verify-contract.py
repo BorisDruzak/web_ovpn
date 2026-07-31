@@ -198,8 +198,7 @@ def validate_menu(
         "ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v2 "
         f"sosnadmin.controller={controller} "
         f"sosnadmin.build={build_id} "
-        "systemd.unit=install2.target ai "
-        "curl=http://127.0.0.1:18192"
+        "systemd.unit=install2.target ai"
     )
     expected_entry = [
         V2_DECLARATION,
@@ -224,8 +223,7 @@ def validate_menu(
             raise ContractError("normal or V1 menu contract changed")
     if (
         grub.count("sosnadmin.mode=agent-v2") != 1
-        or grub.count("curl=http://127.0.0.1:18192") != 1
-        or re.search(r"(?<!ai )\bcurl=", grub)
+        or "curl=" in grub
     ):
         raise ContractError("V2 kernel command line is not canonical")
     if (

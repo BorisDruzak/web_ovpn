@@ -292,7 +292,7 @@ def _run_builder(paths: dict[str, Path], controller_url: str) -> subprocess.Comp
     )
 
 
-def test_v2_iso_has_opt_in_execution_menu_and_loopback_metadata(
+def test_v2_iso_has_opt_in_execution_menu_and_staged_metadata(
     tmp_path: Path,
 ) -> None:
     grub = extract(build_v2_fixture(tmp_path), "/boot/grub/grub.cfg")
@@ -300,7 +300,8 @@ def test_v2_iso_has_opt_in_execution_menu_and_loopback_metadata(
         'menuentry "Signed-plan installation [ROOT APPROVAL REQUIRED]"'
         in grub
     )
-    assert "ai curl=http://127.0.0.1:18192" in grub
+    assert "systemd.unit=install2.target ai" in grub
+    assert "curl=http://127.0.0.1:18192" not in grub
     assert "set default=harddisk" in grub
     assert "curl=http://192.168.100.17" not in grub
 
@@ -348,7 +349,7 @@ def test_v2_menu_is_uefi_only_non_default_and_preserves_v1(
     assert "default harddisk" in isolinux
 
 
-def test_verifier_rejects_appended_direct_controller_curl(
+def test_verifier_rejects_appended_metadata_curl(
     tmp_path: Path,
 ) -> None:
     fixture = _menu_contract_fixture(tmp_path)
@@ -357,8 +358,8 @@ def test_verifier_rejects_appended_direct_controller_curl(
     grub = fixture["grub"]
     grub.write_text(
         grub.read_text(encoding="utf-8").replace(
-            "ai curl=http://127.0.0.1:18192",
-            "ai curl=http://127.0.0.1:18192 "
+            "systemd.unit=install2.target ai",
+            "systemd.unit=install2.target ai "
             "curl=https://192.168.100.17:18092",
         ),
         encoding="utf-8",

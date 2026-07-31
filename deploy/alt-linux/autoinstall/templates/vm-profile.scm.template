@@ -1,7 +1,13 @@
 ((standard-office-v1
-  (target_disk . "$target_disk_path")
-  (swap_mib . $swap_mib)
-  (filesystem . "$filesystem")
-  (minimum_mib . $btrfs_minimum_mib)
-  (grow . #t)
-  (subvols ("@" . "/") ("@home" . "/home"))))
+  (title . "Sosnadmin ALT workstation")
+  (action . trivial)
+  (actiondata
+    ("swap"
+      (size $swap_kib . $swap_kib)
+      (fsim . "SWAPFS")
+      (methods plain))
+    (""
+      (size $btrfs_minimum_kib . #t)
+      (fsim . "BtrFS")
+      (methods plain)
+      (subvols ("@" . "/") ("@home" . "/home"))))))
