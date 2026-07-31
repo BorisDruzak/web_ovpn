@@ -4,7 +4,6 @@ import hashlib
 import http.client
 import ipaddress
 import json
-import logging
 import socket
 import ssl
 import sys
@@ -298,19 +297,19 @@ def test_manifest_route_requires_the_session_bearer_and_is_no_store(
 
 def test_rejected_execution_request_logs_only_safe_diagnostics(
     tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
-    caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     server, material, _claims, _settings = tls_server
     path = f"/v2/install-sessions/{SESSION_ID}/execution/manifest"
 
-    with caplog.at_level(logging.WARNING, logger=install_execution_server.__name__):
-        with _running(server):
-            response = _request(server, material, "GET", path)
+    with _running(server):
+        response = _request(server, material, "GET", path)
 
     assert response[0] == 401
-    assert "method=GET status=401 code=authorization_required" in caplog.text
-    assert CREDENTIAL not in caplog.text
-    assert SESSION_ID not in caplog.text
+    stderr = capfd.readouterr().err
+    assert "method=GET status=401 code=authorization_required" in stderr
+    assert CREDENTIAL not in stderr
+    assert SESSION_ID not in stderr
 
 
 def test_manifest_signature_route_is_exact_authenticated_and_no_store(
