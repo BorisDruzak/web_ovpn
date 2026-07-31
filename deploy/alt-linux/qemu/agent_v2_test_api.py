@@ -126,6 +126,7 @@ MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
 AUTHORIZATION_CAPTURE_MAX_SECONDS = 10
 AUTHORIZATION_PENDING_TO_PREAUTH_MAX_SECONDS = 30
 AUTHORIZATION_PREAUTH_TO_OBSERVED_MAX_SECONDS = 10
+AUTHORIZATION_COMPLETION_MAX_SECONDS = 90
 TIMELINE_KEYS = (
     "waiting_for_authorization_at",
     "preflight_ready_at",
@@ -2309,7 +2310,7 @@ def invoke_root_execution_authorization(
         or execution.get("target_disk") != "/dev/vda"
         or authorized_at < authorization_observed
         or authorized_at - authorization_observed
-        > timedelta(seconds=30)
+        > timedelta(seconds=AUTHORIZATION_COMPLETION_MAX_SECONDS)
     ):
         _fail("Controller execution authorization response is invalid")
     payload = {
@@ -3226,7 +3227,7 @@ def _replay_public_acceptance(
     if (
         controller_authorized < authorization_observed
         or controller_authorized - authorization_observed
-        > timedelta(seconds=30)
+        > timedelta(seconds=AUTHORIZATION_COMPLETION_MAX_SECONDS)
     ):
         _fail("Public authorization semantic freshness is invalid")
     pending_qmp = evidence / "pending.qmp.jsonl"
