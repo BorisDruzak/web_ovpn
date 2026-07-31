@@ -537,6 +537,11 @@ esac
             "if [[ ${INSTALL_SESSION_SS_RC:-0} != 0 ]]; then\n"
             "  exit \"$INSTALL_SESSION_SS_RC\"\n"
             "fi\n"
+            "if [[ -n ${INSTALL_SESSION_SS_ACTIVE_OUTPUT+x} ]]; then\n"
+            "  read -r _ active < \"${INSTALL_SESSION_SERVICE_STATE:?}\"\n"
+            "  [[ $active == active ]] && printf '%s' \"$INSTALL_SESSION_SS_ACTIVE_OUTPUT\"\n"
+            "  exit 0\n"
+            "fi\n"
             "printf '%s' \"${INSTALL_SESSION_SS_OUTPUT:-}\"\n",
         )
         self._fake_script(

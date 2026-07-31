@@ -192,6 +192,30 @@ def test_installer_activates_only_the_isolated_unit(tmp_path: Path) -> None:
     )
 
 
+def test_installer_restarts_its_active_service_before_runtime_switch(
+    tmp_path: Path,
+) -> None:
+    sandbox = InstallSessionInstallerSandbox.create(tmp_path)
+
+    result = sandbox.run_install(
+        INSTALL_SESSION_SS_ACTIVE_OUTPUT=(
+            "LISTEN 0 128 192.168.100.17:18090 0.0.0.0:*\\n"
+        )
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = sandbox.commands()
+    assert [
+        "systemctl", "stop", "alt-install-session.service"
+    ] in commands
+    assert sandbox.current_target() != sandbox._bash_path(
+        sandbox.destination(
+            "/opt/alt-install-session-api/releases/existing-release"
+        )
+    )
+    assert sandbox.service_status() == ("enabled", "active")
+
+
 def test_installer_accepts_absent_unit_systemd_state(tmp_path: Path) -> None:
     sandbox = InstallSessionInstallerSandbox.create_clean_host(tmp_path)
 
