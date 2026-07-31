@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import logging
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -25,6 +26,7 @@ from alt_deploy.install_tls import (
 
 INSTALL_EXECUTION_LISTEN_ADDRESS = "192.168.100.17"
 INSTALL_EXECUTION_LISTEN_PORT = 18092
+_LOGGER = logging.getLogger(__name__)
 _SESSION_ID = r"install-\d{8}T\d{6}Z-[0-9a-f]{8}"
 _MANIFEST_PATH_RE = re.compile(
     rf"^/v2/install-sessions/({_SESSION_ID})/execution/manifest$"
@@ -122,6 +124,12 @@ def create_execution_tls_server(
             )
 
         def _error(self, status: int, code: str) -> None:
+            _LOGGER.warning(
+                "execution_api_rejection method=%s status=%d code=%s",
+                self.command,
+                status,
+                code,
+            )
             self._send_json(
                 status,
                 {"status": "error", "error": {"code": code}},
