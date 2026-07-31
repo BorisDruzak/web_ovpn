@@ -330,6 +330,7 @@ def test_v2_menu_is_uefi_only_non_default_and_preserves_v1(
     assert 0 <= efi_start < entry_offset < efi_end
     assert "sosnadmin.mode=agent-v2" in grub[entry_offset:efi_end]
     assert "systemd.unit=install2.target" in grub[entry_offset:efi_end]
+    assert "automatic=method:disk,uuid:$ROOT_UUID" in grub[entry_offset:efi_end]
     assert "ip=dhcp" in grub[entry_offset:efi_end]
     assert "console=ttyS0,115200" in grub[entry_offset:efi_end]
     assert "savedefault" not in grub[entry_offset:efi_end]

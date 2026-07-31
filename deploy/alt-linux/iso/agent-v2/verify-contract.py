@@ -192,7 +192,8 @@ def validate_menu(
 
     expected_linux = (
         "linux /boot/vmlinuz$KFLAVOUR fastboot live $CONSOLE $SAFEMODE "
-        "root=bootchain bootchain=fg,altboot stagename=live "
+        "root=bootchain bootchain=fg,altboot "
+        "automatic=method:disk,uuid:$ROOT_UUID stagename=live "
         "ramdisk_size=4497433 lowmem quiet splash lang=$lang "
         "ip=dhcp console=ttyS0,115200 sosnadmin.mode=agent-v2 "
         f"sosnadmin.controller={controller} "
