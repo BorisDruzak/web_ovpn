@@ -49,7 +49,7 @@
 </form>
 <section class="table-wrap">
   <table>
-    <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Last active check</th><th>Evidence</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
+    <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Endpoint Agent</th><th>Last active check</th><th>Evidence</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
     <tbody>
       {% for host in hosts %}
       <tr>
@@ -65,6 +65,19 @@
           <a href="/network/hosts/{{ host.ip }}" title="Открыть доступность устройства">
             <span class="badge {{ host.status|status_class }}">{{ availability_status_label(host) }}</span>
           </a>
+        </td>
+        <td>
+          {% if host.endpoint_agent.state == "confirmed" %}
+          <span class="badge ok">Confirmed automatically</span> {{ host.endpoint_agent.device_display_name or "Endpoint Agent" }}
+          {% elif host.endpoint_agent.state == "ambiguous" %}
+          <span class="badge warn">Ambiguous match</span>
+          {% elif host.endpoint_agent.state == "stale" %}
+          <span class="badge warn">Stale cached result</span> {{ host.endpoint_agent.device_display_name or "" }}
+          {% elif host.endpoint_agent.state == "updating" %}
+          <span class="badge muted">Updating</span>
+          {% else %}
+          <span class="badge muted">No agent</span>
+          {% endif %}
         </td>
         {% if host.availability %}
         <td>{{ availability_method_label(host.availability.active_method) or "-" }}{% if host.availability.checked_at %} · {{ host.availability.checked_at }}{% endif %}</td>
@@ -96,4 +109,9 @@
     </tbody>
   </table>
 </section>
+{% endblock %}
+{% block page_scripts %}
+{% if endpoint_agent_refresh_state == "updating" %}
+<script src="{{ url_for('static', path='endpoint-agent-status.js') }}"></script>
+{% endif %}
 {% endblock %}

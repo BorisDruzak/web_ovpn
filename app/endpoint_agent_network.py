@@ -10,6 +10,9 @@ from typing import Any
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
+from .db import session_scope
+from .endpoint_context_adapter import get_endpoint_context_adapter
+from .endpoint_platform_client import EndpointPlatformServiceDisabled
 from .models import EndpointAgentNetworkLink, EndpointAgentNetworkRefresh
 
 
@@ -237,3 +240,48 @@ def endpoint_agent_refresh_status(
     else:
         state = "ready"
     return {"state": state, "last_success_at": _timestamp_text(refresh.last_success_at)}
+
+
+def refresh_endpoint_agent_network(inventory: list[dict[str, object]]) -> None:
+    """Fetch, correlate and commit a full safe cache replacement in a worker session."""
+    adapter = None
+    try:
+        adapter = get_endpoint_context_adapter()
+        statuses = correlate_endpoint_agents(inventory, adapter.list_agent_network_identities())
+        with session_scope() as db:
+            store_endpoint_agent_statuses(db, statuses, datetime.now(UTC))
+    except EndpointPlatformServiceDisabled:
+        with session_scope() as db:
+            mark_endpoint_agent_refresh_failed(db, "endpoint_platform_disabled")
+    except Exception:
+        with session_scope() as db:
+            mark_endpoint_agent_refresh_failed(db, "endpoint_platform_unavailable")
+    finally:
+        if adapter is not None:
+            adapter.close()
+
+
+def attach_endpoint_agent_statuses(db: Session, rows: Iterable[dict[str, object]]) -> str:
+    """Attach only cache-safe state to render rows; never propagate matching inputs."""
+    refresh = endpoint_agent_refresh_status(db)
+    cached = cached_endpoint_agent_statuses(db)
+    overall_state = refresh["state"]
+    for row in rows:
+        asset_key = row.get("device_key")
+        cached_status = cached.get(asset_key) if isinstance(asset_key, str) else None
+        if cached_status is not None:
+            status = dict(cached_status)
+            if overall_state == "stale":
+                status["state"] = "stale"
+        else:
+            status = {
+                "state": "updating" if overall_state == "updating" else "no_agent",
+                "device_id": None,
+                "device_display_name": None,
+                "gateway_last_seen_at": None,
+                "baseline_collected_at": None,
+                "profiles": [],
+                "evidence_kind": None,
+            }
+        row["endpoint_agent"] = status
+    return str(overall_state)
