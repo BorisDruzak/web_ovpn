@@ -326,6 +326,10 @@ for library in config.sh network.sh protocol.sh state.sh transport.sh ui.sh; do
 done
 mode_is 755 \
     "$workdir/initrd/usr/libexec/alt-install-agent-v2/alt-install-execution-agent"
+mode_is 644 "$workdir/initrd/usr/bin/initrd-sh-functions"
+grep -Fqx 'omit_pid() {' \
+    "$workdir/initrd/usr/bin/initrd-sh-functions" ||
+    die 'Initrd cannot preserve the execution relay across handoff'
 for library in config.sh protocol.sh ui.sh; do
     mode_is 644 \
         "$workdir/initrd/usr/libexec/alt-install-agent-v2/lib/$library"

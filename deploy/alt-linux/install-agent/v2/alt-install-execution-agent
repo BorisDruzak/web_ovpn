@@ -52,6 +52,16 @@ source "$agent_root/lib/protocol.sh"
 source "$agent_root/lib/ui.sh"
 
 ALT_INSTALL_RELAY_PID=
+ALT_INSTALL_INITRD_FUNCTIONS=${ALT_INSTALL_INITRD_FUNCTIONS:-/usr/bin/initrd-sh-functions}
+
+protect_execution_relay() {
+    [[ -f "$ALT_INSTALL_INITRD_FUNCTIONS" &&
+        ! -L "$ALT_INSTALL_INITRD_FUNCTIONS" ]] || return 1
+    # shellcheck disable=SC1090
+    source "$ALT_INSTALL_INITRD_FUNCTIONS"
+    type -t omit_pid >/dev/null || return 1
+    omit_pid "$ALT_INSTALL_RELAY_PID"
+}
 
 helper_verify_execution_bundle() {
     local result temporary
@@ -156,6 +166,15 @@ start_execution_relay() {
         kill "$relay_pid" 2>/dev/null || true
         wait "$relay_pid" || true
         state_remove relay-ready
+        return 1
+    fi
+    # The upstream initrd kills unmarked background processes before entering
+    # install2.  Keep the bound loopback-only relay alive for cp-metadata.
+    if ! protect_execution_relay; then
+        kill "$relay_pid" 2>/dev/null || true
+        wait "$relay_pid" || true
+        state_remove relay-ready
+        ALT_INSTALL_RELAY_PID=
         return 1
     fi
     if ! state_write relay-pid "$relay_pid"; then

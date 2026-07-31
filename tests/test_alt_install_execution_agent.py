@@ -298,6 +298,15 @@ def test_agent_waits_for_delayed_post_bind_readiness_before_handoff(
         '{"expires_at":"2099-01-01T00:00:00Z"}',
         encoding="utf-8",
     )
+    initrd_functions = tmp_path / "initrd-sh-functions"
+    initrd_functions.write_text(
+        f"""omit_pid() {{
+    printf 'relay-protected:%s\\n' "$1" >> '{actions.as_posix()}'
+}}
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
     completed = _run_bash(
         _library_agent_script(
             f"""
@@ -319,14 +328,19 @@ printf 'agent-returned\\n' >> '{actions.as_posix()}'
         env={
             "ALT_INSTALL_STATE_ROOT": state.as_posix(),
             "ALT_INSTALL_HELPER": helper.as_posix(),
+            "ALT_INSTALL_INITRD_FUNCTIONS": initrd_functions.as_posix(),
             "ALT_INSTALL_RELAY_READY_TIMEOUT": "2",
             "ALT_INSTALL_RELAY_POLL_INTERVAL": "0.05",
         },
     )
     assert completed.returncode == 0, completed.stderr
-    assert actions.read_text(encoding="utf-8").splitlines() == [
+    recorded = actions.read_text(encoding="utf-8").splitlines()
+    assert recorded[:2] == [
         "relay-started",
         "relay-bound",
+    ]
+    assert recorded[2].startswith("relay-protected:")
+    assert recorded[3:] == [
         "handoff-started",
         "installer-started",
         "agent-returned",
