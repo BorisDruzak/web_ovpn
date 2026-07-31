@@ -2169,7 +2169,7 @@ def test_authorization_wrapper_reaches_cli_with_same_second_boundary(
         if status_reads == 2:
             base["execution"] = {
                 "authorized_at": (
-                    "2026-07-29T12:01:01.950000+00:00"
+                    "2026-07-29T12:01:53.950000+00:00"
                 ),
                 "disk_fingerprint": request["disk_fingerprint"],
                 "inventory_sha256": request["inventory_sha256"],
