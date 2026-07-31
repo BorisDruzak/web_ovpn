@@ -1066,6 +1066,108 @@ def test_disposable_preflight_allows_only_a_preexisting_expired_session_to_chang
     assert attestation["payload"]["request"]["session_id"] == session_id
 
 
+def test_disposable_preflight_allows_a_baseline_session_to_expire_naturally(
+    tmp_path: Path,
+) -> None:
+    state, _manifest = _create_run_state(tmp_path)
+    module = _support_module()
+    stale_id = "install-20260729T120000Z-a1b2c3d4"
+    session_id = "install-20260730T120000Z-b1c2d3e4"
+    inventory_sha256 = "a" * 64
+    disk_fingerprint = "sha256:" + "b" * 64
+    stale_before = {
+        "session_id": stale_id,
+        "state": "awaiting_approval",
+        "expires_at": "2026-07-30T12:03:00+00:00",
+    }
+    stale_after = {
+        **stale_before,
+        "state": "expired",
+        "expired_at": "2026-07-30T12:03:01+00:00",
+        "updated_at": "2026-07-30T12:03:01+00:00",
+    }
+    waiting = {
+        "session_id": session_id,
+        "state": "awaiting_approval",
+        "inventory_sha256": inventory_sha256,
+        "agent_status": {"reported_stage": "waiting_for_approval"},
+    }
+    approved = {**waiting, "state": "plan_published", "plan_revision": 1}
+    plan_bytes = json.dumps(
+        {"target_disk": {"fingerprint": disk_fingerprint, "path": "/dev/vda"}},
+        sort_keys=True,
+    ).encode()
+    module.capture_preflight_session_baseline(state, statuses=lambda: [stale_before])
+
+    def cli(arguments, *, stdout, stderr) -> int:
+        if arguments[2] == "preview":
+            stdout.write(
+                json.dumps(
+                    {
+                        "status": "ok",
+                        "preview": {
+                            "session_id": session_id,
+                            "inventory_sha256": inventory_sha256,
+                            "target_disk": {
+                                "path": "/dev/vda",
+                                "fingerprint": disk_fingerprint,
+                            },
+                        },
+                    }
+                )
+            )
+        else:
+            stdout.write(json.dumps({"status": "ok", "session": approved}))
+        return 0
+
+    attestation = module.approve_disposable_preflight(
+        state,
+        statuses=lambda: [stale_after, waiting],
+        status_loader=lambda observed: approved
+        if observed == session_id
+        else pytest.fail("unexpected session"),
+        revision_file=lambda observed, filename: plan_bytes
+        if (observed, filename) == (session_id, "plan.json")
+        else pytest.fail("unexpected revision"),
+        cli=cli,
+        euid=lambda: 0,
+        observed_at="2026-07-30T12:03:01+00:00",
+    )
+
+    assert attestation["payload"]["request"]["session_id"] == session_id
+
+
+def test_disposable_preflight_rejects_early_expiration_of_baseline_session(
+    tmp_path: Path,
+) -> None:
+    state, _manifest = _create_run_state(tmp_path)
+    module = _support_module()
+    session_id = "install-20260729T120000Z-a1b2c3d4"
+    before = {
+        "session_id": session_id,
+        "state": "awaiting_approval",
+        "expires_at": "2026-07-30T12:03:00+00:00",
+    }
+    after = {
+        **before,
+        "state": "expired",
+        "expired_at": "2026-07-30T12:02:00+00:00",
+        "updated_at": "2026-07-30T12:02:00+00:00",
+    }
+    module.capture_preflight_session_baseline(state, statuses=lambda: [before])
+
+    with pytest.raises(
+        module.AcceptanceError,
+        match="Expired controller sessions changed",
+    ):
+        module.approve_disposable_preflight(
+            state,
+            statuses=lambda: [after],
+            euid=lambda: 0,
+            observed_at="2026-07-30T12:02:00+00:00",
+        )
+
+
 def test_signed_chain_rejects_stale_postflight_from_another_run(
     tmp_path: Path,
 ) -> None:

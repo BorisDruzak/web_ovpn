@@ -478,23 +478,32 @@ def capture_preflight_session_baseline(
 ) -> dict[str, object]:
     """Bind the acceptance run to the controller state before guest boot."""
     current = _controller_status_map(statuses())
-    observed_at = datetime.now(timezone.utc)
     expiring = {
         session_id
         for session_id, status in current.items()
         if status.get("state") not in {"cancelled", "expired"}
         and isinstance(status.get("expires_at"), str)
-        and _timestamp_before_or_equal(status["expires_at"], observed_at)
+        and _timestamp_before_or_equal(
+            status["expires_at"], datetime.max.replace(tzinfo=timezone.utc)
+        )
     }
     baseline = {
-        "schema_version": 2,
+        "schema_version": 3,
         "known_session_ids": sorted(current),
         "session_status_sha256": {
             session_id: hashlib.sha256(_json_bytes(status)).hexdigest()
             for session_id, status in sorted(current.items())
             if session_id not in expiring
         },
-        "expiring_session_ids": sorted(expiring),
+        "expiring_session_anchors": {
+            session_id: {
+                "expires_at": current[session_id]["expires_at"],
+                "status_sha256": hashlib.sha256(
+                    _json_bytes(current[session_id])
+                ).hexdigest(),
+            }
+            for session_id in sorted(expiring)
+        },
     }
     _write_new(
         state_dir.resolve(strict=True) / "preflight-session-baseline.json",
@@ -514,27 +523,26 @@ def _timestamp_before_or_equal(value: str, observed_at: datetime) -> bool:
 
 def _load_preflight_session_baseline(
     state_dir: Path,
-) -> tuple[set[str], dict[str, str], set[str]]:
+) -> tuple[set[str], dict[str, str], dict[str, dict[str, str]]]:
     baseline = _read_json(
         state_dir.resolve(strict=True) / "preflight-session-baseline.json"
     )
     entries = baseline.get("session_status_sha256")
     known = baseline.get("known_session_ids")
-    expiring = baseline.get("expiring_session_ids")
+    expiring = baseline.get("expiring_session_anchors")
     if (
         set(baseline)
         != {
             "schema_version",
             "known_session_ids",
             "session_status_sha256",
-            "expiring_session_ids",
+            "expiring_session_anchors",
         }
-        or baseline.get("schema_version") != 2
+        or baseline.get("schema_version") != 3
         or not isinstance(known, list)
         or not isinstance(entries, dict)
-        or not isinstance(expiring, list)
+        or not isinstance(expiring, dict)
         or len(known) != len(set(known))
-        or len(expiring) != len(set(expiring))
         or any(
             not isinstance(session_id, str)
             or not SESSION_ID_RE.fullmatch(session_id)
@@ -553,10 +561,22 @@ def _load_preflight_session_baseline(
             for session_id in known_ids | expiring_ids
         )
         or not expiring_ids <= known_ids
+        or set(entries) & expiring_ids
         or set(entries) | expiring_ids != known_ids
+        or any(
+            not isinstance(anchor, dict)
+            or set(anchor) != {"expires_at", "status_sha256"}
+            or not isinstance(anchor.get("expires_at"), str)
+            or not _timestamp_before_or_equal(
+                anchor["expires_at"], datetime.max.replace(tzinfo=timezone.utc)
+            )
+            or not isinstance(anchor.get("status_sha256"), str)
+            or not SHA256_RE.fullmatch(anchor["status_sha256"])
+            for anchor in expiring.values()
+        )
     ):
         _fail("Controller preflight baseline is invalid")
-    return known_ids, dict(entries), expiring_ids
+    return known_ids, dict(entries), dict(expiring)
 
 
 def approve_disposable_preflight(
@@ -574,10 +594,14 @@ def approve_disposable_preflight(
     """Approve only the one new VM session seen after a run-owned baseline."""
     if euid() != 0:
         _fail("Real root preflight approval is required")
-    known_ids, baseline, expiring_ids = _load_preflight_session_baseline(
+    known_ids, baseline, expiring = _load_preflight_session_baseline(
         state_dir
     )
     current = _controller_status_map(statuses())
+    approval_observed = _parse_timestamp(
+        observed_at or datetime.now(timezone.utc).isoformat(),
+        field="preflight_approval_observed_at",
+    )
     if any(
         session_id not in current
         or hashlib.sha256(_json_bytes(current[session_id])).hexdigest()
@@ -587,8 +611,19 @@ def approve_disposable_preflight(
         _fail("Controller sessions changed after the preflight baseline")
     if any(
         session_id not in current
-        or current[session_id].get("state") != "expired"
-        for session_id in expiring_ids
+        or (
+            hashlib.sha256(_json_bytes(current[session_id])).hexdigest()
+            != anchor["status_sha256"]
+            and (
+                current[session_id].get("state") != "expired"
+                or not isinstance(current[session_id].get("expires_at"), str)
+                or current[session_id]["expires_at"] != anchor["expires_at"]
+                or not _timestamp_before_or_equal(
+                    anchor["expires_at"], approval_observed
+                )
+            )
+        )
+        for session_id, anchor in expiring.items()
     ):
         _fail("Expired controller sessions changed after the preflight baseline")
     candidates = [
@@ -715,8 +750,9 @@ def approve_disposable_preflight(
         payload={
             "baseline_sha256": hashlib.sha256(
                 _json_bytes({
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "session_status_sha256": baseline,
+                    "expiring_session_anchors": expiring,
                 })
             ).hexdigest(),
             "controller": {"plan_revision": 1, "state": "plan_published"},
