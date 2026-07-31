@@ -120,6 +120,24 @@ def test_installer_records_exact_validated_source_commit(
     )
 
 
+def test_installer_stages_install_renderer_templates(tmp_path: Path) -> None:
+    sandbox = InstallSessionInstallerSandbox.create(tmp_path)
+
+    result = sandbox.run_install()
+
+    assert result.returncode == 0, result.stderr
+    runtime = Path(sandbox.current_target())
+    template_root = runtime / "autoinstall" / "templates"
+    for template_name in (
+        "autoinstall.scm.template",
+        "vm-profile.scm.template",
+    ):
+        assert (template_root / template_name).read_text(encoding="utf-8") == (
+            (ALT_ROOT / "autoinstall" / "templates" / template_name)
+            .read_text(encoding="utf-8")
+        )
+
+
 def test_key_initializer_uses_only_pinned_signing_paths(
     tmp_path: Path,
 ) -> None:

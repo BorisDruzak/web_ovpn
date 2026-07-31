@@ -104,6 +104,7 @@ install_session_api_validate_source() {
         deploy/alt-linux/api \
         deploy/alt-linux/control \
         deploy/alt-linux/autoinstall/profiles \
+        deploy/alt-linux/autoinstall/templates \
         deploy/alt-linux/systemd/alt-install-session.service \
         deploy/alt-linux/install-install-session-api.sh) || {
         install_session_api_error "Relevant source status cannot be inspected"
@@ -649,12 +650,16 @@ install_session_api_install() {
         "${stage}/control" \
         "${stage}/autoinstall" \
         "${stage}/autoinstall/profiles" \
+        "${stage}/autoinstall/templates" \
         "${stage}/.rollback"
     cp -a -- "${alt_root}/api/." "${stage}/api/"
     cp -a -- "${alt_root}/control/." "${stage}/control/"
     cp -a -- \
         "${alt_root}/autoinstall/profiles/." \
         "${stage}/autoinstall/profiles/"
+    cp -a -- \
+        "${alt_root}/autoinstall/templates/." \
+        "${stage}/autoinstall/templates/"
 
     if [[ -n $(find "${stage}" -type l -print -quit) ]]; then
         install_session_api_error "Staged runtime contains a symlink"
@@ -664,7 +669,9 @@ install_session_api_install() {
     for required in \
         "${stage}/api/install_session_server.py" \
         "${stage}/api/install_session_key_init.py" \
-        "${stage}/control/alt_deploy/install_session_keys.py"
+        "${stage}/control/alt_deploy/install_session_keys.py" \
+        "${stage}/autoinstall/templates/autoinstall.scm.template" \
+        "${stage}/autoinstall/templates/vm-profile.scm.template"
     do
         if [[ ! -f ${required} ]]; then
             install_session_api_error "Staged runtime is incomplete"
