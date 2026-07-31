@@ -13,6 +13,15 @@ AGENT_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "install-agent" / "v2"
 AGENT = AGENT_ROOT / "alt-install-execution-agent"
 PROTOCOL = AGENT_ROOT / "lib" / "protocol.sh"
 UI = AGENT_ROOT / "lib" / "ui.sh"
+POSTINSTALL = (
+    REPO_ROOT
+    / "deploy"
+    / "alt-linux"
+    / "autoinstall"
+    / "install-scripts"
+    / "postinstall.d"
+    / "90-alt-install-execution-postflight"
+)
 
 
 def _bash() -> Path:
@@ -104,7 +113,10 @@ agent_run
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == "terminal=execution_pending"
+    assert completed.stdout.splitlines() == [
+        "terminal=execution_pending",
+        "ALT install execution: verified_handoff",
+    ]
     assert actions.read_text(encoding="utf-8").splitlines() == [
         "download-rejected",
         "download-authorized",
@@ -150,6 +162,16 @@ agent_run
         "handoff-started",
         "installer-started",
     ]
+
+
+def test_postinstall_emits_completion_marker_after_postflight_service_setup() -> None:
+    script = POSTINSTALL.read_text(encoding="utf-8")
+    marker = "ALT install execution: installer_completed"
+
+    assert marker in script
+    assert script.index(marker) > script.index(
+        "systemctl --root \"$target_root\" enable"
+    )
 
 
 def test_agent_bootstraps_v1_preflight_before_execution_bundle(

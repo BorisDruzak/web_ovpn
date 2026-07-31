@@ -20,3 +20,7 @@ install -D -m 0644 -- "$source_root/payload/alt-install-execution-postflight.ser
     "$target_root/etc/systemd/system/alt-install-execution-postflight.service"
 systemctl --root "$target_root" enable \
     alt-install-execution-postflight.service >/dev/null
+if [[ -c /dev/ttyS0 ]]; then
+    printf '%s\n' 'ALT install execution: installer_completed' \
+        >/dev/ttyS0 || true
+fi
