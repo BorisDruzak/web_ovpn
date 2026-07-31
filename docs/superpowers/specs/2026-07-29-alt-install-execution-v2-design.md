@@ -111,7 +111,7 @@ validated plan plus a root-only typed secret object, and creates a signed
 `ExecutionManifestV1`.  The manifest binds the session ID, plan digest,
 inventory digest, disk fingerprint, target path, profile/version, ISO identity,
 the SHA-256 and byte length of all four artefacts, authorization time, and a
-five-minute expiry.  It has no password hash or credential.
+fifteen-minute expiry.  It has no password hash or credential.
 
 The status document gains an optional `execution` object while preserving all
 V1 fields and semantics.  Its only valid transitions are:

@@ -750,7 +750,7 @@ def test_claim_marks_an_expired_authorization_terminal(
         settings,
         repository,
         tmp_path,
-        clock=lambda: "2026-07-29T12:07:00+00:00",
+        clock=lambda: "2026-07-29T12:17:00+00:00",
     )
 
     with pytest.raises(ControlError, match="expired"):

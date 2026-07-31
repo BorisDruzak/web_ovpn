@@ -57,6 +57,7 @@ _RELEASE_ARCHIVE_NAMES = ("pkg-groups.tar", "install-scripts.tar")
 _RELEASE_MANIFEST_NAME = "manifest.json"
 _MAX_RELEASE_MANIFEST_BYTES = 64 * 1024
 _MAX_RELEASE_ARCHIVE_BYTES = 64 * 1024 * 1024
+_EXECUTION_AUTHORIZATION_TTL = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -818,7 +819,9 @@ class ExecutionAuthorizationService:
             )
             self._reconcile_execution_orphan(status)
             artifacts = self._bundle_artifacts(plan)
-            expires_at = min(plan_expiry, now + timedelta(minutes=5)).isoformat()
+            expires_at = min(
+                plan_expiry, now + _EXECUTION_AUTHORIZATION_TTL
+            ).isoformat()
             manifest = build_execution_manifest(
                 plan=plan.to_dict(),
                 plan_sha256=plan_sha256,

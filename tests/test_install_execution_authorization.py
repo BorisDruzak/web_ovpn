@@ -158,7 +158,7 @@ def test_root_execution_authorization_is_bound_to_preflight_plan_and_disk(
     assert execution["state"] == "authorized"
     assert execution["plan_sha256"] == plan_sha256
     assert execution["target_disk"] == "/dev/vda"
-    assert execution["expires_at"] == "2026-07-29T12:07:00+00:00"
+    assert execution["expires_at"] == "2026-07-29T12:17:00+00:00"
     with pytest.raises(ControlError, match="already authorized"):
         _execution_service(
             settings,
