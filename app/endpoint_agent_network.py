@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from sqlalchemy import delete
+from sqlalchemy.orm import Session
+
+from .models import EndpointAgentNetworkLink, EndpointAgentNetworkRefresh
 
 
 _BASELINE_MAC_KEY_RE = re.compile(r"^mac-([0-9a-f]{12})$")
 _SAFE_PROFILES = frozenset(("baseline_v1", "health_v1", "network_v1"))
+_REFRESH_INTERVAL_SECONDS = 300
+_REFRESH_LEASE_SECONDS = 60
 
 
 def normalize_mac(value: object) -> str | None:
@@ -105,3 +113,110 @@ def correlate_endpoint_agents(
         }
     return results
 
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _timestamp_text(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return aware.isoformat().replace("+00:00", "Z")
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _refresh_row(db: Session) -> EndpointAgentNetworkRefresh:
+    row = db.get(EndpointAgentNetworkRefresh, 1)
+    if row is None:
+        row = EndpointAgentNetworkRefresh(id=1)
+        db.add(row)
+        db.flush()
+    return row
+
+
+def acquire_refresh_lease(db: Session, now: datetime) -> bool:
+    """Acquire the singleton lease only when a successful result is older than five minutes."""
+    refresh = _refresh_row(db)
+    current = _as_utc(now)
+    if (
+        refresh.last_success_at is not None
+        and (current - _as_utc(refresh.last_success_at)).total_seconds() < _REFRESH_INTERVAL_SECONDS
+    ):
+        return False
+    if refresh.lease_expires_at is not None and _as_utc(refresh.lease_expires_at) > current:
+        return False
+    refresh.lease_expires_at = current + timedelta(seconds=_REFRESH_LEASE_SECONDS)
+    return True
+
+
+def mark_endpoint_agent_refresh_failed(db: Session, code: str) -> None:
+    """Release a failed refresh without deleting the last successful safe cache."""
+    refresh = _refresh_row(db)
+    refresh.lease_expires_at = None
+    refresh.last_error_code = (
+        "endpoint_platform_disabled"
+        if code == "endpoint_platform_disabled"
+        else "endpoint_platform_unavailable"
+    )
+
+
+def store_endpoint_agent_statuses(
+    db: Session, statuses: Mapping[str, Mapping[str, object]], calculated_at: datetime
+) -> None:
+    """Atomically replace safe cache rows after a fully successful refresh."""
+    db.execute(delete(EndpointAgentNetworkLink))
+    for asset_key, status in statuses.items():
+        state = status.get("state")
+        evidence_kind = status.get("evidence_kind")
+        if state not in {"confirmed", "ambiguous"} or evidence_kind != "baseline_interface_mac":
+            continue
+        profiles = status.get("profiles")
+        profile_summary = ",".join(
+            sorted(profile for profile in profiles if isinstance(profile, str))
+        ) if isinstance(profiles, list) else ""
+        db.add(
+            EndpointAgentNetworkLink(
+                asset_key=asset_key,
+                state=state,
+                device_id=status.get("device_id") if isinstance(status.get("device_id"), str) else None,
+                device_display_name=status.get("device_display_name") if isinstance(status.get("device_display_name"), str) else None,
+                gateway_last_seen_at=_parse_timestamp(status.get("gateway_last_seen_at")),
+                baseline_collected_at=_parse_timestamp(status.get("baseline_collected_at")),
+                profile_summary=profile_summary,
+                evidence_kind="baseline_interface_mac",
+                calculated_at=calculated_at,
+            )
+        )
+    refresh = _refresh_row(db)
+    refresh.last_success_at = calculated_at
+    refresh.lease_expires_at = None
+    refresh.last_error_code = ""
+
+
+def cached_endpoint_agent_statuses(
+    db: Session, _: datetime | None = None
+) -> dict[str, dict[str, object]]:
+    """Read the MAC-free cache in the exact render shape used by network pages."""
+    rows = db.query(EndpointAgentNetworkLink).order_by(EndpointAgentNetworkLink.asset_key).all()
+    return {
+        row.asset_key: {
+            "state": row.state,
+            "device_id": row.device_id,
+            "device_display_name": row.device_display_name,
+            "gateway_last_seen_at": _timestamp_text(row.gateway_last_seen_at),
+            "baseline_collected_at": _timestamp_text(row.baseline_collected_at),
+            "profiles": [profile for profile in row.profile_summary.split(",") if profile],
+            "evidence_kind": row.evidence_kind,
+        }
+        for row in rows
+    }

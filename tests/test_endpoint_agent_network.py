@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 from app.endpoint_agent_network import correlate_endpoint_agents
 from app.endpoint_context_adapter import EndpointContextAdapter
+from app.db import Base
 from app.models import EndpointAgentNetworkLink, EndpointAgentNetworkRefresh
 
 
@@ -139,3 +144,54 @@ def test_endpoint_adapter_projects_only_network_identity_fields_needed_for_corre
             "baseline_mac_keys": ["mac-aabbccddeeff"],
         }
     ]
+
+
+def test_safe_cache_persists_confirmed_result_without_mac_or_ip() -> None:
+    from app.endpoint_agent_network import cached_endpoint_agent_statuses, store_endpoint_agent_statuses
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+    result = {
+        "asset-a": {
+            "state": "confirmed",
+            "device_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "device_display_name": "Office workstation",
+            "gateway_last_seen_at": "2026-07-31T10:00:00Z",
+            "baseline_collected_at": "2026-07-31T09:00:00Z",
+            "profiles": ["baseline_v1", "health_v1"],
+            "evidence_kind": "baseline_interface_mac",
+        }
+    }
+    with Session(engine) as db:
+        store_endpoint_agent_statuses(db, result, now)
+        db.commit()
+        status = cached_endpoint_agent_statuses(db, now)
+        link = db.get(EndpointAgentNetworkLink, "asset-a")
+        refresh = db.get(EndpointAgentNetworkRefresh, 1)
+
+    assert status == result
+    assert refresh is not None
+    assert refresh.last_success_at is not None
+    assert refresh.last_success_at.replace(tzinfo=timezone.utc) == now
+    assert link is not None
+    assert "mac" not in link.__dict__
+    assert "ip" not in link.__dict__
+
+
+def test_refresh_lease_allows_one_refresh_and_preserves_cache_on_failure() -> None:
+    from app.endpoint_agent_network import acquire_refresh_lease, mark_endpoint_agent_refresh_failed
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+    with Session(engine) as db:
+        assert acquire_refresh_lease(db, now) is True
+        assert acquire_refresh_lease(db, now + timedelta(seconds=1)) is False
+        mark_endpoint_agent_refresh_failed(db, "endpoint_platform_unavailable")
+        db.commit()
+        refresh = db.get(EndpointAgentNetworkRefresh, 1)
+
+    assert refresh is not None
+    assert refresh.lease_expires_at is None
+    assert refresh.last_error_code == "endpoint_platform_unavailable"
