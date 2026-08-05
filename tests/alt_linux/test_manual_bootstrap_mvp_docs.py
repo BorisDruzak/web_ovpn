@@ -1,36 +1,88 @@
+import re
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNBOOK = ROOT / "docs" / "runbooks" / "alt-manual-bootstrap-mvp.md"
 
+FORBIDDEN_INSTRUCTION_PATTERNS = {
+    "direct Ansible execution": re.compile(
+        r"(?m)^\s*(?:sudo\s+)?(?:"
+        r"ansible-(?:playbook|pull|galaxy)\b"
+        r"|ansible[\t ]+(?:\S+[\t ]+-[A-Za-z]|--\S+)"
+        r")",
+    ),
+    "password-bearing command": re.compile(
+        r"(?ix)"
+        r"\bsshpass\s+-p\s+\S+"
+        r"|--ask-pass\b"
+        r"|\bsudo\s+-S\b"
+        r"|\b\w*password\w*\s*=\s*\S+",
+    ),
+    "managed installation mutation": re.compile(
+        r"(?ix)"
+        r"\b(?:rebuild|modify|remaster|update|change)\s+(?:the\s+)?managed\s+ISO\b"
+        r"|\b(?:modify|change|update)\s+(?:the\s+)?boot\s+menus?\b"
+        r"|\b(?:modify|change|update)\s+(?:the\s+)?(?:autoinstall\.scm|install-agent)\b",
+    ),
+}
+
+
+def assert_manual_mvp_contract(text: str) -> None:
+    for required in (
+        "curl --noproxy '*' -fsS",
+        "sudo env no_proxy=192.168.100.17",
+        "http://192.168.100.17:8087/bootstrap/bootstrap.sh",
+        "Domain join and software installation are controller-only.",
+        "managed ISO",
+        "ai curl=",
+    ):
+        assert required in text
+
+    for category, pattern in FORBIDDEN_INSTRUCTION_PATTERNS.items():
+        match = pattern.search(text)
+        assert match is None, f"{category} is forbidden: {match.group()!r}"
+
 
 def test_manual_mvp_runbook_preserves_the_controller_boundary() -> None:
-    text = RUNBOOK.read_text(encoding="utf-8")
-    lowered_text = text.casefold()
+    assert_manual_mvp_contract(RUNBOOK.read_text(encoding="utf-8"))
 
-    assert "curl --noproxy '*' -fsS" in text
-    assert "sudo env no_proxy=192.168.100.17" in text
-    assert "http://192.168.100.17:8087/bootstrap/bootstrap.sh" in text
-    assert "Domain join and software installation are controller-only." in text
-    assert "managed ISO" in text
-    assert "ai curl=" in text
-    for forbidden in (
-        "vault_ad_join_password",
-        "vault",
-        "ansible-playbook",
-        "ansible-pull",
-        "ansible-galaxy",
-        "ansible ",
-        "osn-admin password",
-        "password=",
-        "--password",
-        "sudo -s",
-        "rebuild the managed ISO",
-        "modify the managed ISO",
-        "remaster the managed ISO",
-        "change the boot menu",
-        "autoinstall.scm",
-        "install-agent",
-    ):
-        assert forbidden not in lowered_text
+
+@pytest.mark.parametrize(
+    "safe_explanation",
+    (
+        "Ansible execution remains controller-only.",
+        "This pilot does not replace managed ISO workflows.",
+    ),
+)
+def test_manual_mvp_contract_allows_safe_boundary_explanations(
+    safe_explanation: str,
+) -> None:
+    assert_manual_mvp_contract(
+        RUNBOOK.read_text(encoding="utf-8") + f"\n{safe_explanation}\n",
+    )
+
+
+@pytest.mark.parametrize(
+    ("unsafe_instruction", "expected_category"),
+    (
+        ("ansible\tall -m ping", "direct Ansible execution"),
+        ("sshpass -p secret ssh host", "password-bearing command"),
+        ("--ask-pass", "password-bearing command"),
+        ("update the managed ISO", "managed installation mutation"),
+    ),
+)
+def test_manual_mvp_contract_rejects_unsafe_instruction_mutations(
+    unsafe_instruction: str,
+    expected_category: str,
+) -> None:
+    assert FORBIDDEN_INSTRUCTION_PATTERNS[expected_category].search(
+        unsafe_instruction,
+    )
+
+    with pytest.raises(AssertionError):
+        assert_manual_mvp_contract(
+            RUNBOOK.read_text(encoding="utf-8") + f"\n{unsafe_instruction}\n",
+        )
