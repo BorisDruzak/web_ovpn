@@ -22,7 +22,7 @@
   block:
     - name: Acquire temporary Kerberos ticket
       ansible.builtin.command:
-        argv: [kinit, "{{ vault_ad_join_user }}"]
+        argv: [kinit, -C, "{{ vault_ad_join_user }}"]
         stdin: "{{ vault_ad_join_password }}"
       changed_when: false
 

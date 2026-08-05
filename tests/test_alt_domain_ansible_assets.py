@@ -44,7 +44,7 @@ def test_domain_join_uses_kerberos_stdin_and_never_password_arguments() -> None:
     assert all(task.get("no_log") is True for task in credential_tasks)
     assert "vault_ad_join_password" in rendered
     assert 'stdin: "{{ vault_ad_join_password }}"' in rendered
-    assert 'argv: [kinit, "{{ vault_ad_join_user }}"]' in rendered
+    assert 'argv: [kinit, -C, "{{ vault_ad_join_user }}"]' in rendered
     assert "system-auth" in rendered
     assert "kdestroy" in rendered
 
