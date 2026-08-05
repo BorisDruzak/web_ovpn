@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
@@ -36,6 +36,12 @@ from .models import (
 )
 from .netctl_client import NetctlError, run_netctl
 from .network_actions import acquire_network_action
+from .endpoint_agent_network import (
+    acquire_refresh_lease,
+    attach_endpoint_agent_statuses,
+    endpoint_agent_refresh_status,
+    refresh_endpoint_agent_network,
+)
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_FILTERS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
@@ -1787,7 +1793,11 @@ def validate_runtime_asset_key(value: object) -> str:
 
 
 @app.get("/network/hosts", response_class=HTMLResponse)
-def network_hosts(request: Request, db: Session = Depends(get_db)):
+def network_hosts(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     require_user(request, db)
     requested_status = request.query_params.get("status")
     selected_status = (
@@ -1797,7 +1807,11 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
         if requested_status is not None
         else "current"
     )
-    rows, error = unified_network_rows(request, status=selected_status)
+
+    all_rows, error = unified_network_rows(request, status="all")
+    if acquire_refresh_lease(db, utcnow()):
+        db.commit()
+        background_tasks.add_task(refresh_endpoint_agent_network, [dict(row) for row in all_rows])
     requested_seen_within = request.query_params.get("seen_within") or "24h"
     filters = {
         "q": request.query_params.get("q") or "",
@@ -1809,7 +1823,8 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
         "has_mac": request.query_params.get("has_mac") or "",
         "seen_within": requested_seen_within if requested_seen_within in {"1h", "24h", "7d", "30d", "all"} else "24h",
     }
-    rows = filter_unified_hosts(rows, filters)
+    rows = filter_unified_hosts(all_rows, filters)
+    endpoint_agent_refresh_state = attach_endpoint_agent_statuses(db, rows)
     sources_data, sources_error = net_cli_call(request, ["sources", "list"])
     return render(
         request,
@@ -1820,10 +1835,17 @@ def network_hosts(request: Request, db: Session = Depends(get_db)):
             "sources": sources_data.get("sources", []),
             "network_filters": NETWORK_FILTERS,
             "is_runtime_asset_key": is_runtime_asset_key,
+            "endpoint_agent_refresh_state": endpoint_agent_refresh_state,
             "error": error or sources_error,
         },
         db,
     )
+
+
+@app.get("/network/endpoint-agent-status")
+def network_endpoint_agent_status(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    require_user(request, db)
+    return JSONResponse(endpoint_agent_refresh_status(db))
 
 
 @app.get("/network/assets/{asset_key}", response_class=HTMLResponse)
@@ -2119,6 +2141,7 @@ def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)
     rows, unified_error = unified_network_rows(request)
     vpn_row = next((row for row in rows if row.get("ip") == valid_ip), None)
     host = vpn_row or normalize_netctl_host(netctl_host or {})
+    endpoint_agent_refresh_state = attach_endpoint_agent_statuses(db, [host])
     detail = dict(data)
     detail["host"] = host
     return render(
@@ -2129,6 +2152,7 @@ def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)
             "detail": detail,
             "host": host,
             "vpn_row": vpn_row,
+            "endpoint_agent_refresh_state": endpoint_agent_refresh_state,
             "can_probe_availability": (
                 host_availability_action_error(netctl_host, valid_ip) is None
             ),

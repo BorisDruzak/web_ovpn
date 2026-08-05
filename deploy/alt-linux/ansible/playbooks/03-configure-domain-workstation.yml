@@ -1,0 +1,16 @@
+---
+- name: Configure manual ALT domain workstation
+  hosts: all
+  gather_facts: true
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/vault.yml
+  roles:
+    - manual_preflight
+    - workstation_identity
+    - workstation_base
+    - workstation_network
+    - domain_join
+    - standard_software
+    - domain_verify

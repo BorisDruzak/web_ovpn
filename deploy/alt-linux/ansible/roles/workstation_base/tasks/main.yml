@@ -1,0 +1,6 @@
+---
+- name: Install ALT domain prerequisites
+  ansible.builtin.package:
+    name: "{{ domain_prerequisite_packages }}"
+    state: present
+  when: domain_prerequisite_packages | length > 0

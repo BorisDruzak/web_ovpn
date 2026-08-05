@@ -78,7 +78,16 @@ def _timestamp(value: object, *, description: str) -> str:
         raise ValueError(f"Execution {description} is invalid") from exc
     if parsed.tzinfo is None:
         raise ValueError(f"Execution {description} is invalid")
-    return parsed.astimezone(timezone.utc).isoformat()
+    normalized = parsed.astimezone(timezone.utc)
+    encoded = normalized.isoformat(timespec="microseconds")
+    head, separator, offset = encoded.partition("+")
+    if not separator:
+        raise ValueError(f"Execution {description} is invalid")
+    if "." not in head:
+        return head + separator + offset
+    seconds, fraction = head.split(".", 1)
+    fraction = fraction.rstrip("0")
+    return seconds + (f".{fraction}" if fraction else "") + separator + offset
 
 
 def _required_plan_value(plan: Mapping[str, object], name: str) -> object:

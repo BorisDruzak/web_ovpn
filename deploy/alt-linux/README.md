@@ -1,5 +1,12 @@
 # ALT Workstation Provisioning
 
+## Manual bootstrap and Ansible MVP
+
+An additional manual-install path is documented in
+[`docs/ALT_MANUAL_ANSIBLE_MVP.md`](../../docs/ALT_MANUAL_ANSIBLE_MVP.md). It
+uses the existing registration and SSH readiness boundary but does not replace
+the managed ISO or existing local-account provisioning flow.
+
 This directory contains the verified ALT Workstation K 11.2 autoinstall,
 bootstrap, registration, preflight and local-account provisioning control
 plane.

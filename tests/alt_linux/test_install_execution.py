@@ -750,7 +750,7 @@ def test_claim_marks_an_expired_authorization_terminal(
         settings,
         repository,
         tmp_path,
-        clock=lambda: "2026-07-29T12:07:00+00:00",
+        clock=lambda: "2026-07-29T12:17:00+00:00",
     )
 
     with pytest.raises(ControlError, match="expired"):
@@ -777,7 +777,7 @@ def test_repository_rejects_extra_or_tampered_execution_files(
         plan_sha256,
     )
     execution = settings.install_sessions_dir / session_id / "execution-0001"
-    assert b"install-plan" in repository.read_execution_file(
+    assert b"Generated from immutable InstallPlan V1." in repository.read_execution_file(
         session_id, "autoinstall.scm"
     )
     (execution / "unexpected").write_bytes(b"x")

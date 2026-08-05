@@ -6,6 +6,7 @@ import ipaddress
 import json
 import re
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -14,11 +15,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .audit import write_audit
-from .auth import authorize_network_change
+from .auth import authorize_network_change, verify_api_csrf
 from .auto_sync import force_client_sync
 from .config import get_settings
 from .context_contract import ContextCursorError, decode_search_cursor, encode_search_cursor
 from .db import get_db
+from .endpoint_context_adapter import get_endpoint_context_adapter
+from .endpoint_platform_client import (
+    EndpointPlatformServiceDisabled,
+    EndpointPlatformServiceError,
+)
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
 from .models import NetworkChangeIdempotency, utcnow
@@ -143,6 +149,10 @@ class NetworkChangePlanCreateRequest(BaseModel):
     subject_key: str = Field(min_length=1, max_length=240)
     desired_state: Literal["allow", "deny"]
     reason: str = Field(min_length=1, max_length=1000)
+
+
+class EndpointCollectionRequest(BaseModel):
+    profile: Literal["baseline_v1", "health_v1", "network_v1"]
 
 
 def api_response(data: dict[str, Any]) -> dict[str, Any]:
@@ -296,6 +306,122 @@ def _require_idempotency_key(value: str | None) -> str:
     if not value or not IDEMPOTENCY_KEY_RE.fullmatch(value):
         raise HTTPException(status_code=400, detail="Idempotency-Key is required")
     return value
+
+
+def _endpoint_platform_degraded(code: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"status": "degraded", "code": code},
+    )
+
+
+def _endpoint_context_operation(
+    *,
+    request: Request,
+    db: Session,
+    actor: str,
+    action: str,
+    target_device: str | None,
+    operation: Any,
+) -> dict[str, Any] | JSONResponse:
+    """Run one adapter operation without exposing upstream exception data."""
+
+    adapter = None
+    try:
+        adapter = get_endpoint_context_adapter()
+        data = operation(adapter)
+    except EndpointPlatformServiceDisabled:
+        code = "endpoint_platform_disabled"
+    except EndpointPlatformServiceError:
+        code = "endpoint_platform_unavailable"
+    except Exception:
+        # This covers malformed safe SDK data as well as transport errors
+        # without leaking a response body, token, or local filesystem details.
+        code = "endpoint_platform_unavailable"
+    else:
+        write_audit(db, request, actor, action, "ok", "Endpoint Platform safe API response", target_client=target_device)
+        return api_response(data)
+    finally:
+        if adapter is not None:
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+    write_audit(db, request, actor, action, "degraded", code, target_client=target_device)
+    return _endpoint_platform_degraded(code)
+
+
+@router.get("/endpoints")
+def api_endpoints(
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    return _endpoint_context_operation(
+        request=request, db=db, actor=actor, action="api-endpoint-list", target_device=None,
+        operation=lambda adapter: {"devices": adapter.list_devices()},
+    )
+
+
+@router.get("/endpoints/{device_id}")
+def api_endpoint_detail(
+    device_id: UUID,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    return _endpoint_context_operation(
+        request=request, db=db, actor=actor, action="api-endpoint-detail", target_device=str(device_id),
+        operation=lambda adapter: adapter.get_device(device_id),
+    )
+
+
+@router.post("/endpoints/{device_id}/collections", status_code=202)
+def api_endpoint_collection_request(
+    device_id: UUID,
+    payload: EndpointCollectionRequest,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    csrf_token_header: str | None = Header(default=None, alias="X-CSRF-Token"),
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    verify_api_csrf(request, csrf_token_header)
+    key = _require_idempotency_key(idempotency_key)
+    return _endpoint_context_operation(
+        request=request, db=db, actor=actor, action="api-endpoint-collection-request", target_device=str(device_id),
+        operation=lambda adapter: adapter.request_collection(device_id, payload.profile, key),
+    )
+
+
+@router.get("/endpoint-collections/{collection_id}")
+def api_endpoint_collection(
+    collection_id: UUID,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    return _endpoint_context_operation(
+        request=request, db=db, actor=actor, action="api-endpoint-collection", target_device=None,
+        operation=lambda adapter: adapter.get_collection(collection_id),
+    )
+
+
+@router.get("/endpoints/{device_id}/context/compare")
+def api_endpoint_context_compare(
+    device_id: UUID,
+    from_snapshot_id: UUID,
+    to_snapshot_id: UUID,
+    request: Request,
+    actor: str = Depends(require_api_actor),
+    db: Session = Depends(get_db),
+):
+    return _endpoint_context_operation(
+        request=request, db=db, actor=actor, action="api-endpoint-context-compare", target_device=str(device_id),
+        operation=lambda adapter: adapter.compare_context(device_id, from_snapshot_id, to_snapshot_id),
+    )
 
 
 @router.post("/network-changes/plans")

@@ -1460,7 +1460,7 @@ def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(t
     }
 
     def fake_netctl(request, args, timeout=None):
-        if args == ["hosts", "list"]:
+        if args in (["hosts", "list"], ["hosts", "list", "--status", "all"]):
             return {"hosts": [host]}, None
         if args == ["hosts", "inspect", "192.168.99.44"]:
             return {"host": host, "observations": []}, None

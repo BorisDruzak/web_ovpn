@@ -122,6 +122,12 @@ def create_execution_tls_server(
             )
 
         def _error(self, status: int, code: str) -> None:
+            print(
+                f"execution_api_rejection method={self.command} "
+                f"status={status} code={code}",
+                file=sys.stderr,
+                flush=True,
+            )
             self._send_json(
                 status,
                 {"status": "error", "error": {"code": code}},

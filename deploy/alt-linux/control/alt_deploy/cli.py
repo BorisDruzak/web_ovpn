@@ -32,6 +32,7 @@ from .provision import (
     ProvisionPlanner,
     ProvisionRequest,
 )
+from .configure import ConfigurePlanner, ConfigureRequest
 from .registry import MachineRepository
 from .vault import VaultHealthChecker
 
@@ -114,6 +115,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--vars-file",
         required=True,
     )
+
+    configure = commands.add_parser("configure")
+    configure_commands = configure.add_subparsers(
+        dest="configure_command",
+        required=True,
+    )
+    configure_preview = configure_commands.add_parser("preview")
+    configure_preview.add_argument("machine_uuid")
+    configure_preview.add_argument("--vars-file", required=True)
+    configure_start = configure_commands.add_parser("start")
+    configure_start.add_argument("machine_uuid")
+    configure_start.add_argument("--vars-file", required=True)
 
     jobs = commands.add_parser("jobs")
     job_commands = jobs.add_subparsers(
@@ -594,6 +607,22 @@ def main(
                     "status": "ok",
                     "job": job.to_public_dict(),
                 }
+
+        elif (
+            parsed.command == "configure"
+            and parsed.configure_command in {"preview", "start"}
+        ):
+            request_payload = _read_request_file(parsed.vars_file)
+            request = ConfigureRequest.from_mapping(
+                request_payload,
+                expected_uuid=parsed.machine_uuid,
+            )
+            planner = ConfigurePlanner(active_settings)
+
+            if parsed.configure_command == "preview":
+                payload = planner.preview(parsed.machine_uuid, request)
+            else:
+                payload = planner.start(parsed.machine_uuid, request)
 
         elif (
             parsed.command == "jobs"

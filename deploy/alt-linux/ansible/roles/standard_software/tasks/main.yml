@@ -1,0 +1,6 @@
+---
+- name: Install approved standard workstation packages
+  ansible.builtin.package:
+    name: "{{ standard_packages + organization_packages }}"
+    state: present
+  when: (standard_packages + organization_packages) | length > 0

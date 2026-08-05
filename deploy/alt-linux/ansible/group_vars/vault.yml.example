@@ -2,3 +2,5 @@
 # Создайте рабочий зашифрованный vault.yml только на 192.168.100.17.
 # Значение должно быть yescrypt-хешем, а не открытым паролем.
 vault_employee_password_hash: ""
+vault_ad_join_user: ""
+vault_ad_join_password: ""

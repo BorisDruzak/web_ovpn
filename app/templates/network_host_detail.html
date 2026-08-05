@@ -21,6 +21,25 @@
     <dt>Site</dt><dd>{{ host.site or "-" }}</dd>
   </dl>
 </section>
+<section class="panel">
+  <h3>Endpoint Agent</h3>
+  {% if host.endpoint_agent.state == "confirmed" %}
+  <p><span class="badge ok">Confirmed automatically</span> {{ host.endpoint_agent.device_display_name or "Endpoint Agent" }}</p>
+  <dl class="details">
+    <dt>Gateway activity</dt><dd>{{ host.endpoint_agent.gateway_last_seen_at or "-" }}</dd>
+    <dt>Latest baseline</dt><dd>{{ host.endpoint_agent.baseline_collected_at or "-" }}</dd>
+    <dt>Profiles</dt><dd>{{ host.endpoint_agent.profiles|join(", ") or "-" }}</dd>
+  </dl>
+  {% elif host.endpoint_agent.state == "ambiguous" %}
+  <p><span class="badge warn">Ambiguous match</span></p>
+  {% elif host.endpoint_agent.state == "stale" %}
+  <p><span class="badge warn">Stale cached result</span> {{ host.endpoint_agent.device_display_name or "" }}</p>
+  {% elif host.endpoint_agent.state == "updating" %}
+  <p><span class="badge muted">Updating</span></p>
+  {% else %}
+  <p><span class="badge muted">No agent</span></p>
+  {% endif %}
+</section>
 {% set availability = host.availability or {} %}
 <section class="panel">
   <h3>Доступность</h3>

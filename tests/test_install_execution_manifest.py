@@ -70,6 +70,19 @@ def test_manifest_is_canonical_signed_and_binds_every_execution_artifact() -> No
     assert signature["manifest_sha256"] == hashlib.sha256(encoded).hexdigest()
 
 
+def test_manifest_normalizes_timestamps_for_the_install_agent_contract() -> None:
+    manifest = build_execution_manifest(
+        plan=_plan(),
+        plan_sha256="d" * 64,
+        authorized_at="2026-07-29T12:02:00.950000+00:00",
+        expires_at="2026-07-29T12:07:00.950100+00:00",
+        artifacts=_artifacts(),
+    )
+
+    assert manifest.authorized_at == "2026-07-29T12:02:00.95+00:00"
+    assert manifest.expires_at == "2026-07-29T12:07:00.9501+00:00"
+
+
 def test_manifest_rejects_missing_extra_or_empty_artifacts() -> None:
     with pytest.raises(ValueError, match="artifact names"):
         build_execution_manifest(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import importlib.util
 import json
 import os
@@ -177,6 +178,7 @@ def test_execution_commands_call_task2_service_and_redact_output(
                 status={
                     "session_id": session_id,
                     "execution": {
+                        "revision": 1,
                         "state": "authorized",
                         "reason": kwargs["reason"],
                         "plan_sha256": kwargs["plan_sha256"],
@@ -195,6 +197,7 @@ def test_execution_commands_call_task2_service_and_redact_output(
             return {
                 "session_id": session_id,
                 "execution": {
+                    "revision": 1,
                     "state": "cancelled",
                     "cancel_reason": reason,
                     "bearer": "must-not-appear",
@@ -272,6 +275,7 @@ def test_execution_commands_call_task2_service_and_redact_output(
     assert authorize_document == {
         "status": "ok",
         "session": {
+            "execution_id": f"{session_id}:execution-0001",
             "session_id": session_id,
             "execution_state": "authorized",
         },
@@ -279,6 +283,7 @@ def test_execution_commands_call_task2_service_and_redact_output(
     assert cancel_document == {
         "status": "ok",
         "session": {
+            "execution_id": f"{session_id}:execution-0001",
             "session_id": session_id,
             "execution_state": "cancelled",
         },
@@ -434,6 +439,28 @@ def test_qemu_authorization_cli_reaches_real_production_service_by_default(
         sentinel=sentinel,
         vm_instance_id="22222222-3333-4444-5555-666666666662",
     )
+    approved_request = {
+        "disk_fingerprint": plan["target_disk"]["fingerprint"],
+        "inventory_sha256": approved["inventory_sha256"],
+        "plan_sha256": plan_sha256,
+        "session_id": session_id,
+        "target_disk": "/dev/vda",
+    }
+    preflight = support.issue_attestation(
+        state,
+        event="preflight_approval",
+        sequence=1,
+        payload={
+            "baseline_sha256": "a" * 64,
+            "controller": {"plan_revision": 1, "state": "plan_published"},
+            "request": approved_request,
+        },
+        observed_at="2026-07-29T12:00:00+00:00",
+        previous_sha256=None,
+    )
+    (state / "preflight-approval-attestation.json").write_bytes(
+        support._json_bytes(preflight)
+    )
     evidence = tmp_path / "qemu-evidence"
     evidence.mkdir()
 
@@ -527,11 +554,10 @@ def test_qemu_authorization_cli_reaches_real_production_service_by_default(
     )
     request = support.create_authorization_request(state)
     assert request == {
-        "disk_fingerprint": plan["target_disk"]["fingerprint"],
-        "inventory_sha256": approved["inventory_sha256"],
-        "plan_sha256": plan_sha256,
-        "session_id": session_id,
-        "target_disk": "/dev/vda",
+        **approved_request,
+        "preflight_approval_attestation_sha256": (
+            support.attestation_sha256(preflight)
+        ),
     }
 
     result = support.main(

@@ -95,6 +95,20 @@ async def verify_csrf(request: Request) -> None:
         raise HTTPException(status_code=400, detail="CSRF token mismatch")
 
 
+def verify_api_csrf(request: Request, csrf_token_header: str | None) -> None:
+    """Require the same session CSRF secret for JSON API mutations.
+
+    The existing form verifier consumes request bodies, so JSON endpoints carry
+    the token in a header instead.  Bearer authentication remains mandatory at
+    each API route; this only protects browser-originated requests further.
+    """
+
+    expected = str(request.session.get("csrf_token") or "")
+    sent = str(csrf_token_header or "")
+    if not expected or not hmac.compare_digest(sent, expected):
+        raise HTTPException(status_code=400, detail="CSRF token mismatch")
+
+
 def _network_change_tokens() -> tuple[dict[str, object], ...]:
     """Load only hashed, explicitly scoped control-plane credentials."""
     try:

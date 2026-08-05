@@ -295,6 +295,23 @@ def test_manifest_route_requires_the_session_bearer_and_is_no_store(
     assert status_path.read_bytes() == status_before
 
 
+def test_rejected_execution_request_logs_only_safe_diagnostics(
+    tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    server, material, _claims, _settings = tls_server
+    path = f"/v2/install-sessions/{SESSION_ID}/execution/manifest"
+
+    with _running(server):
+        response = _request(server, material, "GET", path)
+
+    assert response[0] == 401
+    stderr = capfd.readouterr().err
+    assert "method=GET status=401 code=authorization_required" in stderr
+    assert CREDENTIAL not in stderr
+    assert SESSION_ID not in stderr
+
+
 def test_manifest_signature_route_is_exact_authenticated_and_no_store(
     tls_server: tuple[object, TLSMaterial, _ClaimService, Settings],
 ) -> None:

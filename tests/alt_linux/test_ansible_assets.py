@@ -120,6 +120,8 @@ def test_assignment_template_contains_no_secret_fields() -> None:
 def test_vault_example_contains_no_secret_value() -> None:
     assert load_yaml(VAULT_EXAMPLE)[0] == {
         "vault_employee_password_hash": "",
+        "vault_ad_join_user": "",
+        "vault_ad_join_password": "",
     }
 
 

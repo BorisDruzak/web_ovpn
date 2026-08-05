@@ -1,0 +1,16 @@
+---
+- name: Determine active IPv4 interface
+  ansible.builtin.set_fact:
+    workstation_network_interface: "{{ ansible_default_ipv4.interface }}"
+
+- name: Configure domain DNS without replacing interface profile
+  ansible.builtin.copy:
+    dest: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
+    content: |
+      search {{ ad_domain }}
+      {% for server in ad_dns_servers %}
+      nameserver {{ server }}
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"

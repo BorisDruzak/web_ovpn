@@ -17,6 +17,8 @@ from .errors import ControlError
 VAULT_VARIABLE = "vault_employee_password_hash"
 EXECUTION_ROOT_VARIABLE = "vault_install_root_password_hash"
 EXECUTION_ADMIN_VARIABLE = "vault_install_admin_password_hash"
+AD_JOIN_USER_VARIABLE = "vault_ad_join_user"
+AD_JOIN_PASSWORD_VARIABLE = "vault_ad_join_password"
 
 
 def extract_execution_password_hashes(decrypted_text: str) -> dict[str, str]:
@@ -232,3 +234,24 @@ class VaultHealthChecker:
             "status": "ok",
             "checks": checks,
         }
+
+    def check_ad_join(self) -> dict[str, object]:
+        base_checks = self._build_checks()
+        decrypted_text = self._decrypt() if all(base_checks.values()) else None
+        values = {
+            line.partition(":")[0].strip(): line.partition(":")[2].strip()
+            for line in (decrypted_text or "").splitlines()
+            if ":" in line
+        }
+        checks = {
+            "ad_join_user_present": bool(values.get(AD_JOIN_USER_VARIABLE)),
+            "ad_join_password_present": bool(values.get(AD_JOIN_PASSWORD_VARIABLE)),
+        }
+        if not all(base_checks.values()) or not all(checks.values()):
+            raise ControlError(
+                code="domain_join_credentials_unavailable",
+                message="AD join credentials are unavailable",
+                exit_code=7,
+                details={"checks": checks},
+            )
+        return {"status": "ok", "checks": checks}

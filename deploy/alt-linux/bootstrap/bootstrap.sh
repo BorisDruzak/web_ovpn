@@ -2,17 +2,73 @@
 
 set -Eeuo pipefail
 
+if [[ $(id -u) -ne 0 ]]; then
+    echo "Run as root" >&2
+    exit 6
+fi
+
 exec > >(tee -a /var/log/alt-bootstrap.log) 2>&1
 
-DEPLOY_HOST="192.168.100.17"
+DEPLOY_HOST="${ALT_DEPLOY_HOST:-192.168.100.17}"
 DEPLOY_URL="http://${DEPLOY_HOST}:8087"
 REGISTER_HELPER_URL="${DEPLOY_URL}/bootstrap/alt-bootstrap-register"
 REGISTER_HELPER_TARGET="/usr/local/sbin/alt-bootstrap-register"
+ANSIBLE_AUTHORIZED_KEY_SHA256="${ALT_ANSIBLE_AUTHORIZED_KEY_SHA256:-SHA256:60+ctiToYXkwE+H5LfV2hD/MZqRFiato7Q1RcQRlTmM}"
 
 ANSIBLE_USER="ansible"
 
 MARKER="/var/lib/alt-bootstrap-completed"
 REGISTER_MARKER="/var/lib/alt-bootstrap-registered"
+
+validate_alt_workstation() {
+    local release
+
+    release=$(cat /etc/altlinux-release 2>/dev/null || true)
+    if [[ ! "${release}" =~ ^ALT\ Workstation\ K\ 11\. ]]; then
+        echo "ERROR: unsupported operating system: ${release:-unknown}" >&2
+        return 1
+    fi
+}
+
+install_authorized_key() {
+    local temporary
+    local key_count
+    local actual_fingerprint
+
+    temporary=$(mktemp)
+
+    if ! curl \
+        --fail \
+        --silent \
+        --show-error \
+        --connect-timeout 5 \
+        --max-time 15 \
+        "${DEPLOY_URL}/bootstrap/ansible_authorized_keys" \
+        -o "${temporary}"; then
+        rm -f "${temporary}"
+        return 1
+    fi
+
+    key_count=$(awk 'NF && $1 !~ /^#/ { count += 1 } END { print count + 0 }' "${temporary}")
+    actual_fingerprint=$(ssh-keygen -lf "${temporary}" -E sha256 | awk 'NR == 1 { print $2 }')
+
+    if [[ "${key_count}" -ne 1 ]] \
+        || [[ -z "${actual_fingerprint}" ]] \
+        || [[ "${actual_fingerprint}" != "${ANSIBLE_AUTHORIZED_KEY_SHA256}" ]]; then
+        echo "ERROR: controller authorized key fingerprint mismatch" >&2
+        rm -f "${temporary}"
+        return 1
+    fi
+
+    install \
+        -o "${ANSIBLE_USER}" \
+        -g "${ANSIBLE_USER}" \
+        -m 0600 \
+        "${temporary}" \
+        "/home/${ANSIBLE_USER}/.ssh/authorized_keys"
+
+    rm -f "${temporary}"
+}
 
 install_registration_helper() {
     local temporary
@@ -75,6 +131,18 @@ register_machine() {
 
 echo "=== Bootstrap started: $(date) ==="
 
+validate_alt_workstation
+
+if ! ip route show default | grep -q .; then
+    echo "ERROR: default route is unavailable" >&2
+    exit 1
+fi
+
+if ! ip -4 -o addr show scope global | grep -q .; then
+    echo "ERROR: IPv4 address is unavailable" >&2
+    exit 1
+fi
+
 if [[ -f "${MARKER}" ]]; then
     echo "Bootstrap already completed"
 
@@ -136,19 +204,7 @@ install \
     -m 0700 \
     "/home/${ANSIBLE_USER}/.ssh"
 
-curl \
-    --fail \
-    --silent \
-    --show-error \
-    "${DEPLOY_URL}/bootstrap/ansible_authorized_keys" \
-    -o "/home/${ANSIBLE_USER}/.ssh/authorized_keys"
-
-chown \
-    "${ANSIBLE_USER}:${ANSIBLE_USER}" \
-    "/home/${ANSIBLE_USER}/.ssh/authorized_keys"
-
-chmod 0600 \
-    "/home/${ANSIBLE_USER}/.ssh/authorized_keys"
+install_authorized_key
 
 cat > "/etc/sudoers.d/90-${ANSIBLE_USER}" <<SUDOEOF
 ${ANSIBLE_USER} ALL=(ALL:ALL) NOPASSWD: ALL
@@ -159,6 +215,11 @@ chmod 0440 \
 
 visudo -cf \
     "/etc/sudoers.d/90-${ANSIBLE_USER}"
+
+if ! sudo -n -u "${ANSIBLE_USER}" true; then
+    echo "ERROR: ansible passwordless sudo validation failed" >&2
+    exit 1
+fi
 
 systemctl enable --now sshd
 

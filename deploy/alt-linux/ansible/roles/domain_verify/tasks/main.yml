@@ -1,0 +1,41 @@
+---
+- name: Verify ALT domain membership
+  ansible.builtin.command:
+    argv: [net, ads, testjoin]
+  register: domain_verify_join
+  changed_when: false
+
+- name: Verify SSSD service
+  ansible.builtin.command:
+    argv: [systemctl, is-active, sssd]
+  register: domain_verify_sssd
+  changed_when: false
+
+- name: Verify domain user lookup
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ domain_test_user if '@' in domain_test_user else domain_test_user ~ '@' ~ ad_domain }}"]
+  register: domain_verify_user
+  changed_when: false
+
+- name: Validate domain verification result
+  ansible.builtin.assert:
+    that:
+      - domain_verify_join.rc == 0
+      - domain_verify_sssd.stdout | trim == 'active'
+      - domain_verify_user.rc == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:domain_verification_failed domain verification failed
+
+- name: Write public configure result on controller
+  ansible.builtin.copy:
+    content: >-
+      {{ {'machine_uuid': machine_uuid, 'hostname': final_hostname, 'profile': profile,
+          'domain': ad_domain, 'already_joined': domain_join_already_joined,
+          'reboot_required': not domain_join_already_joined,
+          'verification': {'ssh': true, 'sudo': true, 'dns': true, 'time': true,
+          'domain_join': true, 'sssd': true, 'domain_user_lookup': true,
+          'packages': true}} | to_nice_json }}
+    dest: "{{ configure_result_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  run_once: true
