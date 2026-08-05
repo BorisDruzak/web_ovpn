@@ -1,0 +1,48 @@
+---
+- name: Read current ALT authentication scheme
+  ansible.builtin.command:
+    argv: [system-auth, status]
+  register: domain_join_status
+  changed_when: false
+  failed_when: false
+
+- name: Reject a different Active Directory domain
+  ansible.builtin.assert:
+    that: >-
+      (domain_join_status.stdout | trim | lower is not match('^ad\\s+'))
+      or (ad_domain in (domain_join_status.stdout | lower))
+    fail_msg: ALT_PREFLIGHT_FAILURE:domain_conflict workstation belongs to another domain
+
+- name: Determine whether the requested domain is already joined
+  ansible.builtin.set_fact:
+    domain_join_already_joined: >-
+      {{ domain_join_status.stdout | lower is search('^ad\\s+' + ad_domain) }}
+
+- name: Join workstation to Active Directory with Kerberos credentials
+  block:
+    - name: Acquire temporary Kerberos ticket
+      ansible.builtin.command:
+        argv: [kinit, "{{ vault_ad_join_user }}"]
+        stdin: "{{ vault_ad_join_password }}"
+      changed_when: false
+
+    - name: Join workstation through ALT system-auth
+      ansible.builtin.command:
+        argv:
+          - system-auth
+          - write
+          - ad
+          - "{{ ad_domain }}"
+          - "{{ final_hostname }}"
+          - "{{ workgroup }}"
+          - "{{ vault_ad_join_user }}"
+          - "--createcomputer={{ computer_ou | regex_replace(',DC=sosnadmin,DC=local$', '') | regex_replace('OU=', '') | regex_replace(',OU=', '/') }}"
+      register: domain_join_command
+  always:
+    - name: Destroy temporary Kerberos ticket
+      ansible.builtin.command:
+        argv: [kdestroy]
+      changed_when: false
+      failed_when: false
+  no_log: true
+  when: not domain_join_already_joined
