@@ -55,6 +55,23 @@ def test_manual_mvp_runbook_preserves_the_controller_boundary() -> None:
     assert_manual_mvp_contract(RUNBOOK.read_text(encoding="utf-8"))
 
 
+def test_manual_mvp_runbook_includes_the_pilot_acceptance_checklist() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+
+    for required in (
+        "## Pilot acceptance",
+        "curl --noproxy '*' -fsS http://192.168.100.17:8087/health",
+        "curl --noproxy '*' -fsS http://192.168.100.17:8088/health",
+        "Run the manual bootstrap command once and record only its exit status and registration UUID.",
+        "Machine registration completed",
+        "Machine already registered",
+        "sudo /usr/local/sbin/workstationctl machines list",
+        "sudo /usr/local/sbin/workstationctl preflight <machine-uuid>",
+        "Do not run `configure start` until preview shows the expected UUID and target IP.",
+    ):
+        assert required in text
+
+
 def test_autoinstall_context_links_to_manual_mvp_without_replacing_legacy_path() -> None:
     text = AUTOINSTALL_CONTEXT.read_text(encoding="utf-8")
 

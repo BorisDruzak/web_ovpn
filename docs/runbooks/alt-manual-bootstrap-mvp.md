@@ -33,6 +33,28 @@ sudo /usr/local/sbin/workstationctl configure preview <machine-uuid> --vars-file
 sudo /usr/local/sbin/workstationctl configure start <machine-uuid> --vars-file <request.json>
 ```
 
+## Pilot acceptance
+
+1. Confirm controller endpoints from the workstation:
+
+   ```bash
+   curl --noproxy '*' -fsS http://192.168.100.17:8087/health
+   curl --noproxy '*' -fsS http://192.168.100.17:8088/health
+   ```
+
+2. Run the manual bootstrap command once and record only its exit status and registration UUID.
+3. Run the same command a second time. It must exit zero and print either `Machine registration completed` or `Machine already registered`.
+4. On the controller, verify the machine is ready:
+
+   ```bash
+   sudo /usr/local/sbin/workstationctl machines list
+   sudo /usr/local/sbin/workstationctl preflight <machine-uuid>
+   ```
+
+5. Do not run `configure start` until preview shows the expected UUID and target IP.
+
+Live pilot acceptance is pending a user-designated disposable workstation or VM. Do not select, repurpose, or wipe a target for this checklist without that designation.
+
 ## Recovery
 
 The bootstrap is safe to rerun after a transient download, network, or controller-registration failure. A rerun does not repair intentionally deleted SSH keys or sudoers files; restore those through the approved controller process before rerunning.
