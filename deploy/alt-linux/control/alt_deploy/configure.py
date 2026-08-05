@@ -97,7 +97,7 @@ class ConfigureRequest:
             profile != "standard-domain"
             or domain != "sosnadmin.local"
             or realm != "SOSNADMIN.LOCAL"
-            or workgroup != "SOSNADMIN"
+            or workgroup != "SOSNADM"
         ):
             raise _invalid_request("Configure domain values are unsupported")
 

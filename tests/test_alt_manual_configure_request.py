@@ -45,7 +45,7 @@ def valid_request() -> dict[str, str]:
         "profile": "standard-domain",
         "domain": "sosnadmin.local",
         "realm": "SOSNADMIN.LOCAL",
-        "workgroup": "SOSNADMIN",
+        "workgroup": "SOSNADM",
         "computer_ou": "OU=Workstations,DC=sosnadmin,DC=local",
         "domain_test_user": "pilot.user",
     }

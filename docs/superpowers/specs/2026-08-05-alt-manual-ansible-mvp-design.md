@@ -55,7 +55,7 @@ The request is an object with exactly these fields:
   "profile": "standard-domain",
   "domain": "sosnadmin.local",
   "realm": "SOSNADMIN.LOCAL",
-  "workgroup": "SOSNADMIN",
+  "workgroup": "SOSNADM",
   "computer_ou": "OU=Workstations,DC=sosnadmin,DC=local",
   "domain_test_user": "pilot.user"
 }
