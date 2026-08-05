@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from .config import Settings
 from .errors import ControlError
 from .jsonio import atomic_write_json, read_json
+from .vault import VaultHealthChecker
 
 if TYPE_CHECKING:
     from .registry import MachineRepository
@@ -204,6 +205,8 @@ class ConfigurePlanner:
         missing = [name for name, path in required.items() if not path.is_file()]
         if missing:
             raise ControlError(code="configure_not_configured", message="Domain configure is not fully configured", exit_code=5, details={"missing": missing})
+
+        VaultHealthChecker(self.settings).check_ad_join()
 
         run_id = uuid.uuid4().hex
         run_dir = self.settings.state_root / "configure-runs" / run_id

@@ -170,6 +170,7 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from alt_deploy.config import Settings
+    from alt_deploy.vault import VaultHealthChecker
 
     settings = Settings(
         registration_root=tmp_path / "registration", state_root=tmp_path / "state",
@@ -196,6 +197,7 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
     request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
     result = ConfigurePlanner(settings, machines=SimpleNamespace(get=lambda _: machine)).start(MACHINE_UUID, request)
 
@@ -205,3 +207,16 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
     assert result["verification"]["domain_join"] is True
     if os.name != "nt":
         assert (settings.state_root / "configure-runs").stat().st_mode & 0o777 == 0o700
+
+
+def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: "vault_ad_join_user: joiner\nvault_ad_join_password: secret\n"  # type: ignore[method-assign]
+
+    assert checker.check_ad_join() == {
+        "status": "ok",
+        "checks": {"ad_join_user_present": True, "ad_join_password_present": True},
+    }
