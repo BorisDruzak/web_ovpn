@@ -25,12 +25,12 @@ Domain join and software installation are controller-only.
 
 ## Controller handoff
 
-After registration is ready, an authorized controller operator runs preflight, preview and configuration. The workstation operator does not run Ansible, `system-auth`, or any domain join command.
+After registration is ready, an authorized controller operator runs preflight, preview and configuration as the `altserver` service account. Controller state is owned by `altserver`; running these commands as root can create files that the service account cannot access. The workstation operator does not run Ansible, `system-auth`, or any domain join command.
 
 ```bash
-sudo /usr/local/sbin/workstationctl preflight <machine-uuid>
-sudo /usr/local/sbin/workstationctl configure preview <machine-uuid> --vars-file <request.json>
-sudo /usr/local/sbin/workstationctl configure start <machine-uuid> --vars-file <request.json>
+sudo -u altserver /usr/local/sbin/workstationctl preflight <machine-uuid>
+sudo -u altserver /usr/local/sbin/workstationctl configure preview <machine-uuid> --vars-file <request.json>
+sudo -u altserver /usr/local/sbin/workstationctl configure start <machine-uuid> --vars-file <request.json>
 ```
 
 ## Pilot acceptance
@@ -47,8 +47,8 @@ sudo /usr/local/sbin/workstationctl configure start <machine-uuid> --vars-file <
 4. On the controller, verify the machine is ready:
 
    ```bash
-   sudo /usr/local/sbin/workstationctl machines list
-   sudo /usr/local/sbin/workstationctl preflight <machine-uuid>
+   sudo -u altserver /usr/local/sbin/workstationctl machines list
+   sudo -u altserver /usr/local/sbin/workstationctl preflight <machine-uuid>
    ```
 
 5. Do not run `configure start` until preview shows the expected UUID and target IP.
