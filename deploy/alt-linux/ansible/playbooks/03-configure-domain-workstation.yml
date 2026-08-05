@@ -4,6 +4,7 @@
   gather_facts: true
   become: true
   vars_files:
+    - ../group_vars/all.yml
     - ../group_vars/vault.yml
   roles:
     - manual_preflight

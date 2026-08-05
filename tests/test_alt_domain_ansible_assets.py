@@ -23,7 +23,10 @@ def test_domain_playbook_uses_only_the_manual_domain_roles() -> None:
         "standard_software",
         "domain_verify",
     ]
-    assert playbook[0]["vars_files"] == ["../group_vars/vault.yml"]
+    assert playbook[0]["vars_files"] == [
+        "../group_vars/all.yml",
+        "../group_vars/vault.yml",
+    ]
 
 
 def test_domain_join_uses_kerberos_stdin_and_never_password_arguments() -> None:
