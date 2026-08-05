@@ -15,7 +15,7 @@ FORBIDDEN_INSTRUCTION_PATTERNS = {
         r"(?i:ansible(?:-(?:playbook|pull|galaxy))?)\b"
         r"|\s*(?i:ansible(?:-(?:playbook|pull|galaxy))?)\b"
         r"[^\r\n]*\s--?[A-Za-z][\w-]*(?:\s|$)"
-        r"|\s*(?i:ansible-playbook)\b\s+\S+\.ya?ml\b"
+        r"|\s*(?i:ansible-playbook)\b\s+\S+(?:\s|$)"
         r")",
     ),
     "password-bearing command": re.compile(
@@ -98,6 +98,7 @@ def test_manual_mvp_contract_rejects_unsafe_instruction_mutations(
     "unsafe_instruction",
     (
         "Vault secret usage",
+        "ansible-playbook deploy",
         "ansible all -m ping",
         "Ansible all -m ping",
         "ansible all --module-name ping",
