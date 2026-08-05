@@ -68,6 +68,8 @@ def test_manual_mvp_runbook_includes_the_pilot_acceptance_checklist() -> None:
         "sudo /usr/local/sbin/workstationctl machines list",
         "sudo /usr/local/sbin/workstationctl preflight <machine-uuid>",
         "Do not run `configure start` until preview shows the expected UUID and target IP.",
+        "Live pilot acceptance is pending a user-designated disposable workstation or VM.",
+        "Do not select, repurpose, or wipe a target for this checklist without that designation.",
     ):
         assert required in text
 
