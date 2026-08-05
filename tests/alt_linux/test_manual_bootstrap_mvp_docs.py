@@ -10,9 +10,9 @@ RUNBOOK = ROOT / "docs" / "runbooks" / "alt-manual-bootstrap-mvp.md"
 FORBIDDEN_INSTRUCTION_PATTERNS = {
     "Vault credential reference": re.compile(r"(?i)\bvault\b"),
     "direct Ansible execution": re.compile(
-        r"(?im)^\s*(?:sudo\s+)?(?:"
+        r"(?i)(?:"
         r"ansible-(?:playbook|pull|galaxy)\b"
-        r"|ansible[\t ]+(?:\S+[\t ]+--?[A-Za-z][\w-]*|--\S+)"
+        r"|\bansible\b(?=[^\r\n]*\s--?[A-Za-z][\w-]*(?:\s|$))"
         r")",
     ),
     "password-bearing command": re.compile(
@@ -93,8 +93,12 @@ def test_manual_mvp_contract_rejects_unsafe_instruction_mutations(
     "unsafe_instruction",
     (
         "Vault secret usage",
+        "ansible all -m ping",
         "Ansible all -m ping",
         "ansible all --module-name ping",
+        "$ ansible all -m ping",
+        "sudo -u root ansible all -m ping",
+        "env X=1 ansible all -m ping",
     ),
 )
 def test_manual_mvp_contract_rejects_regression_bypasses(
