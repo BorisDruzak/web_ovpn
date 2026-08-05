@@ -49,6 +49,15 @@ def test_domain_join_uses_kerberos_stdin_and_never_password_arguments() -> None:
     assert "kdestroy" in rendered
 
 
+def test_domain_join_converts_ad_dn_to_alt_parent_first_ou_path() -> None:
+    role_path = ANSIBLE_ROOT / "roles" / "domain_join" / "tasks" / "main.yml"
+    rendered = role_path.read_text(encoding="utf-8")
+
+    assert "alt_createcomputer_path" in rendered
+    assert "regex_findall('OU=([^,]+)') | reverse | join('/')" in rendered
+    assert '"--createcomputer={{ alt_createcomputer_path }}"' in rendered
+
+
 def test_domain_group_vars_use_confirmed_alt_package_and_domain_dns() -> None:
     variables = yaml.safe_load(
         (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
