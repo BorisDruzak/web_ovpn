@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -11,35 +12,31 @@ ALT_ROOT = (
 )
 BOOTSTRAP = ALT_ROOT / "bootstrap" / "bootstrap.sh"
 HELPER = ALT_ROOT / "bootstrap" / "alt-bootstrap-register"
-BASE_SETUP_MUTATIONS = (
-    "apt-get update",
-    "apt-get install -y",
-    "useradd ",
-    "usermod -aG wheel",
-    '"/home/${ANSIBLE_USER}/.ssh"',
-    "install_authorized_key",
-    'cat > "/etc/sudoers.d/90-${ANSIBLE_USER}"',
-    "chmod 0440",
-    "visudo -cf",
-    'systemctl enable --now sshd',
+BASE_MUTATION_PATTERNS = {
+    "package management": r"(?m)^\s*(?:apt-get|apt|dnf|yum|zypper|apk|rpm|dpkg)\b",
+    "account/group management": r"(?m)^\s*(?:useradd|adduser|usermod|userdel|groupadd|addgroup|groupmod|gpasswd)\b",
+    "SSH configuration": r"(?m)^\s*(?:install_authorized_key\b|(?:install|mkdir|chmod|chown)\b[^\n]*(?:/etc/ssh|\.ssh)|(?:sshd|ssh-keygen)\b|(?:sed|tee|cat)\b[^\n]*/etc/ssh)",
+    "sudo configuration": r"(?m)^\s*(?:(?:install|mkdir|chmod|chown|sed|tee|cat)\b[^\n]*(?:sudoers|/etc/sudo)|(?:visudo|sudo)\b)",
+    "service control": r"(?m)^\s*(?:systemctl|service|rc-service)\b",
+}
+REGISTRATION_MUTATION_PATTERNS = {
+    **BASE_MUTATION_PATTERNS,
+    "direct Ansible": r"(?m)^\s*ansible(?:-playbook|-galaxy|-pull)?\b",
+    "domain join": r"(?m)^\s*(?:system-auth\s+write\s+ad|realm\s+join|net\s+ads\s+join)\b",
+    "Vault credential action": r"(?m)^\s*(?:ansible-)?vault\s+(?:read|write|kv|get|login|view|decrypt)\b|^\s*(?:export\s+)?VAULT_[A-Z0-9_]*(?:TOKEN|PASSWORD|SECRET)\s*=",
+}
+BASE_MUTATION_EXAMPLES = (
+    ("package management", "apt-get update"),
+    ("account/group management", "useradd temporary-user"),
+    ("SSH configuration", "install -d /etc/ssh"),
+    ("sudo configuration", "visudo -cf /etc/sudoers"),
+    ("service control", "systemctl restart sshd"),
 )
-REGISTRATION_FORBIDDEN_MUTATIONS = (
-    "apt-get",
-    "useradd",
-    "usermod",
-    "groupadd",
-    "adduser",
-    "addgroup",
-    "install_authorized_key",
-    "/etc/ssh",
-    ".ssh",
-    "/etc/sudoers.d/",
-    "sudo",
-    "visudo",
-    "systemctl",
-    "ansible",
-    "domain",
-    "vault",
+HELPER_MUTATION_EXAMPLES = (
+    *BASE_MUTATION_EXAMPLES,
+    ("direct Ansible", "ansible-playbook workstation.yml"),
+    ("domain join", "realm join example.test"),
+    ("Vault credential action", "vault kv get secret/host"),
 )
 
 
@@ -51,28 +48,32 @@ def function_body(source: str, name: str) -> str:
     return source[body_start:body_end]
 
 
-def bootstrap_main(source: str) -> str:
-    """Return the executable bootstrap section, excluding function definitions."""
-    return source[source.index('echo "=== Bootstrap started: $(date) ==="') :]
+def top_level_executable_source(source: str) -> str:
+    """Remove shell function bodies and retain every top-level executable line."""
+    return re.sub(r"(?ms)^\w+\(\) \{\n.*?^}\n", "", source)
+
+
+def normalize_shell_commands(source: str) -> str:
+    """Join backslash continuations so action matchers see complete commands."""
+    return re.sub(r"\\\n\s*", " ", source)
 
 
 def assert_completed_bootstrap_skips_base_setup(source: str) -> None:
-    main = bootstrap_main(source)
+    main = normalize_shell_commands(top_level_executable_source(source))
     marker_branch_start = main.index('if [[ -f "${MARKER}" ]]; then')
     early_exit = main.index("    exit 0", marker_branch_start)
 
     assert marker_branch_start < early_exit
-    for base_setup in BASE_SETUP_MUTATIONS:
-        mutation_position = main.index(base_setup)
-        assert early_exit < mutation_position, base_setup
+    for mutation_class, pattern in BASE_MUTATION_PATTERNS.items():
+        mutations = list(re.finditer(pattern, main))
+        assert mutations, mutation_class
+        assert all(early_exit < mutation.start() for mutation in mutations), mutation_class
 
 
-def assert_registration_source_has_no_base_or_configuration_mutations(
-    source: str,
-) -> None:
-    source = source.lower()
-    for forbidden in REGISTRATION_FORBIDDEN_MUTATIONS:
-        assert forbidden not in source, forbidden
+def assert_registration_source_has_no_mutations(source: str) -> None:
+    source = normalize_shell_commands(source)
+    for mutation_class, pattern in REGISTRATION_MUTATION_PATTERNS.items():
+        assert not re.search(pattern, source), mutation_class
 
 
 def test_register_helper_source_exists_and_is_strict() -> None:
@@ -85,21 +86,23 @@ def test_register_helper_source_exists_and_is_strict() -> None:
 def test_register_helper_contains_no_base_or_configuration_mutations() -> None:
     source = HELPER.read_text(encoding="utf-8")
 
-    assert_registration_source_has_no_base_or_configuration_mutations(source)
+    assert_registration_source_has_no_mutations(source)
 
 
-def test_register_helper_contract_rejects_package_mutation() -> None:
+@pytest.mark.parametrize(("mutation_class", "mutation"), HELPER_MUTATION_EXAMPLES)
+def test_register_helper_contract_rejects_mutation(
+    mutation_class: str,
+    mutation: str,
+) -> None:
     source = HELPER.read_text(encoding="utf-8")
     mutated_source = source.replace(
         "REGISTER_URL=",
-        "apt-get update\n\nREGISTER_URL=",
+        f"{mutation}\n\nREGISTER_URL=",
         1,
     )
 
-    with pytest.raises(AssertionError, match="apt-get"):
-        assert_registration_source_has_no_base_or_configuration_mutations(
-            mutated_source,
-        )
+    with pytest.raises(AssertionError, match=mutation_class):
+        assert_registration_source_has_no_mutations(mutated_source)
 
 
 def test_bootstrap_installs_helper_before_invocation() -> None:
@@ -168,15 +171,19 @@ def test_completed_bootstrap_exits_before_every_base_setup_mutation() -> None:
     assert_completed_bootstrap_skips_base_setup(source)
 
 
-def test_completed_bootstrap_contract_rejects_pre_marker_package_mutation() -> None:
+@pytest.mark.parametrize(("mutation_class", "mutation"), BASE_MUTATION_EXAMPLES)
+def test_completed_bootstrap_contract_rejects_pre_entrypoint_mutation(
+    mutation_class: str,
+    mutation: str,
+) -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
     mutated_source = source.replace(
-        'if [[ -f "${MARKER}" ]]; then',
-        'apt-get update\n\nif [[ -f "${MARKER}" ]]; then',
+        'echo "=== Bootstrap started: $(date) ==="',
+        f'{mutation}\n\necho "=== Bootstrap started: $(date) ==="',
         1,
     )
 
-    with pytest.raises(AssertionError, match="apt-get update"):
+    with pytest.raises(AssertionError, match=mutation_class):
         assert_completed_bootstrap_skips_base_setup(mutated_source)
 
 
@@ -187,4 +194,4 @@ def test_register_machine_contains_only_registration_operations() -> None:
     assert "install_registration_helper" in register_body
     assert '"${REGISTER_HELPER_TARGET}"' in register_body
     assert 'touch "${REGISTER_MARKER}"' in register_body
-    assert_registration_source_has_no_base_or_configuration_mutations(register_body)
+    assert_registration_source_has_no_mutations(register_body)
