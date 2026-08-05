@@ -11,6 +11,14 @@ BOOTSTRAP = ALT_ROOT / "bootstrap" / "bootstrap.sh"
 HELPER = ALT_ROOT / "bootstrap" / "alt-bootstrap-register"
 
 
+def function_body(source: str, name: str) -> str:
+    """Return a shell function body while keeping source-order assertions readable."""
+    start = source.index(f"{name}() {{")
+    body_start = source.index("\n", start) + 1
+    body_end = source.index("\n}\n", body_start)
+    return source[body_start:body_end]
+
+
 def test_register_helper_source_exists_and_is_strict() -> None:
     assert HELPER.is_file()
     source = HELPER.read_text(encoding="utf-8")
@@ -76,3 +84,45 @@ fi'''
         "domain_join",
     ):
         assert forbidden not in source
+
+
+def test_completed_bootstrap_exits_before_every_base_setup_mutation() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+    marker_branch_start = source.index('if [[ -f "${MARKER}" ]]; then')
+    early_exit = source.index("    exit 0", marker_branch_start)
+
+    assert marker_branch_start < early_exit
+    for base_setup in (
+        "apt-get update",
+        "apt-get install -y",
+        "useradd ",
+        "usermod -aG wheel",
+        '"/home/${ANSIBLE_USER}/.ssh"',
+        "install_authorized_key",
+        'cat > "/etc/sudoers.d/90-${ANSIBLE_USER}"',
+        "chmod 0440",
+        "visudo -cf",
+        'systemctl enable --now sshd',
+    ):
+        mutation_position = source.index(base_setup, early_exit)
+        assert early_exit < mutation_position, base_setup
+
+
+def test_register_machine_contains_only_registration_operations() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+    register_body = function_body(source, "register_machine")
+
+    assert "install_registration_helper" in register_body
+    assert '"${REGISTER_HELPER_TARGET}"' in register_body
+    assert 'touch "${REGISTER_MARKER}"' in register_body
+    for base_setup in (
+        "apt-get",
+        "useradd",
+        "usermod",
+        "install_authorized_key",
+        "/etc/sudoers.d/",
+        "visudo",
+        "systemctl",
+        ".ssh",
+    ):
+        assert base_setup not in register_body
