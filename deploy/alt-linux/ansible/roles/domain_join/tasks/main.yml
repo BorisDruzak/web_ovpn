@@ -13,10 +13,18 @@
       or (ad_domain in (domain_join_status.stdout | lower))
     fail_msg: ALT_PREFLIGHT_FAILURE:domain_conflict workstation belongs to another domain
 
+- name: Verify existing Samba domain trust
+  ansible.builtin.command:
+    argv: [net, ads, testjoin]
+  register: domain_join_testjoin
+  changed_when: false
+  failed_when: false
+
 - name: Determine whether the requested domain is already joined
   ansible.builtin.set_fact:
     domain_join_already_joined: >-
-      {{ domain_join_status.stdout | lower is search('^ad\\s+' + ad_domain) }}
+      {{ (domain_join_status.stdout | lower is search('^ad\\s+' + ad_domain))
+         and domain_join_testjoin.rc == 0 }}
 
 - name: Convert computer OU DN to ALT parent-first createcomputer path
   ansible.builtin.set_fact:

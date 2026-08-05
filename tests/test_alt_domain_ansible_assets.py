@@ -58,6 +58,14 @@ def test_domain_join_converts_ad_dn_to_alt_parent_first_ou_path() -> None:
     assert '"--createcomputer={{ alt_createcomputer_path }}"' in rendered
 
 
+def test_domain_join_requires_a_valid_samba_trust_before_skipping_join() -> None:
+    role_path = ANSIBLE_ROOT / "roles" / "domain_join" / "tasks" / "main.yml"
+    rendered = role_path.read_text(encoding="utf-8")
+
+    assert "argv: [net, ads, testjoin]" in rendered
+    assert "domain_join_testjoin.rc == 0" in rendered
+
+
 def test_domain_group_vars_use_confirmed_alt_package_and_domain_dns() -> None:
     variables = yaml.safe_load(
         (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
