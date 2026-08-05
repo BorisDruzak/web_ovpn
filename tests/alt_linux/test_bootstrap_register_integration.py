@@ -56,8 +56,18 @@ def test_bootstrap_remains_non_secret_and_registration_only() -> None:
 
     assert 'ANSIBLE_USER="ansible"' in source
     assert 'touch "${MARKER}"' in source
-    assert 'if [[ -f "${MARKER}" ]]' in source
-    assert "register_machine" in source
+    completed_marker_branch = '''if [[ -f "${MARKER}" ]]; then
+    echo "Bootstrap already completed"
+
+    if [[ ! -f "${REGISTER_MARKER}" ]]; then
+        register_machine
+    else
+        echo "Machine already registered"
+    fi
+
+    exit 0
+fi'''
+    assert completed_marker_branch in source
     for forbidden in (
         "ansible-playbook",
         "system-auth write ad",
