@@ -3,8 +3,13 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from .config import Settings
 from .errors import ControlError
+
+if TYPE_CHECKING:
+    from .registry import MachineRepository
 
 
 REQUEST_FIELDS = frozenset(
@@ -126,4 +131,51 @@ class ConfigureRequest:
             "workgroup": self.workgroup,
             "computer_ou": self.computer_ou,
             "domain_test_user": self.domain_test_user,
+        }
+
+
+CONFIGURE_ACTIONS = [
+    "manual_preflight",
+    "set_final_hostname",
+    "configure_domain_dns",
+    "join_or_verify_domain",
+    "install_standard_packages",
+    "verify_domain_workstation",
+]
+
+
+class ConfigurePlanner:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        machines: "MachineRepository | None" = None,
+    ) -> None:
+        if machines is None:
+            from .registry import MachineRepository
+
+            machines = MachineRepository(settings)
+        self.machines = machines
+
+    def preview(
+        self,
+        machine_uuid: str,
+        request: ConfigureRequest,
+    ) -> dict[str, object]:
+        machine = self.machines.get(machine_uuid)
+        if not machine.ip:
+            raise ControlError(
+                code="machine_missing_ip",
+                message="Registered machine has no IP address",
+                exit_code=5,
+                details={"machine_uuid": machine.uuid},
+            )
+
+        return {
+            "status": "ok",
+            "machine_uuid": machine.uuid,
+            "target_ip": machine.ip,
+            "playbook": "03-configure-domain-workstation.yml",
+            "request": request.to_dict(),
+            "actions": list(CONFIGURE_ACTIONS),
         }

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +16,22 @@ CONTROL_ROOT = (
 )
 sys.path.insert(0, str(CONTROL_ROOT))
 
+if sys.platform == "win32":
+    sys.modules["fcntl"] = types.SimpleNamespace(
+        LOCK_EX=2,
+        LOCK_UN=8,
+        flock=lambda *_args: None,
+    )
+    sys.modules["pwd"] = types.SimpleNamespace(
+        getpwnam=lambda _name: SimpleNamespace(pw_uid=0, pw_gid=0),
+        getpwuid=lambda _uid: SimpleNamespace(pw_name="altserver"),
+    )
+    sys.modules["grp"] = types.SimpleNamespace(
+        getgrnam=lambda _name: SimpleNamespace(gr_gid=0),
+    )
+
 from alt_deploy.configure import ConfigureRequest
+from alt_deploy.configure import ConfigurePlanner
 from alt_deploy.errors import ControlError
 
 
@@ -87,3 +104,61 @@ def test_configure_request_rejects_selected_uuid_mismatch() -> None:
         )
 
     assert exc.value.code == "configure_request_invalid"
+
+
+def test_configure_preview_uses_registered_ip_without_assignment_check() -> None:
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    machines = SimpleNamespace(get=lambda machine_uuid: machine)
+    request = ConfigureRequest.from_mapping(
+        valid_request(), expected_uuid=MACHINE_UUID
+    )
+
+    preview = ConfigurePlanner(
+        SimpleNamespace(), machines=machines
+    ).preview(MACHINE_UUID, request)
+
+    assert preview == {
+        "status": "ok",
+        "machine_uuid": MACHINE_UUID,
+        "target_ip": "192.168.101.56",
+        "playbook": "03-configure-domain-workstation.yml",
+        "request": valid_request(),
+        "actions": [
+            "manual_preflight",
+            "set_final_hostname",
+            "configure_domain_dns",
+            "join_or_verify_domain",
+            "install_standard_packages",
+            "verify_domain_workstation",
+        ],
+    }
+
+
+def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
+    from alt_deploy.cli import build_parser
+
+    parser = build_parser()
+    preview = parser.parse_args(
+        [
+            "--json",
+            "configure",
+            "preview",
+            MACHINE_UUID,
+            "--vars-file",
+            "request.json",
+        ]
+    )
+    start = parser.parse_args(
+        [
+            "configure",
+            "start",
+            MACHINE_UUID,
+            "--vars-file",
+            "request.json",
+        ]
+    )
+
+    assert preview.command == "configure"
+    assert preview.configure_command == "preview"
+    assert preview.vars_file == "request.json"
+    assert start.configure_command == "start"
