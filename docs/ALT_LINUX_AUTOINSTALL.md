@@ -95,6 +95,10 @@ journalctl -u alt-deploy-http -f
 journalctl -u alt-deploy-process.service -f
 ```
 
+## Manual bootstrap MVP
+
+For pilot hardware installed manually, use [Manual bootstrap MVP](runbooks/alt-manual-bootstrap-mvp.md). This path begins only after ALT is installed and does not select, repartition or erase a disk. It is separate from both the legacy `ai curl=` autoinstall and managed ISO workflows.
+
 ## Autoinstall boot
 
 The current stock USB image is not modified. At the ALT boot menu, edit the Linux kernel command line and append:

@@ -23,6 +23,16 @@ The local sudo prompt is the only place where the pilot local-administrator pass
 
 Domain join and software installation are controller-only.
 
+## Controller handoff
+
+After registration is ready, an authorized controller operator runs preflight, preview and configuration. The workstation operator does not run Ansible, `system-auth`, or any domain join command.
+
+```bash
+sudo /usr/local/sbin/workstationctl preflight <machine-uuid>
+sudo /usr/local/sbin/workstationctl configure preview <machine-uuid> --vars-file <request.json>
+sudo /usr/local/sbin/workstationctl configure start <machine-uuid> --vars-file <request.json>
+```
+
 ## Recovery
 
 The bootstrap is safe to rerun after a transient download, network, or controller-registration failure. A rerun does not repair intentionally deleted SSH keys or sudoers files; restore those through the approved controller process before rerunning.

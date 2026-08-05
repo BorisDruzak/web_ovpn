@@ -6,6 +6,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNBOOK = ROOT / "docs" / "runbooks" / "alt-manual-bootstrap-mvp.md"
+AUTOINSTALL_CONTEXT = ROOT / "docs" / "ALT_LINUX_AUTOINSTALL.md"
 
 FORBIDDEN_INSTRUCTION_PATTERNS = {
     "Vault credential reference": re.compile(r"(?i)\bvault\b"),
@@ -52,6 +53,14 @@ def assert_manual_mvp_contract(text: str) -> None:
 
 def test_manual_mvp_runbook_preserves_the_controller_boundary() -> None:
     assert_manual_mvp_contract(RUNBOOK.read_text(encoding="utf-8"))
+
+
+def test_autoinstall_context_links_to_manual_mvp_without_replacing_legacy_path() -> None:
+    text = AUTOINSTALL_CONTEXT.read_text(encoding="utf-8")
+
+    assert "Manual bootstrap MVP" in text
+    assert "runbooks/alt-manual-bootstrap-mvp.md" in text
+    assert "ai curl=http://192.168.100.17:8087/metadata/" in text
 
 
 @pytest.mark.parametrize(
