@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 ALT_ROOT = (
     Path(__file__).resolve().parents[2]
     / "deploy"
@@ -9,6 +11,36 @@ ALT_ROOT = (
 )
 BOOTSTRAP = ALT_ROOT / "bootstrap" / "bootstrap.sh"
 HELPER = ALT_ROOT / "bootstrap" / "alt-bootstrap-register"
+BASE_SETUP_MUTATIONS = (
+    "apt-get update",
+    "apt-get install -y",
+    "useradd ",
+    "usermod -aG wheel",
+    '"/home/${ANSIBLE_USER}/.ssh"',
+    "install_authorized_key",
+    'cat > "/etc/sudoers.d/90-${ANSIBLE_USER}"',
+    "chmod 0440",
+    "visudo -cf",
+    'systemctl enable --now sshd',
+)
+REGISTRATION_FORBIDDEN_MUTATIONS = (
+    "apt-get",
+    "useradd",
+    "usermod",
+    "groupadd",
+    "adduser",
+    "addgroup",
+    "install_authorized_key",
+    "/etc/ssh",
+    ".ssh",
+    "/etc/sudoers.d/",
+    "sudo",
+    "visudo",
+    "systemctl",
+    "ansible",
+    "domain",
+    "vault",
+)
 
 
 def function_body(source: str, name: str) -> str:
@@ -19,11 +51,55 @@ def function_body(source: str, name: str) -> str:
     return source[body_start:body_end]
 
 
+def bootstrap_main(source: str) -> str:
+    """Return the executable bootstrap section, excluding function definitions."""
+    return source[source.index('echo "=== Bootstrap started: $(date) ==="') :]
+
+
+def assert_completed_bootstrap_skips_base_setup(source: str) -> None:
+    main = bootstrap_main(source)
+    marker_branch_start = main.index('if [[ -f "${MARKER}" ]]; then')
+    early_exit = main.index("    exit 0", marker_branch_start)
+
+    assert marker_branch_start < early_exit
+    for base_setup in BASE_SETUP_MUTATIONS:
+        mutation_position = main.index(base_setup)
+        assert early_exit < mutation_position, base_setup
+
+
+def assert_registration_source_has_no_base_or_configuration_mutations(
+    source: str,
+) -> None:
+    source = source.lower()
+    for forbidden in REGISTRATION_FORBIDDEN_MUTATIONS:
+        assert forbidden not in source, forbidden
+
+
 def test_register_helper_source_exists_and_is_strict() -> None:
     assert HELPER.is_file()
     source = HELPER.read_text(encoding="utf-8")
     assert source.startswith("#!/bin/bash\n")
     assert "set -Eeuo pipefail" in source
+
+
+def test_register_helper_contains_no_base_or_configuration_mutations() -> None:
+    source = HELPER.read_text(encoding="utf-8")
+
+    assert_registration_source_has_no_base_or_configuration_mutations(source)
+
+
+def test_register_helper_contract_rejects_package_mutation() -> None:
+    source = HELPER.read_text(encoding="utf-8")
+    mutated_source = source.replace(
+        "REGISTER_URL=",
+        "apt-get update\n\nREGISTER_URL=",
+        1,
+    )
+
+    with pytest.raises(AssertionError, match="apt-get"):
+        assert_registration_source_has_no_base_or_configuration_mutations(
+            mutated_source,
+        )
 
 
 def test_bootstrap_installs_helper_before_invocation() -> None:
@@ -88,24 +164,20 @@ fi'''
 
 def test_completed_bootstrap_exits_before_every_base_setup_mutation() -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
-    marker_branch_start = source.index('if [[ -f "${MARKER}" ]]; then')
-    early_exit = source.index("    exit 0", marker_branch_start)
 
-    assert marker_branch_start < early_exit
-    for base_setup in (
-        "apt-get update",
-        "apt-get install -y",
-        "useradd ",
-        "usermod -aG wheel",
-        '"/home/${ANSIBLE_USER}/.ssh"',
-        "install_authorized_key",
-        'cat > "/etc/sudoers.d/90-${ANSIBLE_USER}"',
-        "chmod 0440",
-        "visudo -cf",
-        'systemctl enable --now sshd',
-    ):
-        mutation_position = source.index(base_setup, early_exit)
-        assert early_exit < mutation_position, base_setup
+    assert_completed_bootstrap_skips_base_setup(source)
+
+
+def test_completed_bootstrap_contract_rejects_pre_marker_package_mutation() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+    mutated_source = source.replace(
+        'if [[ -f "${MARKER}" ]]; then',
+        'apt-get update\n\nif [[ -f "${MARKER}" ]]; then',
+        1,
+    )
+
+    with pytest.raises(AssertionError, match="apt-get update"):
+        assert_completed_bootstrap_skips_base_setup(mutated_source)
 
 
 def test_register_machine_contains_only_registration_operations() -> None:
@@ -115,14 +187,4 @@ def test_register_machine_contains_only_registration_operations() -> None:
     assert "install_registration_helper" in register_body
     assert '"${REGISTER_HELPER_TARGET}"' in register_body
     assert 'touch "${REGISTER_MARKER}"' in register_body
-    for base_setup in (
-        "apt-get",
-        "useradd",
-        "usermod",
-        "install_authorized_key",
-        "/etc/sudoers.d/",
-        "visudo",
-        "systemctl",
-        ".ssh",
-    ):
-        assert base_setup not in register_body
+    assert_registration_source_has_no_base_or_configuration_mutations(register_body)
