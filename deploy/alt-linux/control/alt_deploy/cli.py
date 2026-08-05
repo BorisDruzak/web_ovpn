@@ -622,14 +622,7 @@ def main(
             if parsed.configure_command == "preview":
                 payload = planner.preview(parsed.machine_uuid, request)
             else:
-                raise ControlError(
-                    code="configure_not_configured",
-                    message=(
-                        "Domain configure execution is not yet "
-                        "configured"
-                    ),
-                    exit_code=5,
-                )
+                payload = planner.start(parsed.machine_uuid, request)
 
         elif (
             parsed.command == "jobs"

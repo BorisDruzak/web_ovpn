@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import re
+import os
+import subprocess
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .config import Settings
 from .errors import ControlError
+from .jsonio import atomic_write_json, read_json
 
 if TYPE_CHECKING:
     from .registry import MachineRepository
@@ -151,6 +156,7 @@ class ConfigurePlanner:
         *,
         machines: "MachineRepository | None" = None,
     ) -> None:
+        self.settings = settings
         if machines is None:
             from .registry import MachineRepository
 
@@ -179,3 +185,63 @@ class ConfigurePlanner:
             "request": request.to_dict(),
             "actions": list(CONFIGURE_ACTIONS),
         }
+
+    @property
+    def configure_playbook(self) -> Path:
+        return self.settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+
+    def start(self, machine_uuid: str, request: ConfigureRequest) -> dict[str, object]:
+        machine = self.machines.get(machine_uuid)
+        if not machine.ip:
+            raise ControlError(code="machine_missing_ip", message="Registered machine has no IP address", exit_code=5)
+
+        required = {
+            "ansible_playbook": self.settings.ansible_playbook_path,
+            "private_key": self.settings.private_key_file,
+            "known_hosts": self.settings.known_hosts_file,
+            "configure_playbook": self.configure_playbook,
+        }
+        missing = [name for name, path in required.items() if not path.is_file()]
+        if missing:
+            raise ControlError(code="configure_not_configured", message="Domain configure is not fully configured", exit_code=5, details={"missing": missing})
+
+        run_id = uuid.uuid4().hex
+        run_dir = self.settings.state_root / "configure-runs" / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        os.chmod(run_dir.parent, 0o700)
+        os.chmod(run_dir, 0o700)
+        request_path = run_dir / "request.json"
+        result_path = run_dir / "result.json"
+        log_path = run_dir / "ansible.log"
+        atomic_write_json(request_path, request.to_dict())
+
+        strict_ssh_arguments = (
+            f"-o UserKnownHostsFile={self.settings.known_hosts_file} "
+            "-o StrictHostKeyChecking=yes -o ProxyCommand=none "
+            "-o IdentitiesOnly=yes -o ConnectTimeout=10"
+        )
+        command = [
+            str(self.settings.ansible_playbook_path), "-i", f"{machine.ip},", "-u", "ansible",
+            f"--private-key={self.settings.private_key_file}",
+            f"--ssh-common-args={strict_ssh_arguments}",
+            "-e", "ansible_python_interpreter=/usr/bin/python3",
+            "-e", f"@{request_path}",
+            "-e", f"configure_result_file={result_path}",
+            str(self.configure_playbook),
+        ]
+        environment = os.environ.copy()
+        environment["ANSIBLE_CONFIG"] = str(
+            self.settings.ansible_project_dir / "ansible.cfg"
+        )
+        with log_path.open("w", encoding="utf-8") as log_stream:
+            os.chmod(log_path, 0o600)
+            completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=1800, check=False, cwd=self.settings.ansible_project_dir, env=environment)
+
+        if completed.returncode != 0:
+            raise ControlError(code="domain_join_failed", message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
+        try:
+            result = read_json(result_path)
+        except (OSError, ValueError) as exc:
+            raise ControlError(code="domain_verification_failed", message="Domain configure did not produce a valid result", exit_code=7, details={"run_id": run_id}) from exc
+        result["run_id"] = run_id
+        return result
