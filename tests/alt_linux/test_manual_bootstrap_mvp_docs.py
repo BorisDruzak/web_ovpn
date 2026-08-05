@@ -8,10 +8,11 @@ ROOT = Path(__file__).resolve().parents[2]
 RUNBOOK = ROOT / "docs" / "runbooks" / "alt-manual-bootstrap-mvp.md"
 
 FORBIDDEN_INSTRUCTION_PATTERNS = {
+    "Vault credential reference": re.compile(r"(?i)\bvault\b"),
     "direct Ansible execution": re.compile(
-        r"(?m)^\s*(?:sudo\s+)?(?:"
+        r"(?im)^\s*(?:sudo\s+)?(?:"
         r"ansible-(?:playbook|pull|galaxy)\b"
-        r"|ansible[\t ]+(?:\S+[\t ]+-[A-Za-z]|--\S+)"
+        r"|ansible[\t ]+(?:\S+[\t ]+--?[A-Za-z][\w-]*|--\S+)"
         r")",
     ),
     "password-bearing command": re.compile(
@@ -82,6 +83,23 @@ def test_manual_mvp_contract_rejects_unsafe_instruction_mutations(
         unsafe_instruction,
     )
 
+    with pytest.raises(AssertionError):
+        assert_manual_mvp_contract(
+            RUNBOOK.read_text(encoding="utf-8") + f"\n{unsafe_instruction}\n",
+        )
+
+
+@pytest.mark.parametrize(
+    "unsafe_instruction",
+    (
+        "Vault secret usage",
+        "Ansible all -m ping",
+        "ansible all --module-name ping",
+    ),
+)
+def test_manual_mvp_contract_rejects_regression_bypasses(
+    unsafe_instruction: str,
+) -> None:
     with pytest.raises(AssertionError):
         assert_manual_mvp_contract(
             RUNBOOK.read_text(encoding="utf-8") + f"\n{unsafe_instruction}\n",
