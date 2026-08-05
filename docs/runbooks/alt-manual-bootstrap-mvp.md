@@ -1,0 +1,32 @@
+# Manual ALT bootstrap MVP
+
+This temporary pilot path starts after a manual ALT Workstation K 11.x installation. It does not replace managed ISO or legacy `ai curl=` autoinstall.
+
+## Preconditions
+
+- The computer is on trusted provisioning network `192.168.100.0/23`.
+- ALT Workstation K 11.x is already installed manually.
+- The operator created and can use local administrator `osn-admin`.
+- A default route reaches `192.168.100.17`.
+
+## Run on the workstation
+
+```bash
+curl --noproxy '*' -fsS --connect-timeout 5 --max-time 30 \
+  http://192.168.100.17:8087/bootstrap/bootstrap.sh \
+  -o /tmp/alt-bootstrap.sh && \
+sudo env no_proxy=192.168.100.17 NO_PROXY=192.168.100.17 \
+  bash /tmp/alt-bootstrap.sh
+```
+
+The local sudo prompt is the only place where the pilot local-administrator password is entered. Do not put it in a command, file, request or log.
+
+Domain join and software installation are controller-only.
+
+## Recovery
+
+The bootstrap is safe to rerun after a transient download, network, or controller-registration failure. A rerun does not repair intentionally deleted SSH keys or sudoers files; restore those through the approved controller process before rerunning.
+
+## Security
+
+HTTP without SHA-256 verification is accepted only for this trusted pilot network. Do not use this manual path outside `192.168.100.0/23`.
