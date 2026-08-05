@@ -10,9 +10,12 @@ RUNBOOK = ROOT / "docs" / "runbooks" / "alt-manual-bootstrap-mvp.md"
 FORBIDDEN_INSTRUCTION_PATTERNS = {
     "Vault credential reference": re.compile(r"(?i)\bvault\b"),
     "direct Ansible execution": re.compile(
-        r"(?i)(?:"
-        r"ansible-(?:playbook|pull|galaxy)\b"
-        r"|\bansible\b(?=[^\r\n]*\s--?[A-Za-z][\w-]*(?:\s|$))"
+        r"(?im)^(?:"
+        r"\s*(?:[$#]\s+|(?:sudo|env)\b[^\r\n]*?\s+)"
+        r"(?i:ansible(?:-(?:playbook|pull|galaxy))?)\b"
+        r"|\s*(?i:ansible(?:-(?:playbook|pull|galaxy))?)\b"
+        r"[^\r\n]*\s--?[A-Za-z][\w-]*(?:\s|$)"
+        r"|\s*(?i:ansible-playbook)\b\s+\S+\.ya?ml\b"
         r")",
     ),
     "password-bearing command": re.compile(
@@ -55,6 +58,8 @@ def test_manual_mvp_runbook_preserves_the_controller_boundary() -> None:
     "safe_explanation",
     (
         "Ansible execution remains controller-only.",
+        "The controller-only policy prohibits ansible-playbook on workstations.",
+        "The controller uses ansible --version when it is maintained.",
         "This pilot does not replace managed ISO workflows.",
     ),
 )
