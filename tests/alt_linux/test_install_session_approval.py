@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import atexit
 import json
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -26,14 +30,34 @@ from alt_deploy.install_session_keys import ensure_install_session_keypair
 from alt_deploy.install_session_signing import public_key_metadata
 
 
+def _root_safe_approval_fixture_base(tmp_path: Path) -> Path:
+    if os.name != "posix" or os.geteuid() != 0:
+        return tmp_path
+
+    root_home = Path("/root")
+    root_home_metadata = root_home.stat()
+    if root_home_metadata.st_uid != 0 or root_home_metadata.st_gid != 0:
+        raise RuntimeError("root-owned fixture base is unavailable")
+    base = Path(tempfile.mkdtemp(prefix="alt-install-approval-", dir=root_home))
+    os.chown(base, 0, 0)
+    base.chmod(0o700)
+    atexit.register(shutil.rmtree, base, ignore_errors=True)
+    return base
+
+
 def test_root_approval_publishes_signed_first_revision(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    key_path = tmp_path / "secrets" / "install-plan-ed25519.pem"
-    public_key_path = tmp_path / "etc" / "install-plan-ed25519.pub"
-    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS", str(tmp_path / "sessions"))
-    monkeypatch.setenv("ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(tmp_path / "sessions.lock"))
+    fixture_base = _root_safe_approval_fixture_base(tmp_path)
+    key_path = fixture_base / "secrets" / "install-plan-ed25519.pem"
+    public_key_path = fixture_base / "etc" / "install-plan-ed25519.pub"
+    monkeypatch.setenv(
+        "ALT_DEPLOY_INSTALL_SESSIONS", str(fixture_base / "sessions")
+    )
+    monkeypatch.setenv(
+        "ALT_DEPLOY_INSTALL_SESSIONS_LOCK", str(fixture_base / "sessions.lock")
+    )
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_PROFILE_ROOT", str(REPO_ROOT / "deploy" / "alt-linux" / "autoinstall" / "profiles"))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SIGNING_PRIVATE_KEY", str(key_path))
     monkeypatch.setenv("ALT_DEPLOY_INSTALL_SIGNING_PUBLIC_KEY", str(public_key_path))

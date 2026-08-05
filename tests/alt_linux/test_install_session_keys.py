@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import sys
+import tempfile
 import types
 from dataclasses import replace
 from pathlib import Path
@@ -33,11 +36,29 @@ from alt_deploy.install_session_signing import (
 
 
 def settings_for_keys(tmp_path: Path) -> Settings:
+    fixture_base = _root_safe_key_fixture_base(tmp_path)
     return replace(
         Settings.from_env(),
-        install_signing_private_key=tmp_path / "secrets" / "install-plan-ed25519.pem",
-        install_signing_public_key=tmp_path / "etc" / "install-plan-ed25519.pub",
+        install_signing_private_key=fixture_base
+        / "secrets"
+        / "install-plan-ed25519.pem",
+        install_signing_public_key=fixture_base / "etc" / "install-plan-ed25519.pub",
     )
+
+
+def _root_safe_key_fixture_base(tmp_path: Path) -> Path:
+    if os.name != "posix" or os.geteuid() != 0:
+        return tmp_path
+
+    root_home = Path("/root")
+    root_home_metadata = root_home.stat()
+    if root_home_metadata.st_uid != 0 or root_home_metadata.st_gid != 0:
+        raise RuntimeError("root-owned fixture base is unavailable")
+    base = Path(tempfile.mkdtemp(prefix="alt-install-keys-", dir=root_home))
+    os.chown(base, 0, 0)
+    base.chmod(0o700)
+    atexit.register(shutil.rmtree, base, ignore_errors=True)
+    return base
 
 
 def write_complete_pair(
