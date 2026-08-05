@@ -49,3 +49,20 @@ def test_bootstrap_has_no_embedded_registration_post() -> None:
     assert "--data \"$payload\"" not in source
     assert "payload=$(printf" not in source
     assert "REGISTER_URL=" not in source
+
+
+def test_bootstrap_remains_non_secret_and_registration_only() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert 'ANSIBLE_USER="ansible"' in source
+    assert 'touch "${MARKER}"' in source
+    assert 'if [[ -f "${MARKER}" ]]' in source
+    assert "register_machine" in source
+    for forbidden in (
+        "ansible-playbook",
+        "system-auth write ad",
+        "vault_ad_join_password",
+        "vault.yml",
+        "domain_join",
+    ):
+        assert forbidden not in source
