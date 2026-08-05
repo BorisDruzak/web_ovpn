@@ -13,7 +13,7 @@
 
 - name: Verify domain user lookup
   ansible.builtin.command:
-    argv: [getent, passwd, "{{ domain_test_user }}@{{ ad_domain }}"]
+    argv: [getent, passwd, "{{ domain_test_user if '@' in domain_test_user else domain_test_user ~ '@' ~ ad_domain }}"]
   register: domain_verify_user
   changed_when: false
 

@@ -54,3 +54,11 @@ def test_domain_group_vars_use_confirmed_alt_package_and_domain_dns() -> None:
     assert variables["domain_prerequisite_packages"] == ["task-auth-ad-sssd"]
     assert variables["ad_dns_servers"] == ["192.168.100.11"]
     assert variables["ad_domain"] == "sosnadmin.local"
+
+
+def test_domain_verify_accepts_short_name_or_upn() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "domain_test_user if '@' in domain_test_user" in content

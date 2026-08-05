@@ -68,6 +68,18 @@ def test_configure_request_normalizes_safe_values() -> None:
     }
 
 
+def test_configure_request_accepts_domain_test_user_upn() -> None:
+    payload = valid_request()
+    payload["domain_test_user"] = "alt-test-user@sosnadmin.local"
+
+    request = ConfigureRequest.from_mapping(
+        payload,
+        expected_uuid=MACHINE_UUID,
+    )
+
+    assert request.domain_test_user == "alt-test-user@sosnadmin.local"
+
+
 @pytest.mark.parametrize(
     ("change", "expected_code"),
     [

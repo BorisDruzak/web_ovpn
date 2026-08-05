@@ -39,6 +39,9 @@ UUID_RE = re.compile(
     r"[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 DOMAIN_USER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
+DOMAIN_USER_UPN_RE = re.compile(
+    r"^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\.local$"
+)
 
 
 def _invalid_request(message: str) -> ControlError:
@@ -113,7 +116,10 @@ class ConfigureRequest:
         ):
             raise _invalid_request("Configure computer OU is invalid")
 
-        if not DOMAIN_USER_RE.fullmatch(domain_test_user):
+        if not (
+            DOMAIN_USER_RE.fullmatch(domain_test_user)
+            or DOMAIN_USER_UPN_RE.fullmatch(domain_test_user)
+        ):
             raise _invalid_request("Configure domain test user is invalid")
 
         return cls(
