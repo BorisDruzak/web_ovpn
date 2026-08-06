@@ -32,6 +32,16 @@ sudo -u altserver /usr/local/sbin/workstationctl preflight <machine-uuid>
 sudo -u altserver /usr/local/sbin/workstationctl configure preview <machine-uuid> --vars-file <request.json>
 sudo -u altserver /usr/local/sbin/workstationctl configure start <machine-uuid> --vars-file <request.json>
 ```
+ 
+preview is non-mutating: it validates the request and registration only. It
+does not test the target hostname, DNS, NTP or AD connectivity.
+
+The request contains no passwords, service credentials or key values. Its hostname must match
+^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$, for example alt-a1-pc3.
+Use hostname_mode verify to require that the installed hostname already equals
+final_hostname. Use hostname_mode change_confirmed only when an approved rename
+is required. The computer OU is always
+OU=Pilot,OU=Linux,OU=Устройства,DC=sosnadmin,DC=local.
 
 ## Pilot acceptance
 
@@ -52,6 +62,10 @@ sudo -u altserver /usr/local/sbin/workstationctl configure start <machine-uuid> 
    ```
 
 5. Do not run `configure start` until preview shows the expected UUID and target IP.
+
+6. After a successful new join, reboot the station and sign in once with the
+   existing domain user. Confirm the SSSD lookup works and the user's home
+   directory was created automatically.
 
 Live pilot acceptance is pending a user-designated disposable workstation or VM. Do not select, repurpose, or wipe a target for this checklist without that designation.
 

@@ -87,6 +87,17 @@ def test_domain_verify_accepts_short_name_or_upn() -> None:
     assert "domain_test_user if '@' in domain_test_user" in content
 
 
+def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "/etc/pam.d/system-auth-sss-only" in content
+    assert "pam_mkhomedir.so" in content
+    assert "skel=/etc/skel umask=0077" in content
+    assert "grep" in content
+
+
 def test_manual_preflight_accepts_alt_workstation_k_11_x_from_os_release() -> None:
     content = (
         ANSIBLE_ROOT / "roles" / "manual_preflight" / "tasks" / "main.yml"
