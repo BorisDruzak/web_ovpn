@@ -1,19 +1,34 @@
 ---
-- name: Set final static hostname
+- name: Validate requested hostname mode
+  ansible.builtin.assert:
+    that: hostname_mode in ['verify', 'change_confirmed']
+    fail_msg: ALT_PREFLIGHT_FAILURE:hostname_mismatch unsupported hostname mode
+
+- name: Read current static hostname
+  ansible.builtin.command:
+    argv: [hostnamectl, --static]
+  register: workstation_identity_before
+  changed_when: false
+
+- name: Verify approved static hostname without changing it
+  ansible.builtin.assert:
+    that: workstation_identity_before.stdout | trim == final_hostname
+    fail_msg: ALT_PREFLIGHT_FAILURE:hostname_mismatch static hostname does not match approved request
+  when: hostname_mode == 'verify'
+
+- name: Apply explicitly confirmed static hostname
   ansible.builtin.hostname:
     name: "{{ final_hostname }}"
     use: systemd
+  when: hostname_mode == 'change_confirmed'
 
 - name: Read resulting static hostname
   ansible.builtin.command:
-    argv:
-      - hostnamectl
-      - --static
-  register: workstation_identity_hostname
+    argv: [hostnamectl, --static]
+  register: workstation_identity_after
   changed_when: false
 
 - name: Verify resulting static hostname
   ansible.builtin.assert:
-    that:
-      - workstation_identity_hostname.stdout | trim == final_hostname
-    fail_msg: Final hostname was not applied
+    that: workstation_identity_after.stdout | trim == final_hostname
+    fail_msg: ALT_PREFLIGHT_FAILURE:hostname_mismatch static hostname does not match approved request

@@ -82,3 +82,26 @@ def test_domain_verify_accepts_short_name_or_upn() -> None:
     ).read_text(encoding="utf-8")
 
     assert "domain_test_user if '@' in domain_test_user" in content
+
+
+def test_manual_preflight_accepts_alt_workstation_k_11_x_from_os_release() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "manual_preflight" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "/etc/os-release" in content
+    assert "ALT Workstation K" in content
+    assert "VERSION_ID" in content
+    assert "^11\\." in content
+    assert "/etc/altlinux-release" not in content
+
+
+def test_workstation_identity_requires_explicit_hostname_mode_for_rename() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "workstation_identity" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "hostname_mode" in content
+    assert "change_confirmed" in content
+    assert "when: hostname_mode == 'change_confirmed'" in content
+    assert "ALT_PREFLIGHT_FAILURE:hostname_mismatch" in content
