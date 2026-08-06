@@ -32,7 +32,7 @@ sudo -u altserver /usr/local/sbin/workstationctl preflight <machine-uuid>
 sudo -u altserver /usr/local/sbin/workstationctl configure preview <machine-uuid> --vars-file <request.json>
 sudo -u altserver /usr/local/sbin/workstationctl configure start <machine-uuid> --vars-file <request.json>
 ```
- 
+
 preview is non-mutating: it validates the request and registration only. It
 does not test the target hostname, DNS, NTP or AD connectivity.
 

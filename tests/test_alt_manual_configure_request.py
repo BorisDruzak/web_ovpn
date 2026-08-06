@@ -17,10 +17,12 @@ CONTROL_ROOT = (
     / "control"
 )
 sys.path.insert(0, str(CONTROL_ROOT))
+_ORIGINAL_FCNTL_MODULE = sys.modules.get("fcntl")
 
 if sys.platform == "win32":
     sys.modules["fcntl"] = types.SimpleNamespace(
         LOCK_EX=2,
+        LOCK_NB=4,
         LOCK_UN=8,
         flock=lambda *_args: None,
     )
@@ -34,7 +36,14 @@ if sys.platform == "win32":
 
 from alt_deploy.configure import ConfigureRequest  # noqa: E402
 from alt_deploy.configure import ConfigurePlanner  # noqa: E402
+from alt_deploy.cli import build_parser  # noqa: E402
 from alt_deploy.errors import ControlError  # noqa: E402
+
+if sys.platform == "win32":
+    if _ORIGINAL_FCNTL_MODULE is None:
+        sys.modules.pop("fcntl", None)
+    else:
+        sys.modules["fcntl"] = _ORIGINAL_FCNTL_MODULE
 
 
 MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
@@ -175,8 +184,6 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
 
 
 def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
-    from alt_deploy.cli import build_parser
-
     parser = build_parser()
     preview = parser.parse_args(
         [

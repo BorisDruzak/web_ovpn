@@ -111,4 +111,3 @@ For a new join the public result reports reboot_required: true. The controller
 does not reboot the station automatically. Reboot it, then sign in using the
 existing AD account. PAM creates the domain user's home directory at that first
 successful login; no local employee account is created.
-
