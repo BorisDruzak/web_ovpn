@@ -17,9 +17,12 @@ def test_domain_playbook_uses_only_the_manual_domain_roles() -> None:
     assert playbook[0]["roles"] == [
         "manual_preflight",
         "workstation_identity",
+        "prejoin_upgrade",
         "workstation_base",
+        "alt_group_policy_prerequisites",
         "workstation_network",
         "domain_join",
+        "alt_group_policy_client",
         "standard_software",
         "domain_verify",
     ]
@@ -56,6 +59,37 @@ def test_domain_join_converts_ad_dn_to_alt_parent_first_ou_path() -> None:
     assert "alt_createcomputer_path" in rendered
     assert "regex_findall('OU=([^,]+)') | reverse | join('/')" in rendered
     assert '"--createcomputer={{ alt_createcomputer_path }}"' in rendered
+    assert '"--gpo"' in rendered
+
+
+def test_prejoin_upgrade_runs_only_before_domain_join_and_reboots() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "prejoin_upgrade" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "system-auth, status" in content
+    assert "apt-get, update" in content
+    assert "apt-get, -y, dist-upgrade" in content
+    assert "ansible.builtin.reboot" in content
+    assert content.count("not prejoin_upgrade_already_joined") == 3
+    assert "prejoin_upgrade_dist_upgrade is defined" in content
+
+
+def test_group_policy_installation_precedes_join_and_enablement_follows_it() -> None:
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+    prerequisites = (
+        ANSIBLE_ROOT / "roles" / "alt_group_policy_prerequisites" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    client = (
+        ANSIBLE_ROOT / "roles" / "alt_group_policy_client" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert variables["alt_group_policy_prerequisite_packages"] == ["gpupdate"]
+    assert "alt_group_policy_prerequisite_packages" in prerequisites
+    assert "gpupdate-setup, enable" in client
+    assert "gpupdate, --target, Computer, --system, --force" in client
 
 
 def test_domain_join_requires_a_valid_samba_trust_before_skipping_join() -> None:

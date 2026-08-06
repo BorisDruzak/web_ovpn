@@ -1,0 +1,6 @@
+---
+- name: Install the ALT Group Policy client before domain join
+  ansible.builtin.package:
+    name: "{{ alt_group_policy_prerequisite_packages }}"
+    state: present
+  when: alt_group_policy_prerequisite_packages | length > 0

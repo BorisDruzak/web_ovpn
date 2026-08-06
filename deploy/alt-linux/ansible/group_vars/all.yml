@@ -12,5 +12,9 @@ ad_realm: SOSNADMIN.LOCAL
 domain_prerequisite_packages:
   - task-auth-ad-sssd
   - openldap-clients
+prejoin_upgrade_enabled: true
+prejoin_upgrade_reboot_timeout: 900
+alt_group_policy_prerequisite_packages:
+  - gpupdate
 standard_packages: []
 organization_packages: []

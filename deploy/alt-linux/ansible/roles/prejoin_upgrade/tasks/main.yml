@@ -1,0 +1,38 @@
+---
+- name: Read current ALT authentication scheme before upgrade
+  ansible.builtin.command:
+    argv: [system-auth, status]
+  register: prejoin_upgrade_auth_status
+  changed_when: false
+  failed_when: false
+
+- name: Detect whether the workstation is already domain joined
+  ansible.builtin.set_fact:
+    prejoin_upgrade_already_joined: >-
+      {{ prejoin_upgrade_auth_status.stdout | trim | lower is match('^ad\\s+') }}
+
+- name: Refresh ALT package metadata before first domain join
+  ansible.builtin.command:
+    argv: [apt-get, update]
+  changed_when: false
+  when:
+    - prejoin_upgrade_enabled | bool
+    - not prejoin_upgrade_already_joined
+
+- name: Perform the full ALT upgrade before first domain join
+  ansible.builtin.command:
+    argv: [apt-get, -y, dist-upgrade]
+  register: prejoin_upgrade_dist_upgrade
+  changed_when: true
+  when:
+    - prejoin_upgrade_enabled | bool
+    - not prejoin_upgrade_already_joined
+
+- name: Reboot after the full pre-join ALT upgrade
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ prejoin_upgrade_reboot_timeout }}"
+  when:
+    - prejoin_upgrade_enabled | bool
+    - not prejoin_upgrade_already_joined
+    - prejoin_upgrade_dist_upgrade is defined
+    - prejoin_upgrade_dist_upgrade is changed

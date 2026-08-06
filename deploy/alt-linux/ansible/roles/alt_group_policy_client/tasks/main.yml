@@ -1,0 +1,23 @@
+---
+- name: Enable the ALT Group Policy workstation profile after domain join
+  ansible.builtin.command:
+    argv: [gpupdate-setup, enable]
+  register: alt_group_policy_enable
+  changed_when: false
+
+- name: Apply machine Group Policy after domain join
+  ansible.builtin.command:
+    argv: [gpupdate, --target, Computer, --system, --force]
+  register: alt_group_policy_machine_update
+  changed_when: false
+
+- name: Require a successful machine Group Policy update
+  ansible.builtin.assert:
+    that:
+      - alt_group_policy_machine_update.rc == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:group_policy_update_failed
+
+- name: Publish Group Policy verification facts
+  ansible.builtin.set_fact:
+    alt_group_policy_enabled: true
+    alt_group_policy_machine_updated: true

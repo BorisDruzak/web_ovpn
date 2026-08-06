@@ -9,8 +9,11 @@
   roles:
     - manual_preflight
     - workstation_identity
+    - prejoin_upgrade
     - workstation_base
+    - alt_group_policy_prerequisites
     - workstation_network
     - domain_join
+    - alt_group_policy_client
     - standard_software
     - domain_verify

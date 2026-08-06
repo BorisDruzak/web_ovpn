@@ -51,7 +51,9 @@
           'reboot_required': not domain_join_already_joined,
           'verification': {'ssh': true, 'sudo': true, 'dns': true, 'time': true,
           'domain_join': true, 'sssd': true, 'domain_user_lookup': true,
-          'packages': true}} | to_nice_json }}
+          'packages': true,
+          'group_policy': alt_group_policy_enabled | default(false) and
+          alt_group_policy_machine_updated | default(false)}} | to_nice_json }}
     dest: "{{ configure_result_file }}"
     mode: "0600"
   delegate_to: localhost

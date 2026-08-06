@@ -80,6 +80,7 @@
           - "{{ workgroup }}"
           - "{{ vault_ad_join_user }}"
           - "--createcomputer={{ alt_createcomputer_path }}"
+          - "--gpo"
       register: domain_join_command
   always:
     - name: Destroy temporary Kerberos ticket
