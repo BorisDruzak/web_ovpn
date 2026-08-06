@@ -3,9 +3,11 @@ ansible_python_interpreter: /usr/bin/python3
 preflight_min_home_bytes: 2147483648
 ad_dns_servers:
   - 192.168.100.11
+ad_ldap_uri: ldap://ad-main.sosnadmin.local
 ad_domain: sosnadmin.local
 ad_realm: SOSNADMIN.LOCAL
 domain_prerequisite_packages:
   - task-auth-ad-sssd
+  - openldap-clients
 standard_packages: []
 organization_packages: []
