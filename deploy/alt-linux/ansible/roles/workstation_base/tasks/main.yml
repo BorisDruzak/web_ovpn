@@ -5,15 +5,34 @@
     state: present
   when: domain_prerequisite_packages | length > 0
 
-- name: Check that Plasma X11 session is installed
-  ansible.builtin.stat:
-    path: /usr/bin/startplasma-x11
-  register: workstation_base_plasma_x11
+- name: Define supported Plasma desktop sessions
+  ansible.builtin.set_fact:
+    workstation_base_desktop_sessions:
+      x11:
+        executable: /usr/bin/startplasma-x11
+        lightdm_session: plasmax11
+      wayland:
+        executable: /usr/bin/startplasma-wayland
+        lightdm_session: plasma
 
-- name: Require Plasma X11 session
+- name: Validate requested Plasma desktop session
   ansible.builtin.assert:
-    that: workstation_base_plasma_x11.stat.exists
-    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_session_unavailable Plasma X11 is not installed
+    that: workstation_desktop_session in workstation_base_desktop_sessions
+    fail_msg: >-
+      ALT_PREFLIGHT_FAILURE:desktop_session_invalid
+      Supported values are x11 and wayland
+
+- name: Check that requested Plasma session is installed
+  ansible.builtin.stat:
+    path: "{{ workstation_base_desktop_sessions[workstation_desktop_session].executable }}"
+  register: workstation_base_plasma_session
+
+- name: Require requested Plasma session
+  ansible.builtin.assert:
+    that: workstation_base_plasma_session.stat.exists
+    fail_msg: >-
+      ALT_PREFLIGHT_FAILURE:desktop_session_unavailable
+      Requested Plasma {{ workstation_desktop_session }} session is not installed
 
 - name: Create LightDM local configuration directory
   ansible.builtin.file:
@@ -23,12 +42,17 @@
     group: root
     mode: "0755"
 
-- name: Select stable Plasma X11 session in LightDM
+- name: Remove legacy forced Plasma X11 session configuration
+  ansible.builtin.file:
+    path: /etc/lightdm/lightdm.conf.d/90-alt-workstation-x11.conf
+    state: absent
+
+- name: Select managed Plasma session in LightDM
   ansible.builtin.copy:
-    dest: /etc/lightdm/lightdm.conf.d/90-alt-workstation-x11.conf
+    dest: /etc/lightdm/lightdm.conf.d/90-alt-workstation-session.conf
     content: |
       [Seat:*]
-      user-session=plasmax11
+      user-session={{ workstation_base_desktop_sessions[workstation_desktop_session].lightdm_session }}
     owner: root
     group: root
     mode: "0644"

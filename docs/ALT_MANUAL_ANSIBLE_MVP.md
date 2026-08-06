@@ -111,3 +111,10 @@ For a new join the public result reports reboot_required: true. The controller
 does not reboot the station automatically. Reboot it, then sign in using the
 existing AD account. PAM creates the domain user's home directory at that first
 successful login; no local employee account is created.
+
+The same fixed playbook selects Plasma X11 in LightDM before the domain-join
+step. Wayland is not removed; X11 is the MVP default for reliable graphical UPN
+login on ALT Workstation K 11.x. The selection takes effect after the required
+reboot. On an already joined workstation it takes effect after the next normal
+reboot or a deliberate LightDM restart; the controller never restarts LightDM
+and interrupts an active user session on its own.

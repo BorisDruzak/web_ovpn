@@ -1,6 +1,9 @@
 ---
 ansible_python_interpreter: /usr/bin/python3
 preflight_min_home_bytes: 2147483648
+# UPN login is compatible with Plasma X11 on ALT Workstation K 11.x.
+# Keep Wayland installed for a later vendor-compatible switch.
+workstation_desktop_session: x11
 ad_dns_servers:
   - 192.168.100.11
 ad_ldap_uri: ldap://ad-main.sosnadmin.local

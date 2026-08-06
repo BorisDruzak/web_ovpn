@@ -98,14 +98,23 @@ def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
     assert "grep" in content
 
 
-def test_workstation_base_forces_stable_plasma_x11_lightdm_session() -> None:
+def test_workstation_base_manages_desktop_session_with_x11_default() -> None:
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
     content = (
         ANSIBLE_ROOT / "roles" / "workstation_base" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
+    assert variables["workstation_desktop_session"] == "x11"
+    assert "workstation_desktop_session" in content
     assert "/usr/bin/startplasma-x11" in content
+    assert "/usr/bin/startplasma-wayland" in content
     assert "/etc/lightdm/lightdm.conf.d" in content
-    assert "user-session=plasmax11" in content
+    assert "90-alt-workstation-session.conf" in content
+    assert "90-alt-workstation-x11.conf" in content
+    assert "lightdm_session: plasmax11" in content
+    assert "user-session={{ workstation_base_desktop_sessions" in content
 
 
 def test_manual_preflight_accepts_alt_workstation_k_11_x_from_os_release() -> None:
