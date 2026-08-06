@@ -4,16 +4,17 @@
     argv:
       - sh
       - -c
-      - '. /etc/os-release && printf "%s\\n%s\\n" "$NAME" "$VERSION_ID"'
+      - '. /etc/os-release && printf "%s\\n%s\\n%s\\n" "$ID" "$VARIANT_ID" "$VERSION_ID"'
   register: manual_preflight_os_release
   changed_when: false
 
-- name: Validate ALT Workstation K 11.x release
+- name: Validate ALT Linux Workstation K 11.x release
   ansible.builtin.assert:
     that:
-      - manual_preflight_os_release.stdout_lines | length == 2
-      - manual_preflight_os_release.stdout_lines[0] | trim == 'ALT Workstation K'
-      - manual_preflight_os_release.stdout_lines[1] | trim is match('^11\.')
+      - manual_preflight_os_release.stdout_lines | length == 3
+      - manual_preflight_os_release.stdout_lines[0] | trim == 'altlinux'
+      - manual_preflight_os_release.stdout_lines[1] | trim == 'kworkstation'
+      - manual_preflight_os_release.stdout_lines[2] | trim is match('^11\.')
     fail_msg: ALT_PREFLIGHT_FAILURE:manual_preflight_failed unsupported ALT release
 
 - name: Read target UUID

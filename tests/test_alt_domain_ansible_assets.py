@@ -104,7 +104,10 @@ def test_manual_preflight_accepts_alt_workstation_k_11_x_from_os_release() -> No
     ).read_text(encoding="utf-8")
 
     assert "/etc/os-release" in content
-    assert "ALT Workstation K" in content
+    assert '"$ID"' in content
+    assert '"$VARIANT_ID"' in content
+    assert "altlinux" in content
+    assert "kworkstation" in content
     assert "VERSION_ID" in content
     assert "^11\\." in content
     assert "/etc/altlinux-release" not in content
