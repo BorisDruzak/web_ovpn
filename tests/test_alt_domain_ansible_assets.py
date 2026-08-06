@@ -98,6 +98,16 @@ def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
     assert "grep" in content
 
 
+def test_workstation_base_forces_stable_plasma_x11_lightdm_session() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "workstation_base" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "/usr/bin/startplasma-x11" in content
+    assert "/etc/lightdm/lightdm.conf.d" in content
+    assert "user-session=plasmax11" in content
+
+
 def test_manual_preflight_accepts_alt_workstation_k_11_x_from_os_release() -> None:
     content = (
         ANSIBLE_ROOT / "roles" / "manual_preflight" / "tasks" / "main.yml"

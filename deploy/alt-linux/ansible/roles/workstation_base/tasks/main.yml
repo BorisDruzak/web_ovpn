@@ -4,3 +4,31 @@
     name: "{{ domain_prerequisite_packages }}"
     state: present
   when: domain_prerequisite_packages | length > 0
+
+- name: Check that Plasma X11 session is installed
+  ansible.builtin.stat:
+    path: /usr/bin/startplasma-x11
+  register: workstation_base_plasma_x11
+
+- name: Require Plasma X11 session
+  ansible.builtin.assert:
+    that: workstation_base_plasma_x11.stat.exists
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_session_unavailable Plasma X11 is not installed
+
+- name: Create LightDM local configuration directory
+  ansible.builtin.file:
+    path: /etc/lightdm/lightdm.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Select stable Plasma X11 session in LightDM
+  ansible.builtin.copy:
+    dest: /etc/lightdm/lightdm.conf.d/90-alt-workstation-x11.conf
+    content: |
+      [Seat:*]
+      user-session=plasmax11
+    owner: root
+    group: root
+    mode: "0644"
