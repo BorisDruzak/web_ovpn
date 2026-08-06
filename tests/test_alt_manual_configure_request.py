@@ -32,9 +32,9 @@ if sys.platform == "win32":
         getgrnam=lambda _name: SimpleNamespace(gr_gid=0),
     )
 
-from alt_deploy.configure import ConfigureRequest
-from alt_deploy.configure import ConfigurePlanner
-from alt_deploy.errors import ControlError
+from alt_deploy.configure import ConfigureRequest  # noqa: E402
+from alt_deploy.configure import ConfigurePlanner  # noqa: E402
+from alt_deploy.errors import ControlError  # noqa: E402
 
 
 MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
