@@ -61,11 +61,12 @@ Vault and are kept out of the request, command line and public result.
 ## Domain user login
 
 The domain configuration must explicitly enable automatic home-directory
-creation for AD users through the ALT-supported `system-auth`/PAM mechanism and
-verify its effective configuration.  The acceptance check after reboot uses the
-existing AD test account: `getent` must resolve it and its first successful
-login must create the expected home directory.  No local employee account is
-created by this path; `osn-admin` and `ansible` remain the technical accounts.
+creation for AD users through the ALT PAM stack after `system-auth write ad`.
+It manages the `pam_mkhomedir.so` session entry for the SSSD stack and verifies
+that exact effective entry.  The acceptance check after reboot uses the existing
+AD test account: `getent` must resolve it and its first successful login must
+create the expected home directory.  No local employee account is created by
+this path; `osn-admin` and `ansible` remain the technical accounts.
 
 ## Operator flow
 

@@ -165,7 +165,7 @@ Expected: FAIL because the documents use the old request/OU and the role only pe
 
 - [ ] **Step 3: Implement the verification and documentation**
 
-Use ALT `system-auth` status/configuration as a read-only assertion that home creation is enabled; do not create a local account or synthetic domain login. Document the first real domain login after reboot as the acceptance check that creates the home. Replace old bootstrap text and OU with non-secret requests for both modes.
+Manage the standard ALT PAM `session required pam_mkhomedir.so skel=/etc/skel umask=0077` entry in the SSSD-only stack after the join, then assert that exact entry. Do not create a local account or synthetic domain login. Document the first real domain login after reboot as the acceptance check that creates the home. Replace old bootstrap text and OU with non-secret requests for both modes.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -207,4 +207,3 @@ Expected: no password, Vault value, raw Ansible command interface, AD delete/res
 Run: `git status --short`
 
 Expected: empty output after commits; do not create an empty commit.
-
