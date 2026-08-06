@@ -1,72 +1,113 @@
-# ALT Workstation: manual bootstrap and Ansible MVP
+# ALT Workstation: manual bootstrap and domain join MVP
 
-This is an additional operator path for a manually installed ALT Workstation
-K 11.x. It does not replace the managed-ISO/install-agent path.
+This is a temporary, controller-managed path for a manually installed ALT
+Workstation K 11.x. It does not replace managed ISO or legacy ai curl=
+installation.
 
-## Prerequisites
+## Operator preparation
 
-The controller is `192.168.100.17`; its bootstrap SSH public key fingerprint
-is `SHA256:60+ctiToYXkwE+H5LfV2hD/MZqRFiato7Q1RcQRlTmM`. The controller needs
-the existing `altserver` account, SSH identity, known-hosts file and runtime
-Ansible Vault. AD DNS is `192.168.100.11`; the domain is `sosnadmin.local`,
-realm `SOSNADMIN.LOCAL`, workgroup `SOSNADM`.
+The employee's domain account must already exist in sosnadmin.local; this flow
+does not create AD users. During manual installation the operator creates the
+local recovery administrator osn-admin, uses DHCP, and sets the final unique
+hostname.
 
-Install ALT manually, obtain an IP address and run as root:
+The hostname is lower-case and must follow:
 
-```bash
-sudo ALT_DEPLOY_HOST=192.168.100.17 \
-  ALT_ANSIBLE_AUTHORIZED_KEY_SHA256='SHA256:60+ctiToYXkwE+H5LfV2hD/MZqRFiato7Q1RcQRlTmM' \
-  bash bootstrap.sh
-```
+~~~text
+^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$
+~~~
 
-The script must not be fetched through `curl | bash`. It checks ALT release,
-route, IPv4, controller reachability, the public-key fingerprint, sudoers and
-passwordless sudo for `ansible`; it then registers the machine.
+For example: alt-a1-pc3, lin-b-pc2, win-k3-pc1.
 
-## Vault and request
+## Bootstrap
 
-Create/edit the runtime encrypted Vault only on the controller. It must include
-`vault_ad_join_user` and `vault_ad_join_password`; never place those values in
-the request file, command line, logs or Git.
+Log in as osn-admin and run:
 
-```json
+~~~bash
+curl --noproxy '*' -fsS --connect-timeout 5 --max-time 30 \
+  http://192.168.100.17:8087/bootstrap/bootstrap.sh \
+  -o /tmp/alt-bootstrap.sh && \
+sudo env no_proxy=192.168.100.17 NO_PROXY=192.168.100.17 \
+  bash /tmp/alt-bootstrap.sh
+~~~
+
+The local sudo prompt is the only place the local administrator password is
+entered. Bootstrap prepares ansible, SSH, sudo and registration only. It does
+not create an AD user or join the domain.
+
+## Controller request
+
+The workstation operator does not run Ansible or system-auth. An authorized
+controller operator creates a non-secret JSON request and runs the fixed
+controller command. The request does not contain a password, SSH key or Vault
+value.
+
+To verify the hostname set during installation without changing it:
+
+~~~json
 {
-  "machine_uuid": "53b03180-5d78-11f0-bd95-f027db877a00",
-  "final_hostname": "alt-ws-001",
+  "machine_uuid": "<registered-uuid>",
+  "final_hostname": "alt-a1-pc3",
+  "hostname_mode": "verify",
   "profile": "standard-domain",
   "domain": "sosnadmin.local",
   "realm": "SOSNADMIN.LOCAL",
   "workgroup": "SOSNADM",
-  "computer_ou": "OU=Workstations,DC=sosnadmin,DC=local",
-  "domain_test_user": "pilot.user"
+  "computer_ou": "OU=Pilot,OU=Linux,OU=Устройства,DC=sosnadmin,DC=local",
+  "domain_test_user": "alt-test-user@sosnadmin.local"
 }
-```
+~~~
+
+To rename a station only after explicit approval, change exactly these two
+fields:
+
+~~~json
+{
+  "final_hostname": "alt-a1-pc3",
+  "hostname_mode": "change_confirmed"
+}
+~~~
+
+verify stops with hostname_mismatch when the installed hostname differs.
+change_confirmed is the only mode that permits a rename. A name outside the
+approved grammar is rejected as hostname_invalid before the controller contacts
+the workstation.
+
+## Controller execution
 
 Run preview before any mutation:
 
-```bash
+~~~bash
 sudo -u altserver /usr/local/sbin/workstationctl --json configure preview <uuid> \
   --vars-file /path/to/request.json
-```
+~~~
 
-After preview review and explicit approval, start the fixed playbook:
+preview is non-mutating: it validates the request and registration and shows the
+fixed plan, but does not test DNS, NTP, hostname or AD connectivity on the
+station.
 
-```bash
+After review and approval, start the fixed playbook:
+
+~~~bash
 sudo -u altserver /usr/local/sbin/workstationctl --json configure start <uuid> \
   --vars-file /path/to/request.json
-```
+~~~
 
-`start` uses only `03-configure-domain-workstation.yml`, resolves the target
-through its registration, uses strict SSH host-key checks and writes a private
-per-run log. It installs ALT's `task-auth-ad-sssd`, configures domain DNS,
-acquires a temporary Kerberos ticket through stdin, invokes `system-auth`, then
-destroys the ticket. Reboot when `reboot_required` is true.
+The controller resolves the registered target IP, uses strict SSH host-key
+checking and runs only 03-configure-domain-workstation.yml. It configures AD
+DNS, obtains the delegated join credential from the existing Ansible Vault,
+creates a missing computer account in
+OU=Pilot,OU=Linux,OU=Устройства,DC=sosnadmin,DC=local, and verifies Samba,
+SSSD and the supplied AD user lookup.
 
-## Limits and recovery
+If an existing computer account cannot be proven to belong to this station, the
+run stops with domain_computer_conflict. It never deletes, resets, moves or
+reuses that account. A station already joined to the requested domain with a
+valid trust is unchanged.
 
-Do not use this flow to remove assignments, release/reassign local employees,
-install non-approved software, configure printers/shares/certificates, or run
-arbitrary Ansible. A different existing domain stops with `domain_conflict`.
-For failed joins, retain the private run log, correct DNS/time/OU/delegation,
-then rerun preview; restore a VM snapshot or reinstall ALT for clean recovery.
-Graphical domain login is verified manually by the operator.
+## After a successful join
+
+For a new join the public result reports reboot_required: true. The controller
+does not reboot the station automatically. Reboot it, then sign in using the
+existing AD account. PAM creates the domain user's home directory at that first
+successful login; no local employee account is created.

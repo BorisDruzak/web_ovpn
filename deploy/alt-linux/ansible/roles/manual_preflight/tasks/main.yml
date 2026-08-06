@@ -1,13 +1,19 @@
 ---
-- name: Read ALT release
-  ansible.builtin.slurp:
-    src: /etc/altlinux-release
-  register: manual_preflight_release_raw
+- name: Read ALT operating system metadata
+  ansible.builtin.command:
+    argv:
+      - sh
+      - -c
+      - '. /etc/os-release && printf "%s\\n%s\\n" "$NAME" "$VERSION_ID"'
+  register: manual_preflight_os_release
+  changed_when: false
 
-- name: Validate ALT Workstation release
+- name: Validate ALT Workstation K 11.x release
   ansible.builtin.assert:
     that:
-      - manual_preflight_release_raw.content | b64decode | trim is match('^ALT Workstation K 11\\.')
+      - manual_preflight_os_release.stdout_lines | length == 2
+      - manual_preflight_os_release.stdout_lines[0] | trim == 'ALT Workstation K'
+      - manual_preflight_os_release.stdout_lines[1] | trim is match('^11\.')
     fail_msg: ALT_PREFLIGHT_FAILURE:manual_preflight_failed unsupported ALT release
 
 - name: Read target UUID

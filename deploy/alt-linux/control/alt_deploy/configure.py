@@ -22,6 +22,7 @@ REQUEST_FIELDS = frozenset(
     {
         "machine_uuid",
         "final_hostname",
+        "hostname_mode",
         "profile",
         "domain",
         "realm",
@@ -31,9 +32,8 @@ REQUEST_FIELDS = frozenset(
     }
 )
 
-HOSTNAME_RE = re.compile(
-    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
-)
+HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
+HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -52,6 +52,10 @@ def _invalid_request(message: str) -> ControlError:
     )
 
 
+def _hostname_invalid(message: str) -> ControlError:
+    return ControlError(code="hostname_invalid", message=message, exit_code=4)
+
+
 def _required_string(payload: Mapping[str, object], field: str) -> str:
     value = payload[field]
     if not isinstance(value, str):
@@ -68,6 +72,7 @@ def _required_string(payload: Mapping[str, object], field: str) -> str:
 class ConfigureRequest:
     machine_uuid: str
     final_hostname: str
+    hostname_mode: str
     profile: str
     domain: str
     realm: str
@@ -93,7 +98,11 @@ class ConfigureRequest:
 
         final_hostname = _required_string(payload, "final_hostname").lower()
         if not HOSTNAME_RE.fullmatch(final_hostname):
-            raise _invalid_request("Configure hostname is invalid")
+            raise _hostname_invalid("Configure hostname is invalid")
+
+        hostname_mode = _required_string(payload, "hostname_mode").lower()
+        if hostname_mode not in HOSTNAME_MODES:
+            raise _invalid_request("Configure hostname mode is unsupported")
 
         profile = _required_string(payload, "profile").lower()
         domain = _required_string(payload, "domain").lower()
@@ -125,6 +134,7 @@ class ConfigureRequest:
         return cls(
             machine_uuid=machine_uuid,
             final_hostname=final_hostname,
+            hostname_mode=hostname_mode,
             profile=profile,
             domain=domain,
             realm=realm,
@@ -137,6 +147,7 @@ class ConfigureRequest:
         return {
             "machine_uuid": self.machine_uuid,
             "final_hostname": self.final_hostname,
+            "hostname_mode": self.hostname_mode,
             "profile": self.profile,
             "domain": self.domain,
             "realm": self.realm,
@@ -148,7 +159,7 @@ class ConfigureRequest:
 
 CONFIGURE_ACTIONS = [
     "manual_preflight",
-    "set_final_hostname",
+    "verify_or_change_hostname",
     "configure_domain_dns",
     "join_or_verify_domain",
     "install_standard_packages",
@@ -247,7 +258,17 @@ class ConfigurePlanner:
             completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=1800, check=False, cwd=self.settings.ansible_project_dir, env=environment)
 
         if completed.returncode != 0:
-            raise ControlError(code="domain_join_failed", message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
+            error_code = "domain_join_failed"
+            marker_codes = (
+                "hostname_mismatch",
+                "domain_computer_conflict",
+            )
+            log_content = log_path.read_text(encoding="utf-8", errors="replace")
+            for marker_code in marker_codes:
+                if f"ALT_PREFLIGHT_FAILURE:{marker_code}" in log_content:
+                    error_code = marker_code
+                    break
+            raise ControlError(code=error_code, message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
         try:
             result = read_json(result_path)
         except (OSError, ValueError) as exc:

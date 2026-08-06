@@ -71,6 +71,11 @@ def test_manual_mvp_runbook_includes_the_pilot_acceptance_checklist() -> None:
         "sudo -u altserver /usr/local/sbin/workstationctl machines list",
         "Controller state is owned by `altserver`; running these commands as root can create files that the service account cannot access.",
         "Do not run `configure start` until preview shows the expected UUID and target IP.",
+        "preview is non-mutating",
+        "hostname_mode",
+        "verify",
+        "change_confirmed",
+        "OU=Pilot,OU=Linux,OU=Устройства,DC=sosnadmin,DC=local",
         "Live pilot acceptance is pending a user-designated disposable workstation or VM.",
         "Do not select, repurpose, or wipe a target for this checklist without that designation.",
     ):

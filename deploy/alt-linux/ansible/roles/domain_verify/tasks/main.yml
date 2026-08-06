@@ -11,6 +11,24 @@
   register: domain_verify_sssd
   changed_when: false
 
+- name: Enable automatic home creation for SSSD domain users
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/system-auth-sss-only
+    regexp: '^session[[:space:]]+required[[:space:]]+pam_mkhomedir\.so.*$'
+    line: 'session required pam_mkhomedir.so skel=/etc/skel umask=0077'
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Verify automatic home creation for SSSD domain users
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -Fx
+      - 'session required pam_mkhomedir.so skel=/etc/skel umask=0077'
+      - /etc/pam.d/system-auth-sss-only
+  changed_when: false
+
 - name: Verify domain user lookup
   ansible.builtin.command:
     argv: [getent, passwd, "{{ domain_test_user if '@' in domain_test_user else domain_test_user ~ '@' ~ ad_domain }}"]

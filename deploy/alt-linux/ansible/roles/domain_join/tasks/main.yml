@@ -40,6 +40,34 @@
         stdin: "{{ vault_ad_join_password }}"
       changed_when: false
 
+    - name: Search target OU for requested computer account
+      ansible.builtin.command:
+        argv:
+          - ldapsearch
+          - -LLL
+          - -Y
+          - GSSAPI
+          - -H
+          - "{{ ad_ldap_uri }}"
+          - -b
+          - "{{ computer_ou }}"
+          - -s
+          - sub
+          - "(sAMAccountName={{ final_hostname }}$)"
+          - dn
+      register: domain_join_computer_lookup
+      changed_when: false
+
+    - name: Determine whether requested computer account already exists
+      ansible.builtin.set_fact:
+        domain_join_computer_exists: >-
+          {{ domain_join_computer_lookup.stdout is search('(?m)^dn: ') }}
+
+    - name: Reject an untrusted existing computer account
+      ansible.builtin.assert:
+        that: not domain_join_computer_exists
+        fail_msg: ALT_PREFLIGHT_FAILURE:domain_computer_conflict requested computer account already exists
+
     - name: Join workstation through ALT system-auth
       ansible.builtin.command:
         argv:
