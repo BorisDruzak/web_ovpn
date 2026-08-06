@@ -43,7 +43,8 @@ MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
 def valid_request() -> dict[str, str]:
     return {
         "machine_uuid": MACHINE_UUID,
-        "final_hostname": "alt-ws-001",
+        "final_hostname": "alt-a1-pc3",
+        "hostname_mode": "verify",
         "profile": "standard-domain",
         "domain": "sosnadmin.local",
         "realm": "SOSNADMIN.LOCAL",
@@ -55,7 +56,7 @@ def valid_request() -> dict[str, str]:
 
 def test_configure_request_normalizes_safe_values() -> None:
     payload = valid_request()
-    payload["final_hostname"] = "ALT-WS-001"
+    payload["final_hostname"] = "ALT-A1-PC3"
 
     request = ConfigureRequest.from_mapping(
         payload,
@@ -64,8 +65,17 @@ def test_configure_request_normalizes_safe_values() -> None:
 
     assert request.to_dict() == {
         **valid_request(),
-        "final_hostname": "alt-ws-001",
+        "final_hostname": "alt-a1-pc3",
     }
+
+
+def test_configure_request_accepts_explicit_confirmed_hostname_change() -> None:
+    payload = valid_request()
+    payload["hostname_mode"] = "change_confirmed"
+
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert request.hostname_mode == "change_confirmed"
 
 
 def test_configure_request_accepts_domain_test_user_upn() -> None:
@@ -90,8 +100,8 @@ def test_configure_request_accepts_domain_test_user_upn() -> None:
         ({"workgroup": ""}, "configure_request_invalid"),
         ({"computer_ou": ""}, "configure_request_invalid"),
         ({"domain_test_user": ""}, "configure_request_invalid"),
-        ({"final_hostname": "alt_ws_001"}, "configure_request_invalid"),
         ({"machine_uuid": "not-a-uuid"}, "configure_request_invalid"),
+        ({"hostname_mode": "change"}, "configure_request_invalid"),
     ],
 )
 def test_configure_request_rejects_untrusted_input(
@@ -108,6 +118,22 @@ def test_configure_request_rejects_untrusted_input(
         )
 
     assert exc.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    ["alt_ws_001", "alt-a11-pc3", "ubuntu-a1-pc3", "alt-a1-pc0"],
+)
+def test_configure_request_rejects_hostname_outside_operational_grammar(
+    hostname: str,
+) -> None:
+    payload = valid_request()
+    payload["final_hostname"] = hostname
+
+    with pytest.raises(ControlError) as exc:
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert exc.value.code == "hostname_invalid"
 
 
 def test_configure_request_rejects_selected_uuid_mismatch() -> None:
@@ -139,7 +165,7 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
         "request": valid_request(),
         "actions": [
             "manual_preflight",
-            "set_final_hostname",
+            "verify_or_change_hostname",
             "configure_domain_dns",
             "join_or_verify_domain",
             "install_standard_packages",
@@ -232,3 +258,44 @@ def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:
         "status": "ok",
         "checks": {"ad_join_user_present": True, "ad_join_password_present": True},
     }
+
+
+def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from alt_deploy.config import Settings
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = Settings(
+        registration_root=tmp_path / "registration", state_root=tmp_path / "state",
+        jobs_dir=tmp_path / "state" / "jobs", assignments_dir=tmp_path / "state" / "assignments",
+        lock_file=tmp_path / "state" / "lock", ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=tmp_path / "known_hosts", private_key_file=tmp_path / "id_ed25519",
+        ansible_playbook_path=tmp_path / "ansible-playbook", systemd_run_path=tmp_path / "systemd-run",
+        worker_path=tmp_path / "worker", job_stage_helper_path=tmp_path / "stage-helper",
+        workstationctl_path=tmp_path / "workstationctl",
+    )
+    for path in (settings.known_hosts_file, settings.private_key_file, settings.ansible_playbook_path):
+        path.write_text("fixture", encoding="utf-8")
+    playbook = settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+    playbook.parent.mkdir(parents=True)
+    playbook.write_text("---\n- hosts: all\n", encoding="utf-8")
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        kwargs["stdout"].write("ALT_PREFLIGHT_FAILURE:hostname_mismatch\n")  # type: ignore[index,union-attr]
+        return subprocess.CompletedProcess(command, 2)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
+
+    with pytest.raises(ControlError) as exc:
+        ConfigurePlanner(
+            settings, machines=SimpleNamespace(get=lambda _: machine)
+        ).start(
+            MACHINE_UUID,
+            ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID),
+        )
+
+    assert exc.value.code == "hostname_mismatch"
+    assert set(exc.value.details) == {"run_id"}
