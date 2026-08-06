@@ -22,9 +22,10 @@
 
 - name: Determine whether the requested domain is already joined
   ansible.builtin.set_fact:
-    domain_join_already_joined: >-
-      {{ (domain_join_status.stdout | lower is search('^ad\\s+' + ad_domain))
-         and domain_join_testjoin.rc == 0 }}
+    # The preceding domain-conflict assertion already binds system-auth to
+    # ad_domain. net ads testjoin is the authoritative trust check and avoids
+    # reparing a valid machine account on an idempotent rerun.
+    domain_join_already_joined: "{{ domain_join_testjoin.rc == 0 }}"
 
 - name: Convert computer OU DN to ALT parent-first createcomputer path
   ansible.builtin.set_fact:

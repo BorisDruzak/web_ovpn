@@ -64,6 +64,7 @@ def test_domain_join_requires_a_valid_samba_trust_before_skipping_join() -> None
 
     assert "argv: [net, ads, testjoin]" in rendered
     assert "domain_join_testjoin.rc == 0" in rendered
+    assert 'domain_join_already_joined: "{{ domain_join_testjoin.rc == 0 }}"' in rendered
 
 
 def test_domain_group_vars_use_confirmed_alt_package_and_domain_dns() -> None:
