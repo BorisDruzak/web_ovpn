@@ -68,6 +68,8 @@ def test_prejoin_upgrade_runs_only_before_domain_join_and_reboots() -> None:
     ).read_text(encoding="utf-8")
 
     assert "system-auth, status" in content
+    assert "argv: [net, ads, testjoin]" in content
+    assert "prejoin_upgrade_testjoin.rc == 0" in content
     assert "apt-get, update" in content
     assert "apt-get, -y, dist-upgrade" in content
     assert "ansible.builtin.reboot" in content

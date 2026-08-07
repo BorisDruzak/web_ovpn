@@ -6,10 +6,20 @@
   changed_when: false
   failed_when: false
 
+- name: Verify whether a Samba domain trust already exists before upgrade
+  ansible.builtin.command:
+    argv: [net, ads, testjoin]
+  register: prejoin_upgrade_testjoin
+  changed_when: false
+  failed_when: false
+
 - name: Detect whether the workstation is already domain joined
   ansible.builtin.set_fact:
     prejoin_upgrade_already_joined: >-
-      {{ prejoin_upgrade_auth_status.stdout | trim | lower is match('^ad\\s+') }}
+      {{
+        (prejoin_upgrade_auth_status.stdout | trim | lower is match('^ad\\s+'))
+        or (prejoin_upgrade_testjoin.rc == 0)
+      }}
 
 - name: Refresh ALT package metadata before first domain join
   ansible.builtin.command:
