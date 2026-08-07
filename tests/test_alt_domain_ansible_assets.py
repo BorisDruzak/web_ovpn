@@ -114,6 +114,64 @@ def test_domain_group_vars_use_confirmed_alt_package_and_domain_dns() -> None:
     assert variables["ad_domain"] == "sosnadmin.local"
 
 
+def test_browser_catalog_declares_the_approved_vendor_rpm() -> None:
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+
+    assert variables["approved_software_components"] == ["browser"]
+    assert variables["software_catalog"]["browser"] == {
+        "artifact_path": (
+            "/opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm"
+        ),
+        "sha256": (
+            "7fbce78e9799ae36ebfcf750d5880f27d829d5546e9ac77f1868afb9657d9a89"
+        ),
+        "package_name": "yandex-browser-stable",
+        "package_evr": "26.4.4.968-1",
+        "architecture": "x86_64",
+    }
+
+
+def test_standard_software_dispatches_only_the_approved_browser_role() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "standard_software" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "browser: software_browser" in content
+    assert "approved_software_components" in content
+    assert "ALT_PREFLIGHT_FAILURE:software_component_unsupported" in content
+    assert "ansible.builtin.include_role" in content
+
+
+def test_browser_role_validates_then_installs_and_cleans_up_without_policy_files() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "software_browser" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "delegate_to: localhost" in content
+    assert "get_checksum: true" in content
+    assert "software_browser_catalog.sha256" in content
+    assert content.index("Validate approved Yandex Browser artifact") < content.index(
+        "Install approved Yandex Browser RPM"
+    )
+    assert "apt-get, -y, install" in content
+    assert "rpm, -q" in content
+    assert "state: absent" in content
+    assert "software_browser_verified: true" in content
+    assert "/etc/opt/yandex/browser/policies" not in content
+
+
+def test_domain_verify_publishes_only_a_boolean_browser_result() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "'browser': software_browser_verified | default(false)" in content
+    assert "Yandex.rpm" not in content
+    assert "/opt/alt-deploy-control/artifacts" not in content
+
+
 def test_domain_verify_accepts_short_name_or_upn() -> None:
     content = (
         ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"

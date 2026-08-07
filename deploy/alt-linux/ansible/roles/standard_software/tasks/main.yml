@@ -4,3 +4,22 @@
     name: "{{ standard_packages + organization_packages }}"
     state: present
   when: (standard_packages + organization_packages) | length > 0
+
+- name: Resolve fixed workstation software roles
+  ansible.builtin.set_fact:
+    standard_software_role_map:
+      browser: software_browser
+
+- name: Require only approved workstation software components
+  ansible.builtin.assert:
+    that:
+      - >-
+        approved_software_components |
+        difference(standard_software_role_map.keys() | list) |
+        length == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_unsupported
+
+- name: Install selected approved workstation software components
+  ansible.builtin.include_role:
+    name: "{{ standard_software_role_map[item] }}"
+  loop: "{{ approved_software_components }}"

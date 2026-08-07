@@ -18,3 +18,12 @@ alt_group_policy_prerequisite_packages:
   - gpupdate
 standard_packages: []
 organization_packages: []
+approved_software_components:
+  - browser
+software_catalog:
+  browser:
+    artifact_path: /opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm
+    sha256: 7fbce78e9799ae36ebfcf750d5880f27d829d5546e9ac77f1868afb9657d9a89
+    package_name: yandex-browser-stable
+    package_evr: 26.4.4.968-1
+    architecture: x86_64
