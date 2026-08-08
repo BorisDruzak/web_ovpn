@@ -1845,6 +1845,26 @@ def _migration_20(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_21(conn: sqlite3.Connection) -> None:
+    for statement in (
+        "ALTER TABLE current_switch_lldp_neighbors "
+        "ADD COLUMN chassis_id_subtype TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE current_switch_lldp_neighbors "
+        "ADD COLUMN port_id_subtype TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE current_switch_lldp_neighbors "
+        "ADD COLUMN port_description TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE current_switch_lldp_neighbors "
+        "ADD COLUMN system_description TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE current_switch_lldp_neighbors "
+        "ADD COLUMN system_capabilities_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE current_switch_lldp_neighbors "
+        "ADD COLUMN enabled_capabilities_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE current_switch_lldp_neighbors "
+        "ADD COLUMN management_addresses_json TEXT NOT NULL DEFAULT '[]'",
+    ):
+        conn.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1866,6 +1886,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (18, _migration_18),
     (19, _migration_19),
     (20, _migration_20),
+    (21, _migration_21),
 )
 
 

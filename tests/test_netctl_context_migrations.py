@@ -123,7 +123,7 @@ def test_connect_migrates_pre_pr_1b_database_without_changing_runtime_rows(tmp_p
                 *INTENT_TABLES,
             } <= table_names
         assert [tuple(row) for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()] == [
-            (version,) for version in range(1, 21)
+            (version,) for version in range(1, 22)
         ]
         manual_result_index = conn.execute(
             "PRAGMA index_xinfo(availability_manual_results_latest_idx)"

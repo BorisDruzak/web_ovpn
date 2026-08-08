@@ -375,12 +375,26 @@ def _lldp_row(
     chassis_id: str = "00:11:22:33:44:55",
     port_id: str = "uplink-1",
     system_name: str = "neighbor-1",
+    chassis_id_subtype: str = "",
+    port_id_subtype: str = "",
+    port_description: str = "",
+    system_description: str = "",
+    system_capabilities: list[str] | None = None,
+    enabled_capabilities: list[str] | None = None,
+    management_addresses: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "local_port_key": f"ifindex:{port}",
         "chassis_id": chassis_id,
+        "chassis_id_subtype": chassis_id_subtype,
         "port_id": port_id,
+        "port_id_subtype": port_id_subtype,
+        "port_description": port_description,
         "system_name": system_name,
+        "system_description": system_description,
+        "system_capabilities": system_capabilities or [],
+        "enabled_capabilities": enabled_capabilities or [],
+        "management_addresses": management_addresses or [],
     }
 
 
@@ -734,6 +748,13 @@ def test_migration_6_creates_typed_vlan_and_lldp_current_tables(
         "system_name": ("TEXT", 1, 0),
         "observed_at": ("TEXT", 1, 0),
         "collector_run_id": ("INTEGER", 1, 0),
+        "chassis_id_subtype": ("TEXT", 1, 0),
+        "port_id_subtype": ("TEXT", 1, 0),
+        "port_description": ("TEXT", 1, 0),
+        "system_description": ("TEXT", 1, 0),
+        "system_capabilities_json": ("TEXT", 1, 0),
+        "enabled_capabilities_json": ("TEXT", 1, 0),
+        "management_addresses_json": ("TEXT", 1, 0),
     }
     indexes = {
         row["name"]
@@ -747,6 +768,23 @@ def test_migration_6_creates_typed_vlan_and_lldp_current_tables(
         "current_switch_vlan_memberships_source_observed_idx",
         "current_switch_lldp_neighbors_source_observed_idx",
     } <= indexes
+
+
+def test_migration_21_preserves_lldp_identity_primary_key(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 21"
+    ).fetchone()[0] == 1
+    primary_key = [
+        row["name"]
+        for row in sorted(
+            switch_conn.execute("PRAGMA table_info(current_switch_lldp_neighbors)"),
+            key=lambda row: row["pk"],
+        )
+        if row["pk"]
+    ]
+    assert primary_key == ["source_id", "local_port_key", "chassis_id", "port_id"]
 
 
 def test_migration_7_creates_typed_current_switch_stp_state(
@@ -1175,6 +1213,52 @@ def test_successful_vlan_and_lldp_groups_replace_current_rows(
     ]
 
 
+def test_enriched_lldp_fields_are_persisted_for_downstream_evidence(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch-enriched-lldp")
+    snapshot = _with_optional_state(
+        _snapshot((_entry("02:00:00:00:00:01", 1),)),
+        lldp_neighbors=(
+            _lldp_row(
+                chassis_id_subtype="mac_address",
+                port_id_subtype="interface_name",
+                port_description="Core uplink",
+                system_description="FixtureOS 1.0",
+                system_capabilities=["bridge", "router"],
+                enabled_capabilities=["bridge"],
+                management_addresses=["192.0.2.10"],
+            ),
+        ),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+
+    result = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(snapshot), "2026-07-19T10:00:00Z"
+    )
+
+    assert result["status"] == "success"
+    assert _rows(
+        switch_conn,
+        "SELECT chassis_id_subtype, port_id_subtype, port_description, "
+        "system_description, system_capabilities_json, "
+        "enabled_capabilities_json, management_addresses_json "
+        "FROM current_switch_lldp_neighbors",
+    ) == [
+        {
+            "chassis_id_subtype": "mac_address",
+            "port_id_subtype": "interface_name",
+            "port_description": "Core uplink",
+            "system_description": "FixtureOS 1.0",
+            "system_capabilities_json": '["bridge","router"]',
+            "enabled_capabilities_json": '["bridge"]',
+            "management_addresses_json": '["192.0.2.10"]',
+        }
+    ]
+
+
 @pytest.mark.parametrize("group", ["vlan", "lldp"])
 def test_confirmed_empty_optional_group_clears_only_that_group(
     switch_conn: sqlite3.Connection, group: str
@@ -1379,6 +1463,47 @@ def test_malformed_optional_mapping_is_not_persisted_or_allowed_to_block_fdb(
         if group == "vlan"
         else [{"chassis_id": "00:11:22:33:44:55"}]
     )
+
+
+def test_malformed_lldp_enrichment_is_rejected_without_blocking_fdb(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch-malformed-lldp-enrichment")
+    seeded = _with_optional_state(
+        _snapshot((_entry("02:00:00:00:00:01", 1),)),
+        lldp_neighbors=(_lldp_row(),),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(seeded), "2026-07-19T10:00:00Z"
+    )
+    malformed = _with_optional_state(
+        _snapshot((_entry("02:00:00:00:00:02", 2),)),
+        lldp_neighbors=(
+            {**_lldp_row(2), "system_capabilities": [{}]},
+        ),
+        lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+    )
+
+    result = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(malformed), "2026-07-19T11:00:00Z"
+    )
+
+    assert result["status"] == "success"
+    assert _rows(switch_conn, "SELECT mac FROM current_switch_fdb") == [
+        {"mac": "02:00:00:00:00:02"}
+    ]
+    assert _rows(
+        switch_conn,
+        "SELECT local_port_key, chassis_id FROM current_switch_lldp_neighbors",
+    ) == [
+        {
+            "local_port_key": "ifindex:1",
+            "chassis_id": "00:11:22:33:44:55",
+        }
+    ]
 
 
 def test_sparse_vlan_mapping_preserves_vlan_without_rolling_back_required_state(

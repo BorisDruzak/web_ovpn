@@ -241,8 +241,20 @@ def _snapshot_with_optional_state(entry_count: int = 3) -> SwitchSnapshot:
             {
                 "local_port_key": f"ifindex:{index}",
                 "chassis_id": f"00:11:22:33:44:{index:02X}",
+                "chassis_id_subtype": "mac_address",
                 "port_id": f"uplink-{index}",
+                "port_id_subtype": "interface_name",
+                "port_description": f"Uplink {index}",
                 "system_name": f"neighbor-{index}",
+                "system_description": f"FixtureOS {index}",
+                "system_capabilities": [
+                    "bridge",
+                    "router",
+                    "telephone",
+                    "wlan_access_point",
+                ],
+                "enabled_capabilities": ["bridge", "router"],
+                "management_addresses": [f"192.0.2.{index}"],
             }
             for index in range(1, entry_count + 1)
         ),
@@ -1350,6 +1362,28 @@ def test_switch_optional_query_is_read_only_source_filtered_paginated_and_raw_fr
         "has_more": False,
         "next_offset": None,
     }
+    if command == "lldp":
+        assert data[result_key][0] == {
+            "source": "switch-test",
+            "local_port_key": "ifindex:2",
+            "chassis_id": "00:11:22:33:44:02",
+            "chassis_id_subtype": "mac_address",
+            "port_id": "uplink-2",
+            "port_id_subtype": "interface_name",
+            "port_description": "Uplink 2",
+            "system_name": "neighbor-2",
+            "system_description": "FixtureOS 2",
+            "system_capabilities": [
+                "bridge",
+                "router",
+                "telephone",
+                "wlan_access_point",
+            ],
+            "enabled_capabilities": ["bridge", "router"],
+            "management_addresses": ["192.0.2.2"],
+            "observed_at": "2026-07-19T10:00:00Z",
+            "collector_run_id": 1,
+        }
     rendered = json.dumps(data).lower()
     assert "varbind" not in rendered
     assert "community" not in rendered

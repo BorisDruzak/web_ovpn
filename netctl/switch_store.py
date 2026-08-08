@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from ipaddress import IPv4Address
 from typing import Any, Protocol
 
 from .snmp.models import (
@@ -51,6 +52,13 @@ _OPTIONAL_CAPABILITIES = frozenset(
         "stp_root_cost",
         "stp_root_port",
         "lldp_remote",
+        "lldp_remote_chassis_id_subtype",
+        "lldp_remote_port_id_subtype",
+        "lldp_remote_port_description",
+        "lldp_remote_system_description",
+        "lldp_remote_system_capabilities",
+        "lldp_remote_enabled_capabilities",
+        "lldp_remote_management_address",
         "qbridge_fdb_rejected_rows",
         "counter_samples",
     }
@@ -75,6 +83,42 @@ _STP_FIELDS = frozenset(
         "root_port_key",
         "root_path_cost",
         "topology_changes",
+    }
+)
+_LLDP_CAPABILITY_NAMES = frozenset(
+    {
+        "other",
+        "repeater",
+        "bridge",
+        "wlan_access_point",
+        "router",
+        "telephone",
+        "docsis_cable_device",
+        "station_only",
+    }
+)
+_LLDP_CHASSIS_ID_SUBTYPES = frozenset(
+    {
+        "",
+        "chassis_component",
+        "interface_alias",
+        "port_component",
+        "mac_address",
+        "network_address",
+        "interface_name",
+        "local",
+    }
+)
+_LLDP_PORT_ID_SUBTYPES = frozenset(
+    {
+        "",
+        "interface_alias",
+        "port_component",
+        "mac_address",
+        "network_address",
+        "interface_name",
+        "agent_circuit_id",
+        "local",
     }
 )
 _EMPTY_COUNTS = {
@@ -591,15 +635,66 @@ def _valid_lldp_neighbors(rows: tuple[dict[str, Any], ...]) -> bool:
         local_port_key = row.get("local_port_key")
         chassis_id = row.get("chassis_id")
         port_id = row.get("port_id")
+        system_capabilities = row.get("system_capabilities", [])
+        enabled_capabilities = row.get("enabled_capabilities", [])
+        management_addresses = row.get("management_addresses", [])
         if not (
             _valid_text(local_port_key)
             and _valid_text(chassis_id)
             and _valid_text(port_id)
             and type(row.get("system_name")) is str
+            and _valid_lldp_subtype(
+                row.get("chassis_id_subtype", ""), _LLDP_CHASSIS_ID_SUBTYPES
+            )
+            and _valid_lldp_subtype(
+                row.get("port_id_subtype", ""), _LLDP_PORT_ID_SUBTYPES
+            )
+            and type(row.get("port_description", "")) is str
+            and type(row.get("system_description", "")) is str
+            and _valid_lldp_capabilities(system_capabilities)
+            and _valid_lldp_capabilities(enabled_capabilities)
+            and _valid_management_addresses(management_addresses)
         ):
             return False
         keys.append((local_port_key, chassis_id, port_id))
     return len(keys) == len(set(keys))
+
+
+def _valid_lldp_subtype(value: object, allowed: frozenset[str]) -> bool:
+    return type(value) is str and value in allowed
+
+
+def _valid_lldp_capabilities(value: object) -> bool:
+    if (
+        type(value) is not list
+        or len(value) > len(_LLDP_CAPABILITY_NAMES)
+        or any(type(item) is not str for item in value)
+    ):
+        return False
+    return len(value) == len(set(value)) and all(
+        item in _LLDP_CAPABILITY_NAMES for item in value
+    )
+
+
+def _valid_management_addresses(value: object) -> bool:
+    if (
+        type(value) is not list
+        or len(value) > 16
+        or any(type(item) is not str for item in value)
+    ):
+        return False
+    return len(value) == len(set(value)) and all(
+        _valid_ipv4_address(item) for item in value
+    )
+
+
+def _valid_ipv4_address(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    try:
+        return str(IPv4Address(value)) == value
+    except ValueError:
+        return False
 
 
 def _valid_stp_state(row: object) -> bool:
@@ -1150,8 +1245,11 @@ def _replace_optional_current_state(
                 """
                 INSERT INTO current_switch_lldp_neighbors (
                     source_id, local_port_key, chassis_id, port_id, system_name,
-                    observed_at, collector_run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    observed_at, collector_run_id, chassis_id_subtype,
+                    port_id_subtype, port_description, system_description,
+                    system_capabilities_json, enabled_capabilities_json,
+                    management_addresses_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     source_id,
@@ -1161,6 +1259,13 @@ def _replace_optional_current_state(
                     row["system_name"],
                     observed_at,
                     run_id,
+                    row.get("chassis_id_subtype", ""),
+                    row.get("port_id_subtype", ""),
+                    row.get("port_description", ""),
+                    row.get("system_description", ""),
+                    _json(row.get("system_capabilities", [])),
+                    _json(row.get("enabled_capabilities", [])),
+                    _json(row.get("management_addresses", [])),
                 ),
             )
 
@@ -1453,7 +1558,7 @@ def _current_fdb_count(conn: sqlite3.Connection, source_id: int) -> int:
     return int(row[0])
 
 
-def _json(value: dict[str, Any]) -> str:
+def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 

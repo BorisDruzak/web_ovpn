@@ -173,7 +173,10 @@ def lldp_link_evidence(
     by_mac = _identity_by_management_mac(identities)
     evidence: list[LinkEvidence] = []
     for row in conn.execute(
-        "SELECT source_id, local_port_key, chassis_id, port_id, observed_at FROM current_switch_lldp_neighbors ORDER BY source_id, local_port_key"
+        "SELECT source_id, local_port_key, chassis_id, port_id, observed_at, "
+        "system_description, system_capabilities_json, "
+        "enabled_capabilities_json, management_addresses_json "
+        "FROM current_switch_lldp_neighbors ORDER BY source_id, local_port_key"
     ):
         remote = by_mac.get(normalize_mac(row["chassis_id"]) or "")
         local = by_source.get(int(row["source_id"]))
@@ -184,8 +187,52 @@ def lldp_link_evidence(
             LinkEndpoint(remote.source_id, _resolve_port(conn, remote.source_id, row["port_id"])),
         )
         if pair is not None:
-            evidence.append(LinkEvidence(pair[0], pair[1], "lldp_chassis_mac", 90, str(row["observed_at"]), "", {"chassis_id": normalize_mac(row["chassis_id"])}))
+            details: dict[str, object] = {
+                "chassis_id": normalize_mac(row["chassis_id"])
+            }
+            management_addresses = _json_string_list(
+                row["management_addresses_json"]
+            )
+            if management_addresses:
+                details["management_address"] = management_addresses[0]
+            system_description = str(row["system_description"] or "").strip()
+            if system_description:
+                details["system_description"] = system_description
+            enabled_capabilities = _json_string_list(
+                row["enabled_capabilities_json"]
+            )
+            supported_capabilities = _json_string_list(
+                row["system_capabilities_json"]
+            )
+            capabilities = enabled_capabilities or supported_capabilities
+            if capabilities:
+                details["capabilities"] = capabilities
+            evidence.append(
+                LinkEvidence(
+                    pair[0],
+                    pair[1],
+                    "lldp_chassis_mac",
+                    90,
+                    str(row["observed_at"]),
+                    "",
+                    details,
+                )
+            )
     return tuple(evidence)
+
+
+def _json_string_list(value: object) -> list[str]:
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if (
+        type(decoded) is not list
+        or len(decoded) > 16
+        or any(type(item) is not str for item in decoded)
+    ):
+        return []
+    return decoded
 
 
 def collect_link_evidence(

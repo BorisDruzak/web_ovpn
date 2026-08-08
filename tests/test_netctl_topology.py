@@ -125,7 +125,14 @@ def _evidence_db() -> sqlite3.Connection:
         );
         CREATE TABLE current_switch_lldp_neighbors (
             source_id INTEGER NOT NULL, local_port_key TEXT NOT NULL, chassis_id TEXT NOT NULL,
-            port_id TEXT NOT NULL, system_name TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL
+            port_id TEXT NOT NULL, system_name TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL,
+            chassis_id_subtype TEXT NOT NULL DEFAULT '',
+            port_id_subtype TEXT NOT NULL DEFAULT '',
+            port_description TEXT NOT NULL DEFAULT '',
+            system_description TEXT NOT NULL DEFAULT '',
+            system_capabilities_json TEXT NOT NULL DEFAULT '[]',
+            enabled_capabilities_json TEXT NOT NULL DEFAULT '[]',
+            management_addresses_json TEXT NOT NULL DEFAULT '[]'
         );
         """
     )
@@ -160,7 +167,10 @@ def test_collect_link_evidence_keeps_intent_fdb_and_lldp_rows_separate() -> None
             "INSERT INTO current_switch_fdb VALUES (1, '1', 'BB:BB:BB:BB:BB:02', 'ifindex:1', '2026-07-22T08:00:00Z')"
         )
         conn.execute(
-            "INSERT INTO current_switch_lldp_neighbors VALUES (1, 'ifindex:1', 'BB:BB:BB:BB:BB:02', 'ge24', '', '2026-07-22T08:01:00Z')"
+            "INSERT INTO current_switch_lldp_neighbors "
+            "(source_id, local_port_key, chassis_id, port_id, system_name, observed_at) "
+            "VALUES (1, 'ifindex:1', 'BB:BB:BB:BB:BB:02', 'ge24', '', "
+            "'2026-07-22T08:01:00Z')"
         )
 
         evidence = collect_link_evidence(conn, _identities())
@@ -173,6 +183,62 @@ def test_collect_link_evidence_keeps_intent_fdb_and_lldp_rows_separate() -> None
         assert all(item.endpoint_a.source_id == 1 and item.endpoint_b.source_id == 2 for item in evidence)
         assert {item.endpoint_a.port_key for item in evidence} == {"ifindex:1"}
         assert [item.endpoint_b.port_key for item in evidence] == ["", "physical:24", "physical:24"]
+    finally:
+        conn.close()
+
+
+def test_lldp_topology_enriches_only_chassis_mac_matched_evidence() -> None:
+    from netctl.topology_evidence import lldp_link_evidence
+
+    conn = _evidence_db()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO current_switch_lldp_neighbors (
+                source_id, local_port_key, chassis_id, port_id, system_name,
+                observed_at, system_description, system_capabilities_json,
+                enabled_capabilities_json, management_addresses_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    1,
+                    "ifindex:1",
+                    "BB:BB:BB:BB:BB:02",
+                    "ge24",
+                    "switch",
+                    "2026-07-22T08:01:00Z",
+                    "Fixture SwitchOS",
+                    '["bridge","router"]',
+                    '["bridge"]',
+                    '["192.0.2.20"]',
+                ),
+                (
+                    1,
+                    "ifindex:2",
+                    "DD:DD:DD:DD:DD:04",
+                    "ge23",
+                    "switch-duplicate-name",
+                    "2026-07-22T08:02:00Z",
+                    "Similar Fixture SwitchOS",
+                    '["bridge"]',
+                    '["bridge"]',
+                    '["192.0.2.30"]',
+                ),
+            ],
+        )
+
+        evidence = lldp_link_evidence(conn, _identities())
+
+        assert len(evidence) == 1
+        assert evidence[0].endpoint_a.source_id == 1
+        assert evidence[0].endpoint_b.source_id == 2
+        assert evidence[0].details == {
+            "chassis_id": "BB:BB:BB:BB:BB:02",
+            "management_address": "192.0.2.20",
+            "system_description": "Fixture SwitchOS",
+            "capabilities": ["bridge"],
+        }
     finally:
         conn.close()
 

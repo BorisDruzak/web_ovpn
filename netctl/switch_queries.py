@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -189,11 +190,14 @@ def query_switch_lldp_neighbors(
     offset: int = 0,
 ) -> dict[str, object]:
     where, params = _source_filter(source)
-    return _page(
+    page = _page(
         conn,
         """
         SELECT s.name AS source, n.local_port_key, n.chassis_id, n.port_id,
-               n.system_name, n.observed_at, n.collector_run_id
+               n.system_name, n.observed_at, n.collector_run_id,
+               n.chassis_id_subtype, n.port_id_subtype, n.port_description,
+               n.system_description, n.system_capabilities_json,
+               n.enabled_capabilities_json, n.management_addresses_json
         FROM current_switch_lldp_neighbors AS n
         JOIN network_sources AS s ON s.id = n.source_id
         """
@@ -205,6 +209,17 @@ def query_switch_lldp_neighbors(
         offset=offset,
         maximum=OPTIONAL_STATE_MAX_PAGE_SIZE,
     )
+    for row in page["items"]:
+        row["system_capabilities"] = _string_list(
+            row.pop("system_capabilities_json", "[]")
+        )
+        row["enabled_capabilities"] = _string_list(
+            row.pop("enabled_capabilities_json", "[]")
+        )
+        row["management_addresses"] = _string_list(
+            row.pop("management_addresses_json", "[]")
+        )
+    return page
 
 
 def query_switch_stp(
@@ -298,3 +313,17 @@ def _source_filter(source: str) -> tuple[str, list[Any]]:
 
 def _where(predicates: list[str]) -> str:
     return " WHERE " + " AND ".join(predicates) if predicates else ""
+
+
+def _string_list(value: object) -> list[str]:
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if (
+        type(decoded) is not list
+        or len(decoded) > 16
+        or any(type(item) is not str for item in decoded)
+    ):
+        return []
+    return decoded

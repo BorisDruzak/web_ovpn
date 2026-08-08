@@ -50,7 +50,14 @@ from .oids import (
     IF_PHYS_ADDRESS,
     IF_SPEED,
     LLDP_REM_CHASSIS_ID,
+    LLDP_REM_CHASSIS_ID_SUBTYPE,
+    LLDP_REM_MAN_ADDR_IF_SUBTYPE,
+    LLDP_REM_PORT_DESC,
     LLDP_REM_PORT_ID,
+    LLDP_REM_PORT_ID_SUBTYPE,
+    LLDP_REM_SYS_CAP_ENABLED,
+    LLDP_REM_SYS_CAP_SUPPORTED,
+    LLDP_REM_SYS_DESC,
     LLDP_REM_SYS_NAME,
     SYS_DESCR,
     SYS_LOCATION,
@@ -518,7 +525,7 @@ async def collect_switch_snapshot(
                 )
                 capabilities[-len(stp_results) :] = stp_results
 
-    lldp_results = (
+    lldp_core_results = (
         await transport.walk(
             LLDP_REM_CHASSIS_ID, capability="lldp_remote_chassis_id"
         ),
@@ -527,12 +534,40 @@ async def collect_switch_snapshot(
             LLDP_REM_SYS_NAME, capability="lldp_remote_system_name"
         ),
     )
-    capabilities.extend(lldp_results)
+    lldp_enrichment_results = (
+        await transport.walk(
+            LLDP_REM_CHASSIS_ID_SUBTYPE,
+            capability="lldp_remote_chassis_id_subtype",
+        ),
+        await transport.walk(
+            LLDP_REM_PORT_ID_SUBTYPE,
+            capability="lldp_remote_port_id_subtype",
+        ),
+        await transport.walk(
+            LLDP_REM_PORT_DESC, capability="lldp_remote_port_description"
+        ),
+        await transport.walk(
+            LLDP_REM_SYS_DESC, capability="lldp_remote_system_description"
+        ),
+        await transport.walk(
+            LLDP_REM_SYS_CAP_SUPPORTED,
+            capability="lldp_remote_system_capabilities",
+        ),
+        await transport.walk(
+            LLDP_REM_SYS_CAP_ENABLED,
+            capability="lldp_remote_enabled_capabilities",
+        ),
+        await transport.walk(
+            LLDP_REM_MAN_ADDR_IF_SUBTYPE,
+            capability="lldp_remote_management_address",
+        ),
+    )
+    capabilities.extend((*lldp_core_results, *lldp_enrichment_results))
     lldp_neighbors: tuple[dict[str, object], ...] = ()
     lldp_failure = next(
         (
             result
-            for result in lldp_results
+            for result in lldp_core_results
             if result.outcome
             not in {SnmpOutcome.SUCCESS_WITH_ROWS, SnmpOutcome.SUCCESS_EMPTY}
         ),
@@ -547,15 +582,30 @@ async def collect_switch_snapshot(
         )
     else:
         try:
-            lldp_neighbors = parse_lldp_neighbors(*lldp_results, ports=ports)
+            lldp_neighbors = parse_lldp_neighbors(
+                *lldp_core_results,
+                ports=ports,
+                chassis_id_subtype_result=lldp_enrichment_results[0],
+                port_id_subtype_result=lldp_enrichment_results[1],
+                port_description_result=lldp_enrichment_results[2],
+                system_description_result=lldp_enrichment_results[3],
+                system_capabilities_result=lldp_enrichment_results[4],
+                enabled_capabilities_result=lldp_enrichment_results[5],
+                management_address_result=lldp_enrichment_results[6],
+            )
         except ValueError:
             lldp_neighbors = ()
-            lldp_results = _optional_parse_errors(
-                lldp_results,
+            lldp_core_results = _optional_parse_errors(
+                lldp_core_results,
                 error_code="malformed_lldp",
                 error_message="SNMP LLDP rows are malformed",
             )
-            capabilities[-len(lldp_results) :] = lldp_results
+            first_core_result = len(capabilities) - len(lldp_enrichment_results) - len(
+                lldp_core_results
+            )
+            capabilities[
+                first_core_result : first_core_result + len(lldp_core_results)
+            ] = lldp_core_results
             lldp_group = _optional_group_result(
                 "lldp_remote",
                 SnmpOutcome.PARSE_ERROR,

@@ -37,7 +37,14 @@ from netctl.snmp.oids import (
     SYS_OBJECT_ID,
     SYS_UPTIME,
     LLDP_REM_CHASSIS_ID,
+    LLDP_REM_CHASSIS_ID_SUBTYPE,
+    LLDP_REM_MAN_ADDR_IF_SUBTYPE,
+    LLDP_REM_PORT_DESC,
     LLDP_REM_PORT_ID,
+    LLDP_REM_PORT_ID_SUBTYPE,
+    LLDP_REM_SYS_CAP_ENABLED,
+    LLDP_REM_SYS_CAP_SUPPORTED,
+    LLDP_REM_SYS_DESC,
     LLDP_REM_SYS_NAME,
 )
 
@@ -720,8 +727,109 @@ def test_lldp_joins_remote_columns_and_resolves_local_bridge_port() -> None:
         {
             "local_port_key": "physical:5",
             "chassis_id": "00:11:22:33:44:55",
+            "chassis_id_subtype": "",
             "port_id": "uplink-5",
+            "port_id_subtype": "",
+            "port_description": "",
             "system_name": "edge-fixture",
+            "system_description": "",
+            "system_capabilities": [],
+            "enabled_capabilities": [],
+            "management_addresses": [],
+        },
+    )
+
+
+def test_lldp_normalizes_enriched_remote_columns_and_ipv4_management_address() -> None:
+    from netctl.snmp import oids
+    from netctl.snmp.lldp import parse_lldp_neighbors
+    from netctl.snmp.models import SwitchPort
+
+    suffix = (1234, 5, 9)
+    port = SwitchPort(
+        "physical:5", 5, 5, 5, "ether5", "", None, "up", "up", None
+    )
+
+    neighbors = parse_lldp_neighbors(
+        _result(
+            "lldp_remote_chassis_id",
+            _vb(
+                LLDP_REM_CHASSIS_ID + suffix,
+                b"\x00\x11\x22\x33\x44\x55",
+                "octet_string",
+            ),
+        ),
+        _result(
+            "lldp_remote_port_id",
+            _vb(LLDP_REM_PORT_ID + suffix, b"uplink-5", "octet_string"),
+        ),
+        _result(
+            "lldp_remote_system_name",
+            _vb(LLDP_REM_SYS_NAME + suffix, b"edge-fixture", "octet_string"),
+        ),
+        ports=(port,),
+        chassis_id_subtype_result=_result(
+            "lldp_remote_chassis_id_subtype",
+            _vb(oids.LLDP_REM_CHASSIS_ID_SUBTYPE + suffix, 4),
+        ),
+        port_id_subtype_result=_result(
+            "lldp_remote_port_id_subtype",
+            _vb(oids.LLDP_REM_PORT_ID_SUBTYPE + suffix, 5),
+        ),
+        port_description_result=_result(
+            "lldp_remote_port_description",
+            _vb(
+                oids.LLDP_REM_PORT_DESC + suffix,
+                b"Core uplink",
+                "octet_string",
+            ),
+        ),
+        system_description_result=_result(
+            "lldp_remote_system_description",
+            _vb(
+                oids.LLDP_REM_SYS_DESC + suffix,
+                b"FixtureOS 1.0",
+                "octet_string",
+            ),
+        ),
+        system_capabilities_result=_result(
+            "lldp_remote_system_capabilities",
+            _vb(oids.LLDP_REM_SYS_CAP_SUPPORTED + suffix, b"\x3d", "octet_string"),
+        ),
+        enabled_capabilities_result=_result(
+            "lldp_remote_enabled_capabilities",
+            _vb(oids.LLDP_REM_SYS_CAP_ENABLED + suffix, b"\x28", "octet_string"),
+        ),
+        management_address_result=_result(
+            "lldp_remote_management_address",
+            _vb(
+                oids.LLDP_REM_MAN_ADDR_IF_SUBTYPE
+                + suffix
+                + (1, 4, 192, 0, 2, 10),
+                2,
+            ),
+        ),
+    )
+
+    assert neighbors == (
+        {
+            "local_port_key": "physical:5",
+            "chassis_id": "00:11:22:33:44:55",
+            "chassis_id_subtype": "mac_address",
+            "port_id": "uplink-5",
+            "port_id_subtype": "interface_name",
+            "port_description": "Core uplink",
+            "system_name": "edge-fixture",
+            "system_description": "FixtureOS 1.0",
+            "system_capabilities": [
+                "bridge",
+                "wlan_access_point",
+                "router",
+                "telephone",
+                "station_only",
+            ],
+            "enabled_capabilities": ["bridge", "router"],
+            "management_addresses": ["192.0.2.10"],
         },
     )
 
@@ -788,17 +896,23 @@ def test_malformed_lldp_is_sanitized_and_never_fails_fdb() -> None:
     )
 
     snapshot = asyncio.run(collect_switch_snapshot({}, transport))
-    lldp_leaves = [
+    lldp_core_leaves = [
         row
         for row in snapshot.capabilities
-        if row.capability.startswith("lldp_remote_")
+        if row.capability
+        in {
+            "lldp_remote_chassis_id",
+            "lldp_remote_port_id",
+            "lldp_remote_system_name",
+        }
     ]
 
     assert next(row for row in snapshot.capabilities if row.capability == "fdb").outcome is SnmpOutcome.SUCCESS_EMPTY
     assert snapshot.lldp_neighbors == ()
-    assert len(lldp_leaves) == 3
+    assert len(lldp_core_leaves) == 3
     assert {
-        (row.outcome, row.error_code, row.error_message) for row in lldp_leaves
+        (row.outcome, row.error_code, row.error_message)
+        for row in lldp_core_leaves
     } == {
         (
             SnmpOutcome.PARSE_ERROR,
@@ -807,6 +921,89 @@ def test_malformed_lldp_is_sanitized_and_never_fails_fdb() -> None:
         )
     }
     assert "31071" not in repr(snapshot.to_dict()["capabilities"])
+
+
+def test_optional_lldp_enrichment_failure_preserves_core_neighbor() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    suffix = (1, 5, 9)
+    transport = _FixtureTransport(
+        {
+            IF_INDEX: _result("if_index", _vb(IF_INDEX + (5,), 5)),
+            DOT1D_BASE_PORT_IFINDEX: _result(
+                "bridge_port_ifindex", _vb(DOT1D_BASE_PORT_IFINDEX + (5,), 5)
+            ),
+            DOT1Q_FDB_PORT: _result("qbridge_port"),
+            LLDP_REM_CHASSIS_ID: _result(
+                "lldp_remote_chassis_id",
+                _vb(
+                    LLDP_REM_CHASSIS_ID + suffix,
+                    b"\x00\x11\x22\x33\x44\x55",
+                    "octet_string",
+                ),
+            ),
+            LLDP_REM_PORT_ID: _result(
+                "lldp_remote_port_id",
+                _vb(LLDP_REM_PORT_ID + suffix, b"p5", "octet_string"),
+            ),
+            LLDP_REM_SYS_NAME: _result(
+                "lldp_remote_system_name",
+                _vb(LLDP_REM_SYS_NAME + suffix, b"neighbor", "octet_string"),
+            ),
+            LLDP_REM_PORT_DESC: _result(
+                "lldp_remote_port_description",
+                _vb(LLDP_REM_PORT_DESC + suffix, b"uplink", "octet_string"),
+            ),
+            LLDP_REM_SYS_DESC: _result(
+                "lldp_remote_system_description",
+                outcome=SnmpOutcome.AUTH_OR_VIEW_FAILURE,
+            ),
+            LLDP_REM_MAN_ADDR_IF_SUBTYPE: _result(
+                "lldp_remote_management_address",
+                _vb(
+                    LLDP_REM_MAN_ADDR_IF_SUBTYPE
+                    + suffix
+                    + (1, 3, 192, 0, 2),
+                    2,
+                ),
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert snapshot.lldp_neighbors == (
+        {
+            "local_port_key": "ifindex:5",
+            "chassis_id": "00:11:22:33:44:55",
+            "chassis_id_subtype": "",
+            "port_id": "p5",
+            "port_id_subtype": "",
+            "port_description": "uplink",
+            "system_name": "neighbor",
+            "system_description": "",
+            "system_capabilities": [],
+            "enabled_capabilities": [],
+            "management_addresses": [],
+        },
+    )
+    assert {
+        LLDP_REM_CHASSIS_ID_SUBTYPE,
+        LLDP_REM_PORT_ID_SUBTYPE,
+        LLDP_REM_PORT_DESC,
+        LLDP_REM_SYS_DESC,
+        LLDP_REM_SYS_CAP_SUPPORTED,
+        LLDP_REM_SYS_CAP_ENABLED,
+        LLDP_REM_MAN_ADDR_IF_SUBTYPE,
+    } <= set(transport.walked)
+    assert next(
+        row
+        for row in snapshot.capabilities
+        if row.capability == "lldp_remote_system_description"
+    ).outcome is SnmpOutcome.AUTH_OR_VIEW_FAILURE
+    assert next(
+        row for row in snapshot.capabilities if row.capability == "lldp_remote"
+    ).outcome is SnmpOutcome.SUCCESS_WITH_ROWS
 
 
 @pytest.mark.parametrize(
