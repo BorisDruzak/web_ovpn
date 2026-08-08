@@ -1381,6 +1381,36 @@ def test_switch_optional_query_is_read_only_source_filtered_paginated_and_raw_fr
             ],
             "enabled_capabilities": ["bridge", "router"],
             "management_addresses": ["192.0.2.2"],
+            "fingerprint_evidence": [
+                {
+                    "provider": "lldp",
+                    "signal": "bridge",
+                    "candidate_type": "network",
+                    "weight": 90,
+                    "summary": "LLDP bridge capability",
+                },
+                {
+                    "provider": "lldp",
+                    "signal": "router",
+                    "candidate_type": "network",
+                    "weight": 90,
+                    "summary": "LLDP router capability",
+                },
+                {
+                    "provider": "lldp",
+                    "signal": "telephone",
+                    "candidate_type": "phone",
+                    "weight": 90,
+                    "summary": "LLDP telephone capability",
+                },
+                {
+                    "provider": "lldp",
+                    "signal": "wlan_access_point",
+                    "candidate_type": "network",
+                    "weight": 90,
+                    "summary": "LLDP wlan_access_point capability",
+                },
+            ],
             "observed_at": "2026-07-19T10:00:00Z",
             "collector_run_id": 1,
         }

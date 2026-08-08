@@ -1465,12 +1465,28 @@ def test_malformed_optional_mapping_is_not_persisted_or_allowed_to_block_fdb(
     )
 
 
-def test_malformed_lldp_enrichment_is_rejected_without_blocking_fdb(
+@pytest.mark.parametrize(
+    ("field", "malformed_value", "empty_default"),
+    [
+        ("chassis_id_subtype", [], ""),
+        ("port_id_subtype", "invalid", ""),
+        ("port_description", 7, ""),
+        ("system_description", None, ""),
+        ("system_capabilities", [{}], []),
+        ("enabled_capabilities", ["invalid"], []),
+        ("management_addresses", ["999.0.0.1"], []),
+    ],
+)
+def test_malformed_lldp_enrichment_is_sanitized_independently(
     switch_conn: sqlite3.Connection,
+    field: str,
+    malformed_value: object,
+    empty_default: object,
 ) -> None:
     from netctl.switch_store import collect_and_save_switch
+    from netctl.switch_queries import query_switch_lldp_neighbors
 
-    source = _source(switch_conn, "switch-malformed-lldp-enrichment")
+    source = _source(switch_conn, f"switch-malformed-{field}")
     seeded = _with_optional_state(
         _snapshot((_entry("02:00:00:00:00:01", 1),)),
         lldp_neighbors=(_lldp_row(),),
@@ -1482,7 +1498,19 @@ def test_malformed_lldp_enrichment_is_rejected_without_blocking_fdb(
     malformed = _with_optional_state(
         _snapshot((_entry("02:00:00:00:00:02", 2),)),
         lldp_neighbors=(
-            {**_lldp_row(2), "system_capabilities": [{}]},
+            {
+                **_lldp_row(
+                    2,
+                    chassis_id_subtype="mac_address",
+                    port_id_subtype="interface_name",
+                    port_description="Core uplink",
+                    system_description="FixtureOS 1.0",
+                    system_capabilities=["bridge", "router"],
+                    enabled_capabilities=["bridge"],
+                    management_addresses=["192.0.2.10"],
+                ),
+                field: malformed_value,
+            },
         ),
         lldp_outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
     )
@@ -1495,15 +1523,28 @@ def test_malformed_lldp_enrichment_is_rejected_without_blocking_fdb(
     assert _rows(switch_conn, "SELECT mac FROM current_switch_fdb") == [
         {"mac": "02:00:00:00:00:02"}
     ]
-    assert _rows(
-        switch_conn,
-        "SELECT local_port_key, chassis_id FROM current_switch_lldp_neighbors",
-    ) == [
-        {
-            "local_port_key": "ifindex:1",
-            "chassis_id": "00:11:22:33:44:55",
-        }
-    ]
+    item = query_switch_lldp_neighbors(
+        switch_conn, source=f"switch-malformed-{field}"
+    )["items"][0]
+    assert (
+        item["local_port_key"],
+        item["chassis_id"],
+        item["port_id"],
+        item["system_name"],
+    ) == ("ifindex:2", "00:11:22:33:44:55", "uplink-1", "neighbor-1")
+    expected_enrichment = {
+        "chassis_id_subtype": "mac_address",
+        "port_id_subtype": "interface_name",
+        "port_description": "Core uplink",
+        "system_description": "FixtureOS 1.0",
+        "system_capabilities": ["bridge", "router"],
+        "enabled_capabilities": ["bridge"],
+        "management_addresses": ["192.0.2.10"],
+    }
+    expected_enrichment[field] = empty_default
+    assert {
+        key: item[key] for key in expected_enrichment
+    } == expected_enrichment
 
 
 def test_sparse_vlan_mapping_preserves_vlan_without_rolling_back_required_state(

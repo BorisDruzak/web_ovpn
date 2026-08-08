@@ -627,41 +627,68 @@ def _valid_vlan_memberships(rows: tuple[dict[str, Any], ...]) -> bool:
     return len(keys) == len(set(keys))
 
 
-def _valid_lldp_neighbors(rows: tuple[dict[str, Any], ...]) -> bool:
+def _sanitized_lldp_neighbors(
+    rows: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...] | None:
     keys: list[tuple[str, str, str]] = []
+    sanitized: list[dict[str, Any]] = []
     for row in rows:
         if type(row) is not dict:
-            return False
+            return None
         local_port_key = row.get("local_port_key")
         chassis_id = row.get("chassis_id")
         port_id = row.get("port_id")
-        system_capabilities = row.get("system_capabilities", [])
-        enabled_capabilities = row.get("enabled_capabilities", [])
-        management_addresses = row.get("management_addresses", [])
         if not (
             _valid_text(local_port_key)
             and _valid_text(chassis_id)
             and _valid_text(port_id)
             and type(row.get("system_name")) is str
-            and _valid_lldp_subtype(
-                row.get("chassis_id_subtype", ""), _LLDP_CHASSIS_ID_SUBTYPES
-            )
-            and _valid_lldp_subtype(
-                row.get("port_id_subtype", ""), _LLDP_PORT_ID_SUBTYPES
-            )
-            and type(row.get("port_description", "")) is str
-            and type(row.get("system_description", "")) is str
-            and _valid_lldp_capabilities(system_capabilities)
-            and _valid_lldp_capabilities(enabled_capabilities)
-            and _valid_management_addresses(management_addresses)
         ):
-            return False
+            return None
         keys.append((local_port_key, chassis_id, port_id))
-    return len(keys) == len(set(keys))
+        sanitized.append(
+            {
+                "local_port_key": local_port_key,
+                "chassis_id": chassis_id,
+                "chassis_id_subtype": _sanitized_lldp_subtype(
+                    row.get("chassis_id_subtype", ""),
+                    _LLDP_CHASSIS_ID_SUBTYPES,
+                ),
+                "port_id": port_id,
+                "port_id_subtype": _sanitized_lldp_subtype(
+                    row.get("port_id_subtype", ""), _LLDP_PORT_ID_SUBTYPES
+                ),
+                "port_description": _sanitized_text(
+                    row.get("port_description", "")
+                ),
+                "system_name": row["system_name"],
+                "system_description": _sanitized_text(
+                    row.get("system_description", "")
+                ),
+                "system_capabilities": _sanitized_lldp_capabilities(
+                    row.get("system_capabilities", [])
+                ),
+                "enabled_capabilities": _sanitized_lldp_capabilities(
+                    row.get("enabled_capabilities", [])
+                ),
+                "management_addresses": _sanitized_management_addresses(
+                    row.get("management_addresses", [])
+                ),
+            }
+        )
+    return tuple(sanitized) if len(keys) == len(set(keys)) else None
 
 
 def _valid_lldp_subtype(value: object, allowed: frozenset[str]) -> bool:
     return type(value) is str and value in allowed
+
+
+def _sanitized_lldp_subtype(value: object, allowed: frozenset[str]) -> str:
+    return value if _valid_lldp_subtype(value, allowed) else ""
+
+
+def _sanitized_text(value: object) -> str:
+    return value if type(value) is str else ""
 
 
 def _valid_lldp_capabilities(value: object) -> bool:
@@ -676,6 +703,10 @@ def _valid_lldp_capabilities(value: object) -> bool:
     )
 
 
+def _sanitized_lldp_capabilities(value: object) -> list[str]:
+    return list(value) if _valid_lldp_capabilities(value) else []
+
+
 def _valid_management_addresses(value: object) -> bool:
     if (
         type(value) is not list
@@ -686,6 +717,10 @@ def _valid_management_addresses(value: object) -> bool:
     return len(value) == len(set(value)) and all(
         _valid_ipv4_address(item) for item in value
     )
+
+
+def _sanitized_management_addresses(value: object) -> list[str]:
+    return list(value) if _valid_management_addresses(value) else []
 
 
 def _valid_ipv4_address(value: object) -> bool:
@@ -1233,14 +1268,14 @@ def _replace_optional_current_state(
                 ),
             )
 
-    if _capabilities_confirm_success(
-        snapshot, _LLDP_CAPABILITIES
-    ) and _valid_lldp_neighbors(snapshot.lldp_neighbors):
-        conn.execute(
-            "DELETE FROM current_switch_lldp_neighbors WHERE source_id = ?",
-            (source_id,),
-        )
-        for row in snapshot.lldp_neighbors:
+    if _capabilities_confirm_success(snapshot, _LLDP_CAPABILITIES):
+        lldp_neighbors = _sanitized_lldp_neighbors(snapshot.lldp_neighbors)
+        if lldp_neighbors is not None:
+            conn.execute(
+                "DELETE FROM current_switch_lldp_neighbors WHERE source_id = ?",
+                (source_id,),
+            )
+        for row in lldp_neighbors or ():
             conn.execute(
                 """
                 INSERT INTO current_switch_lldp_neighbors (

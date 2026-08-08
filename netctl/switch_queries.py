@@ -9,6 +9,12 @@ DEFAULT_PAGE_SIZE = 100
 MAX_PAGE_SIZE = 500
 OPTIONAL_STATE_DEFAULT_PAGE_SIZE = 500
 OPTIONAL_STATE_MAX_PAGE_SIZE = 5000
+_LLDP_FINGERPRINT_TYPES = {
+    "bridge": "network",
+    "router": "network",
+    "telephone": "phone",
+    "wlan_access_point": "network",
+}
 
 
 def validate_pagination(
@@ -210,14 +216,19 @@ def query_switch_lldp_neighbors(
         maximum=OPTIONAL_STATE_MAX_PAGE_SIZE,
     )
     for row in page["items"]:
-        row["system_capabilities"] = _string_list(
+        system_capabilities = _string_list(
             row.pop("system_capabilities_json", "[]")
         )
-        row["enabled_capabilities"] = _string_list(
+        enabled_capabilities = _string_list(
             row.pop("enabled_capabilities_json", "[]")
         )
+        row["system_capabilities"] = system_capabilities
+        row["enabled_capabilities"] = enabled_capabilities
         row["management_addresses"] = _string_list(
             row.pop("management_addresses_json", "[]")
+        )
+        row["fingerprint_evidence"] = _lldp_fingerprint_evidence(
+            system_capabilities, enabled_capabilities
         )
     return page
 
@@ -327,3 +338,25 @@ def _string_list(value: object) -> list[str]:
     ):
         return []
     return decoded
+
+
+def _lldp_fingerprint_evidence(
+    system_capabilities: list[str], enabled_capabilities: list[str]
+) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for capability in (*system_capabilities, *enabled_capabilities):
+        candidate_type = _LLDP_FINGERPRINT_TYPES.get(capability)
+        if candidate_type is None or capability in seen:
+            continue
+        seen.add(capability)
+        evidence.append(
+            {
+                "provider": "lldp",
+                "signal": capability,
+                "candidate_type": candidate_type,
+                "weight": 90,
+                "summary": f"LLDP {capability} capability",
+            }
+        )
+    return evidence
