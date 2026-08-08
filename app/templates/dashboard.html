@@ -2,24 +2,27 @@
 {% block title %}Панель - OpenVPN Web{% endblock %}
 {% block page_title %}Панель состояния{% endblock %}
 {% block content %}
-<section class="metrics" data-dashboard-url="/dashboard/data">
-  <article class="metric">
-    <span>OpenVPN</span>
-    <strong class="badge muted" data-dashboard-openvpn>Loading...</strong>
-  </article>
-  <article class="metric">
-    <span>NAT</span>
-    <strong class="badge muted" data-dashboard-nat>Loading...</strong>
-  </article>
-  <article class="metric">
-    <span>Клиенты</span>
-    <strong data-dashboard-clients>Loading...</strong>
-  </article>
-  <article class="metric">
-    <span>Подключено сейчас</span>
-    <strong data-dashboard-connected>Loading...</strong>
-  </article>
-</section>
+<div data-dashboard-url="/dashboard/data">
+  <section class="metrics">
+    <article class="metric">
+      <span>OpenVPN</span>
+      <strong class="badge muted" data-dashboard-openvpn>Loading...</strong>
+    </article>
+    <article class="metric">
+      <span>NAT</span>
+      <strong class="badge muted" data-dashboard-nat>Loading...</strong>
+    </article>
+    <article class="metric">
+      <span>Клиенты</span>
+      <strong data-dashboard-clients>Loading...</strong>
+    </article>
+    <article class="metric">
+      <span>Подключено сейчас</span>
+      <strong data-dashboard-connected>Loading...</strong>
+    </article>
+  </section>
+  <p class="dashboard-freshness" data-dashboard-freshness role="status">Загрузка данных…</p>
+</div>
 
 <section class="toolbar">
   <a class="button primary" href="/clients/new">Создать профиль</a>

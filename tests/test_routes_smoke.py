@@ -226,6 +226,18 @@ def test_dashboard_initial_html_does_not_call_slow_vpnctl(tmp_path, monkeypatch)
         assert unauthenticated.get("/dashboard/data", follow_redirects=False).status_code == 303
 
 
+def test_dashboard_refreshes_visible_card_and_marks_stale_snapshots():
+    root = Path(__file__).resolve().parents[1]
+    template = (root / "app" / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    script = (root / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "data-dashboard-freshness" in template
+    assert "function scheduleDashboardData" in script
+    assert "const DASHBOARD_REFRESH_DELAY_MS = 5000" in script
+    assert "payload.stale" in script
+    assert "document.hidden" in script
+
+
 def test_clients_page_shows_live_vpn_ip_without_ccd_push(tmp_path, monkeypatch):
     fake = make_fake_vpnctl(tmp_path / "vpnctl")
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")

@@ -24,17 +24,39 @@ function dashboardStatusClass(value) {
   return "muted";
 }
 
+const DASHBOARD_REFRESH_DELAY_MS = 5000;
+let dashboardInFlight = false;
+let dashboardTimer = null;
+
+function dashboardFreshnessLabel(generatedAt, stale) {
+  const generatedAtMs = Date.parse(generatedAt || "");
+  if (!Number.isFinite(generatedAtMs)) return stale ? "Данные устарели" : "Время обновления неизвестно";
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - generatedAtMs) / 1000));
+  const age = ageSeconds < 2 ? "только что" : `${ageSeconds} с назад`;
+  return stale ? `Данные устарели — обновлены ${age}` : `Обновлено ${age}`;
+}
+
+function setDashboardFreshness(card, message, stale = false) {
+  const element = card.querySelector("[data-dashboard-freshness]");
+  if (!element) return;
+  element.textContent = message;
+  element.classList.toggle("stale", stale);
+}
+
 async function loadDashboardData() {
   const card = document.querySelector("[data-dashboard-url]");
-  if (!card) return;
+  if (!card || dashboardInFlight) return;
+  dashboardInFlight = true;
   const setValue = (selector, value, badge = false) => {
     const element = card.querySelector(selector);
     if (!element) return;
     element.textContent = String(value);
     if (badge) element.className = `badge ${dashboardStatusClass(value)}`;
   };
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch(card.dataset.dashboardUrl, {credentials: "same-origin"});
+    const response = await fetch(card.dataset.dashboardUrl, {credentials: "same-origin", signal: controller.signal});
     if (!response.ok) throw new Error("dashboard unavailable");
     const payload = await response.json();
     const data = payload.data || {};
@@ -42,10 +64,24 @@ async function loadDashboardData() {
     setValue("[data-dashboard-nat]", data.nat || "unknown", true);
     setValue("[data-dashboard-clients]", Number.isFinite(data.clients_count) ? data.clients_count : "-");
     setValue("[data-dashboard-connected]", Number.isFinite(data.connected_count) ? data.connected_count : "-");
+    setDashboardFreshness(card, dashboardFreshnessLabel(payload.generated_at, payload.stale), Boolean(payload.stale));
   } catch (_) {
     setValue("[data-dashboard-openvpn]", "unavailable", true);
     setValue("[data-dashboard-nat]", "unavailable", true);
+    setDashboardFreshness(card, "Данные недоступны", true);
+  } finally {
+    window.clearTimeout(timeout);
+    dashboardInFlight = false;
   }
+}
+
+function scheduleDashboardData() {
+  if (!document.querySelector("[data-dashboard-url]") || document.hidden) return;
+  void loadDashboardData().finally(() => {
+    if (!document.hidden) {
+      dashboardTimer = window.setTimeout(scheduleDashboardData, DASHBOARD_REFRESH_DELAY_MS);
+    }
+  });
 }
 
 function runtimeHealthRows(sections) {
@@ -150,7 +186,8 @@ function scheduleVpnRuntimeHealth() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  void loadDashboardData();
+  const hasDashboard = Boolean(document.querySelector("[data-dashboard-url]"));
+  if (hasDashboard) scheduleDashboardData();
   const copyButton = document.querySelector("[data-copy-observer-key]");
   const publicKey = document.querySelector("[data-observer-public-key]");
   const copyStatus = document.querySelector("[data-observer-key-status]");
@@ -180,14 +217,22 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  if (!document.querySelector("#vpn-runtime-card")) return;
-  scheduleVpnRuntimeHealth();
+  const hasRuntimeHealth = Boolean(document.querySelector("#vpn-runtime-card"));
+  if (hasRuntimeHealth) scheduleVpnRuntimeHealth();
+  if (!hasDashboard && !hasRuntimeHealth) return;
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
+      if (dashboardTimer) window.clearTimeout(dashboardTimer);
+      dashboardTimer = null;
       if (runtimeHealthTimer) window.clearTimeout(runtimeHealthTimer);
       runtimeHealthTimer = null;
-    } else if (!runtimeHealthTimer && !runtimeHealthInFlight) {
-      scheduleVpnRuntimeHealth();
+    } else {
+      if (hasDashboard && !dashboardTimer && !dashboardInFlight) {
+        scheduleDashboardData();
+      }
+      if (hasRuntimeHealth && !runtimeHealthTimer && !runtimeHealthInFlight) {
+        scheduleVpnRuntimeHealth();
+      }
     }
   });
 });
