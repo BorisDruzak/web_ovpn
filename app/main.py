@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import time
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -20,7 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .audit import write_audit
 from .api import router as api_router
 from .auth import authenticate_user, csrf_token, current_user, require_user, verify_csrf
-from .auto_sync import force_client_sync, maybe_client_sync
+from .auto_sync import force_client_sync
 from .config import get_settings
 from .db import get_db, init_db
 from .client_batch import ClientBatchInputError, create_batch_zip, parse_batch_client_names, parse_custom_cidrs
@@ -46,6 +47,7 @@ from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_F
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
+from .ui_snapshot_cache import SnapshotCache
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -64,6 +66,7 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(api_router)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+dashboard_snapshot_cache = SnapshotCache()
 
 
 def status_class(value: Any) -> str:
@@ -780,7 +783,7 @@ async def server_draft_cleanup_retry(request: Request, db: Session = Depends(get
 
 def cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
     try:
-        return run_vpnctl(args, timeout=timeout), None
+        return run_vpnctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", ""))), None
     except VpnctlError as exc:
         message = exc.message
         if exc.stderr:
@@ -790,7 +793,7 @@ def cli_call(request: Request, args: list[str], timeout: int | None = None) -> t
 
 def net_cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
     try:
-        return run_netctl(args, timeout=timeout), None
+        return run_netctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", ""))), None
     except NetctlError as exc:
         message = exc.message
         if exc.stderr:
@@ -851,26 +854,47 @@ async def logout(request: Request, db: Session = Depends(get_db)):
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
-    status, status_error = cli_call(request, ["status"])
-    clients_data, clients_error = cli_call(request, ["list"])
-    connected_data, connected_error = cli_call(request, ["connected"])
-    errors = [err for err in [status_error, clients_error, connected_error] if err]
-    clients = list_from(clients_data, "clients")
-    connected = list_from(connected_data, "connected")
-    return render(
-        request,
-        "dashboard.html",
-        {"status": status, "clients_count": len(clients), "connected_count": len(connected), "errors": errors},
-        db,
+    return render(request, "dashboard.html", {}, db)
+
+
+def collect_dashboard_summary(request_id: str = "") -> dict[str, Any]:
+    result = run_vpnctl(["web-summary"], timeout=5, request_id=request_id)
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    return {
+        "openvpn": str(data.get("openvpn") or "unknown"),
+        "nat": str(data.get("nat") or "unknown"),
+        "clients_count": int(data.get("clients_count") or 0),
+        "connected_count": int(data.get("connected_count") or 0),
+    }
+
+
+@app.get("/dashboard/data")
+def dashboard_data(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    started = time.monotonic()
+    snapshot = dashboard_snapshot_cache.get(
+        "dashboard",
+        5,
+        lambda: collect_dashboard_summary(str(getattr(request.state, "request_id", ""))),
     )
+    response = JSONResponse(
+        {
+            "status": "ok" if not snapshot.errors else "degraded",
+            "generated_at": snapshot.generated_at.isoformat(),
+            "stale": snapshot.stale,
+            "data": snapshot.data,
+            "errors": snapshot.errors,
+        }
+    )
+    response.headers["Server-Timing"] = f"dashboard;dur={(time.monotonic() - started) * 1000:.0f}"
+    return response
 
 
 @app.get("/clients", response_class=HTMLResponse)
 def clients(request: Request, db: Session = Depends(get_db)):
-    user = require_user(request, db)
-    sync_error = maybe_client_sync(db, request, user, "clients page")
-    data, error = cli_call(request, ["list"])
-    profiles_data, _ = cli_call(request, ["profiles"])
+    require_user(request, db)
+    data, error = cli_call(request, ["list"], timeout=5)
+    profiles_data, _ = cli_call(request, ["profiles"], timeout=5)
     rows = list_from(data, "clients")
     query = (request.query_params.get("q") or "").lower()
     profile = request.query_params.get("profile") or ""
@@ -889,7 +913,7 @@ def clients(request: Request, db: Session = Depends(get_db)):
     return render(
         request,
         "clients.html",
-        {"clients": rows, "profiles": profiles_list(profiles_data), "error": error or sync_error},
+        {"clients": rows, "profiles": profiles_list(profiles_data), "error": error},
         db,
     )
 

@@ -2177,8 +2177,12 @@ def connected_clients_from_status_log(include_registry: bool = True) -> List[Dic
 def service_status() -> Dict[str, Any]:
     data: Dict[str, Any] = {}
     for svc_key, svc in [("openvpn", CFG.SERVICE_NAME), ("nat", CFG.NAT_SERVICE)]:
-        proc = run(["systemctl", "is-active", svc], check=False)
-        data[svc_key] = {"service": svc, "active": proc.stdout.strip(), "returncode": proc.returncode}
+        try:
+            proc = run(["systemctl", "is-active", svc], check=False)
+        except FileNotFoundError:
+            data[svc_key] = {"service": svc, "active": "unknown", "returncode": None}
+        else:
+            data[svc_key] = {"service": svc, "active": proc.stdout.strip(), "returncode": proc.returncode}
     return data
 
 
@@ -2799,6 +2803,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("list", help="list registered clients")
 
+    p = sub.add_parser("web-summary", help="read-only dashboard metrics")
+
     p = sub.add_parser("connected", help="show current connected clients")
     p.add_argument("--source", choices=["auto", "management", "status-log"], default="auto")
 
@@ -3041,6 +3047,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"{'client':<28} {'profile':<24} {'status':<10} {'vpn_ip':<14} {'connected':<9}")
                 for r in data["clients"]:
                     print(f"{r['name']:<28} {(r.get('profile') or r.get('detected_profile') or '-'):<24} {r.get('status','-'):<10} {(r.get('vpn_ip') or '-'):<14} {str(r.get('connected')):<9}")
+            return 0
+
+        if args.cmd == "web-summary":
+            services = service_status()
+            clients = list_clients()
+            data = {
+                "status": "ok",
+                "data": {
+                    "openvpn": str(services.get("openvpn", {}).get("active", "unknown")),
+                    "nat": str(services.get("nat", {}).get("active", "unknown")),
+                    "clients_count": len(clients),
+                    "connected_count": sum(bool(client.get("connected")) for client in clients),
+                },
+            }
+            emit(data, args)
             return 0
 
         if args.cmd == "connected":

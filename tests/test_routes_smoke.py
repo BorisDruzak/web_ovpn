@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ def make_fake_vpnctl(path: Path) -> Path:
 import json
 import os
 import sys
+import time
 args = sys.argv[1:]
 cmd = args[1] if args and args[0] == "--json" else args[0]
 log_path = os.environ.get("FAKE_VPNCTL_LOG")
@@ -21,11 +23,16 @@ out_dir = os.environ.get("OUT_DIR") or "/tmp"
 if log_path:
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(args, ensure_ascii=False) + "\\n")
+delay_seconds = float(os.environ.get("FAKE_VPNCTL_DELAY_SECONDS", "0"))
+if delay_seconds:
+    time.sleep(delay_seconds)
 if cmd == "status":
     print(json.dumps({"services": {"openvpn": {"active": "active"}, "nat": {"active": "active"}}, "connected": []}))
 elif cmd == "list":
     dynamic_vpn_ip = os.environ.get("FAKE_DYNAMIC_VPN_IP", "")
     print(json.dumps({"clients": [{"name": "alpha", "profile": "directum", "status": "active", "vpn_ip": None if dynamic_vpn_ip else "192.168.50.10", "connected": bool(dynamic_vpn_ip), "virtual_address": dynamic_vpn_ip}]}))
+elif cmd == "web-summary":
+    print(json.dumps({"status": "ok", "data": {"openvpn": "active", "nat": "active", "clients_count": 1, "connected_count": 0}}))
 elif cmd == "connected":
     print(json.dumps({"connected": [{"common_name": "alpha", "virtual_address": "192.168.50.10", "real_address": "1.2.3.4:1000", "bytes_received": 10, "bytes_sent": 20, "connected_since": "hidden"}]}))
 elif cmd == "server-config":
@@ -127,6 +134,20 @@ def test_login_dashboard_and_clients_smoke(tmp_path, monkeypatch):
         assert clients_page.status_code == 200
         assert "alpha" in clients_page.text
         assert "/clients/alpha/edit" in clients_page.text
+        calls_after_clients_get = [
+            json.loads(line)
+            for line in (tmp_path / "vpnctl-calls.jsonl").read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        assert not any(call[1] == "sync" for call in calls_after_clients_get)
+
+        clients_csrf = clients_page.text.split('name="csrf_token" value="')[1].split('"')[0]
+        sync_response = client.post(
+            "/clients/sync",
+            data={"csrf_token": clients_csrf},
+            follow_redirects=False,
+        )
+        assert sync_response.status_code == 303
 
         networks_page = client.get("/networks")
         assert networks_page.status_code == 200
@@ -154,6 +175,55 @@ def test_login_dashboard_and_clients_smoke(tmp_path, monkeypatch):
             if line
         ]
         assert any(call[1] == "sync" for call in calls)
+
+
+def test_dashboard_initial_html_does_not_call_slow_vpnctl(tmp_path, monkeypatch):
+    fake = make_fake_vpnctl(tmp_path / "vpnctl")
+    log_path = tmp_path / "vpnctl-calls.jsonl"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
+    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
+    monkeypatch.setenv("VPNCTL_PATH", str(fake))
+    monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
+    monkeypatch.setenv("OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("SHARE_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("ARCHIVE_DIR", str(tmp_path))
+    monkeypatch.setenv("FAKE_VPNCTL_LOG", str(log_path))
+    monkeypatch.setenv("FAKE_VPNCTL_DELAY_SECONDS", "1")
+
+    import app.db
+    import app.main
+
+    app.db.reset_engine_cache()
+    importlib.reload(app.main)
+
+    with TestClient(app.main.app) as client:
+        login = client.get("/login")
+        csrf = login.text.split('name="csrf_token" value="')[1].split('"')[0]
+        assert client.post(
+            "/login",
+            data={"username": "admin", "password": "admin-pass", "csrf_token": csrf},
+            follow_redirects=False,
+        ).status_code == 303
+
+        page = client.get("/")
+
+        assert page.status_code == 200
+        assert 'data-dashboard-url="/dashboard/data"' in page.text
+        assert not log_path.exists()
+
+        data = client.get("/dashboard/data")
+        assert data.status_code == 200
+        assert data.json()["data"] == {
+            "openvpn": "active",
+            "nat": "active",
+            "clients_count": 1,
+            "connected_count": 0,
+        }
+
+    with TestClient(app.main.app) as unauthenticated:
+        assert unauthenticated.get("/dashboard/data", follow_redirects=False).status_code == 303
 
 
 def test_clients_page_shows_live_vpn_ip_without_ccd_push(tmp_path, monkeypatch):

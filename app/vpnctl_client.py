@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,14 +28,15 @@ def _timeout_for(args: list[str], timeout: int | None) -> int:
     return 60
 
 
-def run_vpnctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
+def run_vpnctl(args: list[str], timeout: int | None = None, request_id: str = "") -> dict[str, Any]:
     settings = get_settings()
     clean_args = [str(arg) for arg in args if str(arg) != ""]
     command = [settings.vpnctl_path, "--json", *clean_args]
     if settings.vpnctl_use_sudo:
         command = ["sudo", "-n", *command]
 
-    log.info("running vpnctl command: %s", " ".join(command[:3] + clean_args[:2]))
+    command_name = clean_args[0] if clean_args else "unknown"
+    started = time.monotonic()
     try:
         completed = subprocess.run(
             command,
@@ -46,16 +48,20 @@ def run_vpnctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        log.warning("vpnctl command=%s outcome=timeout duration_ms=%d request_id=%s", command_name, (time.monotonic() - started) * 1000, request_id or "-")
         raise VpnctlError(f"vpnctl timeout after {exc.timeout}s", stdout=exc.stdout or "", stderr=exc.stderr or "") from exc
 
     if completed.returncode != 0:
+        log.warning("vpnctl command=%s outcome=error duration_ms=%d request_id=%s", command_name, (time.monotonic() - started) * 1000, request_id or "-")
         message = f"vpnctl {' '.join(clean_args[:2])} failed with code {completed.returncode}"
         raise VpnctlError(message, completed.returncode, completed.stdout, completed.stderr)
 
     try:
         parsed = json.loads(completed.stdout or "{}")
     except json.JSONDecodeError as exc:
+        log.warning("vpnctl command=%s outcome=invalid_json duration_ms=%d request_id=%s", command_name, (time.monotonic() - started) * 1000, request_id or "-")
         raise VpnctlError("vpnctl returned invalid JSON", completed.returncode, completed.stdout, completed.stderr) from exc
+    log.info("vpnctl command=%s outcome=ok duration_ms=%d request_id=%s", command_name, (time.monotonic() - started) * 1000, request_id or "-")
     if not isinstance(parsed, dict):
         return {"result": parsed}
     return parsed

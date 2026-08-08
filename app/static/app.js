@@ -16,6 +16,38 @@ function runtimeHealthValue(value) {
   return "Unknown";
 }
 
+function dashboardStatusClass(value) {
+  const normalized = String(value || "unknown").toLowerCase();
+  if (["active", "connected", "valid", "ok", "true"].includes(normalized)) return "ok";
+  if (["disabled", "warning", "warn", "stale"].includes(normalized)) return "warn";
+  if (["deleted", "revoked", "error", "failed", "inactive", "critical"].includes(normalized)) return "bad";
+  return "muted";
+}
+
+async function loadDashboardData() {
+  const card = document.querySelector("[data-dashboard-url]");
+  if (!card) return;
+  const setValue = (selector, value, badge = false) => {
+    const element = card.querySelector(selector);
+    if (!element) return;
+    element.textContent = String(value);
+    if (badge) element.className = `badge ${dashboardStatusClass(value)}`;
+  };
+  try {
+    const response = await fetch(card.dataset.dashboardUrl, {credentials: "same-origin"});
+    if (!response.ok) throw new Error("dashboard unavailable");
+    const payload = await response.json();
+    const data = payload.data || {};
+    setValue("[data-dashboard-openvpn]", data.openvpn || "unknown", true);
+    setValue("[data-dashboard-nat]", data.nat || "unknown", true);
+    setValue("[data-dashboard-clients]", Number.isFinite(data.clients_count) ? data.clients_count : "-");
+    setValue("[data-dashboard-connected]", Number.isFinite(data.connected_count) ? data.connected_count : "-");
+  } catch (_) {
+    setValue("[data-dashboard-openvpn]", "unavailable", true);
+    setValue("[data-dashboard-nat]", "unavailable", true);
+  }
+}
+
 function runtimeHealthRows(sections) {
   const openvpn = sections.openvpn || {};
   const wireguard = sections.wireguard || {};
@@ -64,17 +96,24 @@ function runtimeHealthMessages(messages) {
   });
 }
 
+let runtimeHealthInFlight = false;
+let runtimeHealthTimer = null;
+
 async function loadVpnRuntimeHealth() {
   const card = document.querySelector("#vpn-runtime-card");
   if (!card) return;
+  if (runtimeHealthInFlight) return;
+  runtimeHealthInFlight = true;
 
   const state = card.querySelector("[data-runtime-health-state]");
   const details = card.querySelector("[data-runtime-health-details]");
   const warnings = card.querySelector("[data-runtime-health-warnings]");
   const errors = card.querySelector("[data-runtime-health-errors]");
 
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 5000);
   try {
-    const response = await fetch("/network/runtime-health", {credentials: "same-origin"});
+    const response = await fetch("/network/runtime-health", {credentials: "same-origin", signal: controller.signal});
     if (!response.ok) throw new Error("runtime status unavailable");
 
     const health = await response.json();
@@ -95,10 +134,23 @@ async function loadVpnRuntimeHealth() {
     warnings.hidden = true;
     errors.replaceChildren();
     errors.hidden = true;
+  } finally {
+    window.clearTimeout(timeout);
+    runtimeHealthInFlight = false;
   }
 }
 
+function scheduleVpnRuntimeHealth() {
+  if (!document.querySelector("#vpn-runtime-card") || document.hidden) return;
+  void loadVpnRuntimeHealth().finally(() => {
+    if (!document.hidden) {
+      runtimeHealthTimer = window.setTimeout(scheduleVpnRuntimeHealth, 30000);
+    }
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  void loadDashboardData();
   const copyButton = document.querySelector("[data-copy-observer-key]");
   const publicKey = document.querySelector("[data-observer-public-key]");
   const copyStatus = document.querySelector("[data-observer-key-status]");
@@ -129,6 +181,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   if (!document.querySelector("#vpn-runtime-card")) return;
-  void loadVpnRuntimeHealth();
-  window.setInterval(loadVpnRuntimeHealth, 30000);
+  scheduleVpnRuntimeHealth();
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (runtimeHealthTimer) window.clearTimeout(runtimeHealthTimer);
+      runtimeHealthTimer = null;
+    } else if (!runtimeHealthTimer && !runtimeHealthInFlight) {
+      scheduleVpnRuntimeHealth();
+    }
+  });
 });

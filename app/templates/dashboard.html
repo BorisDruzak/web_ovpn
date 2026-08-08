@@ -2,36 +2,22 @@
 {% block title %}Панель - OpenVPN Web{% endblock %}
 {% block page_title %}Панель состояния{% endblock %}
 {% block content %}
-{% if errors %}
-<section class="alerts">
-  {% for error in errors %}<div class="alert bad">{{ error }}</div>{% endfor %}
-</section>
-{% endif %}
-
-{% set services = status.get('services', {}) if status else {} %}
-{% set openvpn_service = services.get('openvpn', {}) %}
-{% set nat_service = services.get('nat', {}) %}
-
-<section class="metrics">
+<section class="metrics" data-dashboard-url="/dashboard/data">
   <article class="metric">
     <span>OpenVPN</span>
-    <strong class="badge {{ openvpn_service.get('active', 'unknown')|status_class }}">
-      {{ openvpn_service.get('active', 'unknown') }}
-    </strong>
+    <strong class="badge muted" data-dashboard-openvpn>Loading...</strong>
   </article>
   <article class="metric">
     <span>NAT</span>
-    <strong class="badge {{ nat_service.get('active', 'unknown')|status_class }}">
-      {{ nat_service.get('active', 'unknown') }}
-    </strong>
+    <strong class="badge muted" data-dashboard-nat>Loading...</strong>
   </article>
   <article class="metric">
     <span>Клиенты</span>
-    <strong>{{ clients_count }}</strong>
+    <strong data-dashboard-clients>Loading...</strong>
   </article>
   <article class="metric">
     <span>Подключено сейчас</span>
-    <strong>{{ connected_count }}</strong>
+    <strong data-dashboard-connected>Loading...</strong>
   </article>
 </section>
 

@@ -258,6 +258,45 @@ def test_connected_fallback_when_management_unavailable(tmp_path):
     assert data["connected"][0]["common_name"] == "alpha"
 
 
+def test_web_summary_returns_only_dashboard_metrics(tmp_path):
+    systemctl_py = tmp_path / "systemctl.py"
+    systemctl_py.write_text(
+        """import sys
+service = sys.argv[-1]
+if service == 'openvpn-server@server':
+    print('active')
+    raise SystemExit(0)
+print('inactive')
+raise SystemExit(3)
+""",
+        encoding="utf-8",
+    )
+    systemctl_cmd = tmp_path / "systemctl.cmd"
+    systemctl_cmd.write_text(f'@echo off\r\n"{sys.executable}" "{systemctl_py}" %*\r\n', encoding="utf-8")
+    env = vpnctl_env(tmp_path)
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
+
+    proc = subprocess.run(
+        [sys.executable, str(VPNCTL), "--json", "web-summary"],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json_out(proc) == {
+        "status": "ok",
+        "data": {
+            "openvpn": "unknown",
+            "nat": "unknown",
+            "clients_count": 0,
+            "connected_count": 0,
+        },
+    }
+
+
 def test_management_kill_command(tmp_path):
     if not hasattr(socket, "AF_UNIX"):
         pytest.skip("Unix domain sockets are not available on this Python build")
