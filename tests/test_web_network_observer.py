@@ -396,8 +396,11 @@ def test_network_dashboard_contains_runtime_health_card_and_polling(tmp_path, mo
     assert "VPN Runtime" in page.text
 
     script = (Path(__file__).resolve().parents[1] / "app" / "static" / "app.js").read_text(encoding="utf-8")
-    assert 'fetch("/network/runtime-health", {credentials: "same-origin"})' in script
-    assert "setInterval(loadVpnRuntimeHealth, 30000)" in script
+    assert 'fetch("/network/runtime-health", {credentials: "same-origin", signal: controller.signal})' in script
+    assert "function scheduleVpnRuntimeHealth" in script
+    assert "AbortController" in script
+    assert "document.hidden" in script
+    assert "setInterval(loadVpnRuntimeHealth, 30000)" not in script
     assert "function runtimeHealthRows" in script
     assert "innerHTML" not in script
 
