@@ -105,6 +105,18 @@ def _rows(results: tuple[CapabilityResult, ...]) -> tuple[SnmpVarBind, ...]:
     return tuple(row for result in results for row in result.rows)
 
 
+def _column_ifindexes(
+    result: CapabilityResult, base: tuple[int, ...]
+) -> set[int]:
+    return {
+        int(row.oid[-1])
+        for row in result.rows
+        if row.oid[: len(base)] == base
+        and len(row.oid) == len(base) + 1
+        and row.oid[-1] > 0
+    }
+
+
 def _final_fdb_result(
     outcome: SnmpOutcome,
     *,
@@ -566,29 +578,34 @@ async def collect_switch_snapshot(
         await transport.walk(IF_HC_OUT_OCTETS, capability="if_hc_out_octets"),
     )
     capabilities.extend(hc_octet_results)
-    octet_results = hc_octet_results
-    octet_counter_bits = 64
-    if (
+    port_ifindexes = {
+        int(port.if_index) for port in ports if port.if_index is not None
+    }
+    hc_pair_ifindexes = _column_ifindexes(
+        hc_octet_results[0], IF_HC_IN_OCTETS
+    ) & _column_ifindexes(hc_octet_results[1], IF_HC_OUT_OCTETS)
+    fallback_octet_results: tuple[CapabilityResult, ...] = ()
+    hc_fallback_eligible = all(
+        result.outcome
+        in {
+            SnmpOutcome.SUCCESS_WITH_ROWS,
+            SnmpOutcome.SUCCESS_EMPTY,
+            SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+        }
+        for result in hc_octet_results
+    )
+    if hc_fallback_eligible and (
         any(
             result.outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
             for result in hc_octet_results
         )
-        and all(
-            result.outcome
-            in {
-                SnmpOutcome.SUCCESS_WITH_ROWS,
-                SnmpOutcome.SUCCESS_EMPTY,
-                SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
-            }
-            for result in hc_octet_results
-        )
+        or bool(port_ifindexes - hc_pair_ifindexes)
     ):
-        octet_results = (
+        fallback_octet_results = (
             await transport.walk(IF_IN_OCTETS, capability="if_in_octets"),
             await transport.walk(IF_OUT_OCTETS, capability="if_out_octets"),
         )
-        octet_counter_bits = 32
-        capabilities.extend(octet_results)
+        capabilities.extend(fallback_octet_results)
     counter_detail_results = (
         await transport.walk(IF_IN_ERRORS, capability="if_in_errors"),
         await transport.walk(IF_OUT_ERRORS, capability="if_out_errors"),
@@ -596,15 +613,38 @@ async def collect_switch_snapshot(
         await transport.walk(IF_OUT_DISCARDS, capability="if_out_discards"),
     )
     capabilities.extend(counter_detail_results)
-    selected_counter_results = (*octet_results, *counter_detail_results)
     counter_failure = next(
         (
             result
-            for result in selected_counter_results
+            for result in counter_detail_results
             if result.outcome not in _USABLE_REQUIRED_OUTCOMES
         ),
         None,
     )
+    usable_fallback_results: tuple[CapabilityResult, ...] = ()
+    if counter_failure is None:
+        if fallback_octet_results:
+            fallback_failure = next(
+                (
+                    result
+                    for result in fallback_octet_results
+                    if result.outcome not in _USABLE_REQUIRED_OUTCOMES
+                ),
+                None,
+            )
+            if fallback_failure is None:
+                usable_fallback_results = fallback_octet_results
+            elif not (port_ifindexes & hc_pair_ifindexes):
+                counter_failure = fallback_failure
+        else:
+            counter_failure = next(
+                (
+                    result
+                    for result in hc_octet_results
+                    if result.outcome not in _USABLE_REQUIRED_OUTCOMES
+                ),
+                None,
+            )
     counter_samples = ()
     if counter_failure is not None:
         counter_group = _optional_group_result(
@@ -616,10 +656,17 @@ async def collect_switch_snapshot(
     else:
         try:
             counter_samples = parse_counter_samples(
-                *selected_counter_results,
+                *hc_octet_results,
+                *counter_detail_results,
                 ports=ports,
                 sys_uptime_ticks=system.sys_uptime_ticks,
-                octet_counter_bits=octet_counter_bits,
+                octet_counter_bits=64,
+                fallback_in_octets=(
+                    usable_fallback_results[0] if usable_fallback_results else None
+                ),
+                fallback_out_octets=(
+                    usable_fallback_results[1] if usable_fallback_results else None
+                ),
             )
         except ValueError:
             counter_samples = ()

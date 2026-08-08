@@ -15,7 +15,6 @@ _SWITCH_CURRENT_TABLES = (
     "current_switch_lldp_neighbors",
     "current_switch_port_telemetry",
 )
-_SWITCH_HISTORY_TABLES = ("switch_port_counter_samples",)
 _PATH_CURRENT_TABLES = (
     "router_filter_rules",
     "router_nat_rules",
@@ -75,11 +74,23 @@ def _current_run_ids(conn: sqlite3.Connection, tables: tuple[str, ...], column: 
     return protected
 
 
-def protected_switch_run_ids(conn: sqlite3.Connection) -> set[int]:
+def protected_switch_run_ids(
+    conn: sqlite3.Connection,
+    *,
+    excluded_counter_sample_ids: set[int] | None = None,
+) -> set[int]:
     """Return switch collection runs still needed by current state or recovery."""
+    excluded = excluded_counter_sample_ids or set()
+    counter_sample_run_ids = {
+        int(row[1])
+        for row in conn.execute(
+            "SELECT id, collector_run_id FROM switch_port_counter_samples"
+        )
+        if row[1] is not None and int(row[0]) not in excluded
+    }
     return (
         _current_run_ids(conn, _SWITCH_CURRENT_TABLES, "collector_run_id")
-        | _current_run_ids(conn, _SWITCH_HISTORY_TABLES, "collector_run_id")
+        | counter_sample_run_ids
         | _latest_run_ids(
             conn, "switch_collection_runs", "source_id", ("success", "partial")
         )
@@ -168,14 +179,15 @@ def retention_report(
     """Return deterministic candidate and protection counts without changing the database."""
     cutoff = _validate_cutoff(cutoff)
     reference_time = _retention_reference(reference_time)
-    switch_protected = protected_switch_run_ids(conn)
+    counter_sample_ids = _counter_sample_ids(conn, reference_time)
+    switch_protected = protected_switch_run_ids(
+        conn, excluded_counter_sample_ids=set(counter_sample_ids)
+    )
     correlation_protected = protected_correlation_run_ids(conn)
     path_protected = protected_path_fact_run_ids(conn)
     availability_protected = protected_availability_run_ids(conn)
     delete = {table: len(_old_ids(conn, table, column, cutoff)) for table, column in _EVENT_TABLES}
-    delete["switch_port_counter_samples"] = len(
-        _counter_sample_ids(conn, reference_time)
-    )
+    delete["switch_port_counter_samples"] = len(counter_sample_ids)
     delete.update(
         {
             "ip_observations": int(conn.execute(

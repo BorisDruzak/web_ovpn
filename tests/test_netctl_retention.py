@@ -208,6 +208,35 @@ def test_counter_retention_uses_source_setting_and_keeps_current_telemetry(conn)
     ).fetchone()[0] == "ok"
 
 
+def test_counter_retention_dry_run_excludes_expired_sample_run_references(conn):
+    from netctl.retention import apply_retention, retention_report
+
+    conn.execute(
+        "UPDATE network_sources SET driver_options_json = ? WHERE id = 1",
+        ('{"counter_retention_days":14}',),
+    )
+    conn.execute(
+        """INSERT INTO switch_port_counter_samples (
+               source_id, collector_run_id, port_key, if_index, observed_at,
+               sys_uptime_ticks, octet_counter_bits, in_octets, out_octets
+           ) VALUES (1, 11, 'ether1', 1, ?, 1000, 64, '100', '200')""",
+        (OLD,),
+    )
+    conn.commit()
+
+    report = retention_report(conn, CUTOFF, reference_time=NEW)
+
+    assert report["delete"]["switch_port_counter_samples"] == 1
+    assert report["delete"]["switch_collection_runs"] == 1
+    assert ids(conn, "switch_port_counter_samples")
+    assert 11 in ids(conn, "switch_collection_runs")
+
+    result = apply_retention(conn, CUTOFF, reference_time=NEW)
+
+    assert result["deleted"]["switch_port_counter_samples"] == 1
+    assert result["deleted"]["switch_collection_runs"] == 1
+
+
 def test_retention_rolls_back_all_deletes_when_the_second_delete_fails(conn):
     """Committing each family separately would leave FDB events deleted after a later failure."""
     from netctl.retention import apply_retention

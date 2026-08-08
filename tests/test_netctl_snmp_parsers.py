@@ -206,6 +206,95 @@ def test_collector_falls_back_to_32_bit_octets_when_hc_is_unsupported() -> None:
     ]
 
 
+def test_collector_selects_32_bit_octet_fallback_per_missing_hc_port() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    transport = _FixtureTransport(
+        {
+            SYS_UPTIME: _result(
+                "sys_uptime", _vb(SYS_UPTIME, 5_000, "time_ticks")
+            ),
+            IF_INDEX: _result(
+                "if_index",
+                _vb(IF_INDEX + (7,), 7),
+                _vb(IF_INDEX + (8,), 8),
+            ),
+            IF_HC_IN_OCTETS: _result(
+                "if_hc_in_octets",
+                _vb(IF_HC_IN_OCTETS + (7,), 9_000_000_000, "counter64"),
+            ),
+            IF_HC_OUT_OCTETS: _result(
+                "if_hc_out_octets",
+                _vb(IF_HC_OUT_OCTETS + (7,), 8_000_000_000, "counter64"),
+            ),
+            IF_IN_OCTETS: _result(
+                "if_in_octets",
+                _vb(IF_IN_OCTETS + (8,), 3_000, "counter32"),
+            ),
+            IF_OUT_OCTETS: _result(
+                "if_out_octets",
+                _vb(IF_OUT_OCTETS + (8,), 4_000, "counter32"),
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert IF_IN_OCTETS in transport.walked
+    assert IF_OUT_OCTETS in transport.walked
+    assert [
+        (sample.if_index, sample.in_octets, sample.out_octets, sample.octet_counter_bits)
+        for sample in snapshot.counter_samples
+    ] == [
+        (7, 9_000_000_000, 8_000_000_000, 64),
+        (8, 3_000, 4_000, 32),
+    ]
+
+
+def test_collector_keeps_valid_hc_port_when_missing_port_fallback_fails() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    transport = _FixtureTransport(
+        {
+            IF_INDEX: _result(
+                "if_index",
+                _vb(IF_INDEX + (7,), 7),
+                _vb(IF_INDEX + (8,), 8),
+            ),
+            IF_HC_IN_OCTETS: _result(
+                "if_hc_in_octets",
+                _vb(IF_HC_IN_OCTETS + (7,), 9_000_000_000, "counter64"),
+            ),
+            IF_HC_OUT_OCTETS: _result(
+                "if_hc_out_octets",
+                _vb(IF_HC_OUT_OCTETS + (7,), 8_000_000_000, "counter64"),
+            ),
+            IF_IN_OCTETS: _result(
+                "if_in_octets", outcome=SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
+            ),
+            IF_OUT_OCTETS: _result(
+                "if_out_octets", outcome=SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
+            ),
+            IF_IN_ERRORS: _result(
+                "if_in_errors", _vb(IF_IN_ERRORS + (8,), 3, "counter32")
+            ),
+            IF_OUT_ERRORS: _result(
+                "if_out_errors", _vb(IF_OUT_ERRORS + (8,), 4, "counter32")
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert [
+        (sample.if_index, sample.in_octets, sample.out_octets)
+        for sample in snapshot.counter_samples
+    ] == [(7, 9_000_000_000, 8_000_000_000)]
+    assert next(
+        item for item in snapshot.capabilities if item.capability == "counter_samples"
+    ).outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+
+
 def test_interfaces_join_if_table_ifx_table_and_bridge_map() -> None:
     from netctl.snmp.interfaces import parse_bridge_port_map, parse_interfaces
 

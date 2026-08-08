@@ -185,6 +185,7 @@ def _snapshot(
 
 def _counter_sample(
     *,
+    port: int = 1,
     uptime: int = 10_000,
     in_octets: int = 2_000,
     out_octets: int = 4_000,
@@ -195,8 +196,8 @@ def _counter_sample(
     bits: int = 64,
 ) -> SwitchCounterSample:
     return SwitchCounterSample(
-        port_key="ifindex:1",
-        if_index=1,
+        port_key=f"ifindex:{port}",
+        if_index=port,
         sys_uptime_ticks=uptime,
         in_errors=in_errors,
         in_discards=in_discards,
@@ -491,6 +492,71 @@ def test_counter_samples_are_persisted_and_current_rates_are_derived(
     assert current["in_discards_delta"] == 3
     assert current["out_discards_delta"] == 6
     assert current["telemetry_state"] == "ok"
+
+
+def test_successful_counter_snapshot_marks_an_omitted_port_unsupported(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch-telemetry-missing-port")
+    base = _snapshot(
+        (
+            _entry("02:00:00:00:00:01", 1),
+            _entry("02:00:00:00:00:02", 2),
+        )
+    )
+    first = replace(
+        _with_counter_sample(base, _counter_sample(port=1, in_octets=1_000)),
+        counter_samples=(
+            _counter_sample(port=1, in_octets=1_000),
+            _counter_sample(port=2, in_octets=2_000),
+        ),
+    )
+    second = replace(
+        _with_counter_sample(base, _counter_sample(port=1, in_octets=2_000)),
+        counter_samples=(
+            _counter_sample(port=1, in_octets=2_000),
+            _counter_sample(port=2, in_octets=3_000),
+        ),
+    )
+    third = _with_counter_sample(
+        base,
+        _counter_sample(port=1, in_octets=3_000),
+    )
+
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(first), "2026-08-09T10:00:00Z"
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(second), "2026-08-09T10:00:10Z"
+    )
+    result = collect_and_save_switch(
+        switch_conn, source, _FakeDriver(third), "2026-08-09T10:00:20Z"
+    )
+    current = [
+        dict(row)
+        for row in switch_conn.execute(
+            """SELECT port_key, collector_run_id, telemetry_state
+               FROM current_switch_port_telemetry
+               WHERE source_id = ? ORDER BY port_key""",
+            (source["id"],),
+        )
+    ]
+
+    assert result["status"] == "success"
+    assert current == [
+        {
+            "port_key": "ifindex:1",
+            "collector_run_id": result["run_id"],
+            "telemetry_state": "ok",
+        },
+        {
+            "port_key": "ifindex:2",
+            "collector_run_id": result["run_id"],
+            "telemetry_state": "unsupported",
+        },
+    ]
 
 
 def test_counter_timeout_is_partial_and_does_not_destroy_fdb(

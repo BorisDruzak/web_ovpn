@@ -1304,19 +1304,19 @@ def _persist_counter_telemetry(
     )
     if capability is None:
         return
+    unsupported = {
+        "sample_interval_seconds": None,
+        "rx_bps": None,
+        "tx_bps": None,
+        "rx_utilization_pct": None,
+        "tx_utilization_pct": None,
+        "in_errors_delta": None,
+        "out_errors_delta": None,
+        "in_discards_delta": None,
+        "out_discards_delta": None,
+        "telemetry_state": "unsupported",
+    }
     if capability.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
-        unsupported = {
-            "sample_interval_seconds": None,
-            "rx_bps": None,
-            "tx_bps": None,
-            "rx_utilization_pct": None,
-            "tx_utilization_pct": None,
-            "in_errors_delta": None,
-            "out_errors_delta": None,
-            "in_discards_delta": None,
-            "out_discards_delta": None,
-            "telemetry_state": "unsupported",
-        }
         for port in snapshot.ports:
             _upsert_telemetry_row(
                 conn,
@@ -1330,7 +1330,9 @@ def _persist_counter_telemetry(
 
     speeds = {port.port_key: port.speed_bps for port in snapshot.ports}
     observed_time = _parse_started_at(observed_at)
+    sampled_port_keys: set[str] = set()
     for sample in snapshot.counter_samples:
+        sampled_port_keys.add(sample.port_key)
         previous_row = conn.execute(
             """
             SELECT * FROM switch_port_counter_samples
@@ -1383,6 +1385,16 @@ def _persist_counter_telemetry(
             observed_at=observed_at,
             telemetry=telemetry,
         )
+    for port in snapshot.ports:
+        if port.port_key not in sampled_port_keys:
+            _upsert_telemetry_row(
+                conn,
+                source_id=source_id,
+                port_key=port.port_key,
+                run_id=run_id,
+                observed_at=observed_at,
+                telemetry=unsupported,
+            )
 
 
 def _insert_fdb_event(
