@@ -1774,6 +1774,77 @@ def _migration_19(conn: sqlite3.Connection) -> bool | None:
             conn.execute(statement)
 
 
+def _migration_20(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE switch_port_counter_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            collector_run_id INTEGER NOT NULL,
+            port_key TEXT NOT NULL,
+            if_index INTEGER,
+            observed_at TEXT NOT NULL,
+            sys_uptime_ticks INTEGER,
+            octet_counter_bits INTEGER CHECK (octet_counter_bits IN (32, 64)),
+            in_octets TEXT,
+            out_octets TEXT,
+            in_errors INTEGER,
+            out_errors INTEGER,
+            in_discards INTEGER,
+            out_discards INTEGER,
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_port_counter_samples_source_port_time_idx
+        ON switch_port_counter_samples(source_id, port_key, observed_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX switch_port_counter_samples_observed_idx
+        ON switch_port_counter_samples(observed_at, id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE current_switch_port_telemetry (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            port_key TEXT NOT NULL,
+            collector_run_id INTEGER NOT NULL,
+            observed_at TEXT NOT NULL,
+            sample_interval_seconds REAL,
+            rx_bps REAL,
+            tx_bps REAL,
+            rx_utilization_pct REAL,
+            tx_utilization_pct REAL,
+            in_errors_delta INTEGER,
+            out_errors_delta INTEGER,
+            in_discards_delta INTEGER,
+            out_discards_delta INTEGER,
+            telemetry_state TEXT NOT NULL CHECK (telemetry_state IN (
+                'ok', 'insufficient_history', 'counter_reset',
+                'unsupported', 'invalid_sample'
+            )),
+            PRIMARY KEY(source_id, port_key),
+            FOREIGN KEY(source_id, port_key)
+                REFERENCES switch_ports(source_id, port_key) ON DELETE RESTRICT,
+            FOREIGN KEY(collector_run_id, source_id)
+                REFERENCES switch_collection_runs(id, source_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_port_telemetry_run_source_idx
+        ON current_switch_port_telemetry(collector_run_id, source_id)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1794,6 +1865,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (17, _migration_17),
     (18, _migration_18),
     (19, _migration_19),
+    (20, _migration_20),
 )
 
 

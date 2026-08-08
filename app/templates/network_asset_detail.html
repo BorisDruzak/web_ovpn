@@ -50,6 +50,18 @@
     <dt>Коммутатор</dt><dd>{{ (attachment.get("switch") or {}).get("name") or "-" }}</dd>
     <dt>Порт</dt><dd>{{ (attachment.get("port") or {}).get("alias") or (attachment.get("port") or {}).get("name") or "-" }}</dd>
     {% if (attachment.get("vlan_membership") or {}).get("vlan_id") is not none %}<dt>VLAN</dt><dd>VLAN {{ attachment.get("vlan_membership").get("vlan_id") }}</dd>{% endif %}
+    {% set telemetry = ((attachment.get("port") or {}).get("telemetry") or {}) %}
+    {% if telemetry %}
+    <dt>Port speed</dt><dd>{{ telemetry.get("speed_bps") if telemetry.get("speed_bps") is not none else "-" }}{% if telemetry.get("speed_bps") is not none %} bps{% endif %}</dd>
+    <dt>RX</dt><dd>{{ telemetry.get("rx_bps") if telemetry.get("rx_bps") is not none else "-" }}{% if telemetry.get("rx_bps") is not none %} bps{% endif %}</dd>
+    <dt>TX</dt><dd>{{ telemetry.get("tx_bps") if telemetry.get("tx_bps") is not none else "-" }}{% if telemetry.get("tx_bps") is not none %} bps{% endif %}</dd>
+    <dt>RX utilization</dt><dd>{{ telemetry.get("rx_utilization_pct") if telemetry.get("rx_utilization_pct") is not none else "-" }}{% if telemetry.get("rx_utilization_pct") is not none %}%{% endif %}</dd>
+    <dt>TX utilization</dt><dd>{{ telemetry.get("tx_utilization_pct") if telemetry.get("tx_utilization_pct") is not none else "-" }}{% if telemetry.get("tx_utilization_pct") is not none %}%{% endif %}</dd>
+    <dt>Errors Δ</dt><dd>RX {{ telemetry.get("in_errors_delta") if telemetry.get("in_errors_delta") is not none else "-" }} · TX {{ telemetry.get("out_errors_delta") if telemetry.get("out_errors_delta") is not none else "-" }}</dd>
+    <dt>Discards Δ</dt><dd>RX {{ telemetry.get("in_discards_delta") if telemetry.get("in_discards_delta") is not none else "-" }} · TX {{ telemetry.get("out_discards_delta") if telemetry.get("out_discards_delta") is not none else "-" }}</dd>
+    <dt>Telemetry state</dt><dd>{{ telemetry.get("telemetry_state") or "-" }}</dd>
+    <dt>Last sample</dt><dd>{{ telemetry.get("observed_at") or "-" }}</dd>
+    {% endif %}
   </dl>
   {% set peers = attachment.get("port_peers") or {} %}
   {% if peers.get("items") %}

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Iterable
+
+from .config import normalize_snmp_driver_options
 
 
 _SWITCH_CURRENT_TABLES = (
@@ -10,7 +13,9 @@ _SWITCH_CURRENT_TABLES = (
     "current_switch_fdb",
     "current_switch_vlan_memberships",
     "current_switch_lldp_neighbors",
+    "current_switch_port_telemetry",
 )
+_SWITCH_HISTORY_TABLES = ("switch_port_counter_samples",)
 _PATH_CURRENT_TABLES = (
     "router_filter_rules",
     "router_nat_rules",
@@ -72,8 +77,12 @@ def _current_run_ids(conn: sqlite3.Connection, tables: tuple[str, ...], column: 
 
 def protected_switch_run_ids(conn: sqlite3.Connection) -> set[int]:
     """Return switch collection runs still needed by current state or recovery."""
-    return _current_run_ids(conn, _SWITCH_CURRENT_TABLES, "collector_run_id") | _latest_run_ids(
-        conn, "switch_collection_runs", "source_id", ("success", "partial")
+    return (
+        _current_run_ids(conn, _SWITCH_CURRENT_TABLES, "collector_run_id")
+        | _current_run_ids(conn, _SWITCH_HISTORY_TABLES, "collector_run_id")
+        | _latest_run_ids(
+            conn, "switch_collection_runs", "source_id", ("success", "partial")
+        )
     )
 
 
@@ -113,14 +122,60 @@ def _count_current_references(conn: sqlite3.Connection, tables: tuple[str, ...],
     return len(_current_run_ids(conn, tables, column))
 
 
-def retention_report(conn: sqlite3.Connection, cutoff: str) -> dict[str, dict[str, int]]:
+def _counter_sample_ids(
+    conn: sqlite3.Connection, reference_time: str
+) -> list[int]:
+    reference = datetime.fromisoformat(reference_time.replace("Z", "+00:00"))
+    expired: list[int] = []
+    for row in conn.execute(
+        """SELECT id, driver_options_json FROM network_sources
+           WHERE driver = 'snmp_switch' ORDER BY id"""
+    ):
+        try:
+            raw_options = json.loads(str(row["driver_options_json"] or "{}"))
+            if not isinstance(raw_options, dict):
+                raise ValueError("stored SNMP options are not a mapping")
+            options = normalize_snmp_driver_options(raw_options)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ValueError("invalid stored SNMP retention settings") from None
+        source_cutoff = (
+            reference - timedelta(days=int(options["counter_retention_days"]))
+        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        expired.extend(
+            int(item[0])
+            for item in conn.execute(
+                """SELECT id FROM switch_port_counter_samples
+                   WHERE source_id = ? AND observed_at < ?""",
+                (int(row["id"]), source_cutoff),
+            )
+        )
+    return sorted(expired)
+
+
+def _retention_reference(value: str | None) -> str:
+    if value is None:
+        return datetime.now(UTC).replace(microsecond=0).isoformat().replace(
+            "+00:00", "Z"
+        )
+    return _validate_cutoff(value)
+
+
+def retention_report(
+    conn: sqlite3.Connection,
+    cutoff: str,
+    reference_time: str | None = None,
+) -> dict[str, dict[str, int]]:
     """Return deterministic candidate and protection counts without changing the database."""
     cutoff = _validate_cutoff(cutoff)
+    reference_time = _retention_reference(reference_time)
     switch_protected = protected_switch_run_ids(conn)
     correlation_protected = protected_correlation_run_ids(conn)
     path_protected = protected_path_fact_run_ids(conn)
     availability_protected = protected_availability_run_ids(conn)
     delete = {table: len(_old_ids(conn, table, column, cutoff)) for table, column in _EVENT_TABLES}
+    delete["switch_port_counter_samples"] = len(
+        _counter_sample_ids(conn, reference_time)
+    )
     delete.update(
         {
             "ip_observations": int(conn.execute(
@@ -167,13 +222,25 @@ def _verify_database(conn: sqlite3.Connection) -> None:
         raise RuntimeError("retention_failed")
 
 
-def apply_retention(conn: sqlite3.Connection, cutoff: str) -> dict[str, object]:
+def apply_retention(
+    conn: sqlite3.Connection,
+    cutoff: str,
+    reference_time: str | None = None,
+) -> dict[str, object]:
     """Prune expired history atomically, preserving state and last successful recovery runs."""
     cutoff = _validate_cutoff(cutoff)
+    reference_time = _retention_reference(reference_time)
     conn.execute("BEGIN IMMEDIATE")
     try:
-        report = retention_report(conn, cutoff)
+        report = retention_report(
+            conn, cutoff, reference_time=reference_time
+        )
         deleted: dict[str, int] = {}
+        deleted["switch_port_counter_samples"] = _delete_ids(
+            conn,
+            "switch_port_counter_samples",
+            _counter_sample_ids(conn, reference_time),
+        )
         for table, timestamp_column in _EVENT_TABLES:
             deleted[table] = _delete_ids(conn, table, _old_ids(conn, table, timestamp_column, cutoff))
         deleted["ip_observations"] = int(conn.execute(

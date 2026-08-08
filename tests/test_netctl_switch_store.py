@@ -10,6 +10,7 @@ import pytest
 from netctl.db import connect, ensure_schema, get_source, upsert_source
 from netctl.snmp.models import (
     CapabilityResult,
+    SwitchCounterSample,
     SwitchFdbEntry,
     SwitchPort,
     SwitchSnapshot,
@@ -182,6 +183,170 @@ def _snapshot(
     )
 
 
+def _counter_sample(
+    *,
+    uptime: int = 10_000,
+    in_octets: int = 2_000,
+    out_octets: int = 4_000,
+    in_errors: int = 3,
+    out_errors: int = 5,
+    in_discards: int = 7,
+    out_discards: int = 11,
+    bits: int = 64,
+) -> SwitchCounterSample:
+    return SwitchCounterSample(
+        port_key="ifindex:1",
+        if_index=1,
+        sys_uptime_ticks=uptime,
+        in_errors=in_errors,
+        in_discards=in_discards,
+        out_errors=out_errors,
+        out_discards=out_discards,
+        in_octets=in_octets,
+        out_octets=out_octets,
+        octet_counter_bits=bits,
+    )
+
+
+def test_first_counter_sample_has_insufficient_history() -> None:
+    from netctl.switch_telemetry import derive_port_telemetry
+
+    assert derive_port_telemetry(
+        _counter_sample(), None, elapsed_seconds=None, port_speed_bps=10_000
+    ) == {
+        "sample_interval_seconds": None,
+        "rx_bps": None,
+        "tx_bps": None,
+        "rx_utilization_pct": None,
+        "tx_utilization_pct": None,
+        "in_errors_delta": None,
+        "out_errors_delta": None,
+        "in_discards_delta": None,
+        "out_discards_delta": None,
+        "telemetry_state": "insufficient_history",
+    }
+
+
+def test_normal_64_bit_delta_calculates_rates_and_utilization() -> None:
+    from netctl.switch_telemetry import derive_port_telemetry
+
+    telemetry = derive_port_telemetry(
+        _counter_sample(in_octets=2_000, out_octets=4_000),
+        _counter_sample(
+            uptime=9_000,
+            in_octets=1_000,
+            out_octets=2_000,
+            in_errors=2,
+            out_errors=3,
+            in_discards=4,
+            out_discards=5,
+        ),
+        elapsed_seconds=10.0,
+        port_speed_bps=10_000,
+    )
+
+    assert telemetry == {
+        "sample_interval_seconds": 10.0,
+        "rx_bps": 800.0,
+        "tx_bps": 1_600.0,
+        "rx_utilization_pct": 8.0,
+        "tx_utilization_pct": 16.0,
+        "in_errors_delta": 1,
+        "out_errors_delta": 2,
+        "in_discards_delta": 3,
+        "out_discards_delta": 6,
+        "telemetry_state": "ok",
+    }
+
+
+@pytest.mark.parametrize(
+    ("previous", "expected_state"),
+    [
+        (_counter_sample(uptime=11_000, in_octets=1_000), "counter_reset"),
+        (_counter_sample(uptime=9_000, in_octets=3_000), "counter_reset"),
+    ],
+)
+def test_reboot_or_decreasing_64_bit_counter_never_produces_a_rate(
+    previous: SwitchCounterSample, expected_state: str
+) -> None:
+    from netctl.switch_telemetry import derive_port_telemetry
+
+    telemetry = derive_port_telemetry(
+        _counter_sample(uptime=10_000, in_octets=2_000),
+        previous,
+        elapsed_seconds=10.0,
+        port_speed_bps=10_000,
+    )
+
+    assert telemetry["telemetry_state"] == expected_state
+    assert telemetry["rx_bps"] is None
+    assert telemetry["tx_bps"] is None
+
+
+def test_valid_32_bit_wrap_is_accepted_when_physically_plausible() -> None:
+    from netctl.switch_telemetry import derive_port_telemetry
+
+    telemetry = derive_port_telemetry(
+        _counter_sample(bits=32, in_octets=1_000, out_octets=200),
+        _counter_sample(
+            bits=32,
+            uptime=9_900,
+            in_octets=4_294_967_200,
+            out_octets=100,
+            in_errors=3,
+            out_errors=5,
+            in_discards=7,
+            out_discards=11,
+        ),
+        elapsed_seconds=1.0,
+        port_speed_bps=10_000,
+    )
+
+    assert telemetry["telemetry_state"] == "ok"
+    assert telemetry["rx_bps"] == 8_768.0
+    assert telemetry["rx_utilization_pct"] == 87.68
+
+
+def test_physically_impossible_32_bit_wrap_is_invalid_not_clamped() -> None:
+    from netctl.switch_telemetry import derive_port_telemetry
+
+    telemetry = derive_port_telemetry(
+        _counter_sample(bits=32, in_octets=1_000),
+        _counter_sample(bits=32, uptime=9_900, in_octets=4_294_967_200),
+        elapsed_seconds=1.0,
+        port_speed_bps=1_000,
+    )
+
+    assert telemetry["telemetry_state"] == "invalid_sample"
+    assert telemetry["rx_bps"] is None
+    assert telemetry["rx_utilization_pct"] is None
+
+
+def test_unknown_port_speed_keeps_rates_without_utilization() -> None:
+    from netctl.switch_telemetry import derive_port_telemetry
+
+    telemetry = derive_port_telemetry(
+        _counter_sample(),
+        _counter_sample(
+            uptime=9_000,
+            in_octets=1_000,
+            out_octets=2_000,
+            in_errors=2,
+            out_errors=3,
+            in_discards=4,
+            out_discards=5,
+        ),
+        elapsed_seconds=10.0,
+        port_speed_bps=None,
+    )
+
+    assert telemetry["telemetry_state"] == "ok"
+    assert telemetry["rx_bps"] == 800.0
+    assert telemetry["tx_bps"] == 1_600.0
+    assert telemetry["rx_utilization_pct"] is None
+    assert telemetry["tx_utilization_pct"] is None
+
+
 def _vlan_row(
     vlan_id: int = 20,
     port: int = 1,
@@ -244,6 +409,154 @@ def _with_optional_state(
         lldp_neighbors=lldp_neighbors,
         capabilities=(*snapshot.capabilities, *optional_capabilities),
     )
+
+
+def _with_counter_sample(
+    snapshot: SwitchSnapshot,
+    sample: SwitchCounterSample | None,
+    *,
+    outcome: SnmpOutcome = SnmpOutcome.SUCCESS_WITH_ROWS,
+) -> SwitchSnapshot:
+    return replace(
+        snapshot,
+        counter_samples=() if sample is None else (sample,),
+        capabilities=(
+            *snapshot.capabilities,
+            CapabilityResult("counter_samples", outcome),
+        ),
+    )
+
+
+def test_counter_samples_are_persisted_and_current_rates_are_derived(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch-telemetry")
+    base = _snapshot((_entry("02:00:00:00:00:01", 1),))
+    first = _with_counter_sample(
+        base,
+        _counter_sample(
+            uptime=10_000,
+            in_octets=1_000,
+            out_octets=2_000,
+            in_errors=2,
+            out_errors=3,
+            in_discards=4,
+            out_discards=5,
+        ),
+    )
+    second = _with_counter_sample(
+        base,
+        _counter_sample(
+            uptime=11_000,
+            in_octets=2_000,
+            out_octets=4_000,
+            in_errors=3,
+            out_errors=5,
+            in_discards=7,
+            out_discards=11,
+        ),
+    )
+
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(first), "2026-08-09T10:00:00Z"
+    )
+    initial = dict(
+        switch_conn.execute(
+            "SELECT * FROM current_switch_port_telemetry WHERE source_id = ?",
+            (source["id"],),
+        ).fetchone()
+    )
+    collect_and_save_switch(
+        switch_conn, source, _FakeDriver(second), "2026-08-09T10:00:10Z"
+    )
+    current = dict(
+        switch_conn.execute(
+            "SELECT * FROM current_switch_port_telemetry WHERE source_id = ?",
+            (source["id"],),
+        ).fetchone()
+    )
+
+    assert initial["telemetry_state"] == "insufficient_history"
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM switch_port_counter_samples WHERE source_id = ?",
+        (source["id"],),
+    ).fetchone()[0] == 2
+    assert current["sample_interval_seconds"] == 10.0
+    assert current["rx_bps"] == 800.0
+    assert current["tx_bps"] == 1_600.0
+    assert current["in_errors_delta"] == 1
+    assert current["out_errors_delta"] == 2
+    assert current["in_discards_delta"] == 3
+    assert current["out_discards_delta"] == 6
+    assert current["telemetry_state"] == "ok"
+
+
+def test_counter_timeout_is_partial_and_does_not_destroy_fdb(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch-telemetry-timeout")
+    base = _snapshot((_entry("02:00:00:00:00:02", 1),))
+    collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(_with_counter_sample(base, _counter_sample())),
+        "2026-08-09T10:00:00Z",
+    )
+
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(
+            _with_counter_sample(base, None, outcome=SnmpOutcome.TIMEOUT)
+        ),
+        "2026-08-09T10:00:10Z",
+    )
+
+    assert result["status"] == "partial"
+    assert switch_conn.execute(
+        "SELECT mac FROM current_switch_fdb WHERE source_id = ?",
+        (source["id"],),
+    ).fetchone()[0] == "02:00:00:00:00:02"
+    assert switch_conn.execute(
+        "SELECT COUNT(*) FROM switch_port_counter_samples WHERE source_id = ?",
+        (source["id"],),
+    ).fetchone()[0] == 1
+    assert switch_conn.execute(
+        "SELECT telemetry_state FROM current_switch_port_telemetry WHERE source_id = ?",
+        (source["id"],),
+    ).fetchone()[0] == "unsupported"
+
+
+def test_unsigned_64_bit_octets_are_persisted_without_precision_loss(
+    switch_conn: sqlite3.Connection,
+) -> None:
+    from netctl.switch_store import collect_and_save_switch
+
+    source = _source(switch_conn, "switch-counter64-max")
+    value = 2**63 + 123
+    snapshot = _with_counter_sample(
+        _snapshot((_entry("02:00:00:00:00:03", 1),)),
+        _counter_sample(in_octets=value, out_octets=value + 1),
+    )
+
+    result = collect_and_save_switch(
+        switch_conn,
+        source,
+        _FakeDriver(snapshot),
+        "2026-08-09T10:00:00Z",
+    )
+    row = switch_conn.execute(
+        """SELECT typeof(in_octets), in_octets, typeof(out_octets), out_octets
+           FROM switch_port_counter_samples WHERE source_id = ?""",
+        (source["id"],),
+    ).fetchone()
+
+    assert result["status"] == "success"
+    assert tuple(row) == ("text", str(value), "text", str(value + 1))
 
 
 _STP_CAPABILITIES = (

@@ -233,6 +233,35 @@ def query_switch_stp(
     )
 
 
+def query_switch_telemetry(
+    conn: sqlite3.Connection,
+    *,
+    source: str = "",
+    limit: int = DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> dict[str, Any]:
+    where, params = _source_filter(source)
+    return _page(
+        conn,
+        """
+        SELECT s.name AS source, t.port_key, p.if_index, p.speed_bps,
+               t.collector_run_id, t.observed_at, t.sample_interval_seconds,
+               t.rx_bps, t.tx_bps, t.rx_utilization_pct,
+               t.tx_utilization_pct, t.in_errors_delta, t.out_errors_delta,
+               t.in_discards_delta, t.out_discards_delta, t.telemetry_state
+        FROM current_switch_port_telemetry AS t
+        JOIN network_sources AS s ON s.id = t.source_id
+        LEFT JOIN switch_ports AS p
+          ON p.source_id = t.source_id AND p.port_key = t.port_key
+        """
+        + where
+        + " ORDER BY s.name, t.port_key LIMIT ? OFFSET ?",
+        params,
+        limit=limit,
+        offset=offset,
+    )
+
+
 def query_switch_status(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [
         dict(row)

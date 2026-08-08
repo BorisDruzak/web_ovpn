@@ -11,6 +11,7 @@ import pytest
 from netctl.config import load_config_sources
 from netctl.snmp.models import (
     CapabilityResult,
+    SwitchCounterSample,
     SwitchDiscovery,
     SwitchDiscoveryCapability,
     SwitchFdbEntry,
@@ -257,6 +258,107 @@ def _snapshot_with_optional_state(entry_count: int = 3) -> SwitchSnapshot:
             CapabilityResult("lldp_remote", SnmpOutcome.SUCCESS_WITH_ROWS),
         ),
     )
+
+
+def _snapshot_with_counters(multiplier: int) -> SwitchSnapshot:
+    snapshot = _snapshot(2)
+    return replace(
+        snapshot,
+        counter_samples=tuple(
+            SwitchCounterSample(
+                port_key=f"ifindex:{index}",
+                if_index=index,
+                sys_uptime_ticks=10_000 + multiplier * 1_000,
+                in_errors=index + multiplier,
+                in_discards=index + multiplier * 2,
+                out_errors=index + multiplier * 3,
+                out_discards=index + multiplier * 4,
+                in_octets=index * 1_000 * multiplier,
+                out_octets=index * 2_000 * multiplier,
+                octet_counter_bits=64,
+            )
+            for index in range(1, 3)
+        ),
+        capabilities=(
+            *snapshot.capabilities,
+            CapabilityResult("counter_samples", SnmpOutcome.SUCCESS_WITH_ROWS),
+        ),
+    )
+
+
+def test_switch_telemetry_cli_is_source_filtered_paginated_and_serialized(
+    tmp_path: Path, capsys
+) -> None:
+    from netctl.db import connect, get_source, sync_config_sources
+    from netctl.switch_store import collect_and_save_switch
+
+    config_path = tmp_path / "netctl.yaml"
+    db_path = tmp_path / "netctl.sqlite"
+    db_url = f"sqlite:///{db_path.as_posix()}"
+    _write_switch_source(config_path)
+    conn = connect(db_url)
+    try:
+        sync_config_sources(conn, config_path)
+        source = get_source(conn, "switch-test")
+        assert source is not None
+        collect_and_save_switch(
+            conn,
+            source,
+            _FakeSwitchDriver(_snapshot_with_counters(1)),
+            "2026-08-09T10:00:00Z",
+        )
+        collect_and_save_switch(
+            conn,
+            source,
+            _FakeSwitchDriver(_snapshot_with_counters(2)),
+            "2026-08-09T10:00:10Z",
+        )
+    finally:
+        conn.close()
+
+    rc, data = _run_cli(
+        _base_args(config_path, db_path)
+        + [
+            "switches",
+            "telemetry",
+            "--source",
+            "switch-test",
+            "--limit",
+            "1",
+            "--offset",
+            "0",
+        ],
+        capsys,
+    )
+
+    assert rc == 0
+    assert data["telemetry"] == [
+        {
+            "source": "switch-test",
+            "port_key": "ifindex:1",
+            "if_index": 1,
+            "speed_bps": 1_000_000_000,
+            "collector_run_id": 2,
+            "observed_at": "2026-08-09T10:00:10Z",
+            "sample_interval_seconds": 10.0,
+            "rx_bps": 800.0,
+            "tx_bps": 1_600.0,
+            "rx_utilization_pct": 0.00008,
+            "tx_utilization_pct": 0.00016,
+            "in_errors_delta": 1,
+            "out_errors_delta": 3,
+            "in_discards_delta": 2,
+            "out_discards_delta": 4,
+            "telemetry_state": "ok",
+        }
+    ]
+    assert data["pagination"] == {
+        "limit": 1,
+        "offset": 0,
+        "returned": 1,
+        "has_more": True,
+        "next_offset": 1,
+    }
 
 
 def _snapshot_with_stp(entry_count: int = 3) -> SwitchSnapshot:

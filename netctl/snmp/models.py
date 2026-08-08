@@ -152,6 +152,7 @@ class SwitchCounterSample:
     out_discards: int | None
     in_octets: int | None
     out_octets: int | None
+    octet_counter_bits: int | None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -164,6 +165,7 @@ class SwitchCounterSample:
             "out_discards": self.out_discards,
             "in_octets": self.in_octets,
             "out_octets": self.out_octets,
+            "octet_counter_bits": self.octet_counter_bits,
         }
 
 

@@ -17,10 +17,18 @@ from netctl.snmp.oids import (
     IF_ADMIN_STATUS,
     IF_ALIAS,
     IF_DESCR,
+    IF_HC_IN_OCTETS,
+    IF_HC_OUT_OCTETS,
     IF_HIGH_SPEED,
     IF_INDEX,
+    IF_IN_DISCARDS,
+    IF_IN_ERRORS,
+    IF_IN_OCTETS,
     IF_NAME,
     IF_OPER_STATUS,
+    IF_OUT_DISCARDS,
+    IF_OUT_ERRORS,
+    IF_OUT_OCTETS,
     IF_PHYS_ADDRESS,
     IF_SPEED,
     SYS_DESCR,
@@ -87,6 +95,115 @@ def test_system_uptime_requires_timeticks_not_another_integer_type() -> None:
 
     with pytest.raises(ValueError, match="sysUpTime"):
         parse_system((_vb(SYS_UPTIME, 7, "counter32"),))
+
+
+def test_counter_parser_retains_hc_width_and_interface_values() -> None:
+    from netctl.snmp.counters import parse_counter_samples
+    from netctl.snmp.models import SwitchPort
+
+    samples = parse_counter_samples(
+        _result(
+            "if_hc_in_octets",
+            _vb(IF_HC_IN_OCTETS + (7,), 9_000_000_000, "counter64"),
+        ),
+        _result(
+            "if_hc_out_octets",
+            _vb(IF_HC_OUT_OCTETS + (7,), 8_000_000_000, "counter64"),
+        ),
+        _result("if_in_errors", _vb(IF_IN_ERRORS + (7,), 2, "counter32")),
+        _result("if_out_errors", _vb(IF_OUT_ERRORS + (7,), 3, "counter32")),
+        _result("if_in_discards", _vb(IF_IN_DISCARDS + (7,), 4, "counter32")),
+        _result("if_out_discards", _vb(IF_OUT_DISCARDS + (7,), 5, "counter32")),
+        ports=(
+            SwitchPort(
+                port_key="physical:7",
+                if_index=7,
+                bridge_port=7,
+                physical_port=7,
+                name="Gi1/0/7",
+                alias="",
+                mac=None,
+                admin_status="up",
+                oper_status="up",
+                speed_bps=1_000_000_000,
+            ),
+        ),
+        sys_uptime_ticks=12_345,
+        octet_counter_bits=64,
+    )
+
+    assert [sample.to_dict() for sample in samples] == [
+        {
+            "port_key": "physical:7",
+            "if_index": 7,
+            "sys_uptime_ticks": 12_345,
+            "in_errors": 2,
+            "in_discards": 4,
+            "out_errors": 3,
+            "out_discards": 5,
+            "in_octets": 9_000_000_000,
+            "out_octets": 8_000_000_000,
+            "octet_counter_bits": 64,
+        }
+    ]
+
+
+def test_collector_falls_back_to_32_bit_octets_when_hc_is_unsupported() -> None:
+    from netctl.snmp.collector import collect_switch_snapshot
+
+    transport = _FixtureTransport(
+        {
+            SYS_UPTIME: _result(
+                "sys_uptime", _vb(SYS_UPTIME, 5_000, "time_ticks")
+            ),
+            IF_INDEX: _result("if_index", _vb(IF_INDEX + (7,), 7)),
+            IF_HC_IN_OCTETS: _result(
+                "if_hc_in_octets",
+                outcome=SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+            ),
+            IF_HC_OUT_OCTETS: _result(
+                "if_hc_out_octets",
+                outcome=SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+            ),
+            IF_IN_OCTETS: _result(
+                "if_in_octets", _vb(IF_IN_OCTETS + (7,), 4_294_967_000, "counter32")
+            ),
+            IF_OUT_OCTETS: _result(
+                "if_out_octets", _vb(IF_OUT_OCTETS + (7,), 100, "counter32")
+            ),
+            IF_IN_ERRORS: _result(
+                "if_in_errors", _vb(IF_IN_ERRORS + (7,), 1, "counter32")
+            ),
+            IF_OUT_ERRORS: _result(
+                "if_out_errors", _vb(IF_OUT_ERRORS + (7,), 2, "counter32")
+            ),
+            IF_IN_DISCARDS: _result(
+                "if_in_discards", _vb(IF_IN_DISCARDS + (7,), 3, "counter32")
+            ),
+            IF_OUT_DISCARDS: _result(
+                "if_out_discards", _vb(IF_OUT_DISCARDS + (7,), 4, "counter32")
+            ),
+        }
+    )
+
+    snapshot = asyncio.run(collect_switch_snapshot({}, transport))
+
+    assert IF_IN_OCTETS in transport.walked
+    assert IF_OUT_OCTETS in transport.walked
+    assert [sample.to_dict() for sample in snapshot.counter_samples] == [
+        {
+            "port_key": "ifindex:7",
+            "if_index": 7,
+            "sys_uptime_ticks": 5_000,
+            "in_errors": 1,
+            "in_discards": 3,
+            "out_errors": 2,
+            "out_discards": 4,
+            "in_octets": 4_294_967_000,
+            "out_octets": 100,
+            "octet_counter_bits": 32,
+        }
+    ]
 
 
 def test_interfaces_join_if_table_ifx_table_and_bridge_map() -> None:

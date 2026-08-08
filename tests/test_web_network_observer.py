@@ -55,8 +55,8 @@ else:
     )
 
 
-def make_fake_netctl(path: Path) -> Path:
-    return make_executable(
+def make_fake_netctl(path: Path, *, include_telemetry: bool = False) -> Path:
+    executable = make_executable(
         path,
         """#!/usr/bin/env python3
 import json
@@ -161,9 +161,25 @@ else:
     print(json.dumps({"status": "ok"}))
 """,
     )
+    if include_telemetry:
+        script_path = path.with_suffix(".py") if os.name == "nt" else path
+        script = script_path.read_text(encoding="utf-8")
+        port = '"port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up"}'
+        telemetry = (
+            port[:-1]
+            + ', "telemetry": {"speed_bps": 1000000000, "rx_bps": 800.0, '
+            '"tx_bps": 1600.0, "rx_utilization_pct": 0.00008, '
+            '"tx_utilization_pct": 0.00016, "in_errors_delta": 1, '
+            '"out_errors_delta": 2, "in_discards_delta": 3, '
+            '"out_discards_delta": 4, "telemetry_state": "ok", '
+            '"observed_at": "2026-07-26T10:00:10Z"}}'
+        )
+        assert port in script
+        script_path.write_text(script.replace(port, telemetry), encoding="utf-8")
+    return executable
 
 
-def make_client(tmp_path, monkeypatch):
+def make_client(tmp_path, monkeypatch, *, include_telemetry: bool = False):
     token = "api-token"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
     monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
@@ -172,7 +188,14 @@ def make_client(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENVPN_WEB_API_TOKEN_HASH", hashlib.sha256(token.encode("utf-8")).hexdigest())
     monkeypatch.setenv("VPNCTL_PATH", str(make_fake_vpnctl(tmp_path / "vpnctl")))
     monkeypatch.setenv("VPNCTL_USE_SUDO", "0")
-    monkeypatch.setenv("NETCTL_PATH", str(make_fake_netctl(tmp_path / "netctl")))
+    monkeypatch.setenv(
+        "NETCTL_PATH",
+        str(
+            make_fake_netctl(
+                tmp_path / "netctl", include_telemetry=include_telemetry
+            )
+        ),
+    )
     monkeypatch.setenv("NETCTL_USE_SUDO", "0")
     monkeypatch.setenv("NETCTL_INVOKED_CLI_PATH", str(tmp_path / "netctl-invoked-cli.txt"))
     monkeypatch.setenv("NETWORK_OBSERVER_ENABLED", "1")
@@ -508,7 +531,7 @@ def test_network_hosts_url_encodes_reserved_asset_key_and_routes_exact_key(tmp_p
 
 
 def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_path, monkeypatch):
-    client, _ = make_client(tmp_path, monkeypatch)
+    client, _ = make_client(tmp_path, monkeypatch, include_telemetry=True)
 
     denied = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01", follow_redirects=False)
     assert denied.status_code == 303
@@ -522,6 +545,15 @@ def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_
     assert "VLAN 20" in page.text
     assert "Подтверждено" in page.text
     assert "AA:BB:CC:DD:EE:02" in page.text
+    assert "Port speed" in page.text
+    assert "RX utilization" in page.text
+    assert "TX utilization" in page.text
+    assert "Errors Δ" in page.text
+    assert "Discards Δ" in page.text
+    assert "Telemetry state" in page.text
+    assert "Last sample" in page.text
+    assert "2026-07-26T10:00:10Z" in page.text
+    assert "<canvas" not in page.text
     assert "must-not-render" not in page.text
     assert "Raw JSON" not in page.text
 

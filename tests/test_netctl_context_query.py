@@ -216,6 +216,56 @@ def test_inspect_asset_context_enriches_confirmed_attachment(tmp_path: Path) -> 
         conn.close()
 
 
+def test_confirmed_attachment_exposes_safe_current_port_telemetry(
+    tmp_path: Path,
+) -> None:
+    from netctl.context_query import inspect_asset_context
+
+    conn = _context_db(tmp_path)
+    try:
+        run_id = conn.execute(
+            "SELECT id FROM switch_collection_runs WHERE source_id = 10"
+        ).fetchone()[0]
+        conn.execute(
+            """UPDATE switch_ports SET speed_bps = 1000000000
+               WHERE source_id = 10 AND port_key = 'physical:7'"""
+        )
+        conn.execute(
+            """INSERT INTO current_switch_port_telemetry (
+                   source_id, port_key, collector_run_id, observed_at,
+                   sample_interval_seconds, rx_bps, tx_bps,
+                   rx_utilization_pct, tx_utilization_pct,
+                   in_errors_delta, out_errors_delta,
+                   in_discards_delta, out_discards_delta, telemetry_state
+               ) VALUES (
+                   10, 'physical:7', ?, '2026-07-22T12:00:10Z',
+                   10.0, 800.0, 1600.0, 0.00008, 0.00016,
+                   1, 2, 3, 4, 'ok'
+               )""",
+            (run_id,),
+        )
+
+        context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+
+        assert context is not None
+        assert context["attachment"]["port"]["telemetry"] == {
+            "speed_bps": 1_000_000_000,
+            "sample_interval_seconds": 10.0,
+            "rx_bps": 800.0,
+            "tx_bps": 1_600.0,
+            "rx_utilization_pct": 0.00008,
+            "tx_utilization_pct": 0.00016,
+            "in_errors_delta": 1,
+            "out_errors_delta": 2,
+            "in_discards_delta": 3,
+            "out_discards_delta": 4,
+            "telemetry_state": "ok",
+            "observed_at": "2026-07-22T12:00:10Z",
+        }
+    finally:
+        conn.close()
+
+
 def test_inspect_asset_context_preserves_uncertain_attachment_states(tmp_path: Path) -> None:
     from netctl.context_query import inspect_asset_context
 

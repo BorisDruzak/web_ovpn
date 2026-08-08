@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 
+from .counters import parse_counter_samples
 from .fdb import parse_legacy_fdb, parse_qbridge_fdb_with_rejections
 from .interfaces import parse_bridge_port_map, parse_interfaces
 from .lldp import parse_lldp_neighbors
@@ -34,10 +35,18 @@ from .oids import (
     IF_ADMIN_STATUS,
     IF_ALIAS,
     IF_DESCR,
+    IF_HC_IN_OCTETS,
+    IF_HC_OUT_OCTETS,
     IF_HIGH_SPEED,
     IF_INDEX,
+    IF_IN_DISCARDS,
+    IF_IN_ERRORS,
+    IF_IN_OCTETS,
     IF_NAME,
     IF_OPER_STATUS,
+    IF_OUT_DISCARDS,
+    IF_OUT_ERRORS,
+    IF_OUT_OCTETS,
     IF_PHYS_ADDRESS,
     IF_SPEED,
     LLDP_REM_CHASSIS_ID,
@@ -552,6 +561,85 @@ async def collect_switch_snapshot(
                 rows=lldp_neighbors,
             )
     capabilities.append(lldp_group)
+    hc_octet_results = (
+        await transport.walk(IF_HC_IN_OCTETS, capability="if_hc_in_octets"),
+        await transport.walk(IF_HC_OUT_OCTETS, capability="if_hc_out_octets"),
+    )
+    capabilities.extend(hc_octet_results)
+    octet_results = hc_octet_results
+    octet_counter_bits = 64
+    if (
+        any(
+            result.outcome is SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT
+            for result in hc_octet_results
+        )
+        and all(
+            result.outcome
+            in {
+                SnmpOutcome.SUCCESS_WITH_ROWS,
+                SnmpOutcome.SUCCESS_EMPTY,
+                SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+            }
+            for result in hc_octet_results
+        )
+    ):
+        octet_results = (
+            await transport.walk(IF_IN_OCTETS, capability="if_in_octets"),
+            await transport.walk(IF_OUT_OCTETS, capability="if_out_octets"),
+        )
+        octet_counter_bits = 32
+        capabilities.extend(octet_results)
+    counter_detail_results = (
+        await transport.walk(IF_IN_ERRORS, capability="if_in_errors"),
+        await transport.walk(IF_OUT_ERRORS, capability="if_out_errors"),
+        await transport.walk(IF_IN_DISCARDS, capability="if_in_discards"),
+        await transport.walk(IF_OUT_DISCARDS, capability="if_out_discards"),
+    )
+    capabilities.extend(counter_detail_results)
+    selected_counter_results = (*octet_results, *counter_detail_results)
+    counter_failure = next(
+        (
+            result
+            for result in selected_counter_results
+            if result.outcome not in _USABLE_REQUIRED_OUTCOMES
+        ),
+        None,
+    )
+    counter_samples = ()
+    if counter_failure is not None:
+        counter_group = _optional_group_result(
+            "counter_samples",
+            counter_failure.outcome,
+            error_code=counter_failure.error_code,
+            error_message=counter_failure.error_message,
+        )
+    else:
+        try:
+            counter_samples = parse_counter_samples(
+                *selected_counter_results,
+                ports=ports,
+                sys_uptime_ticks=system.sys_uptime_ticks,
+                octet_counter_bits=octet_counter_bits,
+            )
+        except ValueError:
+            counter_samples = ()
+            counter_group = _optional_group_result(
+                "counter_samples",
+                SnmpOutcome.PARSE_ERROR,
+                error_code="malformed_counters",
+                error_message="SNMP counter rows are malformed",
+            )
+        else:
+            counter_group = _optional_group_result(
+                "counter_samples",
+                (
+                    SnmpOutcome.SUCCESS_WITH_ROWS
+                    if counter_samples
+                    else SnmpOutcome.SUCCESS_EMPTY
+                ),
+                rows=tuple(sample.to_dict() for sample in counter_samples),
+            )
+    capabilities.append(counter_group)
     return SwitchSnapshot(
         snapshot_kind="snmp_switch",
         profile_id=profile.profile_id,
@@ -562,7 +650,7 @@ async def collect_switch_snapshot(
         vlan_memberships=vlan_memberships,
         stp=stp,
         lldp_neighbors=lldp_neighbors,
-        counter_samples=(),
+        counter_samples=counter_samples,
         capabilities=tuple(capabilities),
     )
 

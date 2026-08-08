@@ -59,6 +59,7 @@ from .switch_queries import (
     query_switch_ports,
     query_switch_status,
     query_switch_stp,
+    query_switch_telemetry,
     query_switch_vlans,
     validate_pagination,
 )
@@ -663,10 +664,25 @@ def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     try:
         now = datetime.fromisoformat(utc_now().replace("Z", "+00:00"))
         cutoff = (now - timedelta(days=args.days)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        reference_time = now.replace(microsecond=0).isoformat().replace(
+            "+00:00", "Z"
+        )
         with CollectLock(args.db):
             if not args.apply:
-                return 0, ok(dry_run=True, cutoff=cutoff, **retention_report(conn, cutoff))
-            return 0, ok(dry_run=False, cutoff=cutoff, **apply_retention(conn, cutoff))
+                return 0, ok(
+                    dry_run=True,
+                    cutoff=cutoff,
+                    **retention_report(
+                        conn, cutoff, reference_time
+                    ),
+                )
+            return 0, ok(
+                dry_run=False,
+                cutoff=cutoff,
+                **apply_retention(
+                    conn, cutoff, reference_time
+                ),
+            )
     except (RuntimeError, sqlite3.Error) as exc:
         if str(exc) == "collection already running":
             return 1, err("collection already running")
@@ -816,6 +832,11 @@ def cmd_switches(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         if args.switches_command == "stp":
             page = query_switch_stp(conn, **common)
             return 0, ok(stp=page["items"], pagination=page["pagination"])
+        if args.switches_command == "telemetry":
+            page = query_switch_telemetry(conn, **common)
+            return 0, ok(
+                telemetry=page["items"], pagination=page["pagination"]
+            )
         return 2, err("unsupported switches command")
     finally:
         conn.close()
@@ -1623,6 +1644,7 @@ def build_parser() -> argparse.ArgumentParser:
         "vlans",
         "lldp",
         "stp",
+        "telemetry",
     ):
         switch_query = switches_sub.add_parser(name)
         switch_query.add_argument("--source", default="")

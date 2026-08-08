@@ -172,6 +172,42 @@ def test_retention_apply_removes_expired_rows_but_keeps_current_and_last_success
     assert apply_retention(conn, CUTOFF)["total_deleted"] == 0
 
 
+def test_counter_retention_uses_source_setting_and_keeps_current_telemetry(conn):
+    from netctl.retention import apply_retention, retention_report
+
+    conn.execute(
+        "UPDATE network_sources SET driver_options_json = ? WHERE id = 1",
+        ('{"counter_retention_days":14}',),
+    )
+    conn.executemany(
+        """INSERT INTO switch_port_counter_samples (
+               source_id, collector_run_id, port_key, if_index, observed_at,
+               sys_uptime_ticks, octet_counter_bits, in_octets, out_octets
+           ) VALUES (1, ?, 'ether1', 1, ?, 1000, 64, ?, ?)""",
+        [(10, OLD, 100, 200), (12, NEW, 300, 400)],
+    )
+    conn.execute(
+        """INSERT INTO current_switch_port_telemetry (
+               source_id, port_key, collector_run_id, observed_at,
+               telemetry_state
+           ) VALUES (1, 'ether1', 12, ?, 'ok')""",
+        (NEW,),
+    )
+    conn.commit()
+
+    report = retention_report(conn, CUTOFF, reference_time=NEW)
+
+    assert report["delete"]["switch_port_counter_samples"] == 1
+    result = apply_retention(conn, CUTOFF, reference_time=NEW)
+    assert result["deleted"]["switch_port_counter_samples"] == 1
+    assert conn.execute(
+        "SELECT in_octets FROM switch_port_counter_samples"
+    ).fetchone()[0] == "300"
+    assert conn.execute(
+        "SELECT telemetry_state FROM current_switch_port_telemetry"
+    ).fetchone()[0] == "ok"
+
+
 def test_retention_rolls_back_all_deletes_when_the_second_delete_fails(conn):
     """Committing each family separately would leave FDB events deleted after a later failure."""
     from netctl.retention import apply_retention

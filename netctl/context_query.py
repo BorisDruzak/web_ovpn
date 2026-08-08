@@ -185,11 +185,26 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
                   resolutions.last_seen_at, sources.name AS switch_name, sources.site AS switch_site,
                   sources.host AS switch_host, ports.name AS port_name, ports.alias AS port_alias,
                   ports.admin_status AS port_admin_status, ports.oper_status AS port_oper_status,
+                  ports.speed_bps AS port_speed_bps,
+                  telemetry.sample_interval_seconds AS telemetry_interval,
+                  telemetry.rx_bps AS telemetry_rx_bps,
+                  telemetry.tx_bps AS telemetry_tx_bps,
+                  telemetry.rx_utilization_pct AS telemetry_rx_utilization,
+                  telemetry.tx_utilization_pct AS telemetry_tx_utilization,
+                  telemetry.in_errors_delta AS telemetry_in_errors,
+                  telemetry.out_errors_delta AS telemetry_out_errors,
+                  telemetry.in_discards_delta AS telemetry_in_discards,
+                  telemetry.out_discards_delta AS telemetry_out_discards,
+                  telemetry.telemetry_state AS telemetry_state,
+                  telemetry.observed_at AS telemetry_observed_at,
                   resolutions.evidence_json AS evidence_json
            FROM asset_attachment_resolutions AS resolutions
            LEFT JOIN network_sources AS sources ON sources.id = resolutions.selected_source_id
            LEFT JOIN switch_ports AS ports
              ON ports.source_id = resolutions.selected_source_id AND ports.port_key = resolutions.selected_port_key
+           LEFT JOIN current_switch_port_telemetry AS telemetry
+             ON telemetry.source_id = resolutions.selected_source_id
+            AND telemetry.port_key = resolutions.selected_port_key
            WHERE {' AND '.join(conditions)} ORDER BY confidence DESC, asset_interface_id LIMIT 1""",
         params,
     ).fetchone()
@@ -244,6 +259,23 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
         "key": port_key, "name": str(row["port_name"] or ""), "alias": str(row["port_alias"] or ""),
         "admin_status": str(row["port_admin_status"] or "unknown"), "oper_status": str(row["port_oper_status"] or "unknown"),
     }
+    if row["telemetry_state"] is None:
+        attachment["port"]["telemetry"] = None
+    else:
+        attachment["port"]["telemetry"] = {
+            "speed_bps": row["port_speed_bps"],
+            "sample_interval_seconds": row["telemetry_interval"],
+            "rx_bps": row["telemetry_rx_bps"],
+            "tx_bps": row["telemetry_tx_bps"],
+            "rx_utilization_pct": row["telemetry_rx_utilization"],
+            "tx_utilization_pct": row["telemetry_tx_utilization"],
+            "in_errors_delta": row["telemetry_in_errors"],
+            "out_errors_delta": row["telemetry_out_errors"],
+            "in_discards_delta": row["telemetry_in_discards"],
+            "out_discards_delta": row["telemetry_out_discards"],
+            "telemetry_state": str(row["telemetry_state"]),
+            "observed_at": str(row["telemetry_observed_at"] or ""),
+        }
     vlan_id = attachment["selected_vlan_id"]
     if vlan_id is not None:
         membership = conn.execute(

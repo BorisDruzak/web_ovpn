@@ -18,6 +18,7 @@ from .snmp.models import (
     SnmpVarBind,
 )
 from .snmp.outcomes import SnmpOutcome
+from .switch_telemetry import derive_port_telemetry
 
 
 _REPLACING_FDB_OUTCOMES = {
@@ -51,6 +52,7 @@ _OPTIONAL_CAPABILITIES = frozenset(
         "stp_root_port",
         "lldp_remote",
         "qbridge_fdb_rejected_rows",
+        "counter_samples",
     }
 )
 _VLAN_MEMBERSHIP_FIELDS = frozenset(
@@ -215,6 +217,13 @@ def collect_and_save_switch(
                     snapshot=snapshot,
                     observed_at=started_at,
                 )
+                _persist_counter_telemetry(
+                    conn,
+                    source_id=source_id,
+                    run_id=run_id,
+                    snapshot=snapshot,
+                    observed_at=started_at,
+                )
                 status = (
                     "partial" if _has_failed_optional_capability(snapshot) else "success"
                 )
@@ -368,6 +377,31 @@ def _validate_snapshot(snapshot: object) -> str:
         and fdb_outcome is not SnmpOutcome.SUCCESS_WITH_ROWS
     ):
         return "invalid_fdb_warning"
+    counter_capabilities = [
+        capability
+        for capability in snapshot.capabilities
+        if capability.capability == "counter_samples"
+    ]
+    if len(counter_capabilities) > 1:
+        return "invalid_counter_outcome"
+    if counter_capabilities:
+        counter_outcome = counter_capabilities[0].outcome
+        if (
+            counter_outcome is SnmpOutcome.SUCCESS_WITH_ROWS
+            and not snapshot.counter_samples
+        ):
+            return "missing_counter_samples"
+        if (
+            counter_outcome is not SnmpOutcome.SUCCESS_WITH_ROWS
+            and snapshot.counter_samples
+        ):
+            return "unexpected_counter_samples"
+        counter_port_keys = [sample.port_key for sample in snapshot.counter_samples]
+        if (
+            len(counter_port_keys) != len(set(counter_port_keys))
+            or any(key not in port_keys for key in counter_port_keys)
+        ):
+            return "invalid_counter_samples"
     return ""
 
 
@@ -458,20 +492,30 @@ def _valid_capability(capability: CapabilityResult) -> bool:
 
 
 def _valid_counter_sample(sample: SwitchCounterSample) -> bool:
+    octet_maximum = (
+        2**sample.octet_counter_bits - 1
+        if sample.octet_counter_bits in {32, 64}
+        else 0
+    )
     return (
         _valid_text(sample.port_key)
         and _valid_optional_int(sample.if_index, minimum=1, maximum=2_147_483_647)
         and _valid_optional_int(sample.sys_uptime_ticks, minimum=0)
         and all(
-            _valid_optional_int(value, minimum=0)
+            _valid_optional_int(value, minimum=0, maximum=2**32 - 1)
             for value in (
                 sample.in_errors,
                 sample.in_discards,
                 sample.out_errors,
                 sample.out_discards,
-                sample.in_octets,
-                sample.out_octets,
             )
+        )
+        and sample.octet_counter_bits in {32, 64}
+        and _valid_optional_int(
+            sample.in_octets, minimum=0, maximum=octet_maximum
+        )
+        and _valid_optional_int(
+            sample.out_octets, minimum=0, maximum=octet_maximum
         )
     )
 
@@ -917,6 +961,8 @@ def _upsert_capabilities(
             if capability.capability == _QBRIDGE_REJECTED_ROWS_CAPABILITY
             else len(snapshot.fdb)
             if capability.capability == "fdb"
+            else len(snapshot.counter_samples)
+            if capability.capability == "counter_samples"
             else len(capability.rows)
         )
         conn.execute(
@@ -1157,6 +1203,186 @@ def _replace_optional_current_state(
                     observed_at,
                 ),
             )
+
+
+def _sample_from_row(row: sqlite3.Row) -> SwitchCounterSample:
+    return SwitchCounterSample(
+        port_key=str(row["port_key"]),
+        if_index=int(row["if_index"]) if row["if_index"] is not None else None,
+        sys_uptime_ticks=(
+            int(row["sys_uptime_ticks"])
+            if row["sys_uptime_ticks"] is not None
+            else None
+        ),
+        in_errors=int(row["in_errors"]) if row["in_errors"] is not None else None,
+        in_discards=(
+            int(row["in_discards"]) if row["in_discards"] is not None else None
+        ),
+        out_errors=(
+            int(row["out_errors"]) if row["out_errors"] is not None else None
+        ),
+        out_discards=(
+            int(row["out_discards"]) if row["out_discards"] is not None else None
+        ),
+        in_octets=int(row["in_octets"]) if row["in_octets"] is not None else None,
+        out_octets=(
+            int(row["out_octets"]) if row["out_octets"] is not None else None
+        ),
+        octet_counter_bits=(
+            int(row["octet_counter_bits"])
+            if row["octet_counter_bits"] is not None
+            else None
+        ),
+    )
+
+
+def _upsert_telemetry_row(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+    port_key: str,
+    run_id: int,
+    observed_at: str,
+    telemetry: dict[str, object],
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO current_switch_port_telemetry (
+            source_id, port_key, collector_run_id, observed_at,
+            sample_interval_seconds, rx_bps, tx_bps, rx_utilization_pct,
+            tx_utilization_pct, in_errors_delta, out_errors_delta,
+            in_discards_delta, out_discards_delta, telemetry_state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_id, port_key) DO UPDATE SET
+            collector_run_id = excluded.collector_run_id,
+            observed_at = excluded.observed_at,
+            sample_interval_seconds = excluded.sample_interval_seconds,
+            rx_bps = excluded.rx_bps,
+            tx_bps = excluded.tx_bps,
+            rx_utilization_pct = excluded.rx_utilization_pct,
+            tx_utilization_pct = excluded.tx_utilization_pct,
+            in_errors_delta = excluded.in_errors_delta,
+            out_errors_delta = excluded.out_errors_delta,
+            in_discards_delta = excluded.in_discards_delta,
+            out_discards_delta = excluded.out_discards_delta,
+            telemetry_state = excluded.telemetry_state
+        """,
+        (
+            source_id,
+            port_key,
+            run_id,
+            observed_at,
+            telemetry["sample_interval_seconds"],
+            telemetry["rx_bps"],
+            telemetry["tx_bps"],
+            telemetry["rx_utilization_pct"],
+            telemetry["tx_utilization_pct"],
+            telemetry["in_errors_delta"],
+            telemetry["out_errors_delta"],
+            telemetry["in_discards_delta"],
+            telemetry["out_discards_delta"],
+            telemetry["telemetry_state"],
+        ),
+    )
+
+
+def _persist_counter_telemetry(
+    conn: sqlite3.Connection,
+    *,
+    source_id: int,
+    run_id: int,
+    snapshot: SwitchSnapshot,
+    observed_at: str,
+) -> None:
+    capability = next(
+        (
+            item
+            for item in snapshot.capabilities
+            if item.capability == "counter_samples"
+        ),
+        None,
+    )
+    if capability is None:
+        return
+    if capability.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
+        unsupported = {
+            "sample_interval_seconds": None,
+            "rx_bps": None,
+            "tx_bps": None,
+            "rx_utilization_pct": None,
+            "tx_utilization_pct": None,
+            "in_errors_delta": None,
+            "out_errors_delta": None,
+            "in_discards_delta": None,
+            "out_discards_delta": None,
+            "telemetry_state": "unsupported",
+        }
+        for port in snapshot.ports:
+            _upsert_telemetry_row(
+                conn,
+                source_id=source_id,
+                port_key=port.port_key,
+                run_id=run_id,
+                observed_at=observed_at,
+                telemetry=unsupported,
+            )
+        return
+
+    speeds = {port.port_key: port.speed_bps for port in snapshot.ports}
+    observed_time = _parse_started_at(observed_at)
+    for sample in snapshot.counter_samples:
+        previous_row = conn.execute(
+            """
+            SELECT * FROM switch_port_counter_samples
+            WHERE source_id = ? AND port_key = ?
+            ORDER BY observed_at DESC, id DESC LIMIT 1
+            """,
+            (source_id, sample.port_key),
+        ).fetchone()
+        previous = _sample_from_row(previous_row) if previous_row is not None else None
+        elapsed_seconds = (
+            (observed_time - _parse_started_at(previous_row["observed_at"])).total_seconds()
+            if previous_row is not None
+            else None
+        )
+        conn.execute(
+            """
+            INSERT INTO switch_port_counter_samples (
+                source_id, collector_run_id, port_key, if_index, observed_at,
+                sys_uptime_ticks, octet_counter_bits, in_octets, out_octets,
+                in_errors, out_errors, in_discards, out_discards
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_id,
+                run_id,
+                sample.port_key,
+                sample.if_index,
+                observed_at,
+                sample.sys_uptime_ticks,
+                sample.octet_counter_bits,
+                str(sample.in_octets) if sample.in_octets is not None else None,
+                str(sample.out_octets) if sample.out_octets is not None else None,
+                sample.in_errors,
+                sample.out_errors,
+                sample.in_discards,
+                sample.out_discards,
+            ),
+        )
+        telemetry = derive_port_telemetry(
+            sample,
+            previous,
+            elapsed_seconds=elapsed_seconds,
+            port_speed_bps=speeds[sample.port_key],
+        )
+        _upsert_telemetry_row(
+            conn,
+            source_id=source_id,
+            port_key=sample.port_key,
+            run_id=run_id,
+            observed_at=observed_at,
+            telemetry=telemetry,
+        )
 
 
 def _insert_fdb_event(
