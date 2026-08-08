@@ -672,8 +672,6 @@ def test_network_asset_card_has_safe_empty_ambiguous_and_freshness_states(tmp_pa
     assert stale.status_code == 200
     assert "Топология: нужно обновление" in stale.text
     assert "Вложения: восстановлены" in stale.text
-
-
 def test_network_asset_card_renders_readable_cyrillic_freshness_and_confirmed_copy(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
@@ -1596,6 +1594,9 @@ def test_network_ipsec_and_backup_pages_render_status(tmp_path, monkeypatch):
 
     assert ipsec.status_code == 200
     assert "IPsec" in ipsec.text
+    assert "Источники" in ipsec.text
+    assert "Двусторонняя проверка" in ipsec.text
+    assert "Фильтр" in ipsec.text
     assert "mikrotik-main" in ipsec.text
     assert "mikrotik-hex" in ipsec.text
     assert "192.168.99.0/24" in ipsec.text

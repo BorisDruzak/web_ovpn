@@ -1242,7 +1242,11 @@ def cmd_ipsec(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
             sources = [source for source in sources if source["name"] == args.source]
             if not sources:
                 return 1, err("source not found", source=args.source)
-        sources = [source for source in sources if source.get("enabled")]
+        sources = [
+            source
+            for source in sources
+            if source.get("enabled") and source.get("driver") in {"mikrotik_api", "mikrotik_ssh", "mock"}
+        ]
         results = []
         for source in sources:
             try:

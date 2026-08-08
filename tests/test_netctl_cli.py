@@ -2695,6 +2695,31 @@ def test_ipsec_status_reports_source_health(tmp_path, capsys):
     assert data["sources"][0]["policies"][0]["dst_address"] == "192.168.99.0/24"
 
 
+def test_ipsec_status_ignores_switch_only_sources(tmp_path, capsys):
+    config_path = tmp_path / "netctl.yaml"
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    write_mock_source(config_path)
+    (config_path.parent / "sources.d" / "access-switch.yaml").write_text(
+        "\n".join(
+            [
+                "name: access-switch",
+                "driver: snmp_switch",
+                "host: 192.168.100.16",
+                "secret_ref: access_switch",
+                "enabled: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    rc, data = run_cli(["--json", "--config", str(config_path), "--db", db_url, "ipsec", "status"], capsys)
+
+    assert rc == 0
+    assert data["summary"] == {"sources": 1, "ok": 1, "warn": 0, "error": 0, "site_checks_ok": 0, "site_checks_warn": 1}
+    assert [source["source"] for source in data["sources"]] == ["mock-main"]
+
+
 def test_ipsec_status_reports_bidirectional_site_checks(tmp_path, capsys):
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
