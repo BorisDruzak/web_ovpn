@@ -91,7 +91,7 @@ elif cmd[:2] == ["context-view", "asset"]:
     elif asset_key == "mac:AA:BB:CC:DD:EE:04":
         print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "ambiguous desktop"}, "attachment": {"status": "ambiguous", "reason": "есть конкурирующая FDB-запись", "alternatives": [{"source": "tplink-ito-15", "port_key": "physical:2", "vlan_id": 20, "candidate_class": "unknown", "score": 50, "reason": "статус порта не получен"}, {"source": "", "port_key": "", "vlan_id": None, "candidate_class": "", "score": None, "reason": ""}], "switch": {"name": "must-not-render"}, "port": {"alias": "must-not-render"}, "port_peers": {"items": [{"asset": {"asset_key": "AA:BB:CC:DD:EE:02", "display_name": "must-not-render"}}]}}, "freshness": freshness}}))
     else:
-        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "desktop pc-buh-01", "manual_name": "Finance workstation", "kind": "device", "status": "active", "site": "main", "location": "Office", "identity_method": "mac", "identity_confidence": 100}, "network": {"ip_observations": [{"ip": "192.168.100.55"}], "best_hostname_observation": {"hostname": "pc-buh-01"}}, "attachment": {"status": "confirmed", "confidence": 100, "last_seen_at": "2026-07-26T10:00:00Z", "switch": {"name": "access-a", "site": "main", "host": "must-not-render"}, "port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up"}, "vlan_membership": {"vlan_id": 20, "egress": True, "untagged": True, "pvid": True}, "port_peers": {"items": [{"asset": {"asset_key": "mac:AA:BB:CC:DD:EE:02", "display_name": "Printer"}, "mac": "AA:BB:CC:DD:EE:02", "vlan_id": 20}], "known_asset_count": 1, "unknown_mac_count": 0, "truncated": False}, "alternatives": []}, "topology_path": {"nodes": [], "hops": [], "complete": True, "reason": ""}, "attachment_events": [{"event_type": "confirmed", "observed_at": "2026-07-25T10:00:00Z", "before": {"status": "unresolved"}, "after": {"status": "confirmed"}}], "freshness": freshness, "evidence": {"secret": "must-not-render"}}}))
+        print(json.dumps({"status": "ok", "context": {"asset": {"asset_key": asset_key, "display_name": "desktop pc-buh-01", "manual_name": "Finance workstation", "kind": "device", "status": "active", "site": "main", "location": "Office", "identity_method": "mac", "identity_confidence": 100}, "network": {"ip_observations": [{"ip": "192.168.100.55"}], "best_hostname_observation": {"hostname": "pc-buh-01"}}, "attachment": {"status": "confirmed", "confidence": 100, "last_seen_at": "2026-07-26T10:00:00Z", "switch": {"name": "access-a", "site": "main", "host": "must-not-render"}, "port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up", "role": {"name": "shared_edge", "confidence": 70, "mac_count": 3, "known_asset_count": 2, "unique_vendor_count": 1, "child_source": None, "reason": "Высокая плотность MAC без подтверждённого дочернего коммутатора", "observed_at": "2026-07-26T10:00:00Z"}}, "vlan_membership": {"vlan_id": 20, "egress": True, "untagged": True, "pvid": True}, "port_peers": {"items": [{"asset": {"asset_key": "mac:AA:BB:CC:DD:EE:02", "display_name": "Printer"}, "mac": "AA:BB:CC:DD:EE:02", "vlan_id": 20}], "known_asset_count": 1, "unknown_mac_count": 0, "truncated": False}, "alternatives": []}, "topology_path": {"nodes": [], "hops": [], "complete": True, "reason": ""}, "attachment_events": [{"event_type": "confirmed", "observed_at": "2026-07-25T10:00:00Z", "before": {"status": "unresolved"}, "after": {"status": "confirmed"}}], "freshness": freshness, "evidence": {"secret": "must-not-render"}}}))
 elif cmd[:2] == ["assets", "set-name"]:
     marker = os.environ.get("NETCTL_ASSET_NAME_MARKER")
     if marker:
@@ -164,7 +164,7 @@ else:
     if include_telemetry:
         script_path = path.with_suffix(".py") if os.name == "nt" else path
         script = script_path.read_text(encoding="utf-8")
-        port = '"port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up"}'
+        port = '"port": {"key": "physical:7", "name": "Gi1/0/7", "alias": "Office 12", "oper_status": "up", "role": {"name": "shared_edge", "confidence": 70, "mac_count": 3, "known_asset_count": 2, "unique_vendor_count": 1, "child_source": None, "reason": "Высокая плотность MAC без подтверждённого дочернего коммутатора", "observed_at": "2026-07-26T10:00:00Z"}}'
         telemetry = (
             port[:-1]
             + ', "telemetry": {"speed_bps": 1000000000, "rx_bps": 800.0, '
@@ -553,6 +553,12 @@ def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_
     assert "Telemetry state" in page.text
     assert "Last sample" in page.text
     assert "2026-07-26T10:00:10Z" in page.text
+    assert "Роль порта" in page.text
+    assert "shared edge" in page.text
+    assert "Уверенность" in page.text
+    assert "70%" in page.text
+    assert "MAC на порту" in page.text
+    assert "Высокая плотность MAC" in page.text
     assert "<canvas" not in page.text
     assert "must-not-render" not in page.text
     assert "Raw JSON" not in page.text

@@ -288,6 +288,37 @@ def query_switch_telemetry(
     )
 
 
+def query_switch_port_roles(
+    conn: sqlite3.Connection,
+    *,
+    source: str = "",
+    limit: int = OPTIONAL_STATE_DEFAULT_PAGE_SIZE,
+    offset: int = 0,
+) -> dict[str, object]:
+    where, params = _source_filter(source)
+    page = _page(
+        conn,
+        """
+        SELECT s.name AS source, roles.port_key, roles.role, roles.confidence,
+               roles.mac_count, roles.known_asset_count,
+               roles.unique_vendor_count, child.name AS child_source,
+               roles.evidence_json, roles.observed_at, roles.correlation_run_id
+        FROM current_switch_port_roles AS roles
+        JOIN network_sources AS s ON s.id = roles.source_id
+        LEFT JOIN network_sources AS child ON child.id = roles.child_source_id
+        """
+        + where
+        + " ORDER BY s.name, roles.port_key LIMIT ? OFFSET ?",
+        params,
+        limit=limit,
+        offset=offset,
+        maximum=OPTIONAL_STATE_MAX_PAGE_SIZE,
+    )
+    for row in page["items"]:
+        row["evidence"] = _port_role_evidence(row.pop("evidence_json", "[]"))
+    return page
+
+
 def query_switch_status(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [
         dict(row)
@@ -338,6 +369,30 @@ def _string_list(value: object) -> list[str]:
     ):
         return []
     return decoded
+
+
+def _port_role_evidence(value: object) -> list[dict[str, object]]:
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if type(decoded) is not list:
+        return []
+    allowed = {
+        "type",
+        "peer_source_id",
+        "mac_count",
+        "known_asset_count",
+        "unique_vendor_count",
+        "access_port_mac_threshold",
+        "switch_management_mac_seen",
+        "density_role",
+    }
+    return [
+        {key: item[key] for key in allowed if key in item}
+        for item in decoded[:16]
+        if isinstance(item, dict) and isinstance(item.get("type"), str)
+    ]
 
 
 def _lldp_fingerprint_evidence(

@@ -200,6 +200,47 @@ def test_attachment_candidates_accept_authoritative_partial_fdb_with_optional_fa
         conn.close()
 
 
+def test_attachment_candidates_apply_port_role_penalties_without_dropping_shared_edge(
+    tmp_path: Path,
+) -> None:
+    from netctl.attachment_candidates import attachment_candidates
+
+    conn = _attachment_db(tmp_path)
+    try:
+        _insert_fdb(conn)
+        topology_run_id = conn.execute(
+            "SELECT id FROM network_correlation_runs WHERE run_type = 'topology' ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        conn.execute(
+            """INSERT INTO current_switch_port_roles (
+                   source_id, port_key, role, confidence, mac_count,
+                   known_asset_count, unique_vendor_count, observed_at,
+                   correlation_run_id, evidence_json
+               ) VALUES (10, 'physical:48', 'shared_edge', 70, 10, 1, 4, ?, ?,
+                         '[{"type":"mac_density"}]')""",
+            ("2026-07-22T08:00:00Z", topology_run_id),
+        )
+
+        shared = attachment_candidates(conn, {10: 2})
+
+        assert [(item.candidate_class, item.score, item.port_role) for item in shared] == [
+            ("direct", 70, "shared_edge")
+        ]
+
+        conn.execute(
+            """UPDATE current_switch_port_roles
+               SET role = 'downstream_bridge', confidence = 95
+               WHERE source_id = 10 AND port_key = 'physical:48'"""
+        )
+        downstream = attachment_candidates(conn, {10: 2})
+
+        assert [(item.candidate_class, item.score, item.port_role) for item in downstream] == [
+            ("uplink", 15, "downstream_bridge")
+        ]
+    finally:
+        conn.close()
+
+
 def _candidate(
     *,
     source_id: int = 10,

@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any, Iterable
 
 from .source_identity import SourceIdentity, list_source_identities
+from .port_roles import infer_port_roles, replace_current_port_roles
 from .topology_evidence import collect_link_evidence
 from .topology_models import CurrentSwitchLink, LinkEndpoint, LinkEvidence
 
@@ -310,11 +311,27 @@ def reconcile_topology(
         links = aggregate_link_evidence(collect_link_evidence(conn, identities), observed_at)
         roots = {identity.source_id for identity in identities if identity.topology_role == "core"}
         depths = topology_depths(links, roots)
+        port_roles = infer_port_roles(
+            conn,
+            links=links,
+            identities=identities,
+            depths=depths,
+            observed_at=observed_at,
+        )
         conn.execute("BEGIN IMMEDIATE")
         event_count = _replace_current_links(conn, links, run_id, observed_at)
+        port_role_count = replace_current_port_roles(
+            conn, port_roles, correlation_run_id=run_id
+        )
         finding_count = _replace_findings(conn, links, observed_at)
         state_counts = {state: sum(link.state == state for link in links) for state in ("confirmed", "inferred", "ambiguous", "conflicting")}
-        counts = {**state_counts, "links": len(links), "events": event_count, "findings": finding_count}
+        counts = {
+            **state_counts,
+            "links": len(links),
+            "port_roles": port_role_count,
+            "events": event_count,
+            "findings": finding_count,
+        }
         conn.execute(
             """
             UPDATE network_correlation_runs

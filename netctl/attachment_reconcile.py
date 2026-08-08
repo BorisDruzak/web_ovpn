@@ -68,6 +68,7 @@ def _candidate_public(candidate: AttachmentCandidate) -> dict[str, Any]:
         "candidate_class": candidate.candidate_class,
         "topology_depth": candidate.topology_depth,
         "score": candidate.score,
+        "port_role": candidate.port_role,
         "observed_at": candidate.observed_at,
         "evidence": list(candidate.evidence),
     }

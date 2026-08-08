@@ -49,6 +49,14 @@
   <dl class="details">
     <dt>Коммутатор</dt><dd>{{ (attachment.get("switch") or {}).get("name") or "-" }}</dd>
     <dt>Порт</dt><dd>{{ (attachment.get("port") or {}).get("alias") or (attachment.get("port") or {}).get("name") or "-" }}</dd>
+    {% set port_role = ((attachment.get("port") or {}).get("role") or {}) %}
+    {% if port_role %}
+    <dt>Роль порта</dt><dd>{{ (port_role.get("name") or "unknown")|replace("_", " ") }}</dd>
+    <dt>Уверенность</dt><dd>{{ port_role.get("confidence") if port_role.get("confidence") is not none else "-" }}{% if port_role.get("confidence") is not none %}%{% endif %}</dd>
+    <dt>MAC на порту</dt><dd>{{ port_role.get("mac_count") if port_role.get("mac_count") is not none else "-" }}</dd>
+    {% if port_role.get("child_source") %}<dt>Предполагаемый дочерний коммутатор</dt><dd>{{ port_role.get("child_source") }}</dd>{% endif %}
+    {% if port_role.get("reason") %}<dt>Основание роли</dt><dd>{{ port_role.get("reason") }}</dd>{% endif %}
+    {% endif %}
     {% if (attachment.get("vlan_membership") or {}).get("vlan_id") is not none %}<dt>VLAN</dt><dd>VLAN {{ attachment.get("vlan_membership").get("vlan_id") }}</dd>{% endif %}
     {% set telemetry = ((attachment.get("port") or {}).get("telemetry") or {}) %}
     {% if telemetry %}

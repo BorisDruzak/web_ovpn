@@ -1865,6 +1865,43 @@ def _migration_21(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migration_22(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE current_switch_port_roles (
+            source_id INTEGER NOT NULL REFERENCES network_sources(id) ON DELETE RESTRICT,
+            port_key TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN (
+                'endpoint', 'backbone', 'downstream_bridge', 'shared_edge', 'unknown'
+            )),
+            confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+            mac_count INTEGER NOT NULL CHECK (mac_count >= 0),
+            known_asset_count INTEGER NOT NULL CHECK (known_asset_count >= 0),
+            unique_vendor_count INTEGER NOT NULL CHECK (unique_vendor_count >= 0),
+            child_source_id INTEGER REFERENCES network_sources(id) ON DELETE RESTRICT,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            observed_at TEXT NOT NULL,
+            correlation_run_id INTEGER NOT NULL
+                REFERENCES network_correlation_runs(id) ON DELETE RESTRICT,
+            PRIMARY KEY(source_id, port_key),
+            CHECK (child_source_id IS NULL OR child_source_id != source_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_port_roles_role_source_idx
+        ON current_switch_port_roles(role, source_id, port_key)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX current_switch_port_roles_run_idx
+        ON current_switch_port_roles(correlation_run_id, source_id)
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1887,6 +1924,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (19, _migration_19),
     (20, _migration_20),
     (21, _migration_21),
+    (22, _migration_22),
 )
 
 

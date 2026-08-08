@@ -216,6 +216,42 @@ def test_inspect_asset_context_enriches_confirmed_attachment(tmp_path: Path) -> 
         conn.close()
 
 
+def test_confirmed_attachment_exposes_safe_current_port_role(tmp_path: Path) -> None:
+    from netctl.context_query import inspect_asset_context
+
+    conn = _context_db(tmp_path)
+    try:
+        topology_run_id = conn.execute(
+            "SELECT id FROM network_correlation_runs WHERE run_type = 'topology' ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        conn.execute(
+            """INSERT INTO current_switch_port_roles (
+                   source_id, port_key, role, confidence, mac_count,
+                   known_asset_count, unique_vendor_count, child_source_id,
+                   evidence_json, observed_at, correlation_run_id
+               ) VALUES (10, 'physical:7', 'shared_edge', 70, 3, 2, 1, NULL,
+                         '[{"type":"mac_density","private":"must-not-render"}]', ?, ?)""",
+            ("2026-07-22T12:00:00Z", topology_run_id),
+        )
+
+        context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+
+        assert context is not None
+        assert context["attachment"]["port"]["role"] == {
+            "name": "shared_edge",
+            "confidence": 70,
+            "mac_count": 3,
+            "known_asset_count": 2,
+            "unique_vendor_count": 1,
+            "child_source": None,
+            "reason": "Высокая плотность MAC без подтверждённого дочернего коммутатора",
+            "observed_at": "2026-07-22T12:00:00Z",
+        }
+        assert "must-not-render" not in json.dumps(context, ensure_ascii=False)
+    finally:
+        conn.close()
+
+
 def test_confirmed_attachment_exposes_safe_current_port_telemetry(
     tmp_path: Path,
 ) -> None:

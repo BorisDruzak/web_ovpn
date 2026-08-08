@@ -24,6 +24,19 @@ ATTACHMENT_REASON_LABELS = {
     "verified_backbone_port": "это подтверждённый uplink",
     "partial_collection": "сбор коммутатора неполный",
 }
+PORT_ROLE_REASON_LABELS = {
+    "confirmed_topology": "Порт участвует в подтверждённой топологии коммутаторов",
+    "lldp_child_switch": "LLDP подтверждает дочерний коммутатор",
+    "lldp_backbone": "LLDP подтверждает магистральное соединение",
+    "non_conflicting_topology": "Порт участвует в непротиворечивой топологии коммутаторов",
+    "single_endpoint": "На порту изучен один endpoint MAC",
+    "small_multi_mac": "На порту изучено несколько MAC; тип подключения не доказан",
+    "moderate_mac_density": "На порту повышенная плотность MAC без подтверждённого дочернего коммутатора",
+    "mac_density": "Высокая плотность MAC без подтверждённого дочернего коммутатора",
+    "switch_management_mac_seen": "На порту виден MAC управления коммутатором",
+    "topology_conflict": "Топологические данные для порта противоречат друг другу",
+    "no_learned_macs": "На порту нет изученных MAC",
+}
 MAX_ATTACHMENT_EVIDENCE_DEPTH = 16
 
 
@@ -173,6 +186,22 @@ def _competing_direct_candidates(evidence_json: object) -> set[tuple[int, str, s
     return candidates if len(candidates) > 1 else set()
 
 
+def _port_role_reason(evidence_json: object) -> str:
+    try:
+        decoded = json.loads(str(evidence_json or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(decoded, list):
+        return ""
+    for item in decoded[:16]:
+        if not isinstance(item, dict):
+            continue
+        evidence_type = item.get("type")
+        if isinstance(evidence_type, str) and evidence_type in PORT_ROLE_REASON_LABELS:
+            return PORT_ROLE_REASON_LABELS[evidence_type]
+    return ""
+
+
 def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int | None = None) -> dict[str, Any] | None:
     conditions = ["resolutions.asset_id = ?"]
     params: list[object] = [asset_id]
@@ -197,6 +226,14 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
                   telemetry.out_discards_delta AS telemetry_out_discards,
                   telemetry.telemetry_state AS telemetry_state,
                   telemetry.observed_at AS telemetry_observed_at,
+                  roles.role AS port_role,
+                  roles.confidence AS port_role_confidence,
+                  roles.mac_count AS port_role_mac_count,
+                  roles.known_asset_count AS port_role_known_asset_count,
+                  roles.unique_vendor_count AS port_role_unique_vendor_count,
+                  role_child.name AS port_role_child_source,
+                  roles.evidence_json AS port_role_evidence_json,
+                  roles.observed_at AS port_role_observed_at,
                   resolutions.evidence_json AS evidence_json
            FROM asset_attachment_resolutions AS resolutions
            LEFT JOIN network_sources AS sources ON sources.id = resolutions.selected_source_id
@@ -205,7 +242,14 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
            LEFT JOIN current_switch_port_telemetry AS telemetry
              ON telemetry.source_id = resolutions.selected_source_id
             AND telemetry.port_key = resolutions.selected_port_key
-           WHERE {' AND '.join(conditions)} ORDER BY confidence DESC, asset_interface_id LIMIT 1""",
+           LEFT JOIN current_switch_port_roles AS roles
+             ON roles.source_id = resolutions.selected_source_id
+            AND roles.port_key = resolutions.selected_port_key
+           LEFT JOIN network_sources AS role_child
+             ON role_child.id = roles.child_source_id
+           WHERE {' AND '.join(conditions)}
+           ORDER BY resolutions.confidence DESC, resolutions.asset_interface_id
+           LIMIT 1""",
         params,
     ).fetchone()
     if row is None:
@@ -259,6 +303,19 @@ def _attachment(conn: sqlite3.Connection, asset_id: int, asset_interface_id: int
         "key": port_key, "name": str(row["port_name"] or ""), "alias": str(row["port_alias"] or ""),
         "admin_status": str(row["port_admin_status"] or "unknown"), "oper_status": str(row["port_oper_status"] or "unknown"),
     }
+    if row["port_role"] is not None:
+        attachment["port"]["role"] = {
+            "name": str(row["port_role"]),
+            "confidence": int(row["port_role_confidence"]),
+            "mac_count": int(row["port_role_mac_count"]),
+            "known_asset_count": int(row["port_role_known_asset_count"]),
+            "unique_vendor_count": int(row["port_role_unique_vendor_count"]),
+            "child_source": str(row["port_role_child_source"] or "") or None,
+            "reason": _port_role_reason(row["port_role_evidence_json"]),
+            "observed_at": str(row["port_role_observed_at"] or ""),
+        }
+    else:
+        attachment["port"]["role"] = None
     if row["telemetry_state"] is None:
         attachment["port"]["telemetry"] = None
     else:

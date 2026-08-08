@@ -21,6 +21,7 @@ class AttachmentCandidate:
     score: int
     observed_at: str
     evidence: tuple[dict[str, Any], ...]
+    port_role: str = "unknown"
 
 
 def _active_interfaces(conn: sqlite3.Connection) -> dict[str, tuple[tuple[int, int], ...]]:
@@ -61,6 +62,7 @@ def _score(
     oper_status: str,
     successful_run: bool,
     verified_backbone_port: bool,
+    port_role: str,
 ) -> int:
     score = {"direct": 60, "uplink": 20, "unknown": 35}[candidate_class]
     if topology_depth is not None:
@@ -73,6 +75,10 @@ def _score(
         score += 5
     if verified_backbone_port:
         score -= 20
+    if port_role in {"backbone", "downstream_bridge"}:
+        score -= 30
+    elif port_role == "shared_edge":
+        score -= 15
     return max(0, min(100, score))
 
 
@@ -94,12 +100,15 @@ def attachment_candidates(
         """
         SELECT f.source_id, f.vlan_key, f.vlan_id, f.mac, f.port_key, f.status,
                f.last_seen_at, f.collector_run_id, p.oper_status,
-               runs.status AS collector_status, runs.outcomes_json
+               runs.status AS collector_status, runs.outcomes_json,
+               roles.role AS port_role, roles.confidence AS port_role_confidence
         FROM current_switch_fdb AS f
         LEFT JOIN switch_ports AS p
           ON p.source_id = f.source_id AND p.port_key = f.port_key
         LEFT JOIN switch_collection_runs AS runs
           ON runs.id = f.collector_run_id AND runs.source_id = f.source_id
+        LEFT JOIN current_switch_port_roles AS roles
+          ON roles.source_id = f.source_id AND roles.port_key = f.port_key
         ORDER BY f.source_id, f.vlan_key, f.mac, f.port_key
         """
     ).fetchall()
@@ -114,9 +123,10 @@ def attachment_candidates(
         runtime_asset_id = runtime_asset_by_source.get(source_id)
         port_key = str(row["port_key"])
         verified_backbone_port = (source_id, port_key) in backbone_ports
+        port_role = str(row["port_role"] or "unknown")
         candidate_class = (
             "uplink"
-            if verified_backbone_port
+            if verified_backbone_port or port_role in {"backbone", "downstream_bridge"}
             else ("direct" if row["oper_status"] is not None else "unknown")
         )
         topology_depth = depths.get(source_id)
@@ -135,6 +145,8 @@ def attachment_candidates(
                     "fdb_status": str(row["status"]),
                     "oper_status": str(row["oper_status"] or "unknown"),
                     "verified_backbone_port": verified_backbone_port,
+                    "port_role": port_role,
+                    "port_role_confidence": int(row["port_role_confidence"] or 0),
                 },
             )
             candidates.append(
@@ -154,9 +166,11 @@ def attachment_candidates(
                         str(row["oper_status"] or "unknown"),
                         successful_run,
                         verified_backbone_port,
+                        port_role,
                     ),
                     observed_at=str(row["last_seen_at"]),
                     evidence=evidence,
+                    port_role=port_role,
                 )
             )
     return tuple(
