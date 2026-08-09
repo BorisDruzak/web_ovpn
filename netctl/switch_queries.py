@@ -387,6 +387,11 @@ def _port_role_evidence(value: object) -> list[dict[str, object]]:
         "access_port_mac_threshold",
         "switch_management_mac_seen",
         "density_role",
+        "child_source",
+        "child_leaf_mac_count",
+        "matched_mac_count",
+        "coverage",
+        "child_management_mac_seen",
     }
     return [
         {key: item[key] for key in allowed if key in item}

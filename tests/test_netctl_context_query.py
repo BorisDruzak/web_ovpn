@@ -252,6 +252,60 @@ def test_confirmed_attachment_exposes_safe_current_port_role(tmp_path: Path) -> 
         conn.close()
 
 
+def test_confirmed_attachment_explains_fdb_subtree_child_role(tmp_path: Path) -> None:
+    """The asset card receives a concise reason, not raw subtree/private evidence."""
+    from netctl.context_query import inspect_asset_context
+
+    conn = _context_db(tmp_path)
+    try:
+        topology_run_id = conn.execute(
+            "SELECT id FROM network_correlation_runs WHERE run_type = 'topology' ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0]
+        conn.execute(
+            """INSERT INTO current_switch_port_roles (
+                   source_id, port_key, role, confidence, mac_count,
+                   known_asset_count, unique_vendor_count, child_source_id,
+                   evidence_json, observed_at, correlation_run_id
+               ) VALUES (10, 'physical:7', 'downstream_bridge', 94, 17, 2, 4, 20,
+                         ?, ?, ?)""",
+            (
+                json.dumps(
+                    [
+                        {
+                            "type": "fdb_subtree",
+                            "child_source": "distribution-a",
+                            "child_leaf_mac_count": 16,
+                            "matched_mac_count": 15,
+                            "coverage": 0.9375,
+                            "child_management_mac_seen": True,
+                            "private": "must-not-render",
+                        }
+                    ],
+                    separators=(",", ":"),
+                ),
+                "2026-07-22T12:00:00Z",
+                topology_run_id,
+            ),
+        )
+
+        context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+
+        assert context is not None
+        assert context["attachment"]["port"]["role"] == {
+            "name": "downstream_bridge",
+            "confidence": 94,
+            "mac_count": 17,
+            "known_asset_count": 2,
+            "unique_vendor_count": 4,
+            "child_source": "distribution-a",
+            "reason": "FDB-поддерево совпадает с MAC дочернего коммутатора",
+            "observed_at": "2026-07-22T12:00:00Z",
+        }
+        assert "must-not-render" not in json.dumps(context, ensure_ascii=False)
+    finally:
+        conn.close()
+
+
 def test_confirmed_attachment_exposes_safe_current_port_telemetry(
     tmp_path: Path,
 ) -> None:

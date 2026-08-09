@@ -481,6 +481,52 @@ def test_aggregate_link_evidence_uses_each_declared_confidence_rule() -> None:
     ]
 
 
+def test_aggregate_link_evidence_obeys_strict_conflict_hierarchy() -> None:
+    """A contradictory lower evidence tier must not replace a stronger port."""
+    from netctl.topology_reconcile import aggregate_link_evidence
+
+    links = aggregate_link_evidence(
+        (
+            # intent > exact LLDP > bidirectional management/FDB > subtree
+            _link_evidence(1, "intent-a", 2, "intent-b", "intent", 90),
+            _link_evidence(1, "lldp-a", 2, "lldp-b", "lldp_chassis_mac", 90),
+            _link_evidence(1, "fdb-a", 2, "", "fdb_management_mac", 70),
+            _link_evidence(1, "", 2, "fdb-b", "fdb_management_mac", 70),
+            _link_evidence(1, "subtree-a", 2, "subtree-b", "fdb_subtree", 92),
+            # exact LLDP > bidirectional management/FDB > subtree
+            _link_evidence(1, "lldp-c", 3, "lldp-d", "lldp_chassis_mac", 90),
+            _link_evidence(1, "fdb-c", 3, "", "fdb_management_mac", 70),
+            _link_evidence(1, "", 3, "fdb-d", "fdb_management_mac", 70),
+            _link_evidence(1, "subtree-c", 3, "subtree-d", "fdb_subtree", 94),
+            # bidirectional management/FDB > subtree
+            _link_evidence(2, "fdb-e", 3, "", "fdb_management_mac", 70),
+            _link_evidence(2, "", 3, "fdb-f", "fdb_management_mac", 70),
+            _link_evidence(2, "subtree-e", 3, "subtree-f", "fdb_subtree", 96),
+            # declared intent remains dominant even without corroborating evidence
+            _link_evidence(3, "intent-g", 4, "intent-h", "intent", 90),
+            _link_evidence(3, "subtree-g", 4, "subtree-h", "fdb_subtree", 91),
+        ),
+        "2026-07-22T08:00:00Z",
+    )
+
+    assert [
+        (
+            link.source_a_id,
+            link.port_a_key,
+            link.source_b_id,
+            link.port_b_key,
+            link.state,
+            link.confidence,
+        )
+        for link in links
+    ] == [
+        (1, "intent-a", 2, "intent-b", "confirmed", 100),
+        (1, "lldp-c", 3, "lldp-d", "inferred", 85),
+        (2, "fdb-e", 3, "fdb-f", "inferred", 70),
+        (3, "intent-g", 4, "intent-h", "inferred", 60),
+    ]
+
+
 def test_topology_depths_handle_missing_core_and_cycles() -> None:
     from netctl.topology_models import CurrentSwitchLink
     from netctl.topology_reconcile import topology_depths

@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from dataclasses import asdict
 from typing import Any, Iterable
 
+from .fdb_correlation import fdb_subtree_candidates, fdb_subtree_link_evidence
 from .source_identity import SourceIdentity, list_source_identities
 from .port_roles import infer_port_roles, replace_current_port_roles
 from .topology_evidence import collect_link_evidence
@@ -46,15 +47,61 @@ def _link_key(source_a_id: int, port_a_key: str, source_b_id: int, port_b_key: s
     return f"{source_a_id}:{port_a_key}|{source_b_id}:{port_b_key}"
 
 
+def _evidence_priorities(evidence: list[LinkEvidence]) -> dict[str, int]:
+    fdb_management = [
+        item for item in evidence if item.evidence_type == "fdb_management_mac"
+    ]
+    fdb_sides_resolved = bool(
+        {"a", "b"}
+        <= {
+            side
+            for item in fdb_management
+            for side, port_key in (
+                ("a", item.endpoint_a.port_key),
+                ("b", item.endpoint_b.port_key),
+            )
+            if port_key
+        }
+    )
+    return {
+        "intent": 500,
+        "lldp_chassis_mac": 400,
+        "fdb_management_mac": 300 if fdb_sides_resolved else 150,
+        "fdb_subtree": 200,
+        "mac_density": 100,
+    }
+
+
+def _preferred_port(
+    evidence: list[LinkEvidence],
+    *,
+    endpoint: str,
+    priorities: dict[str, int],
+) -> tuple[str, bool]:
+    ranked = [
+        (priorities.get(item.evidence_type, 0), getattr(item, endpoint).port_key)
+        for item in evidence
+        if getattr(item, endpoint).port_key
+    ]
+    if not ranked:
+        return "", False
+    strongest = max(priority for priority, _ in ranked)
+    ports = sorted({port for priority, port in ranked if priority == strongest})
+    return (ports[0], False) if len(ports) == 1 else ("", True)
+
+
 def _aggregate_pair(
     pair: tuple[int, int], evidence: list[LinkEvidence], observed_at: str
 ) -> CurrentSwitchLink:
     evidence = sorted(evidence, key=_evidence_key)
-    a_ports = sorted({item.endpoint_a.port_key for item in evidence if item.endpoint_a.port_key})
-    b_ports = sorted({item.endpoint_b.port_key for item in evidence if item.endpoint_b.port_key})
-    conflicting = len(a_ports) > 1 or len(b_ports) > 1
-    port_a_key = a_ports[0] if len(a_ports) == 1 else ""
-    port_b_key = b_ports[0] if len(b_ports) == 1 else ""
+    priorities = _evidence_priorities(evidence)
+    port_a_key, a_conflicting = _preferred_port(
+        evidence, endpoint="endpoint_a", priorities=priorities
+    )
+    port_b_key, b_conflicting = _preferred_port(
+        evidence, endpoint="endpoint_b", priorities=priorities
+    )
+    conflicting = a_conflicting or b_conflicting
     evidence_types = {item.evidence_type for item in evidence}
     intent_ids = sorted({item.intent_link_stable_id for item in evidence if item.intent_link_stable_id})
     intent_link_stable_id = intent_ids[0] if len(intent_ids) == 1 else ""
@@ -66,10 +113,22 @@ def _aggregate_pair(
         confidence = min(100, max(item.confidence for item in evidence) + 10)
     elif "lldp_chassis_mac" in evidence_types:
         state, confidence = "inferred", 85
-    elif "fdb_management_mac" in evidence_types:
+    elif (
+        "fdb_management_mac" in evidence_types
+        and priorities["fdb_management_mac"] == 300
+    ):
         state, confidence = "inferred", 70
     elif "intent" in evidence_types:
         state, confidence = "inferred", (60 if port_a_key and port_b_key else 45)
+    elif "fdb_subtree" in evidence_types:
+        state = "inferred"
+        confidence = max(
+            item.confidence
+            for item in evidence
+            if item.evidence_type == "fdb_subtree"
+        )
+    elif "fdb_management_mac" in evidence_types:
+        state, confidence = "inferred", 70
     else:
         state, confidence = "ambiguous", 0
 
@@ -308,7 +367,20 @@ def reconcile_topology(
     run_id = _insert_run(conn, observed_at, source_watermark)
     try:
         identities = list_source_identities(conn)
-        links = aggregate_link_evidence(collect_link_evidence(conn, identities), observed_at)
+        stronger_evidence = collect_link_evidence(conn, identities)
+        stronger_links = aggregate_link_evidence(stronger_evidence, observed_at)
+        subtree_candidates = fdb_subtree_candidates(
+            conn, identities, known_links=stronger_links
+        )
+        links = aggregate_link_evidence(
+            (
+                *stronger_evidence,
+                *fdb_subtree_link_evidence(
+                    subtree_candidates, stronger_links=stronger_links
+                ),
+            ),
+            observed_at,
+        )
         roots = {identity.source_id for identity in identities if identity.topology_role == "core"}
         depths = topology_depths(links, roots)
         port_roles = infer_port_roles(
@@ -317,6 +389,7 @@ def reconcile_topology(
             identities=identities,
             depths=depths,
             observed_at=observed_at,
+            subtree_candidates=subtree_candidates,
         )
         conn.execute("BEGIN IMMEDIATE")
         event_count = _replace_current_links(conn, links, run_id, observed_at)

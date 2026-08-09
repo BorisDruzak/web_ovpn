@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 from .fdb_correlation import (
     DEFAULT_ACCESS_PORT_MAC_THRESHOLD,
     PortMacSummary,
+    SubtreeCandidate,
     access_port_mac_thresholds,
     port_mac_summaries,
 )
@@ -83,6 +84,7 @@ def _topology_assignments(
     *,
     depths: Mapping[int, int],
     identities: Mapping[int, SourceIdentity],
+    subtree_candidates: Iterable[SubtreeCandidate],
 ) -> tuple[
     dict[tuple[int, str], tuple[int, str, int, int | None, dict[str, Any]]],
     set[tuple[int, str]],
@@ -138,6 +140,18 @@ def _topology_assignments(
                         {"type": "confirmed_topology", "peer_source_id": peer_id},
                     )
             continue
+        if "intent" in evidence_types:
+            for source_id, port_key, peer_id in endpoints:
+                if port_key:
+                    assign(
+                        (source_id, port_key),
+                        275,
+                        "backbone",
+                        95,
+                        None,
+                        {"type": "intent_topology", "peer_source_id": peer_id},
+                    )
+            continue
         if "lldp_chassis_mac" in evidence_types:
             parent_id = _parent_source(
                 link.source_a_id,
@@ -161,17 +175,83 @@ def _topology_assignments(
                     },
                 )
             continue
-        if link.state == "inferred":
+        management_sides = {
+            endpoint.source_id
+            for item in link.evidence
+            if item.evidence_type == "fdb_management_mac"
+            for endpoint in (item.endpoint_a, item.endpoint_b)
+            if endpoint.port_key
+        }
+        if {link.source_a_id, link.source_b_id} <= management_sides:
             for source_id, port_key, peer_id in endpoints:
                 if port_key:
                     assign(
                         (source_id, port_key),
-                        200,
+                        225,
                         "backbone",
                         95,
                         None,
-                        {"type": "non_conflicting_topology", "peer_source_id": peer_id},
+                        {
+                            "type": "bidirectional_management_fdb",
+                            "peer_source_id": peer_id,
+                        },
                     )
+            continue
+        if "fdb_subtree" in evidence_types:
+            continue
+        if link.state == "inferred":
+            one_sided_management = "fdb_management_mac" in evidence_types
+            for source_id, port_key, peer_id in endpoints:
+                if port_key:
+                    assign(
+                        (source_id, port_key),
+                        125 if one_sided_management else 200,
+                        "backbone",
+                        70 if one_sided_management else 95,
+                        None,
+                        {
+                            "type": (
+                                "one_sided_management_fdb"
+                                if one_sided_management
+                                else "non_conflicting_topology"
+                            ),
+                            "peer_source_id": peer_id,
+                        },
+                    )
+    for candidate in sorted(
+        subtree_candidates,
+        key=lambda item: (
+            item.parent_source_id,
+            item.parent_port_key,
+            item.child_source_id,
+            item.child_port_key,
+        ),
+    ):
+        assign(
+            (candidate.parent_source_id, candidate.parent_port_key),
+            150,
+            "downstream_bridge",
+            candidate.confidence,
+            candidate.child_source_id,
+            candidate.evidence,
+        )
+        if candidate.child_port_key:
+            assign(
+                (candidate.child_source_id, candidate.child_port_key),
+                150,
+                "backbone",
+                candidate.confidence,
+                None,
+                {
+                    "type": "fdb_subtree_backbone",
+                    "peer_source_id": candidate.parent_source_id,
+                    **{
+                        key: value
+                        for key, value in candidate.evidence.items()
+                        if key != "type"
+                    },
+                },
+            )
     return assignments, conflicts
 
 
@@ -216,6 +296,7 @@ def infer_port_roles(
     identities: Iterable[SourceIdentity],
     depths: Mapping[int, int],
     observed_at: str,
+    subtree_candidates: Iterable[SubtreeCandidate] = (),
 ) -> tuple[PortRole, ...]:
     """Infer one deterministic current role for every observed or linked switch port."""
     identities = tuple(identities)
@@ -233,7 +314,10 @@ def infer_port_roles(
                 )
     thresholds = access_port_mac_thresholds(conn)
     assignments, conflicts = _topology_assignments(
-        links, depths=depths, identities=identity_by_source
+        links,
+        depths=depths,
+        identities=identity_by_source,
+        subtree_candidates=subtree_candidates,
     )
     roles: list[PortRole] = []
     for key, summary in sorted(summaries.items()):

@@ -36,6 +36,11 @@ PORT_ROLE_REASON_LABELS = {
     "switch_management_mac_seen": "На порту виден MAC управления коммутатором",
     "topology_conflict": "Топологические данные для порта противоречат друг другу",
     "no_learned_macs": "На порту нет изученных MAC",
+    "fdb_subtree": "FDB-поддерево совпадает с MAC дочернего коммутатора",
+    "fdb_subtree_backbone": "FDB-поддерево подтверждает uplink к родительскому коммутатору",
+    "bidirectional_management_fdb": "Взаимные management MAC подтверждают соединение коммутаторов",
+    "one_sided_management_fdb": "Management MAC указывает на возможное соединение коммутаторов",
+    "intent_topology": "Порт участвует в заявленной топологии коммутаторов",
 }
 MAX_ATTACHMENT_EVIDENCE_DEPTH = 16
 
