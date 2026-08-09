@@ -1,7 +1,7 @@
 ---
 - name: Check ALT Group Policy setup command
   ansible.builtin.stat:
-    path: /usr/bin/gpupdate-setup
+    path: /usr/sbin/gpupdate-setup
   register: alt_group_policy_setup_command
 
 - name: Require ALT Group Policy setup command

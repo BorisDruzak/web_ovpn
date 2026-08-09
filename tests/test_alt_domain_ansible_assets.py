@@ -94,7 +94,7 @@ def test_group_policy_installation_precedes_join_and_enablement_follows_it() -> 
     ]
     assert "alt_group_policy_prerequisite_packages" in prerequisites
     assert "Check ALT Group Policy setup command" in client
-    assert "path: /usr/bin/gpupdate-setup" in client
+    assert "path: /usr/sbin/gpupdate-setup" in client
     assert client.index("Check ALT Group Policy setup command") < client.index(
         "Enable the ALT Group Policy workstation profile after domain join"
     )
