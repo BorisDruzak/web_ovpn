@@ -1911,9 +1911,16 @@ def normalize_asset_fingerprint_panel(context: object) -> dict[str, Any]:
         if raw_status in {"not_run", "running", "success", "failed"}
         else "unavailable"
     )
+    raw_generation = nmap.get("id")
+    generation = (
+        str(raw_generation)
+        if type(raw_generation) is int and raw_generation > 0
+        else ""
+    )
     return {
         "status": status,
         "fresh": nmap.get("fresh") is True,
+        "generation": generation,
         "device_type": device_type,
         "confidence": confidence,
         "vendor": vendor,

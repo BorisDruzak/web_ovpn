@@ -712,6 +712,7 @@ def test_network_asset_fingerprint_status_requires_login_and_returns_only_panel_
                     "alternatives": [{"device_type": "server", "score": 10}],
                 },
                 "fingerprint": {
+                    "id": 17,
                     "status": "success",
                     "fresh": True,
                     "target_ip": "192.168.100.55",
@@ -771,6 +772,7 @@ def test_network_asset_fingerprint_status_requires_login_and_returns_only_panel_
     assert response.json() == {
         "status": "success",
         "fresh": True,
+        "generation": "17",
         "device_type": "network",
         "confidence": 96,
         "vendor": "MikroTik",
@@ -849,6 +851,7 @@ def test_network_asset_card_renders_cached_normalized_fingerprint_panels(
                         ],
                     },
                     "fingerprint": {
+                        "id": 17,
                         "status": "success",
                         "fresh": True,
                         "finished_at": "2026-08-09T10:00:01Z",
@@ -912,6 +915,8 @@ def test_network_asset_card_renders_cached_normalized_fingerprint_panels(
     ):
         assert value in page.text
     assert 'data-fingerprint-panel' in page.text
+    assert 'data-initial-status="success"' in page.text
+    assert 'data-initial-generation="17"' in page.text
     assert 'data-ensure-url="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01/fingerprint/ensure"' in page.text
     assert 'data-status-url="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01/fingerprint/status"' in page.text
     assert 'network-asset-fingerprint.js' in page.text

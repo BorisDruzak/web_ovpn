@@ -48,6 +48,8 @@
   data-ensure-url="/network/assets/{{ asset_key|urlencode }}/fingerprint/ensure"
   data-status-url="/network/assets/{{ asset_key|urlencode }}/fingerprint/status"
   data-csrf-token="{{ csrf_token(request) }}"
+  data-initial-status="{{ fingerprint_panel.get('status') }}"
+  data-initial-generation="{{ fingerprint_panel.get('generation') }}"
 >
   <h2>Device fingerprint</h2>
   <p data-fingerprint-state role="status">

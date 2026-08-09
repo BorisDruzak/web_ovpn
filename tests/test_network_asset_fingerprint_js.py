@@ -287,7 +287,7 @@ const { createFingerprintPoller } = require(process.argv[1]);
     fetchImpl: async (_url, options) => {
       calls += 1;
       if (options.method === "POST") throw new Error("ensure unavailable");
-      return {ok: true, status: 200, json: async () => ({status: "failed"})};
+      return {ok: true, status: 200, json: async () => ({status: "failed", generation: "new-run"})};
     },
     now: () => 0,
     isVisible: () => true,
@@ -369,6 +369,86 @@ const { createFingerprintPoller } = require(process.argv[1]);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(statusCalls, 3);
   assert.equal(timers.length, 0, "fresh success is terminal");
+})();
+"""
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="node is required for browser lifecycle tests")
+def test_fingerprint_poller_ignores_stale_failure_until_new_run_generation_finishes():
+    run_node(
+        r"""
+const assert = require("node:assert/strict");
+const { createFingerprintPoller } = require(process.argv[1]);
+
+(async () => {
+  const statuses = [
+    {status: "failed", fresh: false, generation: "old-run"},
+    {status: "running", fresh: false, generation: "new-run"},
+    {status: "failed", fresh: false, generation: "new-run"},
+  ];
+  const timers = [];
+  let statusCalls = 0;
+  const poller = createFingerprintPoller({
+    ensureUrl: "/ensure",
+    statusUrl: "/status",
+    csrfToken: "csrf",
+    initialStatus: "failed",
+    initialGeneration: "old-run",
+    fetchImpl: async (_url, options) => {
+      if (options.method === "POST") return {ok: true, status: 202};
+      const payload = statuses[statusCalls++];
+      return {ok: true, status: 200, json: async () => payload};
+    },
+    now: () => 0,
+    isVisible: () => true,
+    setTimer: (fn, delay) => {
+      const timer = {fn, delay};
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: () => {},
+    render: () => {},
+  });
+
+  await poller.start();
+  assert.equal(statusCalls, 1);
+  assert.equal(timers.length, 1, "the pre-ensure failed generation is not terminal");
+
+  timers.shift().fn();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(statusCalls, 2);
+  assert.equal(timers.length, 1);
+
+  timers.shift().fn();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(statusCalls, 3);
+  assert.equal(timers.length, 0, "failure of the new generation is terminal");
+
+  let fastStatusCalls = 0;
+  const fastPoller = createFingerprintPoller({
+    ensureUrl: "/ensure",
+    statusUrl: "/status",
+    csrfToken: "csrf",
+    initialStatus: "failed",
+    initialGeneration: "old-run",
+    fetchImpl: async (_url, options) => {
+      if (options.method === "POST") return {ok: true, status: 202};
+      fastStatusCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({status: "failed", fresh: false, generation: "fast-new-run"}),
+      };
+    },
+    now: () => 0,
+    isVisible: () => true,
+    setTimer: () => { throw new Error("a changed failed generation is terminal"); },
+    clearTimer: () => {},
+    render: () => {},
+  });
+  await fastPoller.start();
+  assert.equal(fastStatusCalls, 1, "a fast new failure needs no observed running poll");
 })();
 """
     )

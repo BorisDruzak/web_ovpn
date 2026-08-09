@@ -29,6 +29,10 @@
     let inFlight = false;
     let timer = null;
     let startedAt = 0;
+    const initialGeneration = String(options.initialGeneration || "");
+    let activeGeneration =
+      options.initialStatus === "running" ? initialGeneration : "";
+    let observedRunning = options.initialStatus === "running";
 
     function beforeDeadline() {
       return now() - startedAt < POLL_DEADLINE_MS;
@@ -49,6 +53,21 @@
       }, POLL_DELAY_MS);
     }
 
+    function isTerminal(payload) {
+      const generation = String(payload.generation || "");
+      if (payload.status === "running") {
+        observedRunning = true;
+        if (generation) activeGeneration = generation;
+        return false;
+      }
+      if (payload.status === "success" && payload.fresh === true) return true;
+      if (payload.status !== "failed") return false;
+      if (generation && generation !== initialGeneration) return true;
+      return observedRunning && (
+        !activeGeneration || !generation || generation === activeGeneration
+      );
+    }
+
     async function poll() {
       if (stopped || inFlight || !isVisible() || !beforeDeadline()) return;
       inFlight = true;
@@ -61,7 +80,7 @@
         if (response.ok) {
           const payload = await response.json();
           render(payload);
-          if (payload.status === "failed" || (payload.status === "success" && payload.fresh === true)) {
+          if (isTerminal(payload)) {
             stopped = true;
             keepPolling = false;
           }
@@ -174,6 +193,8 @@
       ensureUrl: panel.dataset.ensureUrl,
       statusUrl: panel.dataset.statusUrl,
       csrfToken: panel.dataset.csrfToken,
+      initialStatus: panel.dataset.initialStatus,
+      initialGeneration: panel.dataset.initialGeneration,
       fetchImpl: windowRef.fetch.bind(windowRef),
       now: () => windowRef.Date.now(),
       isVisible: () => !documentRef.hidden,
