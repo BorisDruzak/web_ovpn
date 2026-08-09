@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import time
 import uuid
@@ -67,6 +68,7 @@ app.include_router(api_router)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 dashboard_snapshot_cache = SnapshotCache()
+log = logging.getLogger(__name__)
 
 
 def status_class(value: Any) -> str:
@@ -1816,6 +1818,115 @@ def validate_runtime_asset_key(value: object) -> str:
     return asset_key
 
 
+FINGERPRINT_EVIDENCE_LABELS = {
+    "endpoint_agent": "Agent",
+    "snmp": "SNMP",
+    "lldp": "LLDP",
+    "nmap_os": "Nmap",
+    "nmap_service": "Nmap",
+    "oui": "OUI",
+    "port_role": "FDB",
+    "dns_ptr": "DNS",
+    "hostname": "Hostname",
+    "display_name": "Name",
+    "legacy": "Legacy",
+}
+
+
+def _fingerprint_text(value: object, limit: int = 240) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def normalize_asset_fingerprint_panel(context: object) -> dict[str, Any]:
+    """Whitelist only normalized values rendered by the fingerprint card panel."""
+    safe_context = context if isinstance(context, dict) else {}
+    device = safe_context.get("device_fingerprint")
+    device = device if isinstance(device, dict) else {}
+    nmap = safe_context.get("fingerprint")
+    nmap = nmap if isinstance(nmap, dict) else {}
+
+    raw_type = _fingerprint_text(device.get("device_type"), 32).lower()
+    device_type = raw_type if raw_type in DEVICE_TYPE_LABELS else "unknown"
+    raw_confidence = device.get("confidence")
+    confidence = (
+        raw_confidence
+        if type(raw_confidence) is int and 0 <= raw_confidence <= 100
+        else 0
+    )
+
+    evidence: list[dict[str, str]] = []
+    vendor = ""
+    raw_evidence = device.get("evidence")
+    if isinstance(raw_evidence, list):
+        for item in raw_evidence[:32]:
+            if not isinstance(item, dict):
+                continue
+            provider = _fingerprint_text(item.get("provider"), 32).lower()
+            source = FINGERPRINT_EVIDENCE_LABELS.get(provider)
+            summary = _fingerprint_text(item.get("summary"))
+            if not source or not summary:
+                continue
+            evidence.append({"source": source, "summary": summary})
+            if provider == "oui" and not vendor:
+                vendor = _fingerprint_text(summary.rsplit(":", 1)[-1], 128)
+            if len(evidence) >= 16:
+                break
+
+    services: list[dict[str, object]] = []
+    raw_ports = nmap.get("ports")
+    if isinstance(raw_ports, list):
+        for item in raw_ports[:128]:
+            if not isinstance(item, dict) or item.get("state") != "open":
+                continue
+            port = item.get("port")
+            if type(port) is not int or not 1 <= port <= 65535:
+                continue
+            protocol = _fingerprint_text(item.get("protocol"), 16).lower()
+            if protocol not in {"tcp", "udp", "sctp"}:
+                continue
+            services.append(
+                {
+                    "port": port,
+                    "protocol": protocol,
+                    "service": _fingerprint_text(item.get("service_name"), 80),
+                    "product": _fingerprint_text(item.get("product"), 160),
+                    "version": _fingerprint_text(item.get("version"), 80),
+                }
+            )
+            if len(services) >= 64:
+                break
+
+    os_name = ""
+    accuracy = None
+    raw_matches = nmap.get("os_matches")
+    if isinstance(raw_matches, list) and raw_matches and isinstance(raw_matches[0], dict):
+        os_name = _fingerprint_text(raw_matches[0].get("name"), 160)
+        raw_accuracy = raw_matches[0].get("accuracy")
+        if type(raw_accuracy) is int and 0 <= raw_accuracy <= 100:
+            accuracy = raw_accuracy
+
+    raw_status = _fingerprint_text(nmap.get("status"), 32).lower()
+    status = (
+        raw_status
+        if raw_status in {"not_run", "running", "success", "failed"}
+        else "unavailable"
+    )
+    return {
+        "status": status,
+        "fresh": nmap.get("fresh") is True,
+        "device_type": device_type,
+        "confidence": confidence,
+        "vendor": vendor,
+        "os": os_name,
+        "nmap_accuracy": accuracy,
+        "last_fingerprint_at": _fingerprint_text(
+            nmap.get("finished_at") or nmap.get("started_at"), 40
+        ),
+        "services": services,
+        "evidence": evidence,
+    }
+
+
 @app.get("/network/hosts", response_class=HTMLResponse)
 def network_hosts(
     request: Request,
@@ -1872,6 +1983,16 @@ def network_endpoint_agent_status(request: Request, db: Session = Depends(get_db
     return JSONResponse(endpoint_agent_refresh_status(db))
 
 
+def run_asset_fingerprint_ensure(asset_key: str) -> None:
+    try:
+        run_netctl(
+            ["fingerprint", "ensure", "--asset-key", asset_key],
+            timeout=45,
+        )
+    except NetctlError:
+        log.warning("asset fingerprint background ensure failed asset_key=%s", asset_key)
+
+
 @app.get("/network/assets/{asset_key}", response_class=HTMLResponse)
 def network_asset_detail(asset_key: str, request: Request, db: Session = Depends(get_db)):
     require_user(request, db)
@@ -1884,10 +2005,40 @@ def network_asset_detail(asset_key: str, request: Request, db: Session = Depends
         {
             "asset_key": valid_asset_key,
             "context": context if isinstance(context, dict) else {},
+            "fingerprint_panel": normalize_asset_fingerprint_panel(context),
             "error": error,
         },
         db,
     )
+
+
+@app.post("/network/assets/{asset_key}/fingerprint/ensure")
+async def network_asset_fingerprint_ensure(
+    asset_key: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    require_user(request, db)
+    await verify_csrf(request)
+    valid_asset_key = validate_runtime_asset_key(asset_key)
+    background_tasks.add_task(run_asset_fingerprint_ensure, valid_asset_key)
+    return JSONResponse({"status": "scheduled"}, status_code=202)
+
+
+@app.get("/network/assets/{asset_key}/fingerprint/status")
+def network_asset_fingerprint_status(
+    asset_key: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    require_user(request, db)
+    valid_asset_key = validate_runtime_asset_key(asset_key)
+    data, _error = net_cli_call(
+        request,
+        ["context-view", "asset", "--asset-key", valid_asset_key],
+    )
+    return JSONResponse(normalize_asset_fingerprint_panel(data.get("context")))
 
 
 @app.post("/network/assets/{asset_key}/name")

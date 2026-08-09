@@ -564,6 +564,368 @@ def test_network_asset_card_requires_login_and_renders_confirmed_attachment(tmp_
     assert "Raw JSON" not in page.text
 
 
+def test_network_asset_fingerprint_ensure_requires_login_and_csrf_before_scheduling(
+    tmp_path, monkeypatch
+):
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    scheduled = []
+    monkeypatch.setattr(
+        app.main.BackgroundTasks,
+        "add_task",
+        lambda self, func, *args, **kwargs: scheduled.append((func, args, kwargs)),
+    )
+
+    denied = client.post(
+        "/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/ensure",
+        follow_redirects=False,
+    )
+    assert denied.status_code == 303
+    assert denied.headers["location"] == "/login"
+    assert scheduled == []
+
+    login(client)
+    rejected = client.post(
+        "/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/ensure",
+        data={"csrf_token": "wrong"},
+    )
+    assert rejected.status_code == 400
+    assert scheduled == []
+
+
+def test_network_asset_card_get_never_ensures_and_post_schedules_asset_key_only(
+    tmp_path, monkeypatch
+):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    import app.main
+
+    scheduled = []
+    monkeypatch.setattr(
+        app.main.BackgroundTasks,
+        "add_task",
+        lambda self, func, *args, **kwargs: scheduled.append((func, args, kwargs)),
+    )
+
+    page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
+    assert page.status_code == 200
+    invoked = (tmp_path / "netctl-invoked-cli.txt").read_text(encoding="utf-8").splitlines()
+    assert invoked == [
+        "context-view asset --asset-key mac:AA:BB:CC:DD:EE:01"
+    ]
+
+    csrf = page.text.split('name="csrf_token" value="')[1].split('"')[0]
+    accepted = client.post(
+        "/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/ensure",
+        data={
+            "csrf_token": csrf,
+            "ip": "203.0.113.77",
+            "ports": "1-65535",
+            "script": "vuln",
+        },
+    )
+
+    assert accepted.status_code == 202
+    assert accepted.json() == {"status": "scheduled"}
+    assert len(scheduled) == 1
+    task, args, kwargs = scheduled[0]
+    assert task is app.main.run_asset_fingerprint_ensure
+    assert args == ("mac:AA:BB:CC:DD:EE:01",)
+    assert kwargs == {}
+    assert (tmp_path / "netctl-invoked-cli.txt").read_text(encoding="utf-8").splitlines() == invoked
+
+    invalid = client.post(
+        f"/network/assets/{'x' * 256}/fingerprint/ensure",
+        data={"csrf_token": csrf},
+    )
+    assert invalid.status_code == 404
+    assert len(scheduled) == 1
+
+
+def test_network_asset_fingerprint_background_task_runs_one_bounded_netctl_ensure(
+    tmp_path, monkeypatch
+):
+    make_client(tmp_path, monkeypatch)
+    import app.main
+
+    app.main.run_asset_fingerprint_ensure("mac:AA:BB:CC:DD:EE:01")
+
+    assert (tmp_path / "netctl-invoked-cli.txt").read_text(encoding="utf-8").splitlines() == [
+        "fingerprint ensure --asset-key mac:AA:BB:CC:DD:EE:01"
+    ]
+
+
+def test_network_asset_fingerprint_background_failure_isolated_from_card(
+    tmp_path, monkeypatch
+):
+    make_client(tmp_path, monkeypatch)
+    import app.main
+
+    def fail(*_args, **_kwargs):
+        raise app.main.NetctlError(
+            "fingerprint failed",
+            returncode=1,
+            stdout='{"raw_xml":"private"}',
+            stderr="private command failure",
+        )
+
+    monkeypatch.setattr(app.main, "run_netctl", fail)
+
+    app.main.run_asset_fingerprint_ensure("mac:AA:BB:CC:DD:EE:01")
+
+
+def test_network_asset_fingerprint_status_requires_login_and_returns_only_panel_fields(
+    tmp_path, monkeypatch
+):
+    client, _ = make_client(tmp_path, monkeypatch)
+    import app.main
+
+    calls = []
+
+    def cached_context(args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "status": "ok",
+            "context": {
+                "device_fingerprint": {
+                    "device_type": "network",
+                    "confidence": 96,
+                    "computed_at": "2026-08-09T10:00:01Z",
+                    "evidence": [
+                        {
+                            "provider": "oui",
+                            "signal": "mikrotik",
+                            "candidate_type": "network",
+                            "weight": 50,
+                            "summary": "Local OUI vendor suggests network: MikroTik",
+                            "raw": "must-not-leak",
+                        },
+                        {
+                            "provider": "nmap_os",
+                            "signal": "router",
+                            "candidate_type": "network",
+                            "weight": 80,
+                            "summary": "Nmap OS class suggests network at 98% accuracy",
+                        },
+                    ],
+                    "alternatives": [{"device_type": "server", "score": 10}],
+                },
+                "fingerprint": {
+                    "status": "success",
+                    "fresh": True,
+                    "target_ip": "192.168.100.55",
+                    "started_at": "2026-08-09T10:00:00Z",
+                    "finished_at": "2026-08-09T10:00:01Z",
+                    "nmap_version": "7.95",
+                    "raw_xml": "<private />",
+                    "stderr": "private error",
+                    "command": "nmap --script vuln 192.168.100.55",
+                    "vulnerabilities": [{"cve": "CVE-2099-0001"}],
+                    "ports": [
+                        {
+                            "port": 22,
+                            "protocol": "tcp",
+                            "state": "open",
+                            "service_name": "ssh",
+                            "product": "RouterOS sshd",
+                            "version": "7.15",
+                            "extra_info": "private",
+                            "cpes": ["cpe:/o:mikrotik:routeros"],
+                        },
+                        {
+                            "port": 80,
+                            "protocol": "tcp",
+                            "state": "closed",
+                            "service_name": "http",
+                            "product": "must-not-render",
+                            "version": "",
+                        },
+                    ],
+                    "os_matches": [
+                        {
+                            "name": "MikroTik RouterOS 7.15",
+                            "accuracy": 98,
+                            "classes": [{"vendor": "private"}],
+                        }
+                    ],
+                },
+            },
+        }
+
+    monkeypatch.setattr(app.main, "run_netctl", cached_context)
+
+    denied = client.get(
+        "/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/status",
+        follow_redirects=False,
+    )
+    assert denied.status_code == 303
+    assert calls == []
+
+    login(client)
+    response = client.get(
+        "/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/status"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "success",
+        "fresh": True,
+        "device_type": "network",
+        "confidence": 96,
+        "vendor": "MikroTik",
+        "os": "MikroTik RouterOS 7.15",
+        "nmap_accuracy": 98,
+        "last_fingerprint_at": "2026-08-09T10:00:01Z",
+        "services": [
+            {
+                "port": 22,
+                "protocol": "tcp",
+                "service": "ssh",
+                "product": "RouterOS sshd",
+                "version": "7.15",
+            }
+        ],
+        "evidence": [
+            {
+                "source": "OUI",
+                "summary": "Local OUI vendor suggests network: MikroTik",
+            },
+            {
+                "source": "Nmap",
+                "summary": "Nmap OS class suggests network at 98% accuracy",
+            },
+        ],
+    }
+    assert calls[0][0] == [
+        "context-view",
+        "asset",
+        "--asset-key",
+        "mac:AA:BB:CC:DD:EE:01",
+    ]
+    serialized = json.dumps(response.json())
+    for forbidden in (
+        "target_ip",
+        "raw_xml",
+        "stderr",
+        "command",
+        "vulnerabilities",
+        "CVE-",
+        "cpes",
+        "extra_info",
+        "must-not-render",
+    ):
+        assert forbidden not in serialized
+
+
+def test_network_asset_card_renders_cached_normalized_fingerprint_panels(
+    tmp_path, monkeypatch
+):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    import app.main
+
+    def cached_card(_request, _args, timeout=None):
+        return (
+            {
+                "context": {
+                    "asset": {
+                        "asset_key": "mac:AA:BB:CC:DD:EE:01",
+                        "display_name": "Router",
+                    },
+                    "device_fingerprint": {
+                        "device_type": "network",
+                        "confidence": 96,
+                        "evidence": [
+                            {
+                                "provider": "oui",
+                                "summary": "Local OUI vendor suggests network: MikroTik",
+                                "raw": "must-not-leak",
+                            },
+                            {
+                                "provider": "lldp",
+                                "summary": "LLDP capabilities identify bridge",
+                            },
+                        ],
+                    },
+                    "fingerprint": {
+                        "status": "success",
+                        "fresh": True,
+                        "finished_at": "2026-08-09T10:00:01Z",
+                        "raw_xml": "<must-not-render />",
+                        "stderr": "private command error",
+                        "command": "nmap --script vuln 192.0.2.1",
+                        "ports": [
+                            {
+                                "port": 22,
+                                "protocol": "tcp",
+                                "state": "open",
+                                "service_name": "ssh",
+                                "product": "RouterOS sshd",
+                                "version": "7.15",
+                            },
+                            {
+                                "port": 80,
+                                "protocol": "tcp",
+                                "state": "closed",
+                                "service_name": "http",
+                                "product": "must-not-render",
+                                "version": "",
+                            },
+                        ],
+                        "os_matches": [
+                            {"name": "MikroTik RouterOS 7.15", "accuracy": 98}
+                        ],
+                    },
+                }
+            },
+            None,
+        )
+
+    monkeypatch.setattr(app.main, "net_cli_call", cached_card)
+
+    page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
+
+    assert page.status_code == 200
+    assert "Device fingerprint" in page.text
+    assert "Network services" in page.text
+    assert "Evidence" in page.text
+    for label in (
+        "\u0422\u0438\u043f",
+        "\u0423\u0432\u0435\u0440\u0435\u043d\u043d\u043e\u0441\u0442\u044c",
+        "OUI/vendor",
+        "OS",
+        "Nmap accuracy",
+        "Last fingerprint time",
+    ):
+        assert label in page.text
+    for value in (
+        "network",
+        "96%",
+        "MikroTik",
+        "MikroTik RouterOS 7.15",
+        "98%",
+        "2026-08-09T10:00:01Z",
+        "RouterOS sshd",
+        "LLDP capabilities identify bridge",
+        "\u0410\u043a\u0442\u0443\u0430\u043b\u044c\u043d\u043e",
+    ):
+        assert value in page.text
+    assert 'data-fingerprint-panel' in page.text
+    assert 'data-ensure-url="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01/fingerprint/ensure"' in page.text
+    assert 'data-status-url="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01/fingerprint/status"' in page.text
+    assert 'network-asset-fingerprint.js' in page.text
+    for forbidden in (
+        "must-not-render",
+        "must-not-leak",
+        "raw_xml",
+        "stderr",
+        "nmap --script",
+        "CVE-",
+    ):
+        assert forbidden not in page.text
+
+
 @pytest.mark.parametrize(
     "query",
     ["FINANCE", "pc-buh-01", "192.168.100.55", "AA:BB:CC:DD:EE:01", "mac:AA:BB:CC:DD:EE:01"],

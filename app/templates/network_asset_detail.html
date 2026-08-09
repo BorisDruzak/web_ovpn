@@ -42,6 +42,57 @@
   <p>{% if freshness.get("attachment_reconciled_at") %}Вложения: восстановлены{% else %}Вложения: нужно обновление{% endif %}</p>
 </section>
 
+<section
+  class="panel"
+  data-fingerprint-panel
+  data-ensure-url="/network/assets/{{ asset_key|urlencode }}/fingerprint/ensure"
+  data-status-url="/network/assets/{{ asset_key|urlencode }}/fingerprint/status"
+  data-csrf-token="{{ csrf_token(request) }}"
+>
+  <h2>Device fingerprint</h2>
+  <p data-fingerprint-state role="status">
+    {% if fingerprint_panel.get("status") == "running" %}Обновление...
+    {% elif fingerprint_panel.get("status") == "success" and fingerprint_panel.get("fresh") %}Актуально
+    {% elif fingerprint_panel.get("status") == "failed" %}Ошибка fingerprint
+    {% else %}Нет данных{% endif %}
+  </p>
+  <dl class="details">
+    <dt>Тип</dt><dd data-fingerprint-type>{{ fingerprint_panel.get("device_type") or "unknown" }}</dd>
+    <dt>Уверенность</dt><dd data-fingerprint-confidence>{{ fingerprint_panel.get("confidence") or 0 }}%</dd>
+    <dt>OUI/vendor</dt><dd data-fingerprint-vendor>{{ fingerprint_panel.get("vendor") or "-" }}</dd>
+    <dt>OS</dt><dd data-fingerprint-os>{{ fingerprint_panel.get("os") or "-" }}</dd>
+    <dt>Nmap accuracy</dt><dd data-fingerprint-accuracy>{% if fingerprint_panel.get("nmap_accuracy") is not none %}{{ fingerprint_panel.get("nmap_accuracy") }}%{% else %}-{% endif %}</dd>
+    <dt>Last fingerprint time</dt><dd data-fingerprint-time>{{ fingerprint_panel.get("last_fingerprint_at") or "-" }}</dd>
+  </dl>
+
+  <h3>Network services</h3>
+  <table>
+    <thead><tr><th>Port</th><th>Protocol</th><th>Service</th><th>Product</th><th>Version</th></tr></thead>
+    <tbody data-fingerprint-services>
+      {% for service in fingerprint_panel.get("services") or [] %}
+      <tr>
+        <td>{{ service.get("port") }}</td>
+        <td>{{ service.get("protocol") }}</td>
+        <td>{{ service.get("service") or "-" }}</td>
+        <td>{{ service.get("product") or "-" }}</td>
+        <td>{{ service.get("version") or "-" }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty">Нет данных</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3>Evidence</h3>
+  <ul data-fingerprint-evidence>
+    {% for item in fingerprint_panel.get("evidence") or [] %}
+    <li><strong>{{ item.get("source") }}:</strong> {{ item.get("summary") }}</li>
+    {% else %}
+    <li class="empty">Нет данных</li>
+    {% endfor %}
+  </ul>
+</section>
+
 {% if confirmed %}
 <section class="panel">
   <h2>Подключение</h2>
@@ -117,4 +168,5 @@
   {% if events %}<ul>{% for event in events %}<li>{{ event.get("observed_at") or "-" }}: {{ event.get("event_type") or "-" }}</li>{% endfor %}</ul>{% else %}<p class="empty">Событий нет.</p>{% endif %}
 </section>
 {% endif %}
+<script src="{{ url_for('static', path='network-asset-fingerprint.js') }}"></script>
 {% endblock %}
