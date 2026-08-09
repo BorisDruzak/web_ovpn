@@ -16,6 +16,8 @@ from .runtime_assets import (
     resolve_best_hostname_observation,
 )
 from .util import utc_now
+from .nmap.policy import FingerprintPolicyError
+from .nmap.store import fingerprint_status
 
 
 ATTACHMENT_REASON_LABELS = {
@@ -503,6 +505,17 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
         return None
     asset_id = int(asset["id"])
     attachment = _attachment(conn, asset_id)
+    try:
+        fingerprint = fingerprint_status(conn, asset_key)
+    except FingerprintPolicyError:
+        fingerprint = {
+            "asset_key": asset_key,
+            "profile": "asset-fingerprint-v1",
+            "status": "unavailable",
+            "fresh": False,
+            "ports": [],
+            "os_matches": [],
+        }
     return {
         "asset": _asset_public(asset),
         "intent": _intent(conn, asset_id),
@@ -522,6 +535,7 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
                 conn, asset_id
             ),
         },
+        "fingerprint": fingerprint,
         "topology_path": _topology_path(conn, attachment),
         "attachment_events": _attachment_events(conn, asset_id),
         "freshness": _freshness(conn),

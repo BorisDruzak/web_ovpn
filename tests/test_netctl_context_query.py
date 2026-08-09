@@ -131,7 +131,7 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
     try:
         result = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
         assert result is not None
-        assert set(result) == {"asset", "intent", "owner", "interfaces", "attachment", "network", "topology_path", "attachment_events", "freshness", "source_health", "findings", "evidence"}
+        assert set(result) == {"asset", "intent", "owner", "interfaces", "attachment", "network", "fingerprint", "topology_path", "attachment_events", "freshness", "source_health", "findings", "evidence"}
         assert result["owner"] == {"status": "none", "bindings": []}
         assert result["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"
         assert result["network"]["ip_observations"][0]["ip"] == "192.0.2.10"

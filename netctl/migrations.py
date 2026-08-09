@@ -1902,6 +1902,78 @@ def _migration_22(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_23(conn: sqlite3.Connection) -> None:
+    for statement in (
+        """
+        CREATE TABLE nmap_fingerprint_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
+            target_ip TEXT NOT NULL,
+            profile TEXT NOT NULL CHECK (profile = 'asset-fingerprint-v1'),
+            status TEXT NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            nmap_version TEXT NOT NULL DEFAULT '',
+            error_class TEXT NOT NULL DEFAULT '',
+            error_message TEXT NOT NULL DEFAULT '',
+            CHECK (
+                (status = 'running' AND finished_at IS NULL) OR
+                (status IN ('success', 'failed') AND finished_at IS NOT NULL)
+            )
+        )
+        """,
+        """
+        CREATE INDEX nmap_fingerprint_runs_asset_latest_idx
+        ON nmap_fingerprint_runs(asset_id, profile, started_at DESC, id DESC)
+        """,
+        """
+        CREATE UNIQUE INDEX nmap_fingerprint_runs_one_running_idx
+        ON nmap_fingerprint_runs(asset_id, profile)
+        WHERE status = 'running'
+        """,
+        """
+        CREATE TABLE nmap_fingerprint_ports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL
+                REFERENCES nmap_fingerprint_runs(id) ON DELETE RESTRICT,
+            protocol TEXT NOT NULL,
+            port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+            state TEXT NOT NULL,
+            service_name TEXT NOT NULL DEFAULT '',
+            product TEXT NOT NULL DEFAULT '',
+            version TEXT NOT NULL DEFAULT '',
+            extra_info TEXT NOT NULL DEFAULT '',
+            tunnel TEXT NOT NULL DEFAULT '',
+            method TEXT NOT NULL DEFAULT '',
+            confidence INTEGER CHECK (confidence BETWEEN 0 AND 10),
+            cpe_json TEXT NOT NULL DEFAULT '[]',
+            UNIQUE(run_id, protocol, port)
+        )
+        """,
+        """
+        CREATE INDEX nmap_fingerprint_ports_run_idx
+        ON nmap_fingerprint_ports(run_id, protocol, port)
+        """,
+        """
+        CREATE TABLE nmap_fingerprint_os_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL
+                REFERENCES nmap_fingerprint_runs(id) ON DELETE RESTRICT,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            name TEXT NOT NULL DEFAULT '',
+            accuracy INTEGER CHECK (accuracy BETWEEN 0 AND 100),
+            classes_json TEXT NOT NULL DEFAULT '[]',
+            UNIQUE(run_id, position)
+        )
+        """,
+        """
+        CREATE INDEX nmap_fingerprint_os_matches_run_idx
+        ON nmap_fingerprint_os_matches(run_id, position)
+        """,
+    ):
+        conn.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1925,6 +1997,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (20, _migration_20),
     (21, _migration_21),
     (22, _migration_22),
+    (23, _migration_23),
 )
 
 

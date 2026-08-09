@@ -1,0 +1,1 @@
+netctl ALL=(root) NOPASSWD: /usr/local/libexec/netctl-nmap-fingerprint *

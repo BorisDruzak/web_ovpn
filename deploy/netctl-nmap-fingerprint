@@ -1,0 +1,84 @@
+#!/usr/bin/python3
+from __future__ import annotations
+
+import ipaddress
+import os
+import subprocess
+import sys
+
+
+NMAP_COMMAND = (
+    "/usr/bin/nmap",
+    "-n",
+    "-Pn",
+    "-sS",
+    "-O",
+    "--osscan-limit",
+    "-sV",
+    "--version-light",
+    "--top-ports",
+    "100",
+    "--max-retries",
+    "1",
+    "--host-timeout",
+    "20s",
+    "-T3",
+    "-oX",
+    "-",
+)
+NMAP_TIMEOUT_SECONDS = 25
+SAFE_ENVIRONMENT = {
+    "LANG": "C",
+    "LC_ALL": "C",
+    "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+}
+
+
+def canonical_target(arguments: list[str]) -> str | None:
+    if len(arguments) != 1:
+        return None
+    raw = arguments[0]
+    try:
+        address = ipaddress.IPv4Address(raw)
+    except (ipaddress.AddressValueError, ValueError):
+        return None
+    if (
+        raw != str(address)
+        or address.is_unspecified
+        or address.is_loopback
+        or address.is_multicast
+        or address.packed[-1] in {0, 255}
+    ):
+        return None
+    return str(address)
+
+
+def main(arguments: list[str]) -> int:
+    target = canonical_target(arguments)
+    if target is None:
+        sys.stderr.write("invalid fingerprint target\n")
+        return 2
+    try:
+        completed = subprocess.run(
+            [*NMAP_COMMAND, target],
+            capture_output=True,
+            check=False,
+            env=SAFE_ENVIRONMENT,
+            shell=False,
+            timeout=NMAP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        sys.stderr.write("fingerprint scan timed out\n")
+        return 124
+    except OSError:
+        sys.stderr.write("fingerprint scan unavailable\n")
+        return 126
+    if completed.returncode != 0:
+        sys.stderr.write("fingerprint scan failed\n")
+        return 1
+    os.write(1, completed.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

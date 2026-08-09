@@ -79,6 +79,9 @@ printf '\n' >> "$SUDO_CALLS"
 
 case "$command_name" in
   test)
+    if [[ "$*" == "-x /usr/bin/nmap" ]]; then
+      exit 0
+    fi
     command test "$@"
     ;;
   /usr/local/sbin/verify-netctl-systemd)
@@ -170,6 +173,19 @@ def test_installer_enables_the_collection_and_recovery_timers_after_reload(tmp_p
     assert reload_index < recovery_index
     assert "restart wg-quick@wg0.service" not in calls
     assert "restart openvpn-server@server.service" not in calls
+
+
+def test_installer_migrates_netctl_schema_before_restarting_web(tmp_path: Path) -> None:
+    """Read-only card requests after an upgrade must not see a pre-v23 schema."""
+    result, _bin_dir, _calls_path, environment = _run_installer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    sudo_calls = Path(environment["SUDO_CALLS"]).read_text(encoding="utf-8")
+    assert "netctl.db" in sudo_calls
+    installer = (ROOT / "deploy" / "install-openvpn-web.sh").read_text(encoding="utf-8")
+    migration_index = installer.index("from netctl.db import connect")
+    restart_index = installer.index("systemctl restart openvpn-web.service")
+    assert migration_index < restart_index
 
 
 def test_availability_unit_uses_only_fixed_netctl_argv() -> None:

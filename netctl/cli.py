@@ -47,6 +47,9 @@ from .runtime_assets import (
     runtime_identity_status,
     set_asset_manual_name,
 )
+from .nmap.policy import FingerprintPolicyError, configured_fingerprint_profile
+from .nmap.runner import run_nmap_fingerprint
+from .nmap.store import ensure_fingerprint, fingerprint_status
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .switch_queries import (
     DEFAULT_PAGE_SIZE,
@@ -1386,6 +1389,42 @@ def cmd_assets(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         conn.close()
 
 
+def cmd_fingerprint(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    try:
+        profile = configured_fingerprint_profile()
+    except ValueError as exc:
+        return 2, err(str(exc))
+    if args.fingerprint_command == "status":
+        conn = connect_read_only(args.db)
+        try:
+            return 0, ok(
+                fingerprint=fingerprint_status(
+                    conn, args.asset_key, profile=profile
+                )
+            )
+        except FingerprintPolicyError as exc:
+            return 1, err(str(exc), asset_key=args.asset_key)
+        finally:
+            conn.close()
+    if args.fingerprint_command == "ensure":
+        conn = prepare_conn(args)
+        try:
+            result = ensure_fingerprint(
+                conn,
+                args.asset_key,
+                executor=run_nmap_fingerprint,
+                profile=profile,
+            )
+            if result["status"] == "failed":
+                return 1, err("fingerprint failed", fingerprint=result)
+            return 0, ok(fingerprint=result)
+        except FingerprintPolicyError as exc:
+            return 1, err(str(exc), asset_key=args.asset_key)
+        finally:
+            conn.close()
+    return 2, err("unsupported fingerprint command")
+
+
 def resolve_context_schema(path: Path, explicit_schema: str) -> Path:
     candidates = [Path(explicit_schema)] if explicit_schema else []
     candidates.append(path.parent.parent / "schemas" / "network-context.schema.json")
@@ -1786,6 +1825,14 @@ def build_parser() -> argparse.ArgumentParser:
     assets_set_name.add_argument("--asset-key", required=True)
     assets_set_name.add_argument("--name", required=True)
 
+    fingerprint = sub.add_parser("fingerprint")
+    fingerprint_sub = fingerprint.add_subparsers(
+        dest="fingerprint_command", required=True
+    )
+    for name in ("status", "ensure"):
+        fingerprint_command = fingerprint_sub.add_parser(name)
+        fingerprint_command.add_argument("--asset-key", required=True)
+
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
     for name in ("validate", "status", "import", "diff"):
@@ -1872,6 +1919,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_runtime_assets(args)
     if args.command == "assets":
         return cmd_assets(args)
+    if args.command == "fingerprint":
+        return cmd_fingerprint(args)
     if args.command == "context":
         return cmd_context(args)
     return 2, err("unsupported command")

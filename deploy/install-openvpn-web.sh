@@ -36,6 +36,11 @@ if [[ ! -d "$SRC/app" ]]; then
   exit 2
 fi
 
+if ! sudo_cmd test -x /usr/bin/nmap; then
+  echo "Nmap is required; install the distro nmap package before deployment." >&2
+  exit 2
+fi
+
 if ! id openvpn-web >/dev/null 2>&1; then
   sudo_cmd useradd --system --home "$APP" --shell /usr/sbin/nologin openvpn-web
 fi
@@ -118,6 +123,9 @@ sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/verify_netctl_systemd.py" /usr/local/sbin/verify-netctl-systemd
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
+sudo_cmd install -d -m 0755 -o root -g root /usr/local/libexec
+sudo_cmd install -m 0755 -o root -g root "$SRC/deploy/netctl-nmap-fingerprint" \
+  /usr/local/libexec/netctl-nmap-fingerprint
 sudo_cmd mkdir -p /etc/openvpn/client-generator/output
 sudo_cmd chgrp openvpn-web /etc/openvpn/client-generator/output
 sudo_cmd chmod 0750 /etc/openvpn/client-generator/output
@@ -228,6 +236,9 @@ fi
 
 sudo_cmd install -m 0440 "$SRC/deploy/sudoers-openvpn-web" /etc/sudoers.d/openvpn-web
 sudo_cmd visudo -cf /etc/sudoers.d/openvpn-web
+sudo_cmd install -m 0440 -o root -g root "$SRC/deploy/sudoers-netctl-nmap" \
+  /etc/sudoers.d/netctl-nmap
+sudo_cmd visudo -cf /etc/sudoers.d/netctl-nmap
 
 # Keep locally approved topology out of the repository. A first install gets
 # only the role-only sample; existing operator configuration, including a
@@ -248,6 +259,8 @@ if [[ ! -x "$APP/.venv/bin/python" ]]; then
 fi
 sudo_cmd -u openvpn-web "$APP/.venv/bin/python" -m pip install --upgrade pip
 sudo_cmd -u openvpn-web "$APP/.venv/bin/pip" install -r "$APP/requirements.txt"
+sudo_cmd -u netctl env PYTHONPATH="$APP" "$APP/.venv/bin/python" -c \
+  'from netctl.config import DEFAULT_DB_URL; from netctl.db import connect; connection = connect(DEFAULT_DB_URL); connection.close()'
 
 sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web.service" /etc/systemd/system/openvpn-web.service
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.service" /etc/systemd/system/netctl-collect.service
