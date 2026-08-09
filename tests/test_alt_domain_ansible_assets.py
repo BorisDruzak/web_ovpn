@@ -246,6 +246,16 @@ def test_workstation_identity_requires_explicit_hostname_mode_for_rename() -> No
     assert "ALT_PREFLIGHT_FAILURE:hostname_mismatch" in content
 
 
+def test_workstation_identity_accepts_approved_short_name_or_domain_fqdn() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "workstation_identity" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "workstation_identity_accepted_static_hostnames" in content
+    assert '"{{ final_hostname | lower }}.{{ ad_domain | lower }}"' in content
+    assert "in workstation_identity_accepted_static_hostnames" in content
+
+
 def test_domain_join_rejects_untrusted_existing_computer_before_join_write() -> None:
     role_path = ANSIBLE_ROOT / "roles" / "domain_join" / "tasks" / "main.yml"
     content = role_path.read_text(encoding="utf-8")
