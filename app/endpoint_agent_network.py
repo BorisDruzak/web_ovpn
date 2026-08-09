@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -14,10 +15,14 @@ from .db import session_scope
 from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import EndpointPlatformServiceDisabled
 from .models import EndpointAgentNetworkLink, EndpointAgentNetworkRefresh
+from .netctl_client import run_netctl
 
 
 _BASELINE_MAC_KEY_RE = re.compile(r"^mac-([0-9a-f]{12})$")
 _SAFE_PROFILES = frozenset(("baseline_v1", "health_v1", "network_v1"))
+_SAFE_DEVICE_TYPES = frozenset(
+    ("pc", "phone", "server", "network", "camera", "printer", "noise")
+)
 _REFRESH_INTERVAL_SECONDS = 300
 _REFRESH_LEASE_SECONDS = 60
 
@@ -101,7 +106,7 @@ def correlate_endpoint_agents(
         device_id = next(iter(device_ids))
         identity = identities_by_id[device_id]
         display_name = identity.get("display_name")
-        results[next(iter(asset_keys))] = {
+        result = {
             "state": "confirmed",
             "device_id": device_id,
             "device_display_name": display_name if isinstance(display_name, str) else None,
@@ -114,7 +119,54 @@ def correlate_endpoint_agents(
             "profiles": _safe_profiles(identity.get("profiles")),
             "evidence_kind": "baseline_interface_mac",
         }
+        device_type = identity.get("device_type")
+        if isinstance(device_type, str) and device_type in _SAFE_DEVICE_TYPES:
+            result["device_type"] = device_type
+        os_family = identity.get("os_family")
+        if isinstance(os_family, str) and (safe_os_family := " ".join(os_family.split())[:128]):
+            result["os_family"] = safe_os_family
+        results[next(iter(asset_keys))] = result
     return results
+
+
+def sync_endpoint_agent_fingerprint_evidence(
+    inventory: Iterable[Mapping[str, object]],
+    statuses: Mapping[str, Mapping[str, object]],
+    *,
+    executor=run_netctl,
+) -> None:
+    """Replace netctl's bounded confirmed-agent snapshot through its CLI boundary."""
+    records_by_asset: dict[str, dict[str, object]] = {}
+    for asset in inventory:
+        asset_key = asset.get("device_key")
+        if not isinstance(asset_key, str) or not asset_key or len(asset_key) > 512:
+            continue
+        status = statuses.get(asset_key)
+        state = status.get("state") if status is not None else "no_agent"
+        record: dict[str, object] = {
+            "asset_key": asset_key,
+            "state": state if state in {"confirmed", "ambiguous"} else "no_agent",
+        }
+        if status is not None and record["state"] == "confirmed":
+            device_type = status.get("device_type")
+            if isinstance(device_type, str) and device_type in _SAFE_DEVICE_TYPES:
+                record["device_type"] = device_type
+            os_family = status.get("os_family")
+            if isinstance(os_family, str) and (safe_os_family := " ".join(os_family.split())[:128]):
+                record["os_family"] = safe_os_family
+        records_by_asset[asset_key] = record
+    if len(records_by_asset) > 1000:
+        raise ValueError("endpoint-agent inventory exceeds the evidence sync bound")
+    payload = json.dumps(
+        [records_by_asset[key] for key in sorted(records_by_asset)],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    executor(
+        ["fingerprint", "agent-evidence-sync", "--records-json", payload],
+        timeout=60,
+    )
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -248,6 +300,7 @@ def refresh_endpoint_agent_network(inventory: list[dict[str, object]]) -> None:
     try:
         adapter = get_endpoint_context_adapter()
         statuses = correlate_endpoint_agents(inventory, adapter.list_agent_network_identities())
+        sync_endpoint_agent_fingerprint_evidence(inventory, statuses)
         with session_scope() as db:
             store_endpoint_agent_statuses(db, statuses, datetime.now(UTC))
     except EndpointPlatformServiceDisabled:

@@ -131,7 +131,7 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
     try:
         result = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
         assert result is not None
-        assert set(result) == {"asset", "intent", "owner", "interfaces", "attachment", "network", "fingerprint", "topology_path", "attachment_events", "freshness", "source_health", "findings", "evidence"}
+        assert set(result) == {"asset", "intent", "owner", "interfaces", "attachment", "network", "fingerprint", "device_fingerprint", "topology_path", "attachment_events", "freshness", "source_health", "findings", "evidence"}
         assert result["owner"] == {"status": "none", "bindings": []}
         assert result["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"
         assert result["network"]["ip_observations"][0]["ip"] == "192.0.2.10"
@@ -146,6 +146,47 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
         assert [item["source"] for item in result["source_health"]] == ["access-a", "core-a", "distribution-a"]
     finally:
         conn.close()
+
+
+def test_asset_context_exposes_derived_v2_separately_from_normalized_nmap(
+    tmp_path: Path,
+) -> None:
+    """The card contract must not confuse the derived type with its Nmap evidence source."""
+    from netctl.context_query import inspect_asset_context
+    from netctl.fingerprint.providers import recompute_asset_fingerprint
+
+    conn = _context_db(tmp_path)
+    try:
+        recompute_asset_fingerprint(
+            conn,
+            1,
+            computed_at="2026-08-09T08:00:00Z",
+            oui_path=Path(__file__).parent / "fixtures" / "nmap-mac-prefixes",
+        )
+        conn.commit()
+
+        result = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+    finally:
+        conn.close()
+
+    assert result is not None
+    assert result["device_fingerprint"] == {
+        "device_type": "unknown",
+        "confidence": 20,
+        "evidence": [
+            {
+                "provider": "hostname",
+                "signal": "dhcp_hostname",
+                "candidate_type": "pc",
+                "weight": 20,
+                "summary": "Hostname text suggests pc",
+            },
+        ],
+        "alternatives": [{"device_type": "pc", "score": 20}],
+        "computed_at": "2026-08-09T08:00:00Z",
+        "version": "fingerprint-v2",
+    }
+    assert result["fingerprint"]["status"] == "not_run"
 
 
 def test_asset_context_keeps_manual_name_separate_from_hostname_and_ip(

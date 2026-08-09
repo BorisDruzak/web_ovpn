@@ -380,6 +380,41 @@ def test_reconcile_topology_classifies_links_is_idempotent_and_records_change(
         conn.close()
 
 
+def test_topology_reconciliation_recomputes_from_db_without_starting_nmap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A port-role refresh must update V2 but never create an Nmap run."""
+    from netctl import topology_reconcile
+
+    conn = _topology_db(tmp_path)
+    now = "2026-07-22T08:00:00Z"
+    try:
+        conn.execute(
+            """INSERT INTO assets
+               (asset_key, identity_method, identity_confidence, provisional,
+                first_seen_at, last_seen_at, created_at, updated_at)
+               VALUES ('mac:AA:BB:CC:DD:EE:01', 'manual', 100, 0, ?, ?, ?, ?)""",
+            (now, now, now, now),
+        )
+        conn.commit()
+        monkeypatch.setattr(topology_reconcile, "list_source_identities", lambda _conn: ())
+        monkeypatch.setattr(
+            topology_reconcile, "collect_link_evidence", lambda _conn, _identities: ()
+        )
+
+        result = topology_reconcile.reconcile_topology(conn, now, {})
+
+        assert result["counts"]["fingerprints"] == 1
+        assert conn.execute(
+            "SELECT computed_at FROM asset_fingerprint_current"
+        ).fetchone()[0] == now
+        assert conn.execute(
+            "SELECT count(*) FROM nmap_fingerprint_runs"
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_reconcile_topology_records_conflict_and_preserves_current_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

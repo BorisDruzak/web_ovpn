@@ -11,6 +11,7 @@ from .source_identity import list_source_identities
 from .switch_eligibility import has_authoritative_fdb
 from .topology_models import CurrentSwitchLink
 from .topology_reconcile import topology_depths
+from .fingerprint.providers import recompute_all_asset_fingerprints
 
 
 @dataclass(frozen=True)
@@ -277,6 +278,9 @@ def reconcile_attachments(
                 )
         counts = {status: sum(item.status == status for item in resolutions.values()) for status in ("confirmed", "ambiguous", "uplink_only", "unresolved")}
         counts.update(candidates=len(candidates), resolutions=len(resolutions))
+        counts["fingerprints"] = recompute_all_asset_fingerprints(
+            conn, computed_at=observed_at
+        )
         conn.execute("UPDATE network_correlation_runs SET status='success', finished_at=?, counts_json=? WHERE id=?", (observed_at, json.dumps(counts, sort_keys=True), run_id))
         conn.commit()
         return {"run_id": run_id, "counts": counts}

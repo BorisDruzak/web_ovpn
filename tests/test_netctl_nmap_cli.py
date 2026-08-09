@@ -151,6 +151,59 @@ def test_fingerprint_ensure_returns_sanitized_failure(
     assert "private" not in repr(payload)
 
 
+def test_fingerprint_agent_evidence_sync_is_bounded_db_only_ingestion(
+    tmp_path: Path, capsys
+) -> None:
+    from netctl.db import connect
+
+    db_url = _db_url(tmp_path)
+    _seed_asset(db_url)
+    records = json.dumps(
+        [
+            {
+                "asset_key": ASSET_KEY,
+                "state": "confirmed",
+                "device_type": "pc",
+                "os_family": "Windows",
+            }
+        ]
+    )
+
+    rc, payload = _run_cli(
+        [
+            "--json",
+            "--db",
+            db_url,
+            "fingerprint",
+            "agent-evidence-sync",
+            "--records-json",
+            records,
+        ],
+        capsys,
+    )
+
+    conn = connect(db_url)
+    try:
+        stored = conn.execute(
+            """SELECT evidence.device_type, current.device_type AS fingerprint_type
+               FROM asset_endpoint_agent_evidence_current AS evidence
+               JOIN asset_fingerprint_current AS current
+                 ON current.asset_id = evidence.asset_id"""
+        ).fetchone()
+        nmap_runs = conn.execute("SELECT COUNT(*) FROM nmap_fingerprint_runs").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert rc == 0
+    assert payload == {
+        "status": "ok",
+        "agent_evidence": {"assets": 1, "confirmed": 1, "fingerprints": 1},
+    }
+    assert stored is not None
+    assert (stored["device_type"], stored["fingerprint_type"]) == ("pc", "pc")
+    assert nmap_runs == 0
+
+
 def test_fingerprint_timing_configuration_is_bounded_and_immutable() -> None:
     from netctl.nmap.policy import configured_fingerprint_profile
 

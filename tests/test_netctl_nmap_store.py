@@ -101,7 +101,7 @@ def test_migration_23_creates_bounded_fingerprint_schema(tmp_path: Path) -> None
     finally:
         conn.close()
 
-    assert versions[-1] == 23
+    assert 23 in versions
     assert {
         "nmap_fingerprint_runs",
         "nmap_fingerprint_ports",

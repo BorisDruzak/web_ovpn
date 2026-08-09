@@ -15,6 +15,7 @@ from .source_identity import SourceIdentity, list_source_identities
 from .port_roles import infer_port_roles, replace_current_port_roles
 from .topology_evidence import collect_link_evidence
 from .topology_models import CurrentSwitchLink, LinkEndpoint, LinkEvidence
+from .fingerprint.providers import recompute_all_asset_fingerprints
 
 
 def _canonical_evidence(evidence: LinkEvidence) -> LinkEvidence | None:
@@ -413,6 +414,9 @@ def reconcile_topology(
             "events": event_count,
             "findings": finding_count,
         }
+        counts["fingerprints"] = recompute_all_asset_fingerprints(
+            conn, computed_at=observed_at
+        )
         conn.execute(
             """
             UPDATE network_correlation_runs

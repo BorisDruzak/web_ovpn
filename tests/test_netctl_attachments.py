@@ -308,6 +308,13 @@ def test_reconcile_attachments_persists_candidates_and_a_move(
         }
         created = attachment_reconcile.reconcile_attachments(conn, "2026-07-22T08:00:00Z", watermark)
         assert created["counts"]["confirmed"] == 1
+        assert created["counts"]["fingerprints"] == 3
+        assert conn.execute(
+            "SELECT count(*) FROM asset_fingerprint_current"
+        ).fetchone()[0] == 3
+        assert conn.execute(
+            "SELECT count(*) FROM nmap_fingerprint_runs"
+        ).fetchone()[0] == 0
         assert json.loads(conn.execute(
             "SELECT source_watermark_json FROM network_correlation_runs WHERE id = ?", (created["run_id"],)
         ).fetchone()[0]) == watermark

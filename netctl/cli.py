@@ -50,6 +50,7 @@ from .runtime_assets import (
 from .nmap.policy import FingerprintPolicyError, configured_fingerprint_profile
 from .nmap.runner import run_nmap_fingerprint
 from .nmap.store import ensure_fingerprint, fingerprint_status
+from .fingerprint.providers import replace_endpoint_agent_evidence
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .switch_queries import (
     DEFAULT_PAGE_SIZE,
@@ -1390,6 +1391,26 @@ def cmd_assets(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def cmd_fingerprint(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.fingerprint_command == "agent-evidence-sync":
+        raw_records = args.records_json
+        if len(raw_records.encode("utf-8")) > 262_144:
+            return 1, err("endpoint-agent evidence payload is invalid")
+        try:
+            records = json.loads(raw_records)
+        except json.JSONDecodeError:
+            return 1, err("endpoint-agent evidence payload is invalid")
+        conn = prepare_conn(args)
+        try:
+            result = replace_endpoint_agent_evidence(
+                conn,
+                records,
+                observed_at=utc_now(),
+            )
+            return 0, ok(agent_evidence=result)
+        except ValueError:
+            return 1, err("endpoint-agent evidence payload is invalid")
+        finally:
+            conn.close()
     try:
         profile = configured_fingerprint_profile()
     except ValueError as exc:
@@ -1832,6 +1853,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("status", "ensure"):
         fingerprint_command = fingerprint_sub.add_parser(name)
         fingerprint_command.add_argument("--asset-key", required=True)
+    fingerprint_agent_sync = fingerprint_sub.add_parser("agent-evidence-sync")
+    fingerprint_agent_sync.add_argument("--records-json", required=True)
 
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)

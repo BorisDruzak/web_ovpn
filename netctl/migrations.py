@@ -1974,6 +1974,41 @@ def _migration_23(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migration_24(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE asset_fingerprint_current (
+            asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE RESTRICT,
+            device_type TEXT NOT NULL CHECK (device_type IN (
+                'pc', 'phone', 'server', 'network', 'camera', 'printer',
+                'noise', 'unknown'
+            )),
+            confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            alternatives_json TEXT NOT NULL DEFAULT '[]',
+            fingerprint_version TEXT NOT NULL CHECK (
+                fingerprint_version = 'fingerprint-v2'
+            ),
+            computed_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE asset_endpoint_agent_evidence_current (
+            asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE RESTRICT,
+            device_type TEXT NOT NULL DEFAULT '' CHECK (device_type IN (
+                '', 'pc', 'phone', 'server', 'network', 'camera', 'printer',
+                'noise'
+            )),
+            os_family TEXT NOT NULL DEFAULT '' CHECK (length(os_family) <= 128),
+            observed_at TEXT NOT NULL,
+            CHECK (device_type != '' OR os_family != '')
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -1998,6 +2033,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (21, _migration_21),
     (22, _migration_22),
     (23, _migration_23),
+    (24, _migration_24),
 )
 
 

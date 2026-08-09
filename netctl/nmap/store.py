@@ -11,6 +11,7 @@ from .models import FingerprintProfile, NmapFingerprint
 from .policy import ASSET_FINGERPRINT_PROFILE, resolve_asset_target
 from .runner import NmapRunnerError, run_nmap_fingerprint
 from ..util import utc_now
+from ..fingerprint.providers import recompute_asset_fingerprint
 
 
 FingerprintExecutor = Callable[[str], NmapFingerprint]
@@ -312,6 +313,13 @@ def _finish_success(
                     for position, match in enumerate(fingerprint.os_matches)
                 ],
             )
+            asset = conn.execute(
+                "SELECT asset_id FROM nmap_fingerprint_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if asset is not None:
+                recompute_asset_fingerprint(
+                    conn, int(asset["asset_id"]), computed_at=now
+                )
         conn.commit()
     except BaseException:
         if conn.in_transaction:

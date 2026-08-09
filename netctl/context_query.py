@@ -18,6 +18,7 @@ from .runtime_assets import (
 from .util import utc_now
 from .nmap.policy import FingerprintPolicyError
 from .nmap.store import fingerprint_status
+from .fingerprint.providers import current_asset_fingerprint
 
 
 ATTACHMENT_REASON_LABELS = {
@@ -516,6 +517,26 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
             "ports": [],
             "os_matches": [],
         }
+    current_fingerprint = current_asset_fingerprint(conn, asset_id)
+    device_fingerprint = (
+        {
+            "device_type": current_fingerprint["device_type"],
+            "confidence": current_fingerprint["confidence"],
+            "evidence": current_fingerprint["evidence"],
+            "alternatives": current_fingerprint["alternatives"],
+            "computed_at": current_fingerprint["computed_at"],
+            "version": current_fingerprint["fingerprint_version"],
+        }
+        if current_fingerprint is not None
+        else {
+            "device_type": "unknown",
+            "confidence": 0,
+            "evidence": [],
+            "alternatives": [],
+            "computed_at": "",
+            "version": "fingerprint-v2",
+        }
+    )
     return {
         "asset": _asset_public(asset),
         "intent": _intent(conn, asset_id),
@@ -536,6 +557,7 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
             ),
         },
         "fingerprint": fingerprint,
+        "device_fingerprint": device_fingerprint,
         "topology_path": _topology_path(conn, attachment),
         "attachment_events": _attachment_events(conn, asset_id),
         "freshness": _freshness(conn),

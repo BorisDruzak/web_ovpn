@@ -11,6 +11,9 @@ from .endpoint_platform_client import EndpointPlatformServiceClient, get_endpoin
 
 SafeProfile = Literal["baseline_v1", "health_v1", "network_v1"]
 SAFE_PROFILES = frozenset(("baseline_v1", "health_v1", "network_v1"))
+SAFE_DEVICE_TYPES = frozenset(
+    ("pc", "phone", "server", "network", "camera", "printer", "noise")
+)
 
 
 def _dump(value: Any) -> dict[str, Any]:
@@ -44,7 +47,7 @@ def _project_collection(value: Any) -> dict[str, Any]:
 def _project_network_identity(value: Any) -> dict[str, Any]:
     source = _dump(value)
     profiles = source.get("profiles")
-    return {
+    projected = {
         "id": source.get("id"),
         "display_name": source.get("display_name"),
         "last_seen_at": source.get("last_seen_at"),
@@ -58,6 +61,13 @@ def _project_network_identity(value: Any) -> dict[str, Any]:
         else [],
         "baseline_mac_keys": list(source.get("baseline_mac_keys") or []),
     }
+    device_type = source.get("device_type")
+    if isinstance(device_type, str) and device_type in SAFE_DEVICE_TYPES:
+        projected["device_type"] = device_type
+    os_family = source.get("os_family")
+    if isinstance(os_family, str) and (safe_os_family := " ".join(os_family.split())[:128]):
+        projected["os_family"] = safe_os_family
+    return projected
 
 
 class EndpointContextAdapter:
