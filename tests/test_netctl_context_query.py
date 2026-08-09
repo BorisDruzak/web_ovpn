@@ -131,7 +131,7 @@ def test_inspect_asset_context_has_exact_safe_top_level_contract(tmp_path: Path)
     try:
         result = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
         assert result is not None
-        assert set(result) == {"asset", "intent", "owner", "interfaces", "attachment", "network", "fingerprint", "device_fingerprint", "topology_path", "attachment_events", "freshness", "source_health", "findings", "evidence"}
+        assert set(result) == {"asset", "intent", "owner", "interfaces", "attachment", "network", "fingerprint", "nmap_fingerprint", "topology_path", "attachment_events", "freshness", "source_health", "findings", "evidence"}
         assert result["owner"] == {"status": "none", "bindings": []}
         assert result["asset"]["asset_key"] == "mac:AA:BB:CC:DD:EE:01"
         assert result["network"]["ip_observations"][0]["ip"] == "192.0.2.10"
@@ -170,7 +170,7 @@ def test_asset_context_exposes_derived_v2_separately_from_normalized_nmap(
         conn.close()
 
     assert result is not None
-    assert result["device_fingerprint"] == {
+    assert result["fingerprint"] == {
         "device_type": "unknown",
         "confidence": 20,
         "evidence": [
@@ -186,7 +186,150 @@ def test_asset_context_exposes_derived_v2_separately_from_normalized_nmap(
         "computed_at": "2026-08-09T08:00:00Z",
         "version": "fingerprint-v2",
     }
-    assert result["fingerprint"]["status"] == "not_run"
+    assert result["nmap_fingerprint"]["status"] == "not_run"
+    assert "device_fingerprint" not in result
+
+
+def test_asset_context_bounds_and_allowlists_normalized_nmap_details(
+    tmp_path: Path,
+) -> None:
+    """A compromised row must not make context expose unbounded or internal Nmap data."""
+    from netctl.context_query import inspect_asset_context
+
+    conn = _context_db(tmp_path)
+    try:
+        run_id = int(
+            conn.execute(
+                """INSERT INTO nmap_fingerprint_runs (
+                       asset_id, target_ip, profile, status, started_at, finished_at,
+                       nmap_version, error_class, error_message
+                   ) VALUES (
+                       1, '192.0.2.10', 'asset-fingerprint-v1', 'success', ?, ?,
+                       '7.95', 'internal_error', 'sudo secret snmp-community raw-collector'
+                   )""",
+                ("2026-08-09T08:00:00Z", "2026-08-09T08:00:01Z"),
+            ).lastrowid
+        )
+        cpes = json.dumps([f"cpe:/a:fixture:service:{index}" for index in range(20)])
+        conn.executemany(
+            """INSERT INTO nmap_fingerprint_ports (
+                   run_id, protocol, port, state, service_name, product, version,
+                   extra_info, tunnel, method, confidence, cpe_json
+               ) VALUES (?, 'tcp', ?, 'open', 'https', 'Fixture', '1.0',
+                         '', 'ssl', 'probed', 10, ?)""",
+            [(run_id, port, cpes) for port in range(1, 131)],
+        )
+        classes = json.dumps(
+            [
+                {
+                    "type": "general purpose",
+                    "vendor": "Fixture",
+                    "osfamily": "Linux",
+                    "osgen": str(index),
+                    "accuracy": 95,
+                    "cpes": [f"cpe:/o:fixture:linux:{item}" for item in range(20)],
+                    "snmp_community": "snmp-community",
+                    "sudo_command": "sudo secret",
+                    "raw_collector_payload": "raw-collector",
+                }
+                for index in range(20)
+            ]
+        )
+        conn.executemany(
+            """INSERT INTO nmap_fingerprint_os_matches (
+                   run_id, position, name, accuracy, classes_json
+               ) VALUES (?, ?, 'Fixture Linux', 95, ?)""",
+            [(run_id, position, classes) for position in range(40)],
+        )
+        conn.commit()
+
+        context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+    finally:
+        conn.close()
+
+    assert context is not None
+    nmap = context["nmap_fingerprint"]
+    assert set(nmap) == {
+        "id", "asset_key", "target_ip", "profile", "status", "started_at",
+        "finished_at", "nmap_version", "fresh", "ports", "os_matches",
+    }
+    assert len(nmap["ports"]) == 100
+    assert len(nmap["ports"][0]["cpes"]) == 16
+    assert set(nmap["ports"][0]) == {
+        "protocol", "port", "state", "service_name", "product", "version",
+        "extra_info", "tunnel", "method", "confidence", "cpes",
+    }
+    assert len(nmap["os_matches"]) == 32
+    assert len(nmap["os_matches"][0]["classes"]) == 16
+    assert len(nmap["os_matches"][0]["classes"][0]["cpes"]) == 16
+    assert set(nmap["os_matches"][0]["classes"][0]) == {
+        "type", "vendor", "osfamily", "osgen", "accuracy", "cpes",
+    }
+    serialized = json.dumps(nmap, ensure_ascii=False)
+    assert "snmp-community" not in serialized
+    assert "sudo secret" not in serialized
+    assert "raw-collector" not in serialized
+
+
+def test_asset_context_bounds_and_allowlists_derived_v2_details(tmp_path: Path) -> None:
+    """Stored explanation JSON must stay bounded and cannot carry private provider fields."""
+    from netctl.context_query import inspect_asset_context
+    from netctl.fingerprint.providers import recompute_asset_fingerprint
+
+    conn = _context_db(tmp_path)
+    try:
+        recompute_asset_fingerprint(
+            conn,
+            1,
+            computed_at="2026-08-09T08:00:00Z",
+            oui_path=Path(__file__).parent / "fixtures" / "nmap-mac-prefixes",
+        )
+        evidence = [
+            {
+                "provider": "hostname" + ("x" * 600),
+                "signal": "dhcp_hostname" + ("x" * 600),
+                "candidate_type": "pc",
+                "weight": 20,
+                "summary": "workstation" + ("x" * 800),
+                "snmp_community": "snmp-community",
+                "sudo_command": "sudo secret",
+                "raw_collector_payload": "raw-collector",
+            }
+            for _ in range(70)
+        ]
+        alternatives = [
+            {
+                "device_type": "pc",
+                "score": index,
+                "raw_collector_payload": "raw-collector",
+            }
+            for index in range(12)
+        ]
+        conn.execute(
+            """UPDATE asset_fingerprint_current
+               SET evidence_json = ?, alternatives_json = ? WHERE asset_id = 1""",
+            (json.dumps(evidence), json.dumps(alternatives)),
+        )
+        conn.commit()
+
+        context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
+    finally:
+        conn.close()
+
+    assert context is not None
+    derived = context["fingerprint"]
+    assert set(derived) == {
+        "device_type", "confidence", "evidence", "alternatives", "computed_at", "version",
+    }
+    assert len(derived["evidence"]) == 64
+    assert len(derived["alternatives"]) == 8
+    assert len(derived["evidence"][0]["provider"]) == 512
+    assert len(derived["evidence"][0]["signal"]) == 512
+    assert len(derived["evidence"][0]["summary"]) == 512
+    serialized = json.dumps(derived, ensure_ascii=False)
+    assert "snmp-community" not in serialized
+    assert "sudo secret" not in serialized
+    assert "raw-collector" not in serialized
 
 
 def test_asset_context_keeps_manual_name_separate_from_hostname_and_ip(
@@ -271,8 +414,20 @@ def test_confirmed_attachment_exposes_safe_current_port_role(tmp_path: Path) -> 
                    known_asset_count, unique_vendor_count, child_source_id,
                    evidence_json, observed_at, correlation_run_id
                ) VALUES (10, 'physical:7', 'shared_edge', 70, 3, 2, 1, NULL,
-                         '[{"type":"mac_density","private":"must-not-render"}]', ?, ?)""",
-            ("2026-07-22T12:00:00Z", topology_run_id),
+                         ?, ?, ?)""",
+            (
+                json.dumps(
+                    [{
+                        "type": "mac_density",
+                        "private": "must-not-render",
+                        "snmp_community": "snmp-community",
+                        "sudo_command": "sudo secret",
+                        "raw_collector_payload": "raw-collector",
+                    }]
+                ),
+                "2026-07-22T12:00:00Z",
+                topology_run_id,
+            ),
         )
 
         context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")
@@ -288,7 +443,11 @@ def test_confirmed_attachment_exposes_safe_current_port_role(tmp_path: Path) -> 
             "reason": "Высокая плотность MAC без подтверждённого дочернего коммутатора",
             "observed_at": "2026-07-22T12:00:00Z",
         }
-        assert "must-not-render" not in json.dumps(context, ensure_ascii=False)
+        serialized = json.dumps(context, ensure_ascii=False)
+        assert "must-not-render" not in serialized
+        assert "snmp-community" not in serialized
+        assert "sudo secret" not in serialized
+        assert "raw-collector" not in serialized
     finally:
         conn.close()
 

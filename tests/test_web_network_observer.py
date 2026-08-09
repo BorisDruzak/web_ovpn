@@ -688,7 +688,7 @@ def test_network_asset_fingerprint_status_requires_login_and_returns_only_panel_
         return {
             "status": "ok",
             "context": {
-                "device_fingerprint": {
+                "fingerprint": {
                     "device_type": "network",
                     "confidence": 96,
                     "computed_at": "2026-08-09T10:00:01Z",
@@ -711,7 +711,7 @@ def test_network_asset_fingerprint_status_requires_login_and_returns_only_panel_
                     ],
                     "alternatives": [{"device_type": "server", "score": 10}],
                 },
-                "fingerprint": {
+                "nmap_fingerprint": {
                     "id": 17,
                     "status": "success",
                     "fresh": True,
@@ -835,7 +835,7 @@ def test_network_asset_card_renders_cached_normalized_fingerprint_panels(
                         "asset_key": "mac:AA:BB:CC:DD:EE:01",
                         "display_name": "Router",
                     },
-                    "device_fingerprint": {
+                    "fingerprint": {
                         "device_type": "network",
                         "confidence": 96,
                         "evidence": [
@@ -850,7 +850,7 @@ def test_network_asset_card_renders_cached_normalized_fingerprint_panels(
                             },
                         ],
                     },
-                    "fingerprint": {
+                    "nmap_fingerprint": {
                         "id": 17,
                         "status": "success",
                         "fresh": True,

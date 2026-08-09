@@ -1840,9 +1840,9 @@ def _fingerprint_text(value: object, limit: int = 240) -> str:
 def normalize_asset_fingerprint_panel(context: object) -> dict[str, Any]:
     """Whitelist only normalized values rendered by the fingerprint card panel."""
     safe_context = context if isinstance(context, dict) else {}
-    device = safe_context.get("device_fingerprint")
+    device = safe_context.get("fingerprint")
     device = device if isinstance(device, dict) else {}
-    nmap = safe_context.get("fingerprint")
+    nmap = safe_context.get("nmap_fingerprint")
     nmap = nmap if isinstance(nmap, dict) else {}
 
     raw_type = _fingerprint_text(device.get("device_type"), 32).lower()

@@ -224,7 +224,7 @@ def test_fingerprint_timing_configuration_is_bounded_and_immutable() -> None:
         configured_fingerprint_profile({"NETCTL_NMAP_STALE_RUNNING_SECONDS": "30"})
 
 
-def test_asset_context_projects_stored_fingerprint_without_raw_fields(tmp_path: Path) -> None:
+def test_asset_context_projects_stored_nmap_fingerprint_without_raw_fields(tmp_path: Path) -> None:
     from netctl.context_query import inspect_asset_context
     from netctl.db import connect
     from netctl.nmap.store import ensure_fingerprint
@@ -244,7 +244,7 @@ def test_asset_context_projects_stored_fingerprint_without_raw_fields(tmp_path: 
         conn.close()
 
     assert context is not None
-    assert context["fingerprint"]["status"] == "success"
-    assert context["fingerprint"]["target_ip"] == "192.168.100.55"
-    assert "raw_xml" not in repr(context["fingerprint"])
-    assert "stderr" not in repr(context["fingerprint"])
+    assert context["nmap_fingerprint"]["status"] == "success"
+    assert context["nmap_fingerprint"]["target_ip"] == "192.168.100.55"
+    assert "raw_xml" not in repr(context["nmap_fingerprint"])
+    assert "stderr" not in repr(context["nmap_fingerprint"])

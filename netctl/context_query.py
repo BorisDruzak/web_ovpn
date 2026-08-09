@@ -19,6 +19,7 @@ from .util import utc_now
 from .nmap.policy import FingerprintPolicyError
 from .nmap.store import fingerprint_status
 from .fingerprint.providers import current_asset_fingerprint
+from .fingerprint.models import FINGERPRINT_VERSION, SUPPORTED_DEVICE_TYPES
 
 
 ATTACHMENT_REASON_LABELS = {
@@ -46,6 +47,169 @@ PORT_ROLE_REASON_LABELS = {
     "intent_topology": "Порт участвует в заявленной топологии коммутаторов",
 }
 MAX_ATTACHMENT_EVIDENCE_DEPTH = 16
+MAX_CONTEXT_TEXT_LENGTH = 512
+MAX_CONTEXT_NMAP_PORTS = 100
+MAX_CONTEXT_NMAP_OS_MATCHES = 32
+MAX_CONTEXT_NMAP_OS_CLASSES = 16
+MAX_CONTEXT_NMAP_CPES = 16
+
+
+def _context_text(value: object, limit: int = MAX_CONTEXT_TEXT_LENGTH) -> str:
+    return str(value or "")[:limit]
+
+
+def _context_cpes(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        _context_text(item)
+        for item in value[:MAX_CONTEXT_NMAP_CPES]
+        if isinstance(item, str)
+    ]
+
+
+def _nmap_context_projection(value: object) -> dict[str, Any]:
+    """Project stored Nmap facts into one bounded, allowlisted context section."""
+    raw = value if isinstance(value, dict) else {}
+    result: dict[str, Any] = {}
+    run_id = raw.get("id")
+    if type(run_id) is int and run_id > 0:
+        result["id"] = run_id
+    for key, limit in (
+        ("asset_key", 512),
+        ("target_ip", 64),
+        ("profile", 64),
+        ("status", 32),
+        ("started_at", 64),
+        ("finished_at", 64),
+        ("nmap_version", 64),
+    ):
+        if key in raw:
+            result[key] = _context_text(raw[key], limit)
+    if "fresh" in raw:
+        result["fresh"] = raw.get("fresh") is True
+
+    result["ports"] = []
+    ports = raw.get("ports")
+    if isinstance(ports, list):
+        for item in ports[:MAX_CONTEXT_NMAP_PORTS]:
+            if not isinstance(item, dict):
+                continue
+            port = item.get("port")
+            confidence = item.get("confidence")
+            if type(port) is not int or not 1 <= port <= 65535:
+                continue
+            result["ports"].append({
+                "protocol": _context_text(item.get("protocol"), 16),
+                "port": port,
+                "state": _context_text(item.get("state"), 32),
+                "service_name": _context_text(item.get("service_name")),
+                "product": _context_text(item.get("product")),
+                "version": _context_text(item.get("version")),
+                "extra_info": _context_text(item.get("extra_info")),
+                "tunnel": _context_text(item.get("tunnel"), 32),
+                "method": _context_text(item.get("method"), 32),
+                "confidence": (
+                    confidence
+                    if type(confidence) is int and 0 <= confidence <= 10
+                    else None
+                ),
+                "cpes": _context_cpes(item.get("cpes")),
+            })
+
+    result["os_matches"] = []
+    matches = raw.get("os_matches")
+    if isinstance(matches, list):
+        for item in matches[:MAX_CONTEXT_NMAP_OS_MATCHES]:
+            if not isinstance(item, dict):
+                continue
+            accuracy = item.get("accuracy")
+            public_classes: list[dict[str, Any]] = []
+            classes = item.get("classes")
+            if isinstance(classes, list):
+                for os_class in classes[:MAX_CONTEXT_NMAP_OS_CLASSES]:
+                    if not isinstance(os_class, dict):
+                        continue
+                    class_accuracy = os_class.get("accuracy")
+                    public_classes.append({
+                        "type": _context_text(os_class.get("type")),
+                        "vendor": _context_text(os_class.get("vendor")),
+                        "osfamily": _context_text(os_class.get("osfamily")),
+                        "osgen": _context_text(os_class.get("osgen")),
+                        "accuracy": (
+                            class_accuracy
+                            if type(class_accuracy) is int and 0 <= class_accuracy <= 100
+                            else None
+                        ),
+                        "cpes": _context_cpes(os_class.get("cpes")),
+                    })
+            result["os_matches"].append({
+                "name": _context_text(item.get("name")),
+                "accuracy": (
+                    accuracy
+                    if type(accuracy) is int and 0 <= accuracy <= 100
+                    else None
+                ),
+                "classes": public_classes,
+            })
+    return result
+
+
+def _derived_fingerprint_context_projection(value: object) -> dict[str, Any]:
+    """Project derived device classification without trusting stored JSON fields."""
+    raw = value if isinstance(value, dict) else {}
+    device_type = raw.get("device_type")
+    confidence = raw.get("confidence")
+    evidence: list[dict[str, Any]] = []
+    raw_evidence = raw.get("evidence")
+    if isinstance(raw_evidence, list):
+        for item in raw_evidence[:64]:
+            if not isinstance(item, dict):
+                continue
+            candidate_type = item.get("candidate_type")
+            weight = item.get("weight")
+            if (
+                isinstance(candidate_type, str)
+                and candidate_type in SUPPORTED_DEVICE_TYPES - {"unknown"}
+                and type(weight) is int
+                and 1 <= weight <= 100
+            ):
+                evidence.append({
+                    "provider": _context_text(item.get("provider")),
+                    "signal": _context_text(item.get("signal")),
+                    "candidate_type": candidate_type,
+                    "weight": weight,
+                    "summary": _context_text(item.get("summary")),
+                })
+    alternatives: list[dict[str, Any]] = []
+    raw_alternatives = raw.get("alternatives")
+    if isinstance(raw_alternatives, list):
+        for item in raw_alternatives[:8]:
+            if not isinstance(item, dict):
+                continue
+            candidate_type = item.get("device_type")
+            score = item.get("score")
+            if (
+                isinstance(candidate_type, str)
+                and candidate_type in SUPPORTED_DEVICE_TYPES - {"unknown"}
+                and type(score) is int
+                and 0 <= score <= 100
+            ):
+                alternatives.append({"device_type": candidate_type, "score": score})
+    return {
+        "device_type": (
+            device_type if device_type in SUPPORTED_DEVICE_TYPES else "unknown"
+        ),
+        "confidence": (
+            confidence
+            if type(confidence) is int and 0 <= confidence <= 100
+            else 0
+        ),
+        "evidence": evidence,
+        "alternatives": alternatives,
+        "computed_at": _context_text(raw.get("computed_at"), 64),
+        "version": FINGERPRINT_VERSION,
+    }
 
 
 def _asset_public(asset: dict[str, Any]) -> dict[str, Any]:
@@ -507,35 +671,26 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
     asset_id = int(asset["id"])
     attachment = _attachment(conn, asset_id)
     try:
-        fingerprint = fingerprint_status(conn, asset_key)
+        nmap_fingerprint = _nmap_context_projection(
+            fingerprint_status(conn, asset_key)
+        )
     except FingerprintPolicyError:
-        fingerprint = {
+        nmap_fingerprint = _nmap_context_projection({
             "asset_key": asset_key,
             "profile": "asset-fingerprint-v1",
             "status": "unavailable",
             "fresh": False,
             "ports": [],
             "os_matches": [],
-        }
+        })
     current_fingerprint = current_asset_fingerprint(conn, asset_id)
-    device_fingerprint = (
+    fingerprint = _derived_fingerprint_context_projection(
         {
-            "device_type": current_fingerprint["device_type"],
-            "confidence": current_fingerprint["confidence"],
-            "evidence": current_fingerprint["evidence"],
-            "alternatives": current_fingerprint["alternatives"],
-            "computed_at": current_fingerprint["computed_at"],
+            **current_fingerprint,
             "version": current_fingerprint["fingerprint_version"],
         }
         if current_fingerprint is not None
-        else {
-            "device_type": "unknown",
-            "confidence": 0,
-            "evidence": [],
-            "alternatives": [],
-            "computed_at": "",
-            "version": "fingerprint-v2",
-        }
+        else None
     )
     return {
         "asset": _asset_public(asset),
@@ -557,7 +712,7 @@ def inspect_asset_context(conn: sqlite3.Connection, asset_key: str) -> dict[str,
             ),
         },
         "fingerprint": fingerprint,
-        "device_fingerprint": device_fingerprint,
+        "nmap_fingerprint": nmap_fingerprint,
         "topology_path": _topology_path(conn, attachment),
         "attachment_events": _attachment_events(conn, asset_id),
         "freshness": _freshness(conn),
