@@ -88,8 +88,16 @@ def test_group_policy_installation_precedes_join_and_enablement_follows_it() -> 
         ANSIBLE_ROOT / "roles" / "alt_group_policy_client" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
-    assert variables["alt_group_policy_prerequisite_packages"] == ["gpupdate"]
+    assert variables["alt_group_policy_prerequisite_packages"] == [
+        "gpupdate",
+        "alterator-gpupdate",
+    ]
     assert "alt_group_policy_prerequisite_packages" in prerequisites
+    assert "Check ALT Group Policy setup command" in client
+    assert "path: /usr/bin/gpupdate-setup" in client
+    assert client.index("Check ALT Group Policy setup command") < client.index(
+        "Enable the ALT Group Policy workstation profile after domain join"
+    )
     assert "gpupdate-setup, enable" in client
     assert "gpupdate, --target, Computer, --system, --force" in client
 
@@ -193,7 +201,7 @@ def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
     assert "grep" in content
 
 
-def test_workstation_base_manages_desktop_session_with_x11_default() -> None:
+def test_workstation_base_manages_desktop_session_with_wayland_default() -> None:
     variables = yaml.safe_load(
         (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
     )
@@ -201,7 +209,7 @@ def test_workstation_base_manages_desktop_session_with_x11_default() -> None:
         ANSIBLE_ROOT / "roles" / "workstation_base" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
-    assert variables["workstation_desktop_session"] == "x11"
+    assert variables["workstation_desktop_session"] == "wayland"
     assert "workstation_desktop_session" in content
     assert "/usr/bin/startplasma-x11" in content
     assert "/usr/bin/startplasma-wayland" in content
