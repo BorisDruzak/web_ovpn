@@ -35,6 +35,23 @@ class PortRole:
     observed_at: str
 
 
+def _link_port_keys(link: CurrentSwitchLink) -> tuple[tuple[int, str], ...]:
+    keys = {
+        (source_id, port_key)
+        for source_id, port_key in (
+            (link.source_a_id, link.port_a_key),
+            (link.source_b_id, link.port_b_key),
+            *(
+                (endpoint.source_id, endpoint.port_key)
+                for evidence in link.evidence
+                for endpoint in (evidence.endpoint_a, evidence.endpoint_b)
+            ),
+        )
+        if port_key
+    }
+    return tuple(sorted(keys))
+
+
 def _parent_source(
     first_source_id: int,
     second_source_id: int,
@@ -106,7 +123,7 @@ def _topology_assignments(
             (link.source_b_id, link.port_b_key, link.source_a_id),
         )
         if link.state == "conflicting":
-            conflicts.update((source_id, port_key) for source_id, port_key, _ in endpoints if port_key)
+            conflicts.update(_link_port_keys(link))
             continue
         evidence_types = {item.evidence_type for item in link.evidence}
         if link.state == "confirmed":
@@ -209,11 +226,8 @@ def infer_port_roles(
     }
     links = tuple(links)
     for link in links:
-        for source_id, port_key in (
-            (link.source_a_id, link.port_a_key),
-            (link.source_b_id, link.port_b_key),
-        ):
-            if port_key and (source_id, port_key) not in summaries:
+        for source_id, port_key in _link_port_keys(link):
+            if (source_id, port_key) not in summaries:
                 summaries[(source_id, port_key)] = PortMacSummary(
                     source_id, port_key, 0, 0, 0, False, observed_at
                 )

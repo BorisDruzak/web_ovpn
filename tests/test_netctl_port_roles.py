@@ -220,6 +220,108 @@ def test_port_role_engine_is_deterministic_and_strong_topology_wins_density(
         conn.close()
 
 
+def test_conflicting_topology_marks_all_evidence_ports_unknown_deterministically(
+    tmp_path: Path,
+) -> None:
+    from netctl.port_roles import infer_port_roles
+    from netctl.source_identity import list_source_identities
+    from netctl.topology_models import LinkEndpoint, LinkEvidence
+    from netctl.topology_reconcile import aggregate_link_evidence
+
+    conn = _port_role_db(tmp_path)
+    first = LinkEvidence(
+        LinkEndpoint(1, "physical:1"),
+        LinkEndpoint(2, "physical:24"),
+        "lldp_chassis_mac", 90, NOW, "", {},
+    )
+    second = LinkEvidence(
+        LinkEndpoint(1, "physical:2"),
+        LinkEndpoint(2, "physical:24"),
+        "lldp_chassis_mac", 90, NOW, "", {},
+    )
+    evidence_only = LinkEvidence(
+        LinkEndpoint(1, "physical:8"),
+        LinkEndpoint(2, "physical:24"),
+        "lldp_chassis_mac", 90, NOW, "", {},
+    )
+    stable = _link(1, "physical:5", 3, "physical:30", "confirmed", "intent")
+    try:
+        identities = list_source_identities(conn)
+        conflict = aggregate_link_evidence((first, second, evidence_only), NOW)[0]
+        reordered_conflict = aggregate_link_evidence(
+            (evidence_only, second, first), NOW
+        )[0]
+
+        assert conflict.state == "conflicting"
+        assert conflict.port_a_key == ""
+        assert reordered_conflict == conflict
+
+        roles = infer_port_roles(
+            conn,
+            links=(conflict, stable),
+            identities=identities,
+            depths={1: 0, 2: 1, 3: 1},
+            observed_at=NOW,
+        )
+        reordered_roles = infer_port_roles(
+            conn,
+            links=(stable, reordered_conflict),
+            identities=reversed(identities),
+            depths={3: 1, 2: 1, 1: 0},
+            observed_at=NOW,
+        )
+
+        assert reordered_roles == roles
+        by_port = {(item.source_id, item.port_key): item for item in roles}
+        assert by_port[(1, "physical:1")].role == "unknown"
+        assert by_port[(1, "physical:2")].role == "unknown"
+        assert by_port[(1, "physical:8")].role == "unknown"
+        assert by_port[(1, "physical:1")].evidence[0]["type"] == "topology_conflict"
+        assert by_port[(1, "physical:2")].evidence[0]["type"] == "topology_conflict"
+        assert by_port[(1, "physical:8")].evidence[0]["type"] == "topology_conflict"
+    finally:
+        conn.close()
+
+
+def test_non_learned_other_fdb_status_does_not_create_endpoint_evidence(
+    tmp_path: Path,
+) -> None:
+    from netctl.port_roles import infer_port_roles
+    from netctl.source_identity import list_source_identities
+
+    conn = _port_role_db(tmp_path)
+    try:
+        conn.execute(
+            """INSERT INTO switch_ports (
+                   source_id, port_key, name, oper_status, last_seen_at,
+                   collector_run_id
+               ) VALUES (1, 'physical:7', 'other-status', 'up', ?, 11)""",
+            (NOW,),
+        )
+        conn.execute(
+            """INSERT INTO current_switch_fdb (
+                   source_id, vlan_key, mac, port_key, status,
+                   first_seen_at, last_seen_at, collector_run_id
+               ) VALUES (1, '70', '60:00:00:00:00:01', 'physical:7',
+                         'other', ?, ?, 11)""",
+            (NOW, NOW),
+        )
+
+        roles = infer_port_roles(
+            conn,
+            links=(),
+            identities=list_source_identities(conn),
+            depths={1: 0},
+            observed_at=NOW,
+        )
+        role = next(item for item in roles if item.port_key == "physical:7")
+
+        assert (role.role, role.confidence, role.mac_count) == ("unknown", 0, 0)
+        assert role.evidence[0]["type"] == "no_learned_macs"
+    finally:
+        conn.close()
+
+
 def test_topology_reconcile_persists_roles_and_port_roles_cli_is_bounded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -102,3 +102,38 @@ Result: 1461 passed, 11 skipped, 0 failed in 223.84 seconds. Existing FastAPI/St
 ## Scope boundary
 
 This change implements only Task 3. It does not implement Task 4 FDB-subtree coverage inference, OPNsense integration, discovery scans, secrets, topology hardcoding, or any production configuration change.
+
+## Review round 1 follow-up
+
+Review source:
+`.superpowers/sdd/2026-08-09-network-observer-enrichment-v2/task-3-review-round-1.md`.
+
+Both Important findings were reproduced before the production fix:
+
+```text
+pytest tests/test_netctl_port_roles.py::test_conflicting_topology_marks_all_evidence_ports_unknown_deterministically tests/test_netctl_port_roles.py::test_non_learned_other_fdb_status_does_not_create_endpoint_evidence -q
+```
+
+RED result: 2 failed. The first port stayed density-based because a conflicting aggregate had an empty direct key; the second became a false endpoint from one `status=other` row.
+
+Fixes:
+
+- Port-role inference now derives one sorted unique port-key set from both a link's direct endpoints and every non-empty evidence endpoint. Conflicting links mark all of those ports `unknown`, and evidence-only ports are included in the result instead of being omitted.
+- MAC density and endpoint inference now accept only normalized current FDB rows whose status is exactly `learned`. `other`, `invalid`, `self`, `mgmt`, and unknown statuses do not contribute endpoint/density MACs.
+- The conflict regression recomputes the aggregate from reordered evidence and calls inference with reordered links, identities, and depth-map insertion order. The complete `PortRole` tuple remains equal.
+
+GREEN result: 2 passed.
+
+Fresh review-round target result:
+
+```text
+98 passed
+```
+
+Fresh full-suite result:
+
+```text
+1463 passed, 11 skipped, 0 failed in 222.52 seconds
+```
+
+Task 4 FDB-subtree correlation and all production/network actions remain out of scope.

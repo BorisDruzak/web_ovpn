@@ -10,7 +10,6 @@ from .source_identity import SourceIdentity
 
 
 DEFAULT_ACCESS_PORT_MAC_THRESHOLD = 10
-_IGNORED_FDB_STATUSES = frozenset({"invalid", "self", "mgmt"})
 
 
 @dataclass(frozen=True)
@@ -71,7 +70,7 @@ def port_mac_summaries(
         ORDER BY source_id, port_key, mac
         """
     ):
-        if str(row["status"] or "").lower() in _IGNORED_FDB_STATUSES:
+        if str(row["status"] or "").lower() != "learned":
             continue
         mac = normalize_mac(row["mac"])
         if mac is None:
