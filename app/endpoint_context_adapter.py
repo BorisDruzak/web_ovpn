@@ -11,9 +11,6 @@ from .endpoint_platform_client import EndpointPlatformServiceClient, get_endpoin
 
 SafeProfile = Literal["baseline_v1", "health_v1", "network_v1"]
 SAFE_PROFILES = frozenset(("baseline_v1", "health_v1", "network_v1"))
-SAFE_DEVICE_TYPES = frozenset(
-    ("pc", "phone", "server", "network", "camera", "printer", "noise")
-)
 
 
 def _dump(value: Any) -> dict[str, Any]:
@@ -61,12 +58,6 @@ def _project_network_identity(value: Any) -> dict[str, Any]:
         else [],
         "baseline_mac_keys": list(source.get("baseline_mac_keys") or []),
     }
-    device_type = source.get("device_type")
-    if isinstance(device_type, str) and device_type in SAFE_DEVICE_TYPES:
-        projected["device_type"] = device_type
-    os_family = source.get("os_family")
-    if isinstance(os_family, str) and (safe_os_family := " ".join(os_family.split())[:128]):
-        projected["os_family"] = safe_os_family
     return projected
 
 
@@ -87,6 +78,23 @@ class EndpointContextAdapter:
             _project_network_identity(identity)
             for identity in self._client.list_agent_network_identities()
         ]
+
+    def get_agent_os_family(self, device_id: UUID) -> str:
+        """Read the authoritative OS platform from an existing safe baseline."""
+        snapshot = self._client.get_latest_context(device_id, "baseline_v1")
+        if snapshot is None:
+            return ""
+        source = _dump(snapshot)
+        if source.get("profile") != "baseline_v1":
+            return ""
+        sections = source.get("sections")
+        if not isinstance(sections, dict):
+            return ""
+        system = sections.get("system")
+        if not isinstance(system, dict):
+            return ""
+        platform = system.get("platform")
+        return platform if platform in {"linux", "windows"} else ""
 
     def get_device(self, device_id: UUID) -> dict[str, Any]:
         device = _project_device(self._client.get_device(device_id))

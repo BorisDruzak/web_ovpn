@@ -49,8 +49,10 @@ performed.
   - current DHCP hostname and DNS PTR text;
   - display/manual names and legacy comment/raw kind hints;
   - endpoint switch-port role at only +10.
-- Cisco IOS, IOS XE, and NX-OS are explicitly network operating systems;
-  Apple iOS/iPadOS remain phone evidence.
+- Nmap OS-family matching is vendor/token aware: Cisco IOS/IOS XE are network
+  evidence and Apple iOS/iPadOS are phone evidence. Neither path falls through
+  to the generic desktop-OS rule, and contradictory weak hostnames cannot
+  overturn either medium-confidence result.
 - Nmap `probed` service evidence can receive the example +60 weight, while a
   `table` service-name hint is limited to +40. Low-confidence service results
   and low-accuracy OS matches are ignored.
@@ -72,9 +74,17 @@ performed.
   explanation JSON, alternatives JSON, fixed version, and computation time.
 - Added a narrow `asset_endpoint_agent_evidence_current` table containing only
   confirmed bounded `device_type`, `os_family`, and observation time.
-- The existing endpoint refresh now carries those two safe fields only after
-  a unique exact-MAC correlation. It invokes a bounded internal netctl CLI
-  ingestion command that atomically replaces the snapshot and recomputes V2.
+- The real Endpoint Platform network-identity producer and SDK were inspected
+  read-only. `AgentNetworkIdentity` exposes identity, timestamps, safe profile
+  availability, and baseline MAC keys; its strict model exposes neither
+  `device_type` nor `os_family`. The adapter therefore rejects/ignores those
+  invented feed fields.
+- After a unique exact-MAC correlation, the refresh uses the already-published
+  SDK `get_latest_context(device_id, "baseline_v1")` method and carries only
+  its authoritative `sections.system.platform` literal (`linux` or `windows`)
+  as endpoint OS-family evidence. It then invokes the bounded internal netctl
+  CLI ingestion command that atomically replaces the snapshot and recomputes
+  V2.
 - The ingestion accepts at most 1000 records and a 256 KiB JSON argument,
   resolves only existing exact asset keys, sanitizes fields, and never invokes
   Nmap. A failed sync leaves the previous web cache intact.
@@ -169,6 +179,22 @@ OS handling and the bounded endpoint-refresh-to-netctl sync path.
 Final independent re-review ran 102 focused tests and `git diff --check`.
 Verdict: `Ready`; no remaining Critical or Important findings.
 
+The subsequent recorded review in `task-6-review-round-1.md` found that Nmap's
+generic desktop fallback still used a raw `"ios"` substring and that the
+endpoint refresh expected fields which the real strict identity contract did
+not expose. The fix round was reproduced as 11 failing tests and made green by
+the vendor/token-aware Nmap rules plus the existing baseline-platform SDK path.
+
+The upstream identity-feed gap is now explicit: it contains no authoritative
+device type and no OS detail beyond the safe baseline snapshot's
+`linux|windows` platform. Therefore endpoint OS evidence reaches V2 without an
+external change, but it intentionally leaves PC versus server tied/unknown
+unless another strong or medium provider resolves it. A future authoritative
+device-type or richer OS-family input would require coordinated additions to
+both Endpoint Platform's server `AgentNetworkIdentity` projection and its SDK
+model. This limitation does not block the Task 6 threshold/unknown contract,
+so the local result is not `NEEDS_CONTEXT`.
+
 ## Verification
 
 Fresh expanded suite:
@@ -193,6 +219,31 @@ pytest -q
 Result: 1561 passed, 11 skipped, 0 failed in 269.07 seconds. Existing
 FastAPI/Starlette/pytest-asyncio deprecation warnings remain.
 
+Post-review RED→GREEN evidence:
+
+```text
+pytest -q <Cisco/Apple direct probes and weak-hostname interaction tests> \
+  <endpoint identity/snapshot/refresh boundary tests>
+```
+
+Initial result: 11 failed for the reviewed defects. GREEN: 11 passed in 0.66
+seconds. Expanded fingerprint/endpoint/Nmap/context verification: 86 passed in
+4.06 seconds.
+
+Fresh full suite after the recorded review fixes:
+
+```text
+pytest -q
+```
+
+Result: 1569 passed, 11 skipped, 0 failed in 305.84 seconds. The warnings are
+the same existing FastAPI/Starlette/pytest-asyncio deprecations noted above.
+
+Final independent fix re-review ran 105 focused tests and `git diff --check`.
+Verdict: `Ready`; no Critical or Important findings. It independently
+confirmed that the external Endpoint Platform worktree remained clean and
+that the absent richer upstream type is non-blocking for Task 6.
+
 Static verification:
 
 ```text
@@ -209,4 +260,5 @@ final pre-commit verification.
 This change implements only Task 6. It does not add a browser-triggered flow,
 start Nmap from a GET/card view or reconciliation, scan a subnet or asset
 collection, download OUI data, overwrite `assets.kind`, deploy code, install
-packages, contact the deployment host, or modify network/device configuration.
+packages, contact the deployment host, modify Endpoint Platform source, or
+modify network/device configuration.

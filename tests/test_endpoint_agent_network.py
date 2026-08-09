@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -130,6 +131,8 @@ def test_endpoint_adapter_projects_only_network_identity_fields_needed_for_corre
                     "baseline_collected_at": "2026-07-31T09:00:00Z",
                     "profiles": [{"profile": "baseline_v1", "collected_at": "2026-07-31T09:00:00Z"}],
                     "baseline_mac_keys": ["mac-aabbccddeeff"],
+                    "device_type": "pc",
+                    "os_family": "invented-field",
                     "raw_payload": {"token": "must-not-cross"},
                 }
             ]
@@ -148,7 +151,7 @@ def test_endpoint_adapter_projects_only_network_identity_fields_needed_for_corre
     ]
 
 
-def test_endpoint_classification_fields_cross_only_the_confirmed_mac_boundary() -> None:
+def test_endpoint_adapter_reads_authoritative_os_from_existing_baseline_snapshot() -> None:
     from app.endpoint_agent_network import sync_endpoint_agent_fingerprint_evidence
 
     class Client:
@@ -164,17 +167,53 @@ def test_endpoint_classification_fields_cross_only_the_confirmed_mac_boundary() 
                     "baseline_collected_at": "2026-07-31T09:00:00Z",
                     "profiles": [],
                     "baseline_mac_keys": ["mac-aabbccddee01"],
-                    "device_type": "pc",
-                    "os_family": "Windows 11",
-                    "raw_payload": {"token": "must-not-cross"},
                 }
             ]
+
+        def get_latest_context(self, device_id: UUID, profile: str) -> dict[str, object]:
+            assert device_id == UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+            assert profile == "baseline_v1"
+            return {
+                "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "profile": "baseline_v1",
+                "collected_at": "2026-07-31T09:00:00Z",
+                "semantic_hash": None,
+                "warnings": [],
+                "sections": {
+                    "system": {
+                        "platform": "windows",
+                        "distribution": "Windows",
+                        "architecture": "x86_64",
+                    },
+                    "hardware": {
+                        "manufacturer": "Fixture",
+                        "model": "Workstation",
+                        "cpu_model": "Fixture CPU",
+                        "memory_bytes": 8_589_934_592,
+                    },
+                    "storage": [
+                        {"stable_key": "disk:0", "model": "Fixture", "size_bytes": 1}
+                    ],
+                    "interfaces": [
+                        {
+                            "stable_key": "mac-aabbccddee01",
+                            "name": "Ethernet",
+                            "link_type": "ethernet",
+                        }
+                    ],
+                    "software": [],
+                },
+            }
 
     inventory = [
         {"device_key": "mac:AA:BB:CC:DD:EE:01", "mac": "AA:BB:CC:DD:EE:01"}
     ]
-    identities = EndpointContextAdapter(Client()).list_agent_network_identities()  # type: ignore[arg-type]
+    adapter = EndpointContextAdapter(Client())  # type: ignore[arg-type]
+    identities = adapter.list_agent_network_identities()
     statuses = correlate_endpoint_agents(inventory, identities)
+    statuses["mac:AA:BB:CC:DD:EE:01"]["os_family"] = adapter.get_agent_os_family(
+        UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    )
     calls: list[tuple[list[str], int | None]] = []
 
     sync_endpoint_agent_fingerprint_evidence(
@@ -183,10 +222,9 @@ def test_endpoint_classification_fields_cross_only_the_confirmed_mac_boundary() 
         executor=lambda args, timeout=None: calls.append((args, timeout)) or {},
     )
 
-    assert identities[0]["device_type"] == "pc"
-    assert identities[0]["os_family"] == "Windows 11"
-    assert statuses["mac:AA:BB:CC:DD:EE:01"]["device_type"] == "pc"
-    assert statuses["mac:AA:BB:CC:DD:EE:01"]["os_family"] == "Windows 11"
+    assert "device_type" not in identities[0]
+    assert "os_family" not in identities[0]
+    assert statuses["mac:AA:BB:CC:DD:EE:01"]["os_family"] == "windows"
     assert len(calls) == 1
     args, timeout = calls[0]
     assert args[:3] == ["fingerprint", "agent-evidence-sync", "--records-json"]
@@ -195,8 +233,7 @@ def test_endpoint_classification_fields_cross_only_the_confirmed_mac_boundary() 
     assert payload == [
         {
             "asset_key": "mac:AA:BB:CC:DD:EE:01",
-            "device_type": "pc",
-            "os_family": "Windows 11",
+            "os_family": "windows",
             "state": "confirmed",
         }
     ]
@@ -214,12 +251,15 @@ def test_successful_endpoint_refresh_syncs_fingerprint_evidence_before_cache(
     identity = _identity(
         "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", ["mac-aabbccddee01"]
     )
-    identity.update({"device_type": "pc", "os_family": "Windows"})
     events: list[str] = []
 
     class Adapter:
         def list_agent_network_identities(self):
             return [identity]
+
+        def get_agent_os_family(self, device_id: UUID) -> str:
+            events.append(f"resolve:{device_id}")
+            return "windows"
 
         def close(self) -> None:
             events.append("closed")
@@ -234,7 +274,7 @@ def test_successful_endpoint_refresh_syncs_fingerprint_evidence_before_cache(
         network,
         "sync_endpoint_agent_fingerprint_evidence",
         lambda actual_inventory, statuses: events.append(
-            f"sync:{statuses['mac:AA:BB:CC:DD:EE:01']['device_type']}"
+            f"sync:{statuses['mac:AA:BB:CC:DD:EE:01'].get('os_family')}"
         ),
     )
     monkeypatch.setattr(
@@ -245,7 +285,12 @@ def test_successful_endpoint_refresh_syncs_fingerprint_evidence_before_cache(
 
     network.refresh_endpoint_agent_network(inventory)
 
-    assert events == ["sync:pc", "cache", "closed"]
+    assert events == [
+        "resolve:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "sync:windows",
+        "cache",
+        "closed",
+    ]
 
 
 def test_safe_cache_persists_confirmed_result_without_mac_or_ip() -> None:

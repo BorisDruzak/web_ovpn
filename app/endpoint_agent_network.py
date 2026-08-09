@@ -7,6 +7,7 @@ import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
@@ -119,12 +120,6 @@ def correlate_endpoint_agents(
             "profiles": _safe_profiles(identity.get("profiles")),
             "evidence_kind": "baseline_interface_mac",
         }
-        device_type = identity.get("device_type")
-        if isinstance(device_type, str) and device_type in _SAFE_DEVICE_TYPES:
-            result["device_type"] = device_type
-        os_family = identity.get("os_family")
-        if isinstance(os_family, str) and (safe_os_family := " ".join(os_family.split())[:128]):
-            result["os_family"] = safe_os_family
         results[next(iter(asset_keys))] = result
     return results
 
@@ -300,6 +295,16 @@ def refresh_endpoint_agent_network(inventory: list[dict[str, object]]) -> None:
     try:
         adapter = get_endpoint_context_adapter()
         statuses = correlate_endpoint_agents(inventory, adapter.list_agent_network_identities())
+        for status in statuses.values():
+            device_id = status.get("device_id")
+            if status.get("state") != "confirmed" or not isinstance(device_id, str):
+                continue
+            try:
+                os_family = adapter.get_agent_os_family(UUID(device_id))
+            except ValueError:
+                continue
+            if os_family in {"linux", "windows"}:
+                status["os_family"] = os_family
         sync_endpoint_agent_fingerprint_evidence(inventory, statuses)
         with session_scope() as db:
             store_endpoint_agent_statuses(db, statuses, datetime.now(UTC))

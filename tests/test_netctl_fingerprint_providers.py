@@ -264,6 +264,107 @@ def test_known_snmp_switch_and_nmap_network_class_are_both_explainable(
     }
 
 
+@pytest.mark.parametrize(
+    ("vendor", "os_family", "candidate", "signal"),
+    [
+        ("Cisco", "Cisco IOS", "network", "network_os"),
+        ("Cisco", "Cisco IOS XE", "network", "network_os"),
+        ("Apple", "iOS", "phone", "mobile_os"),
+        ("Apple", "iPadOS", "phone", "mobile_os"),
+    ],
+)
+def test_nmap_os_family_tokens_distinguish_cisco_from_apple_mobile(
+    vendor: str,
+    os_family: str,
+    candidate: str,
+    signal: str,
+) -> None:
+    """A generic-purpose class must not turn every family containing IOS into a PC."""
+    from netctl.fingerprint.providers import _nmap_os_evidence
+
+    classes_json = json.dumps(
+        [
+            {
+                "type": "general purpose",
+                "vendor": vendor,
+                "osfamily": os_family,
+                "accuracy": 95,
+            }
+        ]
+    )
+
+    evidence = _nmap_os_evidence(classes_json, 95)
+
+    assert [
+        (item.candidate_type, item.signal, item.weight) for item in evidence
+    ] == [(candidate, signal, 70)]
+
+
+@pytest.mark.parametrize(
+    ("vendor", "os_family", "hostname", "expected_type"),
+    [
+        ("Cisco", "Cisco IOS", "pc-finance-01", "network"),
+        ("Cisco", "Cisco IOS XE", "pc-finance-01", "network"),
+        ("Apple", "iOS", "srv-mobile-01", "phone"),
+        ("Apple", "iPadOS", "srv-mobile-01", "phone"),
+    ],
+)
+def test_nmap_cisco_and_apple_os_evidence_beats_conflicting_weak_hostname(
+    tmp_path: Path,
+    vendor: str,
+    os_family: str,
+    hostname: str,
+    expected_type: str,
+) -> None:
+    from netctl.fingerprint.engine import classify_evidence
+    from netctl.fingerprint.providers import collect_asset_evidence
+
+    conn = _db(tmp_path)
+    try:
+        asset_id = _asset(
+            conn,
+            mac="AA:BB:CC:DD:EE:01",
+            hostname=hostname,
+        )
+        run_id = int(
+            conn.execute(
+                """INSERT INTO nmap_fingerprint_runs
+                   (asset_id, target_ip, profile, status, started_at, finished_at)
+                   VALUES (?, '192.0.2.55', 'asset-fingerprint-v1', 'success', ?, ?)""",
+                (asset_id, "2026-08-09T08:00:00Z", "2026-08-09T08:00:01Z"),
+            ).lastrowid
+        )
+        conn.execute(
+            """INSERT INTO nmap_fingerprint_os_matches
+               (run_id, position, name, accuracy, classes_json)
+               VALUES (?, 0, 'fixture os', 95, ?)""",
+            (
+                run_id,
+                json.dumps(
+                    [
+                        {
+                            "type": "general purpose",
+                            "vendor": vendor,
+                            "osfamily": os_family,
+                            "accuracy": 95,
+                            "cpes": [],
+                        }
+                    ]
+                ),
+            ),
+        )
+        conn.commit()
+
+        result = classify_evidence(
+            collect_asset_evidence(conn, asset_id, oui_path=OUI_FIXTURE)
+        )
+    finally:
+        conn.close()
+
+    assert result.device_type == expected_type
+    assert result.confidence == 70
+
+
 def test_windows_nmap_os_and_pc_hostname_choose_pc_over_server(tmp_path: Path) -> None:
     """Windows general-purpose evidence needs a weak endpoint hint to resolve PC/server."""
     from netctl.fingerprint.engine import classify_evidence

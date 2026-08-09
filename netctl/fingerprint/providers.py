@@ -384,6 +384,27 @@ def _quality_weight(base: int, quality: int | None, *, maximum: int) -> int | No
     return None
 
 
+def _is_network_os_family(family: str, vendor: str) -> bool:
+    return (
+        "cisco ios" in family
+        or family.startswith(("ios xe", "ios-xe", "nx-os", "nxos"))
+        or (
+            "cisco" in vendor
+            and (family == "ios" or family.startswith(("ios ", "ios-", "nx-os", "nxos")))
+        )
+    )
+
+
+def _is_apple_mobile_os_family(family: str, vendor: str) -> bool:
+    return (
+        family.startswith(("apple ios", "iphone os", "ipados"))
+        or (
+            "apple" in vendor
+            and (family == "ios" or family.startswith(("ios ", "ipados")))
+        )
+    )
+
+
 def _nmap_os_evidence(
     classes_json: object, match_accuracy: object
 ) -> tuple[FingerprintEvidence, ...]:
@@ -391,7 +412,8 @@ def _nmap_os_evidence(
     for item in _dictionary_list(classes_json):
         device_class = str(item.get("type") or "").casefold()
         family = str(item.get("osfamily") or "").casefold()
-        combined = f"{device_class} {family} {str(item.get('vendor') or '').casefold()}"
+        vendor = str(item.get("vendor") or "").casefold()
+        combined = f"{device_class} {family} {vendor}"
         qualities = [
             value
             for value in (item.get("accuracy"), match_accuracy)
@@ -406,6 +428,10 @@ def _nmap_os_evidence(
             candidate_weights = (("printer", 70, "printer"),)
         elif any(value in combined for value in ("camera", "webcam")):
             candidate_weights = (("camera", 70, "camera"),)
+        elif _is_network_os_family(family, vendor):
+            candidate_weights = (("network", 70, "network_os"),)
+        elif _is_apple_mobile_os_family(family, vendor):
+            candidate_weights = (("phone", 70, "mobile_os"),)
         elif "windows" in family and "general purpose" in device_class:
             candidate_weights = (
                 ("pc", 40, "windows_general_purpose"),
@@ -413,7 +439,7 @@ def _nmap_os_evidence(
             )
         elif "linux" in family and "general purpose" in device_class:
             candidate_weights = (("server", 40, "linux_general_purpose"),)
-        elif any(value in family for value in ("mac os", "ios")) and "general purpose" in device_class:
+        elif "mac os" in family and "general purpose" in device_class:
             candidate_weights = (("pc", 40, "desktop_os"),)
         else:
             candidate_weights = ()
