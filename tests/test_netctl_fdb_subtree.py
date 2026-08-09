@@ -395,11 +395,14 @@ def test_one_sided_subtree_sets_only_parent_port_role(
         conn.close()
 
 
-def test_stronger_lldp_role_is_not_replaced_by_subtree_candidate(
+def test_lldp_child_wins_over_conflicting_fdb_child_and_both_evidence_are_exposed(
     tmp_path: Path,
 ) -> None:
     """Subtree evidence on an occupied LLDP port must not silently change its child."""
-    from netctl.fdb_correlation import fdb_subtree_candidates
+    from netctl.fdb_correlation import (
+        fdb_subtree_candidates,
+        fdb_subtree_link_evidence,
+    )
     from netctl.port_roles import infer_port_roles
     from netctl.source_identity import list_source_identities
 
@@ -411,6 +414,31 @@ def test_stronger_lldp_role_is_not_replaced_by_subtree_candidate(
         candidates = fdb_subtree_candidates(
             conn, identities, known_links=links
         )
+
+        assert [
+            (
+                item.parent_port_key,
+                item.child_source_id,
+                item.evidence,
+            )
+            for item in candidates
+        ] == [
+            (
+                "physical:10",
+                2,
+                {
+                    "type": "fdb_subtree",
+                    "child_source": "css326-floor2",
+                    "child_leaf_mac_count": 4,
+                    "matched_mac_count": 4,
+                    "coverage": 1.0,
+                    "child_management_mac_seen": True,
+                },
+            )
+        ]
+        assert fdb_subtree_link_evidence(
+            candidates, stronger_links=links
+        ) == ()
 
         roles = infer_port_roles(
             conn,
@@ -431,7 +459,10 @@ def test_stronger_lldp_role_is_not_replaced_by_subtree_candidate(
             95,
             3,
         )
-        assert parent.evidence[0]["type"] == "lldp_child_switch"
+        assert parent.evidence[0] == {
+            "type": "lldp_child_switch",
+            "peer_source_id": 3,
+        }
     finally:
         conn.close()
 

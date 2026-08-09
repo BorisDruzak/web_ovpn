@@ -40,6 +40,52 @@ NMAP_XML = b"""<?xml version="1.0"?>
 </nmaprun>
 """
 
+WINDOWS_XML = b"""<?xml version="1.0"?>
+<nmaprun scanner="nmap" version="7.95">
+  <host>
+    <os>
+      <osmatch name="Microsoft Windows 10 1909 - 21H1" accuracy="98">
+        <osclass type="general purpose" vendor="Microsoft" osfamily="Windows"
+                 osgen="10" accuracy="98">
+          <cpe>cpe:/o:microsoft:windows_10</cpe>
+        </osclass>
+      </osmatch>
+    </os>
+  </host>
+</nmaprun>
+"""
+
+NETWORK_DEVICE_XML = b"""<?xml version="1.0"?>
+<nmaprun scanner="nmap" version="7.95">
+  <host>
+    <os>
+      <osmatch name="MikroTik RouterOS 7.X" accuracy="97">
+        <osclass type="router" vendor="MikroTik" osfamily="RouterOS"
+                 osgen="7.X" accuracy="97">
+          <cpe>cpe:/o:mikrotik:routeros:7</cpe>
+        </osclass>
+      </osmatch>
+    </os>
+  </host>
+</nmaprun>
+"""
+
+SERVICE_ONLY_XML = b"""<?xml version="1.0"?>
+<nmaprun scanner="nmap" version="7.95">
+  <host>
+    <ports>
+      <port protocol="tcp" portid="554">
+        <state state="open" />
+        <service name="rtsp" product="Hikvision IP camera rtspd"
+                 method="probed" conf="10">
+          <cpe>cpe:/h:hikvision:ip_camera</cpe>
+        </service>
+      </port>
+    </ports>
+  </host>
+</nmaprun>
+"""
+
 
 def test_parse_nmap_xml_projects_only_normalized_port_fields() -> None:
     """Persisting arbitrary XML attributes or script output would leak raw scan data."""
@@ -114,6 +160,78 @@ def test_parse_nmap_xml_projects_os_match_and_class_fields() -> None:
         }
     ]
     assert "private-raw-detail" not in repr(result)
+
+
+def test_parse_nmap_xml_windows_fixture_projects_windows_os_class() -> None:
+    """Dropping Windows osclass fields would remove the PC classification signal."""
+    from netctl.nmap.parser import parse_nmap_xml
+
+    result = parse_nmap_xml(WINDOWS_XML)
+
+    assert [asdict(match) for match in result.os_matches] == [
+        {
+            "name": "Microsoft Windows 10 1909 - 21H1",
+            "accuracy": 98,
+            "classes": (
+                {
+                    "type": "general purpose",
+                    "vendor": "Microsoft",
+                    "osfamily": "Windows",
+                    "osgen": "10",
+                    "accuracy": 98,
+                    "cpes": ("cpe:/o:microsoft:windows_10",),
+                },
+            ),
+        }
+    ]
+
+
+def test_parse_nmap_xml_network_device_fixture_projects_router_os_class() -> None:
+    """A router osclass must remain available to the network-device provider."""
+    from netctl.nmap.parser import parse_nmap_xml
+
+    result = parse_nmap_xml(NETWORK_DEVICE_XML)
+
+    assert [asdict(match) for match in result.os_matches] == [
+        {
+            "name": "MikroTik RouterOS 7.X",
+            "accuracy": 97,
+            "classes": (
+                {
+                    "type": "router",
+                    "vendor": "MikroTik",
+                    "osfamily": "RouterOS",
+                    "osgen": "7.X",
+                    "accuracy": 97,
+                    "cpes": ("cpe:/o:mikrotik:routeros:7",),
+                },
+            ),
+        }
+    ]
+
+
+def test_parse_nmap_xml_service_only_fixture_preserves_services_without_os() -> None:
+    """A service-only scan must not require or invent an OS match."""
+    from netctl.nmap.parser import parse_nmap_xml
+
+    result = parse_nmap_xml(SERVICE_ONLY_XML)
+
+    assert [asdict(port) for port in result.ports] == [
+        {
+            "protocol": "tcp",
+            "port": 554,
+            "state": "open",
+            "service_name": "rtsp",
+            "product": "Hikvision IP camera rtspd",
+            "version": "",
+            "extra_info": "",
+            "tunnel": "",
+            "method": "probed",
+            "confidence": 10,
+            "cpes": ("cpe:/h:hikvision:ip_camera",),
+        }
+    ]
+    assert result.os_matches == ()
 
 
 def test_parse_nmap_xml_rejects_multiple_host_documents() -> None:

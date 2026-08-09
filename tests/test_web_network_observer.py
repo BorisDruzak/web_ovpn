@@ -659,20 +659,29 @@ def test_network_asset_fingerprint_background_task_runs_one_bounded_netctl_ensur
 def test_network_asset_fingerprint_background_failure_isolated_from_card(
     tmp_path, monkeypatch
 ):
-    make_client(tmp_path, monkeypatch)
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
     import app.main
 
-    def fail(*_args, **_kwargs):
-        raise app.main.NetctlError(
-            "fingerprint failed",
-            returncode=1,
-            stdout='{"raw_xml":"private"}',
-            stderr="private command failure",
-        )
+    real_run_netctl = app.main.run_netctl
 
-    monkeypatch.setattr(app.main, "run_netctl", fail)
+    def fail_fingerprint_only(args, **kwargs):
+        if args[:2] == ["fingerprint", "ensure"]:
+            raise app.main.NetctlError(
+                "fingerprint failed",
+                returncode=1,
+                stdout='{"raw_xml":"private"}',
+                stderr="private command failure",
+            )
+        return real_run_netctl(args, **kwargs)
+
+    monkeypatch.setattr(app.main, "run_netctl", fail_fingerprint_only)
 
     app.main.run_asset_fingerprint_ensure("mac:AA:BB:CC:DD:EE:01")
+
+    page = client.get("/network/assets/mac:AA:BB:CC:DD:EE:01")
+    assert page.status_code == 200
+    assert "access-a" in page.text
 
 
 def test_network_asset_fingerprint_status_requires_login_and_returns_only_panel_fields(

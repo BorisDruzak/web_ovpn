@@ -923,7 +923,17 @@ def test_malformed_lldp_is_sanitized_and_never_fails_fdb() -> None:
     assert "31071" not in repr(snapshot.to_dict()["capabilities"])
 
 
-def test_optional_lldp_enrichment_failure_preserves_core_neighbor() -> None:
+@pytest.mark.parametrize(
+    "optional_outcome",
+    [
+        SnmpOutcome.AUTH_OR_VIEW_FAILURE,
+        SnmpOutcome.UNSUPPORTED_NO_SUCH_OBJECT,
+    ],
+    ids=["authorization-failure", "unsupported-no-such-object"],
+)
+def test_optional_lldp_enrichment_failure_preserves_core_neighbor(
+    optional_outcome: SnmpOutcome,
+) -> None:
     from netctl.snmp.collector import collect_switch_snapshot
 
     suffix = (1, 5, 9)
@@ -956,7 +966,7 @@ def test_optional_lldp_enrichment_failure_preserves_core_neighbor() -> None:
             ),
             LLDP_REM_SYS_DESC: _result(
                 "lldp_remote_system_description",
-                outcome=SnmpOutcome.AUTH_OR_VIEW_FAILURE,
+                outcome=optional_outcome,
             ),
             LLDP_REM_MAN_ADDR_IF_SUBTYPE: _result(
                 "lldp_remote_management_address",
@@ -1000,7 +1010,7 @@ def test_optional_lldp_enrichment_failure_preserves_core_neighbor() -> None:
         row
         for row in snapshot.capabilities
         if row.capability == "lldp_remote_system_description"
-    ).outcome is SnmpOutcome.AUTH_OR_VIEW_FAILURE
+    ).outcome is optional_outcome
     assert next(
         row for row in snapshot.capabilities if row.capability == "lldp_remote"
     ).outcome is SnmpOutcome.SUCCESS_WITH_ROWS
