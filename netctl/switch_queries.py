@@ -392,6 +392,7 @@ def _port_role_evidence(value: object) -> list[dict[str, object]]:
         "matched_mac_count",
         "coverage",
         "child_management_mac_seen",
+        "suppressed_by",
     }
     return [
         {key: item[key] for key in allowed if key in item}

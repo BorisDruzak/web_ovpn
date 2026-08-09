@@ -20,6 +20,7 @@ ALLOWED_PORT_ROLES = frozenset(
     {"endpoint", "backbone", "downstream_bridge", "shared_edge", "unknown"}
 )
 _TOPOLOGY_ROLE_RANK = {"core": 0, "distribution": 1, "access": 2, "edge": 3}
+MAX_SUPPRESSED_SUBTREE_EVIDENCE = 8
 
 
 @dataclass(frozen=True)
@@ -298,6 +299,50 @@ def _density_role(summary: PortMacSummary, threshold: int) -> PortRole:
     )
 
 
+def _suppressed_subtree_evidence(
+    key: tuple[int, str],
+    assignment: tuple[int, str, int, int | None, dict[str, Any]],
+    candidates: Iterable[SubtreeCandidate],
+) -> tuple[dict[str, Any], ...]:
+    """Retain bounded contradictory subtree evidence without changing its winner."""
+    priority, _role, _confidence, child_source_id, winner_evidence = assignment
+    if priority <= 150:
+        return ()
+    winner_peer_id = child_source_id or winner_evidence.get("peer_source_id")
+    if type(winner_peer_id) is not int:
+        return ()
+    suppressed_by = winner_evidence.get("type")
+    if not isinstance(suppressed_by, str):
+        return ()
+    contradictory = sorted(
+        (
+            candidate
+            for candidate in candidates
+            if (candidate.parent_source_id, candidate.parent_port_key) == key
+            and candidate.child_source_id != winner_peer_id
+        ),
+        key=lambda candidate: (
+            -int(candidate.child_management_mac_seen),
+            -candidate.coverage,
+            candidate.child_source_id,
+            candidate.child_port_key,
+        ),
+    )
+    suppressed = [
+        {
+            "type": "fdb_subtree_suppressed",
+            "suppressed_by": suppressed_by,
+            **{
+                field: value
+                for field, value in candidate.evidence.items()
+                if field != "type"
+            },
+        }
+        for candidate in contradictory
+    ]
+    return tuple(suppressed[:MAX_SUPPRESSED_SUBTREE_EVIDENCE])
+
+
 def infer_port_roles(
     conn: sqlite3.Connection,
     *,
@@ -310,6 +355,8 @@ def infer_port_roles(
 ) -> tuple[PortRole, ...]:
     """Infer one deterministic current role for every observed or linked switch port."""
     identities = tuple(identities)
+    subtree_candidates = tuple(subtree_candidates)
+    subtree_link_candidates = tuple(subtree_link_candidates)
     identity_by_source = {item.source_id: item for item in identities}
     summaries = {
         (item.source_id, item.port_key): item
@@ -353,13 +400,16 @@ def infer_port_roles(
         assignment = assignments.get(key)
         if assignment is not None:
             _, assigned_role, confidence, child_source_id, evidence = assignment
+            suppressed = _suppressed_subtree_evidence(
+                key, assignment, subtree_candidates
+            )
             roles.append(
                 replace(
                     role,
                     role=assigned_role,
                     confidence=confidence,
                     child_source_id=child_source_id,
-                    evidence=(evidence, *role.evidence),
+                    evidence=(evidence, *suppressed, *role.evidence),
                     observed_at=observed_at,
                 )
             )

@@ -237,6 +237,73 @@ def test_counter_retention_dry_run_excludes_expired_sample_run_references(conn):
     assert result["deleted"]["switch_collection_runs"] == 1
 
 
+def test_nmap_retention_bounds_repeated_stale_scans_and_deletes_children_first(conn):
+    """Repeated expired scans must be pruned without losing current recovery state."""
+    from netctl.retention import apply_retention, retention_report
+
+    conn.execute(
+        "UPDATE ip_observations SET is_current = 1 WHERE asset_id = 1"
+    )
+    runs = [
+        (40, "success", "2026-06-01T01:00:00Z", "2026-06-01T01:00:10Z", "192.0.2.2"),
+        (41, "success", "2026-06-02T01:00:00Z", "2026-06-02T01:00:10Z", "192.0.2.2"),
+        (42, "success", "2026-06-03T01:00:00Z", "2026-06-03T01:00:10Z", "192.0.2.2"),
+        (43, "success", "2026-06-04T01:00:00Z", "2026-06-04T01:00:10Z", "192.0.2.2"),
+        (44, "failed", "2026-06-05T01:00:00Z", "2026-06-05T01:00:10Z", "192.0.2.2"),
+        (45, "running", "2026-06-06T01:00:00Z", None, "192.0.2.99"),
+    ]
+    conn.executemany(
+        """INSERT INTO nmap_fingerprint_runs
+           (id, asset_id, target_ip, profile, status, started_at, finished_at)
+           VALUES (?, 1, ?, 'asset-fingerprint-v1', ?, ?, ?)""",
+        [
+            (run_id, target, status, started, finished)
+            for run_id, status, started, finished, target in runs
+        ],
+    )
+    for run_id in (40, 41, 42, 43):
+        conn.execute(
+            """INSERT INTO nmap_fingerprint_ports
+               (run_id, protocol, port, state)
+               VALUES (?, 'tcp', 22, 'open')""",
+            (run_id,),
+        )
+        conn.execute(
+            """INSERT INTO nmap_fingerprint_os_matches
+               (run_id, position, name)
+               VALUES (?, 0, 'Linux')""",
+            (run_id,),
+        )
+    conn.commit()
+
+    report = retention_report(conn, CUTOFF)
+
+    assert report["delete"]["nmap_fingerprint_ports"] == 3
+    assert report["delete"]["nmap_fingerprint_os_matches"] == 3
+    assert report["delete"]["nmap_fingerprint_runs"] == 3
+    assert report["keep"]["nmap_fingerprint_runs_current"] == 1
+    assert report["keep"]["nmap_fingerprint_runs_last_success"] == 1
+    assert report["keep"]["nmap_fingerprint_runs_running"] == 1
+    assert ids(conn, "nmap_fingerprint_runs") == {40, 41, 42, 43, 44, 45}
+
+    result = apply_retention(conn, CUTOFF)
+
+    assert result["deleted"]["nmap_fingerprint_ports"] == 3
+    assert result["deleted"]["nmap_fingerprint_os_matches"] == 3
+    assert result["deleted"]["nmap_fingerprint_runs"] == 3
+    assert ids(conn, "nmap_fingerprint_runs") == {43, 44, 45}
+    assert {
+        int(row[0])
+        for row in conn.execute("SELECT run_id FROM nmap_fingerprint_ports")
+    } == {43}
+    assert {
+        int(row[0])
+        for row in conn.execute("SELECT run_id FROM nmap_fingerprint_os_matches")
+    } == {43}
+    assert conn.execute("PRAGMA foreign_key_check").fetchone() is None
+    assert apply_retention(conn, CUTOFF)["total_deleted"] == 0
+
+
 def test_retention_rolls_back_all_deletes_when_the_second_delete_fails(conn):
     """Committing each family separately would leave FDB events deleted after a later failure."""
     from netctl.retention import apply_retention

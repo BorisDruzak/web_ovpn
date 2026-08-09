@@ -467,6 +467,67 @@ def test_lldp_child_wins_over_conflicting_fdb_child_and_both_evidence_are_expose
         conn.close()
 
 
+def test_suppressed_subtree_evidence_is_bounded_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    """Many weaker contradictions must not create unbounded or order-dependent evidence."""
+    from netctl.fdb_correlation import SubtreeCandidate
+    from netctl.port_roles import infer_port_roles
+    from netctl.source_identity import list_source_identities
+
+    conn = _subtree_db(tmp_path)
+    candidates = tuple(
+        SubtreeCandidate(
+            parent_source_id=1,
+            parent_port_key="physical:10",
+            child_source_id=child_id,
+            child_source=f"candidate-{child_id}",
+            child_port_key="",
+            child_leaf_mac_count=4,
+            matched_mac_count=4,
+            coverage=1.0,
+            child_management_mac_seen=True,
+            confidence=100,
+            observed_at=NOW,
+        )
+        for child_id in range(10, 20)
+    )
+    try:
+        identities = list_source_identities(conn)
+        lldp = _lldp_link(1, "physical:10", 3, "physical:1")
+
+        def suppressed(order):
+            roles = infer_port_roles(
+                conn,
+                links=(lldp,),
+                identities=identities,
+                depths={1: 0, 3: 1},
+                observed_at=NOW,
+                subtree_candidates=order,
+            )
+            parent = next(
+                item
+                for item in roles
+                if item.source_id == 1 and item.port_key == "physical:10"
+            )
+            return tuple(
+                item
+                for item in parent.evidence
+                if item.get("type") == "fdb_subtree_suppressed"
+            )
+
+        first = suppressed(candidates)
+        reordered = suppressed(reversed(candidates))
+
+        assert len(first) == 8
+        assert first == reordered
+        assert [item["child_source"] for item in first] == [
+            f"candidate-{child_id}" for child_id in range(10, 18)
+        ]
+    finally:
+        conn.close()
+
+
 def test_complete_subtree_does_not_reuse_port_occupied_by_stronger_link(
     tmp_path: Path,
 ) -> None:
@@ -618,8 +679,9 @@ def test_equal_ambiguous_parents_do_not_publish_arbitrary_child_peer(
 def test_reconcile_does_not_persist_subtree_on_lldp_occupied_port(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Reconciliation must apply the cross-pair occupied-port guard."""
+    """The LLDP winner must retain bounded evidence of the suppressed FDB child."""
     from netctl import topology_reconcile
 
     conn = _subtree_db(tmp_path)
@@ -642,11 +704,59 @@ def test_reconcile_does_not_persist_subtree_on_lldp_occupied_port(
         ]
         assert pairs == [(1, 3)]
         role = conn.execute(
-            """SELECT role, child_source_id
+            """SELECT role, child_source_id, evidence_json
                FROM current_switch_port_roles
                WHERE source_id = 1 AND port_key = 'physical:10'"""
         ).fetchone()
-        assert tuple(role) == ("downstream_bridge", 3)
+        assert tuple(role[:2]) == ("downstream_bridge", 3)
+        assert json.loads(str(role["evidence_json"]))[:2] == [
+            {"type": "lldp_child_switch", "peer_source_id": 3},
+            {
+                "type": "fdb_subtree_suppressed",
+                "suppressed_by": "lldp_child_switch",
+                "child_source": "css326-floor2",
+                "child_leaf_mac_count": 5,
+                "matched_mac_count": 4,
+                "coverage": 0.8,
+                "child_management_mac_seen": True,
+            },
+        ]
+
+        import netctl.cli as cli
+
+        assert cli.main(
+            [
+                "--json",
+                "--db",
+                _db_url(tmp_path / "fdb-subtree.sqlite"),
+                "switches",
+                "port-roles",
+                "--source",
+                "parent",
+            ]
+        ) == 0
+        payload = json.loads(capsys.readouterr().out)
+        exposed = next(
+            item
+            for item in payload["port_roles"]
+            if item["port_key"] == "physical:10"
+        )
+        assert (exposed["role"], exposed["child_source"]) == (
+            "downstream_bridge",
+            "known-peer",
+        )
+        assert exposed["evidence"][:2] == [
+            {"type": "lldp_child_switch", "peer_source_id": 3},
+            {
+                "type": "fdb_subtree_suppressed",
+                "suppressed_by": "lldp_child_switch",
+                "child_source": "css326-floor2",
+                "child_leaf_mac_count": 5,
+                "matched_mac_count": 4,
+                "coverage": 0.8,
+                "child_management_mac_seen": True,
+            },
+        ]
     finally:
         conn.close()
 

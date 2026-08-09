@@ -119,6 +119,54 @@ def protected_availability_run_ids(conn: sqlite3.Connection) -> set[int]:
     )
 
 
+def _latest_current_nmap_run_ids(
+    conn: sqlite3.Connection, *, status: str | None = None
+) -> set[int]:
+    status_clause = " AND runs.status = ?" if status is not None else ""
+    latest_status_clause = " AND latest.status = ?" if status is not None else ""
+    order = (
+        "COALESCE(latest.finished_at, latest.started_at)"
+        if status == "success"
+        else "latest.started_at"
+    )
+    params: tuple[object, ...] = (status, status) if status is not None else ()
+    return _ids(
+        conn.execute(
+            f"""SELECT runs.id FROM nmap_fingerprint_runs AS runs
+                WHERE EXISTS (
+                    SELECT 1 FROM ip_observations AS ips
+                    WHERE ips.asset_id = runs.asset_id AND ips.is_current = 1
+                      AND ips.ip = runs.target_ip
+                )
+                {status_clause}
+                  AND runs.id = (
+                    SELECT latest.id FROM nmap_fingerprint_runs AS latest
+                    WHERE latest.asset_id = runs.asset_id
+                      AND latest.target_ip = runs.target_ip
+                      AND latest.profile = runs.profile
+                      {latest_status_clause}
+                    ORDER BY {order} DESC, latest.id DESC
+                    LIMIT 1
+                  )""",
+            params,
+        )
+    )
+
+
+def protected_nmap_run_ids(conn: sqlite3.Connection) -> set[int]:
+    """Keep current-target status/recovery rows and every active single flight."""
+    running = _ids(
+        conn.execute(
+            "SELECT id FROM nmap_fingerprint_runs WHERE status = 'running'"
+        )
+    )
+    return (
+        running
+        | _latest_current_nmap_run_ids(conn)
+        | _latest_current_nmap_run_ids(conn, status="success")
+    )
+
+
 def _old_ids(conn: sqlite3.Connection, table: str, timestamp_column: str, cutoff: str, protected: set[int] | None = None) -> list[int]:
     query = f"SELECT id FROM {table} WHERE {timestamp_column} < ?"
     params: list[object] = [cutoff]
@@ -127,6 +175,21 @@ def _old_ids(conn: sqlite3.Connection, table: str, timestamp_column: str, cutoff
         query += f" AND id NOT IN ({placeholders})"
         params.extend(sorted(protected))
     return [int(row[0]) for row in conn.execute(query, params)]
+
+
+def _child_ids_for_runs(
+    conn: sqlite3.Connection, table: str, run_ids: list[int]
+) -> list[int]:
+    if not run_ids:
+        return []
+    placeholders = ", ".join("?" for _ in run_ids)
+    return [
+        int(row[0])
+        for row in conn.execute(
+            f"SELECT id FROM {table} WHERE run_id IN ({placeholders}) ORDER BY id",
+            run_ids,
+        )
+    ]
 
 
 def _count_current_references(conn: sqlite3.Connection, tables: tuple[str, ...], column: str) -> int:
@@ -186,8 +249,23 @@ def retention_report(
     correlation_protected = protected_correlation_run_ids(conn)
     path_protected = protected_path_fact_run_ids(conn)
     availability_protected = protected_availability_run_ids(conn)
+    nmap_protected = protected_nmap_run_ids(conn)
+    nmap_run_ids = _old_ids(
+        conn,
+        "nmap_fingerprint_runs",
+        "COALESCE(finished_at, started_at)",
+        cutoff,
+        nmap_protected,
+    )
     delete = {table: len(_old_ids(conn, table, column, cutoff)) for table, column in _EVENT_TABLES}
     delete["switch_port_counter_samples"] = len(counter_sample_ids)
+    delete["nmap_fingerprint_ports"] = len(
+        _child_ids_for_runs(conn, "nmap_fingerprint_ports", nmap_run_ids)
+    )
+    delete["nmap_fingerprint_os_matches"] = len(
+        _child_ids_for_runs(conn, "nmap_fingerprint_os_matches", nmap_run_ids)
+    )
+    delete["nmap_fingerprint_runs"] = len(nmap_run_ids)
     delete.update(
         {
             "ip_observations": int(conn.execute(
@@ -215,6 +293,9 @@ def retention_report(
             "router_path_fact_runs_last_success": len(_latest_run_ids(conn, "router_path_fact_runs", "source_id", ("success",))),
             "availability_runs_current_reference": _count_current_references(conn, ("availability_results",), "run_id"),
             "availability_runs_last_success": len(_latest_run_ids(conn, "availability_runs", "cidr", ("success",))),
+            "nmap_fingerprint_runs_current": len(_latest_current_nmap_run_ids(conn)),
+            "nmap_fingerprint_runs_last_success": len(_latest_current_nmap_run_ids(conn, status="success")),
+            "nmap_fingerprint_runs_running": len(_ids(conn.execute("SELECT id FROM nmap_fingerprint_runs WHERE status = 'running'"))),
         },
     }
 
@@ -252,6 +333,26 @@ def apply_retention(
             conn,
             "switch_port_counter_samples",
             _counter_sample_ids(conn, reference_time),
+        )
+        nmap_run_ids = _old_ids(
+            conn,
+            "nmap_fingerprint_runs",
+            "COALESCE(finished_at, started_at)",
+            cutoff,
+            protected_nmap_run_ids(conn),
+        )
+        deleted["nmap_fingerprint_ports"] = _delete_ids(
+            conn,
+            "nmap_fingerprint_ports",
+            _child_ids_for_runs(conn, "nmap_fingerprint_ports", nmap_run_ids),
+        )
+        deleted["nmap_fingerprint_os_matches"] = _delete_ids(
+            conn,
+            "nmap_fingerprint_os_matches",
+            _child_ids_for_runs(conn, "nmap_fingerprint_os_matches", nmap_run_ids),
+        )
+        deleted["nmap_fingerprint_runs"] = _delete_ids(
+            conn, "nmap_fingerprint_runs", nmap_run_ids
         )
         for table, timestamp_column in _EVENT_TABLES:
             deleted[table] = _delete_ids(conn, table, _old_ids(conn, table, timestamp_column, cutoff))
