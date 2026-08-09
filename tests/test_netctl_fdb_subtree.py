@@ -226,6 +226,48 @@ def _one_sided_management_link():
     )
 
 
+def _add_second_upstream_candidate(
+    conn,
+    *,
+    match_backbone_leaf: bool,
+) -> None:
+    leaf_macs = [
+        "10:00:00:00:00:01",
+        "10:00:00:00:00:02",
+        "10:00:00:00:00:03",
+        "10:00:00:00:00:04",
+    ]
+    conn.execute(
+        """INSERT INTO current_switch_fdb (
+               source_id, vlan_key, mac, port_key, status,
+               first_seen_at, last_seen_at, collector_run_id
+           ) VALUES (1, '4', '10:00:00:00:00:99', 'physical:10',
+                     'learned', ?, ?, 11)""",
+        (NOW, NOW),
+    )
+    parent_macs = [*leaf_macs, "B2:B2:B2:B2:B2:02"]
+    if match_backbone_leaf:
+        parent_macs.append("10:00:00:00:00:99")
+    conn.executemany(
+        """INSERT INTO current_switch_fdb (
+               source_id, vlan_key, mac, port_key, status,
+               first_seen_at, last_seen_at, collector_run_id
+           ) VALUES (3, ?, ?, 'physical:1', 'learned', ?, ?, 33)""",
+        [
+            (str(index + 1), mac, NOW, NOW)
+            for index, mac in enumerate(parent_macs)
+        ],
+    )
+    conn.execute(
+        """INSERT INTO current_switch_fdb (
+               source_id, vlan_key, mac, port_key, status,
+               first_seen_at, last_seen_at, collector_run_id
+           ) VALUES (2, '4', 'CC:CC:CC:CC:CC:03', 'physical:1',
+                     'learned', ?, ?, 22)""",
+        (NOW, NOW),
+    )
+
+
 def test_subtree_candidates_filter_leaf_noise_apply_threshold_and_prefer_management_mac(
     tmp_path: Path,
 ) -> None:
@@ -436,40 +478,7 @@ def test_equal_upstream_candidates_do_not_create_multiple_complete_links(
 
     conn = _subtree_db(tmp_path)
     try:
-        leaf_macs = [
-            "10:00:00:00:00:01",
-            "10:00:00:00:00:02",
-            "10:00:00:00:00:03",
-            "10:00:00:00:00:04",
-            "10:00:00:00:00:99",
-        ]
-        conn.execute(
-            """INSERT INTO current_switch_fdb (
-                   source_id, vlan_key, mac, port_key, status,
-                   first_seen_at, last_seen_at, collector_run_id
-               ) VALUES (1, '4', ?, 'physical:10', 'learned', ?, ?, 11)""",
-            (leaf_macs[-1], NOW, NOW),
-        )
-        conn.executemany(
-            """INSERT INTO current_switch_fdb (
-                   source_id, vlan_key, mac, port_key, status,
-                   first_seen_at, last_seen_at, collector_run_id
-               ) VALUES (3, ?, ?, 'physical:1', 'learned', ?, ?, 33)""",
-            [
-                (str(index + 1), mac, NOW, NOW)
-                for index, mac in enumerate(
-                    [*leaf_macs, "B2:B2:B2:B2:B2:02"]
-                )
-            ],
-        )
-        conn.execute(
-            """INSERT INTO current_switch_fdb (
-                   source_id, vlan_key, mac, port_key, status,
-                   first_seen_at, last_seen_at, collector_run_id
-               ) VALUES (2, '4', 'CC:CC:CC:CC:CC:03', 'physical:1',
-                         'learned', ?, ?, 22)""",
-            (NOW, NOW),
-        )
+        _add_second_upstream_candidate(conn, match_backbone_leaf=True)
 
         candidates = fdb_subtree_candidates(
             conn, list_source_identities(conn)
@@ -490,6 +499,87 @@ def test_equal_upstream_candidates_do_not_create_multiple_complete_links(
             for item in fdb_subtree_link_evidence(candidates)
             if {item.endpoint_a.source_id, item.endpoint_b.source_id} & {2}
         ]
+    finally:
+        conn.close()
+
+
+def test_unique_complete_winner_drives_matching_child_backbone_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A weaker candidate must not conflict with the selected child uplink role."""
+    from netctl import topology_reconcile
+
+    conn = _subtree_db(tmp_path)
+    try:
+        _add_second_upstream_candidate(conn, match_backbone_leaf=False)
+        monkeypatch.setattr(
+            topology_reconcile,
+            "collect_link_evidence",
+            lambda _conn, _identities: (),
+        )
+
+        topology_reconcile.reconcile_topology(conn, NOW, {})
+
+        links = conn.execute(
+            """SELECT source_a_id, port_a_key, source_b_id, port_b_key
+               FROM current_switch_links
+               WHERE source_a_id = 1 AND source_b_id = 2"""
+        ).fetchall()
+        assert [tuple(row) for row in links] == [
+            (1, "physical:10", 2, "physical:1")
+        ]
+        role = conn.execute(
+            """SELECT role, confidence, evidence_json
+               FROM current_switch_port_roles
+               WHERE source_id = 2 AND port_key = 'physical:1'"""
+        ).fetchone()
+        assert (role["role"], role["confidence"]) == ("backbone", 100)
+        assert json.loads(str(role["evidence_json"]))[0] == {
+            "child_leaf_mac_count": 5,
+            "child_management_mac_seen": True,
+            "child_source": "css326-floor2",
+            "coverage": 1.0,
+            "matched_mac_count": 5,
+            "peer_source_id": 1,
+            "type": "fdb_subtree_backbone",
+        }
+    finally:
+        conn.close()
+
+
+def test_equal_ambiguous_parents_do_not_publish_arbitrary_child_peer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No complete winner means no fabricated child backbone or peer evidence."""
+    from netctl import topology_reconcile
+
+    conn = _subtree_db(tmp_path)
+    try:
+        _add_second_upstream_candidate(conn, match_backbone_leaf=True)
+        monkeypatch.setattr(
+            topology_reconcile,
+            "collect_link_evidence",
+            lambda _conn, _identities: (),
+        )
+
+        topology_reconcile.reconcile_topology(conn, NOW, {})
+
+        assert conn.execute(
+            """SELECT count(*) FROM current_switch_links
+               WHERE source_a_id = 1 AND source_b_id = 2"""
+        ).fetchone()[0] == 0
+        role = conn.execute(
+            """SELECT role, child_source_id, evidence_json
+               FROM current_switch_port_roles
+               WHERE source_id = 2 AND port_key = 'physical:1'"""
+        ).fetchone()
+        evidence = json.loads(str(role["evidence_json"]))
+        assert role["role"] != "backbone"
+        assert role["child_source_id"] is None
+        assert all(item.get("type") != "fdb_subtree_backbone" for item in evidence)
+        assert all("peer_source_id" not in item for item in evidence)
     finally:
         conn.close()
 

@@ -85,6 +85,7 @@ def _topology_assignments(
     depths: Mapping[int, int],
     identities: Mapping[int, SourceIdentity],
     subtree_candidates: Iterable[SubtreeCandidate],
+    subtree_link_candidates: Iterable[SubtreeCandidate],
 ) -> tuple[
     dict[tuple[int, str], tuple[int, str, int, int | None, dict[str, Any]]],
     set[tuple[int, str]],
@@ -235,23 +236,31 @@ def _topology_assignments(
             candidate.child_source_id,
             candidate.evidence,
         )
-        if candidate.child_port_key:
-            assign(
-                (candidate.child_source_id, candidate.child_port_key),
-                150,
-                "backbone",
-                candidate.confidence,
-                None,
-                {
-                    "type": "fdb_subtree_backbone",
-                    "peer_source_id": candidate.parent_source_id,
-                    **{
-                        key: value
-                        for key, value in candidate.evidence.items()
-                        if key != "type"
-                    },
+    for candidate in sorted(
+        subtree_link_candidates,
+        key=lambda item: (
+            item.parent_source_id,
+            item.parent_port_key,
+            item.child_source_id,
+            item.child_port_key,
+        ),
+    ):
+        assign(
+            (candidate.child_source_id, candidate.child_port_key),
+            150,
+            "backbone",
+            candidate.confidence,
+            None,
+            {
+                "type": "fdb_subtree_backbone",
+                "peer_source_id": candidate.parent_source_id,
+                **{
+                    key: value
+                    for key, value in candidate.evidence.items()
+                    if key != "type"
                 },
-            )
+            },
+        )
     return assignments, conflicts
 
 
@@ -297,6 +306,7 @@ def infer_port_roles(
     depths: Mapping[int, int],
     observed_at: str,
     subtree_candidates: Iterable[SubtreeCandidate] = (),
+    subtree_link_candidates: Iterable[SubtreeCandidate] = (),
 ) -> tuple[PortRole, ...]:
     """Infer one deterministic current role for every observed or linked switch port."""
     identities = tuple(identities)
@@ -318,6 +328,7 @@ def infer_port_roles(
         depths=depths,
         identities=identity_by_source,
         subtree_candidates=subtree_candidates,
+        subtree_link_candidates=subtree_link_candidates,
     )
     roles: list[PortRole] = []
     for key, summary in sorted(summaries.items()):

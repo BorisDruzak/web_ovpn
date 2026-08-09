@@ -218,12 +218,12 @@ def fdb_subtree_candidates(
     )
 
 
-def fdb_subtree_link_evidence(
+def select_fdb_subtree_link_candidates(
     candidates: Iterable[SubtreeCandidate],
     *,
     stronger_links: Iterable[CurrentSwitchLink] = (),
-) -> tuple[LinkEvidence, ...]:
-    """Return complete link evidence only when the reverse child port is proven."""
+) -> tuple[SubtreeCandidate, ...]:
+    """Select one uncontradicted complete subtree winner per child, if unique."""
     occupied_ports: dict[tuple[int, str], set[int]] = {}
     for link in stronger_links:
         if link.state in {"ambiguous", "conflicting"}:
@@ -286,6 +286,28 @@ def fdb_subtree_link_evidence(
         if len(best) == 1:
             winners.append(best[0])
 
+    return tuple(
+        sorted(
+            winners,
+            key=lambda item: (
+                item.parent_source_id,
+                item.parent_port_key,
+                item.child_source_id,
+                item.child_port_key,
+            ),
+        )
+    )
+
+
+def fdb_subtree_link_evidence(
+    candidates: Iterable[SubtreeCandidate],
+    *,
+    stronger_links: Iterable[CurrentSwitchLink] = (),
+) -> tuple[LinkEvidence, ...]:
+    """Return complete link evidence only for a unique selected subtree winner."""
+    winners = select_fdb_subtree_link_candidates(
+        candidates, stronger_links=stronger_links
+    )
     evidence = [
         LinkEvidence(
             LinkEndpoint(candidate.parent_source_id, candidate.parent_port_key),

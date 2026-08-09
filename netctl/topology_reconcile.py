@@ -6,7 +6,11 @@ from collections import defaultdict, deque
 from dataclasses import asdict
 from typing import Any, Iterable
 
-from .fdb_correlation import fdb_subtree_candidates, fdb_subtree_link_evidence
+from .fdb_correlation import (
+    fdb_subtree_candidates,
+    fdb_subtree_link_evidence,
+    select_fdb_subtree_link_candidates,
+)
 from .source_identity import SourceIdentity, list_source_identities
 from .port_roles import infer_port_roles, replace_current_port_roles
 from .topology_evidence import collect_link_evidence
@@ -372,11 +376,14 @@ def reconcile_topology(
         subtree_candidates = fdb_subtree_candidates(
             conn, identities, known_links=stronger_links
         )
+        subtree_link_candidates = select_fdb_subtree_link_candidates(
+            subtree_candidates, stronger_links=stronger_links
+        )
         links = aggregate_link_evidence(
             (
                 *stronger_evidence,
                 *fdb_subtree_link_evidence(
-                    subtree_candidates, stronger_links=stronger_links
+                    subtree_link_candidates, stronger_links=stronger_links
                 ),
             ),
             observed_at,
@@ -390,6 +397,7 @@ def reconcile_topology(
             depths=depths,
             observed_at=observed_at,
             subtree_candidates=subtree_candidates,
+            subtree_link_candidates=subtree_link_candidates,
         )
         conn.execute("BEGIN IMMEDIATE")
         event_count = _replace_current_links(conn, links, run_id, observed_at)

@@ -192,6 +192,54 @@ test, so omitting the stronger-link guard recreates the false second link.
 Final independent re-review verdict: no remaining Critical or Important
 findings; assessment `Ready`.
 
+## Review round 1 follow-up
+
+A subsequent independent review identified two Important consistency defects:
+
+1. Port-role inference consumed every strong subtree candidate even though
+   complete topology-link inference selected only one unique winner. A weaker
+   candidate for the same child uplink could therefore conflict with the
+   selected winner and downgrade that child port to `unknown`.
+2. Equal upstream candidates correctly produced no complete topology link,
+   but the shared child port could still receive `fdb_subtree_backbone`
+   evidence and an arbitrary `peer_source_id` from the first candidate.
+
+Both cases were reproduced before the implementation change:
+
+```text
+pytest tests/test_netctl_fdb_subtree.py::test_unique_complete_winner_drives_matching_child_backbone_role tests/test_netctl_fdb_subtree.py::test_equal_ambiguous_parents_do_not_publish_arbitrary_child_peer -q
+```
+
+RED result: 2 failed. The first child role was `unknown/20` instead of
+`backbone/100`; the equal-parent case published a `backbone` role despite no
+complete link.
+
+The unique-winner selection is now a reusable correlator operation. Topology
+reconciliation passes that exact selected candidate set to both complete link
+evidence and child-side port-role inference. All strong candidates still
+contribute non-fabricated parent-side suspected-child evidence, while only a
+complete unique winner can contribute child-side `backbone` evidence or a
+`peer_source_id`.
+
+GREEN result for the focused command: 2 passed.
+
+Expanded Task 4 target:
+
+```text
+pytest tests/test_netctl_fdb_subtree.py tests/test_netctl_topology.py tests/test_netctl_port_roles.py tests/test_netctl_context_query.py tests/test_netctl_cli.py tests/test_web_network_observer.py -q
+```
+
+Result: 191 passed, 1 skipped, 0 failed in 46.60 seconds.
+
+Fresh full suite after the review fixes:
+
+```text
+pytest -q
+```
+
+Result: 1475 passed, 11 skipped, 0 failed in 224.26 seconds. Existing
+FastAPI/Starlette/pytest-asyncio deprecation warnings remain.
+
 ## Scope boundary
 
 This change implements only Task 4. It does not deploy or collect from live
