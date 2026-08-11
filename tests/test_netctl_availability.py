@@ -838,65 +838,6 @@ def test_bucket_never_constructs_more_than_64_worker_threads(monkeypatch):
     assert workers == [64]
 
 
-def test_collect_bucket_retries_a_transient_parallel_worker_error(monkeypatch):
-    """A one-off worker crash must not leave an otherwise probeable CIDR stale."""
-    import netctl.availability as availability
-
-    attempts = 0
-    target = availability.ProbeTarget("192.0.2.1", (), "192.0.2.0/24")
-
-    def flaky_probe(probe_target, _executor):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise OSError("transient worker failure")
-        return availability.AvailabilityResult(probe_target.ip, "reachable", "icmp")
-
-    monkeypatch.setattr(availability, "probe_target", flaky_probe)
-    executor = availability.ProbeExecutor(
-        lambda _ip: True,
-        lambda _ip, _port: False,
-        lambda: 0.0,
-    )
-
-    result, error = availability._collect_bucket((target,), executor)
-
-    assert error == ""
-    assert result is not None
-    assert [item[1].state for item in result] == ["reachable"]
-    assert attempts == 2
-
-
-def test_collect_bucket_logs_and_fails_closed_when_retry_also_fails(monkeypatch, caplog):
-    """Persistent executor faults stay sanitized but are diagnosable in the journal."""
-    import netctl.availability as availability
-
-    attempts = 0
-    target = availability.ProbeTarget("192.0.2.1", (), "192.0.2.0/24")
-
-    def broken_probe(_probe_target, _executor):
-        nonlocal attempts
-        attempts += 1
-        raise OSError("private worker detail")
-
-    monkeypatch.setattr(availability, "probe_target", broken_probe)
-    executor = availability.ProbeExecutor(
-        lambda _ip: True,
-        lambda _ip, _port: False,
-        lambda: 0.0,
-    )
-
-    result, error = availability._collect_bucket((target,), executor)
-
-    assert result is None
-    assert error == "executor_error"
-    assert attempts == 2
-    assert "phase=parallel class=executor_error" in caplog.text
-    assert "phase=sequential class=executor_error" in caplog.text
-    assert "private worker detail" not in caplog.text
-    assert target.ip not in caplog.text
-
-
 def test_deadline_failure_keeps_current_results_and_persists_no_partial_success(conn, monkeypatch):
     """A deadline after the first address must not replace the previous complete CIDR state."""
     from netctl.availability import AvailabilityResult, AvailabilityRun, ProbeExecutor, collect_availability, current_availability_results, save_availability_run

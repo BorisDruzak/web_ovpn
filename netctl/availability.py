@@ -6,7 +6,6 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import errno
 import ipaddress
 import json
-import logging
 import sqlite3
 import socket
 import subprocess
@@ -29,7 +28,6 @@ TARGET_NEGATIVE_CONNECT_ERRNOS = frozenset(
         errno.EHOSTUNREACH,
     }
 )
-LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -317,30 +315,16 @@ def _bucket_key(target: ProbeTarget) -> str:
     return str(ipaddress.ip_network(f"{target.ip}/24", strict=False))
 
 
-def _collect_bucket_once(
-    targets: tuple[ProbeTarget, ...],
-    executor: ProbeExecutor,
-    *,
-    deadline: float,
-    parallel: bool,
-) -> tuple[tuple[tuple[ProbeTarget, AvailabilityResult], ...] | None, str]:
-    """Run one bucket pass before the supplied shared deadline."""
-    if not parallel:
-        completed: list[tuple[ProbeTarget, AvailabilityResult]] = []
-        for target in targets:
-            if executor.now() >= deadline:
-                return None, "deadline_exceeded"
-            try:
-                completed.append((target, probe_target(target, executor)))
-            except Exception:
-                return None, "executor_error"
-        return tuple(completed), ""
-
+def _collect_bucket(
+    targets: tuple[ProbeTarget, ...], executor: ProbeExecutor
+) -> tuple[tuple[ProbeTarget, AvailabilityResult] | None, str]:
+    """Run one /24-equivalent with at most 64 submitted address jobs."""
     futures: dict[Future[AvailabilityResult], ProbeTarget] = {}
     completed: list[tuple[ProbeTarget, AvailabilityResult]] = []
     pool: ThreadPoolExecutor | None = None
     failed = ""
     try:
+        deadline = executor.now() + 90
         pending = iter(targets)
         pool = ThreadPoolExecutor(max_workers=64)
         exhausted = False
@@ -367,7 +351,7 @@ def _collect_bucket_once(
                 try:
                     completed.append((target, future.result()))
                 except Exception:
-                    failed = "worker_error"
+                    failed = "executor_error"
                     break
             if failed:
                 break
@@ -387,43 +371,9 @@ def _collect_bucket_once(
                 pool.shutdown(wait=not failed, cancel_futures=True)
             except Exception:
                 failed = "executor_error"
-    if failed == "worker_error":
-        return None, failed
     if failed:
         return None, failed
     return tuple(completed), ""
-
-
-def _collect_bucket(
-    targets: tuple[ProbeTarget, ...], executor: ProbeExecutor
-) -> tuple[tuple[tuple[ProbeTarget, AvailabilityResult], ...] | None, str]:
-    """Run one /24-equivalent and retry an unexpected worker error once."""
-    deadline = executor.now() + 90
-    completed, error_class = _collect_bucket_once(
-        targets,
-        executor,
-        deadline=deadline,
-        parallel=True,
-    )
-    if not error_class:
-        return completed, ""
-    if error_class != "worker_error":
-        return None, error_class
-    LOGGER.warning(
-        "availability bucket failure phase=parallel class=executor_error",
-    )
-    retry_completed, retry_error = _collect_bucket_once(
-        targets,
-        executor,
-        deadline=deadline,
-        parallel=False,
-    )
-    if not retry_error:
-        return retry_completed, ""
-    LOGGER.warning(
-        "availability bucket failure phase=sequential class=executor_error",
-    )
-    return None, retry_error
 
 
 def _failed_collection(
