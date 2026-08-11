@@ -5,6 +5,7 @@ Description=Network Observer collection
 Type=oneshot
 User=netctl
 Group=netctl
+AmbientCapabilities=CAP_NET_RAW
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

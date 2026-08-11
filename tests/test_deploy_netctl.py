@@ -184,6 +184,17 @@ def test_availability_unit_uses_only_fixed_netctl_argv() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "unit_name",
+    ("netctl-collect.service", "netctl-availability.service"),
+)
+def test_active_probe_units_grant_raw_icmp_without_relaxing_hardening(unit_name: str) -> None:
+    unit_text = (ROOT / "deploy" / unit_name).read_text(encoding="utf-8")
+
+    assert "NoNewPrivileges=true" in unit_text
+    assert "AmbientCapabilities=CAP_NET_RAW" in unit_text
+
+
 def test_installer_enables_availability_timer_after_systemd_verification(tmp_path: Path) -> None:
     """Enabling an unverified recovery timer could schedule malformed systemd units."""
     result, _bin_dir, calls_path, environment = _run_installer(tmp_path)
