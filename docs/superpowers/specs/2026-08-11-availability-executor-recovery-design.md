@@ -21,6 +21,10 @@ The observed `collection already running` is separate: the timer starts
 shared collection lock for about 35 seconds. A manual collection during that
 interval is rejected rather than run concurrently.
 
+The original timer cadences could also make this interval coincide with the
+next calendar `collect` run: a queued reconciliation began immediately after
+collection and held the lock when the next five-minute collection was due.
+
 ## Scope
 
 Included:
@@ -29,6 +33,8 @@ Included:
   `netctl-availability.service`.
 - Retain `NoNewPrivileges=true`, `PrivateTmp=true`, and `ProtectHome=true`.
 - Regression-test the hardening and capability contract.
+- Offset reconcile and availability timers after the five-minute collection
+  window, so they do not contend for the shared lock.
 - Deploy the unit updates, reload systemd, and run both services.
 
 Excluded:
@@ -41,5 +47,7 @@ Excluded:
 
 - Both active-probe unit files retain `NoNewPrivileges=true` and declare
   `AmbientCapabilities=CAP_NET_RAW`.
+- Collection, reconciliation, and availability timers use non-overlapping
+  calendar offsets.
 - The units reload successfully on the server.
 - Manual availability and full Netctl collection services finish successfully.

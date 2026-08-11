@@ -22,6 +22,8 @@ capability on this host.
 
 ## Task 3: Deploy and verify
 
-- [ ] Back up and deploy the two unit files; reload systemd.
-- [ ] Verify `netctl-availability.service` and `netctl-collect.service` both
-  exit successfully and the collection timer remains active.
+- [ ] Offset reconciliation and availability timers after collection to avoid
+  a shared-lock collision; add a regression test for the schedules.
+- [ ] Back up and deploy the two unit files and both timers; reload systemd.
+- [ ] Verify `netctl-availability.service`, manual collection, and the next
+  automatic collection all exit successfully.

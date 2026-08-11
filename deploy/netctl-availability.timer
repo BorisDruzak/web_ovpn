@@ -2,8 +2,8 @@
 Description=Recover netctl host availability collection after boot
 
 [Timer]
-OnBootSec=3min
-OnUnitActiveSec=5min
+OnBootSec=6min
+OnCalendar=*:3/5
 AccuracySec=30s
 Persistent=true
 Unit=netctl-availability.service
