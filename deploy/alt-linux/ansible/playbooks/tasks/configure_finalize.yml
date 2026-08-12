@@ -30,9 +30,7 @@
                 'status': configure_outcome.status,
                 'phase': configure_outcome.phase,
                 'retryable': configure_outcome.retryable,
-                'recovered': >-
-                  (configure_outcome.recovered | bool) or
-                  (domain_join_recovered | default(false) | bool),
+                'recovered': (configure_outcome.recovered | bool) or (domain_join_recovered | default(false) | bool),
                 'error': configure_outcome.error
               }
             )

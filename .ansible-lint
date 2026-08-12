@@ -1,0 +1,4 @@
+---
+skip_list:
+  # Controller-owned stage markers intentionally run once per job.
+  - run-once[task]

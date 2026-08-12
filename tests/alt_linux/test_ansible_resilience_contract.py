@@ -30,6 +30,9 @@ DOMAIN_VERIFY_TASKS = (
     ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
 )
 COMMON_VARS = ANSIBLE_ROOT / "group_vars" / "all.yml"
+ALT_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "verify-alt-ansible.yml"
+ANSIBLE_LINT_CONFIG = REPO_ROOT / ".ansible-lint"
+YAMLLINT_CONFIG = REPO_ROOT / ".yamllint"
 
 
 def load_tasks(path: Path) -> list[dict[str, Any]]:
@@ -160,6 +163,14 @@ def test_terminal_result_marks_reconciled_domain_join_as_recovered() -> None:
     assert "domain_join_recovered" in finalizer
 
 
+def test_configure_finalizer_does_not_embed_yaml_folding_inside_jinja() -> None:
+    finalizer = (
+        ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_finalize.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "'recovered': >-" not in finalizer
+
+
 def test_local_employee_rejects_conflicting_primary_group_before_mutation() -> None:
     employee_tasks = (
         ANSIBLE_ROOT / "roles" / "local_employee" / "tasks" / "main.yml"
@@ -171,6 +182,27 @@ def test_local_employee_rejects_conflicting_primary_group_before_mutation() -> N
     assert employee_tasks.index("Inspect existing employee primary group") < employee_tasks.index(
         "Ensure employee primary group exists"
     )
+
+
+def test_alt_resilience_ci_checks_contract_and_all_playbook_syntax() -> None:
+    workflow = ALT_CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "tests/alt_linux/test_ansible_assets.py" in workflow
+    assert "tests/alt_linux/test_ansible_resilience_contract.py" in workflow
+    assert "ansible-playbook --syntax-check" in workflow
+    assert "for play in deploy/alt-linux/ansible/playbooks/*.yml" in workflow
+    assert "ansible-lint deploy/alt-linux/ansible" in workflow
+    assert "yamllint deploy/alt-linux/ansible" in workflow
+
+
+def test_alt_resilience_lint_configuration_keeps_safety_rules_enabled() -> None:
+    ansible_lint = ANSIBLE_LINT_CONFIG.read_text(encoding="utf-8")
+    yaml_lint = YAMLLINT_CONFIG.read_text(encoding="utf-8")
+
+    assert "run-once[task]" in ansible_lint
+    assert "no-changed-when" not in ansible_lint
+    assert "syntax-check" not in ansible_lint
+    assert "max: 120" in yaml_lint
 
 
 def test_domain_convergence_probes_have_bounded_retries() -> None:

@@ -34,6 +34,8 @@
          | regex_findall('OU=([^,]+)') | reverse | join('/') }}
 
 - name: Join workstation to Active Directory with Kerberos credentials
+  no_log: true
+  when: not domain_join_already_joined
   block:
     - name: Acquire temporary Kerberos ticket
       ansible.builtin.command:
@@ -105,6 +107,7 @@
               - "--createcomputer={{ alt_createcomputer_path }}"
               - "--gpo"
           register: domain_join_command
+          changed_when: true
 
         - name: Verify resulting Samba domain trust
           ansible.builtin.command:
@@ -174,6 +177,7 @@
               - "--createcomputer={{ alt_createcomputer_path }}"
               - "--gpo"
           register: domain_join_recovery_command
+          changed_when: true
           when:
             - domain_join_reconciled_trust.rc != 0
             - not domain_join_recovery_computer_exists
@@ -201,5 +205,3 @@
         argv: [kdestroy]
       changed_when: false
       failed_when: false
-  no_log: true
-  when: not domain_join_already_joined

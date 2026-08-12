@@ -1,0 +1,63 @@
+name: Verify ALT Ansible resilience
+
+on:
+  pull_request:
+    paths:
+      - "deploy/alt-linux/ansible/**"
+      - "deploy/alt-linux/bootstrap/**"
+      - "deploy/alt-linux/control/**"
+      - "deploy/alt-linux/api/process_pending.py"
+      - "tests/alt_linux/**"
+      - ".github/workflows/verify-alt-ansible.yml"
+  push:
+    paths:
+      - "deploy/alt-linux/ansible/**"
+      - "deploy/alt-linux/bootstrap/**"
+      - "deploy/alt-linux/control/**"
+      - "deploy/alt-linux/api/process_pending.py"
+      - "tests/alt_linux/**"
+      - ".github/workflows/verify-alt-ansible.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: alt-ansible-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install verification tooling
+        run: >-
+          python -m pip install --disable-pip-version-check
+          -r requirements.txt
+          ansible-core==2.18.6
+          ansible-lint==25.1.3
+          yamllint==1.35.1
+      - name: Run ALT resilience safety tests
+        run: >-
+          python -m pytest -q
+          tests/alt_linux/test_ansible_assets.py
+          tests/alt_linux/test_ansible_resilience_contract.py
+      - name: Prepare non-secret syntax variables
+        run: |
+          cp deploy/alt-linux/ansible/group_vars/vault.yml.example deploy/alt-linux/ansible/group_vars/vault.yml
+          printf 'ci-only\n' > "$RUNNER_TEMP/ansible-vault-pass"
+      - name: Check all ALT Ansible playbooks
+        env:
+          ANSIBLE_VAULT_PASSWORD_FILE: ${{ runner.temp }}/ansible-vault-pass
+        run: |
+          for play in deploy/alt-linux/ansible/playbooks/*.yml; do
+            ANSIBLE_CONFIG="$PWD/deploy/alt-linux/ansible/ansible.cfg" \
+              ansible-playbook --syntax-check -i localhost, -c local "$play"
+          done
+      - name: Lint ALT Ansible sources
+        env:
+          ANSIBLE_ROLES_PATH: ${{ github.workspace }}/deploy/alt-linux/ansible/roles
+          ANSIBLE_VAULT_PASSWORD_FILE: ${{ runner.temp }}/ansible-vault-pass
+        run: |
+          ansible-lint deploy/alt-linux/ansible
+          yamllint deploy/alt-linux/ansible
