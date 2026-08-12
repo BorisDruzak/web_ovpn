@@ -15,10 +15,10 @@ This temporary pilot path starts after a manual ALT Workstation K 11.x installat
 curl --noproxy '*' -fsS --connect-timeout 5 --max-time 30 \
   http://192.168.100.17:8087/bootstrap/start-bootstrap.sh \
   -o /tmp/start-alt-bootstrap.sh && \
-sudo bash /tmp/start-alt-bootstrap.sh
+bash /tmp/start-alt-bootstrap.sh
 ```
 
-The local sudo prompt is the only place where the pilot local-administrator password is entered. Do not put it in a command, file, request or log.
+The launcher elevates interactively: through `sudo` when it is installed, or through the standard ALT `su` root prompt on a clean installation. The root password created during ALT installation is required only for that first `su` prompt. Do not put either password in a command, file, request or log.
 
 Domain join and software installation are controller-only.
 
