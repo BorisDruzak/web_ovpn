@@ -46,6 +46,7 @@
               'domain_join': configure_outcome.status != 'failed',
               'sssd': configure_outcome.status != 'failed',
               'domain_user_lookup': configure_outcome.status != 'failed',
+              'browser': software_browser_verified | default(false),
               'group_policy': alt_group_policy_enabled | default(false) and
                               alt_group_policy_machine_updated | default(false)
             }

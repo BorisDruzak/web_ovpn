@@ -174,6 +174,14 @@ def test_browser_artifact_is_validated_and_is_not_hidden_in_standard_software() 
     assert "name: software_browser" not in standard_tasks
 
 
+def test_terminal_result_publishes_boolean_browser_verification() -> None:
+    finalizer = (
+        ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_finalize.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "'browser': software_browser_verified | default(false)" in finalizer
+
+
 def test_browser_install_retries_only_recognized_transient_apt_failures() -> None:
     browser_tasks = (
         ANSIBLE_ROOT / "roles" / "software_browser" / "tasks" / "main.yml"
