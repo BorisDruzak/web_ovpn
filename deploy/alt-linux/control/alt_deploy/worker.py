@@ -6,7 +6,10 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
-from .ansible import AnsibleController
+from .ansible import (
+    AnsibleController,
+    _read_provision_failure_result,
+)
 from .assignments import (
     AssignmentRepository,
     assert_safe_payload,
@@ -266,6 +269,22 @@ def run_job(
         return 0
 
     except Exception as exc:
+        result_file: str | None = None
+        if isinstance(exc, ControlError):
+            try:
+                failure_result = _read_provision_failure_result(
+                    job.job_dir / "provision-result.json",
+                    job=job,
+                )
+                if failure_result is not None:
+                    destination = job.job_dir / "result.json"
+                    atomic_write_json(destination, failure_result)
+                    result_file = str(destination)
+            except (ControlError, OSError, ValueError):
+                # A malformed or unavailable terminal result is secondary to
+                # the original provision failure and must not replace it.
+                result_file = None
+
         if isinstance(exc, ControlError):
             error_text = (
                 f"{exc.code}: {exc.message}"
@@ -285,12 +304,15 @@ def run_job(
             )
             log_stream.flush()
 
-        jobs.update(
-            job.job_id,
-            state="failed",
-            finished_at=utc_now(),
-            error=error_text,
-        )
+        failure_updates: dict[str, object] = {
+            "state": "failed",
+            "finished_at": utc_now(),
+            "error": error_text,
+        }
+        if result_file is not None:
+            failure_updates["result_file"] = result_file
+
+        jobs.update(job.job_id, **failure_updates)
 
         return 1
 

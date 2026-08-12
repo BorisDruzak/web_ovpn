@@ -1,0 +1,27 @@
+---
+- name: Write provision failure result on controller
+  ansible.builtin.copy:
+    content: >-
+      {{
+        {
+          'schema_version': 1,
+          'status': 'failed',
+          'machine_uuid': machine_uuid,
+          'final_hostname': final_hostname,
+          'employee_login': employee_login,
+          'profile': profile,
+          'job_id': job_id,
+          'phase': provision_outcome.phase,
+          'retryable': false,
+          'error': {
+            'code': 'provision_phase_failed',
+            'class': 'fatal_invariant',
+            'safe_message': 'A required local workstation provision phase failed'
+          }
+        } | to_nice_json
+      }}
+    dest: "{{ provision_result_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  run_once: true

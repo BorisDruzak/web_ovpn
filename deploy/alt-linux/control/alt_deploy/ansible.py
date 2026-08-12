@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO
 
+from .assignments import assert_safe_payload
 from .config import Settings
 from .errors import ControlError
 from .jsonio import read_json
@@ -38,6 +40,118 @@ _PREFLIGHT_FAILURE_KINDS = frozenset(
 _CONTROLLED_PREFLIGHT_MARKERS = {
     "ALT_PREFLIGHT_FAILURE:sudo_unavailable": "sudo_unavailable",
 }
+
+_PROVISION_FAILURE_RESULT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "machine_uuid",
+        "final_hostname",
+        "employee_login",
+        "profile",
+        "job_id",
+        "phase",
+        "retryable",
+        "error",
+    }
+)
+_PROVISION_FAILURE_PHASES = frozenset(
+    {"identity", "employee", "login_screen", "verifying", "finalize"}
+)
+_PROVISION_FAILURE_CLASSES = frozenset(
+    {
+        "fatal_invariant",
+        "retryable_transient",
+        "ambiguous_mutation",
+        "cleanup_failure",
+    }
+)
+_SAFE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,79}$")
+
+
+def _read_provision_failure_result(
+    result_path: Path,
+    *,
+    job: JobRecord,
+) -> dict[str, object] | None:
+    try:
+        result = read_json(result_path)
+    except (OSError, ValueError):
+        return None
+
+    if "schema_version" not in result:
+        return None
+
+    if set(result) != _PROVISION_FAILURE_RESULT_FIELDS:
+        raise ControlError(
+            code="provision_result_contract_invalid",
+            message="Provision produced an invalid failure result",
+            exit_code=7,
+        )
+
+    expected = {
+        "schema_version": 1,
+        "status": "failed",
+        "machine_uuid": job.machine_uuid,
+        "final_hostname": str(job.request["final_hostname"]),
+        "employee_login": str(job.request["employee_login"]),
+        "profile": str(job.request["profile"]),
+        "job_id": job.job_id,
+    }
+
+    for key, expected_value in expected.items():
+        if result.get(key) != expected_value:
+            raise ControlError(
+                code="provision_result_contract_invalid",
+                message="Provision failure result does not match its job",
+                exit_code=7,
+            )
+
+    if result.get("phase") not in _PROVISION_FAILURE_PHASES:
+        raise ControlError(
+            code="provision_result_contract_invalid",
+            message="Provision failure result has an invalid phase",
+            exit_code=7,
+        )
+
+    if not isinstance(result.get("retryable"), bool):
+        raise ControlError(
+            code="provision_result_contract_invalid",
+            message="Provision failure result has an invalid retry flag",
+            exit_code=7,
+        )
+
+    error = result.get("error")
+    if not isinstance(error, dict) or set(error) != {
+        "code",
+        "class",
+        "safe_message",
+    }:
+        raise ControlError(
+            code="provision_result_contract_invalid",
+            message="Provision failure result has an invalid error",
+            exit_code=7,
+        )
+
+    code = error.get("code")
+    error_class = error.get("class")
+    safe_message = error.get("safe_message")
+    if not (
+        isinstance(code, str)
+        and _SAFE_ERROR_CODE_RE.fullmatch(code)
+        and error_class in _PROVISION_FAILURE_CLASSES
+        and isinstance(safe_message, str)
+        and safe_message
+        and len(safe_message) <= 240
+    ):
+        raise ControlError(
+            code="provision_result_contract_invalid",
+            message="Provision failure result contains unsafe error fields",
+            exit_code=7,
+        )
+
+    assert_safe_payload(result)
+    return result
 
 
 def _classify_preflight_failure(
@@ -518,6 +632,24 @@ class AnsibleController:
             ) from exc
 
         if completed.returncode != 0:
+            failure_result = _read_provision_failure_result(
+                result_path,
+                job=job,
+            )
+            if failure_result is not None:
+                failure_error = failure_result["error"]
+                assert isinstance(failure_error, dict)
+                raise ControlError(
+                    code=str(failure_error["code"]),
+                    message=str(failure_error["safe_message"]),
+                    exit_code=7,
+                    details={
+                        "phase": failure_result["phase"],
+                        "retryable": failure_result["retryable"],
+                        "result_file": str(result_path),
+                    },
+                )
+
             raise ControlError(
                 code="ansible_provision_failed",
                 message=(

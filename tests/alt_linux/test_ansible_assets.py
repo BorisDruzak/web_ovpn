@@ -59,9 +59,14 @@ def test_provision_role_order_is_fixed() -> None:
     play = load_yaml(PROVISION_PLAYBOOK)[0][0]
 
     assert "roles" not in play
+    workflow = next(
+        task
+        for task in play["tasks"]
+        if task["name"] == "Run provision phases and persist failure outcome"
+    )
     role_names = [
         task["ansible.builtin.include_role"]["name"]
-        for task in play["tasks"]
+        for task in workflow["block"]
         if "ansible.builtin.include_role" in task
     ]
 

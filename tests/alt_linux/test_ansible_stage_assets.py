@@ -30,7 +30,12 @@ def load_playbook() -> dict[str, Any]:
 
 def test_provision_playbook_records_ordered_stages() -> None:
     play = load_playbook()
-    tasks = play["tasks"]
+    workflow = next(
+        task
+        for task in play["tasks"]
+        if task["name"] == "Run provision phases and persist failure outcome"
+    )
+    tasks = workflow["block"]
 
     expected = [
         ("Record identity provision stage", "identity"),
@@ -61,7 +66,7 @@ def test_provision_playbook_records_ordered_stages() -> None:
             assert task["become"] is False
             assert task["run_once"] is True
             assert task["changed_when"] is False
-        else:
+        elif "ansible.builtin.include_role" in task:
             observed.append(
                 (
                     task["name"],

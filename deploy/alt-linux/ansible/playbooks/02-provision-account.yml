@@ -23,70 +23,106 @@
         fail_msg: Required provision variables are missing
 
   tasks:
-    - name: Record identity provision stage
-      ansible.builtin.command:
-        argv:
-          - "{{ job_stage_helper_path }}"
-          - --job-id
-          - "{{ job_id }}"
-          - --stage
-          - identity
-      delegate_to: localhost
-      become: false
-      run_once: true
-      changed_when: false
+    - name: Initialize secret-free provision outcome
+      ansible.builtin.set_fact:
+        provision_outcome:
+          status: successful
+          phase: identity
+        provision_active_phase: identity
 
-    - name: Run workstation identity role
-      ansible.builtin.include_role:
-        name: workstation_identity
+    - name: Run provision phases and persist failure outcome
+      block:
+        - name: Record identity provision stage
+          ansible.builtin.command:
+            argv:
+              - "{{ job_stage_helper_path }}"
+              - --job-id
+              - "{{ job_id }}"
+              - --stage
+              - identity
+          delegate_to: localhost
+          become: false
+          run_once: true
+          changed_when: false
 
-    - name: Record employee provision stage
-      ansible.builtin.command:
-        argv:
-          - "{{ job_stage_helper_path }}"
-          - --job-id
-          - "{{ job_id }}"
-          - --stage
-          - employee
-      delegate_to: localhost
-      become: false
-      run_once: true
-      changed_when: false
+        - name: Run workstation identity role
+          ansible.builtin.include_role:
+            name: workstation_identity
 
-    - name: Run local employee role
-      ansible.builtin.include_role:
-        name: local_employee
+        - name: Set active employee provision phase
+          ansible.builtin.set_fact:
+            provision_active_phase: employee
 
-    - name: Record login screen provision stage
-      ansible.builtin.command:
-        argv:
-          - "{{ job_stage_helper_path }}"
-          - --job-id
-          - "{{ job_id }}"
-          - --stage
-          - login_screen
-      delegate_to: localhost
-      become: false
-      run_once: true
-      changed_when: false
+        - name: Record employee provision stage
+          ansible.builtin.command:
+            argv:
+              - "{{ job_stage_helper_path }}"
+              - --job-id
+              - "{{ job_id }}"
+              - --stage
+              - employee
+          delegate_to: localhost
+          become: false
+          run_once: true
+          changed_when: false
 
-    - name: Run LightDM accounts role
-      ansible.builtin.include_role:
-        name: lightdm_accounts
+        - name: Run local employee role
+          ansible.builtin.include_role:
+            name: local_employee
 
-    - name: Record verification provision stage
-      ansible.builtin.command:
-        argv:
-          - "{{ job_stage_helper_path }}"
-          - --job-id
-          - "{{ job_id }}"
-          - --stage
-          - verifying
-      delegate_to: localhost
-      become: false
-      run_once: true
-      changed_when: false
+        - name: Set active login screen provision phase
+          ansible.builtin.set_fact:
+            provision_active_phase: login_screen
 
-    - name: Run provision verification role
-      ansible.builtin.include_role:
-        name: provision_verify
+        - name: Record login screen provision stage
+          ansible.builtin.command:
+            argv:
+              - "{{ job_stage_helper_path }}"
+              - --job-id
+              - "{{ job_id }}"
+              - --stage
+              - login_screen
+          delegate_to: localhost
+          become: false
+          run_once: true
+          changed_when: false
+
+        - name: Run LightDM accounts role
+          ansible.builtin.include_role:
+            name: lightdm_accounts
+
+        - name: Set active verification provision phase
+          ansible.builtin.set_fact:
+            provision_active_phase: verifying
+
+        - name: Record verification provision stage
+          ansible.builtin.command:
+            argv:
+              - "{{ job_stage_helper_path }}"
+              - --job-id
+              - "{{ job_id }}"
+              - --stage
+              - verifying
+          delegate_to: localhost
+          become: false
+          run_once: true
+          changed_when: false
+
+        - name: Run provision verification role
+          ansible.builtin.include_role:
+            name: provision_verify
+      rescue:
+        - name: Record failed provision phase
+          ansible.builtin.set_fact:
+            provision_outcome:
+              status: failed
+              phase: "{{ provision_active_phase }}"
+      always:
+        - name: Write structured provision failure result
+          ansible.builtin.include_tasks: tasks/provision_failure_result.yml
+          when: provision_outcome.status == 'failed'
+
+    - name: Return a non-zero status after terminal failure persistence
+      ansible.builtin.fail:
+        msg: Provision failed after its terminal result was written
+      when: provision_outcome.status == 'failed'

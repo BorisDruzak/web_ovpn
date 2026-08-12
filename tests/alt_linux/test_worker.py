@@ -177,6 +177,54 @@ class FailedVerificationController:
         return result
 
 
+class TypedFailureController:
+    def __init__(self, settings) -> None:
+        self.settings = settings
+
+    def run_provision(
+        self,
+        job,
+        log_stream: TextIO,
+    ) -> dict[str, Any]:
+        manager = JobStageManager(self.settings)
+        manager.advance(job.job_id, "identity")
+        manager.advance(job.job_id, "employee")
+        failure = {
+            "schema_version": 1,
+            "status": "failed",
+            "machine_uuid": job.machine_uuid,
+            "final_hostname": str(job.request["final_hostname"]),
+            "employee_login": str(job.request["employee_login"]),
+            "profile": str(job.request["profile"]),
+            "job_id": job.job_id,
+            "phase": "employee",
+            "retryable": False,
+            "error": {
+                "code": "employee_group_conflict",
+                "class": "fatal_invariant",
+                "safe_message": "Existing employee group conflicts with the request",
+            },
+        }
+        atomic_write_json(
+            job.job_dir / "provision-result.json",
+            failure,
+        )
+        log_stream.write("Provision returned a typed failure\n")
+        log_stream.flush()
+        raise ControlError(
+            code="employee_group_conflict",
+            message="Existing employee group conflicts with the request",
+            exit_code=7,
+            details={
+                "phase": "employee",
+                "retryable": False,
+                "result_file": str(
+                    job.job_dir / "provision-result.json"
+                ),
+            },
+        )
+
+
 class RecordingResultController:
     def __init__(self, settings) -> None:
         self.settings = settings
@@ -473,6 +521,36 @@ def test_worker_rejects_failed_verification(
 
     assert assignments.get(MACHINE_UUID) is None
     assert not (job.job_dir / "result.json").exists()
+
+
+def test_worker_persists_typed_provision_failure_without_assignment(
+    tmp_path: Path,
+) -> None:
+    """A valid failure result stays available after the worker marks the job failed."""
+    settings = prepare_preview_environment(tmp_path)
+    jobs = JobRepository(settings)
+    assignments = AssignmentRepository(settings)
+    job = jobs.create(valid_request())
+    launch_job(settings, jobs, job.job_id)
+
+    result_code = run_job(
+        job.job_id,
+        settings,
+        TypedFailureController(settings),
+    )
+
+    assert result_code == 1
+    stored_job = jobs.get(job.job_id)
+    stored_result = read_json(job.job_dir / "result.json")
+
+    assert stored_job.state == "failed"
+    assert stored_job.stage == "employee"
+    assert stored_job.status["result_file"] == str(
+        job.job_dir / "result.json"
+    )
+    assert stored_result["status"] == "failed"
+    assert stored_result["error"]["code"] == "employee_group_conflict"
+    assert assignments.get(MACHINE_UUID) is None
 
 
 def test_assignment_failure_remains_at_recording(

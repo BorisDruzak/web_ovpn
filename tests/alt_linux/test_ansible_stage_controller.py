@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -146,3 +147,62 @@ def test_run_provision_requires_stage_helper_before_ansible(
         item["name"] == "job_stage_helper"
         for item in exc.value.details["missing"]
     )
+
+
+def test_run_provision_prefers_structured_failure_result(
+    tmp_path: Path,
+) -> None:
+    """A failed playbook must retain its typed, secret-free outcome."""
+    settings, fake_ansible, _ = prepare_provision_files(
+        tmp_path,
+        include_stage_helper=True,
+    )
+    job = JobRepository(settings).create(valid_request())
+    failure = {
+        "schema_version": 1,
+        "status": "failed",
+        "machine_uuid": job.machine_uuid,
+        "final_hostname": str(job.request["final_hostname"]),
+        "employee_login": str(job.request["employee_login"]),
+        "profile": str(job.request["profile"]),
+        "job_id": job.job_id,
+        "phase": "employee",
+        "retryable": False,
+        "error": {
+            "code": "employee_group_conflict",
+            "class": "fatal_invariant",
+            "safe_message": "Existing employee group conflicts with the request",
+        },
+    }
+    fake_ansible.write_text(
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    provision_result_file=*) result_path=${arg#provision_result_file=} ;;\n"
+        "  esac\n"
+        "done\n"
+        f"printf '%s' {json.dumps(json.dumps(failure))} > \"$result_path\"\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    fake_ansible.chmod(0o755)
+
+    with pytest.raises(ControlError) as exc:
+        with (job.job_dir / "ansible.log").open(
+            "a",
+            encoding="utf-8",
+        ) as log_stream:
+            AnsibleController(settings).run_provision(
+                job,
+                log_stream,
+            )
+
+    assert exc.value.code == "employee_group_conflict"
+    assert exc.value.message == (
+        "Existing employee group conflicts with the request"
+    )
+    assert exc.value.details == {
+        "phase": "employee",
+        "retryable": False,
+        "result_file": str(job.job_dir / "provision-result.json"),
+    }
