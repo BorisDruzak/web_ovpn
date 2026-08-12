@@ -154,6 +154,32 @@ def _read_provision_failure_result(
     return result
 
 
+def _raise_structured_provision_failure(
+    result_path: Path,
+    *,
+    job: JobRecord,
+) -> None:
+    failure_result = _read_provision_failure_result(
+        result_path,
+        job=job,
+    )
+    if failure_result is None:
+        return
+
+    failure_error = failure_result["error"]
+    assert isinstance(failure_error, dict)
+    raise ControlError(
+        code=str(failure_error["code"]),
+        message=str(failure_error["safe_message"]),
+        exit_code=7,
+        details={
+            "phase": failure_result["phase"],
+            "retryable": failure_result["retryable"],
+            "result_file": str(result_path),
+        },
+    )
+
+
 def _classify_preflight_failure(
     *,
     stdout: str | None,
@@ -609,6 +635,10 @@ class AnsibleController:
                 env=self._ansible_environment(),
             )
         except subprocess.TimeoutExpired as exc:
+            _raise_structured_provision_failure(
+                result_path,
+                job=job,
+            )
             raise ControlError(
                 code="ansible_provision_failed",
                 message=(
@@ -620,6 +650,10 @@ class AnsibleController:
                 },
             ) from exc
         except OSError as exc:
+            _raise_structured_provision_failure(
+                result_path,
+                job=job,
+            )
             raise ControlError(
                 code="ansible_provision_failed",
                 message=(
@@ -632,23 +666,10 @@ class AnsibleController:
             ) from exc
 
         if completed.returncode != 0:
-            failure_result = _read_provision_failure_result(
+            _raise_structured_provision_failure(
                 result_path,
                 job=job,
             )
-            if failure_result is not None:
-                failure_error = failure_result["error"]
-                assert isinstance(failure_error, dict)
-                raise ControlError(
-                    code=str(failure_error["code"]),
-                    message=str(failure_error["safe_message"]),
-                    exit_code=7,
-                    details={
-                        "phase": failure_result["phase"],
-                        "retryable": failure_result["retryable"],
-                        "result_file": str(result_path),
-                    },
-                )
 
             raise ControlError(
                 code="ansible_provision_failed",

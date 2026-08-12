@@ -206,3 +206,64 @@ def test_run_provision_prefers_structured_failure_result(
         "retryable": False,
         "result_file": str(job.job_dir / "provision-result.json"),
     }
+
+
+def test_run_provision_prefers_structured_failure_after_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finalizer result written before timeout remains the public outcome."""
+    settings, _, _ = prepare_provision_files(
+        tmp_path,
+        include_stage_helper=True,
+    )
+    job = JobRepository(settings).create(valid_request())
+    failure = {
+        "schema_version": 1,
+        "status": "failed",
+        "machine_uuid": job.machine_uuid,
+        "final_hostname": str(job.request["final_hostname"]),
+        "employee_login": str(job.request["employee_login"]),
+        "profile": str(job.request["profile"]),
+        "job_id": job.job_id,
+        "phase": "employee",
+        "retryable": False,
+        "error": {
+            "code": "employee_group_conflict",
+            "class": "fatal_invariant",
+            "safe_message": "Existing employee group conflicts with the request",
+        },
+    }
+
+    def timeout_after_finalizer(
+        command: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        result_argument = next(
+            value
+            for value in command
+            if value.startswith("provision_result_file=")
+        )
+        atomic_write_json(
+            Path(result_argument.split("=", 1)[1]),
+            failure,
+        )
+        raise subprocess.TimeoutExpired(command, 1800)
+
+    monkeypatch.setattr(
+        "alt_deploy.ansible.subprocess.run",
+        timeout_after_finalizer,
+    )
+
+    with pytest.raises(ControlError) as exc:
+        with (job.job_dir / "ansible.log").open(
+            "a",
+            encoding="utf-8",
+        ) as log_stream:
+            AnsibleController(settings).run_provision(
+                job,
+                log_stream,
+            )
+
+    assert exc.value.code == "employee_group_conflict"
+    assert exc.value.details["phase"] == "employee"
