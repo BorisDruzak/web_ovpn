@@ -39,6 +39,7 @@ def assert_manual_mvp_contract(text: str) -> None:
     for required in (
         "curl --noproxy '*' -fsS",
         "http://192.168.100.17:8087/bootstrap/start-bootstrap.sh",
+        "The root password created during ALT installation",
         "Domain join and software installation are controller-only.",
         "managed ISO",
         "ai curl=",
