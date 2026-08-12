@@ -51,21 +51,16 @@ def test_provision_playbook_records_ordered_stages() -> None:
     observed: list[tuple[str, str]] = []
 
     for task in tasks:
-        if "ansible.builtin.command" in task:
-            argv = task["ansible.builtin.command"]["argv"]
-            observed.append((task["name"], argv[-1]))
-
-            assert argv == [
-                "{{ job_stage_helper_path }}",
-                "--job-id",
-                "{{ job_id }}",
-                "--stage",
-                argv[-1],
-            ]
-            assert task["delegate_to"] == "localhost"
-            assert task["become"] is False
-            assert task["run_once"] is True
-            assert task["changed_when"] is False
+        if "ansible.builtin.include_tasks" in task:
+            observed.append(
+                (
+                    task["name"],
+                    task["vars"]["provision_stage_name"],
+                )
+            )
+            assert task["ansible.builtin.include_tasks"] == (
+                "tasks/record_provision_stage.yml"
+            )
         elif "ansible.builtin.include_role" in task:
             observed.append(
                 (

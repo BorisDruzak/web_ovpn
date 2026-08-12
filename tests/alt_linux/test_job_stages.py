@@ -489,7 +489,12 @@ def test_stage_manager_uses_common_controller_lock(
     locked_paths: list[Path] = []
 
     @contextmanager
-    def fake_lock(path: Path):
+    def fake_lock(
+        path: Path,
+        *,
+        nonblocking: bool = False,
+    ):
+        assert nonblocking is False
         locked_paths.append(path)
         yield
 

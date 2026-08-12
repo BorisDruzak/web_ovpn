@@ -354,8 +354,12 @@ class JobStageManager:
         next_stage: str,
         *,
         updates: Mapping[str, object] | None = None,
+        nonblocking: bool = False,
     ) -> JobRecord:
-        with exclusive_lock(self.settings.lock_file):
+        with exclusive_lock(
+            self.settings.lock_file,
+            nonblocking=nonblocking,
+        ):
             return self.advance_unlocked(
                 job_id,
                 next_stage,

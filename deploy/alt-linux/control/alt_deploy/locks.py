@@ -12,7 +12,11 @@ from .jsonio import ensure_private_dir
 
 
 @contextmanager
-def exclusive_lock(path: Path) -> Iterator[None]:
+def exclusive_lock(
+    path: Path,
+    *,
+    nonblocking: bool = False,
+) -> Iterator[None]:
     ensure_private_dir(path.parent)
 
     flags = os.O_RDWR | os.O_CREAT
@@ -42,7 +46,18 @@ def exclusive_lock(path: Path) -> Iterator[None]:
             )
 
         os.fchmod(descriptor, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        lock_mode = fcntl.LOCK_EX
+        if nonblocking:
+            lock_mode |= fcntl.LOCK_NB
+
+        try:
+            fcntl.flock(descriptor, lock_mode)
+        except BlockingIOError as exc:
+            raise ControlError(
+                code="controller_lock_busy",
+                message="Controller lifecycle lock is busy",
+                exit_code=6,
+            ) from exc
 
         try:
             yield

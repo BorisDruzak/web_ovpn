@@ -7,6 +7,10 @@
   vars_files:
     - ../group_vars/vault.yml
 
+  vars:
+    provision_stage_lock_attempts: 4
+    provision_stage_lock_delay_seconds: 5
+
   pre_tasks:
     - name: Validate required provision variables
       ansible.builtin.assert:
@@ -33,17 +37,9 @@
     - name: Run provision phases and persist failure outcome
       block:
         - name: Record identity provision stage
-          ansible.builtin.command:
-            argv:
-              - "{{ job_stage_helper_path }}"
-              - --job-id
-              - "{{ job_id }}"
-              - --stage
-              - identity
-          delegate_to: localhost
-          become: false
-          run_once: true
-          changed_when: false
+          ansible.builtin.include_tasks: tasks/record_provision_stage.yml
+          vars:
+            provision_stage_name: identity
 
         - name: Run workstation identity role
           ansible.builtin.include_role:
@@ -54,17 +50,9 @@
             provision_active_phase: employee
 
         - name: Record employee provision stage
-          ansible.builtin.command:
-            argv:
-              - "{{ job_stage_helper_path }}"
-              - --job-id
-              - "{{ job_id }}"
-              - --stage
-              - employee
-          delegate_to: localhost
-          become: false
-          run_once: true
-          changed_when: false
+          ansible.builtin.include_tasks: tasks/record_provision_stage.yml
+          vars:
+            provision_stage_name: employee
 
         - name: Run local employee role
           ansible.builtin.include_role:
@@ -75,17 +63,9 @@
             provision_active_phase: login_screen
 
         - name: Record login screen provision stage
-          ansible.builtin.command:
-            argv:
-              - "{{ job_stage_helper_path }}"
-              - --job-id
-              - "{{ job_id }}"
-              - --stage
-              - login_screen
-          delegate_to: localhost
-          become: false
-          run_once: true
-          changed_when: false
+          ansible.builtin.include_tasks: tasks/record_provision_stage.yml
+          vars:
+            provision_stage_name: login_screen
 
         - name: Run LightDM accounts role
           ansible.builtin.include_role:
@@ -96,17 +76,9 @@
             provision_active_phase: verifying
 
         - name: Record verification provision stage
-          ansible.builtin.command:
-            argv:
-              - "{{ job_stage_helper_path }}"
-              - --job-id
-              - "{{ job_id }}"
-              - --stage
-              - verifying
-          delegate_to: localhost
-          become: false
-          run_once: true
-          changed_when: false
+          ansible.builtin.include_tasks: tasks/record_provision_stage.yml
+          vars:
+            provision_stage_name: verifying
 
         - name: Run provision verification role
           ansible.builtin.include_role:

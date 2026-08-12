@@ -1,0 +1,20 @@
+---
+- name: Persist provision stage with bounded lock recovery
+  ansible.builtin.command:
+    argv:
+      - "{{ job_stage_helper_path }}"
+      - --job-id
+      - "{{ job_id }}"
+      - --stage
+      - "{{ provision_stage_name }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: provision_stage_command
+  until: >-
+    provision_stage_command.rc == 0 or
+    'controller_lock_busy' not in provision_stage_command.stdout
+  retries: "{{ provision_stage_lock_attempts }}"
+  delay: "{{ provision_stage_lock_delay_seconds }}"
+  changed_when: false
+  failed_when: provision_stage_command.rc != 0

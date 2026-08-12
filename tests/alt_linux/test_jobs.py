@@ -346,3 +346,19 @@ def test_exclusive_lock_blocks_second_process(
 
         process.join(5)
         assert process.exitcode == 0
+
+
+def test_exclusive_lock_nonblocking_reports_typed_busy_error(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+
+    with exclusive_lock(settings.lock_file):
+        with pytest.raises(ControlError) as exc:
+            with exclusive_lock(
+                settings.lock_file,
+                nonblocking=True,
+            ):
+                raise AssertionError("A busy lock must not enter its body")
+
+    assert exc.value.code == "controller_lock_busy"

@@ -55,6 +55,7 @@ def main(
         after = manager.advance(
             parsed.job_id,
             parsed.stage,
+            nonblocking=True,
         )
     except ControlError as exc:
         _write_json(stdout, exc.to_dict())

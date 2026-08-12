@@ -92,3 +92,28 @@ def test_provision_failure_result_uses_only_safe_contract_fields() -> None:
         "token",
     ):
         assert forbidden not in content
+
+
+def test_provision_stage_marker_retries_only_a_busy_controller_lock() -> None:
+    """A stale/invalid stage must fail once; only an explicit lock conflict retries."""
+    marker = (
+        PLAYBOOK.parent
+        / "tasks"
+        / "record_provision_stage.yml"
+    )
+    payload = yaml.safe_load(marker.read_text(encoding="utf-8"))
+    assert isinstance(payload, list) and len(payload) == 1
+    task = payload[0]
+    command = task["ansible.builtin.command"]
+
+    assert command["argv"] == [
+        "{{ job_stage_helper_path }}",
+        "--job-id",
+        "{{ job_id }}",
+        "--stage",
+        "{{ provision_stage_name }}",
+    ]
+    assert task["retries"] == "{{ provision_stage_lock_attempts }}"
+    assert task["delay"] == "{{ provision_stage_lock_delay_seconds }}"
+    assert "controller_lock_busy" in task["until"]
+    assert task["failed_when"] == "provision_stage_command.rc != 0"

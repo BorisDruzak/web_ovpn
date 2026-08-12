@@ -4,6 +4,9 @@ import io
 import json
 from pathlib import Path
 
+import pytest
+
+from alt_deploy.errors import ControlError
 from alt_deploy.job_stage_helper import main
 from alt_deploy.job_stages import JobStageManager
 from alt_deploy.jobs import JobRepository
@@ -170,3 +173,52 @@ def test_helper_rejects_unknown_job_as_json(
     assert rc == 3
     payload = json.loads(stdout.getvalue())
     assert payload["error"]["code"] == "job_not_found"
+
+
+def test_helper_returns_typed_busy_error_without_waiting_for_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Ansible marker may retry an occupied controller-store lock."""
+    settings = make_settings(tmp_path)
+    job = JobRepository(settings).create(provision_request())
+    captured: dict[str, bool] = {}
+
+    def busy_advance(
+        self,
+        job_id: str,
+        stage: str,
+        *,
+        updates=None,
+        nonblocking: bool = False,
+    ):
+        captured["nonblocking"] = nonblocking
+        raise ControlError(
+            code="controller_lock_busy",
+            message="Controller lifecycle lock is busy",
+            exit_code=6,
+        )
+
+    monkeypatch.setattr(
+        "alt_deploy.job_stage_helper.JobStageManager.advance",
+        busy_advance,
+    )
+
+    stdout = io.StringIO()
+    rc = main(
+        [
+            "--job-id",
+            job.job_id,
+            "--stage",
+            "launching",
+        ],
+        settings=settings,
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    assert rc == 6
+    assert captured == {"nonblocking": True}
+    assert json.loads(stdout.getvalue())["error"]["code"] == (
+        "controller_lock_busy"
+    )
