@@ -162,3 +162,14 @@ def test_workstation_profile_keeps_wayland_and_client_dns_entrypoint() -> None:
         "gpupdate",
         "alterator-gpupdate",
     ]
+
+
+def test_domain_join_enables_gpo_and_identity_accepts_short_or_fqdn_name() -> None:
+    domain_join = DOMAIN_JOIN_TASKS.read_text(encoding="utf-8")
+    identity = (
+        ANSIBLE_ROOT / "roles" / "workstation_identity" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert '"--gpo"' in domain_join
+    assert "workstation_identity_accepted_static_hostnames" in identity
+    assert '"{{ final_hostname | lower }}.{{ ad_domain | lower }}"' in identity
