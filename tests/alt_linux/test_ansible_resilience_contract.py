@@ -80,6 +80,31 @@ def test_prejoin_upgrade_retries_only_recognized_transient_apt_failures() -> Non
     assert content.count("alt_apt_transient_error_pattern") >= 3
 
 
+def test_fixed_package_roles_use_verified_bounded_package_helper() -> None:
+    helper = (
+        ANSIBLE_ROOT / "roles" / "alt_resilience" / "tasks" / "install_packages.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Validate fixed package names" in helper
+    assert "Determine missing fixed packages" in helper
+    assert "Verify installed fixed packages" in helper
+    assert "alt_apt_transient_error_pattern" in helper
+    assert 'retries: "{{ alt_package_lock_attempts }}"' in helper
+    assert "until: alt_resilience_package_install.rc == 0" in helper
+
+    for role in (
+        "workstation_base",
+        "alt_group_policy_prerequisites",
+        "standard_software",
+    ):
+        content = (
+            ANSIBLE_ROOT / "roles" / role / "tasks" / "main.yml"
+        ).read_text(encoding="utf-8")
+        assert "ansible.builtin.include_role" in content
+        assert "alt_resilience" in content
+        assert "ansible.builtin.package" not in content
+
+
 def test_network_resolver_change_has_verification_and_rollback() -> None:
     content = NETWORK_TASKS.read_text(encoding="utf-8")
 
@@ -146,7 +171,7 @@ def test_browser_artifact_is_validated_and_is_not_hidden_in_standard_software() 
 
     assert "Validate approved Yandex Browser artifact" in browser_tasks
     assert "software_browser_catalog.sha256" in browser_tasks
-    assert "ansible.builtin.include_role" not in standard_tasks
+    assert "name: software_browser" not in standard_tasks
 
 
 def test_browser_install_retries_only_recognized_transient_apt_failures() -> None:

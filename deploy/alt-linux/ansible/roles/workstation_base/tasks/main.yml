@@ -1,8 +1,10 @@
 ---
 - name: Install ALT domain prerequisites
-  ansible.builtin.package:
-    name: "{{ domain_prerequisite_packages }}"
-    state: present
+  ansible.builtin.include_role:
+    name: alt_resilience
+    tasks_from: install_packages.yml
+  vars:
+    alt_resilience_package_names: "{{ domain_prerequisite_packages }}"
   when: domain_prerequisite_packages | length > 0
 
 - name: Define supported Plasma desktop sessions

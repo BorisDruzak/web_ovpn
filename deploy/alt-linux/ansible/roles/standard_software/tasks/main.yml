@@ -1,6 +1,8 @@
 ---
 - name: Install approved standard workstation packages
-  ansible.builtin.package:
-    name: "{{ standard_packages + organization_packages }}"
-    state: present
+  ansible.builtin.include_role:
+    name: alt_resilience
+    tasks_from: install_packages.yml
+  vars:
+    alt_resilience_package_names: "{{ standard_packages + organization_packages }}"
   when: (standard_packages + organization_packages) | length > 0

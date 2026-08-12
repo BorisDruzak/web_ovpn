@@ -1,0 +1,60 @@
+---
+- name: Validate fixed package names
+  ansible.builtin.assert:
+    that:
+      - alt_resilience_package_names is iterable
+      - alt_resilience_package_names | length > 0
+      - alt_resilience_package_names | select('string') | list | length == alt_resilience_package_names | length
+      - >-
+        alt_resilience_package_names |
+        select('match', '^[A-Za-z0-9+_.:-]+$') |
+        list | length == alt_resilience_package_names | length
+    fail_msg: ALT_PREFLIGHT_FAILURE:package_name_invalid
+
+- name: Determine whether fixed packages are already installed
+  ansible.builtin.command:
+    argv: [rpm, -q, "{{ item }}"]
+  loop: "{{ alt_resilience_package_names }}"
+  register: alt_resilience_package_probe
+  changed_when: false
+  failed_when: false
+
+- name: Determine missing fixed packages
+  ansible.builtin.set_fact:
+    alt_resilience_missing_packages: >-
+      {{ alt_resilience_package_probe.results |
+         rejectattr('rc', 'equalto', 0) |
+         map(attribute='item') | list }}
+
+- name: Install missing fixed packages
+  ansible.builtin.command:
+    argv: "{{ ['apt-get', '-y', 'install'] + alt_resilience_missing_packages }}"
+  register: alt_resilience_package_install
+  changed_when: alt_resilience_missing_packages | length > 0
+  failed_when: >-
+    alt_resilience_package_install.rc != 0 and
+    not (
+      ((alt_resilience_package_install.stdout | default('')) ~ '\n' ~
+       (alt_resilience_package_install.stderr | default(''))) | lower
+      is search(alt_apt_transient_error_pattern)
+    )
+  retries: "{{ alt_package_lock_attempts }}"
+  delay: "{{ alt_package_lock_delay_seconds }}"
+  until: alt_resilience_package_install.rc == 0
+  when: alt_resilience_missing_packages | length > 0
+
+- name: Verify installed fixed packages
+  ansible.builtin.command:
+    argv: [rpm, -q, "{{ item }}"]
+  loop: "{{ alt_resilience_package_names }}"
+  register: alt_resilience_package_verify
+  changed_when: false
+  failed_when: false
+
+- name: Require all fixed packages after installation
+  ansible.builtin.assert:
+    that: >-
+      alt_resilience_package_verify.results |
+      selectattr('rc', 'equalto', 0) |
+      list | length == alt_resilience_package_names | length
+    fail_msg: ALT_PREFLIGHT_FAILURE:package_install_verification_failed
