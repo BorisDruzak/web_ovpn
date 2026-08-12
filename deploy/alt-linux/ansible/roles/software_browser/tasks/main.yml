@@ -1,0 +1,106 @@
+---
+- name: Inspect approved Yandex Browser artifact on controller
+  ansible.builtin.stat:
+    path: "{{ software_browser_catalog.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: software_browser_artifact
+  no_log: true
+
+- name: Validate approved Yandex Browser artifact
+  ansible.builtin.assert:
+    that:
+      - software_browser_artifact.stat.exists
+      - software_browser_artifact.stat.isreg
+      - software_browser_artifact.stat.checksum == software_browser_catalog.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:browser_artifact_invalid
+  no_log: true
+
+- name: Inspect approved Yandex Browser RPM architecture
+  ansible.builtin.command:
+    argv: [rpm, -qp, --qf, "%{ARCH}", "{{ software_browser_catalog.artifact_path }}"]
+  delegate_to: localhost
+  become: false
+  register: software_browser_artifact_architecture
+  changed_when: false
+  no_log: true
+
+- name: Require approved Yandex Browser RPM architecture
+  ansible.builtin.assert:
+    that:
+      - software_browser_artifact_architecture.stdout | trim == software_browser_catalog.architecture
+    fail_msg: ALT_PREFLIGHT_FAILURE:browser_architecture_invalid
+  no_log: true
+
+- name: Inspect installed Yandex Browser package
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_browser_catalog.package_name }}"]
+  register: software_browser_installed_evr
+  changed_when: false
+  failed_when: false
+
+- name: Install and verify approved Yandex Browser RPM
+  block:
+    - name: Allocate private temporary Yandex Browser RPM path
+      ansible.builtin.tempfile:
+        state: file
+        prefix: alt-yandex-browser-
+        suffix: .rpm
+      register: software_browser_temp_rpm
+      when: software_browser_installed_evr.stdout | trim != software_browser_catalog.package_evr
+
+    - name: Copy approved Yandex Browser RPM
+      ansible.builtin.copy:
+        src: "{{ software_browser_catalog.artifact_path }}"
+        dest: "{{ software_browser_temp_rpm.path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: software_browser_installed_evr.stdout | trim != software_browser_catalog.package_evr
+      no_log: true
+
+    - name: Install approved Yandex Browser RPM
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, "{{ software_browser_temp_rpm.path }}"]
+      when: software_browser_installed_evr.stdout | trim != software_browser_catalog.package_evr
+      register: software_browser_install
+      changed_when: software_browser_install.rc == 0
+      # Only lock, mirror, and transient transport failures are retried.
+      # Signature, checksum, architecture, and dependency-policy failures are fatal.
+      failed_when: >-
+        software_browser_install.rc != 0 and
+        not (
+          ((software_browser_install.stdout | default('')) ~ '\n' ~
+           (software_browser_install.stderr | default(''))) | lower
+          is search('could not get lock|temporary failure|network is unreachable|connection timed out|failed to fetch|mirror')
+        )
+      retries: "{{ alt_package_lock_attempts }}"
+      delay: "{{ alt_package_lock_delay_seconds }}"
+      until: software_browser_install.rc == 0
+      no_log: true
+
+    - name: Verify approved Yandex Browser package EVR
+      ansible.builtin.command:
+        argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_browser_catalog.package_name }}"]
+      register: software_browser_verified_evr
+      changed_when: false
+
+    - name: Require approved Yandex Browser package EVR
+      ansible.builtin.assert:
+        that:
+          - software_browser_verified_evr.rc == 0
+          - software_browser_verified_evr.stdout | trim == software_browser_catalog.package_evr
+        fail_msg: ALT_PREFLIGHT_FAILURE:browser_install_verification_failed
+  always:
+    - name: Remove private temporary Yandex Browser RPM
+      ansible.builtin.file:
+        path: "{{ software_browser_temp_rpm.path }}"
+        state: absent
+      when: software_browser_temp_rpm is defined
+      no_log: true
+
+- name: Publish Yandex Browser verification fact
+  ansible.builtin.set_fact:
+    software_browser_verified: true

@@ -1,9 +1,8 @@
 ---
 ansible_python_interpreter: /usr/bin/python3
 preflight_min_home_bytes: 2147483648
-# UPN login is compatible with Plasma X11 on ALT Workstation K 11.x.
-# Keep Wayland installed for a later vendor-compatible switch.
-workstation_desktop_session: x11
+# Use vendor-supported Plasma Wayland for new LightDM logins.
+workstation_desktop_session: wayland
 ad_dns_servers:
   - 192.168.100.1
 ad_ldap_uri: ldap://ad-main.sosnadmin.local
@@ -25,5 +24,15 @@ alt_ntp_delay_seconds: 5
 alt_domain_join_max_attempts: 2
 alt_group_policy_prerequisite_packages:
   - gpupdate
+  - alterator-gpupdate
 standard_packages: []
 organization_packages: []
+approved_software_components:
+  - browser
+software_catalog:
+  browser:
+    artifact_path: /opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm
+    sha256: 7fbce78e9799ae36ebfcf750d5880f27d829d5546e9ac77f1868afb9657d9a89
+    package_name: yandex-browser-stable
+    package_evr: 26.4.4.968-1
+    architecture: x86_64

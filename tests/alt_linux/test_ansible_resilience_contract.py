@@ -107,3 +107,58 @@ def test_domain_convergence_probes_have_bounded_retries() -> None:
     verification = DOMAIN_VERIFY_TASKS.read_text(encoding="utf-8")
     assert "until: domain_verify_sssd.stdout | trim == 'active'" in verification
     assert "until: domain_verify_user.rc == 0" in verification
+
+
+def test_gpo_and_browser_are_fixed_isolated_configure_components() -> None:
+    play = load_tasks(CONFIGURE_PLAYBOOK)[0]
+    critical_roles = [item["role"] for item in play["vars"]["configure_critical_phases"]]
+    components = play["vars"]["configure_components"]
+
+    assert critical_roles.index("prejoin_upgrade") < critical_roles.index("domain_join")
+    assert critical_roles.index("alt_group_policy_prerequisites") < critical_roles.index(
+        "domain_join"
+    )
+    assert critical_roles.index("domain_join") < critical_roles.index(
+        "alt_group_policy_client"
+    )
+    assert components == [
+        {"name": "standard_software", "role": "standard_software", "required": True},
+        {"name": "browser", "role": "software_browser", "required": True},
+    ]
+
+
+def test_browser_artifact_is_validated_and_is_not_hidden_in_standard_software() -> None:
+    browser_tasks = (
+        ANSIBLE_ROOT / "roles" / "software_browser" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    standard_tasks = (
+        ANSIBLE_ROOT / "roles" / "standard_software" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Validate approved Yandex Browser artifact" in browser_tasks
+    assert "software_browser_catalog.sha256" in browser_tasks
+    assert "ansible.builtin.include_role" not in standard_tasks
+
+
+def test_browser_install_retries_only_recognized_transient_apt_failures() -> None:
+    browser_tasks = (
+        ANSIBLE_ROOT / "roles" / "software_browser" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert 'retries: "{{ alt_package_lock_attempts }}"' in browser_tasks
+    assert 'delay: "{{ alt_package_lock_delay_seconds }}"' in browser_tasks
+    assert "until: software_browser_install.rc == 0" in browser_tasks
+    assert "software_browser_install.stderr" in browser_tasks
+    assert "signature" in browser_tasks.lower()
+    assert "checksum" in browser_tasks.lower()
+
+
+def test_workstation_profile_keeps_wayland_and_client_dns_entrypoint() -> None:
+    variables = yaml.safe_load(COMMON_VARS.read_text(encoding="utf-8"))
+
+    assert variables["workstation_desktop_session"] == "wayland"
+    assert variables["ad_dns_servers"] == ["192.168.100.1"]
+    assert variables["alt_group_policy_prerequisite_packages"] == [
+        "gpupdate",
+        "alterator-gpupdate",
+    ]

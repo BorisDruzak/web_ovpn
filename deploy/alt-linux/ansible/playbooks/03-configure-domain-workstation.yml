@@ -32,6 +32,9 @@
       - name: standard_software
         role: standard_software
         required: true
+      - name: browser
+        role: software_browser
+        required: true
   tasks:
     - name: Initialize secret-free configure outcome
       ansible.builtin.set_fact:

@@ -10,11 +10,12 @@ ANSIBLE_ROOT = (
 )
 
 
-def test_domain_playbook_uses_only_the_manual_domain_roles() -> None:
+def test_domain_playbook_uses_fixed_resilient_domain_phases() -> None:
     playbook_path = ANSIBLE_ROOT / "playbooks" / "03-configure-domain-workstation.yml"
     playbook = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))
 
-    assert playbook[0]["roles"] == [
+    assert "roles" not in playbook[0]
+    assert [item["role"] for item in playbook[0]["vars"]["configure_critical_phases"]] == [
         "manual_preflight",
         "workstation_identity",
         "prejoin_upgrade",
@@ -23,8 +24,12 @@ def test_domain_playbook_uses_only_the_manual_domain_roles() -> None:
         "workstation_network",
         "domain_join",
         "alt_group_policy_client",
-        "standard_software",
+        "domain_login_baseline",
         "domain_verify",
+    ]
+    assert playbook[0]["vars"]["configure_components"] == [
+        {"name": "standard_software", "role": "standard_software", "required": True},
+        {"name": "browser", "role": "software_browser", "required": True},
     ]
     assert playbook[0]["vars_files"] == [
         "../group_vars/all.yml",
@@ -71,7 +76,8 @@ def test_prejoin_upgrade_runs_only_before_domain_join_and_reboots() -> None:
     assert "apt-get, update" in content
     assert "apt-get, -y, dist-upgrade" in content
     assert "ansible.builtin.reboot" in content
-    assert content.count("not prejoin_upgrade_already_joined") == 3
+    assert "Record whether package changes are pending" in content
+    assert "prejoin_upgrade_pending" in content
     assert "prejoin_upgrade_dist_upgrade is defined" in content
 
 
@@ -86,8 +92,12 @@ def test_group_policy_installation_precedes_join_and_enablement_follows_it() -> 
         ANSIBLE_ROOT / "roles" / "alt_group_policy_client" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
-    assert variables["alt_group_policy_prerequisite_packages"] == ["gpupdate"]
+    assert variables["alt_group_policy_prerequisite_packages"] == [
+        "gpupdate",
+        "alterator-gpupdate",
+    ]
     assert "alt_group_policy_prerequisite_packages" in prerequisites
+    assert "Check ALT Group Policy setup command" in client
     assert "gpupdate-setup, enable" in client
     assert "gpupdate, --target, Computer, --system, --force" in client
 
@@ -110,7 +120,7 @@ def test_domain_group_vars_use_confirmed_alt_package_and_domain_dns() -> None:
         "task-auth-ad-sssd",
         "openldap-clients",
     ]
-    assert variables["ad_dns_servers"] == ["192.168.100.11"]
+    assert variables["ad_dns_servers"] == ["192.168.100.1"]
     assert variables["ad_domain"] == "sosnadmin.local"
 
 
@@ -124,7 +134,7 @@ def test_domain_verify_accepts_short_name_or_upn() -> None:
 
 def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
     content = (
-        ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
+        ANSIBLE_ROOT / "roles" / "domain_login_baseline" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
     assert "/etc/pam.d/system-auth-sss-only" in content
@@ -133,7 +143,7 @@ def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
     assert "grep" in content
 
 
-def test_workstation_base_manages_desktop_session_with_x11_default() -> None:
+def test_workstation_base_manages_desktop_session_with_wayland_default() -> None:
     variables = yaml.safe_load(
         (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
     )
@@ -141,7 +151,7 @@ def test_workstation_base_manages_desktop_session_with_x11_default() -> None:
         ANSIBLE_ROOT / "roles" / "workstation_base" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
-    assert variables["workstation_desktop_session"] == "x11"
+    assert variables["workstation_desktop_session"] == "wayland"
     assert "workstation_desktop_session" in content
     assert "/usr/bin/startplasma-x11" in content
     assert "/usr/bin/startplasma-wayland" in content
@@ -189,6 +199,8 @@ def test_domain_join_rejects_untrusted_existing_computer_before_join_write() -> 
     assert "(sAMAccountName={{ final_hostname }}$)" in content
     assert "ALT_PREFLIGHT_FAILURE:domain_computer_conflict" in content
     assert content.index("kinit") < content.index("ldapsearch")
-    assert content.index("ldapsearch") < content.index("- system-auth\n          - write")
+    assert content.index("ldapsearch") < content.index(
+        "Join workstation through ALT system-auth"
+    )
     for forbidden in ("Remove-ADComputer", "net ads leave", "adcli delete-computer", "reset-computer"):
         assert forbidden not in content
