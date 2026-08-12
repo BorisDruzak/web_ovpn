@@ -74,7 +74,7 @@
         not (
           ((software_browser_install.stdout | default('')) ~ '\n' ~
            (software_browser_install.stderr | default(''))) | lower
-          is search('could not get lock|temporary failure|network is unreachable|connection timed out|failed to fetch|mirror')
+          is search(alt_apt_transient_error_pattern)
         )
       retries: "{{ alt_package_lock_attempts }}"
       delay: "{{ alt_package_lock_delay_seconds }}"

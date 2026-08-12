@@ -16,6 +16,13 @@
     argv: [apt-get, update]
   register: prejoin_upgrade_apt_update
   changed_when: false
+  failed_when: >-
+    prejoin_upgrade_apt_update.rc != 0 and
+    not (
+      ((prejoin_upgrade_apt_update.stdout | default('')) ~ '\n' ~
+       (prejoin_upgrade_apt_update.stderr | default(''))) | lower
+      is search(alt_apt_transient_error_pattern)
+    )
   retries: "{{ alt_transient_attempts }}"
   delay: "{{ alt_transient_delay_seconds }}"
   until: prejoin_upgrade_apt_update.rc == 0
@@ -28,6 +35,13 @@
     argv: [apt-get, -s, dist-upgrade]
   register: prejoin_upgrade_simulation
   changed_when: false
+  failed_when: >-
+    prejoin_upgrade_simulation.rc != 0 and
+    not (
+      ((prejoin_upgrade_simulation.stdout | default('')) ~ '\n' ~
+       (prejoin_upgrade_simulation.stderr | default(''))) | lower
+      is search(alt_apt_transient_error_pattern)
+    )
   retries: "{{ alt_transient_attempts }}"
   delay: "{{ alt_transient_delay_seconds }}"
   until: prejoin_upgrade_simulation.rc == 0
@@ -51,6 +65,13 @@
     argv: [apt-get, -y, dist-upgrade]
   register: prejoin_upgrade_dist_upgrade
   changed_when: prejoin_upgrade_pending | bool
+  failed_when: >-
+    prejoin_upgrade_dist_upgrade.rc != 0 and
+    not (
+      ((prejoin_upgrade_dist_upgrade.stdout | default('')) ~ '\n' ~
+       (prejoin_upgrade_dist_upgrade.stderr | default(''))) | lower
+      is search(alt_apt_transient_error_pattern)
+    )
   retries: "{{ alt_transient_attempts }}"
   delay: "{{ alt_transient_delay_seconds }}"
   until: prejoin_upgrade_dist_upgrade.rc == 0

@@ -71,6 +71,15 @@ def test_prejoin_upgrade_does_not_force_changed_or_reboot() -> None:
     assert "Determine whether a full ALT upgrade is pending" in content
 
 
+def test_prejoin_upgrade_retries_only_recognized_transient_apt_failures() -> None:
+    content = PREJOIN_UPGRADE.read_text(encoding="utf-8")
+    variables = yaml.safe_load(COMMON_VARS.read_text(encoding="utf-8"))
+
+    assert variables["alt_apt_transient_error_pattern"]
+    assert content.count("failed_when: >-") >= 3
+    assert content.count("alt_apt_transient_error_pattern") >= 3
+
+
 def test_network_resolver_change_has_verification_and_rollback() -> None:
     content = NETWORK_TASKS.read_text(encoding="utf-8")
 
@@ -149,6 +158,7 @@ def test_browser_install_retries_only_recognized_transient_apt_failures() -> Non
     assert 'delay: "{{ alt_package_lock_delay_seconds }}"' in browser_tasks
     assert "until: software_browser_install.rc == 0" in browser_tasks
     assert "software_browser_install.stderr" in browser_tasks
+    assert "alt_apt_transient_error_pattern" in browser_tasks
     assert "signature" in browser_tasks.lower()
     assert "checksum" in browser_tasks.lower()
 

@@ -17,6 +17,11 @@ alt_transient_attempts: 4
 alt_transient_delay_seconds: 5
 alt_package_lock_attempts: 24
 alt_package_lock_delay_seconds: 5
+# Retry only package-manager locks and transient transport/mirror failures.
+# Signature, checksum, architecture and dependency-policy errors are fatal.
+alt_apt_transient_error_pattern: >-
+  could not get lock|temporary failure|network is unreachable|connection timed out|
+  failed to fetch|mirror|could not resolve|name or service not known
 alt_service_attempts: 12
 alt_service_delay_seconds: 5
 alt_ntp_attempts: 24
