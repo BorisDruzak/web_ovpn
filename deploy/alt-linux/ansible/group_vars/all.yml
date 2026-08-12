@@ -22,6 +22,11 @@ alt_package_lock_delay_seconds: 5
 alt_apt_transient_error_pattern: >-
   could not get lock|temporary failure|network is unreachable|connection timed out|
   failed to fetch|mirror|could not resolve|name or service not known
+# KDC and LDAP transport convergence only; rejected credentials never match.
+alt_domain_transient_error_pattern: >-
+  cannot contact any kdc|cannot resolve network address|can't contact ldap server|
+  server is unavailable|connection timed out|network is unreachable|temporary failure|
+  name or service not known|no route to host
 alt_service_attempts: 12
 alt_service_delay_seconds: 5
 alt_ntp_attempts: 24

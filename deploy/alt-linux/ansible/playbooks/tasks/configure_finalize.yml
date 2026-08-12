@@ -9,7 +9,7 @@
               'status': 'failed',
               'phase': 'components',
               'retryable': false,
-              'recovered': false,
+              'recovered': domain_join_recovered | default(false) | bool,
               'error': {
                 'code': 'required_component_failed',
                 'class': 'component_failure',
@@ -19,10 +19,10 @@
             if configure_component_required_failed | bool
             else (
               {
-                'status': 'degraded',
-                'phase': 'components',
-                'retryable': false,
-                'recovered': false,
+              'status': 'degraded',
+              'phase': 'components',
+              'retryable': false,
+              'recovered': domain_join_recovered | default(false) | bool,
                 'error': {}
               }
               if configure_component_optional_failed | bool
@@ -30,7 +30,9 @@
                 'status': configure_outcome.status,
                 'phase': configure_outcome.phase,
                 'retryable': configure_outcome.retryable,
-                'recovered': configure_outcome.recovered,
+                'recovered': >-
+                  (configure_outcome.recovered | bool) or
+                  (domain_join_recovered | default(false) | bool),
                 'error': configure_outcome.error
               }
             )

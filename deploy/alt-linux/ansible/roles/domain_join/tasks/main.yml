@@ -39,7 +39,18 @@
       ansible.builtin.command:
         argv: [kinit, -C, "{{ vault_ad_join_user }}"]
         stdin: "{{ vault_ad_join_password }}"
+      register: domain_join_kinit
       changed_when: false
+      failed_when: >-
+        domain_join_kinit.rc != 0 and
+        not (
+          ((domain_join_kinit.stdout | default('')) ~ '\n' ~
+           (domain_join_kinit.stderr | default(''))) | lower
+          is search(alt_domain_transient_error_pattern)
+        )
+      retries: "{{ alt_transient_attempts }}"
+      delay: "{{ alt_transient_delay_seconds }}"
+      until: domain_join_kinit.rc == 0
 
     - name: Search target OU for requested computer account
       ansible.builtin.command:
@@ -58,6 +69,16 @@
           - dn
       register: domain_join_computer_lookup
       changed_when: false
+      failed_when: >-
+        domain_join_computer_lookup.rc != 0 and
+        not (
+          ((domain_join_computer_lookup.stdout | default('')) ~ '\n' ~
+           (domain_join_computer_lookup.stderr | default(''))) | lower
+          is search(alt_domain_transient_error_pattern)
+        )
+      retries: "{{ alt_transient_attempts }}"
+      delay: "{{ alt_transient_delay_seconds }}"
+      until: domain_join_computer_lookup.rc == 0
 
     - name: Determine whether requested computer account already exists
       ansible.builtin.set_fact:
@@ -99,13 +120,81 @@
           changed_when: false
           failed_when: false
 
+        - name: Search target OU after ambiguous join failure
+          ansible.builtin.command:
+            argv:
+              - ldapsearch
+              - -LLL
+              - -Y
+              - GSSAPI
+              - -H
+              - "{{ ad_ldap_uri }}"
+              - -b
+              - "{{ computer_ou }}"
+              - -s
+              - sub
+              - "(sAMAccountName={{ final_hostname }}$)"
+              - dn
+          register: domain_join_recovery_computer_lookup
+          changed_when: false
+          failed_when: >-
+            domain_join_recovery_computer_lookup.rc != 0 and
+            not (
+              ((domain_join_recovery_computer_lookup.stdout | default('')) ~ '\n' ~
+               (domain_join_recovery_computer_lookup.stderr | default(''))) | lower
+              is search(alt_domain_transient_error_pattern)
+            )
+          retries: "{{ alt_transient_attempts }}"
+          delay: "{{ alt_transient_delay_seconds }}"
+          until: domain_join_recovery_computer_lookup.rc == 0
+          when: domain_join_reconciled_trust.rc != 0
+
+        - name: Determine whether computer account exists after ambiguous join failure
+          ansible.builtin.set_fact:
+            domain_join_recovery_computer_exists: >-
+              {{ domain_join_recovery_computer_lookup.stdout is search('(?m)^dn: ') }}
+          when: domain_join_reconciled_trust.rc != 0
+
+        - name: Reject untrusted computer account after ambiguous join failure
+          ansible.builtin.assert:
+            that: not domain_join_recovery_computer_exists
+            fail_msg: ALT_PREFLIGHT_FAILURE:domain_computer_conflict requested computer account already exists
+          when: domain_join_reconciled_trust.rc != 0
+
+        - name: Retry join only when mutation is proven absent
+          ansible.builtin.command:
+            argv:
+              - system-auth
+              - write
+              - ad
+              - "{{ ad_domain }}"
+              - "{{ final_hostname }}"
+              - "{{ workgroup }}"
+              - "{{ vault_ad_join_user }}"
+              - "--createcomputer={{ alt_createcomputer_path }}"
+              - "--gpo"
+          register: domain_join_recovery_command
+          when:
+            - domain_join_reconciled_trust.rc != 0
+            - not domain_join_recovery_computer_exists
+
+        - name: Verify trust after safe join retry
+          ansible.builtin.command:
+            argv: [net, ads, testjoin]
+          register: domain_join_reconciled_trust
+          changed_when: false
+          when: domain_join_reconciled_trust.rc != 0
+
         - name: Require trusted domain join after reconciliation
           ansible.builtin.assert:
-            that:
-              - domain_join_reconciled_trust.rc == 0
+            that: domain_join_reconciled_trust.rc == 0
             fail_msg: >-
               ALT_PREFLIGHT_FAILURE:domain_join_outcome_unknown
               Domain join outcome cannot be verified safely
+
+        - name: Mark reconciled domain join as recovered
+          ansible.builtin.set_fact:
+            domain_join_recovered: true
   always:
     - name: Destroy temporary Kerberos ticket
       ansible.builtin.command:

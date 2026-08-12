@@ -121,6 +121,37 @@ def test_domain_join_reconciles_trust_after_mutation() -> None:
     assert "Join workstation and prove resulting domain trust" in content
 
 
+def test_domain_join_retries_only_transient_kdc_and_ldap_failures() -> None:
+    content = DOMAIN_JOIN_TASKS.read_text(encoding="utf-8")
+    variables = yaml.safe_load(COMMON_VARS.read_text(encoding="utf-8"))
+
+    assert variables["alt_domain_transient_error_pattern"]
+    assert content.count("alt_domain_transient_error_pattern") >= 2
+    assert content.count('retries: "{{ alt_transient_attempts }}"') >= 2
+    assert "Acquire temporary Kerberos ticket" in content
+    assert "Search target OU for requested computer account" in content
+
+
+def test_ambiguous_domain_join_retries_once_only_when_account_is_absent() -> None:
+    content = DOMAIN_JOIN_TASKS.read_text(encoding="utf-8")
+
+    assert "Search target OU after ambiguous join failure" in content
+    assert "Reject untrusted computer account after ambiguous join failure" in content
+    assert "Retry join only when mutation is proven absent" in content
+    assert "domain_join_recovery_command" in content
+    assert "Verify trust after safe join retry" in content
+
+
+def test_terminal_result_marks_reconciled_domain_join_as_recovered() -> None:
+    domain_join = DOMAIN_JOIN_TASKS.read_text(encoding="utf-8")
+    finalizer = (
+        ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_finalize.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "domain_join_recovered" in domain_join
+    assert "domain_join_recovered" in finalizer
+
+
 def test_domain_convergence_probes_have_bounded_retries() -> None:
     for path in (
         MANUAL_PREFLIGHT_TASKS,
