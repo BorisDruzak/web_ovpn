@@ -58,6 +58,39 @@ def test_rehearsal_accepts_ready_registration_awaiting_assignment(
     assert result.rehearsal_passed is True
 
 
+def test_rehearsal_accepts_preserved_assignment_quarantine(
+    tmp_path: Path,
+) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    quarantine = (
+        sandbox.settings.controller_state_root
+        / "assignments"
+        / ".quarantine"
+    )
+    quarantine.mkdir(mode=0o700)
+    (
+        quarantine
+        / "53b03180-5d78-11f0-bd95-f027db877a00.json.20260806T1152Z"
+    ).write_text(
+        json.dumps(
+            {
+                "machine_uuid": "53b03180-5d78-11f0-bd95-f027db877a00",
+                "status": "quarantined",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    backup_id = sandbox.repository().create().backup_id
+    sandbox.repository().verify(backup_id, write_evidence=True)
+
+    result = sandbox.rehearsal_service().rehearse(backup_id)
+
+    assert result.rehearsal_passed is True
+
+
 def test_failed_rehearsal_preserves_private_tree(tmp_path: Path) -> None:
     sandbox = BackupSandbox.create(tmp_path)
     sandbox.seed_complete_controller()

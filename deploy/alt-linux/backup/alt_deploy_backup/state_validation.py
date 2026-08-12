@@ -242,6 +242,13 @@ class StateValidator:
                 raise _failure(
                     "Assignment entry cannot be inspected"
                 ) from exc
+            if path.name == ".quarantine":
+                if (
+                    not stat.S_ISDIR(metadata.st_mode)
+                    or stat.S_ISLNK(metadata.st_mode)
+                ):
+                    raise _failure("Assignment quarantine is unsafe")
+                continue
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or not path.name.endswith(".json")
