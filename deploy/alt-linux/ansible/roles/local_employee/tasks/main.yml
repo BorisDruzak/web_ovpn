@@ -26,6 +26,38 @@
       - employee_login not in ['root', 'ansible', 'osn-admin']
     fail_msg: Existing local account conflicts with requested employee
 
+- name: Inspect existing employee primary group
+  ansible.builtin.command:
+    argv:
+      - getent
+      - group
+      - "{{ employee_login }}"
+  register: employee_existing_group
+  changed_when: false
+  failed_when: false
+
+- name: Normalize existing employee primary group
+  ansible.builtin.set_fact:
+    employee_existing_group_fields: >-
+      {{
+        (employee_existing_group.stdout | trim).split(':')
+        if employee_existing_group.rc == 0
+        else []
+      }}
+
+- name: Validate existing employee primary group
+  ansible.builtin.assert:
+    that:
+      - employee_existing_group_fields | length == 0 or employee_existing_group_fields | length == 4
+      - employee_existing_group_fields | length == 0 or employee_existing_fields | length > 0
+      - >-
+        employee_existing_group_fields | length == 0 or
+        employee_existing_group_fields[2] | int >= 1000
+      - >-
+        employee_existing_group_fields | length == 0 or
+        employee_existing_group_fields[2] | int == employee_existing_fields[3] | int
+    fail_msg: ALT_PREFLIGHT_FAILURE:employee_group_conflict existing primary group is incompatible
+
 - name: Ensure employee primary group exists
   ansible.builtin.group:
     name: "{{ employee_login }}"

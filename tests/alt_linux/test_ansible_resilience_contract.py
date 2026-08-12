@@ -152,6 +152,19 @@ def test_terminal_result_marks_reconciled_domain_join_as_recovered() -> None:
     assert "domain_join_recovered" in finalizer
 
 
+def test_local_employee_rejects_conflicting_primary_group_before_mutation() -> None:
+    employee_tasks = (
+        ANSIBLE_ROOT / "roles" / "local_employee" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Inspect existing employee primary group" in employee_tasks
+    assert "Validate existing employee primary group" in employee_tasks
+    assert "ALT_PREFLIGHT_FAILURE:employee_group_conflict" in employee_tasks
+    assert employee_tasks.index("Inspect existing employee primary group") < employee_tasks.index(
+        "Ensure employee primary group exists"
+    )
+
+
 def test_domain_convergence_probes_have_bounded_retries() -> None:
     for path in (
         MANUAL_PREFLIGHT_TASKS,
