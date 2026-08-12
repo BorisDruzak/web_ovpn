@@ -1,0 +1,52 @@
+---
+- name: Execute independent component
+  block:
+    - name: Include component role
+      ansible.builtin.include_role:
+        name: "{{ configure_component_item.role }}"
+
+    - name: Record successful component
+      ansible.builtin.set_fact:
+        configure_outcome: >-
+          {{ configure_outcome | combine(
+             {
+               'components': {
+                 configure_component_item.name: {
+                   'required': configure_component_item.required | bool,
+                   'status': 'ok',
+                   'attempts': 1,
+                   'fallback': none,
+                   'error_code': none
+                 }
+               }
+             },
+             recursive=True
+          ) }}
+  rescue:
+    - name: Record component failure without hiding it
+      ansible.builtin.set_fact:
+        configure_outcome: >-
+          {{ configure_outcome | combine(
+             {
+               'components': {
+                 configure_component_item.name: {
+                   'required': configure_component_item.required | bool,
+                   'status': 'failed',
+                   'attempts': 1,
+                   'fallback': none,
+                   'error_code': 'component_' ~ configure_component_item.name ~ '_failed'
+                 }
+               }
+             },
+             recursive=True
+          ) }}
+
+    - name: Mark required component failure
+      ansible.builtin.set_fact:
+        configure_component_required_failed: true
+      when: configure_component_item.required | bool
+
+    - name: Mark optional component failure
+      ansible.builtin.set_fact:
+        configure_component_optional_failed: true
+      when: not (configure_component_item.required | bool)

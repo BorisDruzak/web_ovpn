@@ -6,7 +6,7 @@ Make the manual ALT Workstation K 11.x bootstrap safe to rerun and resilient to 
 
 ## Scope
 
-The implementation changes bootstrap.sh, alt-bootstrap-register, a short removable-media launcher, Linux-runnable bootstrap tests and operator documentation. It does not change managed ISO or AI Curl paths, join AD, create AD users, change hostname, configure arbitrary DNS or routes, or disable SSH password access.
+The implementation changes bootstrap.sh, alt-bootstrap-register, a controller-served start-bootstrap.sh launcher, the controller pending-registration worker, Linux-runnable tests and operator documentation. It does not change managed ISO or AI Curl paths, create AD users, configure arbitrary DNS or routes, or disable SSH password access.
 
 ## Design
 
@@ -22,9 +22,17 @@ Bootstrap is a state machine with root-only state under /var/lib/alt-bootstrap/:
 
 The bootstrap marker is written only after the technical access checks pass. A rerun reconciles every owned artifact and retries registration; it does not merely return because a marker exists.
 
-The removable-media launcher is a short shell file. It checks root, downloads the canonical bootstrap into a private temporary path, syntax-checks it, then invokes it. The user-facing command is:
+The controller-served start-bootstrap.sh launcher is a short shell file. It checks root, downloads the canonical bootstrap into a private temporary path, syntax-checks it, then invokes it. The user-facing command downloads the launcher from the controller:
 
-    sudo bash /media/<USB>/start-alt-bootstrap.sh
+    curl --noproxy '*' -fsS http://192.168.100.17:8087/bootstrap/start-bootstrap.sh -o /tmp/start-alt-bootstrap.sh && sudo bash /tmp/start-alt-bootstrap.sh
+
+## Controller Handoff
+
+Before the local command, an operator creates a strict configure request at /srv/alt-deploy/configure-requests/<machine-uuid>.json. It contains final_hostname, hostname_mode, profile, domain, realm, workgroup, computer_ou and domain_test_user. It contains no password or Vault secret.
+
+After registration and technical preflight succeed, the controller pending-registration worker loads only the request whose filename equals the registered UUID. It validates it using ConfigureRequest, runs ConfigurePlanner.preview and then ConfigurePlanner.start. The controller has the Vault and runs Ansible as altserver; the workstation never receives controller credentials.
+
+If the request is absent, the worker leaves the station in awaiting_assignment and never starts domain join. If the matching request is invalid or preview fails, it writes a typed terminal status and never starts domain join. If configuration starts and a later role fails, the recorded result contains the run ID and failure; a retry uses the same request and idempotent configure playbook.
 
 ## Failure Policy
 

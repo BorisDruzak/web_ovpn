@@ -32,6 +32,38 @@ REQUEST_FIELDS = frozenset(
     }
 )
 
+CONFIGURE_RESULT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "machine_uuid",
+        "hostname",
+        "profile",
+        "status",
+        "phase",
+        "retryable",
+        "recovered",
+        "reboot_required",
+        "error",
+        "components",
+        "verification",
+    }
+)
+CONFIGURE_RESULT_STATUSES = frozenset(
+    {"successful", "degraded", "failed"}
+)
+CONFIGURE_RESULT_PHASES = frozenset(
+    {
+        "preflight",
+        "identity",
+        "upgrade",
+        "network",
+        "domain_join",
+        "domain_core_verify",
+        "components",
+        "finalize",
+    }
+)
+SAFE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,79}$")
 HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
 HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
 UUID_RE = re.compile(
@@ -208,6 +240,196 @@ class ConfigurePlanner:
     def configure_playbook(self) -> Path:
         return self.settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
 
+    @staticmethod
+    def _synthetic_failure(
+        request: ConfigureRequest,
+        *,
+        code: str,
+        error_class: str,
+        safe_message: str,
+        retryable: bool,
+    ) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "machine_uuid": request.machine_uuid,
+            "hostname": request.final_hostname,
+            "profile": request.profile,
+            "status": "failed",
+            "phase": "finalize",
+            "retryable": retryable,
+            "recovered": False,
+            "reboot_required": False,
+            "error": {
+                "code": code,
+                "class": error_class,
+                "safe_message": safe_message,
+            },
+            "components": {},
+            "verification": {},
+        }
+
+    @staticmethod
+    def _read_structured_result(
+        result_path: Path,
+        *,
+        request: ConfigureRequest,
+    ) -> dict[str, object] | None:
+        try:
+            result = read_json(result_path)
+        except (OSError, ValueError):
+            return None
+
+        if "schema_version" not in result:
+            return None
+
+        if set(result) != CONFIGURE_RESULT_FIELDS:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        if result.get("schema_version") != 1:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        if result.get("machine_uuid") != request.machine_uuid:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        if result.get("hostname") != request.final_hostname:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        if result.get("profile") != request.profile:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        if result.get("status") not in CONFIGURE_RESULT_STATUSES:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        if result.get("phase") not in CONFIGURE_RESULT_PHASES:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        for field in (
+            "retryable",
+            "recovered",
+            "reboot_required",
+        ):
+            if not isinstance(result.get(field), bool):
+                raise ControlError(
+                    code="configure_result_contract_invalid",
+                    message="Domain configure produced an invalid result",
+                    exit_code=7,
+                )
+        if not isinstance(result.get("components"), dict) or not isinstance(
+            result.get("verification"), dict
+        ):
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+
+        error = result.get("error")
+        if not isinstance(error, dict):
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+        if result["status"] == "failed":
+            code = error.get("code")
+            error_class = error.get("class")
+            safe_message = error.get("safe_message")
+            if not (
+                isinstance(code, str)
+                and SAFE_ERROR_CODE_RE.fullmatch(code)
+                and isinstance(error_class, str)
+                and error_class
+                and isinstance(safe_message, str)
+                and safe_message
+                and len(safe_message) <= 240
+            ):
+                raise ControlError(
+                    code="configure_result_contract_invalid",
+                    message="Domain configure produced an invalid result",
+                    exit_code=7,
+                )
+        elif error:
+            raise ControlError(
+                code="configure_result_contract_invalid",
+                message="Domain configure produced an invalid result",
+                exit_code=7,
+            )
+
+        return result
+
+    @staticmethod
+    def _legacy_result(result_path: Path) -> dict[str, object] | None:
+        try:
+            result = read_json(result_path)
+        except (OSError, ValueError):
+            return None
+
+        if "schema_version" in result:
+            return None
+
+        return result
+
+    @staticmethod
+    def _error_from_result(
+        result: dict[str, object],
+        *,
+        run_id: str,
+    ) -> ControlError:
+        error = result["error"]
+        assert isinstance(error, dict)
+        return ControlError(
+            code=str(error["code"]),
+            message="Ansible domain configure failed",
+            exit_code=7,
+            details={
+                "run_id": run_id,
+                "phase": result["phase"],
+                "retryable": result["retryable"],
+                "recovered": result["recovered"],
+            },
+        )
+
+    def _persist_synthetic_failure(
+        self,
+        result_path: Path,
+        request: ConfigureRequest,
+        *,
+        code: str,
+        error_class: str,
+        safe_message: str,
+        retryable: bool,
+    ) -> dict[str, object]:
+        result = self._synthetic_failure(
+            request,
+            code=code,
+            error_class=error_class,
+            safe_message=safe_message,
+            retryable=retryable,
+        )
+        atomic_write_json(result_path, result)
+        return result
+
     def start(self, machine_uuid: str, request: ConfigureRequest) -> dict[str, object]:
         machine = self.machines.get(machine_uuid)
         if not machine.ip:
@@ -253,25 +475,83 @@ class ConfigurePlanner:
         environment["ANSIBLE_CONFIG"] = str(
             self.settings.ansible_project_dir / "ansible.cfg"
         )
-        with log_path.open("w", encoding="utf-8") as log_stream:
-            os.chmod(log_path, 0o600)
-            completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=1800, check=False, cwd=self.settings.ansible_project_dir, env=environment)
-
-        if completed.returncode != 0:
-            error_code = "domain_join_failed"
-            marker_codes = (
-                "hostname_mismatch",
-                "domain_computer_conflict",
-            )
-            log_content = log_path.read_text(encoding="utf-8", errors="replace")
-            for marker_code in marker_codes:
-                if f"ALT_PREFLIGHT_FAILURE:{marker_code}" in log_content:
-                    error_code = marker_code
-                    break
-            raise ControlError(code=error_code, message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
         try:
-            result = read_json(result_path)
-        except (OSError, ValueError) as exc:
-            raise ControlError(code="domain_verification_failed", message="Domain configure did not produce a valid result", exit_code=7, details={"run_id": run_id}) from exc
-        result["run_id"] = run_id
-        return result
+            with log_path.open("w", encoding="utf-8") as log_stream:
+                os.chmod(log_path, 0o600)
+                completed = subprocess.run(
+                    command,
+                    shell=False,
+                    text=True,
+                    stdout=log_stream,
+                    stderr=subprocess.STDOUT,
+                    timeout=1800,
+                    check=False,
+                    cwd=self.settings.ansible_project_dir,
+                    env=environment,
+                )
+        except subprocess.TimeoutExpired:
+            result = self._persist_synthetic_failure(
+                result_path,
+                request,
+                code="configure_execution_timeout",
+                error_class="retryable_transient",
+                safe_message="Ansible domain configure timed out",
+                retryable=True,
+            )
+            raise self._error_from_result(result, run_id=run_id)
+        except OSError:
+            result = self._persist_synthetic_failure(
+                result_path,
+                request,
+                code="configure_execution_unavailable",
+                error_class="retryable_transient",
+                safe_message="Ansible domain configure could not start",
+                retryable=True,
+            )
+            raise self._error_from_result(result, run_id=run_id)
+
+        structured_result = self._read_structured_result(
+            result_path,
+            request=request,
+        )
+        if structured_result is not None:
+            if completed.returncode == 0 and structured_result["status"] in {
+                "successful",
+                "degraded",
+            }:
+                structured_result["run_id"] = run_id
+                return structured_result
+            if (
+                completed.returncode != 0
+                and structured_result["status"] == "failed"
+            ):
+                raise self._error_from_result(
+                    structured_result,
+                    run_id=run_id,
+                )
+
+            result = self._persist_synthetic_failure(
+                result_path,
+                request,
+                code="configure_result_contract_invalid",
+                error_class="fatal_invariant",
+                safe_message="Ansible result and exit status disagree",
+                retryable=False,
+            )
+            raise self._error_from_result(result, run_id=run_id)
+
+        if completed.returncode == 0:
+            legacy_result = self._legacy_result(result_path)
+            if legacy_result is not None:
+                legacy_result["run_id"] = run_id
+                return legacy_result
+
+        result = self._persist_synthetic_failure(
+            result_path,
+            request,
+            code="configure_result_missing",
+            error_class="retryable_transient",
+            safe_message="Ansible domain configure produced no valid result",
+            retryable=completed.returncode != 0,
+        )
+        raise self._error_from_result(result, run_id=run_id)

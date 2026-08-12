@@ -14,21 +14,52 @@
 - name: Refresh ALT package metadata before first domain join
   ansible.builtin.command:
     argv: [apt-get, update]
+  register: prejoin_upgrade_apt_update
   changed_when: false
+  retries: "{{ alt_transient_attempts }}"
+  delay: "{{ alt_transient_delay_seconds }}"
+  until: prejoin_upgrade_apt_update.rc == 0
   when:
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined
 
-- name: Perform the full ALT upgrade before first domain join
+- name: Determine whether a full ALT upgrade is pending
+  ansible.builtin.command:
+    argv: [apt-get, -s, dist-upgrade]
+  register: prejoin_upgrade_simulation
+  changed_when: false
+  retries: "{{ alt_transient_attempts }}"
+  delay: "{{ alt_transient_delay_seconds }}"
+  until: prejoin_upgrade_simulation.rc == 0
+  when:
+    - prejoin_upgrade_enabled | bool
+    - not prejoin_upgrade_already_joined
+
+- name: Record whether package changes are pending
+  ansible.builtin.set_fact:
+    prejoin_upgrade_pending: >-
+      {{ prejoin_upgrade_simulation.stdout is not search(
+         '0 upgraded, 0 newly installed, 0 removed and 0 not upgraded'
+      ) }}
+  when:
+    - prejoin_upgrade_enabled | bool
+    - not prejoin_upgrade_already_joined
+    - prejoin_upgrade_simulation is defined
+
+- name: Perform pending full ALT upgrade before first domain join
   ansible.builtin.command:
     argv: [apt-get, -y, dist-upgrade]
   register: prejoin_upgrade_dist_upgrade
-  changed_when: true
+  changed_when: prejoin_upgrade_pending | bool
+  retries: "{{ alt_transient_attempts }}"
+  delay: "{{ alt_transient_delay_seconds }}"
+  until: prejoin_upgrade_dist_upgrade.rc == 0
   when:
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined
+    - prejoin_upgrade_pending | default(false) | bool
 
-- name: Reboot after the full pre-join ALT upgrade
+- name: Reboot only after a real pre-join ALT upgrade
   ansible.builtin.reboot:
     reboot_timeout: "{{ prejoin_upgrade_reboot_timeout }}"
   when:

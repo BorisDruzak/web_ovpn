@@ -402,21 +402,24 @@ def shell_mutations(
     return mutations
 
 
-def assert_completed_bootstrap_skips_base_setup(source: str) -> None:
+def assert_completed_bootstrap_reconciles_technical_access(source: str) -> None:
     main = normalize_shell_commands(top_level_executable_source(source))
     marker_branch_start = main.index('if [[ -f "${MARKER}" ]]; then')
-    early_exit = main.index("    exit 0", marker_branch_start)
+    marker_branch_end = main.index("\nfi\n", marker_branch_start) + len("\nfi\n")
+    technical_key_position = main.index(
+        "if ! install_authorized_key",
+        marker_branch_start,
+    )
+    deferred_exit_position = main.index(
+        "exit 0",
+        technical_key_position,
+    )
+    registration_position = main.rindex("register_machine")
 
-    assert marker_branch_start < early_exit
-    all_mutations = shell_mutations(main, registration=False)
-    for mutation_class in BASE_MUTATION_CLASSES:
-        mutations = [
-            position
-            for found_class, position in all_mutations
-            if found_class == mutation_class
-        ]
-        assert mutations, mutation_class
-        assert all(early_exit < position for position in mutations), mutation_class
+    assert marker_branch_start < registration_position
+    assert "Bootstrap marker exists; reconciling technical access" in main
+    assert "exit 0" not in main[marker_branch_start:marker_branch_end]
+    assert marker_branch_start < technical_key_position < deferred_exit_position
 
 
 def assert_registration_source_has_no_mutations(source: str) -> None:
@@ -518,18 +521,7 @@ def test_bootstrap_remains_non_secret_and_registration_only() -> None:
 
     assert 'ANSIBLE_USER="ansible"' in source
     assert 'touch "${MARKER}"' in source
-    completed_marker_branch = '''if [[ -f "${MARKER}" ]]; then
-    echo "Bootstrap already completed"
-
-    if [[ ! -f "${REGISTER_MARKER}" ]]; then
-        register_machine
-    else
-        echo "Machine already registered"
-    fi
-
-    exit 0
-fi'''
-    assert completed_marker_branch in source
+    assert "Bootstrap marker exists; reconciling technical access before registration" in source
     for forbidden in (
         "ansible-playbook",
         "system-auth write ad",
@@ -540,49 +532,66 @@ fi'''
         assert forbidden not in source
 
 
-def test_completed_bootstrap_exits_before_every_base_setup_mutation() -> None:
+def test_bootstrap_defers_registration_without_losing_technical_access() -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
 
-    assert_completed_bootstrap_skips_base_setup(source)
+    assert 'usermod -aG wheel "${LOCAL_ADMIN}"' in source
+    assert 'RETRY_SERVICE="/etc/systemd/system/alt-bootstrap-register-retry.service"' in source
+    assert 'RETRY_TIMER="/etc/systemd/system/alt-bootstrap-register-retry.timer"' in source
+    assert 'OnUnitActiveSec=5min' in source
+    assert 'ExecStart=/usr/local/sbin/alt-bootstrap' in source
+    assert 'write_state "registration_deferred"' in source
+
+
+def test_bootstrap_recovers_only_existing_networkmanager_profile() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert "recover_existing_networkmanager_profile()" in source
+    assert "nmcli -t -f NAME connection show --active" in source
+    assert 'nmcli connection up id "${profile}"' in source
+    assert "network_ready()" in source
+    assert "recover_existing_networkmanager_profile || true" in source
+
+
+def test_completed_bootstrap_reconciles_every_owned_technical_artifact() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert_completed_bootstrap_reconciles_technical_access(source)
 
 
 @pytest.mark.parametrize(("mutation_class", "mutation"), BASE_MUTATION_EXAMPLES)
-def test_completed_bootstrap_contract_rejects_pre_entrypoint_mutation(
+def test_completed_bootstrap_contract_rejects_marker_early_exit(
     mutation_class: str,
     mutation: str,
 ) -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
     mutated_source = source.replace(
-        'echo "=== Bootstrap started: $(date) ==="',
-        f'{mutation}\n\necho "=== Bootstrap started: $(date) ==="',
+        'echo "Bootstrap marker exists; reconciling technical access before registration"',
+        'echo "Bootstrap marker exists; reconciling technical access before registration"\n    exit 0',
         1,
     )
 
-    with pytest.raises(AssertionError, match=mutation_class):
-        assert_completed_bootstrap_skips_base_setup(mutated_source)
+    with pytest.raises(AssertionError):
+        assert_completed_bootstrap_reconciles_technical_access(mutated_source)
 
 
 @pytest.mark.parametrize(
     ("mutation_class", "mutation"),
     WRAPPED_BASE_MUTATION_EXAMPLES,
 )
-def test_completed_bootstrap_contract_rejects_wrapped_pre_entrypoint_mutation(
+def test_completed_bootstrap_contract_rejects_wrapped_marker_early_exit(
     mutation_class: str,
     mutation: str,
 ) -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
-    wrapped_mutation = (
-        "if ! command env LC_ALL=C sudo --user root --non-interactive -- "
-        f"{mutation}; then :; fi"
-    )
     mutated_source = source.replace(
-        'echo "=== Bootstrap started: $(date) ==="',
-        f'{wrapped_mutation}\n\necho "=== Bootstrap started: $(date) ==="',
+        'echo "Bootstrap marker exists; reconciling technical access before registration"',
+        'echo "Bootstrap marker exists; reconciling technical access before registration"\n    exit 0',
         1,
     )
 
-    with pytest.raises(AssertionError, match=mutation_class):
-        assert_completed_bootstrap_skips_base_setup(mutated_source)
+    with pytest.raises(AssertionError):
+        assert_completed_bootstrap_reconciles_technical_access(mutated_source)
 
 
 def test_register_machine_contains_only_registration_operations() -> None:

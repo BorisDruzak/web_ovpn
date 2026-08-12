@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** Provide a rerunnable bootstrap that preserves valid DHCP configuration, restores technical Ansible access and defers registration during controller outages.
+**Goal:** Provide a rerunnable bootstrap that preserves valid DHCP configuration, restores technical Ansible access and automatically starts the controller-owned domain configuration for a pre-created UUID-bound request.
 
 **Architecture:** bootstrap.sh owns technical access, local status and a bounded deferred registration unit. alt-bootstrap-register stays responsible only for the non-secret controller payload. A removable-media launcher downloads and executes the canonical script without containing credentials.
 
@@ -68,7 +68,26 @@
 - [ ] Step 4: Run bash -n for both shell files and the focused test.
 - [ ] Step 5: Commit with message feat(alt): defer bootstrap registration safely.
 
-### Task 4: Removable-media launcher
+### Task 4: Automatic controller handoff
+
+**Files:**
+- Modify: deploy/alt-linux/api/process_pending.py
+- Modify: deploy/alt-linux/control/alt_deploy/config.py
+- Modify: deploy/alt-linux/install-control-plane-lib.sh
+- Modify: deploy/alt-linux/systemd/alt-deploy-process.service
+- Modify: tests/alt_linux/test_process_pending.py
+
+**Interfaces:**
+- Consumes: /srv/alt-deploy/configure-requests/<machine-uuid>.json and ConfigureRequest.
+- Produces: configured or configure_failed registration records with the ConfigurePlanner run ID.
+
+- [ ] Step 1: Write failing tests for a ready registration with a UUID-bound valid request, absent request, invalid request and planner failure.
+- [ ] Step 2: Run the focused process-pending tests and confirm failure because the worker stops at awaiting_assignment.
+- [ ] Step 3: Add a private configure-request directory, validate only the matching UUID request, run preview then start, and write a typed result without secrets.
+- [ ] Step 4: Permit the systemd worker to read the request directory and add installation checks for its ownership and mode.
+- [ ] Step 5: Run focused controller tests and commit with message feat(alt): auto-configure registered workstations.
+
+### Task 5: Controller-served launcher
 
 **Files:**
 - Create: deploy/alt-linux/bootstrap/start-alt-bootstrap.sh
@@ -77,7 +96,7 @@
 
 **Interfaces:**
 - Consumes: ALT_DEPLOY_HOST and the canonical bootstrap HTTP URL.
-- Produces: start-alt-bootstrap.sh runnable from mounted USB media.
+- Produces: start-alt-bootstrap.sh downloaded from the controller.
 
 - [ ] Step 1: Write a failing test requiring mktemp, mode 0700, bash -n and cleanup in the launcher.
 - [ ] Step 2: Run the focused test and confirm it fails because the launcher is absent.
@@ -87,6 +106,6 @@
 
 ## Self-Review
 
-- The four tasks cover state, DHCP recovery, deferred registration and a short USB command.
+- The five tasks cover state, DHCP recovery, deferred registration, automatic controller handoff and a short controller-served command.
 - No task changes AD, application provisioning, hostname or controller secrets.
 - Every implementation task begins with a failing test and has a Linux verification command.

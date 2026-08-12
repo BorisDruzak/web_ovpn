@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -26,6 +27,12 @@ SETTINGS = Settings.from_env()
 PENDING_DIR = SETTINGS.registration_root / "pending"
 READY_DIR = SETTINGS.registration_root / "ready"
 FAILED_DIR = SETTINGS.registration_root / "failed"
+CONFIGURE_REQUESTS_DIR = Path(
+    os.environ.get(
+        "ALT_DEPLOY_CONFIGURE_REQUESTS",
+        "/srv/alt-deploy/configure-requests",
+    )
+)
 
 KNOWN_HOSTS = SETTINGS.known_hosts_file
 PRIVATE_KEY = SETTINGS.private_key_file
@@ -41,6 +48,14 @@ WORKSTATIONCTL = os.environ.get(
 ALLOWED_NETWORKS = (
     ipaddress.ip_network("192.168.100.0/23"),
 )
+MACHINE_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+class PendingConfigurationError(RuntimeError):
+    """A secret-free terminal error emitted by the auto-configure handoff."""
 
 
 def utc_now() -> str:
@@ -157,6 +172,104 @@ def mark_failed(
         FAILED_DIR,
         captured_generation,
     )
+
+
+def _configure_request_path(machine_uuid: str) -> Path | None:
+    normalized_uuid = machine_uuid.strip().lower()
+    if not MACHINE_UUID_RE.fullmatch(normalized_uuid):
+        raise PendingConfigurationError("configure_request_invalid")
+
+    path = CONFIGURE_REQUESTS_DIR / f"{normalized_uuid}.json"
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PendingConfigurationError(
+            "configure_request_unavailable"
+        ) from exc
+
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(
+        metadata.st_mode
+    ):
+        raise PendingConfigurationError("configure_request_invalid")
+
+    return path
+
+
+def _run_configure_command(
+    command: list[str],
+    *,
+    error_code: str,
+) -> dict[str, object]:
+    try:
+        completed = run_command(command, timeout=1900)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PendingConfigurationError(error_code) from exc
+
+    if completed.returncode != 0:
+        raise PendingConfigurationError(error_code)
+
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise PendingConfigurationError(error_code) from exc
+
+    if not isinstance(payload, dict):
+        raise PendingConfigurationError(error_code)
+
+    return payload
+
+
+def auto_configure(
+    record: dict[str, object],
+    *,
+    ip: str,
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    machine_uuid = str(record["uuid"]).lower()
+    request_path = _configure_request_path(machine_uuid)
+    if request_path is None:
+        return None
+
+    preview = _run_configure_command(
+        [
+            WORKSTATIONCTL,
+            "--json",
+            "configure",
+            "preview",
+            machine_uuid,
+            "--vars-file",
+            str(request_path),
+        ],
+        error_code="configure_preview_failed",
+    )
+    if (
+        preview.get("status") != "ok"
+        or preview.get("machine_uuid") != machine_uuid
+        or preview.get("target_ip") != ip
+    ):
+        raise PendingConfigurationError("configure_preview_invalid")
+
+    result = _run_configure_command(
+        [
+            WORKSTATIONCTL,
+            "--json",
+            "configure",
+            "start",
+            machine_uuid,
+            "--vars-file",
+            str(request_path),
+        ],
+        error_code="configure_start_failed",
+    )
+    if (
+        result.get("machine_uuid") != machine_uuid
+        or not isinstance(result.get("run_id"), str)
+        or not result["run_id"]
+    ):
+        raise PendingConfigurationError("configure_start_invalid")
+
+    return preview, result
 
 
 def _remove_invalid_pending(path: Path) -> None:
@@ -337,11 +450,20 @@ def process_record(path: Path) -> None:
         record.pop("failed_at", None)
         record.pop("error", None)
 
-        record["status"] = "awaiting_assignment"
         record["verified_at"] = utc_now()
         record["ansible_output"] = result.stdout[-10000:]
         record["preflight"] = dict(preflight_result)
         record["preflight_verified_at"] = utc_now()
+
+        configure = auto_configure(record, ip=ip)
+        if configure is None:
+            record["status"] = "awaiting_assignment"
+        else:
+            configure_preview, configure_result = configure
+            record["status"] = "configured"
+            record["configure_preview"] = configure_preview
+            record["configure_result"] = configure_result
+            record["configured_at"] = utc_now()
 
         finalized = finalize_record(
             path,
@@ -353,7 +475,7 @@ def process_record(path: Path) -> None:
         if finalized:
             print(
                 f"{machine_key}: "
-                f"AWAITING_ASSIGNMENT at {ip}"
+                f"{str(record['status']).upper()} at {ip}"
             )
         else:
             print(

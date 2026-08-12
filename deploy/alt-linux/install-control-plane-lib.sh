@@ -157,6 +157,7 @@ validate_source_layout() {
         "${ALT_ROOT}/ansible/playbooks/01-preflight.yml"
         "${ALT_ROOT}/ansible/playbooks/02-provision-account.yml"
         "${ALT_ROOT}/bootstrap/bootstrap.sh"
+        "${ALT_ROOT}/bootstrap/start-bootstrap.sh"
         "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
         "${ALT_ROOT}/install-control-plane.sh"
         "${ALT_ROOT}/install-control-plane-args.sh"
@@ -318,6 +319,7 @@ run_repository_verification() {
     bash -n "${ALT_ROOT}/install-control-plane-args.sh"
     bash -n "${ALT_ROOT}/install-control-plane-lib.sh"
     bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
+    bash -n "${ALT_ROOT}/bootstrap/start-bootstrap.sh"
     bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
 
     (
@@ -446,6 +448,7 @@ ensure_private_state_directories() {
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/pending)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/ready)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/failed)" \
+        "$(install_destination "${root_prefix}" /srv/alt-deploy/configure-requests)" \
         "$(install_destination "${root_prefix}" /home/altserver/.ssh)"
 
     if [[ -L "${lock_file}" ]] \
@@ -524,6 +527,9 @@ install_registration_runtime() {
     install -o root -g root -m 0644 \
         "${ALT_ROOT}/bootstrap/bootstrap.sh" \
         "${bootstrap_root}/bootstrap.sh"
+    install -o root -g root -m 0644 \
+        "${ALT_ROOT}/bootstrap/start-bootstrap.sh" \
+        "${bootstrap_root}/start-bootstrap.sh"
     install -o root -g root -m 0644 \
         "${ALT_ROOT}/bootstrap/alt-bootstrap-register" \
         "${bootstrap_root}/alt-bootstrap-register"

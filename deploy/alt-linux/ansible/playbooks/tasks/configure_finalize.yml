@@ -1,0 +1,65 @@
+---
+- name: Compute final configure outcome
+  ansible.builtin.set_fact:
+    configure_outcome: >-
+      {{
+        configure_outcome | combine(
+          (
+            {
+              'status': 'failed',
+              'phase': 'components',
+              'retryable': false,
+              'recovered': false,
+              'error': {
+                'code': 'required_component_failed',
+                'class': 'component_failure',
+                'safe_message': 'A required workstation component failed'
+              }
+            }
+            if configure_component_required_failed | bool
+            else (
+              {
+                'status': 'degraded',
+                'phase': 'components',
+                'retryable': false,
+                'recovered': false,
+                'error': {}
+              }
+              if configure_component_optional_failed | bool
+              else {
+                'status': configure_outcome.status,
+                'phase': configure_outcome.phase,
+                'retryable': configure_outcome.retryable,
+                'recovered': configure_outcome.recovered,
+                'error': configure_outcome.error
+              }
+            )
+          ),
+          recursive=True
+        ) | combine(
+          {
+            'verification': {
+              'ssh': true,
+              'sudo': true,
+              'dns': configure_outcome.status != 'failed',
+              'time': configure_outcome.status != 'failed',
+              'domain_join': configure_outcome.status != 'failed',
+              'sssd': configure_outcome.status != 'failed',
+              'domain_user_lookup': configure_outcome.status != 'failed',
+              'group_policy': alt_group_policy_enabled | default(false) and
+                              alt_group_policy_machine_updated | default(false)
+            }
+          },
+          recursive=True
+        )
+      }}
+
+- name: Write public configure result on controller
+  ansible.builtin.copy:
+    content: "{{ configure_outcome | to_nice_json }}"
+    dest: "{{ configure_result_file }}"
+    owner: "{{ lookup('env', 'USER') | default('altserver', true) }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  run_once: true

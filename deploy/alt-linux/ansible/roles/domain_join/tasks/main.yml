@@ -69,19 +69,43 @@
         that: not domain_join_computer_exists
         fail_msg: ALT_PREFLIGHT_FAILURE:domain_computer_conflict requested computer account already exists
 
-    - name: Join workstation through ALT system-auth
-      ansible.builtin.command:
-        argv:
-          - system-auth
-          - write
-          - ad
-          - "{{ ad_domain }}"
-          - "{{ final_hostname }}"
-          - "{{ workgroup }}"
-          - "{{ vault_ad_join_user }}"
-          - "--createcomputer={{ alt_createcomputer_path }}"
-          - "--gpo"
-      register: domain_join_command
+    - name: Join workstation and prove resulting domain trust
+      block:
+        - name: Join workstation through ALT system-auth
+          ansible.builtin.command:
+            argv:
+              - system-auth
+              - write
+              - ad
+              - "{{ ad_domain }}"
+              - "{{ final_hostname }}"
+              - "{{ workgroup }}"
+              - "{{ vault_ad_join_user }}"
+              - "--createcomputer={{ alt_createcomputer_path }}"
+              - "--gpo"
+          register: domain_join_command
+
+        - name: Verify resulting Samba domain trust
+          ansible.builtin.command:
+            argv: [net, ads, testjoin]
+          register: domain_join_reconciled_trust
+          changed_when: false
+
+      rescue:
+        - name: Reconcile domain trust after ambiguous join failure
+          ansible.builtin.command:
+            argv: [net, ads, testjoin]
+          register: domain_join_reconciled_trust
+          changed_when: false
+          failed_when: false
+
+        - name: Require trusted domain join after reconciliation
+          ansible.builtin.assert:
+            that:
+              - domain_join_reconciled_trust.rc == 0
+            fail_msg: >-
+              ALT_PREFLIGHT_FAILURE:domain_join_outcome_unknown
+              Domain join outcome cannot be verified safely
   always:
     - name: Destroy temporary Kerberos ticket
       ansible.builtin.command:

@@ -3,14 +3,106 @@
   ansible.builtin.set_fact:
     workstation_network_interface: "{{ ansible_default_ipv4.interface }}"
 
-- name: Configure domain DNS without replacing interface profile
-  ansible.builtin.copy:
-    dest: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
-    content: |
-      search {{ ad_domain }}
-      {% for server in ad_dns_servers %}
-      nameserver {{ server }}
-      {% endfor %}
-    owner: root
-    group: root
-    mode: "0644"
+- name: Validate active IPv4 interface
+  ansible.builtin.assert:
+    that:
+      - workstation_network_interface | length > 0
+      - workstation_network_interface != 'lo'
+    fail_msg: ALT_PREFLIGHT_FAILURE:network_interface_invalid active IPv4 interface is invalid
+
+- name: Define managed persistent resolver path
+  ansible.builtin.set_fact:
+    workstation_network_persistent_resolver: >-
+      /etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf
+
+- name: Inspect active resolver without following links
+  ansible.builtin.stat:
+    path: /etc/resolv.conf
+    follow: false
+  register: workstation_network_active_resolver
+
+- name: Validate active resolver ownership model
+  ansible.builtin.assert:
+    that:
+      - workstation_network_active_resolver.stat.exists
+      - not workstation_network_active_resolver.stat.islnk
+    fail_msg: >-
+      ALT_PREFLIGHT_FAILURE:resolver_manager_unknown
+      Active resolver is not a managed regular file
+
+- name: Configure and validate domain DNS with rollback
+  block:
+    - name: Update persistent ALT resolver source
+      ansible.builtin.copy:
+        dest: "{{ workstation_network_persistent_resolver }}"
+        content: |
+          search {{ ad_domain }}
+          {% for server in ad_dns_servers %}
+          nameserver {{ server }}
+          {% endfor %}
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      register: workstation_network_persistent_change
+
+    - name: Synchronize active resolver
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          search {{ ad_domain }}
+          {% for server in ad_dns_servers %}
+          nameserver {{ server }}
+          {% endfor %}
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      register: workstation_network_active_change
+
+    - name: Validate domain DNS after resolver change
+      ansible.builtin.command:
+        argv:
+          - dig
+          - "@{{ ad_dns_servers[0] }}"
+          - "_ldap._tcp.{{ ad_domain }}"
+          - SRV
+          - +short
+      register: workstation_network_ldap_srv
+      changed_when: false
+      retries: "{{ alt_transient_attempts }}"
+      delay: "{{ alt_transient_delay_seconds }}"
+      until: >-
+        workstation_network_ldap_srv.rc == 0 and
+        workstation_network_ldap_srv.stdout | trim | length > 0
+
+  rescue:
+    - name: Restore persistent resolver backup
+      ansible.builtin.copy:
+        src: "{{ workstation_network_persistent_change.backup_file }}"
+        dest: "{{ workstation_network_persistent_resolver }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: >-
+        workstation_network_persistent_change is defined and
+        workstation_network_persistent_change.backup_file is defined
+
+    - name: Restore active resolver backup
+      ansible.builtin.copy:
+        src: "{{ workstation_network_active_change.backup_file }}"
+        dest: /etc/resolv.conf
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: >-
+        workstation_network_active_change is defined and
+        workstation_network_active_change.backup_file is defined
+
+    - name: Stop after resolver validation failure
+      ansible.builtin.fail:
+        msg: >-
+          ALT_PREFLIGHT_FAILURE:resolver_validation_failed
+          Domain DNS validation failed and resolver backups were restored

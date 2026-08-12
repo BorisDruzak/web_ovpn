@@ -16,5 +16,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=/srv/alt-deploy/registration
+ReadOnlyPaths=/srv/alt-deploy/configure-requests
 ReadWritePaths=/home/altserver/.ssh
 ReadWritePaths=/var/lib/alt-deploy

@@ -6,14 +6,93 @@
   vars_files:
     - ../group_vars/all.yml
     - ../group_vars/vault.yml
-  roles:
-    - manual_preflight
-    - workstation_identity
-    - prejoin_upgrade
-    - workstation_base
-    - alt_group_policy_prerequisites
-    - workstation_network
-    - domain_join
-    - alt_group_policy_client
-    - standard_software
-    - domain_verify
+  vars:
+    configure_critical_phases:
+      - phase: preflight
+        role: manual_preflight
+      - phase: identity
+        role: workstation_identity
+      - phase: upgrade
+        role: prejoin_upgrade
+      - phase: base_prerequisites
+        role: workstation_base
+      - phase: base_prerequisites
+        role: alt_group_policy_prerequisites
+      - phase: network
+        role: workstation_network
+      - phase: domain_join
+        role: domain_join
+      - phase: group_policy
+        role: alt_group_policy_client
+      - phase: login_baseline
+        role: domain_login_baseline
+      - phase: domain_core_verify
+        role: domain_verify
+    configure_components:
+      - name: standard_software
+        role: standard_software
+        required: true
+  tasks:
+    - name: Initialize secret-free configure outcome
+      ansible.builtin.set_fact:
+        configure_outcome:
+          schema_version: 1
+          machine_uuid: "{{ machine_uuid }}"
+          hostname: "{{ final_hostname }}"
+          profile: "{{ profile }}"
+          status: successful
+          phase: preflight
+          retryable: false
+          recovered: false
+          reboot_required: false
+          error: {}
+          components: {}
+          verification: {}
+        configure_active_phase: preflight
+        configure_component_required_failed: false
+        configure_component_optional_failed: false
+
+    - name: Run critical workstation phases
+      block:
+        - name: Include critical phase
+          ansible.builtin.include_tasks: tasks/configure_critical_phase.yml
+          loop: "{{ configure_critical_phases }}"
+          loop_control:
+            loop_var: configure_phase_item
+            label: "{{ configure_phase_item.phase }}"
+      rescue:
+        - name: Record failed critical phase
+          ansible.builtin.set_fact:
+            configure_outcome: >-
+              {{ configure_outcome | combine(
+                 {
+                   'status': 'failed',
+                   'phase': configure_active_phase,
+                   'retryable': false,
+                   'recovered': false,
+                   'error': {
+                     'code': 'configure_critical_phase_failed',
+                     'class': 'fatal_invariant',
+                     'safe_message': 'A required workstation configuration phase failed'
+                   }
+                 },
+                 recursive=True
+              ) }}
+      always:
+        - name: Run independent configured components
+          ansible.builtin.include_tasks: tasks/configure_component.yml
+          loop: "{{ configure_components }}"
+          loop_control:
+            loop_var: configure_component_item
+            label: "{{ configure_component_item.name }}"
+          when: configure_outcome.status != 'failed'
+
+        - name: Finalize structured configure result
+          ansible.builtin.include_tasks: tasks/configure_finalize.yml
+
+    - name: Return a non-zero status after terminal result persistence
+      ansible.builtin.fail:
+        msg: >-
+          ALT_PREFLIGHT_FAILURE:{{ configure_outcome.error.code }}
+          {{ configure_outcome.error.safe_message }}
+      when: configure_outcome.status == 'failed'

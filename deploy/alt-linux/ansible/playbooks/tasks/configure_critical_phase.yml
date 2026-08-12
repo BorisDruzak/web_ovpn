@@ -1,0 +1,8 @@
+---
+- name: Set active critical phase
+  ansible.builtin.set_fact:
+    configure_active_phase: "{{ configure_phase_item.phase }}"
+
+- name: Execute required phase role
+  ansible.builtin.include_role:
+    name: "{{ configure_phase_item.role }}"
