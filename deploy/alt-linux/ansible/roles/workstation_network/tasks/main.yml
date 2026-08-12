@@ -15,6 +15,25 @@
     workstation_network_persistent_resolver: >-
       /etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf
 
+- name: Inspect persistent resolver without following links
+  ansible.builtin.stat:
+    path: "{{ workstation_network_persistent_resolver }}"
+    follow: false
+  register: workstation_network_persistent_resolver_before
+
+- name: Validate persistent resolver ownership model
+  ansible.builtin.assert:
+    that:
+      - >-
+        not workstation_network_persistent_resolver_before.stat.exists or
+        not workstation_network_persistent_resolver_before.stat.islnk
+      - >-
+        not workstation_network_persistent_resolver_before.stat.exists or
+        workstation_network_persistent_resolver_before.stat.isreg
+    fail_msg: >-
+      ALT_PREFLIGHT_FAILURE:resolver_manager_unknown
+      Persistent resolver is not a managed regular file
+
 - name: Inspect active resolver without following links
   ansible.builtin.stat:
     path: /etc/resolv.conf
@@ -88,6 +107,14 @@
       when: >-
         workstation_network_persistent_change is defined and
         workstation_network_persistent_change.backup_file is defined
+
+    - name: Remove newly created persistent resolver after failed validation
+      ansible.builtin.file:
+        path: "{{ workstation_network_persistent_resolver }}"
+        state: absent
+      when: >-
+        workstation_network_persistent_resolver_before is defined and
+        not workstation_network_persistent_resolver_before.stat.exists
 
     - name: Restore active resolver backup
       ansible.builtin.copy:

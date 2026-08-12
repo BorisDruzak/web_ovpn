@@ -113,6 +113,14 @@ def test_network_resolver_change_has_verification_and_rollback() -> None:
     assert "rescue:" in content
 
 
+def test_network_rollback_removes_only_a_newly_created_persistent_resolver() -> None:
+    content = NETWORK_TASKS.read_text(encoding="utf-8")
+
+    assert "Inspect persistent resolver without following links" in content
+    assert "Remove newly created persistent resolver after failed validation" in content
+    assert "not workstation_network_persistent_resolver_before.stat.exists" in content
+
+
 def test_domain_join_reconciles_trust_after_mutation() -> None:
     content = DOMAIN_JOIN_TASKS.read_text(encoding="utf-8")
 
