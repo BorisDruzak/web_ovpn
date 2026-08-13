@@ -79,8 +79,18 @@ def test_prejoin_upgrade_retries_only_recognized_transient_apt_failures() -> Non
     variables = yaml.safe_load(COMMON_VARS.read_text(encoding="utf-8"))
 
     assert variables["alt_apt_transient_error_pattern"]
-    assert content.count("failed_when: >-") >= 3
+    assert content.count("failed_when: false") >= 3
     assert content.count("alt_apt_transient_error_pattern") >= 3
+    assert content.count("is not search(alt_apt_transient_error_pattern)") >= 3
+
+
+def test_prejoin_upgrade_stops_a_dependency_conflict_without_retries() -> None:
+    content = PREJOIN_UPGRADE.read_text(encoding="utf-8")
+    configure_playbook = CONFIGURE_PLAYBOOK.read_text(encoding="utf-8")
+
+    assert "is not search(alt_apt_transient_error_pattern)" in content
+    assert "upgrade_dependency_conflict" in content
+    assert "configure_phase_failure | default" in configure_playbook
 
 
 def test_fixed_package_roles_use_verified_bounded_package_helper() -> None:
@@ -93,7 +103,8 @@ def test_fixed_package_roles_use_verified_bounded_package_helper() -> None:
     assert "Verify installed fixed packages" in helper
     assert "alt_apt_transient_error_pattern" in helper
     assert 'retries: "{{ alt_package_lock_attempts }}"' in helper
-    assert "until: alt_resilience_package_install.rc == 0" in helper
+    assert "is not search(alt_apt_transient_error_pattern)" in helper
+    assert "package_install_nontransient_failed" in helper
 
     for role in (
         "workstation_base",
@@ -273,7 +284,8 @@ def test_browser_install_retries_only_recognized_transient_apt_failures() -> Non
 
     assert 'retries: "{{ alt_package_lock_attempts }}"' in browser_tasks
     assert 'delay: "{{ alt_package_lock_delay_seconds }}"' in browser_tasks
-    assert "until: software_browser_install.rc == 0" in browser_tasks
+    assert "is not search(alt_apt_transient_error_pattern)" in browser_tasks
+    assert "browser_install_nontransient_failed" in browser_tasks
     assert "software_browser_install.stderr" in browser_tasks
     assert "alt_apt_transient_error_pattern" in browser_tasks
     assert "signature" in browser_tasks.lower()

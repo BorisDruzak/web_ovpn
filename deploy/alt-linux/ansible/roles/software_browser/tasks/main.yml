@@ -69,16 +69,24 @@
       changed_when: software_browser_install.rc == 0
       # Only lock, mirror, and transient transport failures are retried.
       # Signature, checksum, architecture, and dependency-policy failures are fatal.
-      failed_when: >-
-        software_browser_install.rc != 0 and
-        not (
-          ((software_browser_install.stdout | default('')) ~ '\n' ~
-           (software_browser_install.stderr | default(''))) | lower
-          is search(alt_apt_transient_error_pattern)
-        )
+      failed_when: false
       retries: "{{ alt_package_lock_attempts }}"
       delay: "{{ alt_package_lock_delay_seconds }}"
-      until: software_browser_install.rc == 0
+      until: >-
+        software_browser_install.rc == 0 or
+        (
+          ((software_browser_install.stdout | default('')) ~ '\n' ~
+           (software_browser_install.stderr | default(''))) | lower
+          is not search(alt_apt_transient_error_pattern)
+        )
+      no_log: true
+
+    - name: Stop after a non-transient Yandex Browser installation failure
+      ansible.builtin.fail:
+        msg: ALT_PREFLIGHT_FAILURE:browser_install_nontransient_failed
+      when:
+        - software_browser_installed_evr.stdout | trim != software_browser_catalog.package_evr
+        - software_browser_install.rc != 0
       no_log: true
 
     - name: Verify approved Yandex Browser package EVR

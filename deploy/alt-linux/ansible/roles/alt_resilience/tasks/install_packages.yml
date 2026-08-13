@@ -31,17 +31,24 @@
     argv: "{{ ['apt-get', '-y', 'install'] + alt_resilience_missing_packages }}"
   register: alt_resilience_package_install
   changed_when: alt_resilience_missing_packages | length > 0
-  failed_when: >-
-    alt_resilience_package_install.rc != 0 and
-    not (
-      ((alt_resilience_package_install.stdout | default('')) ~ '\n' ~
-       (alt_resilience_package_install.stderr | default(''))) | lower
-      is search(alt_apt_transient_error_pattern)
-    )
+  failed_when: false
   retries: "{{ alt_package_lock_attempts }}"
   delay: "{{ alt_package_lock_delay_seconds }}"
-  until: alt_resilience_package_install.rc == 0
+  until: >-
+    alt_resilience_package_install.rc == 0 or
+    (
+      ((alt_resilience_package_install.stdout | default('')) ~ '\n' ~
+       (alt_resilience_package_install.stderr | default(''))) | lower
+      is not search(alt_apt_transient_error_pattern)
+    )
   when: alt_resilience_missing_packages | length > 0
+
+- name: Stop after a non-transient fixed package installation failure
+  ansible.builtin.fail:
+    msg: ALT_PREFLIGHT_FAILURE:package_install_nontransient_failed
+  when:
+    - alt_resilience_missing_packages | length > 0
+    - alt_resilience_package_install.rc != 0
 
 - name: Verify installed fixed packages
   ansible.builtin.command:

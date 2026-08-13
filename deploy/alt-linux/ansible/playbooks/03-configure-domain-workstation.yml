@@ -73,11 +73,11 @@
                    'phase': configure_active_phase,
                    'retryable': false,
                    'recovered': false,
-                   'error': {
+                   'error': configure_phase_failure | default({
                      'code': 'configure_critical_phase_failed',
                      'class': 'fatal_invariant',
                      'safe_message': 'A required workstation configuration phase failed'
-                   }
+                   }, true)
                  },
                  recursive=True
               ) }}
