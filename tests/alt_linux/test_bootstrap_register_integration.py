@@ -532,6 +532,22 @@ def test_bootstrap_remains_non_secret_and_registration_only() -> None:
         assert forbidden not in source
 
 
+def test_bootstrap_sets_a_root_safe_path_before_account_management() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' in source
+    assert source.index('PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"') < source.index(
+        'usermod -aG wheel "${LOCAL_ADMIN}"'
+    )
+
+
+def test_bootstrap_validates_sudo_as_the_technical_user() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert 'runuser -u "${ANSIBLE_USER}" -- sudo -n true' in source
+    assert 'sudo -n -u "${ANSIBLE_USER}" true' not in source
+
+
 def test_bootstrap_defers_registration_without_losing_technical_access() -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
 

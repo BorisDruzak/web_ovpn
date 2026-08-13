@@ -7,6 +7,9 @@ if [[ $(id -u) -ne 0 ]]; then
     exit 6
 fi
 
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
 exec > >(tee -a /var/log/alt-bootstrap.log) 2>&1
 
 DEPLOY_HOST="${ALT_DEPLOY_HOST:-192.168.100.17}"
@@ -258,7 +261,7 @@ install -o root -g root -m 0440 \
     "/etc/sudoers.d/90-${ANSIBLE_USER}"
 rm -f "${temporary_sudoers}"
 
-if ! sudo -n -u "${ANSIBLE_USER}" true; then
+if ! runuser -u "${ANSIBLE_USER}" -- sudo -n true; then
     echo "ERROR: ansible passwordless sudo validation failed" >&2
     exit 1
 fi
