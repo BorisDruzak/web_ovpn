@@ -338,6 +338,11 @@ def test_core_apps_roles_are_isolated_and_use_resilient_package_paths() -> None:
     shortcuts = (
         ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
+    shortcut_defaults = yaml.safe_load(
+        (
+            ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "defaults" / "main.yml"
+        ).read_text(encoding="utf-8")
+    )
 
     assert 'retries: "{{ alt_package_lock_attempts }}"' in onlyoffice
     assert "onlyoffice_install_nontransient_failed" in onlyoffice
@@ -350,7 +355,7 @@ def test_core_apps_roles_are_isolated_and_use_resilient_package_paths() -> None:
     ]
     assert "assigned_domain_user" in shortcuts
     assert "getent, passwd" in shortcuts
-    assert "nextcloud-client.desktop" in shortcuts
+    assert shortcut_defaults["desktop_shortcuts_nextcloud_entry"] == "nextcloud-client.desktop"
     assert "loop: lookup('ansible.builtin.fileglob'" not in shortcuts
 
 
