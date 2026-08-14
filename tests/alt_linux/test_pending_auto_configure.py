@@ -386,3 +386,51 @@ def test_unknown_assigned_user_stops_before_domain_configure(
     record = json.loads(failed.read_text(encoding="utf-8"))
     assert record["status"] == "failed"
     assert record["error"] == "assigned_domain_user_not_found"
+
+
+def test_registration_with_assigned_user_builds_standard_configure_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, pending, _, requests = _prepare(tmp_path, monkeypatch)
+    pending_record = _write_registration(pending)
+    record = json.loads(pending_record.read_text(encoding="utf-8"))
+    record["assigned_domain_user"] = "alt-test-2@sosnadmin.local"
+    commands: list[list[str]] = []
+
+    def run(
+        command: list[str],
+        *,
+        timeout: int = 60,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if "preview" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps({
+                    "status": "ok",
+                    "machine_uuid": MACHINE_UUID,
+                    "target_ip": "192.168.101.56",
+                }),
+                "",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps({"machine_uuid": MACHINE_UUID, "run_id": "run-123"}),
+            "",
+        )
+
+    monkeypatch.setattr(module, "run_command", run)
+    configured = module.auto_configure(record, ip="192.168.101.56")
+
+    assert configured is not None
+    generated = json.loads(
+        (requests / f"{MACHINE_UUID}.json").read_text(encoding="utf-8")
+    )
+    assert generated["final_hostname"] == "alt-a1-pc2"
+    assert generated["software_profile"] == "core-apps"
+    assert generated["remote_access_profile"] == "krfb"
+    assert generated["assigned_domain_user"] == "alt-test-2@sosnadmin.local"
+    assert all(str(requests / f"{MACHINE_UUID}.json") in command for command in commands)

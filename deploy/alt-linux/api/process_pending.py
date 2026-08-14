@@ -16,6 +16,7 @@ from pathlib import Path
 from alt_deploy.config import Settings
 from alt_deploy.errors import ControlError
 from alt_deploy.locks import exclusive_lock
+from alt_deploy.jsonio import atomic_write_json
 from alt_deploy.machine_archive_repository import (
     MachineArchiveRepository,
 )
@@ -204,6 +205,40 @@ def _configure_request_path(machine_uuid: str) -> Path | None:
     return path
 
 
+def build_auto_configure_request(
+    record: dict[str, object],
+) -> dict[str, object] | None:
+    machine_uuid = str(record.get("uuid") or "").strip().lower()
+    final_hostname = str(record.get("hostname") or "").strip().lower()
+    assigned_domain_user = str(
+        record.get("assigned_domain_user") or ""
+    ).strip().lower()
+    if (
+        not MACHINE_UUID_RE.fullmatch(machine_uuid)
+        or not final_hostname
+        or not ASSIGNED_DOMAIN_USER_RE.fullmatch(assigned_domain_user)
+    ):
+        return None
+
+    return {
+        "machine_uuid": machine_uuid,
+        "final_hostname": final_hostname,
+        "hostname_mode": "verify",
+        "profile": "standard-domain",
+        "domain": "sosnadmin.local",
+        "realm": "SOSNADMIN.LOCAL",
+        "workgroup": "SOSNADM",
+        "computer_ou": (
+            "OU=Pilot,OU=Linux,OU=Устройства,"
+            "DC=sosnadmin,DC=local"
+        ),
+        "domain_test_user": assigned_domain_user,
+        "software_profile": "core-apps",
+        "remote_access_profile": "krfb",
+        "assigned_domain_user": assigned_domain_user,
+    }
+
+
 def _run_configure_command(
     command: list[str],
     *,
@@ -280,7 +315,16 @@ def auto_configure(
     machine_uuid = str(record["uuid"]).lower()
     request_path = _configure_request_path(machine_uuid)
     if request_path is None:
-        return None
+        generated_request = build_auto_configure_request(record)
+        if generated_request is None:
+            return None
+        request_path = CONFIGURE_REQUESTS_DIR / f"{machine_uuid}.json"
+        try:
+            atomic_write_json(request_path, generated_request)
+        except (OSError, ValueError) as exc:
+            raise PendingConfigurationError(
+                "configure_request_unavailable"
+            ) from exc
 
     preview = _run_configure_command(
         [
