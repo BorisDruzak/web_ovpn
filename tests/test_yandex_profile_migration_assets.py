@@ -42,7 +42,8 @@ def test_restore_uses_fixed_playbook_and_atomic_profile_replacement() -> None:
     assert "ansible.builtin.tempfile" in role
     assert "mv" in role
     assert "SingletonLock" in role
-    assert "pkill -TERM" in role
+    assert "- pkill" in role
+    assert "- -TERM" in role
     assert "-KILL" not in role
 
 
