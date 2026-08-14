@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -325,6 +326,35 @@ def test_browser_cleanup_requires_an_allocated_tempfile_path() -> None:
     ).read_text(encoding="utf-8")
 
     assert "software_browser_temp_rpm.path is defined" in browser_tasks
+
+
+def test_browser_launcher_preserves_existing_arguments_when_disabling_kwallet() -> None:
+    browser_tasks = load_tasks(
+        ANSIBLE_ROOT / "roles" / "software_browser" / "tasks" / "main.yml"
+    )
+    launcher_task = next(
+        task
+        for task in browser_tasks
+        if task["name"] == "Disable KDE Wallet integration for Yandex Browser launchers"
+    )
+    replacement = launcher_task["ansible.builtin.replace"]
+    desktop_entry = "\n".join(
+        (
+            "Exec=/usr/bin/yandex-browser-stable %U",
+            "Exec=/usr/bin/yandex-browser-stable",
+            "Exec=/usr/bin/yandex-browser-stable --incognito",
+        )
+    )
+
+    updated_entry = re.sub(
+        replacement["regexp"], replacement["replace"], desktop_entry, flags=re.MULTILINE
+    )
+
+    assert updated_entry.splitlines() == [
+        "Exec=/usr/bin/yandex-browser-stable --password-store=basic %U",
+        "Exec=/usr/bin/yandex-browser-stable --password-store=basic",
+        "Exec=/usr/bin/yandex-browser-stable --password-store=basic --incognito",
+    ]
 
 
 def test_core_apps_roles_are_isolated_and_use_resilient_package_paths() -> None:
