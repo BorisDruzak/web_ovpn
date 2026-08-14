@@ -161,6 +161,7 @@ validate_source_layout() {
         "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
         "${ALT_ROOT}/migrations/collect-yandex-profile.sh"
         "${ALT_ROOT}/migrations/restore-yandex-profile.py"
+        "${ALT_ROOT}/migrations/migrate-yandex-profile.py"
         "${ALT_ROOT}/install-control-plane.sh"
         "${ALT_ROOT}/install-control-plane-args.sh"
         "${ALT_ROOT}/install-control-plane-lib.sh"
@@ -325,7 +326,8 @@ run_repository_verification() {
     bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
     bash -n "${ALT_ROOT}/migrations/collect-yandex-profile.sh"
     "${python_bin}" -m py_compile \
-        "${ALT_ROOT}/migrations/restore-yandex-profile.py"
+        "${ALT_ROOT}/migrations/restore-yandex-profile.py" \
+        "${ALT_ROOT}/migrations/migrate-yandex-profile.py"
 
     (
         cd "${REPO_ROOT}"
@@ -440,6 +442,9 @@ install_controller_package() {
     install -o root -g root -m 0755 \
         "${ALT_ROOT}/migrations/restore-yandex-profile.py" \
         "$(install_destination "${root_prefix}" /usr/local/sbin/restore-yandex-profile)"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/migrations/migrate-yandex-profile.py" \
+        "$(install_destination "${root_prefix}" /usr/local/sbin/migrate-yandex-profile)"
 }
 
 ensure_private_state_directories() {

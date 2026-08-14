@@ -96,13 +96,35 @@ fi || {
     exit 1
 }
 
-while [[ ${elevated_profile_access} == true ]] && ssh "${ssh_options[@]}" "${remote}" \
-    "sudo -n -u '#${source_uid}' pgrep -f '(^|/)(yandex-browser|yandex_browser)( |$)' >/dev/null" \
-    || [[ ${elevated_profile_access} == false ]] && ssh "${ssh_options[@]}" "${remote}" \
-    'pgrep -u "$(id -u)" -f "(^|/)(yandex-browser|yandex_browser)( |$)" >/dev/null'; do
-    echo 'Browser is still running. Close it normally to continue (Ctrl-C cancels).'
-    sleep 2
-done
+browser_running() {
+    if [[ ${elevated_profile_access} == true ]]; then
+        ssh "${ssh_options[@]}" "${remote}" \
+            "sudo -n -u '#${source_uid}' pgrep -f '(^|/)(yandex-browser|yandex_browser)( |$)' >/dev/null"
+    else
+        ssh "${ssh_options[@]}" "${remote}" \
+            'pgrep -u "$(id -u)" -f "(^|/)(yandex-browser|yandex_browser)( |$)" >/dev/null'
+    fi
+}
+
+if browser_running; then
+    echo 'Browser is running on source. Unsaved browser data can be lost.'
+    read -r -p 'Press Enter to close it, or Ctrl-C to cancel: '
+    if [[ ${elevated_profile_access} == true ]]; then
+        ssh "${ssh_options[@]}" "${remote}" \
+            "sudo -n -u '#${source_uid}' pkill -TERM -f '(^|/)(yandex-browser|yandex_browser)( |$)'"
+    else
+        ssh "${ssh_options[@]}" "${remote}" \
+            'pkill -TERM -u "$(id -u)" -f "(^|/)(yandex-browser|yandex_browser)( |$)"'
+    fi
+    for _ in {1..15}; do
+        browser_running || break
+        sleep 1
+    done
+    if browser_running; then
+        echo 'Browser did not close after SIGTERM; migration cancelled.' >&2
+        exit 1
+    fi
+fi
 
 migration_id="migration-$(python3 -c 'import uuid; print(uuid.uuid4())')"
 staging=$(mktemp -d "${storage_root}/.incoming.XXXXXX")
