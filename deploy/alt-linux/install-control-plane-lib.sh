@@ -159,6 +159,8 @@ validate_source_layout() {
         "${ALT_ROOT}/bootstrap/bootstrap.sh"
         "${ALT_ROOT}/bootstrap/start-bootstrap.sh"
         "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
+        "${ALT_ROOT}/migrations/collect-yandex-profile.sh"
+        "${ALT_ROOT}/migrations/restore-yandex-profile.py"
         "${ALT_ROOT}/install-control-plane.sh"
         "${ALT_ROOT}/install-control-plane-args.sh"
         "${ALT_ROOT}/install-control-plane-lib.sh"
@@ -321,6 +323,9 @@ run_repository_verification() {
     bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
     bash -n "${ALT_ROOT}/bootstrap/start-bootstrap.sh"
     bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
+    bash -n "${ALT_ROOT}/migrations/collect-yandex-profile.sh"
+    "${python_bin}" -m py_compile \
+        "${ALT_ROOT}/migrations/restore-yandex-profile.py"
 
     (
         cd "${REPO_ROOT}"
@@ -342,6 +347,8 @@ install_control_plane_prechecks() {
         cp
         ssh
         ssh-keyscan
+        zstd
+        tar
         mkpasswd
         stat
         id
@@ -427,6 +434,12 @@ install_controller_package() {
     install -o root -g root -m 0755 \
         "${ALT_ROOT}/control/alt-job-stage" \
         "$(install_destination "${root_prefix}" /usr/local/libexec/alt-job-stage)"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/migrations/collect-yandex-profile.sh" \
+        "$(install_destination "${root_prefix}" /usr/local/sbin/collect-yandex-profile)"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/migrations/restore-yandex-profile.py" \
+        "$(install_destination "${root_prefix}" /usr/local/sbin/restore-yandex-profile)"
 }
 
 ensure_private_state_directories() {
@@ -444,6 +457,8 @@ ensure_private_state_directories() {
         "${state_root}/assignments" \
         "${state_root}/machine-archives" \
         "${state_root}/machine-archives/.transactions" \
+        "${state_root}/migrations" \
+        "${state_root}/migrations/yandex" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/pending)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/ready)" \

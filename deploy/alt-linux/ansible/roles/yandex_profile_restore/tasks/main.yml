@@ -1,0 +1,226 @@
+---
+- name: Validate Yandex profile migration inputs
+  ansible.builtin.assert:
+    that:
+      - migration_id is string
+      - migration_id is match('^migration-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+      - target_user is string
+      - target_user is match('^[A-Za-z0-9._@-]{1,128}$')
+      - yandex_migration_root is match('^/var/lib/alt-deploy/migrations/yandex$')
+    fail_msg: ALT_PREFLIGHT_FAILURE:yandex_profile_restore_input_invalid
+
+- name: Define trusted controller migration paths
+  ansible.builtin.set_fact:
+    yandex_migration_dir: "{{ yandex_migration_root }}/{{ migration_id }}"
+    yandex_migration_archive: "{{ yandex_migration_root }}/{{ migration_id }}/profile.tar.zst"
+    yandex_migration_checksums: "{{ yandex_migration_root }}/{{ migration_id }}/SHA256SUMS"
+
+- name: Check migration readiness on controller
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  delegate_to: localhost
+  become: false
+  loop:
+    - "{{ yandex_migration_dir }}/READY"
+    - "{{ yandex_migration_dir }}/manifest.json"
+    - "{{ yandex_migration_archive }}"
+    - "{{ yandex_migration_checksums }}"
+  register: yandex_migration_files
+
+- name: Require a complete READY migration
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+    fail_msg: ALT_PREFLIGHT_FAILURE:yandex_profile_migration_not_ready
+  loop: "{{ yandex_migration_files.results }}"
+
+- name: Verify migration archive checksum on controller
+  ansible.builtin.command:
+    argv: [sha256sum, -c, SHA256SUMS]
+  args:
+    chdir: "{{ yandex_migration_dir }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Resolve target domain account
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ target_user }}"]
+  register: yandex_profile_account
+  changed_when: false
+  no_log: true
+
+- name: Parse target domain account
+  ansible.builtin.set_fact:
+    yandex_profile_passwd: "{{ yandex_profile_account.stdout | trim | split(':') }}"
+  no_log: true
+
+- name: Validate target domain account home
+  ansible.builtin.assert:
+    that:
+      - yandex_profile_account.rc == 0
+      - yandex_profile_passwd | length >= 7
+      - yandex_profile_passwd[2] is match('^[0-9]+$')
+      - yandex_profile_passwd[3] is match('^[0-9]+$')
+      - yandex_profile_passwd[5] is match('^/home/')
+    fail_msg: ALT_PREFLIGHT_FAILURE:yandex_profile_target_user_unavailable
+  no_log: true
+
+- name: Set target profile paths
+  ansible.builtin.set_fact:
+    yandex_profile_uid: "{{ yandex_profile_passwd[2] }}"
+    yandex_profile_gid: "{{ yandex_profile_passwd[3] }}"
+    yandex_profile_home: "{{ yandex_profile_passwd[5] }}"
+  no_log: true
+
+- name: Require Yandex Browser to be closed normally
+  ansible.builtin.shell: >-
+    pgrep -u {{ yandex_profile_uid | quote }}
+    -f '(^|/)(yandex-browser|yandex_browser)( |$)' >/dev/null
+  register: yandex_profile_browser_running
+  changed_when: false
+  failed_when: yandex_profile_browser_running.rc not in [0, 1]
+  no_log: true
+
+- name: Stop restore while target browser is open
+  ansible.builtin.assert:
+    that: yandex_profile_browser_running.rc == 1
+    fail_msg: ALT_PREFLIGHT_FAILURE:yandex_profile_browser_running
+
+- name: Create root-only remote staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    path: /var/tmp
+    prefix: yandex-profile-restore-
+  register: yandex_profile_staging
+
+- name: Copy verified migration archive to target staging
+  ansible.builtin.copy:
+    src: "{{ yandex_migration_archive }}"
+    dest: "{{ yandex_profile_staging.path }}/profile.tar.zst"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Copy migration checksum manifest to target staging
+  ansible.builtin.copy:
+    src: "{{ yandex_migration_checksums }}"
+    dest: "{{ yandex_profile_staging.path }}/SHA256SUMS"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Verify copied archive checksum after manifest transfer
+  ansible.builtin.command:
+    argv: [sha256sum, -c, SHA256SUMS]
+  args:
+    chdir: "{{ yandex_profile_staging.path }}"
+  changed_when: false
+
+- name: Extract complete Yandex Browser profile into staging
+  ansible.builtin.command:
+    argv:
+      - tar
+      - --use-compress-program=unzstd
+      - -C
+      - "{{ yandex_profile_staging.path }}"
+      - -xf
+      - "{{ yandex_profile_staging.path }}/profile.tar.zst"
+
+- name: Remove only stale Chromium runtime artifacts from restored staging
+  ansible.builtin.file:
+    path: "{{ yandex_profile_staging.path }}/yandex-browser/{{ item }}"
+    state: absent
+  loop:
+    - SingletonLock
+    - SingletonSocket
+    - SingletonCookie
+
+- name: Require restored browser profile directory
+  ansible.builtin.stat:
+    path: "{{ yandex_profile_staging.path }}/yandex-browser"
+  register: yandex_profile_restored_dir
+
+- name: Validate restored browser profile directory
+  ansible.builtin.assert:
+    that:
+      - yandex_profile_restored_dir.stat.exists
+      - yandex_profile_restored_dir.stat.isdir
+      - not yandex_profile_restored_dir.stat.islnk
+    fail_msg: ALT_PREFLIGHT_FAILURE:yandex_profile_archive_invalid
+
+- name: Set ownership on restored browser profile
+  ansible.builtin.file:
+    path: "{{ yandex_profile_staging.path }}/yandex-browser"
+    owner: "{{ yandex_profile_uid }}"
+    group: "{{ yandex_profile_gid }}"
+    recurse: true
+
+- name: Create target configuration directory
+  ansible.builtin.file:
+    path: "{{ yandex_profile_home }}/.config"
+    state: directory
+    owner: "{{ yandex_profile_uid }}"
+    group: "{{ yandex_profile_gid }}"
+    mode: "0700"
+
+- name: Inspect existing target browser profile
+  ansible.builtin.stat:
+    path: "{{ yandex_profile_home }}/.config/yandex-browser"
+  register: yandex_profile_existing
+
+- name: Require unused backup destination
+  ansible.builtin.stat:
+    path: "{{ yandex_profile_home }}/.config/yandex-browser.pre-migration-{{ migration_id }}"
+  register: yandex_profile_backup
+
+- name: Refuse to overwrite existing migration backup
+  ansible.builtin.assert:
+    that: not yandex_profile_backup.stat.exists
+    fail_msg: ALT_PREFLIGHT_FAILURE:yandex_profile_backup_exists
+
+- name: Replace browser profile atomically with a recoverable backup
+  block:
+    - name: Move current browser profile to pre-migration backup
+      ansible.builtin.command:
+        argv:
+          - mv
+          - "{{ yandex_profile_home }}/.config/yandex-browser"
+          - "{{ yandex_profile_home }}/.config/yandex-browser.pre-migration-{{ migration_id }}"
+      when: yandex_profile_existing.stat.exists
+      register: yandex_profile_backup_move
+
+    - name: Move staged browser profile into its final location
+      ansible.builtin.command:
+        argv:
+          - mv
+          - "{{ yandex_profile_staging.path }}/yandex-browser"
+          - "{{ yandex_profile_home }}/.config/yandex-browser"
+      register: yandex_profile_activate_move
+  rescue:
+    - name: Restore pre-migration profile after activation failure
+      ansible.builtin.command:
+        argv:
+          - mv
+          - "{{ yandex_profile_home }}/.config/yandex-browser.pre-migration-{{ migration_id }}"
+          - "{{ yandex_profile_home }}/.config/yandex-browser"
+      when:
+        - yandex_profile_backup_move is defined
+        - yandex_profile_backup_move.changed
+      failed_when: false
+
+    - name: Stop after restored profile activation failure
+      ansible.builtin.fail:
+        msg: ALT_PREFLIGHT_FAILURE:yandex_profile_activation_failed
+  always:
+    - name: Remove root-only temporary restore staging
+      ansible.builtin.file:
+        path: "{{ yandex_profile_staging.path }}"
+        state: absent
+      when: yandex_profile_staging is defined
+
+- name: Publish browser profile restore verification fact
+  ansible.builtin.set_fact:
+    yandex_profile_restore_configured: true
