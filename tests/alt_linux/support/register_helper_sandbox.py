@@ -42,6 +42,7 @@ def run_helper(
     curl_rc: int = 0,
     interface: str = "eth0",
     machine_uuid: str = TEST_MACHINE_UUID,
+    assigned_domain_user: str | None = None,
 ) -> HelperRun:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -124,6 +125,7 @@ def run_helper(
             "HELPER_TEST_HTTP_STATUS": str(http_status),
             "HELPER_TEST_CURL_RC": str(curl_rc),
             "HELPER_TEST_CURL_LOG": str(curl_log),
+            "ALT_ASSIGNED_DOMAIN_USER": assigned_domain_user or "",
         }
     )
     result = subprocess.run(

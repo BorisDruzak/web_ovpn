@@ -22,6 +22,7 @@ class RegistrationRequest:
     mac: str
     machine_uuid: str
     ip: str
+    assigned_domain_user: str | None = None
 
     @property
     def machine_key(self) -> str:
@@ -88,6 +89,11 @@ class RegistrationAdmissionService:
                 request.machine_uuid.strip().lower()
             ),
             ip=request.ip.strip(),
+            assigned_domain_user=(
+                request.assigned_domain_user.strip().lower()
+                if request.assigned_domain_user
+                else None
+            ),
         )
 
         with exclusive_lock(self.settings.lock_file):
@@ -127,6 +133,10 @@ class RegistrationAdmissionService:
                 "registered_at": utc_now(),
                 "status": "pending",
             }
+            if normalized.assigned_domain_user:
+                record["assigned_domain_user"] = (
+                    normalized.assigned_domain_user
+                )
             destination = (
                 self.settings.registration_root
                 / "pending"

@@ -86,6 +86,20 @@ def test_helper_allows_empty_dmi_uuid(
     assert json.loads(str(run.curl_calls[0]["body"]))["uuid"] == ""
 
 
+def test_helper_carries_selected_domain_user_as_non_secret_metadata(
+    tmp_path: Path,
+) -> None:
+    run = run_helper(
+        tmp_path,
+        assigned_domain_user="Alt-Test-2@SOSNADMIN.LOCAL",
+    )
+
+    assert run.result.returncode == 0, run.result.stderr
+    payload = json.loads(str(run.curl_calls[0]["body"]))
+    assert payload["assigned_domain_user"] == "alt-test-2@sosnadmin.local"
+    assert not any("password" in key.lower() for key in payload)
+
+
 def test_helper_returns_nonzero_for_lifecycle_conflict(
     tmp_path: Path,
 ) -> None:

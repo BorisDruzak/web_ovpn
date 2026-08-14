@@ -76,6 +76,29 @@ def test_new_registration_gets_controller_generation(
     assert pending["ip"] == "192.0.2.56"
 
 
+def test_new_registration_persists_normalized_assigned_domain_user(
+    tmp_path: Path,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    decision = RegistrationAdmissionService(sandbox.settings).admit(
+        RegistrationRequest(
+            hostname="alt-lifecycle-test",
+            mac=TEST_MACHINE_MAC,
+            machine_uuid=TEST_MACHINE_UUID,
+            ip="192.0.2.56",
+            assigned_domain_user="Alt-Test-2@SOSNADMIN.LOCAL",
+        )
+    )
+
+    assert decision.http_status == 201
+    pending = read_json(
+        sandbox.settings.registration_root
+        / "pending"
+        / f"{TEST_MACHINE_UUID}.json"
+    )
+    assert pending["assigned_domain_user"] == "alt-test-2@sosnadmin.local"
+
+
 def test_active_registration_is_not_overwritten(
     tmp_path: Path,
 ) -> None:

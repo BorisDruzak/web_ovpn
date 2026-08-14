@@ -23,24 +23,33 @@ fi
 
 hostname_value=$(hostname -s | tr '[:upper:]' '[:lower:]')
 uuid_value=$(cat /sys/class/dmi/id/product_uuid 2>/dev/null || true)
+assigned_domain_user=${ALT_ASSIGNED_DOMAIN_USER:-}
+if [[ -n "${assigned_domain_user}" ]]; then
+    assigned_domain_user=$(printf '%s' "${assigned_domain_user}" | tr '[:upper:]' '[:lower:]' | xargs)
+    if [[ ! "${assigned_domain_user}" =~ ^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\.local$ ]]; then
+        echo "Assigned domain user is invalid" >&2
+        exit 1
+    fi
+fi
 
 payload=$(python3 - \
     "${hostname_value}" \
     "${mac}" \
-    "${uuid_value}" <<'PY'
+    "${uuid_value}" \
+    "${assigned_domain_user}" <<'PY'
 import json
 import sys
 
-print(
-    json.dumps(
-        {
-            "hostname": sys.argv[1].strip().lower(),
-            "mac": sys.argv[2].strip().lower(),
-            "uuid": sys.argv[3].strip().lower(),
-        },
-        ensure_ascii=False,
-    )
-)
+payload = {
+    "hostname": sys.argv[1].strip().lower(),
+    "mac": sys.argv[2].strip().lower(),
+    "uuid": sys.argv[3].strip().lower(),
+}
+assigned_domain_user = sys.argv[4].strip().lower()
+if assigned_domain_user:
+    payload["assigned_domain_user"] = assigned_domain_user
+
+print(json.dumps(payload, ensure_ascii=False))
 PY
 )
 

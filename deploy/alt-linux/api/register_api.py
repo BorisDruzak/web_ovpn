@@ -29,6 +29,9 @@ MAC_RE = re.compile(
     r"^[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}$"
 )
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+ASSIGNED_DOMAIN_USER_RE = re.compile(
+    r"^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\.local$"
+)
 
 SETTINGS = Settings.from_env()
 
@@ -50,6 +53,12 @@ def handle_registration(
     machine_uuid = str(
         payload.get("uuid", "")
     ).strip().lower()
+    assigned_domain_user_value = payload.get("assigned_domain_user")
+    assigned_domain_user = (
+        assigned_domain_user_value.strip().lower()
+        if isinstance(assigned_domain_user_value, str)
+        else None
+    )
 
     if not HOSTNAME_RE.fullmatch(hostname):
         return 400, {"status": "invalid_hostname"}
@@ -57,6 +66,14 @@ def handle_registration(
         return 400, {"status": "invalid_mac"}
     if machine_uuid and not UUID_RE.fullmatch(machine_uuid):
         return 400, {"status": "invalid_uuid"}
+    if (
+        assigned_domain_user_value is not None
+        and not assigned_domain_user
+    ) or (
+        assigned_domain_user
+        and not ASSIGNED_DOMAIN_USER_RE.fullmatch(assigned_domain_user)
+    ):
+        return 400, {"status": "invalid_assigned_domain_user"}
 
     try:
         decision = RegistrationAdmissionService(
@@ -67,6 +84,7 @@ def handle_registration(
                 mac=mac,
                 machine_uuid=machine_uuid,
                 ip=client_ip,
+                assigned_domain_user=assigned_domain_user,
             )
         )
     except ControlError as exc:

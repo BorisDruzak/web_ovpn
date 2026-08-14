@@ -23,3 +23,14 @@ def test_launcher_falls_back_to_su_when_sudo_exists_but_is_not_authorized() -> N
     assert text.index("if sudo -v; then") < text.index(
         'exec su -c "exec bash ${quoted_launcher}"'
     )
+
+
+def test_launcher_collects_a_non_secret_assigned_ad_user_before_bootstrap() -> None:
+    text = LAUNCHER.read_text(encoding="utf-8")
+
+    assert 'read -r -p "AD user (login or UPN): "' in text
+    assert "ASSIGNED_DOMAIN_USER_RE=" in text
+    assert 'ALT_ASSIGNED_DOMAIN_USER="${assigned_domain_user}"' in text
+    assert 'exec bash "${bootstrap_path}"' in text
+    assert "read -s" not in text
+    assert "ALT_ASSIGNED_DOMAIN_PASSWORD" not in text
