@@ -63,6 +63,12 @@ def test_krfb_role_targets_an_explicit_ad_user_without_starting_krfb() -> None:
     assert "argv: [getent, passwd" in rendered
     assert "krfb_config_home" in rendered
     assert "no_log: true" in rendered
+    assert "krfb_config_state.stat.uid" in rendered
+    assert "krfb_config_state.stat.gid" in rendered
+    assert "krfb_autostart_state.stat.uid" in rendered
+    assert "krfb_autostart_state.stat.gid" in rendered
+    assert "pw_uid" not in rendered
+    assert "gr_gid" not in rendered
     assert "/usr/bin/krfb" not in rendered
     for forbidden in ("systemctl --user", "pkill", "killall", "loginctl"):
         assert forbidden not in rendered

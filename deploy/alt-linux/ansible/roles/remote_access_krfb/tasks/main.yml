@@ -143,12 +143,12 @@
     that:
       - krfb_config_state.stat.exists
       - krfb_config_state.stat.mode == '0600'
-      - krfb_config_state.stat.pw_uid | string == krfb_config_uid | string
-      - krfb_config_state.stat.gr_gid | string == krfb_config_gid | string
+      - krfb_config_state.stat.uid | string == krfb_config_uid | string
+      - krfb_config_state.stat.gid | string == krfb_config_gid | string
       - krfb_autostart_state.stat.exists
       - krfb_autostart_state.stat.mode == '0644'
-      - krfb_autostart_state.stat.pw_uid | string == krfb_config_uid | string
-      - krfb_autostart_state.stat.gr_gid | string == krfb_config_gid | string
+      - krfb_autostart_state.stat.uid | string == krfb_config_uid | string
+      - krfb_autostart_state.stat.gid | string == krfb_config_gid | string
       - krfb_safe_values.results | map(attribute='stdout') | map('trim') | list == ['true', 'true', 'true']
     fail_msg: ALT_PREFLIGHT_FAILURE:remote_access_configuration_invalid
   no_log: true
