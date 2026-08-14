@@ -91,6 +91,30 @@ def test_configure_request_requires_explicit_ad_user_for_krfb() -> None:
         ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
 
 
+def test_configure_request_requires_explicit_ad_user_for_core_apps() -> None:
+    payload = valid_request() | {
+        "software_profile": "core-apps",
+        "remote_access_profile": "none",
+        "assigned_domain_user": None,
+    }
+
+    with pytest.raises(ControlError, match="assigned domain user"):
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+
+def test_configure_request_accepts_explicit_ad_user_for_core_apps() -> None:
+    payload = valid_request() | {
+        "software_profile": "core-apps",
+        "remote_access_profile": "none",
+        "assigned_domain_user": "alt-test-user@sosnadmin.local",
+    }
+
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert request.assigned_domain_user == "alt-test-user@sosnadmin.local"
+    assert request.actions()[-1] == "install_core_apps"
+
+
 def test_configure_request_normalizes_safe_values() -> None:
     payload = valid_request()
     payload["final_hostname"] = "ALT-A1-PC3"

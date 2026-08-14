@@ -257,6 +257,24 @@ def test_gpo_and_browser_are_fixed_isolated_configure_components() -> None:
         {"name": "standard_software", "role": "standard_software", "required": True},
         {"name": "browser", "role": "software_browser", "required": True},
         {
+            "name": "onlyoffice",
+            "role": "software_onlyoffice",
+            "required": True,
+            "enabled": "{{ software_profile == 'core-apps' }}",
+        },
+        {
+            "name": "nextcloud_desktop",
+            "role": "software_nextcloud_desktop",
+            "required": True,
+            "enabled": "{{ software_profile == 'core-apps' }}",
+        },
+        {
+            "name": "desktop_shortcuts",
+            "role": "desktop_shortcuts",
+            "required": True,
+            "enabled": "{{ software_profile == 'core-apps' }}",
+        },
+        {
             "name": "remote_access_krfb",
             "role": "remote_access_krfb",
             "required": True,
@@ -307,6 +325,33 @@ def test_browser_cleanup_requires_an_allocated_tempfile_path() -> None:
     ).read_text(encoding="utf-8")
 
     assert "software_browser_temp_rpm.path is defined" in browser_tasks
+
+
+def test_core_apps_roles_are_isolated_and_use_resilient_package_paths() -> None:
+    variables = yaml.safe_load(COMMON_VARS.read_text(encoding="utf-8"))
+    onlyoffice = (
+        ANSIBLE_ROOT / "roles" / "software_onlyoffice" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    nextcloud = (
+        ANSIBLE_ROOT / "roles" / "software_nextcloud_desktop" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    shortcuts = (
+        ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert 'retries: "{{ alt_package_lock_attempts }}"' in onlyoffice
+    assert "onlyoffice_install_nontransient_failed" in onlyoffice
+    assert "software_onlyoffice_temp_rpm.path is defined" in onlyoffice
+    assert "ansible.builtin.include_role" in nextcloud
+    assert "alt_resilience_package_names" in nextcloud
+    assert variables["software_catalog"]["nextcloud_desktop"]["packages"] == [
+        "nextcloud-client",
+        "nextcloud-client-kde",
+    ]
+    assert "assigned_domain_user" in shortcuts
+    assert "getent, passwd" in shortcuts
+    assert "nextcloud-client.desktop" in shortcuts
+    assert "loop: lookup('ansible.builtin.fileglob'" not in shortcuts
 
 
 def test_workstation_profile_keeps_wayland_and_client_dns_entrypoint() -> None:

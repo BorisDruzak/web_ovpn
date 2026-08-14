@@ -32,6 +32,24 @@ def test_domain_playbook_uses_fixed_resilient_domain_phases() -> None:
         {"name": "standard_software", "role": "standard_software", "required": True},
         {"name": "browser", "role": "software_browser", "required": True},
         {
+            "name": "onlyoffice",
+            "role": "software_onlyoffice",
+            "required": True,
+            "enabled": "{{ software_profile == 'core-apps' }}",
+        },
+        {
+            "name": "nextcloud_desktop",
+            "role": "software_nextcloud_desktop",
+            "required": True,
+            "enabled": "{{ software_profile == 'core-apps' }}",
+        },
+        {
+            "name": "desktop_shortcuts",
+            "role": "desktop_shortcuts",
+            "required": True,
+            "enabled": "{{ software_profile == 'core-apps' }}",
+        },
+        {
             "name": "remote_access_krfb",
             "role": "remote_access_krfb",
             "required": True,
@@ -72,6 +90,44 @@ def test_krfb_role_targets_an_explicit_ad_user_without_starting_krfb() -> None:
     assert "/usr/bin/krfb" not in rendered
     for forbidden in ("systemctl --user", "pkill", "killall", "loginctl"):
         assert forbidden not in rendered
+
+
+def test_core_apps_roles_use_approved_sources_and_an_explicit_user_only() -> None:
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+    onlyoffice = (
+        ANSIBLE_ROOT / "roles" / "software_onlyoffice" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    nextcloud = (
+        ANSIBLE_ROOT / "roles" / "software_nextcloud_desktop" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    shortcuts = (
+        ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    shortcut_defaults = yaml.safe_load(
+        (
+            ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "defaults" / "main.yml"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert "software_onlyoffice_catalog.sha256" in onlyoffice
+    assert "rpm, -qp" in onlyoffice
+    assert "always:" in onlyoffice
+    assert "alt_apt_transient_error_pattern" in onlyoffice
+    assert variables["software_catalog"]["nextcloud_desktop"]["packages"] == [
+        "nextcloud-client",
+        "nextcloud-client-kde",
+    ]
+    assert "software_nextcloud_desktop_catalog.packages" in nextcloud
+    assert "alt_resilience" in nextcloud
+    assert "software_nextcloud_desktop_missing_packages" in nextcloud
+    assert "when: software_nextcloud_desktop_missing_packages | length > 0" in nextcloud
+    assert shortcut_defaults["desktop_shortcuts_skel_dir"] == "/etc/skel/Рабочий стол"
+    assert shortcut_defaults["desktop_shortcuts_nextcloud_entry"] == "nextcloud-client.desktop"
+    assert "assigned_domain_user" in shortcuts
+    assert "argv: [getent, passwd" in shortcuts
+    assert "find" not in shortcuts
 
 
 def test_krfb_template_reads_obscured_values_only_from_vault_variables() -> None:

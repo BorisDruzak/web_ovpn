@@ -39,6 +39,9 @@ standard_packages: []
 organization_packages: []
 approved_software_components:
   - browser
+  - onlyoffice
+  - nextcloud_desktop
+  - desktop_shortcuts
 software_catalog:
   browser:
     artifact_path: /opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm
@@ -46,3 +49,15 @@ software_catalog:
     package_name: yandex-browser-stable
     package_evr: 26.4.4.968-1
     architecture: x86_64
+  onlyoffice:
+    artifact_path: /opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm
+    sha256: b8dd26405b5cd79da8a80afc7089007de608a53e7e90ea6a247379bebfe54c9f
+    package_name: onlyoffice-desktopeditors
+    package_evr: 9.4.0-epm1.repacked.130
+    architecture: x86_64
+    executable: /usr/bin/onlyoffice-desktopeditors
+  nextcloud_desktop:
+    packages:
+      - nextcloud-client
+      - nextcloud-client-kde
+    executable: /usr/bin/nextcloud

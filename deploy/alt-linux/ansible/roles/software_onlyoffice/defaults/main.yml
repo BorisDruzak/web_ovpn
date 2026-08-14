@@ -1,0 +1,2 @@
+---
+software_onlyoffice_catalog: "{{ software_catalog.onlyoffice }}"

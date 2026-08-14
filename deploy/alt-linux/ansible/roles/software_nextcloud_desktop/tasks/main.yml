@@ -1,0 +1,63 @@
+---
+- name: Inspect installed Nextcloud Desktop packages
+  ansible.builtin.command:
+    argv: [rpm, -q, "{{ item }}"]
+  loop: "{{ software_nextcloud_desktop_catalog.packages }}"
+  register: software_nextcloud_desktop_package_probe
+  changed_when: false
+  failed_when: false
+
+- name: Determine missing Nextcloud Desktop packages
+  ansible.builtin.set_fact:
+    software_nextcloud_desktop_missing_packages: >-
+      {{ software_nextcloud_desktop_package_probe.results |
+         rejectattr('rc', 'equalto', 0) |
+         map(attribute='item') | list }}
+
+- name: Refresh approved ALT repository metadata for Nextcloud Desktop
+  ansible.builtin.command:
+    argv: [apt-get, update]
+  register: software_nextcloud_desktop_update
+  changed_when: false
+  failed_when: false
+  retries: "{{ alt_package_lock_attempts }}"
+  delay: "{{ alt_package_lock_delay_seconds }}"
+  until: >-
+    software_nextcloud_desktop_update.rc == 0 or
+    (
+      ((software_nextcloud_desktop_update.stdout | default('')) ~ '\n' ~
+       (software_nextcloud_desktop_update.stderr | default(''))) | lower
+      is not search(alt_apt_transient_error_pattern)
+    )
+  when: software_nextcloud_desktop_missing_packages | length > 0
+
+- name: Stop after a non-transient Nextcloud repository refresh failure
+  ansible.builtin.fail:
+    msg: ALT_PREFLIGHT_FAILURE:nextcloud_repository_refresh_failed
+  when:
+    - software_nextcloud_desktop_missing_packages | length > 0
+    - software_nextcloud_desktop_update.rc != 0
+
+- name: Install Nextcloud Desktop from approved ALT repository
+  ansible.builtin.include_role:
+    name: alt_resilience
+    tasks_from: install_packages.yml
+  vars:
+    alt_resilience_package_names: "{{ software_nextcloud_desktop_catalog.packages }}"
+
+- name: Verify Nextcloud Desktop executable
+  ansible.builtin.stat:
+    path: "{{ software_nextcloud_desktop_catalog.executable }}"
+  register: software_nextcloud_desktop_executable
+
+- name: Require verified Nextcloud Desktop installation
+  ansible.builtin.assert:
+    that:
+      - software_nextcloud_desktop_executable.stat.exists
+      - software_nextcloud_desktop_executable.stat.isreg
+      - software_nextcloud_desktop_executable.stat.executable
+    fail_msg: ALT_PREFLIGHT_FAILURE:nextcloud_desktop_install_verification_failed
+
+- name: Publish Nextcloud Desktop verification facts
+  ansible.builtin.set_fact:
+    software_nextcloud_desktop_verified: true

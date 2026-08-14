@@ -47,6 +47,9 @@
               'sssd': configure_outcome.status != 'failed',
               'domain_user_lookup': configure_outcome.status != 'failed',
               'browser': software_browser_verified | default(false),
+              'onlyoffice': software_onlyoffice_verified | default(false),
+              'nextcloud_desktop': software_nextcloud_desktop_verified | default(false),
+              'desktop_shortcuts': desktop_shortcuts_configured | default(false),
               'plasma_baseline': plasma_baseline_configured | default(false),
               'remote_access': {
                 'profile': remote_access_profile,

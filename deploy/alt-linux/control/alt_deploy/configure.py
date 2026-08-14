@@ -182,16 +182,13 @@ class ConfigureRequest:
         if remote_access_profile not in REMOTE_ACCESS_PROFILES:
             raise _invalid_request("Configure remote access profile is unsupported")
 
-        if remote_access_profile == "none":
-            if assigned_domain_user_raw is not None:
-                raise _invalid_request(
-                    "Configure assigned domain user must be empty without remote access"
-                )
-            assigned_domain_user = None
-        else:
+        selected_user_required = (
+            remote_access_profile == "krfb" or software_profile == "core-apps"
+        )
+        if selected_user_required:
             if not isinstance(assigned_domain_user_raw, str):
                 raise _invalid_request(
-                    "Configure assigned domain user is required for KRFB"
+                    "Configure assigned domain user is required for the selected profile"
                 )
             assigned_domain_user = assigned_domain_user_raw.strip().lower()
             if not assigned_domain_user or not (
@@ -199,6 +196,12 @@ class ConfigureRequest:
                 or DOMAIN_USER_UPN_RE.fullmatch(assigned_domain_user)
             ):
                 raise _invalid_request("Configure assigned domain user is invalid")
+        else:
+            if assigned_domain_user_raw is not None:
+                raise _invalid_request(
+                    "Configure assigned domain user must be empty without a selected user profile"
+                )
+            assigned_domain_user = None
 
         return cls(
             machine_uuid=machine_uuid,

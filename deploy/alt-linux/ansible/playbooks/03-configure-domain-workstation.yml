@@ -38,6 +38,18 @@
       - name: browser
         role: software_browser
         required: true
+      - name: onlyoffice
+        role: software_onlyoffice
+        required: true
+        enabled: "{{ software_profile == 'core-apps' }}"
+      - name: nextcloud_desktop
+        role: software_nextcloud_desktop
+        required: true
+        enabled: "{{ software_profile == 'core-apps' }}"
+      - name: desktop_shortcuts
+        role: desktop_shortcuts
+        required: true
+        enabled: "{{ software_profile == 'core-apps' }}"
       - name: remote_access_krfb
         role: remote_access_krfb
         required: true
