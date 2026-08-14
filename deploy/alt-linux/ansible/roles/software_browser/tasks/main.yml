@@ -106,7 +106,7 @@
       ansible.builtin.file:
         path: "{{ software_browser_temp_rpm.path }}"
         state: absent
-      when: software_browser_temp_rpm is defined
+      when: software_browser_temp_rpm.path is defined
       no_log: true
 
 - name: Publish Yandex Browser verification fact

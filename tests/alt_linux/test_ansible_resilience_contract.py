@@ -71,7 +71,7 @@ def test_prejoin_upgrade_does_not_force_changed_or_reboot() -> None:
     content = PREJOIN_UPGRADE.read_text(encoding="utf-8")
 
     assert "changed_when: true" not in content
-    assert "Determine whether a full ALT upgrade is pending" in content
+    assert "Inspect the planned full ALT upgrade for diagnostics" in content
 
 
 def test_prejoin_upgrade_retries_only_recognized_transient_apt_failures() -> None:
@@ -84,12 +84,14 @@ def test_prejoin_upgrade_retries_only_recognized_transient_apt_failures() -> Non
     assert content.count("is not search(alt_apt_transient_error_pattern)") >= 3
 
 
-def test_prejoin_upgrade_stops_a_dependency_conflict_without_retries() -> None:
+def test_prejoin_upgrade_treats_simulation_conflict_as_diagnostic_only() -> None:
     content = PREJOIN_UPGRADE.read_text(encoding="utf-8")
     configure_playbook = CONFIGURE_PLAYBOOK.read_text(encoding="utf-8")
 
     assert "is not search(alt_apt_transient_error_pattern)" in content
-    assert "upgrade_dependency_conflict" in content
+    assert "prejoin_upgrade_simulation.rc != 0 or" in content
+    assert "upgrade_dependency_conflict" not in content
+    assert "upgrade_execution_failed" in content
     assert "configure_phase_failure | default" in configure_playbook
 
 
@@ -290,6 +292,14 @@ def test_browser_install_retries_only_recognized_transient_apt_failures() -> Non
     assert "alt_apt_transient_error_pattern" in browser_tasks
     assert "signature" in browser_tasks.lower()
     assert "checksum" in browser_tasks.lower()
+
+
+def test_browser_cleanup_requires_an_allocated_tempfile_path() -> None:
+    browser_tasks = (
+        ANSIBLE_ROOT / "roles" / "software_browser" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "software_browser_temp_rpm.path is defined" in browser_tasks
 
 
 def test_workstation_profile_keeps_wayland_and_client_dns_entrypoint() -> None:

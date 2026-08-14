@@ -51,7 +51,7 @@
     - not prejoin_upgrade_already_joined
     - prejoin_upgrade_apt_update.rc != 0
 
-- name: Determine whether a full ALT upgrade is pending
+- name: Inspect the planned full ALT upgrade for diagnostics
   ansible.builtin.command:
     argv: [apt-get, -s, dist-upgrade]
   register: prejoin_upgrade_simulation
@@ -70,33 +70,13 @@
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined
 
-- name: Stop before domain join when ALT upgrade has package conflicts
-  ansible.builtin.set_fact:
-    configure_phase_failure:
-      code: upgrade_dependency_conflict
-      class: fatal_invariant
-      safe_message: ALT full upgrade has unresolved package conflicts
-  when:
-    - prejoin_upgrade_enabled | bool
-    - not prejoin_upgrade_already_joined
-    - prejoin_upgrade_simulation.rc != 0
-
-- name: Fail non-transient ALT upgrade simulation before domain join
-  ansible.builtin.fail:
-    msg: >-
-      ALT_PREFLIGHT_FAILURE:upgrade_dependency_conflict
-      ALT full upgrade has unresolved package conflicts
-  when:
-    - prejoin_upgrade_enabled | bool
-    - not prejoin_upgrade_already_joined
-    - prejoin_upgrade_simulation.rc != 0
-
 - name: Record whether package changes are pending
   ansible.builtin.set_fact:
     prejoin_upgrade_pending: >-
-      {{ prejoin_upgrade_simulation.stdout is not search(
-         '0 upgraded, 0 newly installed, 0 removed and 0 not upgraded'
-      ) }}
+      {{ prejoin_upgrade_simulation.rc != 0 or
+         prejoin_upgrade_simulation.stdout is not search(
+           '0 upgraded, 0 newly installed, 0 removed and 0 not upgraded'
+         ) }}
   when:
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined
