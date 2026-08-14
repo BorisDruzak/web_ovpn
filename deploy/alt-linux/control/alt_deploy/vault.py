@@ -19,6 +19,8 @@ EXECUTION_ROOT_VARIABLE = "vault_install_root_password_hash"
 EXECUTION_ADMIN_VARIABLE = "vault_install_admin_password_hash"
 AD_JOIN_USER_VARIABLE = "vault_ad_join_user"
 AD_JOIN_PASSWORD_VARIABLE = "vault_ad_join_password"
+KRFB_DESKTOP_PASSWORD_VARIABLE = "vault_krfb_desktop_password_obscured"
+KRFB_UNATTENDED_PASSWORD_VARIABLE = "vault_krfb_unattended_password_obscured"
 
 
 def extract_execution_password_hashes(decrypted_text: str) -> dict[str, str]:
@@ -251,6 +253,31 @@ class VaultHealthChecker:
             raise ControlError(
                 code="domain_join_credentials_unavailable",
                 message="AD join credentials are unavailable",
+                exit_code=7,
+                details={"checks": checks},
+            )
+        return {"status": "ok", "checks": checks}
+
+    def check_krfb(self) -> dict[str, object]:
+        base_checks = self._build_checks()
+        decrypted_text = self._decrypt() if all(base_checks.values()) else None
+        values = {
+            line.partition(":")[0].strip(): line.partition(":")[2].strip()
+            for line in (decrypted_text or "").splitlines()
+            if ":" in line
+        }
+        checks = {
+            "krfb_desktop_password_present": bool(
+                values.get(KRFB_DESKTOP_PASSWORD_VARIABLE)
+            ),
+            "krfb_unattended_password_present": bool(
+                values.get(KRFB_UNATTENDED_PASSWORD_VARIABLE)
+            ),
+        }
+        if not all(base_checks.values()) or not all(checks.values()):
+            raise ControlError(
+                code="remote_access_credentials_unavailable",
+                message="KRFB remote access credentials are unavailable",
                 exit_code=7,
                 details={"checks": checks},
             )

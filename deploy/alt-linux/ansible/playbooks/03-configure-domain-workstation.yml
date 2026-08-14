@@ -29,12 +29,19 @@
       - phase: domain_core_verify
         role: domain_verify
     configure_components:
+      - name: plasma_baseline
+        role: plasma_baseline
+        required: true
       - name: standard_software
         role: standard_software
         required: true
       - name: browser
         role: software_browser
         required: true
+      - name: remote_access_krfb
+        role: remote_access_krfb
+        required: true
+        enabled: "{{ remote_access_profile == 'krfb' }}"
   tasks:
     - name: Initialize secret-free configure outcome
       ansible.builtin.set_fact:

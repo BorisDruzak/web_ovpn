@@ -28,13 +28,54 @@ def test_domain_playbook_uses_fixed_resilient_domain_phases() -> None:
         "domain_verify",
     ]
     assert playbook[0]["vars"]["configure_components"] == [
+        {"name": "plasma_baseline", "role": "plasma_baseline", "required": True},
         {"name": "standard_software", "role": "standard_software", "required": True},
         {"name": "browser", "role": "software_browser", "required": True},
+        {
+            "name": "remote_access_krfb",
+            "role": "remote_access_krfb",
+            "required": True,
+            "enabled": "{{ remote_access_profile == 'krfb' }}",
+        },
     ]
     assert playbook[0]["vars_files"] == [
         "../group_vars/all.yml",
         "../group_vars/vault.yml",
     ]
+
+
+def test_plasma_baseline_manages_only_approved_nonsecret_skeleton_files() -> None:
+    role_path = ANSIBLE_ROOT / "roles" / "plasma_baseline" / "tasks" / "main.yml"
+    rendered = role_path.read_text(encoding="utf-8")
+
+    assert "/etc/skel/.config/powerdevilrc" in rendered
+    assert "/etc/skel/.config/kscreenlockerrc" in rendered
+    assert "/etc/skel/.config/kxkbrc" in rendered
+    assert "/home/" not in rendered
+    assert "find" not in rendered
+
+
+def test_krfb_role_targets_an_explicit_ad_user_without_starting_krfb() -> None:
+    role_path = ANSIBLE_ROOT / "roles" / "remote_access_krfb" / "tasks" / "main.yml"
+    rendered = role_path.read_text(encoding="utf-8")
+
+    assert "assigned_domain_user" in rendered
+    assert "argv: [getent, passwd" in rendered
+    assert "krfb_config_home" in rendered
+    assert "no_log: true" in rendered
+    assert "/usr/bin/krfb" not in rendered
+    for forbidden in ("systemctl --user", "pkill", "killall", "loginctl"):
+        assert forbidden not in rendered
+
+
+def test_krfb_template_reads_obscured_values_only_from_vault_variables() -> None:
+    template_path = (
+        ANSIBLE_ROOT / "roles" / "remote_access_krfb" / "templates" / "krfbrc.j2"
+    )
+    rendered = template_path.read_text(encoding="utf-8")
+
+    assert "{{ vault_krfb_desktop_password_obscured }}" in rendered
+    assert "{{ vault_krfb_unattended_password_obscured }}" in rendered
 
 
 def test_domain_join_uses_kerberos_stdin_and_never_password_arguments() -> None:

@@ -1,0 +1,4 @@
+---
+# These defaults are copied only when PAM creates a future domain home from
+# /etc/skel. Existing user configuration is intentionally left untouched.
+plasma_baseline_skeleton_config_dir: /etc/skel/.config

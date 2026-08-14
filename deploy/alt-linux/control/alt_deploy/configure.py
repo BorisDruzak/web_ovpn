@@ -29,6 +29,9 @@ REQUEST_FIELDS = frozenset(
         "workgroup",
         "computer_ou",
         "domain_test_user",
+        "software_profile",
+        "remote_access_profile",
+        "assigned_domain_user",
     }
 )
 
@@ -66,6 +69,8 @@ CONFIGURE_RESULT_PHASES = frozenset(
 SAFE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,79}$")
 HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
 HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
+SOFTWARE_PROFILES = frozenset({"base", "core-apps"})
+REMOTE_ACCESS_PROFILES = frozenset({"none", "krfb"})
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -74,6 +79,7 @@ DOMAIN_USER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 DOMAIN_USER_UPN_RE = re.compile(
     r"^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\.local$"
 )
+PREFLIGHT_FAILURE_RE = re.compile(r"ALT_PREFLIGHT_FAILURE:([a-z][a-z0-9_]{1,79})")
 
 
 def _invalid_request(message: str) -> ControlError:
@@ -111,6 +117,9 @@ class ConfigureRequest:
     workgroup: str
     computer_ou: str
     domain_test_user: str
+    software_profile: str
+    remote_access_profile: str
+    assigned_domain_user: str | None
 
     @classmethod
     def from_mapping(
@@ -142,6 +151,11 @@ class ConfigureRequest:
         workgroup = _required_string(payload, "workgroup").upper()
         computer_ou = _required_string(payload, "computer_ou")
         domain_test_user = _required_string(payload, "domain_test_user").lower()
+        software_profile = _required_string(payload, "software_profile").lower()
+        remote_access_profile = _required_string(
+            payload, "remote_access_profile"
+        ).lower()
+        assigned_domain_user_raw = payload["assigned_domain_user"]
 
         if (
             profile != "standard-domain"
@@ -163,6 +177,29 @@ class ConfigureRequest:
         ):
             raise _invalid_request("Configure domain test user is invalid")
 
+        if software_profile not in SOFTWARE_PROFILES:
+            raise _invalid_request("Configure software profile is unsupported")
+        if remote_access_profile not in REMOTE_ACCESS_PROFILES:
+            raise _invalid_request("Configure remote access profile is unsupported")
+
+        if remote_access_profile == "none":
+            if assigned_domain_user_raw is not None:
+                raise _invalid_request(
+                    "Configure assigned domain user must be empty without remote access"
+                )
+            assigned_domain_user = None
+        else:
+            if not isinstance(assigned_domain_user_raw, str):
+                raise _invalid_request(
+                    "Configure assigned domain user is required for KRFB"
+                )
+            assigned_domain_user = assigned_domain_user_raw.strip().lower()
+            if not assigned_domain_user or not (
+                DOMAIN_USER_RE.fullmatch(assigned_domain_user)
+                or DOMAIN_USER_UPN_RE.fullmatch(assigned_domain_user)
+            ):
+                raise _invalid_request("Configure assigned domain user is invalid")
+
         return cls(
             machine_uuid=machine_uuid,
             final_hostname=final_hostname,
@@ -173,9 +210,12 @@ class ConfigureRequest:
             workgroup=workgroup,
             computer_ou=computer_ou,
             domain_test_user=domain_test_user,
+            software_profile=software_profile,
+            remote_access_profile=remote_access_profile,
+            assigned_domain_user=assigned_domain_user,
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "machine_uuid": self.machine_uuid,
             "final_hostname": self.final_hostname,
@@ -186,17 +226,26 @@ class ConfigureRequest:
             "workgroup": self.workgroup,
             "computer_ou": self.computer_ou,
             "domain_test_user": self.domain_test_user,
+            "software_profile": self.software_profile,
+            "remote_access_profile": self.remote_access_profile,
+            "assigned_domain_user": self.assigned_domain_user,
         }
 
-
-CONFIGURE_ACTIONS = [
-    "manual_preflight",
-    "verify_or_change_hostname",
-    "configure_domain_dns",
-    "join_or_verify_domain",
-    "install_standard_packages",
-    "verify_domain_workstation",
-]
+    def actions(self) -> list[str]:
+        actions = [
+            "manual_preflight",
+            "verify_or_change_hostname",
+            "configure_domain_dns",
+            "join_or_verify_domain",
+            "apply_plasma_baseline",
+            "install_standard_packages",
+            "verify_domain_workstation",
+        ]
+        if self.software_profile == "core-apps":
+            actions.append("install_core_apps")
+        if self.remote_access_profile == "krfb":
+            actions.append("configure_krfb")
+        return actions
 
 
 class ConfigurePlanner:
@@ -233,7 +282,7 @@ class ConfigurePlanner:
             "target_ip": machine.ip,
             "playbook": "03-configure-domain-workstation.yml",
             "request": request.to_dict(),
-            "actions": list(CONFIGURE_ACTIONS),
+            "actions": request.actions(),
         }
 
     @property
@@ -400,15 +449,10 @@ class ConfigurePlanner:
         assert isinstance(error, dict)
         return ControlError(
             code=str(error["code"]),
-            message="Ansible domain configure failed",
-            exit_code=7,
-            details={
-                "run_id": run_id,
-                "phase": result["phase"],
-                "retryable": result["retryable"],
-                "recovered": result["recovered"],
-            },
-        )
+        message="Ansible domain configure failed",
+        exit_code=7,
+        details={"run_id": run_id},
+    )
 
     def _persist_synthetic_failure(
         self,
@@ -430,6 +474,15 @@ class ConfigurePlanner:
         atomic_write_json(result_path, result)
         return result
 
+    @staticmethod
+    def _preflight_failure_code(log_path: Path) -> str | None:
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        match = PREFLIGHT_FAILURE_RE.search(text)
+        return match.group(1) if match else None
+
     def start(self, machine_uuid: str, request: ConfigureRequest) -> dict[str, object]:
         machine = self.machines.get(machine_uuid)
         if not machine.ip:
@@ -445,7 +498,10 @@ class ConfigurePlanner:
         if missing:
             raise ControlError(code="configure_not_configured", message="Domain configure is not fully configured", exit_code=5, details={"missing": missing})
 
-        VaultHealthChecker(self.settings).check_ad_join()
+        vault_checker = VaultHealthChecker(self.settings)
+        vault_checker.check_ad_join()
+        if request.remote_access_profile == "krfb":
+            vault_checker.check_krfb()
 
         run_id = uuid.uuid4().hex
         run_dir = self.settings.state_root / "configure-runs" / run_id
@@ -546,12 +602,21 @@ class ConfigurePlanner:
                 legacy_result["run_id"] = run_id
                 return legacy_result
 
+        preflight_failure_code = self._preflight_failure_code(log_path)
         result = self._persist_synthetic_failure(
             result_path,
             request,
-            code="configure_result_missing",
-            error_class="retryable_transient",
-            safe_message="Ansible domain configure produced no valid result",
-            retryable=completed.returncode != 0,
+            code=preflight_failure_code or "configure_result_missing",
+            error_class=(
+                "fatal_invariant"
+                if preflight_failure_code
+                else "retryable_transient"
+            ),
+            safe_message=(
+                "Ansible preflight rejected the workstation"
+                if preflight_failure_code
+                else "Ansible domain configure produced no valid result"
+            ),
+            retryable=False if preflight_failure_code else completed.returncode != 0,
         )
         raise self._error_from_result(result, run_id=run_id)

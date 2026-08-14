@@ -1,0 +1,6 @@
+---
+krfb_required_package: krfb
+krfb_skeleton_config_files:
+  - powerdevilrc
+  - kscreenlockerrc
+  - kxkbrc

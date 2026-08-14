@@ -1,5 +1,6 @@
 ---
 - name: Execute independent component
+  when: configure_component_item.enabled | default(true) | bool
   block:
     - name: Include component role
       ansible.builtin.include_role:

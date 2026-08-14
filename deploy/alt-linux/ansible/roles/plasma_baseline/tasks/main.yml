@@ -1,0 +1,36 @@
+---
+- name: Create Plasma configuration directory in the user skeleton
+  ansible.builtin.file:
+    path: "{{ plasma_baseline_skeleton_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Plasma power-management defaults in the user skeleton
+  ansible.builtin.template:
+    src: powerdevilrc.j2
+    dest: /etc/skel/.config/powerdevilrc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Plasma screen-lock defaults in the user skeleton
+  ansible.builtin.template:
+    src: kscreenlockerrc.j2
+    dest: /etc/skel/.config/kscreenlockerrc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Plasma keyboard-switching defaults in the user skeleton
+  ansible.builtin.template:
+    src: kxkbrc.j2
+    dest: /etc/skel/.config/kxkbrc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Publish Plasma baseline verification fact
+  ansible.builtin.set_fact:
+    plasma_baseline_configured: true

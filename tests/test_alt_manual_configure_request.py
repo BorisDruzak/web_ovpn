@@ -49,7 +49,7 @@ if sys.platform == "win32":
 MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
 
 
-def valid_request() -> dict[str, str]:
+def valid_request() -> dict[str, object]:
     return {
         "machine_uuid": MACHINE_UUID,
         "final_hostname": "alt-a1-pc3",
@@ -60,7 +60,35 @@ def valid_request() -> dict[str, str]:
         "workgroup": "SOSNADM",
         "computer_ou": "OU=Workstations,DC=sosnadmin,DC=local",
         "domain_test_user": "pilot.user",
+        "software_profile": "base",
+        "remote_access_profile": "none",
+        "assigned_domain_user": None,
     }
+
+
+def test_configure_request_accepts_base_profile_without_remote_user() -> None:
+    payload = valid_request() | {
+        "software_profile": "base",
+        "remote_access_profile": "none",
+        "assigned_domain_user": None,
+    }
+
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert request.software_profile == "base"
+    assert request.remote_access_profile == "none"
+    assert request.assigned_domain_user is None
+
+
+def test_configure_request_requires_explicit_ad_user_for_krfb() -> None:
+    payload = valid_request() | {
+        "software_profile": "base",
+        "remote_access_profile": "krfb",
+        "assigned_domain_user": None,
+    }
+
+    with pytest.raises(ControlError, match="assigned domain user"):
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
 
 
 def test_configure_request_normalizes_safe_values() -> None:
@@ -177,6 +205,7 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
             "verify_or_change_hostname",
             "configure_domain_dns",
             "join_or_verify_domain",
+            "apply_plasma_baseline",
             "install_standard_packages",
             "verify_domain_workstation",
         ],
@@ -264,6 +293,25 @@ def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:
     assert checker.check_ad_join() == {
         "status": "ok",
         "checks": {"ad_join_user_present": True, "ad_join_password_present": True},
+    }
+
+
+def test_krfb_vault_gate_reports_only_boolean_checks() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: (  # type: ignore[method-assign]
+        "vault_krfb_desktop_password_obscured: secret\n"
+        "vault_krfb_unattended_password_obscured: secret\n"
+    )
+
+    assert checker.check_krfb() == {
+        "status": "ok",
+        "checks": {
+            "krfb_desktop_password_present": True,
+            "krfb_unattended_password_present": True,
+        },
     }
 
 
