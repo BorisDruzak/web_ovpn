@@ -88,10 +88,36 @@
   failed_when: yandex_profile_browser_running.rc not in [0, 1]
   no_log: true
 
-- name: Stop restore while target browser is open
-  ansible.builtin.assert:
-    that: yandex_profile_browser_running.rc == 1
-    fail_msg: ALT_PREFLIGHT_FAILURE:yandex_profile_browser_running
+- name: Close target Yandex Browser before profile replacement
+  ansible.builtin.command:
+    argv:
+      - pkill
+      - -TERM
+      - -u
+      - "{{ yandex_profile_uid }}"
+      - -f
+      - '(^|/)(yandex-browser|yandex_browser)( |$)'
+  when: yandex_profile_browser_running.rc == 0
+  register: yandex_profile_browser_stop
+  changed_when: yandex_profile_browser_stop.rc == 0
+  failed_when: yandex_profile_browser_stop.rc not in [0, 1]
+  no_log: true
+
+- name: Wait until target Yandex Browser has stopped
+  ansible.builtin.command:
+    argv:
+      - pgrep
+      - -u
+      - "{{ yandex_profile_uid }}"
+      - -f
+      - '(^|/)(yandex-browser|yandex_browser)( |$)'
+  register: yandex_profile_browser_stopped
+  changed_when: false
+  failed_when: yandex_profile_browser_stopped.rc not in [0, 1]
+  retries: 15
+  delay: 1
+  until: yandex_profile_browser_stopped.rc == 1
+  no_log: true
 
 - name: Create root-only remote staging directory
   ansible.builtin.tempfile:
