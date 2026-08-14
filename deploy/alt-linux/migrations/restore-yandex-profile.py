@@ -11,6 +11,8 @@ from pathlib import Path
 
 DEFAULT_ROOT = Path("/var/lib/alt-deploy/migrations/yandex")
 DEFAULT_ANSIBLE = Path("/home/altserver/ansible")
+CONTROLLER_PRIVATE_KEY = "/home/altserver/.ssh/id_ed25519"
+CONTROLLER_KNOWN_HOSTS = "/home/altserver/.ssh/known_hosts_autoinstall"
 MIGRATION_RE = re.compile(r"^migration-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")
 USER_RE = re.compile(r"^[A-Za-z0-9._@-]{1,128}$")
@@ -79,7 +81,11 @@ def main() -> int:
     if not playbook.is_file():
         raise SystemExit(f"Fixed playbook is unavailable: {playbook}")
     command = [
-        "ansible-playbook", "-i", f"{target},", str(playbook),
+        "ansible-playbook", "-i", f"{target},", "-u", "ansible",
+        "--private-key", CONTROLLER_PRIVATE_KEY,
+        "--ssh-common-args",
+        f"-o StrictHostKeyChecking=yes -o UserKnownHostsFile={CONTROLLER_KNOWN_HOSTS} -o ProxyCommand=none",
+        str(playbook),
         "-e", f"yandex_migration_root={args.migration_root}",
         "-e", f"migration_id={migration_id}",
         "-e", f"target_user={target_user}",

@@ -30,6 +30,9 @@ def test_restore_uses_fixed_playbook_and_atomic_profile_replacement() -> None:
     assert "READY" in launcher
     assert "migration_id" in launcher
     assert "target_user" in launcher
+    assert '"-u", "ansible"' in launcher
+    assert "/home/altserver/.ssh/id_ed25519" in launcher
+    assert "known_hosts_autoinstall" in launcher
     assert "sha256sum" in role
     assert "pre-migration-" in role
     assert "ansible.builtin.tempfile" in role
