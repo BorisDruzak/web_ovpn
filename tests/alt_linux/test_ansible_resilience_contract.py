@@ -355,6 +355,19 @@ def test_browser_launcher_preserves_existing_arguments_when_disabling_kwallet() 
         "Exec=/usr/bin/yandex-browser-stable --password-store=basic",
         "Exec=/usr/bin/yandex-browser-stable --password-store=basic --incognito",
     ]
+    verification_task = next(
+        task
+        for task in browser_tasks
+        if task["name"] == "Verify Yandex Browser launcher uses its own password store"
+    )
+    assert verification_task["ansible.builtin.command"]["argv"] == [
+        "grep",
+        "-F",
+        "--",
+        "--password-store=basic",
+        "/usr/share/applications/yandex-browser.desktop",
+    ]
+    assert "when" not in verification_task
 
 
 def test_core_apps_roles_are_isolated_and_use_resilient_package_paths() -> None:
