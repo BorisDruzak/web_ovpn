@@ -1,0 +1,13 @@
+---
+- name: Configure selected domain user profile after first login
+  hosts: all
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/vault.yml
+  roles:
+    - role: desktop_shortcuts_user
+      when: software_profile == 'core-apps'
+    - role: remote_access_krfb
+      when: remote_access_profile == 'krfb'

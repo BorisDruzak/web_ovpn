@@ -125,11 +125,10 @@
     - prejoin_upgrade_pending | default(false) | bool
     - prejoin_upgrade_dist_upgrade.rc != 0
 
-- name: Reboot only after a real pre-join ALT upgrade
-  ansible.builtin.reboot:
-    reboot_timeout: "{{ prejoin_upgrade_reboot_timeout }}"
-  when:
-    - prejoin_upgrade_enabled | bool
-    - not prejoin_upgrade_already_joined
-    - prejoin_upgrade_dist_upgrade is defined
-    - prejoin_upgrade_dist_upgrade is changed
+- name: Record whether final system reboot is required after upgrade
+  ansible.builtin.set_fact:
+    prejoin_upgrade_reboot_required: >-
+      {{ prejoin_upgrade_enabled | bool and
+         not prejoin_upgrade_already_joined and
+         prejoin_upgrade_dist_upgrade is defined and
+         prejoin_upgrade_dist_upgrade is changed }}

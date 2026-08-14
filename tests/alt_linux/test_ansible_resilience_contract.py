@@ -73,6 +73,8 @@ def test_prejoin_upgrade_does_not_force_changed_or_reboot() -> None:
 
     assert "changed_when: true" not in content
     assert "Inspect the planned full ALT upgrade for diagnostics" in content
+    assert "ansible.builtin.reboot" not in content
+    assert "prejoin_upgrade_reboot_required" in content
 
 
 def test_prejoin_upgrade_retries_only_recognized_transient_apt_failures() -> None:
@@ -241,10 +243,13 @@ def test_domain_convergence_probes_have_bounded_retries() -> None:
     assert "until: domain_verify_user.rc == 0" in verification
 
 
-def test_gpo_and_browser_are_fixed_isolated_configure_components() -> None:
+def test_system_stage_excludes_current_user_configuration() -> None:
     play = load_tasks(CONFIGURE_PLAYBOOK)[0]
     critical_roles = [item["role"] for item in play["vars"]["configure_critical_phases"]]
     components = play["vars"]["configure_components"]
+    user_playbook = load_tasks(
+        ANSIBLE_ROOT / "playbooks" / "04-configure-domain-user-profile.yml"
+    )[0]
 
     assert critical_roles.index("prejoin_upgrade") < critical_roles.index("domain_join")
     assert critical_roles.index("alt_group_policy_prerequisites") < critical_roles.index(
@@ -275,13 +280,12 @@ def test_gpo_and_browser_are_fixed_isolated_configure_components() -> None:
             "required": True,
             "enabled": "{{ software_profile == 'core-apps' }}",
         },
-        {
-            "name": "remote_access_krfb",
-            "role": "remote_access_krfb",
-            "required": True,
-            "enabled": "{{ remote_access_profile == 'krfb' }}",
-        },
     ]
+    assert user_playbook["roles"] == [
+        {"role": "desktop_shortcuts_user", "when": "software_profile == 'core-apps'"},
+        {"role": "remote_access_krfb", "when": "remote_access_profile == 'krfb'"},
+    ]
+    assert "ansible.builtin.reboot" in CONFIGURE_PLAYBOOK.read_text(encoding="utf-8")
 
 
 def test_browser_artifact_is_validated_and_is_not_hidden_in_standard_software() -> None:
@@ -419,9 +423,22 @@ def test_core_apps_roles_are_isolated_and_use_resilient_package_paths() -> None:
         "nextcloud-client-kde",
     ]
     assert "assigned_domain_user" in shortcuts
-    assert "getent, passwd" in shortcuts
+    assert "getent, passwd" not in shortcuts
     assert shortcut_defaults["desktop_shortcuts_nextcloud_entry"] == "nextcloud-client.desktop"
     assert "loop: lookup('ansible.builtin.fileglob'" not in shortcuts
+
+
+def test_user_profile_roles_do_not_create_home_before_first_login() -> None:
+    shortcut_user = (
+        ANSIBLE_ROOT / "roles" / "desktop_shortcuts_user" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    krfb = (
+        ANSIBLE_ROOT / "roles" / "remote_access_krfb" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "getent, passwd" in shortcut_user
+    assert "Create only the assigned domain home before its first login" not in krfb
+    assert "remote_access_user_home_unavailable" in krfb
 
 
 def test_workstation_profile_keeps_wayland_and_client_dns_entrypoint() -> None:

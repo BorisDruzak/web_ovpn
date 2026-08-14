@@ -1,0 +1,66 @@
+---
+- name: Require selected domain user for current profile shortcuts
+  ansible.builtin.assert:
+    that:
+      - assigned_domain_user is string
+      - assigned_domain_user | length > 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_shortcuts_user_invalid
+
+- name: Resolve selected domain user
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ assigned_domain_user }}"]
+  register: desktop_shortcuts_account_lookup
+  changed_when: false
+  no_log: true
+
+- name: Parse selected domain user account
+  ansible.builtin.set_fact:
+    desktop_shortcuts_passwd_fields: "{{ desktop_shortcuts_account_lookup.stdout | trim | split(':') }}"
+  no_log: true
+
+- name: Inspect selected domain user home
+  ansible.builtin.stat:
+    path: "{{ desktop_shortcuts_passwd_fields[5] | default('') }}"
+  register: desktop_shortcuts_home_state
+  no_log: true
+
+- name: Require home created by successful domain login
+  ansible.builtin.assert:
+    that:
+      - desktop_shortcuts_account_lookup.rc == 0
+      - desktop_shortcuts_passwd_fields | length >= 7
+      - desktop_shortcuts_passwd_fields[5] is match('^/home/')
+      - desktop_shortcuts_home_state.stat.exists
+      - desktop_shortcuts_home_state.stat.isdir
+      - desktop_shortcuts_home_state.stat.uid | string == desktop_shortcuts_passwd_fields[2] | string
+      - desktop_shortcuts_home_state.stat.gid | string == desktop_shortcuts_passwd_fields[3] | string
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_shortcuts_user_home_unavailable
+  no_log: true
+
+- name: Record selected domain account paths
+  ansible.builtin.set_fact:
+    desktop_shortcuts_uid: "{{ desktop_shortcuts_passwd_fields[2] }}"
+    desktop_shortcuts_gid: "{{ desktop_shortcuts_passwd_fields[3] }}"
+    desktop_shortcuts_home: "{{ desktop_shortcuts_passwd_fields[5] }}"
+  no_log: true
+
+- name: Copy launchers into selected user desktop
+  ansible.builtin.copy:
+    src: "{{ desktop_shortcuts_applications_dir }}/{{ item }}"
+    dest: "{{ desktop_shortcuts_home }}/Рабочий стол/{{ item }}"
+    remote_src: true
+    owner: "{{ desktop_shortcuts_uid }}"
+    group: "{{ desktop_shortcuts_gid }}"
+    mode: "0700"
+  loop: "{{ desktop_shortcuts_application_entries }}"
+  no_log: true
+
+- name: Add Nextcloud autostart for selected user
+  ansible.builtin.copy:
+    src: "{{ desktop_shortcuts_applications_dir }}/{{ desktop_shortcuts_nextcloud_entry }}"
+    dest: "{{ desktop_shortcuts_home }}/.config/autostart/{{ desktop_shortcuts_nextcloud_entry }}"
+    remote_src: true
+    owner: "{{ desktop_shortcuts_uid }}"
+    group: "{{ desktop_shortcuts_gid }}"
+    mode: "0644"
+  no_log: true

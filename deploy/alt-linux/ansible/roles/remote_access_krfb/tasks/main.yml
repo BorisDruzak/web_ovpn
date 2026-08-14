@@ -49,14 +49,14 @@
   register: krfb_home_state
   no_log: true
 
-- name: Create only the assigned domain home before its first login
-  ansible.builtin.file:
-    path: "{{ krfb_config_home }}"
-    state: directory
-    owner: "{{ krfb_config_uid }}"
-    group: "{{ krfb_config_gid }}"
-    mode: "0700"
-  when: not krfb_home_state.stat.exists
+- name: Require home created by successful domain login
+  ansible.builtin.assert:
+    that:
+      - krfb_home_state.stat.exists
+      - krfb_home_state.stat.isdir
+      - krfb_home_state.stat.uid | string == krfb_config_uid | string
+      - krfb_home_state.stat.gid | string == krfb_config_gid | string
+    fail_msg: ALT_PREFLIGHT_FAILURE:remote_access_user_home_unavailable
   no_log: true
 
 - name: Create the assigned user Plasma configuration directory
@@ -77,7 +77,6 @@
     group: "{{ krfb_config_gid }}"
     mode: "0600"
   loop: "{{ krfb_skeleton_config_files }}"
-  when: not krfb_home_state.stat.exists
   no_log: true
 
 - name: Create the assigned user Plasma autostart directory
