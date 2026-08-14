@@ -20,6 +20,9 @@ def test_collector_waits_for_normal_browser_close_and_streams_full_profile() -> 
     assert "zstd" in content
     assert "SHA256SUMS" in content
     assert "READY" in content
+    assert "--transport-user" in content
+    assert "sudo -n tar" in content
+    assert "sha256sum profile.tar.zst > SHA256SUMS" in content
 
 
 def test_restore_uses_fixed_playbook_and_atomic_profile_replacement() -> None:

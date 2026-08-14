@@ -10,7 +10,7 @@ control_path=
 remote=
 
 usage() {
-    echo "Usage: $0 --host HOST --user USER" >&2
+    echo "Usage: $0 --host HOST --user PROFILE_USER [--transport-user SSH_USER]" >&2
 }
 
 valid_host() {
@@ -31,18 +31,22 @@ trap cleanup EXIT
 
 host=
 source_user=
+transport_user=
 while (( $# > 0 )); do
     case $1 in
         --host) host=${2:-}; shift 2 ;;
         --user) source_user=${2:-}; shift 2 ;;
+        --transport-user) transport_user=${2:-}; shift 2 ;;
         *) usage; exit 2 ;;
     esac
 done
 
 if [[ -z ${host} ]]; then read -r -p 'Source host or IP: ' host; fi
 if [[ -z ${source_user} ]]; then read -r -p 'Source user: ' source_user; fi
+if [[ -z ${transport_user} ]]; then transport_user=${source_user}; fi
 valid_host "${host}" || { echo 'Invalid source host.' >&2; exit 2; }
 valid_user "${source_user}" || { echo 'Invalid source user.' >&2; exit 2; }
+valid_user "${transport_user}" || { echo 'Invalid transport user.' >&2; exit 2; }
 
 command -v ssh >/dev/null || { echo 'ssh is required.' >&2; exit 1; }
 command -v tar >/dev/null || { echo 'tar is required.' >&2; exit 1; }
@@ -56,7 +60,7 @@ touch "${known_hosts}"
 chmod 0600 "${known_hosts}"
 runtime_dir=$(mktemp -d "${TMPDIR:-/tmp}/yandex-profile.XXXXXX")
 control_path="${runtime_dir}/control"
-remote="${source_user}@${host}"
+remote="${transport_user}@${host}"
 ssh_options=(
     -o StrictHostKeyChecking=yes
     -o UserKnownHostsFile="${known_hosts}"
@@ -65,17 +69,36 @@ ssh_options=(
     -o ControlPath="${control_path}"
 )
 
-echo "Connecting to ${remote}. SSH may ask for the source password once."
+echo "Connecting to ${remote}."
 ssh "${ssh_options[@]}" -MNf "${remote}"
 
-home=$(ssh "${ssh_options[@]}" "${remote}" 'printf %s "$HOME"')
+if [[ ${transport_user} == "${source_user}" ]]; then
+    home=$(ssh "${ssh_options[@]}" "${remote}" 'printf %s "$HOME"')
+    source_uid=$(ssh "${ssh_options[@]}" "${remote}" 'id -u')
+    elevated_profile_access=false
+else
+    echo "Using ${transport_user} SSH transport with passwordless sudo for ${source_user}."
+    home=$(ssh "${ssh_options[@]}" "${remote}" \
+        "sudo -n getent passwd ${source_user} | cut -d: -f6")
+    source_uid=$(ssh "${ssh_options[@]}" "${remote}" \
+        "sudo -n getent passwd ${source_user} | cut -d: -f3")
+    elevated_profile_access=true
+fi
 [[ ${home} == /home/* && ${home} != */..* ]] || { echo 'Source home is unsafe.' >&2; exit 1; }
-ssh "${ssh_options[@]}" "${remote}" 'test -d "$HOME/.config/yandex-browser"' || {
+[[ ${source_uid} =~ ^[0-9]+$ ]] || { echo 'Source UID is unsafe.' >&2; exit 1; }
+if [[ ${elevated_profile_access} == true ]]; then
+    ssh "${ssh_options[@]}" "${remote}" \
+        "sudo -n test -d \"${home}/.config/yandex-browser\""
+else
+    ssh "${ssh_options[@]}" "${remote}" 'test -d "$HOME/.config/yandex-browser"'
+fi || {
     echo 'Yandex Browser profile is absent on source.' >&2
     exit 1
 }
 
-while ssh "${ssh_options[@]}" "${remote}" \
+while [[ ${elevated_profile_access} == true ]] && ssh "${ssh_options[@]}" "${remote}" \
+    "sudo -n -u '#${source_uid}' pgrep -f '(^|/)(yandex-browser|yandex_browser)( |$)' >/dev/null" \
+    || [[ ${elevated_profile_access} == false ]] && ssh "${ssh_options[@]}" "${remote}" \
     'pgrep -u "$(id -u)" -f "(^|/)(yandex-browser|yandex_browser)( |$)" >/dev/null'; do
     echo 'Browser is still running. Close it normally to continue (Ctrl-C cancels).'
     sleep 2
@@ -89,12 +112,21 @@ trap '[[ -n ${staging:-} && -d ${staging} ]] && rm -rf -- "${staging}"; cleanup'
 echo 'Copying the complete Yandex Browser profile. This can take several minutes.'
 # The profile is intentionally complete; only Chromium runtime socket/lock files are excluded.
 # The remote command deliberately executes: tar -C "$home/.config" ...
-ssh "${ssh_options[@]}" "${remote}" \
-    "tar -C \"$home/.config\" --exclude='yandex-browser/SingletonLock' --exclude='yandex-browser/SingletonSocket' --exclude='yandex-browser/SingletonCookie' -cf - yandex-browser" \
-    | zstd -T0 -q -o "${staging}/profile.tar.zst"
+if [[ ${elevated_profile_access} == true ]]; then
+    ssh "${ssh_options[@]}" "${remote}" \
+        "sudo -n tar -C \"$home/.config\" --exclude='yandex-browser/SingletonLock' --exclude='yandex-browser/SingletonSocket' --exclude='yandex-browser/SingletonCookie' -cf - yandex-browser" \
+        | zstd -T0 -q -o "${staging}/profile.tar.zst"
+else
+    ssh "${ssh_options[@]}" "${remote}" \
+        "tar -C \"$home/.config\" --exclude='yandex-browser/SingletonLock' --exclude='yandex-browser/SingletonSocket' --exclude='yandex-browser/SingletonCookie' -cf - yandex-browser" \
+        | zstd -T0 -q -o "${staging}/profile.tar.zst"
+fi
 
-sha256sum "${staging}/profile.tar.zst" > "${staging}/SHA256SUMS"
-(cd "${staging}" && sha256sum -c SHA256SUMS >/dev/null)
+(
+    cd "${staging}"
+    sha256sum profile.tar.zst > SHA256SUMS
+    sha256sum -c SHA256SUMS >/dev/null
+)
 source_version=$(ssh "${ssh_options[@]}" "${remote}" 'rpm -q --qf "%{EVR}" yandex-browser-stable 2>/dev/null || true')
 SOURCE_HOST="${host}" SOURCE_USER="${source_user}" SOURCE_HOME="${home}" \
 SOURCE_VERSION="${source_version}" MIGRATION_ID="${migration_id}" python3 - <<'PY' > "${staging}/manifest.json"
