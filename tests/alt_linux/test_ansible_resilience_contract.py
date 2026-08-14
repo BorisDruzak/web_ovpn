@@ -253,8 +253,15 @@ def test_gpo_and_browser_are_fixed_isolated_configure_components() -> None:
         "alt_group_policy_client"
     )
     assert components == [
+        {"name": "plasma_baseline", "role": "plasma_baseline", "required": True},
         {"name": "standard_software", "role": "standard_software", "required": True},
         {"name": "browser", "role": "software_browser", "required": True},
+        {
+            "name": "remote_access_krfb",
+            "role": "remote_access_krfb",
+            "required": True,
+            "enabled": "{{ remote_access_profile == 'krfb' }}",
+        },
     ]
 
 

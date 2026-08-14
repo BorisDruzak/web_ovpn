@@ -449,10 +449,15 @@ class ConfigurePlanner:
         assert isinstance(error, dict)
         return ControlError(
             code=str(error["code"]),
-        message="Ansible domain configure failed",
-        exit_code=7,
-        details={"run_id": run_id},
-    )
+            message="Ansible domain configure failed",
+            exit_code=7,
+            details={
+                "run_id": run_id,
+                "phase": result["phase"],
+                "retryable": result["retryable"],
+                "recovered": result["recovered"],
+            },
+        )
 
     def _persist_synthetic_failure(
         self,

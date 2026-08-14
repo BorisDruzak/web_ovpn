@@ -353,4 +353,7 @@ def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
         )
 
     assert exc.value.code == "hostname_mismatch"
-    assert set(exc.value.details) == {"run_id"}
+    assert exc.value.details["phase"] == "finalize"
+    assert exc.value.details["retryable"] is False
+    assert exc.value.details["recovered"] is False
+    assert set(exc.value.details) == {"run_id", "phase", "retryable", "recovered"}

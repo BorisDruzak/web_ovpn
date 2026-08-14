@@ -76,6 +76,9 @@ def request() -> ConfigureRequest:
                 "DC=sosnadmin,DC=local"
             ),
             "domain_test_user": "alt-test-2@sosnadmin.local",
+            "software_profile": "base",
+            "remote_access_profile": "none",
+            "assigned_domain_user": None,
         },
         expected_uuid=MACHINE_UUID,
     )

@@ -115,6 +115,9 @@ def _write_request(requests: Path, uuid: str) -> Path:
                 "workgroup": "SOSNADM",
                 "computer_ou": "OU=Pilot,OU=Linux,OU=Устройства,DC=sosnadmin,DC=local",
                 "domain_test_user": "alt-test-2@sosnadmin.local",
+                "software_profile": "base",
+                "remote_access_profile": "none",
+                "assigned_domain_user": None,
             }
         )
         + "\n",
