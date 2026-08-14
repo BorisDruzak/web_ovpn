@@ -266,6 +266,18 @@ if ! runuser -u "${ANSIBLE_USER}" -- sudo -n true; then
     exit 1
 fi
 
+# The manually-created recovery administrator must remain able to administer
+# the workstation after bootstrap.  ALT does not grant sudo merely because an
+# account belongs to wheel, so install an explicit password-authenticated rule.
+temporary_local_admin_sudoers=$(mktemp /etc/sudoers.d/.91-local-admin.XXXXXXXX)
+printf '%s ALL=(ALL:ALL) ALL\n' "${LOCAL_ADMIN}" > "${temporary_local_admin_sudoers}"
+chmod 0440 "${temporary_local_admin_sudoers}"
+visudo -cf "${temporary_local_admin_sudoers}"
+install -o root -g root -m 0440 \
+    "${temporary_local_admin_sudoers}" \
+    "/etc/sudoers.d/91-${LOCAL_ADMIN}"
+rm -f "${temporary_local_admin_sudoers}"
+
 systemctl enable --now sshd
 
 # Base bootstrap is complete before registration, so a repeated run retries

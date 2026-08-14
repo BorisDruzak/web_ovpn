@@ -3,12 +3,15 @@ set -Eeuo pipefail
 
 if [[ ${EUID} -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1; then
-        exec sudo -- bash "$0"
+        if sudo -v; then
+            exec sudo -- bash "$0"
+        fi
+        echo "sudo is unavailable for the current user; falling back to su." >&2
     fi
 
     if command -v su >/dev/null 2>&1; then
         quoted_launcher=$(printf '%q' "$0")
-        echo "sudo is not installed; requesting the root password through su." >&2
+        echo "requesting the root password through su." >&2
         exec su -c "exec bash ${quoted_launcher}"
     fi
 

@@ -548,6 +548,16 @@ def test_bootstrap_validates_sudo_as_the_technical_user() -> None:
     assert 'sudo -n -u "${ANSIBLE_USER}" true' not in source
 
 
+def test_bootstrap_grants_password_sudo_to_local_recovery_admin() -> None:
+    source = BOOTSTRAP.read_text(encoding="utf-8")
+
+    assert 'printf \'%s ALL=(ALL:ALL) ALL\\n\' "${LOCAL_ADMIN}"' in source
+    assert '"/etc/sudoers.d/91-${LOCAL_ADMIN}"' in source
+    assert source.index('"/etc/sudoers.d/91-${LOCAL_ADMIN}"') < source.index(
+        "systemctl enable --now sshd"
+    )
+
+
 def test_bootstrap_defers_registration_without_losing_technical_access() -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
 
