@@ -329,10 +329,16 @@ def test_assigned_user_is_validated_before_configure_start(
     module.process_record(pending_record)
 
     record = json.loads((ready / pending_record.name).read_text(encoding="utf-8"))
-    assert record["status"] == "configured"
+    assert record["status"] == "awaiting_first_domain_login"
+    orchestration = json.loads(
+        (module.first_login_root() / f"{MACHINE_UUID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert orchestration["status"] == "awaiting_first_domain_login"
     assert command_order[:2] == ["preflight", "validate"]
     assert command_order.count("configure") == 2
-    assert str(request_path) in [item for item in []] or request_path.exists()
+    assert request_path.exists()
 
 
 def test_unknown_assigned_user_stops_before_domain_configure(

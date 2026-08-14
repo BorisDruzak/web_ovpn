@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll ALT first domain login state
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

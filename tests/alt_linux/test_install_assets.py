@@ -96,6 +96,7 @@ def test_installer_creates_private_state_directories(
         '"${state_root}/assignments"',
         '"${state_root}/machine-archives"',
         '"${state_root}/machine-archives/.transactions"',
+        '"${state_root}/first-login"',
         "/srv/alt-deploy/registration/pending",
         "/srv/alt-deploy/registration/ready",
         "/srv/alt-deploy/registration/failed",
@@ -126,6 +127,7 @@ def test_installer_updates_complete_registration_runtime(
     assert "/opt/alt-deploy-api" in installer_text
     assert '"${api_root}/register_api.py"' in installer_text
     assert '"${api_root}/process_pending.py"' in installer_text
+    assert '"${api_root}/reconcile_first_login.py"' in installer_text
     assert '"${ALT_ROOT}/api/register_api.py"' in installer_text
     assert '"${ALT_ROOT}/api/process_pending.py"' in installer_text
     assert '"${ALT_ROOT}/bootstrap/bootstrap.sh"' in installer_text
@@ -137,8 +139,38 @@ def test_installer_updates_complete_registration_runtime(
         "alt-deploy-register.service",
         "alt-deploy-process.path",
         "alt-deploy-process.service",
+        "alt-deploy-first-login.service",
+        "alt-deploy-first-login.timer",
     ):
         assert unit in installer_text
+
+
+def test_registration_worker_can_create_automatic_configure_requests() -> None:
+    service = (
+        REPO_ROOT
+        / "deploy"
+        / "alt-linux"
+        / "systemd"
+        / "alt-deploy-process.service"
+    ).read_text(encoding="utf-8")
+
+    assert "ReadWritePaths=/srv/alt-deploy/configure-requests" in service
+    assert "ReadOnlyPaths=/srv/alt-deploy/configure-requests" not in service
+
+
+def test_first_login_worker_uses_guard_and_strict_runtime_paths() -> None:
+    service = (
+        REPO_ROOT
+        / "deploy"
+        / "alt-linux"
+        / "systemd"
+        / "alt-deploy-first-login.service"
+    ).read_text(encoding="utf-8")
+
+    assert "Requires=alt-deploy-guard.service" in service
+    assert "ProtectSystem=strict" in service
+    assert "ReadWritePaths=/var/lib/alt-deploy" in service
+    assert "ReadOnlyPaths=/home/altserver/.ssh /home/altserver/ansible" in service
 
 
 def test_installer_verifies_before_maintenance_and_accepts_last(

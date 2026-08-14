@@ -422,7 +422,7 @@ def test_core_apps_roles_are_isolated_and_use_resilient_package_paths() -> None:
         "nextcloud-client",
         "nextcloud-client-kde",
     ]
-    assert "assigned_domain_user" in shortcuts
+    assert "assigned_domain_user" not in shortcuts
     assert "getent, passwd" not in shortcuts
     assert shortcut_defaults["desktop_shortcuts_nextcloud_entry"] == "nextcloud-client.desktop"
     assert "loop: lookup('ansible.builtin.fileglob'" not in shortcuts

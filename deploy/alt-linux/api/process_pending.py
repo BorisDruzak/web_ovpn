@@ -17,6 +17,7 @@ from alt_deploy.config import Settings
 from alt_deploy.errors import ControlError
 from alt_deploy.locks import exclusive_lock
 from alt_deploy.jsonio import atomic_write_json
+from alt_deploy.jsonio import read_json
 from alt_deploy.machine_archive_repository import (
     MachineArchiveRepository,
 )
@@ -203,6 +204,10 @@ def _configure_request_path(machine_uuid: str) -> Path | None:
         raise PendingConfigurationError("configure_request_invalid")
 
     return path
+
+
+def first_login_root() -> Path:
+    return SETTINGS.state_root / "first-login"
 
 
 def build_auto_configure_request(
@@ -557,10 +562,29 @@ def process_record(path: Path) -> None:
             record["status"] = "awaiting_assignment"
         else:
             configure_preview, configure_result = configure
-            record["status"] = "configured"
+            request_path = _configure_request_path(machine_key)
+            if request_path is None:
+                raise PendingConfigurationError("configure_request_unavailable")
             record["configure_preview"] = configure_preview
             record["configure_result"] = configure_result
             record["configured_at"] = utc_now()
+            if record.get("assigned_domain_user"):
+                orchestration_root = first_login_root()
+                orchestration_root.mkdir(parents=True, exist_ok=True)
+                os.chmod(orchestration_root, 0o700)
+                atomic_write_json(
+                    orchestration_root / f"{machine_key}.json",
+                    {
+                        "machine_uuid": machine_key,
+                        "ip": ip,
+                        "request": read_json(request_path),
+                        "status": "awaiting_first_domain_login",
+                        "configured_at": record["configured_at"],
+                    },
+                )
+                record["status"] = "awaiting_first_domain_login"
+            else:
+                record["status"] = "configured"
 
         finalized = finalize_record(
             path,

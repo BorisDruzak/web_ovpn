@@ -105,16 +105,23 @@
             label: "{{ configure_component_item.name }}"
           when: configure_outcome.status != 'failed'
 
+        - name: Mark a required controlled reboot in the result
+          ansible.builtin.set_fact:
+            configure_outcome: >-
+              {{ configure_outcome | combine({'reboot_required': true}, recursive=True) }}
+          when:
+            - configure_outcome.status != 'failed'
+            - >-
+              (prejoin_upgrade_reboot_required | default(false) | bool) or
+              (not (domain_join_already_joined | default(true) | bool))
+
+        - name: Perform one controlled reboot after system domain configuration
+          ansible.builtin.reboot:
+            reboot_timeout: "{{ prejoin_upgrade_reboot_timeout }}"
+          when: configure_outcome.reboot_required | bool
+
         - name: Finalize structured configure result
           ansible.builtin.include_tasks: tasks/configure_finalize.yml
-
-    - name: Perform one controlled reboot after system domain configuration
-      ansible.builtin.reboot:
-        reboot_timeout: "{{ prejoin_upgrade_reboot_timeout }}"
-      when:
-        - configure_outcome.status != 'failed'
-        - prejoin_upgrade_reboot_required | default(false) | bool or
-          not domain_join_already_joined | default(true) | bool
 
     - name: Return a non-zero status after terminal result persistence
       ansible.builtin.fail:

@@ -50,7 +50,8 @@
     - name: Stop when selected Active Directory user is absent
       ansible.builtin.fail:
         msg: ALT_PREFLIGHT_FAILURE:assigned_domain_user_not_found
-      when: assigned_user_lookup.stdout is not search('(?m)^dn: ')
+      when: >-
+        assigned_user_lookup.stdout is not search('(?m)^dn: ')
   always:
     - name: Destroy temporary directory-query Kerberos ticket
       ansible.builtin.command:

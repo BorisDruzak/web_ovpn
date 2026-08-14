@@ -123,6 +123,8 @@ for key in ("manifest_sha256", "verification_sha256"):
 }
 
 stop_control_plane_after_failed_rollout() {
+    stop_if_loaded alt-deploy-first-login.timer || true
+    stop_if_loaded alt-deploy-first-login.service || true
     stop_if_loaded alt-deploy-process.path || true
     stop_if_loaded alt-deploy-register.service || true
     stop_if_loaded alt-deploy-http.service || true
@@ -148,10 +150,13 @@ validate_source_layout() {
         "${ALT_ROOT}/api/static_server.py"
         "${ALT_ROOT}/api/register_api.py"
         "${ALT_ROOT}/api/process_pending.py"
+        "${ALT_ROOT}/api/reconcile_first_login.py"
         "${ALT_ROOT}/systemd/alt-deploy-http.service"
         "${ALT_ROOT}/systemd/alt-deploy-register.service"
         "${ALT_ROOT}/systemd/alt-deploy-process.path"
         "${ALT_ROOT}/systemd/alt-deploy-process.service"
+        "${ALT_ROOT}/systemd/alt-deploy-first-login.service"
+        "${ALT_ROOT}/systemd/alt-deploy-first-login.timer"
         "${ALT_ROOT}/ansible/ansible.cfg"
         "${ALT_ROOT}/ansible/group_vars/all.yml"
         "${ALT_ROOT}/ansible/playbooks/01-preflight.yml"
@@ -316,6 +321,7 @@ run_repository_verification() {
         "${ALT_ROOT}/api/static_server.py" \
         "${ALT_ROOT}/api/register_api.py" \
         "${ALT_ROOT}/api/process_pending.py" \
+        "${ALT_ROOT}/api/reconcile_first_login.py" \
         "${ALT_ROOT}/control/alt-job-stage"
 
     bash -n "${ALT_ROOT}/install-control-plane.sh"
@@ -400,6 +406,7 @@ stop_if_loaded() {
 
 enter_control_plane_maintenance() {
     stop_if_loaded alt-deploy-process.path
+    stop_if_loaded alt-deploy-first-login.timer
     stop_if_loaded alt-deploy-register.service
     stop_if_loaded alt-deploy-http.service
 
@@ -464,6 +471,7 @@ ensure_private_state_directories() {
         "${state_root}/machine-archives/.transactions" \
         "${state_root}/migrations" \
         "${state_root}/migrations/yandex" \
+        "${state_root}/first-login" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/pending)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/ready)" \
@@ -544,6 +552,9 @@ install_registration_runtime() {
     install -o root -g root -m 0755 \
         "${ALT_ROOT}/api/process_pending.py" \
         "${api_root}/process_pending.py"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/api/reconcile_first_login.py" \
+        "${api_root}/reconcile_first_login.py"
     install -o root -g root -m 0644 \
         "${ALT_ROOT}/bootstrap/bootstrap.sh" \
         "${bootstrap_root}/bootstrap.sh"
@@ -569,7 +580,9 @@ install_systemd_units() {
         alt-deploy-http.service \
         alt-deploy-register.service \
         alt-deploy-process.path \
-        alt-deploy-process.service; do
+        alt-deploy-process.service \
+        alt-deploy-first-login.service \
+        alt-deploy-first-login.timer; do
         install -o root -g root -m 0644 \
             "${ALT_ROOT}/systemd/${unit}" \
             "${systemd_root}/${unit}"
@@ -581,6 +594,7 @@ activate_control_plane() {
     systemctl enable --now alt-deploy-http.service
     systemctl enable --now alt-deploy-register.service
     systemctl enable --now alt-deploy-process.path
+    systemctl enable --now alt-deploy-first-login.timer
 }
 
 run_installed_readiness() {

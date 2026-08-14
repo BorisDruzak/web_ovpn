@@ -57,7 +57,6 @@
       - krfb_home_state.stat.uid | string == krfb_config_uid | string
       - krfb_home_state.stat.gid | string == krfb_config_gid | string
     fail_msg: ALT_PREFLIGHT_FAILURE:remote_access_user_home_unavailable
-  no_log: true
 
 - name: Create the assigned user Plasma configuration directory
   ansible.builtin.file:

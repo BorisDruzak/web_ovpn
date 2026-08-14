@@ -1,21 +1,20 @@
 [Unit]
-Description=Process pending ALT registrations
+Description=Finalize ALT profile after first domain login
 After=network-online.target alt-deploy-register.service
 Wants=network-online.target
 
 Requires=alt-deploy-guard.service
 After=alt-deploy-guard.service
+
 [Service]
 Type=oneshot
 User=altserver
 Group=altserver
 Environment=PYTHONPATH=/opt/alt-deploy-control
 WorkingDirectory=/home/altserver/ansible
-ExecStart=/usr/bin/python3 /opt/alt-deploy-api/process_pending.py
+ExecStart=/usr/bin/python3 /opt/alt-deploy-api/reconcile_first_login.py
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/srv/alt-deploy/registration
-ReadWritePaths=/srv/alt-deploy/configure-requests
-ReadWritePaths=/home/altserver/.ssh
 ReadWritePaths=/var/lib/alt-deploy
+ReadOnlyPaths=/home/altserver/.ssh /home/altserver/ansible

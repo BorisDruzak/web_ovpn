@@ -35,7 +35,6 @@
       - desktop_shortcuts_home_state.stat.uid | string == desktop_shortcuts_passwd_fields[2] | string
       - desktop_shortcuts_home_state.stat.gid | string == desktop_shortcuts_passwd_fields[3] | string
     fail_msg: ALT_PREFLIGHT_FAILURE:desktop_shortcuts_user_home_unavailable
-  no_log: true
 
 - name: Record selected domain account paths
   ansible.builtin.set_fact:
