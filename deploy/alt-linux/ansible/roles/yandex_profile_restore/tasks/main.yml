@@ -76,9 +76,13 @@
   no_log: true
 
 - name: Require Yandex Browser to be closed normally
-  ansible.builtin.shell: >-
-    pgrep -u {{ yandex_profile_uid | quote }}
-    -f '(^|/)(yandex-browser|yandex_browser)( |$)' >/dev/null
+  ansible.builtin.command:
+    argv:
+      - pgrep
+      - -u
+      - "{{ yandex_profile_uid }}"
+      - -f
+      - '(^|/)(yandex-browser|yandex_browser)( |$)'
   register: yandex_profile_browser_running
   changed_when: false
   failed_when: yandex_profile_browser_running.rc not in [0, 1]
