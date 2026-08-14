@@ -112,3 +112,16 @@
 - name: Publish Yandex Browser verification fact
   ansible.builtin.set_fact:
     software_browser_verified: true
+
+- name: Disable KDE Wallet integration for Yandex Browser launchers
+  ansible.builtin.replace:
+    path: /usr/share/applications/yandex-browser.desktop
+    regexp: '^Exec=([^\n]*yandex-browser[^\n]*)(?:\s+--password-store=basic)?(\s+%[UuFf])?$'
+    replace: 'Exec=/usr/bin/yandex-browser-stable --password-store=basic %U'
+  register: software_browser_password_store
+
+- name: Verify Yandex Browser launcher uses its own password store
+  ansible.builtin.command:
+    argv: [grep, -F, 'Exec=/usr/bin/yandex-browser-stable --password-store=basic %U', /usr/share/applications/yandex-browser.desktop]
+  changed_when: false
+  when: software_browser_password_store is changed
