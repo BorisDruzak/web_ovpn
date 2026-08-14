@@ -69,6 +69,12 @@ def _prepare(
         job_stage_helper_path=tmp_path / "alt-job-stage",
         workstationctl_path=Path("/usr/local/sbin/workstationctl"),
     )
+    (settings.ansible_project_dir / "playbooks").mkdir(parents=True)
+    (
+        settings.ansible_project_dir
+        / "playbooks"
+        / "00-validate-assigned-domain-user.yml"
+    ).write_text("---\n", encoding="utf-8")
     monkeypatch.setattr(module, "SETTINGS", settings, raising=False)
     monkeypatch.setattr(module, "PENDING_DIR", pending)
     monkeypatch.setattr(module, "READY_DIR", ready)
@@ -258,3 +264,125 @@ def test_request_for_another_uuid_does_not_start_configuration(
         (ready / pending_record.name).read_text(encoding="utf-8")
     )
     assert record["status"] == "awaiting_assignment"
+
+
+def test_assigned_user_is_validated_before_configure_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, pending, ready, requests = _prepare(tmp_path, monkeypatch)
+    pending_record = _write_registration(pending)
+    registration = json.loads(pending_record.read_text(encoding="utf-8"))
+    registration["assigned_domain_user"] = "alt-test-2@sosnadmin.local"
+    pending_record.write_text(json.dumps(registration), encoding="utf-8")
+    request_path = _write_request(requests, MACHINE_UUID)
+    command_order: list[str] = []
+
+    def run(
+        command: list[str],
+        *,
+        timeout: int = 60,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[0] == module.SSH_KEYGEN:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[0] == module.SSH_KEYSCAN:
+            return subprocess.CompletedProcess(
+                command, 0, "192.168.101.56 ssh-ed25519 AAAATEST\n", ""
+            )
+        if command[0] == module.ANSIBLE:
+            return subprocess.CompletedProcess(command, 0, "pong\n", "")
+        if command[0] == module.ANSIBLE_PLAYBOOK:
+            assert command[-1].endswith(
+                "00-validate-assigned-domain-user.yml"
+            )
+            assert "assigned_domain_user=alt-test-2@sosnadmin.local" in command
+            command_order.append("validate")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[0] == module.WORKSTATIONCTL and "preflight" in command:
+            command_order.append("preflight")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps({
+                    "status": "ok",
+                    "machine_uuid": MACHINE_UUID,
+                    "preflight": {"status": "ok", "checks": {}},
+                }),
+                "",
+            )
+        if command[0] == module.WORKSTATIONCTL:
+            command_order.append("configure")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps({
+                    "status": "ok",
+                    "machine_uuid": MACHINE_UUID,
+                    "target_ip": "192.168.101.56",
+                    "run_id": "configure-run-123",
+                }),
+                "",
+            )
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(module, "run_command", run)
+    module.process_record(pending_record)
+
+    record = json.loads((ready / pending_record.name).read_text(encoding="utf-8"))
+    assert record["status"] == "configured"
+    assert command_order[:2] == ["preflight", "validate"]
+    assert command_order.count("configure") == 2
+    assert str(request_path) in [item for item in []] or request_path.exists()
+
+
+def test_unknown_assigned_user_stops_before_domain_configure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, pending, _, requests = _prepare(tmp_path, monkeypatch)
+    pending_record = _write_registration(pending)
+    registration = json.loads(pending_record.read_text(encoding="utf-8"))
+    registration["assigned_domain_user"] = "missing@sosnadmin.local"
+    pending_record.write_text(json.dumps(registration), encoding="utf-8")
+    _write_request(requests, MACHINE_UUID)
+
+    def run(
+        command: list[str],
+        *,
+        timeout: int = 60,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[0] == module.SSH_KEYGEN:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[0] == module.SSH_KEYSCAN:
+            return subprocess.CompletedProcess(
+                command, 0, "192.168.101.56 ssh-ed25519 AAAATEST\n", ""
+            )
+        if command[0] == module.ANSIBLE:
+            return subprocess.CompletedProcess(command, 0, "pong\n", "")
+        if command[0] == module.WORKSTATIONCTL and "preflight" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                json.dumps({
+                    "status": "ok",
+                    "machine_uuid": MACHINE_UUID,
+                    "preflight": {"status": "ok", "checks": {}},
+                }),
+                "",
+            )
+        if command[0] == module.ANSIBLE_PLAYBOOK:
+            return subprocess.CompletedProcess(
+                command,
+                2,
+                "ALT_PREFLIGHT_FAILURE:assigned_domain_user_not_found\n",
+                "",
+            )
+        raise AssertionError(f"Domain configure must not start: {command}")
+
+    monkeypatch.setattr(module, "run_command", run)
+    module.process_record(pending_record)
+
+    failed = pending.parent / "failed" / pending_record.name
+    record = json.loads(failed.read_text(encoding="utf-8"))
+    assert record["status"] == "failed"
+    assert record["error"] == "assigned_domain_user_not_found"

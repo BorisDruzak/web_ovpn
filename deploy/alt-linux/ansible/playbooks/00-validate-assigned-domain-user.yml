@@ -1,0 +1,11 @@
+---
+- name: Validate selected Active Directory user on the deployment controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/vault.yml
+  roles:
+    - ad_assigned_user_validation

@@ -328,6 +328,28 @@ def test_browser_cleanup_requires_an_allocated_tempfile_path() -> None:
     assert "software_browser_temp_rpm.path is defined" in browser_tasks
 
 
+def test_assigned_domain_user_validation_uses_controller_vault_without_logs() -> None:
+    validation_playbook = (
+        ANSIBLE_ROOT / "playbooks" / "00-validate-assigned-domain-user.yml"
+    )
+    validation_role = (
+        ANSIBLE_ROOT
+        / "roles"
+        / "ad_assigned_user_validation"
+        / "tasks"
+        / "main.yml"
+    )
+
+    assert validation_playbook.is_file()
+    tasks = validation_role.read_text(encoding="utf-8")
+    assert "vault_ad_join_user" in tasks
+    assert "vault_ad_join_password" in tasks
+    assert "ldapsearch" in tasks
+    assert "GSSAPI" in tasks
+    assert "kdestroy" in tasks
+    assert "no_log: true" in tasks
+
+
 def test_browser_launcher_preserves_existing_arguments_when_disabling_kwallet() -> None:
     browser_tasks = load_tasks(
         ANSIBLE_ROOT / "roles" / "software_browser" / "tasks" / "main.yml"

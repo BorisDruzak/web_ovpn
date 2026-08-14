@@ -1,0 +1,60 @@
+---
+- name: Require a normalized assigned domain user
+  ansible.builtin.assert:
+    that:
+      - assigned_domain_user is string
+      - assigned_domain_user is match('^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\\.local$')
+    fail_msg: ALT_PREFLIGHT_FAILURE:assigned_domain_user_invalid
+
+- name: Validate assigned user through Active Directory
+  block:
+    - name: Acquire temporary directory-query Kerberos ticket
+      ansible.builtin.command:
+        argv: [kinit, -C, "{{ vault_ad_join_user }}"]
+        stdin: "{{ vault_ad_join_password }}"
+      register: assigned_user_kinit
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Stop when directory-query credentials are unavailable
+      ansible.builtin.fail:
+        msg: ALT_PREFLIGHT_FAILURE:assigned_domain_user_validation_unavailable
+      when: assigned_user_kinit.rc != 0
+
+    - name: Search Active Directory for the selected user principal name
+      ansible.builtin.command:
+        argv:
+          - ldapsearch
+          - -LLL
+          - -Y
+          - GSSAPI
+          - -H
+          - "{{ ad_ldap_uri }}"
+          - -b
+          - DC=sosnadmin,DC=local
+          - -s
+          - sub
+          - "(&(objectClass=user)(userPrincipalName={{ assigned_domain_user }}))"
+          - dn
+      register: assigned_user_lookup
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Stop when Active Directory lookup is unavailable
+      ansible.builtin.fail:
+        msg: ALT_PREFLIGHT_FAILURE:assigned_domain_user_validation_unavailable
+      when: assigned_user_lookup.rc != 0
+
+    - name: Stop when selected Active Directory user is absent
+      ansible.builtin.fail:
+        msg: ALT_PREFLIGHT_FAILURE:assigned_domain_user_not_found
+      when: assigned_user_lookup.stdout is not search('(?m)^dn: ')
+  always:
+    - name: Destroy temporary directory-query Kerberos ticket
+      ansible.builtin.command:
+        argv: [kdestroy]
+      changed_when: false
+      failed_when: false
+      no_log: true

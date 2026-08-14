@@ -38,6 +38,7 @@ KNOWN_HOSTS = SETTINGS.known_hosts_file
 PRIVATE_KEY = SETTINGS.private_key_file
 
 ANSIBLE = "/usr/bin/ansible"
+ANSIBLE_PLAYBOOK = "/usr/bin/ansible-playbook"
 SSH_KEYGEN = "/usr/bin/ssh-keygen"
 SSH_KEYSCAN = "/usr/bin/ssh-keyscan"
 WORKSTATIONCTL = os.environ.get(
@@ -51,6 +52,12 @@ ALLOWED_NETWORKS = (
 MACHINE_UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+ASSIGNED_DOMAIN_USER_RE = re.compile(
+    r"^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\.local$"
+)
+PREFLIGHT_FAILURE_RE = re.compile(
+    r"ALT_PREFLIGHT_FAILURE:([a-z][a-z0-9_]{1,79})"
 )
 
 
@@ -219,6 +226,50 @@ def _run_configure_command(
         raise PendingConfigurationError(error_code)
 
     return payload
+
+
+def validate_assigned_domain_user(record: dict[str, object]) -> None:
+    assigned_domain_user = record.get("assigned_domain_user")
+    if assigned_domain_user is None:
+        return
+    if not isinstance(assigned_domain_user, str):
+        raise PendingConfigurationError("assigned_domain_user_invalid")
+
+    normalized_user = assigned_domain_user.strip().lower()
+    if not ASSIGNED_DOMAIN_USER_RE.fullmatch(normalized_user):
+        raise PendingConfigurationError("assigned_domain_user_invalid")
+
+    playbook = (
+        SETTINGS.ansible_project_dir
+        / "playbooks"
+        / "00-validate-assigned-domain-user.yml"
+    )
+    if not playbook.is_file():
+        raise PendingConfigurationError(
+            "assigned_domain_user_validation_unavailable"
+        )
+
+    completed = run_command(
+        [
+            ANSIBLE_PLAYBOOK,
+            "--extra-vars",
+            f"assigned_domain_user={normalized_user}",
+            str(playbook),
+        ],
+        timeout=180,
+    )
+    if completed.returncode == 0:
+        record["assigned_domain_user"] = normalized_user
+        record["assigned_domain_user_validation"] = "valid"
+        return
+
+    output = completed.stdout + "\n" + completed.stderr
+    match = PREFLIGHT_FAILURE_RE.search(output)
+    if match and match.group(1) == "assigned_domain_user_not_found":
+        raise PendingConfigurationError("assigned_domain_user_not_found")
+    raise PendingConfigurationError(
+        "assigned_domain_user_validation_unavailable"
+    )
 
 
 def auto_configure(
@@ -454,6 +505,8 @@ def process_record(path: Path) -> None:
         record["ansible_output"] = result.stdout[-10000:]
         record["preflight"] = dict(preflight_result)
         record["preflight_verified_at"] = utc_now()
+
+        validate_assigned_domain_user(record)
 
         configure = auto_configure(record, ip=ip)
         if configure is None:
