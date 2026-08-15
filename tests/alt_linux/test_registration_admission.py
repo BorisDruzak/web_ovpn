@@ -191,6 +191,35 @@ def test_interrupted_assigned_user_recovery_is_completed_on_retry(
     ).exists()
 
 
+def test_failed_configure_start_can_resume_through_domain_reconciliation(
+    tmp_path: Path,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    failed = registration_payload(status="failed")
+    failed.update(
+        {
+            "assigned_domain_user": "alt-test-user@sosnadmin.local",
+            "error": "configure_start_failed",
+            "failed_at": "2026-08-15T09:25:46+00:00",
+        }
+    )
+    source = write_registration(sandbox.settings, "failed", failed)
+
+    decision = RegistrationAdmissionService(sandbox.settings).admit(
+        request(assigned_domain_user="alt-test-user@sosnadmin.local")
+    )
+
+    assert decision.http_status == 201
+    assert decision.payload["status"] == "registration_recovered"
+    assert not source.exists()
+    pending = read_json(
+        sandbox.settings.registration_root
+        / "pending"
+        / f"{TEST_MACHINE_UUID}.json"
+    )
+    assert pending["recovery_reason"] == "configure_start_failed"
+
+
 def test_legacy_active_registration_is_idempotent(
     tmp_path: Path,
 ) -> None:

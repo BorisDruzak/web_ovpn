@@ -14,6 +14,8 @@ from .errors import ControlError
 from .jsonio import atomic_write_json, read_json
 from .vault import VaultHealthChecker
 
+CONFIGURE_EXECUTION_TIMEOUT_SECONDS = 5400
+
 if TYPE_CHECKING:
     from .registry import MachineRepository
 
@@ -548,7 +550,7 @@ class ConfigurePlanner:
                     text=True,
                     stdout=log_stream,
                     stderr=subprocess.STDOUT,
-                    timeout=1800,
+                    timeout=CONFIGURE_EXECUTION_TIMEOUT_SECONDS,
                     check=False,
                     cwd=self.settings.ansible_project_dir,
                     env=environment,

@@ -27,6 +27,8 @@ from alt_deploy.registration_records import (
 
 SETTINGS = Settings.from_env()
 PENDING_DIR = SETTINGS.registration_root / "pending"
+CONFIGURE_PREVIEW_TIMEOUT_SECONDS = 300
+CONFIGURE_START_TIMEOUT_SECONDS = 5700
 READY_DIR = SETTINGS.registration_root / "ready"
 FAILED_DIR = SETTINGS.registration_root / "failed"
 CONFIGURE_REQUESTS_DIR = Path(
@@ -248,9 +250,10 @@ def _run_configure_command(
     command: list[str],
     *,
     error_code: str,
+    timeout_seconds: int,
 ) -> dict[str, object]:
     try:
-        completed = run_command(command, timeout=1900)
+        completed = run_command(command, timeout=timeout_seconds)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise PendingConfigurationError(error_code) from exc
 
@@ -342,6 +345,7 @@ def auto_configure(
             str(request_path),
         ],
         error_code="configure_preview_failed",
+        timeout_seconds=CONFIGURE_PREVIEW_TIMEOUT_SECONDS,
     )
     if (
         preview.get("status") != "ok"
@@ -361,6 +365,7 @@ def auto_configure(
             str(request_path),
         ],
         error_code="configure_start_failed",
+        timeout_seconds=CONFIGURE_START_TIMEOUT_SECONDS,
     )
     if (
         result.get("machine_uuid") != machine_uuid

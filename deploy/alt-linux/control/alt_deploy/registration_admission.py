@@ -80,7 +80,7 @@ class RegistrationAdmissionService:
         )
 
     @staticmethod
-    def _can_recover_missing_assigned_user(
+    def _can_recover_retryable_configuration(
         candidate: RegistrationCandidate,
         request: RegistrationRequest,
     ) -> bool:
@@ -88,7 +88,10 @@ class RegistrationAdmissionService:
             candidate.registration_state == "failed"
             and request.assigned_domain_user is not None
             and candidate.payload.get("error")
-            == "assigned_domain_user_not_found"
+            in {
+                "assigned_domain_user_not_found",
+                "configure_start_failed",
+            }
             and "configure_result" not in candidate.payload
         )
 
@@ -134,12 +137,13 @@ class RegistrationAdmissionService:
             },
         )
 
-    def _recover_missing_assigned_user(
+    def _recover_retryable_configuration(
         self,
         candidate: RegistrationCandidate,
         request: RegistrationRequest,
     ) -> RegistrationDecision:
         registration_id = f"reg-{secrets.token_hex(16)}"
+        recovery_reason = str(candidate.payload["error"])
         record = {
             "machine_key": candidate.machine_key,
             "hostname": candidate.hostname,
@@ -151,7 +155,7 @@ class RegistrationAdmissionService:
             "status": "pending",
             "assigned_domain_user": request.assigned_domain_user,
             "recovered_from_registration_id": candidate.generation.value,
-            "recovery_reason": "assigned_domain_user_not_found",
+            "recovery_reason": recovery_reason,
             # If the atomic rename is interrupted, the next request can
             # complete this state transition without replaying configuration.
             "recovery_pending": True,
@@ -226,11 +230,11 @@ class RegistrationAdmissionService:
                     normalized,
                 ):
                     return self._complete_interrupted_recovery(candidate)
-                if self._can_recover_missing_assigned_user(
+                if self._can_recover_retryable_configuration(
                     candidate,
                     normalized,
                 ):
-                    return self._recover_missing_assigned_user(
+                    return self._recover_retryable_configuration(
                         candidate,
                         normalized,
                     )

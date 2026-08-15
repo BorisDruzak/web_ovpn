@@ -150,6 +150,57 @@ def test_nonzero_ansible_uses_valid_structured_failure_result(
     assert exc.value.details["run_id"]
 
 
+def test_first_domain_configure_allows_long_full_upgrade(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = prepare_settings(tmp_path)
+    monkeypatch.setattr(
+        "alt_deploy.configure.VaultHealthChecker.check_ad_join",
+        lambda self: {"status": "ok"},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        result_path = result_path_from_command(command)
+        result_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "machine_uuid": MACHINE_UUID,
+                    "hostname": "alt-a1-pc2",
+                    "profile": "standard-domain",
+                    "status": "successful",
+                    "phase": "finalize",
+                    "retryable": False,
+                    "recovered": False,
+                    "reboot_required": False,
+                    "error": {},
+                    "components": {},
+                    "verification": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(
+        "alt_deploy.configure.subprocess.run",
+        fake_run,
+    )
+
+    ConfigurePlanner(settings, machines=MachineFixture()).start(
+        MACHINE_UUID,
+        request(),
+    )
+
+    assert captured["timeout"] == 5400
+
+
 def test_launch_error_persists_synthetic_safe_failure_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
