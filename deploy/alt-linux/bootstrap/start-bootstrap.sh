@@ -23,7 +23,7 @@ DEPLOY_HOST=${ALT_DEPLOY_HOST:-192.168.100.17}
 DEPLOY_URL="http://${DEPLOY_HOST}:8087"
 BOOTSTRAP_URL="${DEPLOY_URL}/bootstrap/bootstrap.sh"
 HOSTNAME_RE='^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$'
-ASSIGNED_DOMAIN_USER_RE='^[a-z0-9][a-z0-9._-]{0,62}(@sosnadmin\\.local)?$'
+ASSIGNED_DOMAIN_USER_RE='^[a-z0-9][a-z0-9._-]{0,62}(@sosnadmin\.local)?$'
 
 normalize_value() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | xargs

@@ -161,6 +161,23 @@ def test_launcher_uses_confirmed_valid_hostname_without_mutation(
     )
 
 
+def test_launcher_preserves_a_valid_assigned_ad_user_upn(
+    tmp_path: Path,
+) -> None:
+    result, hostname, mutations, capture = _run_launcher(
+        tmp_path,
+        hostname="alt-a1-pc3",
+        answers="y\nAlt-Test-User@sosnadmin.local\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert hostname == "alt-a1-pc3"
+    assert mutations == []
+    assert capture.read_text(encoding="utf-8") == (
+        "alt-test-user@sosnadmin.local|alt-a1-pc3\n"
+    )
+
+
 def test_launcher_cancels_before_bootstrap_when_hostname_is_not_confirmed(
     tmp_path: Path,
 ) -> None:
