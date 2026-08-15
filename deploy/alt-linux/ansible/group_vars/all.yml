@@ -45,6 +45,8 @@ approved_software_components:
 # These values are used by both the system skeleton role and the post-login
 # role.  Role defaults are not shared between separately invoked roles.
 desktop_shortcuts_applications_dir: /usr/share/applications
+desktop_shortcuts_skel_dir: /etc/skel/Рабочий стол
+desktop_shortcuts_skel_autostart_dir: /etc/skel/.config/autostart
 desktop_shortcuts_application_entries:
   - yandex-browser.desktop
   - onlyoffice-desktopeditors.desktop

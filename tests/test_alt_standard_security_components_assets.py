@@ -68,6 +68,10 @@ def test_user_profile_includes_cryptopro_home_and_public_launchers() -> None:
     templates = ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "templates"
 
     assert "desktop_shortcuts_custom_entries" in shortcuts
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+    assert variables["desktop_shortcuts_skel_dir"] == "/etc/skel/Рабочий стол"
     assert (templates / "sosn-cryptopro.desktop.j2").is_file()
     assert (templates / "sosn-home.desktop.j2").is_file()
     assert (templates / "sosn-public.desktop.j2").is_file()
