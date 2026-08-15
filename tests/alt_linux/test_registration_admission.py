@@ -18,6 +18,7 @@ from support.controller_sandbox import make_controller_sandbox
 from support.lifecycle_fixtures import (
     TEST_MACHINE_MAC,
     TEST_MACHINE_UUID,
+    TEST_REGISTRATION_ID,
     commit_candidate_without_cleanup,
     complete_candidate_archive,
     registration_payload,
@@ -26,12 +27,16 @@ from support.lifecycle_fixtures import (
 from support.payloads import provision_request
 
 
-def request() -> RegistrationRequest:
+def request(
+    *,
+    assigned_domain_user: str | None = None,
+) -> RegistrationRequest:
     return RegistrationRequest(
         hostname="alt-lifecycle-test",
         mac=TEST_MACHINE_MAC,
         machine_uuid=TEST_MACHINE_UUID,
         ip="192.0.2.56",
+        assigned_domain_user=assigned_domain_user,
     )
 
 
@@ -123,6 +128,67 @@ def test_active_registration_is_not_overwritten(
         "registration_state": "pending",
     }
     assert path.read_bytes() == before
+
+
+def test_failed_missing_assigned_user_can_be_registered_again(
+    tmp_path: Path,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    failed = registration_payload(status="failed")
+    failed.update(
+        {
+            "assigned_domain_user": "missing-user@sosnadmin.local",
+            "error": "assigned_domain_user_not_found",
+            "failed_at": "2026-08-15T08:20:52+00:00",
+        }
+    )
+    source = write_registration(sandbox.settings, "failed", failed)
+
+    decision = RegistrationAdmissionService(sandbox.settings).admit(
+        request(assigned_domain_user="alt-test-user@sosnadmin.local")
+    )
+
+    assert decision.http_status == 201
+    assert decision.payload["status"] == "registration_recovered"
+    assert not source.exists()
+    pending = read_json(
+        sandbox.settings.registration_root
+        / "pending"
+        / f"{TEST_MACHINE_UUID}.json"
+    )
+    assert pending["assigned_domain_user"] == "alt-test-user@sosnadmin.local"
+    assert pending["status"] == "pending"
+    assert pending["recovered_from_registration_id"] == TEST_REGISTRATION_ID
+    assert pending["recovery_reason"] == "assigned_domain_user_not_found"
+
+
+def test_interrupted_assigned_user_recovery_is_completed_on_retry(
+    tmp_path: Path,
+) -> None:
+    sandbox = make_controller_sandbox(tmp_path)
+    interrupted = registration_payload(status="pending")
+    interrupted.update(
+        {
+            "assigned_domain_user": "alt-test-user@sosnadmin.local",
+            "recovered_from_registration_id": "reg-old-generation",
+            "recovery_reason": "assigned_domain_user_not_found",
+            "recovery_pending": True,
+        }
+    )
+    source = write_registration(sandbox.settings, "failed", interrupted)
+
+    decision = RegistrationAdmissionService(sandbox.settings).admit(
+        request(assigned_domain_user="alt-test-user@sosnadmin.local")
+    )
+
+    assert decision.http_status == 201
+    assert decision.payload["status"] == "registration_recovered"
+    assert not source.exists()
+    assert (
+        sandbox.settings.registration_root
+        / "pending"
+        / f"{TEST_MACHINE_UUID}.json"
+    ).exists()
 
 
 def test_legacy_active_registration_is_idempotent(
