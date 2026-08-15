@@ -54,6 +54,17 @@
   loop: "{{ desktop_shortcuts_application_entries }}"
   no_log: true
 
+- name: Copy managed custom launchers into selected user desktop
+  ansible.builtin.copy:
+    src: "{{ desktop_shortcuts_skel_dir }}/{{ item }}"
+    dest: "{{ desktop_shortcuts_home }}/Рабочий стол/{{ item }}"
+    remote_src: true
+    owner: "{{ desktop_shortcuts_uid }}"
+    group: "{{ desktop_shortcuts_gid }}"
+    mode: "0700"
+  loop: "{{ desktop_shortcuts_custom_entries }}"
+  no_log: true
+
 - name: Add Nextcloud autostart for selected user
   ansible.builtin.copy:
     src: "{{ desktop_shortcuts_applications_dir }}/{{ desktop_shortcuts_nextcloud_entry }}"

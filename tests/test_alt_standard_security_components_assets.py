@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+
+ANSIBLE_ROOT = Path(__file__).resolve().parents[1] / "deploy" / "alt-linux" / "ansible"
+
+
+def test_standard_domain_requires_security_components_after_domain_join() -> None:
+    playbook = yaml.safe_load(
+        (ANSIBLE_ROOT / "playbooks" / "03-configure-domain-workstation.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    components = playbook[0]["vars"]["configure_components"]
+
+    assert [component["name"] for component in components] == [
+        "plasma_baseline",
+        "standard_software",
+        "browser",
+        "onlyoffice",
+        "nextcloud_desktop",
+        "organization_ca",
+        "cryptopro",
+        "cryptopro_cades",
+        "gosuslugi_plugin",
+        "endpoint_agent",
+        "desktop_shortcuts",
+    ]
+    assert all(component["required"] is True for component in components)
+
+
+def test_security_roles_use_reviewed_artifacts_and_safe_endpoint_contract() -> None:
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+    endpoint = (
+        ANSIBLE_ROOT / "roles" / "endpoint_agent_alt" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert variables["software_catalog"]["gosuslugi_plugin"]["package_evr"] == "1.3.19.0-1"
+    assert variables["endpoint_agent_rpm_sha256"] == (
+        "44ef9157f6f88049b715e957d4c0cc8e1b5f5e1ae109e9a0442045de91580d05"
+    )
+    assert "/usr/lib/endpoint-agent/endpoint-agent-fingerprint" in endpoint
+    assert "https://endpoint.sosnadmin.local" in endpoint
+    assert "validate_certs: true" in endpoint
+    assert "endpoint-enrollment-claim" in endpoint
+    assert "Revoke per-host rollout campaign" in endpoint
+    assert "no_log: true" in endpoint
+
+
+def test_user_profile_includes_cryptopro_home_and_public_launchers() -> None:
+    shortcuts = (
+        ANSIBLE_ROOT / "roles" / "desktop_shortcuts_user" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    templates = ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "templates"
+
+    assert "desktop_shortcuts_custom_entries" in shortcuts
+    assert (templates / "sosn-cryptopro.desktop.j2").is_file()
+    assert (templates / "sosn-home.desktop.j2").is_file()
+    assert (templates / "sosn-public.desktop.j2").is_file()

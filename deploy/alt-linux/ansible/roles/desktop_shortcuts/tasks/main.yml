@@ -31,6 +31,15 @@
     mode: "0755"
   loop: "{{ desktop_shortcuts_application_entries }}"
 
+- name: Create managed custom launchers for future domain user desktops
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ desktop_shortcuts_skel_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ desktop_shortcuts_custom_entries }}"
+
 - name: Create Nextcloud autostart directory for future domain users
   ansible.builtin.file:
     path: "{{ desktop_shortcuts_skel_autostart_dir }}"

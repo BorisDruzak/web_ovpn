@@ -50,7 +50,57 @@ desktop_shortcuts_application_entries:
   - onlyoffice-desktopeditors.desktop
   - nextcloud-client.desktop
 desktop_shortcuts_nextcloud_entry: nextcloud-client.desktop
+desktop_shortcuts_custom_entries:
+  - sosn-cryptopro.desktop
+  - sosn-home.desktop
+  - sosn-public.desktop
+organization_ca_artifact_path: /opt/alt-deploy-control/artifacts/organization-ca/sosnadmin-local-ca.crt
+organization_ca_artifact_sha256: b9cef2205fe10e4a2a2b00852348f6cbbbcfa3b18db1588d093a407bee91029f
+organization_ca_anchor_path: /etc/pki/ca-trust/source/anchors/sosnadmin-local-ca.crt
+organization_ca_subject: Sosnadmin Local CA
+endpoint_agent_rpm_source: /opt/alt-deploy-control/artifacts/endpoint-agent/endpoint-agent-3.2.21-alt2.x86_64.rpm
+endpoint_agent_rpm_sha256: 44ef9157f6f88049b715e957d4c0cc8e1b5f5e1ae109e9a0442045de91580d05
+endpoint_agent_ca_source: /opt/alt-deploy-control/artifacts/organization-ca/sosnadmin-local-ca.crt
+endpoint_agent_gateway_ca_path: /opt/alt-deploy-control/artifacts/organization-ca/sosnadmin-local-ca.crt
+endpoint_agent_installation_id: "endpoint-{{ machine_uuid }}"
+endpoint_agent_campaign_cidrs:
+  - 192.168.100.0/23
+  - 192.168.101.0/24
+endpoint_agent_campaign_lifetime_minutes: 15
+endpoint_agent_campaign_policy:
+  policy_id: ansible-alt-rollout
+endpoint_agent_campaign_label: Ansible ALT rollout
+endpoint_agent_campaign_site: sosnadmin
+endpoint_agent_enrollment_retries: 30
+endpoint_agent_enrollment_delay_seconds: 2
 software_catalog:
+  cryptopro:
+    artifact_path: /opt/alt-deploy-control/artifacts/cryptopro/linux-amd64.tgz
+    sha256: dcab1fb326397c1993bf52e55732096793037caeec9f374586fc4e6ff0d739d4
+    package_evr: 5.0.13600-7
+    packages:
+      - lsb-cprocsp-base
+      - lsb-cprocsp-capilite-64
+      - lsb-cprocsp-kc1-64
+      - lsb-cprocsp-rdr-64
+      - cprocsp-rdr-gui-gtk-64
+      - cprocsp-cptools-gtk-64
+      - cprocsp-rdr-pcsc-64
+      - cprocsp-rdr-jacarta-64
+      - lsb-cprocsp-pkcs11-64
+  cryptopro_cades:
+    artifact_path: /opt/alt-deploy-control/artifacts/cryptopro-cades/cades-linux-amd64.tar.gz
+    sha256: 9559cff6c818c6031fb7f182493830e9e138bda85616848d0f54620bf523c137
+    package_evr: 2.0.15700-1
+    packages:
+      - cprocsp-pki-cades-64
+      - cprocsp-pki-plugin-64
+  gosuslugi_plugin:
+    artifact_path: /opt/alt-deploy-control/artifacts/gosuslugi/gosuslugi-plugin-1.3.19.0-1.x86_64.rpm
+    sha256: ca4ca31dfd5bbcb4f61a47d989a3087b5e2d1e80f72e73018976108488e96a98
+    package_name: gosuslugi-plugin
+    package_evr: 1.3.19.0-1
+    architecture: x86_64
   browser:
     artifact_path: /opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm
     sha256: 7fbce78e9799ae36ebfcf750d5880f27d829d5546e9ac77f1868afb9657d9a89

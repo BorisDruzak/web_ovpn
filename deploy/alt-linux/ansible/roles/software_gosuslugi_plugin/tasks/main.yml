@@ -1,0 +1,65 @@
+---
+- name: Inspect approved ГосПлагин RPM on controller
+  ansible.builtin.stat:
+    path: "{{ software_catalog.gosuslugi_plugin.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: gosuslugi_artifact
+
+- name: Require approved ГосПлагин RPM
+  ansible.builtin.assert:
+    that:
+      - gosuslugi_artifact.stat.exists
+      - gosuslugi_artifact.stat.isreg
+      - gosuslugi_artifact.stat.checksum == software_catalog.gosuslugi_plugin.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_artifact_invalid
+
+- name: Inspect reviewed ГосПлагин RPM metadata
+  ansible.builtin.command:
+    argv:
+      - rpm
+      - -qp
+      - --qf
+      - "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}"
+      - "{{ software_catalog.gosuslugi_plugin.artifact_path }}"
+  delegate_to: localhost
+  become: false
+  register: gosuslugi_metadata
+  changed_when: false
+
+- name: Require exact ГосПлагин RPM metadata
+  ansible.builtin.assert:
+    that:
+      - gosuslugi_metadata.stdout | trim == software_catalog.gosuslugi_plugin.package_name ~ '|' ~ software_catalog.gosuslugi_plugin.package_evr ~ '|' ~ software_catalog.gosuslugi_plugin.architecture
+    fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_metadata_invalid
+
+- name: Query installed ГосПлагин version
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_catalog.gosuslugi_plugin.package_name }}"]
+  register: gosuslugi_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install approved ГосПлагин RPM
+  ansible.builtin.command:
+    argv: [apt-get, -y, install, "{{ software_catalog.gosuslugi_plugin.artifact_path }}"]
+  when: gosuslugi_installed.rc != 0 or (gosuslugi_installed.stdout | trim) != software_catalog.gosuslugi_plugin.package_evr
+  changed_when: true
+  no_log: true
+
+- name: Verify ГосПлагин native host
+  ansible.builtin.stat:
+    path: /opt/iitrust/gosuslugi_plugin/bin/gosuslugi_plugin
+  register: gosuslugi_native_host
+  changed_when: false
+
+- name: Require ГосПлагин native host
+  ansible.builtin.assert:
+    that: [gosuslugi_native_host.stat.exists, gosuslugi_native_host.stat.isreg]
+    fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_native_host_missing
+
+- name: Publish ГосПлагин verification fact
+  ansible.builtin.set_fact:
+    gosuslugi_plugin_ok: true

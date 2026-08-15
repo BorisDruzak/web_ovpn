@@ -1,0 +1,103 @@
+---
+- name: Inspect approved CryptoPro archive on controller
+  ansible.builtin.stat:
+    path: "{{ software_catalog.cryptopro.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: cryptopro_artifact
+
+- name: Require approved CryptoPro archive
+  ansible.builtin.assert:
+    that:
+      - cryptopro_artifact.stat.exists
+      - cryptopro_artifact.stat.isreg
+      - cryptopro_artifact.stat.checksum == software_catalog.cryptopro.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_artifact_invalid
+
+- name: Query installed CryptoPro packages
+  ansible.builtin.command:
+    argv: [rpm, -q, "{{ item }}"]
+  loop: "{{ software_catalog.cryptopro.packages }}"
+  register: cryptopro_packages
+  changed_when: false
+  failed_when: false
+
+- name: Determine whether CryptoPro installation is needed
+  ansible.builtin.set_fact:
+    cryptopro_install_needed: "{{ cryptopro_packages.results | selectattr('rc', 'ne', 0) | list | length > 0 }}"
+
+- name: Install CryptoPro prerequisite
+  ansible.builtin.include_role:
+    name: alt_resilience
+    tasks_from: install_packages.yml
+  vars:
+    alt_resilience_package_names: [cryptopro-preinstall]
+  when: cryptopro_install_needed | bool
+
+- name: Install CryptoPro CSP from reviewed archive
+  block:
+    - name: Create CryptoPro extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: cryptopro-
+      register: cryptopro_tmp
+
+    - name: Unpack approved CryptoPro archive
+      ansible.builtin.unarchive:
+        src: "{{ software_catalog.cryptopro.artifact_path }}"
+        dest: "{{ cryptopro_tmp.path }}"
+
+    - name: Find required CryptoPro RPMs
+      ansible.builtin.find:
+        paths: "{{ cryptopro_tmp.path }}"
+        patterns: "{{ item }}-{{ software_catalog.cryptopro.package_evr }}*.rpm"
+        recurse: true
+        file_type: file
+      loop: "{{ software_catalog.cryptopro.packages }}"
+      register: cryptopro_rpms
+
+    - name: Require one RPM for every CryptoPro package
+      ansible.builtin.assert:
+        that: [item.matched | int == 1]
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_archive_content_invalid
+      loop: "{{ cryptopro_rpms.results }}"
+
+    - name: Install exact CryptoPro RPMs in one transaction
+      ansible.builtin.command:
+        argv: "{{ ['apt-get', '-y', 'install'] + (cryptopro_rpms.results | map(attribute='files') | map('first') | map(attribute='path') | list) }}"
+      register: cryptopro_install
+      changed_when: cryptopro_install.rc == 0
+      no_log: true
+  always:
+    - name: Remove CryptoPro extraction directory
+      ansible.builtin.file:
+        path: "{{ cryptopro_tmp.path | default('') }}"
+        state: absent
+      when: cryptopro_tmp is defined
+      no_log: true
+  when: cryptopro_install_needed | bool
+
+- name: Apply CryptoPro license without disclosing it
+  ansible.builtin.command:
+    argv: [/opt/cprocsp/sbin/amd64/cpconfig, -license, -set, "{{ vault_cryptopro_license }}"]
+  changed_when: false
+  no_log: true
+
+- name: Enable PCSC socket for CryptoPro
+  ansible.builtin.systemd_service:
+    name: pcscd.socket
+    enabled: true
+    state: started
+
+- name: Verify CryptoPro installation
+  ansible.builtin.command:
+    argv: [rpm, -q, "{{ item }}"]
+  loop: "{{ software_catalog.cryptopro.packages }}"
+  changed_when: false
+
+- name: Publish CryptoPro verification fact
+  ansible.builtin.set_fact:
+    cryptopro_ok: true

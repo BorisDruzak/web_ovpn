@@ -46,6 +46,21 @@
         role: software_nextcloud_desktop
         required: true
         enabled: "{{ software_profile == 'core-apps' }}"
+      - name: organization_ca
+        role: organization_ca
+        required: true
+      - name: cryptopro
+        role: software_cryptopro
+        required: true
+      - name: cryptopro_cades
+        role: software_cryptopro_cades
+        required: true
+      - name: gosuslugi_plugin
+        role: software_gosuslugi_plugin
+        required: true
+      - name: endpoint_agent
+        role: endpoint_agent_alt
+        required: true
       - name: desktop_shortcuts
         role: desktop_shortcuts
         required: true

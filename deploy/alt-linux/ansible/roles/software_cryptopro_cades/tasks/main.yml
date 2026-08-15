@@ -1,0 +1,83 @@
+---
+- name: Inspect approved CryptoPro CAdES archive on controller
+  ansible.builtin.stat:
+    path: "{{ software_catalog.cryptopro_cades.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: cades_artifact
+
+- name: Require approved CryptoPro CAdES archive
+  ansible.builtin.assert:
+    that:
+      - cades_artifact.stat.exists
+      - cades_artifact.stat.isreg
+      - cades_artifact.stat.checksum == software_catalog.cryptopro_cades.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_artifact_invalid
+
+- name: Query installed CAdES packages
+  ansible.builtin.command:
+    argv: [rpm, -q, "{{ item }}"]
+  loop: "{{ software_catalog.cryptopro_cades.packages }}"
+  register: cades_packages
+  changed_when: false
+  failed_when: false
+
+- name: Determine whether CAdES installation is needed
+  ansible.builtin.set_fact:
+    cades_install_needed: "{{ cades_packages.results | selectattr('rc', 'ne', 0) | list | length > 0 }}"
+
+- name: Install CAdES from reviewed archive
+  block:
+    - name: Create CAdES extraction directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: cryptopro-cades-
+      register: cades_tmp
+    - name: Unpack approved CAdES archive
+      ansible.builtin.unarchive:
+        src: "{{ software_catalog.cryptopro_cades.artifact_path }}"
+        dest: "{{ cades_tmp.path }}"
+    - name: Find required CAdES RPMs
+      ansible.builtin.find:
+        paths: "{{ cades_tmp.path }}"
+        patterns: "{{ item }}-{{ software_catalog.cryptopro_cades.package_evr }}*.rpm"
+        recurse: true
+        file_type: file
+      loop: "{{ software_catalog.cryptopro_cades.packages }}"
+      register: cades_rpms
+    - name: Require one RPM for every CAdES package
+      ansible.builtin.assert:
+        that: [item.matched | int == 1]
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_archive_content_invalid
+      loop: "{{ cades_rpms.results }}"
+    - name: Install exact CAdES RPMs in one transaction
+      ansible.builtin.command:
+        argv: "{{ ['apt-get', '-y', 'install'] + (cades_rpms.results | map(attribute='files') | map('first') | map(attribute='path') | list) }}"
+      changed_when: true
+      no_log: true
+  always:
+    - name: Remove CAdES extraction directory
+      ansible.builtin.file:
+        path: "{{ cades_tmp.path | default('') }}"
+        state: absent
+      when: cades_tmp is defined
+      no_log: true
+  when: cades_install_needed | bool
+
+- name: Verify CAdES native browser host
+  ansible.builtin.stat:
+    path: /opt/cprocsp/bin/amd64/nmcades
+  register: cades_native_host
+  changed_when: false
+
+- name: Require CAdES native browser host
+  ansible.builtin.assert:
+    that: [cades_native_host.stat.exists, cades_native_host.stat.isreg]
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_native_host_missing
+
+- name: Publish CAdES verification fact
+  ansible.builtin.set_fact:
+    cryptopro_cades_ok: true

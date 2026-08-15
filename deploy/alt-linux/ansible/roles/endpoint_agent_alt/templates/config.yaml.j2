@@ -1,0 +1,12 @@
+schema_version: 1
+gateway:
+  endpoint: "https://endpoint.sosnadmin.local"
+  ca_file: "/etc/endpoint-agent/ca.crt"
+provisioning:
+  installation_id: "{{ endpoint_agent_installation_id }}"
+  systemd_claim_credential_name: "endpoint-enrollment-claim"
+  permanent_credential_file: "/var/lib/endpoint-agent/device-credential"
+runtime:
+  data_dir: "/var/lib/endpoint-agent"
+  log_dir: "/var/log/endpoint-agent"
+  install_root: "/opt/endpoint-agent"
