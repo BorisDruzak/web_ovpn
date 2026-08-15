@@ -158,15 +158,19 @@
         state: started
       loop: [endpoint-agent-update.path, endpoint-agent.service]
 
-    - name: Wait for durable Endpoint enrollment
-      ansible.builtin.shell: >-
-        test -s /var/lib/endpoint-agent/device-credential &&
-        systemctl is-active --quiet endpoint-agent.service &&
-        systemctl is-active --quiet endpoint-agent-update.path
-      register: endpoint_agent_enrolled
+    - name: Wait for durable Endpoint credential
+      ansible.builtin.command:
+        argv: [test, -s, /var/lib/endpoint-agent/device-credential]
+      register: endpoint_agent_credential_ready
       retries: "{{ endpoint_agent_enrollment_retries }}"
       delay: "{{ endpoint_agent_enrollment_delay_seconds }}"
-      until: endpoint_agent_enrolled.rc == 0
+      until: endpoint_agent_credential_ready.rc == 0
+      changed_when: false
+      no_log: true
+
+    - name: Require active Endpoint Agent services after enrollment
+      ansible.builtin.command:
+        argv: [systemctl, is-active, --quiet, endpoint-agent.service, endpoint-agent-update.path]
       changed_when: false
       no_log: true
   always:
