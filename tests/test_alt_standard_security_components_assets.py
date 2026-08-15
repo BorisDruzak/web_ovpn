@@ -65,3 +65,12 @@ def test_user_profile_includes_cryptopro_home_and_public_launchers() -> None:
     assert (templates / "sosn-cryptopro.desktop.j2").is_file()
     assert (templates / "sosn-home.desktop.j2").is_file()
     assert (templates / "sosn-public.desktop.j2").is_file()
+
+
+def test_identity_accepts_domain_fqdn_after_hostname_verification() -> None:
+    identity = (
+        ANSIBLE_ROOT / "roles" / "workstation_identity" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "workstation_identity_after.stdout | trim | lower" in identity
+    assert "in workstation_identity_accepted_static_hostnames" in identity
