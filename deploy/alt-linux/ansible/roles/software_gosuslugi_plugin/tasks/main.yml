@@ -42,12 +42,20 @@
   changed_when: false
   failed_when: false
 
+- name: Copy approved ГосПлагин RPM to workstation
+  ansible.builtin.copy:
+    src: "{{ software_catalog.gosuslugi_plugin.artifact_path }}"
+    dest: /var/tmp/gosuslugi-plugin.rpm
+    owner: root
+    group: root
+    mode: "0600"
+  when: gosuslugi_installed.rc != 0 or (gosuslugi_installed.stdout | trim) != software_catalog.gosuslugi_plugin.package_evr
+
 - name: Install approved ГосПлагин RPM
   ansible.builtin.command:
-    argv: [apt-get, -y, install, "{{ software_catalog.gosuslugi_plugin.artifact_path }}"]
+    argv: [apt-get, -y, install, /var/tmp/gosuslugi-plugin.rpm]
   when: gosuslugi_installed.rc != 0 or (gosuslugi_installed.stdout | trim) != software_catalog.gosuslugi_plugin.package_evr
   changed_when: true
-  no_log: true
 
 - name: Verify ГосПлагин native host
   ansible.builtin.stat:

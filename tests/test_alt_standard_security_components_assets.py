@@ -54,6 +54,12 @@ def test_security_roles_use_reviewed_artifacts_and_safe_endpoint_contract() -> N
     assert "Restart Endpoint Agent without one-time claim" in endpoint
     assert "no_log: true" in endpoint
 
+    gosuslugi = (
+        ANSIBLE_ROOT / "roles" / "software_gosuslugi_plugin" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+    assert "Copy approved ГосПлагин RPM to workstation" in gosuslugi
+    assert "argv: [apt-get, -y, install, /var/tmp/gosuslugi-plugin.rpm]" in gosuslugi
+
 
 def test_user_profile_includes_cryptopro_home_and_public_launchers() -> None:
     shortcuts = (
