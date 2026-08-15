@@ -274,6 +274,19 @@ def test_system_stage_excludes_current_user_configuration() -> None:
             "required": True,
             "enabled": "{{ software_profile == 'core-apps' }}",
         },
+        {"name": "organization_ca", "role": "organization_ca", "required": True},
+        {"name": "cryptopro", "role": "software_cryptopro", "required": True},
+        {
+            "name": "cryptopro_cades",
+            "role": "software_cryptopro_cades",
+            "required": True,
+        },
+        {
+            "name": "gosuslugi_plugin",
+            "role": "software_gosuslugi_plugin",
+            "required": True,
+        },
+        {"name": "endpoint_agent", "role": "endpoint_agent_alt", "required": True},
         {
             "name": "desktop_shortcuts",
             "role": "desktop_shortcuts",
