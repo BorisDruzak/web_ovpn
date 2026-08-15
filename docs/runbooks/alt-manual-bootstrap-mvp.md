@@ -20,19 +20,25 @@ bash /tmp/start-alt-bootstrap.sh
 
 The launcher elevates interactively: through `sudo` when it is installed, or through the standard ALT `su` root prompt on a clean installation. The root password created during ALT installation is required only for that first `su` prompt. Do not put either password in a command, file, request or log.
 
+The launcher validates and confirms the final hostname before it downloads the
+technical bootstrap. The operator enters only the hostname and AD login; the
+domain name, realm, workgroup and OU are controller-owned. The launcher never
+requests an AD password. A valid current hostname is shown for confirmation;
+an invalid hostname must be replaced with a name such as `alt-a1-pc3` and then
+confirmed before it is changed locally.
+
 Domain join and software installation are controller-only.
 
 ## Controller handoff
 
-Before the local command, an authorized controller operator creates one
-strict request file named for the registered machine UUID in the private
-configure-requests directory. The file contains hostname, hostname mode,
-profile, domain values, OU and test user only; it contains no password,
-controller secret or key.
+After registration with a selected AD user, the controller creates the strict
+request from the registered hostname and fixed domain profile. The request
+contains no password, controller secret or key.
 
-After registration, the controller automatically runs preflight, preview and configuration as the altserver service account. It loads only the file whose
-name exactly matches the registered UUID, requires preview UUID and target IP
-to match registration, and then invokes the fixed configuration playbook.
+After registration, the controller automatically runs preflight, AD-user
+validation, preview and configuration as the `altserver` service account.
+Preview UUID and target IP must match registration before the fixed
+configuration playbook can run.
 
 Controller state is owned by altserver; the workstation operator does not run Ansible, system-auth or any domain join command.
 

@@ -22,14 +22,66 @@ fi
 DEPLOY_HOST=${ALT_DEPLOY_HOST:-192.168.100.17}
 DEPLOY_URL="http://${DEPLOY_HOST}:8087"
 BOOTSTRAP_URL="${DEPLOY_URL}/bootstrap/bootstrap.sh"
+HOSTNAME_RE='^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$'
 ASSIGNED_DOMAIN_USER_RE='^[a-z0-9][a-z0-9._-]{0,62}(@sosnadmin\\.local)?$'
+
+normalize_value() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | xargs
+}
+
+confirm_hostname() {
+    local candidate=$1 answer
+    read -r -p "Apply hostname ${candidate}? [y/N]: " answer
+    [[ ${answer,,} == y ]]
+}
+
+current_hostname_raw=$(hostnamectl --static 2>/dev/null || true)
+current_hostname=$(normalize_value "${current_hostname_raw}")
+confirmed_hostname=''
+
+if [[ "${current_hostname}" =~ ${HOSTNAME_RE} ]]; then
+    echo "Current hostname: ${current_hostname}"
+    if ! confirm_hostname "${current_hostname}"; then
+        echo "Hostname confirmation was cancelled." >&2
+        exit 1
+    fi
+    confirmed_hostname=${current_hostname}
+else
+    echo "Current hostname does not match the workstation naming scheme." >&2
+    echo "Hostname must match: alt-a1-pc3" >&2
+    while :; do
+        read -r -p "Final hostname: " candidate_hostname
+        candidate_hostname=$(normalize_value "${candidate_hostname}")
+        if [[ ! "${candidate_hostname}" =~ ${HOSTNAME_RE} ]]; then
+            echo "Hostname must match: alt-a1-pc3" >&2
+            continue
+        fi
+        if ! confirm_hostname "${candidate_hostname}"; then
+            echo "Hostname confirmation was cancelled." >&2
+            exit 1
+        fi
+        confirmed_hostname=${candidate_hostname}
+        break
+    done
+fi
+
+if [[ "${current_hostname_raw}" != "${confirmed_hostname}" ]]; then
+    hostnamectl set-hostname "${confirmed_hostname}"
+fi
+
+hostname_after=$(hostnamectl --static 2>/dev/null || true)
+if [[ "${hostname_after}" != "${confirmed_hostname}" ]]; then
+    echo "Hostname read-back verification failed." >&2
+    exit 1
+fi
+export ALT_FINAL_HOSTNAME="${confirmed_hostname}"
 
 assigned_domain_user=${ALT_ASSIGNED_DOMAIN_USER:-}
 if [[ -z "${assigned_domain_user}" ]]; then
     read -r -p "AD user (login or UPN): " assigned_domain_user
 fi
 
-assigned_domain_user=$(printf '%s' "${assigned_domain_user}" | tr '[:upper:]' '[:lower:]' | xargs)
+assigned_domain_user=$(normalize_value "${assigned_domain_user}")
 if [[ ! "${assigned_domain_user}" =~ ${ASSIGNED_DOMAIN_USER_RE} ]]; then
     echo "AD user must be a valid sosnadmin.local login or UPN." >&2
     exit 1
