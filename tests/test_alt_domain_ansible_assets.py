@@ -130,6 +130,20 @@ def test_core_apps_roles_use_approved_sources_and_an_explicit_user_only() -> Non
     assert "find" not in shortcuts
 
 
+def test_user_profile_shortcuts_share_the_system_shortcut_catalog() -> None:
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+
+    assert variables["desktop_shortcuts_applications_dir"] == "/usr/share/applications"
+    assert variables["desktop_shortcuts_application_entries"] == [
+        "yandex-browser.desktop",
+        "onlyoffice-desktopeditors.desktop",
+        "nextcloud-client.desktop",
+    ]
+    assert variables["desktop_shortcuts_nextcloud_entry"] == "nextcloud-client.desktop"
+
+
 def test_krfb_template_reads_obscured_values_only_from_vault_variables() -> None:
     template_path = (
         ANSIBLE_ROOT / "roles" / "remote_access_krfb" / "templates" / "krfbrc.j2"

@@ -42,6 +42,14 @@ approved_software_components:
   - onlyoffice
   - nextcloud_desktop
   - desktop_shortcuts
+# These values are used by both the system skeleton role and the post-login
+# role.  Role defaults are not shared between separately invoked roles.
+desktop_shortcuts_applications_dir: /usr/share/applications
+desktop_shortcuts_application_entries:
+  - yandex-browser.desktop
+  - onlyoffice-desktopeditors.desktop
+  - nextcloud-client.desktop
+desktop_shortcuts_nextcloud_entry: nextcloud-client.desktop
 software_catalog:
   browser:
     artifact_path: /opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm
