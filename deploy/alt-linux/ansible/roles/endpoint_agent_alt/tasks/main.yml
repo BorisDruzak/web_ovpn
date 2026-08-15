@@ -15,6 +15,12 @@
   register: endpoint_agent_credential
   changed_when: false
 
+- name: Inspect one-time Endpoint claim
+  ansible.builtin.stat:
+    path: /etc/credstore/endpoint-enrollment-claim
+  register: endpoint_agent_claim_file
+  changed_when: false
+
 - name: Require existing Endpoint Agent to be enrolled and active
   ansible.builtin.assert:
     that:
@@ -29,7 +35,7 @@
       ansible.builtin.assert:
         that:
           - not endpoint_agent_credential.stat.exists
-          - not lookup('ansible.builtin.fileglob', '/etc/credstore/endpoint-enrollment-claim')
+          - not endpoint_agent_claim_file.stat.exists
         fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_host_not_clean
 
     - name: Inspect reviewed Endpoint Agent RPM on controller
@@ -142,6 +148,14 @@
       register: endpoint_agent_claim
       no_log: true
 
+    - name: Create protected Endpoint credential directory
+      ansible.builtin.file:
+        path: /etc/credstore
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
     - name: Install protected Endpoint claim
       ansible.builtin.copy:
         content: "{{ endpoint_agent_claim.json.claim }}"
@@ -169,6 +183,36 @@
       no_log: true
 
     - name: Require active Endpoint Agent services after enrollment
+      ansible.builtin.command:
+        argv: [systemctl, is-active, --quiet, endpoint-agent.service, endpoint-agent-update.path]
+      changed_when: false
+      no_log: true
+
+    - name: Remove consumed Endpoint one-time claim
+      ansible.builtin.file:
+        path: /etc/credstore/endpoint-enrollment-claim
+        state: absent
+      no_log: true
+
+    - name: Confirm Endpoint one-time claim is removed
+      ansible.builtin.stat:
+        path: /etc/credstore/endpoint-enrollment-claim
+      register: endpoint_agent_claim_removed
+      changed_when: false
+      no_log: true
+
+    - name: Require removed Endpoint one-time claim
+      ansible.builtin.assert:
+        that: not endpoint_agent_claim_removed.stat.exists
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_claim_cleanup_failed
+      no_log: true
+
+    - name: Restart Endpoint Agent without one-time claim
+      ansible.builtin.systemd_service:
+        name: endpoint-agent.service
+        state: restarted
+
+    - name: Require Endpoint Agent active without one-time claim
       ansible.builtin.command:
         argv: [systemctl, is-active, --quiet, endpoint-agent.service, endpoint-agent-update.path]
       changed_when: false

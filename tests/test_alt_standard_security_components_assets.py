@@ -49,6 +49,9 @@ def test_security_roles_use_reviewed_artifacts_and_safe_endpoint_contract() -> N
     assert "validate_certs: true" in endpoint
     assert "endpoint-enrollment-claim" in endpoint
     assert "Revoke per-host rollout campaign" in endpoint
+    assert "Inspect one-time Endpoint claim" in endpoint
+    assert "Create protected Endpoint credential directory" in endpoint
+    assert "Restart Endpoint Agent without one-time claim" in endpoint
     assert "no_log: true" in endpoint
 
 
