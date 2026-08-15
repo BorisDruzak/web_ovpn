@@ -49,6 +49,26 @@ def test_helper_accepts_already_registered(
     )
 
 
+def test_helper_accepts_recovered_registration(
+    tmp_path: Path,
+) -> None:
+    run = run_helper(
+        tmp_path,
+        http_status=201,
+        response={
+            "status": "registration_recovered",
+            "machine_key": TEST_MACHINE_UUID,
+            "registration_id": TEST_REGISTRATION_ID,
+            "ip": "192.168.101.56",
+        },
+    )
+
+    assert run.result.returncode == 0
+    assert json.loads(run.result.stdout)["status"] == (
+        "registration_recovered"
+    )
+
+
 def test_helper_requires_root_before_network(
     tmp_path: Path,
 ) -> None:

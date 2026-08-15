@@ -97,7 +97,10 @@ if not isinstance(payload, dict):
     raise SystemExit(1)
 
 status = payload.get("status")
-if http_status == 201 and status == "registered":
+if http_status == 201 and status in {
+    "registered",
+    "registration_recovered",
+}:
     raise SystemExit(0)
 if http_status == 200 and status == "already_registered":
     raise SystemExit(0)
