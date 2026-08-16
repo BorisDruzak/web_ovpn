@@ -77,6 +77,20 @@ def test_user_profile_includes_cryptopro_home_and_public_launchers() -> None:
     assert (templates / "sosn-public.desktop.j2").is_file()
 
 
+def test_managed_desktop_launchers_have_executable_commands_and_icons() -> None:
+    templates = ANSIBLE_ROOT / "roles" / "desktop_shortcuts" / "templates"
+    cryptopro = (templates / "sosn-cryptopro.desktop.j2").read_text(encoding="utf-8")
+    home = (templates / "sosn-home.desktop.j2").read_text(encoding="utf-8")
+    public = (templates / "sosn-public.desktop.j2").read_text(encoding="utf-8")
+
+    assert "Icon=/opt/cprocsp/share/icons/cptools.png" in cryptopro
+    assert "Exec=dolphin --new-window" in home
+    assert "Icon=folder-home" in home
+    assert "Exec=dolphin --new-window smb://antares/Public" in public
+    assert "Icon=folder-network" in public
+    assert "sh -c" not in home
+
+
 def test_identity_accepts_domain_fqdn_after_hostname_verification() -> None:
     identity = (
         ANSIBLE_ROOT / "roles" / "workstation_identity" / "tasks" / "main.yml"
