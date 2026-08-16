@@ -91,6 +91,24 @@ def test_managed_desktop_launchers_have_executable_commands_and_icons() -> None:
     assert "sh -c" not in home
 
 
+def test_organization_ca_catalog_includes_russian_trusted_rsa_and_gost_chains() -> None:
+    variables = yaml.safe_load(
+        (ANSIBLE_ROOT / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
+    anchors = variables["organization_ca_anchors"]
+
+    assert [anchor["name"] for anchor in anchors] == [
+        "sosnadmin-local-ca",
+        "russian-trusted-root-ca",
+        "russian-trusted-sub-ca",
+        "russian-trusted-sub-ca-2024",
+        "russian-trusted-root-ca-gost-2025",
+        "russian-trusted-sub-ca-gost-2025",
+    ]
+    assert all(anchor["source"].startswith("/opt/alt-deploy-control/artifacts/") for anchor in anchors)
+    assert all(len(anchor["sha256"]) == 64 for anchor in anchors)
+
+
 def test_identity_accepts_domain_fqdn_after_hostname_verification() -> None:
     identity = (
         ANSIBLE_ROOT / "roles" / "workstation_identity" / "tasks" / "main.yml"

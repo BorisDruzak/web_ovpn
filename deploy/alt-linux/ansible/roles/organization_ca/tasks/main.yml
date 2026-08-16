@@ -1,34 +1,43 @@
 ---
-- name: Inspect approved Sosnadmin CA on controller
+- name: Inspect approved organization CA anchors on controller
   ansible.builtin.stat:
-    path: "{{ organization_ca_artifact_path }}"
+    path: "{{ item.source }}"
     get_checksum: true
     checksum_algorithm: sha256
   delegate_to: localhost
   become: false
-  register: organization_ca_artifact
+  loop: "{{ organization_ca_anchors }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: organization_ca_artifacts
 
-- name: Require approved Sosnadmin CA on controller
+- name: Require approved organization CA anchors on controller
   ansible.builtin.assert:
     that:
-      - organization_ca_artifact.stat.exists
-      - organization_ca_artifact.stat.isreg
-      - organization_ca_artifact.stat.checksum == organization_ca_artifact_sha256
+      - item.stat.exists
+      - item.stat.isreg
+      - item.stat.checksum == item.item.sha256
     fail_msg: ALT_PREFLIGHT_FAILURE:organization_ca_artifact_invalid
+  loop: "{{ organization_ca_artifacts.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
 
-- name: Install Sosnadmin CA anchor
+- name: Install organization CA anchors
   ansible.builtin.copy:
-    src: "{{ organization_ca_artifact_path }}"
-    dest: "{{ organization_ca_anchor_path }}"
+    src: "{{ item.source }}"
+    dest: "{{ item.anchor_path }}"
     owner: root
     group: root
     mode: "0644"
-  register: organization_ca_copy
+  loop: "{{ organization_ca_anchors }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: organization_ca_copies
 
 - name: Refresh system certificate trust
   ansible.builtin.command:
     argv: [/bin/update-ca-trust]
-  when: organization_ca_copy is changed
+  when: organization_ca_copies.results | selectattr('changed') | list | length > 0
   changed_when: true
 
 - name: Verify Sosnadmin CA in system trust
@@ -37,11 +46,14 @@
   register: organization_ca_trust
   changed_when: false
 
-- name: Require Sosnadmin CA in system trust
+- name: Require organization CA anchors in system trust
   ansible.builtin.assert:
     that:
-      - organization_ca_subject in organization_ca_trust.stdout
+      - item.subject in organization_ca_trust.stdout
     fail_msg: ALT_PREFLIGHT_FAILURE:organization_ca_verification_failed
+  loop: "{{ organization_ca_anchors }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Publish organization CA verification fact
   ansible.builtin.set_fact:

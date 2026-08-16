@@ -56,10 +56,37 @@ desktop_shortcuts_custom_entries:
   - sosn-cryptopro.desktop
   - sosn-home.desktop
   - sosn-public.desktop
-organization_ca_artifact_path: /opt/alt-deploy-control/artifacts/organization-ca/sosnadmin-local-ca.crt
-organization_ca_artifact_sha256: b9cef2205fe10e4a2a2b00852348f6cbbbcfa3b18db1588d093a407bee91029f
-organization_ca_anchor_path: /etc/pki/ca-trust/source/anchors/sosnadmin-local-ca.crt
-organization_ca_subject: Sosnadmin Local CA
+organization_ca_anchors:
+  - name: sosnadmin-local-ca
+    source: /opt/alt-deploy-control/artifacts/organization-ca/sosnadmin-local-ca.crt
+    sha256: b9cef2205fe10e4a2a2b00852348f6cbbbcfa3b18db1588d093a407bee91029f
+    anchor_path: /etc/pki/ca-trust/source/anchors/sosnadmin-local-ca.crt
+    subject: Sosnadmin Local CA
+  - name: russian-trusted-root-ca
+    source: /opt/alt-deploy-control/artifacts/russian-trusted-ca/russian_trusted_root_ca.cer
+    sha256: 936a43fea6e8e525bcc0f81acd9c3d21b4fc4b9b68acea7906d698005afc6504
+    anchor_path: /etc/pki/ca-trust/source/anchors/russian_trusted_root_ca.cer
+    subject: Russian Trusted Root CA
+  - name: russian-trusted-sub-ca
+    source: /opt/alt-deploy-control/artifacts/russian-trusted-ca/russian_trusted_sub_ca.cer
+    sha256: f0ae589f36774f29ef3648f7984b08d42fcce6f1ffeeb6236d773daeb2744ea6
+    anchor_path: /etc/pki/ca-trust/source/anchors/russian_trusted_sub_ca.cer
+    subject: Russian Trusted Sub CA
+  - name: russian-trusted-sub-ca-2024
+    source: /opt/alt-deploy-control/artifacts/russian-trusted-ca/russian_trusted_sub_ca_2024.cer
+    sha256: 6f9d829c8e6712444fce3624658d8788672849c5d5b7b53fd9cf7e83eac4193e
+    anchor_path: /etc/pki/ca-trust/source/anchors/russian_trusted_sub_ca_2024.cer
+    subject: Russian Trusted Sub CA
+  - name: russian-trusted-root-ca-gost-2025
+    source: /opt/alt-deploy-control/artifacts/russian-trusted-ca/russian_trusted_root_ca_gost_2025.cer
+    sha256: 5b51db721b7c34958ed7432ae917a91297dd37508b2cae4f858ffbac6bc525ef
+    anchor_path: /etc/pki/ca-trust/source/anchors/russian_trusted_root_ca_gost_2025.cer
+    subject: Минцифры России НУЦ корневой
+  - name: russian-trusted-sub-ca-gost-2025
+    source: /opt/alt-deploy-control/artifacts/russian-trusted-ca/russian_trusted_sub_ca_gost_2025.cer
+    sha256: b809281bf07b865bcdd7f5746bf1ebb7ccee093d5c63b016dd91ee3b22cda8d1
+    anchor_path: /etc/pki/ca-trust/source/anchors/russian_trusted_sub_ca_gost_2025.cer
+    subject: Минцифры России НУЦ подчиненный
 endpoint_agent_rpm_source: /opt/alt-deploy-control/artifacts/endpoint-agent/endpoint-agent-3.2.21-alt2.x86_64.rpm
 endpoint_agent_rpm_sha256: 44ef9157f6f88049b715e957d4c0cc8e1b5f5e1ae109e9a0442045de91580d05
 endpoint_agent_ca_source: /opt/alt-deploy-control/artifacts/organization-ca/sosnadmin-local-ca.crt
