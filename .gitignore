@@ -64,6 +64,13 @@ build/
 Thumbs.db
 Desktop.ini
 
+# Local verification and transfer artifacts
+.playwright-cli/
+.codex_ssh_askpass.cmd
+.tmp-main-*.bundle
+alt-*.png
+alt-*.ppm
+
 # ALT deployment active secrets and runtime state
 deploy/alt-linux/ansible/group_vars/vault.yml
 alt-deploy-state/
