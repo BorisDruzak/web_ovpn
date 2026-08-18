@@ -126,6 +126,9 @@ sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbi
 sudo_cmd install -d -m 0755 -o root -g root /usr/local/libexec
 sudo_cmd install -m 0755 -o root -g root "$SRC/deploy/netctl-nmap-fingerprint" \
   /usr/local/libexec/netctl-nmap-fingerprint
+sudo_cmd install -m 0755 "$SRC/deploy/gov74-wait-dns.sh" /usr/local/sbin/gov74-wait-dns
+sudo_cmd install -d -m 0755 /etc/systemd/system/gov74-anyconnect.service.d
+sudo_cmd install -m 0644 "$SRC/deploy/gov74-anyconnect-dns-wait.conf" /etc/systemd/system/gov74-anyconnect.service.d/dns-wait.conf
 sudo_cmd mkdir -p /etc/openvpn/client-generator/output
 sudo_cmd chgrp openvpn-web /etc/openvpn/client-generator/output
 sudo_cmd chmod 0750 /etc/openvpn/client-generator/output
