@@ -100,6 +100,27 @@ def test_critical_phase_persists_safe_failed_result_before_terminal_failure() ->
     assert "'error':" in rendered
 
 
+def test_critical_phase_rescue_persists_before_terminal_failure() -> None:
+    phase_path = ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_critical_phase.yml"
+    phase = yaml.safe_load(phase_path.read_text(encoding="utf-8"))
+    rescue_tasks = phase[1]["rescue"]
+
+    persistence_indexes = [
+        index
+        for index, task in enumerate(rescue_tasks)
+        if task.get("ansible.builtin.include_tasks") == "write_configure_result.yml"
+    ]
+    failure_indexes = [
+        index
+        for index, task in enumerate(rescue_tasks)
+        if "ansible.builtin.fail" in task
+    ]
+
+    assert persistence_indexes == [1]
+    assert failure_indexes == [2]
+    assert persistence_indexes[0] < failure_indexes[0]
+
+
 def test_domain_verify_does_not_write_a_legacy_configure_result() -> None:
     content = (
         ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
