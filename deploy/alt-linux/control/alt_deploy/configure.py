@@ -36,6 +36,39 @@ PROFILE_FIELDS = frozenset(
 )
 SOFTWARE_PROFILES = frozenset({"base", "core-apps"})
 REMOTE_ACCESS_PROFILES = frozenset({"none", "krfb"})
+CONFIGURE_RESULT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "machine_uuid",
+        "hostname",
+        "profile",
+        "status",
+        "phase",
+        "retryable",
+        "recovered",
+        "reboot_required",
+        "error",
+        "components",
+        "verification",
+    }
+)
+LEGACY_CONFIGURE_RESULT_FIELDS = frozenset(
+    {"machine_uuid", "hostname", "profile", "verification"}
+)
+CONFIGURE_RESULT_STATUSES = frozenset({"successful", "degraded", "failed"})
+CONFIGURE_RESULT_PHASES = frozenset(
+    {
+        "preflight",
+        "identity",
+        "upgrade",
+        "network",
+        "domain_join",
+        "domain_core_verify",
+        "components",
+        "finalize",
+    }
+)
+CONFIGURE_ERROR_FIELDS = frozenset({"code", "class", "message"})
 
 HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
 HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
@@ -47,6 +80,9 @@ DOMAIN_USER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 DOMAIN_USER_UPN_RE = re.compile(
     r"^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\.local$"
 )
+CONFIGURE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+CONFIGURE_ERROR_CLASS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
+CONFIGURE_ERROR_MESSAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,;:()/_-]{0,511}$")
 
 
 def _invalid_request(message: str) -> ControlError:
@@ -71,6 +107,65 @@ def _required_string(payload: Mapping[str, object], field: str) -> str:
         raise _invalid_request(f"Configure request field {field} is required")
 
     return normalized
+
+
+def _read_configure_result(
+    payload: object,
+    request: "ConfigureRequest",
+) -> dict[str, object]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("Configure result must be a mapping")
+
+    result = dict(payload)
+    fields = set(result)
+    if fields == LEGACY_CONFIGURE_RESULT_FIELDS:
+        if (
+            result["machine_uuid"] != request.machine_uuid
+            or result["hostname"] != request.final_hostname
+            or result["profile"] != request.profile
+            or not isinstance(result["verification"], Mapping)
+        ):
+            raise ValueError("Legacy configure result is invalid")
+        return result
+
+    if fields != CONFIGURE_RESULT_FIELDS:
+        raise ValueError("Configure result fields are invalid")
+    if (
+        type(result["schema_version"]) is not int
+        or result["schema_version"] != 1
+        or result["machine_uuid"] != request.machine_uuid
+        or result["hostname"] != request.final_hostname
+        or result["profile"] != request.profile
+        or not isinstance(result["status"], str)
+        or result["status"] not in CONFIGURE_RESULT_STATUSES
+        or not isinstance(result["phase"], str)
+        or result["phase"] not in CONFIGURE_RESULT_PHASES
+        or any(
+            type(result[field]) is not bool
+            for field in ("retryable", "recovered", "reboot_required")
+        )
+        or not isinstance(result["components"], Mapping)
+        or not isinstance(result["verification"], Mapping)
+    ):
+        raise ValueError("Configure result is invalid")
+
+    error = result["error"]
+    if result["status"] != "failed":
+        if error is not None:
+            raise ValueError("Configure result error is invalid")
+    elif (
+        not isinstance(error, Mapping)
+        or set(error) != CONFIGURE_ERROR_FIELDS
+        or not isinstance(error["code"], str)
+        or not CONFIGURE_ERROR_CODE_RE.fullmatch(error["code"])
+        or not isinstance(error["class"], str)
+        or not CONFIGURE_ERROR_CLASS_RE.fullmatch(error["class"])
+        or not isinstance(error["message"], str)
+        or not CONFIGURE_ERROR_MESSAGE_RE.fullmatch(error["message"])
+    ):
+        raise ValueError("Configure result error is invalid")
+
+    return result
 
 
 @dataclass(frozen=True)
@@ -326,7 +421,7 @@ class ConfigurePlanner:
                     break
             raise ControlError(code=error_code, message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
         try:
-            result = read_json(result_path)
+            result = _read_configure_result(read_json(result_path), request)
         except (OSError, ValueError) as exc:
             raise ControlError(code="domain_verification_failed", message="Domain configure did not produce a valid result", exit_code=7, details={"run_id": run_id}) from exc
         result["run_id"] = run_id

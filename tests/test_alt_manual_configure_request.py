@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 import os
@@ -61,6 +62,75 @@ def valid_request() -> dict[str, str]:
         "computer_ou": "OU=Workstations,DC=sosnadmin,DC=local",
         "domain_test_user": "pilot.user",
     }
+
+
+def valid_structured_result() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "machine_uuid": MACHINE_UUID,
+        "hostname": "alt-a1-pc3",
+        "profile": "standard-domain",
+        "status": "successful",
+        "phase": "finalize",
+        "retryable": False,
+        "recovered": False,
+        "reboot_required": False,
+        "error": None,
+        "components": {"domain_join": True},
+        "verification": {"domain_join": True},
+    }
+
+
+@pytest.fixture
+def run_configure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from alt_deploy.config import Settings
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = Settings(
+        registration_root=tmp_path / "registration", state_root=tmp_path / "state",
+        jobs_dir=tmp_path / "state" / "jobs", assignments_dir=tmp_path / "state" / "assignments",
+        lock_file=tmp_path / "state" / "lock", ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=tmp_path / "known_hosts", private_key_file=tmp_path / "id_ed25519",
+        ansible_playbook_path=tmp_path / "ansible-playbook", systemd_run_path=tmp_path / "systemd-run",
+        worker_path=tmp_path / "worker", job_stage_helper_path=tmp_path / "stage-helper",
+        workstationctl_path=tmp_path / "workstationctl",
+    )
+    for path in (
+        settings.known_hosts_file,
+        settings.private_key_file,
+        settings.ansible_playbook_path,
+    ):
+        path.write_text("fixture", encoding="utf-8")
+    playbook = settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+    playbook.parent.mkdir(parents=True)
+    playbook.write_text("---\n- hosts: all\n", encoding="utf-8")
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    monkeypatch.setattr(
+        VaultHealthChecker,
+        "check_ad_join",
+        lambda _self: {"status": "ok"},
+    )
+
+    def run(result_payload: dict[str, object]) -> dict[str, object]:
+        def fake_run(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            result_arg = next(
+                item for item in command if item.startswith("configure_result_file=")
+            )
+            result_path = Path(result_arg.split("=", 1)[1])
+            result_path.write_text(json.dumps(result_payload), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        request = ConfigureRequest.from_mapping(
+            valid_request(), expected_uuid=MACHINE_UUID
+        )
+        return ConfigurePlanner(
+            settings, machines=SimpleNamespace(get=lambda _: machine)
+        ).start(MACHINE_UUID, request)
+
+    return run
 
 
 def test_configure_request_normalizes_safe_values() -> None:
@@ -275,6 +345,128 @@ def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
     assert start.configure_command == "start"
 
 
+@pytest.mark.parametrize(
+    "result_payload",
+    [
+        valid_structured_result(),
+        valid_structured_result() | {"status": "degraded"},
+        valid_structured_result()
+        | {
+            "status": "failed",
+            "phase": "domain_join",
+            "error": {
+                "code": "domain_join_failed",
+                "class": "DomainJoinError",
+                "message": "Domain join failed",
+            },
+        },
+    ],
+    ids=["successful", "degraded", "failed"],
+)
+def test_configure_start_accepts_valid_structured_results(
+    run_configure,
+    result_payload: dict[str, object],
+) -> None:
+    result = run_configure(result_payload)
+
+    assert result["schema_version"] == 1
+    assert result["verification"] == {"domain_join": True}
+    assert isinstance(result["run_id"], str)
+
+
+@pytest.mark.parametrize(
+    "result_payload",
+    [
+        valid_structured_result() | {"unexpected": True},
+        valid_structured_result() | {"machine_uuid": "11111111-2222-3333-4444-555555555555"},
+        valid_structured_result()
+        | {
+            "status": "failed",
+            "error": {
+                "code": "domain_join_failed\nsecret",
+                "class": "DomainJoinError",
+                "message": "Domain join failed",
+            },
+        },
+        valid_structured_result() | {"phase": "untrusted_phase"},
+    ],
+    ids=["unknown_field", "mismatched_machine", "unsafe_error", "unsupported_phase"],
+)
+def test_configure_start_rejects_untrusted_structured_results(
+    run_configure,
+    result_payload: dict[str, object],
+) -> None:
+    with pytest.raises(ControlError) as exc:
+        run_configure(result_payload)
+
+    assert exc.value.code == "domain_verification_failed"
+    assert set(exc.value.details) == {"run_id"}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"schema_version": 2},
+        {"hostname": "wrong-host"},
+        {"profile": "wrong-profile"},
+        {"status": "pending"},
+        {"status": []},
+        {"phase": []},
+        {"retryable": 1},
+        {"recovered": "false"},
+        {"reboot_required": 0},
+        {"components": []},
+        {"verification": []},
+        {
+            "error": {
+                "code": "domain_join_failed",
+                "class": "DomainJoinError",
+                "message": "Domain join failed",
+            }
+        },
+        {"status": "failed", "error": None},
+    ],
+)
+def test_configure_start_rejects_invalid_structured_contract_values(
+    run_configure,
+    change: dict[str, object],
+) -> None:
+    with pytest.raises(ControlError) as exc:
+        run_configure(valid_structured_result() | change)
+
+    assert exc.value.code == "domain_verification_failed"
+
+
+@pytest.mark.parametrize(
+    "result_payload",
+    [
+        {"machine_uuid": MACHINE_UUID, "hostname": "alt-a1-pc3", "profile": "standard-domain"},
+        {
+            "machine_uuid": MACHINE_UUID,
+            "hostname": "alt-a1-pc3",
+            "profile": "standard-domain",
+            "verification": {},
+            "unexpected": True,
+        },
+        {
+            "machine_uuid": MACHINE_UUID,
+            "hostname": "wrong-host",
+            "profile": "standard-domain",
+            "verification": {},
+        },
+    ],
+    ids=["missing_verification", "extra_field", "mismatched_hostname"],
+)
+def test_configure_start_rejects_invalid_legacy_result(
+    run_configure,
+    result_payload: dict[str, object],
+) -> None:
+    with pytest.raises(ControlError) as exc:
+        run_configure(result_payload)
+
+    assert exc.value.code == "domain_verification_failed"
+
+
 def test_configure_start_uses_fixed_playbook_and_private_run_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -302,7 +494,17 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
         captured.extend(command)
         result_arg = next(item for item in command if item.startswith("configure_result_file="))
         result_path = Path(result_arg.split("=", 1)[1])
-        result_path.write_text('{"verification": {"domain_join": true}}', encoding="utf-8")
+        result_path.write_text(
+            json.dumps(
+                {
+                    "machine_uuid": MACHINE_UUID,
+                    "hostname": "alt-a1-pc3",
+                    "profile": "standard-domain",
+                    "verification": {"domain_join": True},
+                }
+            ),
+            encoding="utf-8",
+        )
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
