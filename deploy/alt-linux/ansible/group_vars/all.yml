@@ -14,7 +14,23 @@ domain_prerequisite_packages:
   - openldap-clients
 prejoin_upgrade_enabled: true
 prejoin_upgrade_reboot_timeout: 900
+# Attempts include the first invocation; Ansible retries are attempts minus one.
+alt_transient_retry_attempts: 4
+alt_transient_retry_delay: 5
+alt_service_retry_attempts: 12
+alt_service_retry_delay: 5
+alt_ntp_retry_attempts: 24
+alt_ntp_retry_delay: 5
+alt_package_lock_retry_attempts: 24
+alt_package_lock_retry_delay: 5
+alt_domain_join_max_attempts: 2
+# Deliberately narrow allowlists; unknown failures stop immediately.
+alt_package_lock_pattern: '(?i)(could not get lock|unable to acquire.*lock|another process.*(apt|rpm)|resource temporarily unavailable.*lock)'
+alt_package_transient_pattern: '(?i)(temporary failure resolving|could not resolve|connection timed out|connection refused|could not connect|network is unreachable)'
+alt_package_fatal_pattern: '(?i)(signature|checksum|hash sum mismatch|unmet dependencies|dependency problems|broken packages|no_pubkey)'
+alt_domain_transient_pattern: "(?i)(cannot contact any KDC|cannot find KDC|can.t contact LDAP server|connection timed out|connection refused|network is unreachable|temporary failure in name resolution)"
 alt_group_policy_prerequisite_packages:
   - gpupdate
+  - alterator-gpupdate
 standard_packages: []
 organization_packages: []

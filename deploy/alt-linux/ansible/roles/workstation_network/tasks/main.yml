@@ -3,14 +3,143 @@
   ansible.builtin.set_fact:
     workstation_network_interface: "{{ ansible_default_ipv4.interface }}"
 
-- name: Configure domain DNS without replacing interface profile
-  ansible.builtin.copy:
-    dest: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
-    content: |
-      search {{ ad_domain }}
-      {% for server in ad_dns_servers %}
-      nameserver {{ server }}
-      {% endfor %}
-    owner: root
-    group: root
-    mode: "0644"
+- name: Validate the resolver interface path
+  ansible.builtin.assert:
+    that: workstation_network_interface is match('^[a-zA-Z0-9_-][a-zA-Z0-9_.:-]{0,14}$')
+    fail_msg: ALT_PREFLIGHT_FAILURE:domain_dns_unhealthy unsafe resolver interface path
+
+- name: Inspect resolver parent directories without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /etc
+    - /etc/net
+    - /etc/net/ifaces
+    - "/etc/net/ifaces/{{ workstation_network_interface }}"
+  register: workstation_network_resolver_directories
+
+- name: Require root-owned resolver directories without links
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir | default(false)
+      - not item.stat.islnk | default(false)
+      - item.stat.uid | default(-1) == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:domain_dns_unhealthy unsupported resolver directory ownership
+  loop: "{{ workstation_network_resolver_directories.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect the persistent resolver without following links
+  ansible.builtin.stat:
+    path: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
+    follow: false
+  register: workstation_network_persistent_resolver
+
+- name: Inspect the active resolver without following links
+  ansible.builtin.stat:
+    path: /etc/resolv.conf
+    follow: false
+  register: workstation_network_active_resolver
+
+- name: Require root-owned regular resolver files without links
+  ansible.builtin.assert:
+    that:
+      - workstation_network_active_resolver.stat.exists
+      - workstation_network_active_resolver.stat.isreg | default(false)
+      - not workstation_network_active_resolver.stat.islnk | default(false)
+      - workstation_network_active_resolver.stat.uid | default(-1) == 0
+      - >-
+        not workstation_network_persistent_resolver.stat.exists or
+        (workstation_network_persistent_resolver.stat.isreg | default(false) and
+         not workstation_network_persistent_resolver.stat.islnk | default(false) and
+         workstation_network_persistent_resolver.stat.uid | default(-1) == 0)
+    fail_msg: ALT_PREFLIGHT_FAILURE:domain_dns_unhealthy unsupported resolver file ownership
+
+- name: Apply and validate domain DNS without replacing the interface profile
+  block:
+    - name: Write persistent domain resolver with a backup
+      ansible.builtin.copy:
+        dest: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
+        content: |
+          search {{ ad_domain }}
+          {% for server in ad_dns_servers %}
+          nameserver {{ server }}
+          {% endfor %}
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      register: workstation_network_persistent_write
+
+    - name: Write active domain resolver with a backup
+      ansible.builtin.copy:
+        dest: /etc/resolv.conf
+        content: |
+          search {{ ad_domain }}
+          {% for server in ad_dns_servers %}
+          nameserver {{ server }}
+          {% endfor %}
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      register: workstation_network_active_write
+
+    - name: Validate LDAP discovery through the active resolver
+      ansible.builtin.command:
+        argv: [dig, "_ldap._tcp.{{ ad_domain }}", SRV, +short, +time=2, +tries=1]
+      register: workstation_network_ldap_srv
+      changed_when: false
+      until: workstation_network_ldap_srv.rc == 0 and workstation_network_ldap_srv.stdout | trim | length > 0
+      retries: "{{ alt_transient_retry_attempts | int - 1 }}"
+      delay: "{{ alt_transient_retry_delay }}"
+
+    - name: Validate Kerberos discovery through the active resolver
+      ansible.builtin.command:
+        argv: [dig, "_kerberos._tcp.{{ ad_domain }}", SRV, +short, +time=2, +tries=1]
+      register: workstation_network_kerberos_srv
+      changed_when: false
+      until: workstation_network_kerberos_srv.rc == 0 and workstation_network_kerberos_srv.stdout | trim | length > 0
+      retries: "{{ alt_transient_retry_attempts | int - 1 }}"
+      delay: "{{ alt_transient_retry_delay }}"
+
+  rescue:
+    - name: Restore the original active resolver
+      ansible.builtin.copy:
+        src: "{{ workstation_network_active_write.backup_file }}"
+        dest: /etc/resolv.conf
+        remote_src: true
+        owner: "{{ workstation_network_active_resolver.stat.uid }}"
+        group: "{{ workstation_network_active_resolver.stat.gid }}"
+        mode: preserve
+      when:
+        - workstation_network_active_write is defined
+        - workstation_network_active_write.backup_file is defined
+
+    - name: Restore the original persistent resolver
+      ansible.builtin.copy:
+        src: "{{ workstation_network_persistent_write.backup_file }}"
+        dest: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
+        remote_src: true
+        owner: "{{ workstation_network_persistent_resolver.stat.uid }}"
+        group: "{{ workstation_network_persistent_resolver.stat.gid }}"
+        mode: preserve
+      when:
+        - workstation_network_persistent_resolver.stat.exists
+        - workstation_network_persistent_write is defined
+        - workstation_network_persistent_write.backup_file is defined
+
+    - name: Remove only the newly created persistent resolver
+      ansible.builtin.file:
+        path: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
+        state: absent
+      when:
+        - not workstation_network_persistent_resolver.stat.exists
+        - workstation_network_persistent_write is defined
+        - workstation_network_persistent_write is changed
+
+    - name: Stop configuration after unsuccessful resolver validation
+      ansible.builtin.fail:
+        msg: ALT_PREFLIGHT_FAILURE:domain_dns_unhealthy resolver update failed and rollback was attempted

@@ -160,7 +160,7 @@ def test_domain_join_converts_ad_dn_to_alt_parent_first_ou_path() -> None:
     assert '"--gpo"' in rendered
 
 
-def test_prejoin_upgrade_runs_only_before_domain_join_and_reboots() -> None:
+def test_prejoin_upgrade_runs_only_before_domain_join_and_defers_reboot() -> None:
     content = (
         ANSIBLE_ROOT / "roles" / "prejoin_upgrade" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
@@ -168,8 +168,9 @@ def test_prejoin_upgrade_runs_only_before_domain_join_and_reboots() -> None:
     assert "system-auth, status" in content
     assert "apt-get, update" in content
     assert "apt-get, -y, dist-upgrade" in content
-    assert "ansible.builtin.reboot" in content
-    assert content.count("not prejoin_upgrade_already_joined") == 3
+    assert "ansible.builtin.reboot" not in content
+    assert "prejoin_upgrade_reboot_required" in content
+    assert content.count("not prejoin_upgrade_already_joined") >= 3
     assert "prejoin_upgrade_dist_upgrade is defined" in content
 
 
@@ -184,7 +185,9 @@ def test_group_policy_installation_precedes_join_and_enablement_follows_it() -> 
         ANSIBLE_ROOT / "roles" / "alt_group_policy_client" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
 
-    assert variables["alt_group_policy_prerequisite_packages"] == ["gpupdate"]
+    assert variables["alt_group_policy_prerequisite_packages"] == [
+        "gpupdate", "alterator-gpupdate"
+    ]
     assert "alt_group_policy_prerequisite_packages" in prerequisites
     assert "gpupdate-setup, enable" in client
     assert "gpupdate, --target, Computer, --system, --force" in client

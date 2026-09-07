@@ -50,6 +50,9 @@
     argv: [timedatectl, show, -p, NTPSynchronized, --value]
   register: manual_preflight_ntp
   changed_when: false
+  until: manual_preflight_ntp.rc == 0 and manual_preflight_ntp.stdout | trim == 'yes'
+  retries: "{{ alt_ntp_retry_attempts | int - 1 }}"
+  delay: "{{ alt_ntp_retry_delay }}"
 
 - name: Validate time synchronization
   ansible.builtin.assert:
@@ -61,12 +64,18 @@
     argv: [dig, "@{{ ad_dns_servers[0] }}", "_ldap._tcp.{{ ad_domain }}", SRV, +short]
   register: manual_preflight_ldap_srv
   changed_when: false
+  until: manual_preflight_ldap_srv.rc == 0 and manual_preflight_ldap_srv.stdout | trim | length > 0
+  retries: "{{ alt_transient_retry_attempts | int - 1 }}"
+  delay: "{{ alt_transient_retry_delay }}"
 
 - name: Verify AD Kerberos SRV record
   ansible.builtin.command:
     argv: [dig, "@{{ ad_dns_servers[0] }}", "_kerberos._tcp.{{ ad_domain }}", SRV, +short]
   register: manual_preflight_kerberos_srv
   changed_when: false
+  until: manual_preflight_kerberos_srv.rc == 0 and manual_preflight_kerberos_srv.stdout | trim | length > 0
+  retries: "{{ alt_transient_retry_attempts | int - 1 }}"
+  delay: "{{ alt_transient_retry_delay }}"
 
 - name: Validate AD DNS
   ansible.builtin.assert:
