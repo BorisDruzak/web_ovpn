@@ -81,6 +81,29 @@ def valid_structured_result() -> dict[str, object]:
     }
 
 
+def valid_legacy_result() -> dict[str, object]:
+    """Exact public result written by the stage-03 domain_verify role."""
+    return {
+        "machine_uuid": MACHINE_UUID,
+        "hostname": "alt-a1-pc3",
+        "profile": "standard-domain",
+        "domain": "sosnadmin.local",
+        "already_joined": True,
+        "reboot_required": False,
+        "verification": {
+            "ssh": True,
+            "sudo": True,
+            "dns": True,
+            "time": True,
+            "domain_join": True,
+            "sssd": True,
+            "domain_user_lookup": True,
+            "packages": True,
+            "group_policy": False,
+        },
+    }
+
+
 @pytest.fixture
 def run_configure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from alt_deploy.config import Settings
@@ -529,6 +552,56 @@ def test_configure_start_rejects_invalid_legacy_result(
     assert exc.value.code == "domain_verification_failed"
 
 
+def test_configure_start_accepts_exact_stage_03_legacy_result(run_configure) -> None:
+    result = run_configure(valid_legacy_result())
+
+    assert result["domain"] == "sosnadmin.local"
+    assert result["already_joined"] is True
+    assert result["reboot_required"] is False
+    assert result["verification"]["group_policy"] is False
+
+
+@pytest.mark.parametrize(
+    ("change", "missing"),
+    [
+        ({}, "domain"),
+        ({"unexpected": True}, None),
+        ({"machine_uuid": "11111111-2222-3333-4444-555555555555"}, None),
+        ({"hostname": "wrong-host"}, None),
+        ({"profile": "wrong-profile"}, None),
+        ({"domain": "example.local"}, None),
+        ({"already_joined": 1}, None),
+        ({"reboot_required": "false"}, None),
+        ({"verification": []}, None),
+    ],
+    ids=[
+        "missing_field",
+        "extra_field",
+        "mismatched_machine_uuid",
+        "mismatched_hostname",
+        "mismatched_profile",
+        "mismatched_domain",
+        "already_joined_not_bool",
+        "reboot_required_not_bool",
+        "verification_not_mapping",
+    ],
+)
+def test_configure_start_rejects_invalid_stage_03_legacy_result(
+    run_configure,
+    change: dict[str, object],
+    missing: str | None,
+) -> None:
+    result_payload = valid_legacy_result() | change
+    if missing is not None:
+        result_payload.pop(missing)
+
+    with pytest.raises(ControlError) as exc:
+        run_configure(result_payload)
+
+    assert exc.value.code == "domain_verification_failed"
+    assert set(exc.value.details) == {"run_id"}
+
+
 def test_configure_start_uses_fixed_playbook_and_private_run_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -558,12 +631,7 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
         result_path = Path(result_arg.split("=", 1)[1])
         result_path.write_text(
             json.dumps(
-                {
-                    "machine_uuid": MACHINE_UUID,
-                    "hostname": "alt-a1-pc3",
-                    "profile": "standard-domain",
-                    "verification": {"domain_join": True},
-                }
+                valid_legacy_result()
             ),
             encoding="utf-8",
         )

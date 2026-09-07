@@ -53,7 +53,15 @@ CONFIGURE_RESULT_FIELDS = frozenset(
     }
 )
 LEGACY_CONFIGURE_RESULT_FIELDS = frozenset(
-    {"machine_uuid", "hostname", "profile", "verification"}
+    {
+        "machine_uuid",
+        "hostname",
+        "profile",
+        "domain",
+        "already_joined",
+        "reboot_required",
+        "verification",
+    }
 )
 CONFIGURE_RESULT_STATUSES = frozenset({"successful", "degraded", "failed"})
 CONFIGURE_RESULT_PHASES = frozenset(
@@ -125,6 +133,9 @@ def _read_configure_result(
             result["machine_uuid"] != request.machine_uuid
             or result["hostname"] != request.final_hostname
             or result["profile"] != request.profile
+            or result["domain"] != request.domain
+            or type(result["already_joined"]) is not bool
+            or type(result["reboot_required"]) is not bool
             or not isinstance(result["verification"], Mapping)
         ):
             raise ValueError("Legacy configure result is invalid")
