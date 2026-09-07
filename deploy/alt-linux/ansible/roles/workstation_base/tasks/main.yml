@@ -3,6 +3,20 @@
   ansible.builtin.package:
     name: "{{ domain_prerequisite_packages }}"
     state: present
+  environment:
+    LC_ALL: C
+  register: workstation_base_packages
+  vars:
+    alt_package_retry_output: >-
+      {{ [workstation_base_packages.stdout | default(''), workstation_base_packages.stderr | default(''), workstation_base_packages.msg | default('')] | join('\n') }}
+  until: >-
+    workstation_base_packages is succeeded or
+    alt_package_retry_output | regex_search(alt_package_fatal_pattern) is not none or
+    (alt_package_retry_output | regex_search(alt_package_lock_pattern) is none and
+      (alt_package_retry_output | regex_search(alt_package_transient_pattern) is none or
+       workstation_base_packages.attempts | int >= alt_transient_retry_attempts | int))
+  retries: "{{ alt_package_lock_retry_attempts | int - 1 }}"
+  delay: "{{ alt_package_lock_retry_delay }}"
   when: domain_prerequisite_packages | length > 0
 
 - name: Define supported Plasma desktop sessions

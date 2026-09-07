@@ -1,0 +1,155 @@
+---
+# A pessimistic record survives any failure; success is published after cleanup.
+- name: Initialize onlyoffice verification and safe failure record
+  ansible.builtin.set_fact:
+    software_onlyoffice_verified: false
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'onlyoffice': {'status': 'failed', 'verified': false}
+        }),
+        'verification': configure_result.verification | combine({'software_onlyoffice': false})
+      }) }}
+
+- name: Install and verify the approved onlyoffice RPM
+  no_log: true
+  block:
+    - name: Revalidate the fixed onlyoffice catalog contract
+      ansible.builtin.assert:
+        that:
+          - configure_component_preflight_passed | default(false) | bool
+          - "'onlyoffice' in selected_software_components"
+          - software_catalog.onlyoffice.enabled is boolean
+          - software_catalog.onlyoffice.enabled
+          - software_catalog.onlyoffice.source == 'rpm'
+          - software_catalog.onlyoffice.artifact_path == '/opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm'
+          - software_catalog.onlyoffice.sha256 is match('^[0-9a-f]{64}$')
+          - software_catalog.onlyoffice.package_name == 'onlyoffice-desktopeditors'
+          - software_catalog.onlyoffice.package_evr is string
+          - software_catalog.onlyoffice.package_evr | trim | length > 0
+          - software_catalog.onlyoffice.package_evr == '9.4.0-epm1.repacked.130'
+          - software_catalog.onlyoffice.architecture == 'x86_64'
+          - software_catalog.onlyoffice.executable == '/usr/bin/onlyoffice-desktopeditors'
+        fail_msg: Approved software catalog validation failed
+
+    - name: Recheck the controller onlyoffice artifact checksum
+      ansible.builtin.stat:
+        path: "{{ software_catalog.onlyoffice.artifact_path }}"
+        checksum_algorithm: sha256
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: software_onlyoffice_controller_artifact
+
+    - name: Require the regular checksum-valid controller onlyoffice artifact
+      ansible.builtin.assert:
+        that:
+          - software_onlyoffice_controller_artifact.stat.exists
+          - software_onlyoffice_controller_artifact.stat.isreg
+          - software_onlyoffice_controller_artifact.stat.checksum == software_catalog.onlyoffice.sha256
+        fail_msg: Approved software artifact verification failed
+
+    # These approved EVRs have no epoch; reject a hidden nonzero RPM epoch.
+    - name: Read the controller onlyoffice RPM identity
+      ansible.builtin.command:
+        argv: [rpm, -qp, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "{{ software_catalog.onlyoffice.artifact_path }}"]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: software_onlyoffice_controller_metadata
+
+    - name: Require the exact controller onlyoffice RPM identity
+      ansible.builtin.assert:
+        that:
+          - >-
+            software_onlyoffice_controller_metadata.stdout in [
+              software_catalog.onlyoffice.package_name ~ '|' ~ software_catalog.onlyoffice.package_evr ~ '|' ~ software_catalog.onlyoffice.architecture ~ '|(none)',
+              software_catalog.onlyoffice.package_name ~ '|' ~ software_catalog.onlyoffice.package_evr ~ '|' ~ software_catalog.onlyoffice.architecture ~ '|0'
+            ]
+        fail_msg: Approved software RPM metadata verification failed
+
+    - name: Create a private temporary onlyoffice RPM path
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .rpm
+        prefix: alt-onlyoffice-
+      register: software_onlyoffice_temporary
+
+    - name: Copy the approved onlyoffice RPM into the private temporary path
+      ansible.builtin.copy:
+        src: "{{ software_catalog.onlyoffice.artifact_path }}"
+        dest: "{{ software_onlyoffice_temporary.path }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Verify the transferred onlyoffice RPM checksum
+      ansible.builtin.stat:
+        path: "{{ software_onlyoffice_temporary.path }}"
+        checksum_algorithm: sha256
+        follow: false
+      register: software_onlyoffice_target_artifact
+
+    - name: Require the exact transferred onlyoffice RPM bytes
+      ansible.builtin.assert:
+        that:
+          - software_onlyoffice_target_artifact.stat.exists
+          - software_onlyoffice_target_artifact.stat.isreg
+          - software_onlyoffice_target_artifact.stat.mode == '0600'
+          - software_onlyoffice_target_artifact.stat.checksum == software_catalog.onlyoffice.sha256
+        fail_msg: Transferred software artifact verification failed
+
+    - name: Read the transferred onlyoffice RPM identity
+      ansible.builtin.command:
+        argv: [rpm, -qp, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "{{ software_onlyoffice_temporary.path }}"]
+      changed_when: false
+      register: software_onlyoffice_target_metadata
+
+    - name: Require the exact transferred onlyoffice RPM identity
+      ansible.builtin.assert:
+        that:
+          - software_onlyoffice_target_metadata.stdout == software_onlyoffice_controller_metadata.stdout
+        fail_msg: Transferred software RPM metadata verification failed
+
+    - name: Install exactly the verified temporary onlyoffice RPM
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, "{{ software_onlyoffice_temporary.path }}"]
+
+    - name: Query the installed onlyoffice package identity
+      ansible.builtin.command:
+        argv: [rpm, -q, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "onlyoffice-desktopeditors"]
+      changed_when: false
+      register: software_onlyoffice_installed_metadata
+
+    - name: Inspect the installed onlyoffice executable
+      ansible.builtin.stat:
+        path: "/usr/bin/onlyoffice-desktopeditors"
+        follow: true
+      register: software_onlyoffice_executable
+
+    - name: Require exact installed onlyoffice EVR architecture and executable
+      ansible.builtin.assert:
+        that:
+          - software_onlyoffice_installed_metadata.stdout == software_onlyoffice_controller_metadata.stdout
+          - software_onlyoffice_executable.stat.exists
+          - software_onlyoffice_executable.stat.isreg
+          - software_onlyoffice_executable.stat.executable
+        fail_msg: Installed software verification failed
+
+  always:
+    - name: Remove the private temporary onlyoffice RPM
+      ansible.builtin.file:
+        path: "{{ software_onlyoffice_temporary.path }}"
+        state: absent
+      when: software_onlyoffice_temporary.path is defined
+
+- name: Record verified onlyoffice success
+  ansible.builtin.set_fact:
+    software_onlyoffice_verified: true
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'onlyoffice': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_onlyoffice': true})
+      }) }}

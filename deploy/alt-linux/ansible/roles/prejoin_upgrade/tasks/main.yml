@@ -1,4 +1,8 @@
 ---
+- name: Initialize deferred upgrade reboot decision
+  ansible.builtin.set_fact:
+    prejoin_upgrade_reboot_required: false
+
 - name: Read current ALT authentication scheme before upgrade
   ansible.builtin.command:
     argv: [system-auth, status]
@@ -9,12 +13,32 @@
 - name: Detect whether the workstation is already domain joined
   ansible.builtin.set_fact:
     prejoin_upgrade_already_joined: >-
-      {{ prejoin_upgrade_auth_status.stdout | trim | lower is match('^ad\\s+') }}
+      {{ (prejoin_upgrade_auth_status.stdout | lower).split() | length > 1 and
+         (prejoin_upgrade_auth_status.stdout | lower).split() | first == 'ad' }}
 
 - name: Refresh ALT package metadata before first domain join
   ansible.builtin.command:
     argv: [apt-get, update]
+  environment:
+    LC_ALL: C
+  register: prejoin_upgrade_metadata
   changed_when: false
+  vars:
+    alt_package_retry_output: >-
+      {{ [prejoin_upgrade_metadata.stdout | default(''), prejoin_upgrade_metadata.stderr | default(''), prejoin_upgrade_metadata.msg | default('')] | join('\n') }}
+  failed_when: >-
+    prejoin_upgrade_metadata.rc != 0 or
+    alt_package_retry_output | regex_search(alt_package_fatal_pattern) is not none or
+    alt_package_retry_output | regex_search(alt_package_transient_pattern) is not none or
+    'Some index files failed to download' in alt_package_retry_output
+  until: >-
+    prejoin_upgrade_metadata is succeeded or
+    alt_package_retry_output | regex_search(alt_package_fatal_pattern) is not none or
+    (alt_package_retry_output | regex_search(alt_package_lock_pattern) is none and
+      (alt_package_retry_output | regex_search(alt_package_transient_pattern) is none or
+       prejoin_upgrade_metadata.attempts | int >= alt_transient_retry_attempts | int))
+  retries: "{{ alt_package_lock_retry_attempts | int - 1 }}"
+  delay: "{{ alt_package_lock_retry_delay }}"
   when:
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined
@@ -22,15 +46,28 @@
 - name: Perform the full ALT upgrade before first domain join
   ansible.builtin.command:
     argv: [apt-get, -y, dist-upgrade]
+  environment:
+    LC_ALL: C
   register: prejoin_upgrade_dist_upgrade
   changed_when: true
+  vars:
+    alt_package_retry_output: >-
+      {{ [prejoin_upgrade_dist_upgrade.stdout | default(''), prejoin_upgrade_dist_upgrade.stderr | default(''), prejoin_upgrade_dist_upgrade.msg | default('')] | join('\n') }}
+  until: >-
+    prejoin_upgrade_dist_upgrade is succeeded or
+    alt_package_retry_output | regex_search(alt_package_fatal_pattern) is not none or
+    (alt_package_retry_output | regex_search(alt_package_lock_pattern) is none and
+      (alt_package_retry_output | regex_search(alt_package_transient_pattern) is none or
+       prejoin_upgrade_dist_upgrade.attempts | int >= alt_transient_retry_attempts | int))
+  retries: "{{ alt_package_lock_retry_attempts | int - 1 }}"
+  delay: "{{ alt_package_lock_retry_delay }}"
   when:
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined
 
-- name: Reboot after the full pre-join ALT upgrade
-  ansible.builtin.reboot:
-    reboot_timeout: "{{ prejoin_upgrade_reboot_timeout }}"
+- name: Request a deferred reboot after the full pre-join ALT upgrade
+  ansible.builtin.set_fact:
+    prejoin_upgrade_reboot_required: true
   when:
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined

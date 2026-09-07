@@ -1,0 +1,67 @@
+---
+- name: Initialize Nextcloud verification and safe failure record
+  ansible.builtin.set_fact:
+    software_nextcloud_desktop_verified: false
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'nextcloud_desktop': {'status': 'failed', 'verified': false}
+        }),
+        'verification': configure_result.verification | combine({'software_nextcloud_desktop': false})
+      }) }}
+
+- name: Revalidate the fixed Nextcloud repository catalog contract
+  ansible.builtin.assert:
+    that:
+      - configure_component_preflight_passed | default(false) | bool
+      - "'nextcloud_desktop' in selected_software_components"
+      - software_catalog.nextcloud_desktop.enabled is boolean
+      - software_catalog.nextcloud_desktop.enabled
+      - software_catalog.nextcloud_desktop.source == 'alt-repository'
+      - software_catalog.nextcloud_desktop.packages == ['nextcloud-client', 'nextcloud-client-kde']
+      - software_catalog.nextcloud_desktop.executable == '/usr/bin/nextcloud'
+    fail_msg: Approved Nextcloud catalog validation failed
+  no_log: true
+
+- name: Install the fixed Nextcloud packages from configured ALT repositories
+  ansible.builtin.command:
+    argv: [apt-get, -y, install, nextcloud-client, nextcloud-client-kde]
+  no_log: true
+
+- name: Verify both installed Nextcloud repository package identities
+  ansible.builtin.command:
+    argv: [rpm, -q, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}", "{{ nextcloud_package }}"]
+  loop: [nextcloud-client, nextcloud-client-kde]
+  loop_control:
+    loop_var: nextcloud_package
+  register: software_nextcloud_desktop_packages
+  changed_when: false
+  failed_when: >-
+    software_nextcloud_desktop_packages.rc != 0 or
+    not (software_nextcloud_desktop_packages.stdout is match('^' ~ nextcloud_package ~ '[|][^|]+[|](x86_64|noarch)$'))
+  no_log: true
+
+- name: Inspect the installed Nextcloud executable
+  ansible.builtin.stat:
+    path: /usr/bin/nextcloud
+    follow: true
+  register: software_nextcloud_desktop_executable
+
+- name: Require the installed Nextcloud executable
+  ansible.builtin.assert:
+    that:
+      - software_nextcloud_desktop_executable.stat.exists
+      - software_nextcloud_desktop_executable.stat.isreg
+      - software_nextcloud_desktop_executable.stat.executable
+    fail_msg: Installed Nextcloud verification failed
+
+- name: Record verified Nextcloud success
+  ansible.builtin.set_fact:
+    software_nextcloud_desktop_verified: true
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'nextcloud_desktop': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_nextcloud_desktop': true})
+      }) }}

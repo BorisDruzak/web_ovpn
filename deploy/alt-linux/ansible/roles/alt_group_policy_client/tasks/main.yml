@@ -1,15 +1,38 @@
 ---
+- name: Verify the ALT Group Policy setup command is installed
+  ansible.builtin.command:
+    argv: [sh, -c, "command -v gpupdate-setup"]
+  changed_when: false
+
 - name: Enable the ALT Group Policy workstation profile after domain join
   ansible.builtin.command:
     argv: [gpupdate-setup, enable]
   register: alt_group_policy_enable
   changed_when: false
 
+- name: Require successful Group Policy profile setup
+  ansible.builtin.assert:
+    that: alt_group_policy_enable.rc == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:group_policy_setup_failed
+
 - name: Apply machine Group Policy after domain join
   ansible.builtin.command:
     argv: [gpupdate, --target, Computer, --system, --force]
+  environment:
+    LC_ALL: C
   register: alt_group_policy_machine_update
   changed_when: false
+  vars:
+    alt_group_policy_retry_output: >-
+      {{ [alt_group_policy_machine_update.stdout | default(''),
+          alt_group_policy_machine_update.stderr | default(''),
+          alt_group_policy_machine_update.msg | default('')] | join(' ') }}
+  until: >-
+    alt_group_policy_machine_update.rc == 0 or
+    alt_group_policy_retry_output | regex_search(alt_group_policy_fatal_pattern) is not none or
+    alt_group_policy_retry_output | regex_search(alt_group_policy_transient_pattern) is none
+  retries: "{{ alt_transient_retry_attempts | int - 1 }}"
+  delay: "{{ alt_transient_retry_delay }}"
 
 - name: Require a successful machine Group Policy update
   ansible.builtin.assert:

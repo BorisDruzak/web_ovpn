@@ -1,5 +1,11 @@
 # ALT Workstation: manual bootstrap and domain join MVP
 
+> **Scope/status:** This document is a local/static operator procedure. It does
+> not prove that a deployed controller canary has run; runtime acceptance is a
+> Task 6 activity after separately authorized deployment and successful
+> controller readiness. Nothing here authorizes machine selection, `netctl`,
+> bootstrap modification, network-policy changes, or Vault changes.
+
 This is a temporary, controller-managed path for a manually installed ALT
 Workstation K 11.x. It does not replace managed ISO or legacy ai curl=
 installation.
@@ -75,7 +81,8 @@ the workstation.
 
 ## Controller execution
 
-Run preview before any mutation:
+The controller operator uses the fixed `workstationctl` route. Always run the
+non-mutating preview before any start or other mutation:
 
 ~~~bash
 sudo -u altserver /usr/local/sbin/workstationctl --json configure preview <uuid> \
@@ -104,6 +111,34 @@ If an existing computer account cannot be proven to belong to this station, the
 run stops with domain_computer_conflict. It never deletes, resets, moves or
 reuses that account. A station already joined to the requested domain with a
 valid trust is unchanged.
+
+### Optional managed profiles
+
+The request's `software_profile` and `remote_access_profile` are fixed profile
+selectors; they are not a place for paths, package metadata, Vault values or
+arbitrary playbook options. `base`/`none` keeps the base path above.
+
+For `software_profile: core-apps`, the controller and stage-03 playbook select
+the approved browser, OnlyOffice and Nextcloud Desktop components. Every
+selected component must pass its controller-side artifact preflight (including
+the approved identity and package metadata) before any selected component can
+run. A missing or invalid artifact fails closed; it never falls back to a
+download or a caller-supplied artifact.
+
+For `remote_access_profile: krfb`, the controller first requires both
+presence-only checks for the existing Vault fields
+`vault_krfb_desktop_password_obscured` and
+`vault_krfb_unattended_password_obscured`. It also requires one explicit,
+already-existing domain user in the request and the exact controller setting
+`ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED=true`. That setting records a
+separate operator confirmation that the pre-existing VPN/firewall policy
+restricts TCP port 5900; it does not open or change the port. KRFB writes only
+the assigned user's protected configuration and autostart file. The controller
+does not start KRFB, discover a user, or return a secret.
+
+For every profile, review `configure preview` first and run `configure start`
+only through the fixed controller command above. Stop on any preflight or
+profile-gate failure.
 
 ## After a successful join
 

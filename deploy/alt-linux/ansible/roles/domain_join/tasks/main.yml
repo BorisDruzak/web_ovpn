@@ -1,4 +1,9 @@
 ---
+- name: Initialize safe domain join outcome facts
+  ansible.builtin.set_fact:
+    domain_join_reboot_required: false
+    domain_join_recovered: false
+
 - name: Read current ALT authentication scheme
   ansible.builtin.command:
     argv: [system-auth, status]
@@ -9,8 +14,8 @@
 - name: Reject a different Active Directory domain
   ansible.builtin.assert:
     that: >-
-      (domain_join_status.stdout | trim | lower is not match('^ad\\s+'))
-      or (ad_domain in (domain_join_status.stdout | lower))
+      (domain_join_status.stdout | trim | lower).split()[:1] != ['ad']
+      or (domain_join_status.stdout | trim | lower).split()[:2] == ['ad', ad_domain | lower]
     fail_msg: ALT_PREFLIGHT_FAILURE:domain_conflict workstation belongs to another domain
 
 - name: Verify existing Samba domain trust
@@ -19,12 +24,28 @@
   register: domain_join_testjoin
   changed_when: false
   failed_when: false
+  no_log: true
+  retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+  delay: "{{ alt_transient_retry_delay }}"
+  # Preserve an unjoined/exhausted result for the LDAP safety check, while
+  # allowing a valid existing trust to recover from transient KDC failures.
+  until: >-
+    domain_join_testjoin.rc == 0
+    or (domain_join_testjoin_output | regex_search(alt_domain_transient_pattern)) is none
+    or (domain_join_testjoin_output | regex_search(domain_join_fatal_pattern)) is not none
+    or (domain_join_testjoin.attempts | default(1) | int) >= (alt_transient_retry_attempts | int)
+  environment:
+    LC_ALL: C
+  vars:
+    domain_join_testjoin_output: >-
+      {{ domain_join_testjoin.stdout | default('') }} {{ domain_join_testjoin.stderr | default('') }}
+    domain_join_fatal_pattern: &domain_join_fatal_pattern '(?i)(access denied|permission denied|invalid credentials|preauthentication failed|client not found in Kerberos database|insufficient access|constraint violation|already exists)'
 
 - name: Determine whether the requested domain is already joined
   ansible.builtin.set_fact:
     # The preceding domain-conflict assertion already binds system-auth to
     # ad_domain. net ads testjoin is the authoritative trust check and avoids
-    # reparing a valid machine account on an idempotent rerun.
+    # repairing a valid machine account on an idempotent rerun.
     domain_join_already_joined: "{{ domain_join_testjoin.rc == 0 }}"
 
 - name: Convert computer OU DN to ALT parent-first createcomputer path
@@ -39,9 +60,19 @@
       ansible.builtin.command:
         argv: [kinit, -C, "{{ vault_ad_join_user }}"]
         stdin: "{{ vault_ad_join_password }}"
+      register: domain_join_ticket
       changed_when: false
+      retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+      delay: "{{ alt_transient_retry_delay }}"
+      until: >-
+        domain_join_ticket.rc == 0
+        or (domain_join_ticket_output | regex_search(alt_domain_transient_pattern)) is none
+        or (domain_join_ticket_output | regex_search(domain_join_fatal_pattern)) is not none
+      vars:
+        domain_join_ticket_output: >-
+          {{ domain_join_ticket.stdout | default('') }} {{ domain_join_ticket.stderr | default('') }}
 
-    - name: Search target OU for requested computer account
+    - name: Search entire domain for requested computer account
       ansible.builtin.command:
         argv:
           - ldapsearch
@@ -51,18 +82,27 @@
           - -H
           - "{{ ad_ldap_uri }}"
           - -b
-          - "{{ computer_ou }}"
+          - "{{ 'DC=' ~ ad_domain.split('.') | join(',DC=') }}"
           - -s
           - sub
           - "(sAMAccountName={{ final_hostname }}$)"
           - dn
       register: domain_join_computer_lookup
       changed_when: false
+      retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+      delay: "{{ alt_transient_retry_delay }}"
+      until: >-
+        domain_join_computer_lookup.rc == 0
+        or (domain_join_lookup_output | regex_search(alt_domain_transient_pattern)) is none
+        or (domain_join_lookup_output | regex_search(domain_join_fatal_pattern)) is not none
+      vars:
+        domain_join_lookup_output: >-
+          {{ domain_join_computer_lookup.stdout | default('') }} {{ domain_join_computer_lookup.stderr | default('') }}
 
     - name: Determine whether requested computer account already exists
       ansible.builtin.set_fact:
         domain_join_computer_exists: >-
-          {{ domain_join_computer_lookup.stdout is search('(?m)^dn: ') }}
+          {{ domain_join_computer_lookup.stdout is search('(?im)^dn:') }}
 
     - name: Reject an untrusted existing computer account
       ansible.builtin.assert:
@@ -82,6 +122,142 @@
           - "--createcomputer={{ alt_createcomputer_path }}"
           - "--gpo"
       register: domain_join_command
+      # A nonzero result can follow a successful AD write. Reconcile trust
+      # before deciding whether another join is safe.
+      failed_when: false
+      changed_when: domain_join_command.rc == 0
+      when:
+        - domain_join_computer_lookup.rc == 0
+        - not domain_join_computer_exists
+
+    - name: Record accepted domain join before trust verification
+      ansible.builtin.set_fact:
+        domain_join_reboot_required: "{{ domain_join_command.rc == 0 }}"
+
+    - name: Reconcile Samba trust after domain join result
+      ansible.builtin.command:
+        argv: [net, ads, testjoin]
+      register: domain_join_reconcile
+      changed_when: false
+      failed_when: false
+      retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+      delay: "{{ alt_transient_retry_delay }}"
+      # On exhaustion retain rc for the guarded LDAP decision below; a failed
+      # trust probe must never itself cause another domain write.
+      until: >-
+        domain_join_reconcile.rc == 0
+        or (domain_join_reconcile_output | regex_search(alt_domain_transient_pattern)) is none
+        or (domain_join_reconcile_output | regex_search(domain_join_fatal_pattern)) is not none
+        or (domain_join_reconcile.attempts | default(1) | int) >= (alt_transient_retry_attempts | int)
+      vars:
+        domain_join_reconcile_output: >-
+          {{ domain_join_reconcile.stdout | default('') }} {{ domain_join_reconcile.stderr | default('') }}
+
+    - name: Record reconciled domain join outcome
+      ansible.builtin.set_fact:
+        domain_join_reboot_required: "{{ domain_join_reboot_required or domain_join_reconcile.rc == 0 }}"
+        domain_join_recovered: "{{ domain_join_command.rc != 0 and domain_join_reconcile.rc == 0 }}"
+
+    - name: Determine whether a second domain join may be considered
+      ansible.builtin.set_fact:
+        domain_join_retry_allowed: >-
+          {{ domain_join_command.rc != 0
+             and domain_join_reconcile.rc != 0
+             and (alt_domain_join_max_attempts | int) >= 2
+             and (domain_join_command_output | regex_search(alt_domain_transient_pattern)) is not none
+             and (domain_join_command_output | regex_search(domain_join_fatal_pattern)) is none }}
+      vars:
+        domain_join_command_output: >-
+          {{ domain_join_command.stdout | default('') }} {{ domain_join_command.stderr | default('') }}
+
+    - name: Retry one transient domain join only after proving account absence
+      block:
+        - name: Search entire domain again after ambiguous join failure
+          ansible.builtin.command:
+            argv:
+              - ldapsearch
+              - -LLL
+              - -Y
+              - GSSAPI
+              - -H
+              - "{{ ad_ldap_uri }}"
+              - -b
+              - "{{ 'DC=' ~ ad_domain.split('.') | join(',DC=') }}"
+              - -s
+              - sub
+              - "(sAMAccountName={{ final_hostname }}$)"
+              - dn
+          register: domain_join_retry_lookup
+          changed_when: false
+          retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+          delay: "{{ alt_transient_retry_delay }}"
+          until: >-
+            domain_join_retry_lookup.rc == 0
+            or (domain_join_retry_lookup_output | regex_search(alt_domain_transient_pattern)) is none
+            or (domain_join_retry_lookup_output | regex_search(domain_join_fatal_pattern)) is not none
+          vars:
+            domain_join_retry_lookup_output: >-
+              {{ domain_join_retry_lookup.stdout | default('') }} {{ domain_join_retry_lookup.stderr | default('') }}
+
+        - name: Reject retry over any computer object created by the first attempt
+          ansible.builtin.assert:
+            that:
+              - domain_join_retry_lookup.rc == 0
+              - domain_join_retry_lookup.stdout is not search('(?im)^dn:')
+            fail_msg: ALT_PREFLIGHT_FAILURE:domain_computer_conflict computer object exists after failed join; no retry is safe
+
+        - name: Perform the only permitted second ALT domain join
+          ansible.builtin.command:
+            argv:
+              - system-auth
+              - write
+              - ad
+              - "{{ ad_domain }}"
+              - "{{ final_hostname }}"
+              - "{{ workgroup }}"
+              - "{{ vault_ad_join_user }}"
+              - "--createcomputer={{ alt_createcomputer_path }}"
+              - "--gpo"
+          register: domain_join_retry_command
+          failed_when: false
+          changed_when: domain_join_retry_command.rc == 0
+          when:
+            - domain_join_retry_lookup.rc == 0
+            - domain_join_retry_lookup.stdout is not search('(?im)^dn:')
+
+        - name: Record accepted second join before trust verification
+          ansible.builtin.set_fact:
+            domain_join_reboot_required: "{{ domain_join_reboot_required or domain_join_retry_command.rc == 0 }}"
+
+        - name: Reconcile Samba trust after the second join result
+          ansible.builtin.command:
+            argv: [net, ads, testjoin]
+          register: domain_join_retry_reconcile
+          changed_when: false
+          failed_when: false
+          retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+          delay: "{{ alt_transient_retry_delay }}"
+          until: >-
+            domain_join_retry_reconcile.rc == 0
+            or (domain_join_retry_reconcile_output | regex_search(alt_domain_transient_pattern)) is none
+            or (domain_join_retry_reconcile_output | regex_search(domain_join_fatal_pattern)) is not none
+            or (domain_join_retry_reconcile.attempts | default(1) | int) >= (alt_transient_retry_attempts | int)
+          vars:
+            domain_join_retry_reconcile_output: >-
+              {{ domain_join_retry_reconcile.stdout | default('') }} {{ domain_join_retry_reconcile.stderr | default('') }}
+
+        - name: Record recovered domain trust after the second join
+          ansible.builtin.set_fact:
+            domain_join_reboot_required: "{{ domain_join_reboot_required or domain_join_retry_reconcile.rc == 0 }}"
+            domain_join_recovered: "{{ domain_join_retry_reconcile.rc == 0 }}"
+      when: domain_join_retry_allowed
+
+    - name: Require verified domain trust after all permitted attempts
+      ansible.builtin.assert:
+        that: >-
+          domain_join_reconcile.rc == 0
+          or (domain_join_retry_reconcile | default({})).get('rc', 1) == 0
+        fail_msg: ALT_PREFLIGHT_FAILURE:domain_join_failed Samba trust could not be verified
   always:
     - name: Destroy temporary Kerberos ticket
       ansible.builtin.command:
@@ -89,4 +265,8 @@
       changed_when: false
       failed_when: false
   no_log: true
+  environment:
+    LC_ALL: C
+  vars:
+    domain_join_fatal_pattern: *domain_join_fatal_pattern
   when: not domain_join_already_joined

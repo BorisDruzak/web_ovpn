@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 import os
@@ -63,6 +64,98 @@ def valid_request() -> dict[str, str]:
     }
 
 
+def valid_structured_result() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "machine_uuid": MACHINE_UUID,
+        "hostname": "alt-a1-pc3",
+        "profile": "standard-domain",
+        "status": "successful",
+        "phase": "finalize",
+        "retryable": False,
+        "recovered": False,
+        "reboot_required": False,
+        "error": None,
+        "components": {"domain_join": True},
+        "verification": {"domain_join": True},
+    }
+
+
+def valid_legacy_result() -> dict[str, object]:
+    """Exact public result written by the stage-03 domain_verify role."""
+    return {
+        "machine_uuid": MACHINE_UUID,
+        "hostname": "alt-a1-pc3",
+        "profile": "standard-domain",
+        "domain": "sosnadmin.local",
+        "already_joined": True,
+        "reboot_required": False,
+        "verification": {
+            "ssh": True,
+            "sudo": True,
+            "dns": True,
+            "time": True,
+            "domain_join": True,
+            "sssd": True,
+            "domain_user_lookup": True,
+            "packages": True,
+            "group_policy": False,
+        },
+    }
+
+
+@pytest.fixture
+def run_configure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from alt_deploy.config import Settings
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = Settings(
+        registration_root=tmp_path / "registration", state_root=tmp_path / "state",
+        jobs_dir=tmp_path / "state" / "jobs", assignments_dir=tmp_path / "state" / "assignments",
+        lock_file=tmp_path / "state" / "lock", ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=tmp_path / "known_hosts", private_key_file=tmp_path / "id_ed25519",
+        ansible_playbook_path=tmp_path / "ansible-playbook", systemd_run_path=tmp_path / "systemd-run",
+        worker_path=tmp_path / "worker", job_stage_helper_path=tmp_path / "stage-helper",
+        workstationctl_path=tmp_path / "workstationctl",
+    )
+    for path in (
+        settings.known_hosts_file,
+        settings.private_key_file,
+        settings.ansible_playbook_path,
+    ):
+        path.write_text("fixture", encoding="utf-8")
+    playbook = settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+    playbook.parent.mkdir(parents=True)
+    playbook.write_text("---\n- hosts: all\n", encoding="utf-8")
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    monkeypatch.setattr(
+        VaultHealthChecker,
+        "check_ad_join",
+        lambda _self: {"status": "ok"},
+    )
+
+    def run(result_payload: dict[str, object]) -> dict[str, object]:
+        def fake_run(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            result_arg = next(
+                item for item in command if item.startswith("configure_result_file=")
+            )
+            result_path = Path(result_arg.split("=", 1)[1])
+            result_path.write_text(json.dumps(result_payload), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        request = ConfigureRequest.from_mapping(
+            valid_request(), expected_uuid=MACHINE_UUID
+        )
+        return ConfigurePlanner(
+            settings, machines=SimpleNamespace(get=lambda _: machine)
+        ).start(MACHINE_UUID, request)
+
+    return run
+
+
 def test_configure_request_normalizes_safe_values() -> None:
     payload = valid_request()
     payload["final_hostname"] = "ALT-A1-PC3"
@@ -75,7 +168,77 @@ def test_configure_request_normalizes_safe_values() -> None:
     assert request.to_dict() == {
         **valid_request(),
         "final_hostname": "alt-a1-pc3",
+        "software_profile": "base",
+        "remote_access_profile": "none",
+        "assigned_domain_user": None,
     }
+
+
+def test_legacy_configure_request_receives_safe_profile_defaults() -> None:
+    request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
+    assert request.software_profile == "base"
+    assert request.remote_access_profile == "none"
+    assert request.assigned_domain_user is None
+
+
+def test_core_apps_profile_requires_assigned_user() -> None:
+    payload = valid_request() | {"software_profile": "core-apps", "remote_access_profile": "none", "assigned_domain_user": "Pilot.User@SOSNADMIN.LOCAL"}
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    assert request.software_profile == "core-apps"
+    assert request.assigned_domain_user == "pilot.user@sosnadmin.local"
+
+
+def test_core_apps_profile_rejects_missing_assigned_user() -> None:
+    payload = valid_request() | {"software_profile": "core-apps", "remote_access_profile": "none", "assigned_domain_user": None}
+    with pytest.raises(ControlError, match="assigned domain user"):
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+
+def test_krfb_profile_requires_assigned_user() -> None:
+    payload = valid_request() | {"software_profile": "base", "remote_access_profile": "krfb", "assigned_domain_user": "pilot.user"}
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    assert request.remote_access_profile == "krfb"
+    assert request.assigned_domain_user == "pilot.user"
+
+
+def test_krfb_profile_rejects_missing_assigned_user() -> None:
+    payload = valid_request() | {
+        "software_profile": "base",
+        "remote_access_profile": "krfb",
+        "assigned_domain_user": None,
+    }
+
+    with pytest.raises(ControlError, match="assigned domain user"):
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+
+def test_krfb_network_confirmation_is_not_a_request_field() -> None:
+    payload = valid_request() | {
+        "software_profile": "base",
+        "remote_access_profile": "krfb",
+        "assigned_domain_user": "pilot.user",
+        "ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED": "true",
+    }
+
+    with pytest.raises(ControlError) as exc:
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert exc.value.code == "configure_request_invalid"
+
+
+@pytest.mark.parametrize("change", [
+    {"software_profile": "unsupported", "remote_access_profile": "none", "assigned_domain_user": None},
+    {"software_profile": "base", "remote_access_profile": "unsupported", "assigned_domain_user": None},
+    {"software_profile": "base", "remote_access_profile": "none"},
+    {"software_profile": "base", "assigned_domain_user": None},
+    {"software_profile": "base", "remote_access_profile": "none", "assigned_domain_user": "bad user"},
+])
+def test_configure_request_rejects_unsupported_or_partial_profiles(change: dict[str, object]) -> None:
+    payload = valid_request()
+    payload.update(change)  # type: ignore[arg-type]
+    with pytest.raises(ControlError) as exc:
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    assert exc.value.code == "configure_request_invalid"
 
 
 def test_configure_request_accepts_explicit_confirmed_hostname_change() -> None:
@@ -171,16 +334,36 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
         "machine_uuid": MACHINE_UUID,
         "target_ip": "192.168.101.56",
         "playbook": "03-configure-domain-workstation.yml",
-        "request": valid_request(),
+        "request": {**valid_request(), "software_profile": "base", "remote_access_profile": "none", "assigned_domain_user": None},
         "actions": [
             "manual_preflight",
             "verify_or_change_hostname",
             "configure_domain_dns",
             "join_or_verify_domain",
-            "install_standard_packages",
             "verify_domain_workstation",
         ],
+        "deferred_actions": [],
     }
+
+
+@pytest.mark.parametrize(
+    "software,remote,selected",
+    [
+        ("core-apps", "none", ["install_core_apps"]),
+        ("base", "krfb", ["configure_krfb"]),
+        ("core-apps", "krfb", ["install_core_apps", "configure_krfb"]),
+    ],
+)
+def test_configure_preview_describes_only_explicit_selected_components(
+    software: str, remote: str, selected: list[str],
+) -> None:
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    machines = SimpleNamespace(get=lambda machine_uuid: machine)
+    request = ConfigureRequest.from_mapping(valid_request() | {"software_profile": software, "remote_access_profile": remote, "assigned_domain_user": "pilot.user"}, expected_uuid=MACHINE_UUID)
+    preview = ConfigurePlanner(SimpleNamespace(), machines=machines).preview(MACHINE_UUID, request)
+    assert "install_standard_packages" not in preview["actions"]
+    assert preview["actions"][4:] == selected + ["verify_domain_workstation"]
+    assert preview["deferred_actions"] == []
 
 
 def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
@@ -211,6 +394,240 @@ def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
     assert start.configure_command == "start"
 
 
+@pytest.mark.parametrize(
+    "result_payload",
+    [
+        valid_structured_result(),
+        valid_structured_result() | {"status": "degraded"},
+        valid_structured_result()
+        | {
+            "status": "failed",
+            "phase": "domain_join",
+            "error": {
+                "code": "domain_join_failed",
+                "class": "DomainJoinError",
+                "safe_message": "Domain join failed",
+            },
+        },
+    ],
+    ids=["successful", "degraded", "failed"],
+)
+def test_configure_start_accepts_valid_structured_results(
+    run_configure,
+    result_payload: dict[str, object],
+) -> None:
+    result = run_configure(result_payload)
+
+    assert result["schema_version"] == 1
+    assert result["verification"] == {"domain_join": True}
+    assert isinstance(result["run_id"], str)
+
+
+@pytest.mark.parametrize(
+    "result_payload",
+    [
+        valid_structured_result() | {"unexpected": True},
+        valid_structured_result() | {"machine_uuid": "11111111-2222-3333-4444-555555555555"},
+        valid_structured_result()
+        | {
+            "status": "failed",
+            "error": {
+                "code": "domain_join_failed\nsecret",
+                "class": "DomainJoinError",
+                "safe_message": "Domain join failed",
+            },
+        },
+        valid_structured_result() | {"phase": "untrusted_phase"},
+    ],
+    ids=["unknown_field", "mismatched_machine", "unsafe_error", "unsupported_phase"],
+)
+def test_configure_start_rejects_untrusted_structured_results(
+    run_configure,
+    result_payload: dict[str, object],
+) -> None:
+    with pytest.raises(ControlError) as exc:
+        run_configure(result_payload)
+
+    assert exc.value.code == "domain_verification_failed"
+    assert set(exc.value.details) == {"run_id"}
+
+
+@pytest.mark.parametrize(
+    ("code", "accepted"),
+    [
+        ("a", False),
+        ("ab", True),
+        ("a" + "x" * 64, True),
+        ("a" + "x" * 79, True),
+        ("a" + "x" * 80, False),
+    ],
+    ids=["one", "minimum", "sixty_five", "maximum", "eighty_one"],
+)
+def test_configure_start_enforces_failed_error_code_boundaries(
+    run_configure,
+    code: str,
+    accepted: bool,
+) -> None:
+    result_payload = valid_structured_result() | {
+        "status": "failed",
+        "phase": "domain_join",
+        "error": {
+            "code": code,
+            "class": "DomainJoinError",
+            "safe_message": "Domain join failed",
+        },
+    }
+
+    if accepted:
+        assert run_configure(result_payload)["error"] == result_payload["error"]
+    else:
+        with pytest.raises(ControlError) as exc:
+            run_configure(result_payload)
+        assert exc.value.code == "domain_verification_failed"
+
+
+@pytest.mark.parametrize(
+    ("safe_message", "accepted"),
+    [("", False), ("x" * 240, True), ("x" * 241, False)],
+    ids=["empty", "maximum", "two_hundred_forty_one"],
+)
+def test_configure_start_enforces_failed_safe_message_boundaries(
+    run_configure,
+    safe_message: str,
+    accepted: bool,
+) -> None:
+    result_payload = valid_structured_result() | {
+        "status": "failed",
+        "phase": "domain_join",
+        "error": {
+            "code": "domain_join_failed",
+            "class": "DomainJoinError",
+            "safe_message": safe_message,
+        },
+    }
+
+    if accepted:
+        assert run_configure(result_payload)["error"] == result_payload["error"]
+    else:
+        with pytest.raises(ControlError) as exc:
+            run_configure(result_payload)
+        assert exc.value.code == "domain_verification_failed"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"schema_version": 2},
+        {"hostname": "wrong-host"},
+        {"profile": "wrong-profile"},
+        {"status": "pending"},
+        {"status": []},
+        {"phase": []},
+        {"retryable": 1},
+        {"recovered": "false"},
+        {"reboot_required": 0},
+        {"components": []},
+        {"verification": []},
+        {
+            "error": {
+                "code": "domain_join_failed",
+                "class": "DomainJoinError",
+                "safe_message": "Domain join failed",
+            }
+        },
+        {"status": "failed", "error": None},
+    ],
+)
+def test_configure_start_rejects_invalid_structured_contract_values(
+    run_configure,
+    change: dict[str, object],
+) -> None:
+    with pytest.raises(ControlError) as exc:
+        run_configure(valid_structured_result() | change)
+
+    assert exc.value.code == "domain_verification_failed"
+
+
+@pytest.mark.parametrize(
+    "result_payload",
+    [
+        {"machine_uuid": MACHINE_UUID, "hostname": "alt-a1-pc3", "profile": "standard-domain"},
+        {
+            "machine_uuid": MACHINE_UUID,
+            "hostname": "alt-a1-pc3",
+            "profile": "standard-domain",
+            "verification": {},
+            "unexpected": True,
+        },
+        {
+            "machine_uuid": MACHINE_UUID,
+            "hostname": "wrong-host",
+            "profile": "standard-domain",
+            "verification": {},
+        },
+    ],
+    ids=["missing_verification", "extra_field", "mismatched_hostname"],
+)
+def test_configure_start_rejects_invalid_legacy_result(
+    run_configure,
+    result_payload: dict[str, object],
+) -> None:
+    with pytest.raises(ControlError) as exc:
+        run_configure(result_payload)
+
+    assert exc.value.code == "domain_verification_failed"
+
+
+def test_configure_start_accepts_exact_stage_03_legacy_result(run_configure) -> None:
+    result = run_configure(valid_legacy_result())
+
+    assert result["domain"] == "sosnadmin.local"
+    assert result["already_joined"] is True
+    assert result["reboot_required"] is False
+    assert result["verification"]["group_policy"] is False
+
+
+@pytest.mark.parametrize(
+    ("change", "missing"),
+    [
+        ({}, "domain"),
+        ({"unexpected": True}, None),
+        ({"machine_uuid": "11111111-2222-3333-4444-555555555555"}, None),
+        ({"hostname": "wrong-host"}, None),
+        ({"profile": "wrong-profile"}, None),
+        ({"domain": "example.local"}, None),
+        ({"already_joined": 1}, None),
+        ({"reboot_required": "false"}, None),
+        ({"verification": []}, None),
+    ],
+    ids=[
+        "missing_field",
+        "extra_field",
+        "mismatched_machine_uuid",
+        "mismatched_hostname",
+        "mismatched_profile",
+        "mismatched_domain",
+        "already_joined_not_bool",
+        "reboot_required_not_bool",
+        "verification_not_mapping",
+    ],
+)
+def test_configure_start_rejects_invalid_stage_03_legacy_result(
+    run_configure,
+    change: dict[str, object],
+    missing: str | None,
+) -> None:
+    result_payload = valid_legacy_result() | change
+    if missing is not None:
+        result_payload.pop(missing)
+
+    with pytest.raises(ControlError) as exc:
+        run_configure(result_payload)
+
+    assert exc.value.code == "domain_verification_failed"
+    assert set(exc.value.details) == {"run_id"}
+
+
 def test_configure_start_uses_fixed_playbook_and_private_run_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -238,7 +655,12 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
         captured.extend(command)
         result_arg = next(item for item in command if item.startswith("configure_result_file="))
         result_path = Path(result_arg.split("=", 1)[1])
-        result_path.write_text('{"verification": {"domain_join": true}}', encoding="utf-8")
+        result_path.write_text(
+            json.dumps(
+                valid_legacy_result()
+            ),
+            encoding="utf-8",
+        )
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -265,6 +687,354 @@ def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:
         "status": "ok",
         "checks": {"ad_join_user_present": True, "ad_join_password_present": True},
     }
+
+
+@pytest.mark.parametrize(
+    "scalar",
+    ["obscured", "'obscured'", '"obscured"', "'null'", '"true"', "'123'", "'[]'", "'{}'"],
+)
+def test_krfb_vault_gate_accepts_only_present_string_scalars(scalar: str) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: (  # type: ignore[method-assign]
+        f"vault_krfb_desktop_password_obscured: {scalar}\n"
+        "vault_krfb_unattended_password_obscured: obscured-too\n"
+    )
+
+    assert checker.check_krfb() == {
+        "status": "ok",
+        "checks": {
+            "krfb_desktop_password_present": True,
+            "krfb_unattended_password_present": True,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "scalar",
+    [
+        "",
+        "# comment only",
+        "''",
+        '\"\"',
+        "null",
+        "NULL",
+        "null # comment",
+        "~",
+        "|",
+        ">",
+        "true",
+        "TRUE",
+        "true # comment",
+        "false",
+        "False",
+        "'mismatch\"",
+        "[]",
+        "{}",
+        "[] # comment",
+        "[obscured]",
+        "{password: obscured}",
+        "123",
+        "123 # comment",
+        "-42",
+        "0xAB",
+        "3.14",
+        "1e3",
+        ".inf",
+        ".NaN",
+        "yes",
+        "off",
+        "&anchor obscured",
+        "*anchor",
+        "!!str obscured",
+        "- obscured",
+        "password: obscured",
+    ],
+)
+def test_krfb_vault_gate_rejects_blank_null_boolean_or_malformed_scalars(
+    scalar: str,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: (  # type: ignore[method-assign]
+        f"vault_krfb_desktop_password_obscured: {scalar}\n"
+        "vault_krfb_unattended_password_obscured: obscured-too\n"
+    )
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {
+        "checks": {
+            "krfb_desktop_password_present": False,
+            "krfb_unattended_password_present": True,
+        }
+    }
+    assert "obscured-too" not in str(exc.value.to_dict())
+
+
+def test_krfb_vault_gate_ignores_nested_variable_names() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: (  # type: ignore[method-assign]
+        "nested:\n"
+        "  vault_krfb_desktop_password_obscured: nested-desktop\n"
+        "  vault_krfb_unattended_password_obscured: nested-unattended\n"
+    )
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {
+        "checks": {
+            "krfb_desktop_password_present": False,
+            "krfb_unattended_password_present": False,
+        }
+    }
+    assert "nested-desktop" not in str(exc.value.to_dict())
+    assert "nested-unattended" not in str(exc.value.to_dict())
+
+
+def test_krfb_vault_gate_does_not_decrypt_after_base_vault_failure() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": False}  # type: ignore[method-assign]
+
+    def unexpected_decrypt() -> str:
+        raise AssertionError("KRFB gate must stop at the base Vault gate")
+
+    checker._decrypt = unexpected_decrypt  # type: ignore[method-assign]
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {
+        "checks": {
+            "krfb_desktop_password_present": False,
+            "krfb_unattended_password_present": False,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("missing_variable", "expected_checks"),
+    [
+        (
+            "vault_krfb_desktop_password_obscured",
+            {
+                "krfb_desktop_password_present": False,
+                "krfb_unattended_password_present": True,
+            },
+        ),
+        (
+            "vault_krfb_unattended_password_obscured",
+            {
+                "krfb_desktop_password_present": True,
+                "krfb_unattended_password_present": False,
+            },
+        ),
+    ],
+)
+def test_krfb_vault_gate_requires_both_named_fields(
+    missing_variable: str,
+    expected_checks: dict[str, bool],
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    values = {
+        "vault_krfb_desktop_password_obscured": "desktop-fixture",
+        "vault_krfb_unattended_password_obscured": "unattended-fixture",
+    }
+    values.pop(missing_variable)
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: "".join(  # type: ignore[method-assign]
+        f"{name}: {value}\n" for name, value in values.items()
+    )
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {"checks": expected_checks}
+
+
+def _configured_settings(tmp_path: Path):
+    from alt_deploy.config import Settings
+
+    settings = Settings(
+        registration_root=tmp_path / "registration", state_root=tmp_path / "state",
+        jobs_dir=tmp_path / "state" / "jobs", assignments_dir=tmp_path / "state" / "assignments",
+        lock_file=tmp_path / "state" / "lock", ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=tmp_path / "known_hosts", private_key_file=tmp_path / "id_ed25519",
+        ansible_playbook_path=tmp_path / "ansible-playbook", systemd_run_path=tmp_path / "systemd-run",
+        worker_path=tmp_path / "worker", job_stage_helper_path=tmp_path / "stage-helper",
+        workstationctl_path=tmp_path / "workstationctl",
+    )
+    for path in (
+        settings.known_hosts_file,
+        settings.private_key_file,
+        settings.ansible_playbook_path,
+    ):
+        path.write_text("fixture", encoding="utf-8")
+    playbook = settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+    playbook.parent.mkdir(parents=True)
+    playbook.write_text("---\n- hosts: all\n", encoding="utf-8")
+    return settings
+
+
+@pytest.mark.parametrize(
+    "confirmation",
+    [None, "false", "TRUE", "1", "yes", " true", "true "],
+)
+def test_configure_start_krfb_requires_exact_network_confirmation_after_vault(
+    confirmation: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = _configured_settings(tmp_path)
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_ad_join", lambda _self: calls.append("ad_join")
+    )
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_krfb", lambda _self: calls.append("krfb")
+    )
+    if confirmation is None:
+        monkeypatch.delenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", raising=False)
+    else:
+        monkeypatch.setenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", confirmation)
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Ansible must not run without exact network confirmation")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_run)
+    request = ConfigureRequest.from_mapping(
+        valid_request()
+        | {
+            "software_profile": "base",
+            "remote_access_profile": "krfb",
+            "assigned_domain_user": "pilot.user",
+        },
+        expected_uuid=MACHINE_UUID,
+    )
+
+    with pytest.raises(ControlError) as exc:
+        ConfigurePlanner(
+            settings, machines=SimpleNamespace(get=lambda _uuid: machine)
+        ).start(MACHINE_UUID, request)
+
+    assert calls == ["ad_join", "krfb"]
+    assert exc.value.code == "remote_access_network_restriction_unconfirmed"
+    assert not (settings.state_root / "configure-runs").exists()
+
+
+def test_configure_start_passes_krfb_confirmation_only_after_controller_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = _configured_settings(tmp_path)
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    events: list[str] = []
+    captured: list[str] = []
+    captured_environment: dict[str, str] = {}
+    request_payload: dict[str, object] = {}
+    monkeypatch.setenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", "true")
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_ad_join", lambda _self: events.append("ad_join")
+    )
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_krfb", lambda _self: events.append("krfb")
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        events.append("ansible")
+        captured.extend(command)
+        captured_environment.update(kwargs["env"])  # type: ignore[arg-type]
+        request_arg = next(item for item in command if item.startswith("@"))
+        request_payload.update(json.loads(Path(request_arg[1:]).read_text(encoding="utf-8")))
+        result_arg = next(item for item in command if item.startswith("configure_result_file="))
+        Path(result_arg.split("=", 1)[1]).write_text(
+            json.dumps(valid_structured_result()), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    request = ConfigureRequest.from_mapping(
+        valid_request()
+        | {
+            "software_profile": "base",
+            "remote_access_profile": "krfb",
+            "assigned_domain_user": "pilot.user",
+        },
+        expected_uuid=MACHINE_UUID,
+    )
+
+    ConfigurePlanner(
+        settings, machines=SimpleNamespace(get=lambda _uuid: machine)
+    ).start(MACHINE_UUID, request)
+
+    assert events == ["ad_join", "krfb", "ansible"]
+    confirmation_arg = next(
+        item for item in captured if "krfb_tcp_5900_restricted_confirmed" in item
+    )
+    assert json.loads(confirmation_arg) == {
+        "alt_deploy_krfb_tcp_5900_restricted_confirmed": True
+    }
+    assert not any("krfb_tcp_5900_restricted_confirmed=true" in item for item in captured)
+    assert "ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED" not in captured_environment
+    assert "alt_deploy_krfb_tcp_5900_restricted_confirmed" not in request_payload
+    assert "ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED" not in request_payload
+
+
+def test_configure_start_base_none_does_not_require_or_pass_krfb_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = _configured_settings(tmp_path)
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    captured: list[str] = []
+    monkeypatch.delenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", raising=False)
+    monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: None)
+
+    def unexpected_krfb(_self: object) -> None:
+        raise AssertionError("base/none must not check KRFB Vault fields")
+
+    monkeypatch.setattr(VaultHealthChecker, "check_krfb", unexpected_krfb, raising=False)
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.extend(command)
+        result_arg = next(item for item in command if item.startswith("configure_result_file="))
+        Path(result_arg.split("=", 1)[1]).write_text(
+            json.dumps(valid_structured_result()), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
+
+    ConfigurePlanner(
+        settings, machines=SimpleNamespace(get=lambda _uuid: machine)
+    ).start(MACHINE_UUID, request)
+
+    assert not any("krfb_tcp_5900" in argument for argument in captured)
 
 
 def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
@@ -306,3 +1076,51 @@ def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
 
     assert exc.value.code == "hostname_mismatch"
     assert set(exc.value.details) == {"run_id"}
+
+
+def test_configure_start_maps_long_running_timeout_without_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from alt_deploy.config import Settings
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = Settings(
+        registration_root=tmp_path / "registration", state_root=tmp_path / "state",
+        jobs_dir=tmp_path / "state" / "jobs", assignments_dir=tmp_path / "state" / "assignments",
+        lock_file=tmp_path / "state" / "lock", ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=tmp_path / "known_hosts", private_key_file=tmp_path / "id_ed25519",
+        ansible_playbook_path=tmp_path / "ansible-playbook", systemd_run_path=tmp_path / "systemd-run",
+        worker_path=tmp_path / "worker", job_stage_helper_path=tmp_path / "stage-helper",
+        workstationctl_path=tmp_path / "workstationctl",
+    )
+    for path in (settings.known_hosts_file, settings.private_key_file, settings.ansible_playbook_path):
+        path.write_text("fixture", encoding="utf-8")
+    playbook = settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+    playbook.parent.mkdir(parents=True)
+    playbook.write_text("---\n- hosts: all\n", encoding="utf-8")
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    timeout_error = subprocess.TimeoutExpired(["ansible-playbook"], 5400)
+    timeouts: list[int] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs["timeout"])  # type: ignore[arg-type]
+        raise timeout_error
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
+
+    with pytest.raises(ControlError) as exc:
+        ConfigurePlanner(
+            settings, machines=SimpleNamespace(get=lambda _: machine)
+        ).start(
+            MACHINE_UUID,
+            ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID),
+        )
+
+    assert timeouts == [5400]
+    assert exc.value.code == "domain_join_timeout"
+    assert exc.value.exit_code == 7
+    assert exc.value.message == "Ansible domain configure timed out"
+    assert set(exc.value.details) == {"run_id"}
+    assert isinstance(exc.value.details["run_id"], str)
+    assert exc.value.__cause__ is timeout_error
