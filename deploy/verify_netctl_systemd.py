@@ -70,7 +70,8 @@ EXPECTED_PROPERTIES = {
         "ProtectHome": "yes",
     },
     "netctl-availability.timer": {
-        "TimersMonotonic": ("OnBootUSec=3min", "OnUnitActiveUSec=5min"),
+        "TimersMonotonic": ("OnBootUSec=6min",),
+        "TimersCalendar": "*-*-* *:03/5:00",
         "AccuracyUSec": "30s",
         "Persistent": "yes",
         "Unit": "netctl-availability.service",

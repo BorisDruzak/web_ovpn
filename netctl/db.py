@@ -13,6 +13,7 @@ from .config import (
     normalize_snmp_driver_options,
 )
 from .migrations import apply_migrations
+from .normalizer import normalize_mac
 from .util import utc_now
 
 
@@ -42,6 +43,7 @@ def connect(db_url: str) -> sqlite3.Connection:
     path = db_path_from_url(db_url)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
+    conn.create_function("netctl_normalize_mac", 1, normalize_mac, deterministic=True)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -54,6 +56,7 @@ def connect_read_only(db_url: str) -> sqlite3.Connection:
     """Open an existing SQLite database without schema or data side effects."""
     path = db_path_from_url(db_url).resolve()
     conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    conn.create_function("netctl_normalize_mac", 1, normalize_mac, deterministic=True)
     conn.execute("PRAGMA query_only = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.row_factory = sqlite3.Row
@@ -79,6 +82,7 @@ def read_context_snapshot(db_url: str) -> Iterator[sqlite3.Connection]:
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
+    conn.create_function("netctl_normalize_mac", 1, normalize_mac, deterministic=True)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS network_sources (

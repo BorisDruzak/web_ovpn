@@ -13,7 +13,7 @@ from .context_classifier import (
     load_active_availability_segments,
     load_active_segment_rules,
 )
-from .availability import project_host_availability
+from .availability import bulk_project_host_availability
 from .dns_ptr import normalize_ptr_hostname, resolve_ptr_hostname
 from .normalizer import is_stale_noise_ip, normalize_hosts, normalize_mac
 from .path_facts import save_path_facts
@@ -686,7 +686,11 @@ def query_hosts(conn: sqlite3.Connection, q: str = "", category: str = "", statu
         """,
         params,
     ).fetchall()
-    projected = [project_host_availability(conn, decode_host(dict(row)), now=utc_now()) for row in rows]
+    projected = bulk_project_host_availability(
+        conn,
+        [decode_host(dict(row)) for row in rows],
+        now=utc_now(),
+    )
     selected = status or "current"
     if selected == "all":
         return projected
@@ -722,7 +726,9 @@ def inspect_host(conn: sqlite3.Connection, ip_or_id: str) -> dict[str, Any] | No
         row = conn.execute("SELECT * FROM network_hosts WHERE id = ?", (int(ip_or_id),)).fetchone()
     else:
         row = conn.execute("SELECT * FROM network_hosts WHERE ip = ?", (ip_or_id,)).fetchone()
-    return project_host_availability(conn, decode_host(dict(row)), now=utc_now()) if row else None
+    if row is None:
+        return None
+    return bulk_project_host_availability(conn, [decode_host(dict(row))], now=utc_now())[0]
 
 
 def related_for_host(conn: sqlite3.Connection, host: dict[str, Any]) -> dict[str, Any]:
@@ -754,7 +760,11 @@ def related_for_host(conn: sqlite3.Connection, host: dict[str, Any]) -> dict[str
 
 
 def dashboard_summary(conn: sqlite3.Connection) -> dict[str, Any]:
-    hosts = [project_host_availability(conn, decode_host(dict(row)), now=utc_now()) for row in conn.execute("SELECT * FROM network_hosts").fetchall()]
+    hosts = bulk_project_host_availability(
+        conn,
+        [decode_host(dict(row)) for row in conn.execute("SELECT * FROM network_hosts").fetchall()],
+        now=utc_now(),
+    )
     summary = {
         "total_hosts": len(hosts),
         "online": sum(1 for host in hosts if host.get("status") == "online"),

@@ -68,7 +68,8 @@ def test_systemd_verifier_expects_hardened_read_only_availability_recovery() -> 
         "ProtectHome": "yes",
     }
     assert verifier["EXPECTED_PROPERTIES"]["netctl-availability.timer"] == {
-        "TimersMonotonic": ("OnBootUSec=3min", "OnUnitActiveUSec=5min"),
+        "TimersMonotonic": ("OnBootUSec=6min",),
+        "TimersCalendar": "*-*-* *:03/5:00",
         "AccuracyUSec": "30s",
         "Persistent": "yes",
         "Unit": "netctl-availability.service",
@@ -76,32 +77,33 @@ def test_systemd_verifier_expects_hardened_read_only_availability_recovery() -> 
 
 
 def test_systemd_verifier_accepts_captured_availability_timer_dbus_properties() -> None:
-    """Linux exposes monotonic timers as *USec DBus properties, not unit-file names."""
+    """Linux exposes the availability schedule through DBus timer properties."""
     verifier = runpy.run_path(str(VERIFIER))
     properties = verifier["parse_show_properties"](AVAILABILITY_FIXTURE.read_text(encoding="utf-8"))
-    expected = verifier["EXPECTED_PROPERTIES"]["netctl-availability.timer"]["TimersMonotonic"]
 
-    assert expected == ("OnBootUSec=3min", "OnUnitActiveUSec=5min")
     assert verifier["property_matches"](
-        "TimersMonotonic", properties["TimersMonotonic"], expected
+        "TimersMonotonic", properties["TimersMonotonic"], ("OnBootUSec=6min",)
+    ) is True
+    assert verifier["property_matches"](
+        "TimersCalendar", properties["TimersCalendar"], "*-*-* *:03/5:00"
     ) is True
 
 
 def test_systemd_verifier_accepts_repeated_monotonic_timer_properties() -> None:
-    """A real systemctl show response may emit one TimersMonotonic line per trigger."""
+    """An obsolete OnUnitActive trigger must not be accepted with the boot trigger."""
     verifier = runpy.run_path(str(VERIFIER))
     properties = verifier["parse_show_properties"](
         "TimersMonotonic={ OnUnitActiveUSec=5min ; next_elapse=0 }\n"
-        "TimersMonotonic={ OnBootUSec=3min ; next_elapse=0 }\n"
+        "TimersMonotonic={ OnBootUSec=6min ; next_elapse=0 }\n"
+        "TimersCalendar={ OnCalendar=*-*-* *:03/5:00 ; next_elapse=0 }\n"
         "AccuracyUSec=30s\n"
         "Persistent=yes\n"
         "Unit=netctl-availability.service\n"
     )
-    expected = verifier["EXPECTED_PROPERTIES"]["netctl-availability.timer"]["TimersMonotonic"]
 
     assert verifier["property_matches"](
-        "TimersMonotonic", properties["TimersMonotonic"], expected
-    ) is True
+        "TimersMonotonic", properties["TimersMonotonic"], ("OnBootUSec=6min",)
+    ) is False
 
 
 def test_systemd_show_property_parser_reads_retention_hardening_and_schedule() -> None:

@@ -122,6 +122,63 @@ Main files:
 - `netctl-reconcile.timer` - five-minute recovery reconciliation for current topology and attachments.
 - `netctl-retention.timer` - daily 03:17 cleanup of local Netctl history older than 30 days. It does not run `VACUUM`; see the [backup-first compaction runbook](docs/runbooks/netctl-retention-compact.md) for the separate operator procedure.
 
+### Persistent host snapshots
+
+The Network Hosts page and host-list API read a persisted, versioned SQLite
+snapshot. Availability is projected in batches during snapshot refresh; host
+filters and pagination run in SQL before the selected page is decoded. Host
+list GET requests do not start collection, probes, reconciliation, or live VPN
+lookups. The Endpoint Agent column remains neutral until that integration exists.
+
+Migrations 25 and 26 add projection indexes and the current host snapshot tables.
+Successful complete collection/reconciliation and availability collection publish
+a replacement snapshot under the collection lock. Failed publication preserves
+the previous snapshot. After installing the migrations, an operator can publish
+the initial snapshot from existing local observations as the `netctl` service user:
+
+```bash
+sudo -u netctl /usr/local/sbin/netctl --json hosts snapshot-refresh
+sudo -u netctl /usr/local/sbin/netctl --json hosts snapshot-status
+sudo -u netctl /usr/local/sbin/netctl --json hosts list --status all --page 1 --limit 50
+```
+
+The direct `snapshot-refresh` command above explicitly writes the local snapshot.
+Status and list open a read-only database connection; a missing database or
+unpublished snapshot yields an empty pending result. Successful collection,
+reconciliation, and manual availability `probe` or `force` commands also publish
+snapshots as described below. List limits are clamped to 1–250 and pages to at
+least 1.
+The API exposes `GET /api/v1/network/hosts` and the inexpensive metadata endpoint
+`GET /api/v1/network/hosts/meta`; both accept bearer authorization or an existing
+authenticated browser session. The page polls metadata every 15 seconds and
+fetches its filtered page when the snapshot ID changes, preserving current rows
+when refresh fails. Metadata includes ID, generation time, host count and refresh
+duration and a `stale` boolean. A published snapshot becomes stale after more
+than 20 minutes (two expected ten-minute collection cycles); invalid or future
+generation timestamps are also stale. Pending snapshots have `stale=false` and
+ID zero. Freshness is calculated from the stored generation timestamp on every
+read, without a database write, and the 15-second metadata poll updates its
+label even when the snapshot ID is unchanged. Successful manual availability
+`probe` and `force` commands publish a new snapshot inside the collection lock,
+making their saved results visible on the next poll. If publication fails, the
+command reports `host_snapshot_failed`; its saved manual result remains intact
+and the previous complete snapshot remains visible until a successful refresh.
+
+Migration 27 adds expression indexes on `netctl_normalize_mac(mac)` for bridge
+and switch FDB evidence. The deterministic function uses the existing full MAC
+normalizer (including case, whitespace and separator handling), and is
+registered before migration and on all netctl writable/read-only connections.
+Raw MAC values and raw indexes remain intact; SQLite maintains the expression
+indexes on writes. Maintenance tools that write these tables must use
+`netctl.db.connect` or register this same deterministic function first. For a
+rollback to code predating this registration, restore the matching database
+backup together with the old code. No device configuration changes are required.
+
+At INFO level, snapshot refresh and completed list reads log only snapshot ID,
+counts, pagination and elapsed milliseconds. Payloads and filter values are never
+included. Local SQL counts, regression results and pending production checks are
+recorded in the [host snapshot verification record](docs/verification/2026-09-07-network-host-snapshot.md).
+
 ### Read-only SNMP switch readiness
 
 PR 3A provides a disabled-by-default SNMPv2c switch collector core and the

@@ -11,14 +11,14 @@ NEW = "2026-07-01T00:00:00Z"
 NOW = "2026-07-29T12:00:00Z"
 
 
-def _projection_segment(conn, cidr: str = "203.0.113.0/24") -> None:
+def _projection_segment(conn, cidr: str = "203.0.113.0/24", segment_id: str = "projection") -> None:
     """Add one approved monitored segment without changing collector fixtures."""
     revision = conn.execute("SELECT id FROM context_revisions WHERE context_id = 'availability-test'").fetchone()[0]
     conn.execute(
         """INSERT INTO intent_segments
            (context_revision_id, stable_id, lifecycle, canonical_json, canonical_hash, origin_context_revision_id)
-           VALUES (?, 'projection', 'active', ?, 'projection-hash', ?)""",
-        (revision, json.dumps({"id": "projection", "cidr": cidr, "availability_monitoring": True}, sort_keys=True), revision),
+           VALUES (?, ?, 'active', ?, ?, ?)""",
+        (revision, segment_id, json.dumps({"id": segment_id, "cidr": cidr, "availability_monitoring": True}, sort_keys=True), f"{segment_id}-hash", revision),
     )
 
 
@@ -85,6 +85,315 @@ def _set_segment(
         tcp_ports=tcp_ports,
         interval_minutes=interval_minutes,
     )
+
+
+@pytest.fixture
+def seeded_hosts(conn):
+    """Seed production-scale host evidence spanning every availability outcome."""
+    from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run, set_force_monitor
+
+    _projection_segment(conn, "203.0.113.0/24", "projection-stale")
+    _projection_segment(conn, "203.0.114.0/24", "projection-seen")
+    _projection_segment(conn, "203.0.115.0/24", "projection-missing")
+    special_hosts = [
+        ("192.0.2.1", "AA:BB:CC:00:00:01", "online"),
+        ("192.0.2.2", "AA:BB:CC:00:00:02", "online"),
+        ("198.51.100.1", "AA:BB:CC:00:00:03", "online"),
+        ("198.51.100.2", "AA:BB:CC:00:00:04", "online"),
+        ("203.0.113.8", "AA:BB:CC:00:00:08", "online"),
+        ("203.0.113.9", "AA:BB:CC:00:00:09", "online"),
+        ("203.0.113.10", "AA:BB:CC:00:00:0A", "online"),
+        ("203.0.113.11", "AA:BB:CC:00:00:0B", "online"),
+        ("203.0.114.8", "AA:BB:CC:00:00:0C", "online"),
+        ("203.0.114.9", "AA:BB:CC:00:00:0D", "online"),
+        ("203.0.114.10", "AA:BC:00:00:00:01", "online"),
+        ("203.0.114.11", "AA:BD:00:00:00:01", "online"),
+        ("203.0.115.8", "AA:BB:CC:00:00:0D", "online"),
+    ]
+    generated_hosts = [
+        (f"10.200.{index // 254}.{index % 254 + 1}", f"AA:BB:DD:{index >> 16:02X}:{index >> 8 & 255:02X}:{index & 255:02X}", "online")
+        for index in range(1187)
+    ]
+    conn.executemany(
+        """INSERT INTO network_hosts
+           (ip, mac, category, status, first_seen_at, last_seen_at, last_source, tags_json)
+           VALUES (?, ?, 'unknown', ?, ?, ?, 'test', '{}')""",
+        [(ip, mac, status, NOW, NOW) for ip, mac, status in special_hosts + generated_hosts],
+    )
+    mikrotik_source = conn.execute(
+        """INSERT INTO network_sources
+           (name, driver, host, port, username, secret_ref, enabled, created_at, updated_at,
+            last_collect_at, last_status)
+           VALUES ('projection-mikrotik', 'mikrotik_api', '192.0.2.254', 8729, '', '', 1, ?, ?, ?, 'ok')""",
+        (NOW, NOW, NOW),
+    ).lastrowid
+    switch_source = conn.execute(
+        """INSERT INTO network_sources
+           (name, driver, host, port, username, secret_ref, enabled, created_at, updated_at,
+            last_collect_at, last_status)
+           VALUES ('projection-switch', 'snmp_switch', '192.0.2.253', 161, '', '', 1, ?, ?, ?, 'success')""",
+        (NOW, NOW, NOW),
+    ).lastrowid
+    switch_run = conn.execute(
+        """INSERT INTO switch_collection_runs (source_id, started_at, finished_at, status, outcomes_json)
+           VALUES (?, ?, ?, 'success', '{}')""",
+        (switch_source, NOW, NOW),
+    ).lastrowid
+    conn.executemany(
+        "INSERT INTO arp_entries (source_id, ip, mac, complete, last_seen_at) VALUES (?, ?, ?, 1, ?)",
+        [
+            (mikrotik_source, "203.0.113.10", "AA:BB:CC:00:00:0A", NOW),
+            (mikrotik_source, "203.0.114.8", "AA:BB:CC:00:00:0C", NOW),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO dhcp_leases (source_id, ip, mac, status, last_seen_at) VALUES (?, ?, ?, 'bound', ?)",
+        [(mikrotik_source, "203.0.114.9", "AA:BB:CC:00:00:0D", NOW)],
+    )
+    conn.executemany(
+        "INSERT INTO bridge_hosts (source_id, mac, bridge, interface, last_seen_at) VALUES (?, ?, 'bridge', 'ether2', ?)",
+        [(mikrotik_source, f"AA:BC:00:{index >> 8:02X}:{index & 255:02X}:01", NOW) for index in range(300)],
+    )
+    conn.executemany(
+        """INSERT INTO current_switch_fdb
+           (source_id, vlan_key, mac, port_key, status, first_seen_at, last_seen_at, collector_run_id)
+           VALUES (?, '1', ?, 'physical:1', 'learned', ?, ?, ?)""",
+        [
+            (switch_source, f"AA:BD:00:{index >> 8:02X}:{index & 255:02X}:01", NOW, NOW, switch_run)
+            for index in range(2000)
+        ],
+    )
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30", started=NOW, finished=NOW,
+            results=[
+                AvailabilityResult("192.0.2.1", "reachable", "icmp"),
+                AvailabilityResult("192.0.2.2", "unreachable", None),
+            ],
+            target_count=2,
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "203.0.114.0/24", started=NOW, finished=NOW,
+            results=[
+                AvailabilityResult("203.0.114.8", "unreachable", None),
+                AvailabilityResult("203.0.114.9", "unreachable", None),
+                AvailabilityResult("203.0.114.10", "unreachable", None),
+                AvailabilityResult("203.0.114.11", "unreachable", None),
+            ],
+            target_count=4,
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.failed(
+            "198.51.100.0/30", started=NOW, finished=NOW, error_class="deadline_exceeded", target_count=2,
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "203.0.113.0/24", started=OLD, finished=OLD,
+            results=[AvailabilityResult("203.0.113.8", "unreachable", None)], target_count=1,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO availability_manual_results
+           (segment_id, ip, requested_at, checked_at, active_state, active_method)
+           VALUES ('projection-stale', '203.0.113.9', ?, ?, 'reachable', 'tcp')""",
+        (NOW, NOW),
+    )
+    set_force_monitor(conn, "192.0.2.2", enabled=True, now=NOW)
+    set_force_monitor(conn, "198.51.100.1", enabled=False, now=NOW)
+    conn.commit()
+    hosts = [dict(row) for row in conn.execute("SELECT * FROM network_hosts ORDER BY ip")]
+    next(host for host in hosts if host["ip"] == "203.0.113.10")["openvpn_connected"] = True
+    return hosts
+
+
+def test_bulk_projection_matches_legacy_for_every_status(conn, seeded_hosts):
+    from netctl.availability import project_host_availability
+
+    expected = [project_host_availability(conn, host, now=NOW) for host in seeded_hosts]
+    assert {host["status"] for host in expected} == {"connected", "offline", "online", "seen", "stale"}
+    assert {
+        host["ip"]: host["availability"]["passive_evidence"]
+        for host in expected
+        if host["ip"] in {"203.0.114.8", "203.0.114.9", "203.0.114.10", "203.0.114.11"}
+    } == {
+        "203.0.114.8": ["mikrotik_arp"],
+        "203.0.114.9": ["mikrotik_dhcp"],
+        "203.0.114.10": ["mikrotik_bridge"],
+        "203.0.114.11": ["snmp_fdb"],
+    }
+
+    from netctl.availability import bulk_project_host_availability
+
+    assert bulk_project_host_availability(conn, seeded_hosts, now=NOW) == expected
+
+
+def test_bulk_projection_uses_bounded_sql_for_large_host_list(conn, seeded_hosts):
+    from netctl.availability import bulk_project_host_availability
+
+    assert len(seeded_hosts) == 1200
+    assert conn.execute("SELECT count(*) FROM current_switch_fdb").fetchone()[0] == 2000
+    assert conn.execute("SELECT count(*) FROM bridge_hosts").fetchone()[0] == 300
+    statements = []
+    conn.set_trace_callback(statements.append)
+    bulk_project_host_availability(conn, seeded_hosts, now=NOW)
+
+    assert len(statements) < 80
+
+
+def test_bulk_mac_queries_search_expression_indexes(conn, seeded_hosts):
+    """A normalized predicate must seek evidence indexes, including every chunk."""
+    from netctl.availability import bulk_project_host_availability
+
+    statements = []
+    conn.set_trace_callback(statements.append)
+    bulk_project_host_availability(conn, seeded_hosts, now=NOW)
+    conn.set_trace_callback(None)
+    queries = [sql for sql in statements if "WHERE netctl_normalize_mac(" in sql]
+    assert len(queries) == 6
+    for query in queries:
+        plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + query)]
+        alias, index = ("hosts", "bridge_hosts_normalized_mac_idx") if "FROM bridge_hosts" in query else ("f", "current_switch_fdb_normalized_mac_idx")
+        assert any(f"SEARCH {alias} USING INDEX {index} (<expr>=?)" in line for line in plan), plan
+        assert not any(f"SCAN {alias}" in line for line in plan), plan
+
+
+def test_normalized_mac_index_migration_preserves_legacy_rows_and_tracks_writes(conn, seeded_hosts, tmp_path):
+    import sqlite3
+    from netctl.db import connect, connect_read_only
+    from netctl.migrations import apply_migrations
+
+    for table in ("bridge_hosts", "current_switch_fdb"):
+        conn.execute(f"DROP INDEX IF EXISTS {table}_normalized_mac_idx")
+        conn.execute(f"UPDATE {table} SET mac=' \taa-bb.cc dd Ee:08\n' WHERE rowid=(SELECT min(rowid) FROM {table})")
+    conn.execute("DELETE FROM schema_migrations WHERE version=27")
+    conn.commit()
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    migrated = sqlite3.connect(tmp_path / "netctl.sqlite")
+    try:
+        apply_migrations(migrated)
+        apply_migrations(migrated)
+        for table in ("bridge_hosts", "current_switch_fdb"):
+            query = f"SELECT mac FROM {table} WHERE netctl_normalize_mac(mac)=?"
+            assert migrated.execute(query, ("AA:BB:CC:DD:EE:08",)).fetchone()[0] == ' \taa-bb.cc dd Ee:08\n'
+            plan = [row[3] for row in migrated.execute("EXPLAIN QUERY PLAN " + query, ("AA:BB:CC:DD:EE:08",))]
+            assert any(f"USING INDEX {table}_normalized_mac_idx" in line for line in plan), plan
+        assert migrated.execute("SELECT count(*) FROM schema_migrations WHERE version=27").fetchone()[0] == 1
+    finally:
+        migrated.close()
+    writer = connect(db_url)
+    try:
+        for table in ("bridge_hosts", "current_switch_fdb"):
+            writer.execute(f"UPDATE {table} SET mac='aa-bb-cc-dd-ee-09' WHERE netctl_normalize_mac(mac)=?", ("AA:BB:CC:DD:EE:08",))
+        writer.commit()
+    finally:
+        writer.close()
+    reader = connect_read_only(db_url)
+    try:
+        for table in ("bridge_hosts", "current_switch_fdb"):
+            assert reader.execute(f"SELECT mac FROM {table} WHERE netctl_normalize_mac(mac)=?", ("AA:BB:CC:DD:EE:09",)).fetchone()[0] == "aa-bb-cc-dd-ee-09"
+    finally:
+        reader.close()
+
+
+def test_project_host_from_context_performs_no_sql(conn, seeded_hosts):
+    """A per-host projection must use only the evidence captured in its batch context."""
+    from netctl.availability import AvailabilityProjectionContext, project_host_from_context
+
+    context = AvailabilityProjectionContext.load(conn, seeded_hosts, now=NOW)
+    statements = []
+    conn.set_trace_callback(statements.append)
+
+    projected = project_host_from_context(seeded_hosts[0], context, now=context.now)
+
+    assert projected["ip"] == seeded_hosts[0]["ip"]
+    assert statements == []
+
+
+def test_bulk_context_uses_only_latest_manual_and_run_history(conn):
+    """History volume must not change the batch's current manual/run projection state."""
+    from netctl.availability import AvailabilityProjectionContext, project_host_from_context
+
+    host = _projection_host(conn)
+    _negative_projection_run(conn, host["ip"])
+    scheduled_host = _projection_host(conn, ip="203.0.113.9")
+    current_run = conn.execute(
+        """SELECT id FROM availability_runs
+           WHERE cidr = '203.0.113.0/24'
+           ORDER BY finished_at DESC, id DESC LIMIT 1"""
+    ).fetchone()["id"]
+    revision = conn.execute(
+        "SELECT id FROM context_revisions WHERE context_id = 'availability-test'"
+    ).fetchone()["id"]
+    old_manuals = [
+        ("projection", host["ip"], f"2026-07-01T00:{index // 60:02}:{index % 60:02}Z")
+        for index in range(240)
+    ]
+    conn.executemany(
+        """INSERT INTO availability_manual_results
+           (segment_id, ip, requested_at, checked_at, active_state, active_method)
+           VALUES (?, ?, ?, ?, 'unreachable', '')""",
+        [(segment_id, ip, checked_at, checked_at) for segment_id, ip, checked_at in old_manuals],
+    )
+    conn.execute(
+        """INSERT INTO availability_manual_results
+           (segment_id, ip, requested_at, checked_at, active_state, active_method)
+           VALUES ('projection', ?, ?, ?, 'reachable', 'icmp')""",
+        (host["ip"], NOW, NOW),
+    )
+    conn.executemany(
+        """INSERT INTO availability_runs
+           (context_revision_id, cidr, started_at, finished_at, status,
+            target_count, completed_target_count, error_class)
+           VALUES (?, '203.0.113.0/24', ?, ?, 'success', 1, 1, '')""",
+        [
+            (revision, f"2026-07-01T00:{index // 60:02}:{index % 60:02}Z", f"2026-07-01T00:{index // 60:02}:{index % 60:02}Z")
+            for index in range(240)
+        ],
+    )
+    conn.commit()
+    statements = []
+    conn.set_trace_callback(statements.append)
+
+    context = AvailabilityProjectionContext.load(conn, [host, scheduled_host], now=NOW)
+
+    assert len(context.manual_by_segment_ip) == 1
+    manual = context.manual_by_segment_ip[("projection", host["ip"])]
+    assert manual["active_state"] == "reachable"
+    assert manual["checked_at"] == NOW
+    assert context.run_by_cidr["203.0.113.0/24"]["id"] == current_run
+    assert project_host_from_context(host, context, now=NOW)["status"] == "online"
+    scheduled_projection = project_host_from_context(scheduled_host, context, now=NOW)
+    assert scheduled_projection["availability"]["reason"] == "missing_result"
+    assert scheduled_projection["availability"]["checked_at"] == NOW
+    assert len(statements) < 20
+
+
+@pytest.mark.parametrize("passive_source", ("mikrotik_bridge", "snmp_fdb"))
+@pytest.mark.parametrize(
+    "stored_mac",
+    ("aabb.ccdd.ee08", "Aa:Bb:Cc:Dd:Ee:08", "  AA:BB:CC:DD:EE:08  "),
+)
+def test_bulk_projection_matches_legacy_for_normalized_mac_evidence(conn, passive_source, stored_mac):
+    """Batch lookup must retain legacy MAC normalization across stored punctuation styles."""
+    from netctl.availability import bulk_project_host_availability, project_host_availability
+
+    host = _projection_host(conn, mac="AA:BB:CC:DD:EE:08")
+    _negative_projection_run(conn, host["ip"])
+    _fresh_passive(conn, passive_source, ip=host["ip"], mac=stored_mac)
+    conn.commit()
+
+    expected = project_host_availability(conn, host, now=NOW)
+    assert expected["status"] == "seen"
+    assert bulk_project_host_availability(conn, [host], now=NOW) == [expected]
 
 
 def test_availability_targets_include_recent_hosts_management_and_forced_history(conn):
@@ -365,6 +674,50 @@ class FakeExecutor:
         return self.tcp.get((ip, port), False)
 
 
+@pytest.mark.parametrize("command", ["probe", "force"])
+def test_manual_availability_action_publishes_snapshot_under_collection_lock(conn, tmp_path, monkeypatch, command):
+    from contextlib import contextmanager
+    import netctl.cli as cli
+    from netctl.db import connect
+    from netctl.host_snapshot import refresh_host_snapshot, list_host_snapshot
+
+    host = _projection_host(conn, ip="192.0.2.1")
+    conn.commit()
+    first = refresh_host_snapshot(conn, now=NOW)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    locked = False
+
+    @contextmanager
+    def lock(_db):
+        nonlocal locked
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    def publish(connection, *, now):
+        assert locked, "publication must happen before releasing CollectLock"
+        return refresh_host_snapshot(connection, now=now)
+
+    monkeypatch.setattr(cli, "CollectLock", lock)
+    monkeypatch.setattr(cli, "prepare_conn", lambda args: connect(args.db))
+    monkeypatch.setattr(cli, "utc_now", lambda: NOW)
+    monkeypatch.setattr(cli, "default_probe_executor", lambda: FakeExecutor(icmp={host["ip"]: True}))
+    monkeypatch.setattr(cli, "refresh_host_snapshot", publish)
+    args = ["--db", db_url, "availability", command, "--ip", host["ip"]]
+    if command == "force":
+        args += ["--enabled", "true"]
+    rc, data = cli.dispatch(cli.build_parser().parse_args(args))
+    assert rc == 0, data
+    page = list_host_snapshot(conn, {"status": "all"}, 1, 100)
+    assert page["snapshot"]["snapshot_id"] == first.snapshot_id + 1
+    if command == "probe":
+        assert page["hosts"][0]["status"] == "online"
+    else:
+        assert page["hosts"][0]["availability"]["force_monitor"]["enabled"] is True
+
+
 def test_due_collection_skips_segment_until_selected_interval_expires(conn):
     """Ignoring the effective interval would probe a segment before its configured due time."""
     from netctl.availability import (
@@ -447,6 +800,24 @@ def test_due_collection_with_no_due_segments_does_not_call_executor(conn):
     assert result.status == "success"
     assert result.summary == {"targets": 0, "completed": 0}
     assert executor.calls == []
+
+
+@pytest.mark.parametrize("already_collected", [False, True])
+def test_completed_availability_collection_can_publish_snapshot_without_outer_transaction(conn, already_collected):
+    from netctl.availability import collect_due_availability
+    from netctl.cli import _refresh_host_snapshot_locked
+    from netctl.host_snapshot import snapshot_status
+
+    _observed_targets(conn, seen_at=NOW)
+    if already_collected:
+        assert collect_due_availability(conn, FakeExecutor(), now=lambda: NOW).status == "success"
+    collection = collect_due_availability(conn, FakeExecutor(), now=lambda: NOW)
+    assert collection.status == "success"
+    assert bool(collection.runs) is not already_collected
+    assert not conn.in_transaction
+    _refresh_host_snapshot_locked(conn, now=NOW)
+    assert snapshot_status(conn).total_hosts == 4
+    assert not conn.in_transaction
 
 
 def test_due_collection_fails_closed_when_active_context_is_missing(tmp_path):

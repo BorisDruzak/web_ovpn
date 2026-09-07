@@ -2009,6 +2009,70 @@ def _migration_24(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_25(conn: sqlite3.Connection) -> None:
+    """Index the bounded availability projection lookups."""
+    for statement in (
+        "CREATE INDEX arp_entries_ip_idx ON arp_entries(ip)",
+        "CREATE INDEX dhcp_leases_ip_idx ON dhcp_leases(ip)",
+        "CREATE INDEX bridge_hosts_mac_idx ON bridge_hosts(mac)",
+        "DROP INDEX current_switch_fdb_mac_idx",
+        "CREATE INDEX current_switch_fdb_mac_idx ON current_switch_fdb(mac)",
+        """CREATE INDEX availability_manual_results_segment_ip_checked_idx
+           ON availability_manual_results(segment_id, ip, checked_at DESC, id DESC)""",
+        """CREATE INDEX availability_results_cidr_ip_run_idx
+           ON availability_results(cidr, ip, run_id)""",
+    ):
+        conn.execute(statement)
+
+
+def _migration_26(conn: sqlite3.Connection) -> None:
+    """Persist one complete public host projection without changing legacy state."""
+    for statement in (
+        """CREATE TABLE network_host_snapshot_meta (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            snapshot_id INTEGER NOT NULL,
+            generated_at TEXT NOT NULL,
+            total_hosts INTEGER NOT NULL,
+            duration_ms INTEGER NOT NULL
+        )""",
+        """CREATE TABLE network_host_current_state (
+            snapshot_id INTEGER NOT NULL,
+            ip TEXT NOT NULL PRIMARY KEY,
+            ip_sort BLOB NOT NULL,
+            category TEXT NOT NULL,
+            status TEXT NOT NULL,
+            network TEXT NOT NULL,
+            has_hostname INTEGER NOT NULL CHECK (has_hostname IN (0, 1)),
+            has_mac INTEGER NOT NULL CHECK (has_mac IN (0, 1)),
+            last_seen_at TEXT,
+            search_text TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            UNIQUE (snapshot_id, ip)
+        )""",
+        """CREATE TABLE network_host_current_sources (
+            snapshot_id INTEGER NOT NULL,
+            ip TEXT NOT NULL,
+            source TEXT NOT NULL,
+            PRIMARY KEY (snapshot_id, ip, source),
+            FOREIGN KEY (snapshot_id, ip)
+                REFERENCES network_host_current_state(snapshot_id, ip)
+        )""",
+        "CREATE INDEX network_host_snapshot_sort_idx ON network_host_current_state(snapshot_id, ip_sort, ip)",
+        "CREATE INDEX network_host_snapshot_filter_idx ON network_host_current_state(snapshot_id, category, status, network)",
+        "CREATE INDEX network_host_snapshot_status_idx ON network_host_current_state(snapshot_id, status, ip_sort, ip)",
+        "CREATE INDEX network_host_snapshot_source_idx ON network_host_current_sources(snapshot_id, source, ip)",
+    ):
+        conn.execute(statement)
+
+
+def _migration_27(conn: sqlite3.Connection) -> None:
+    """Seek normalized MAC batches while retaining raw indexes for other readers."""
+    for table in ("bridge_hosts", "current_switch_fdb"):
+        conn.execute(
+            f"CREATE INDEX {table}_normalized_mac_idx ON {table}(netctl_normalize_mac(mac))"
+        )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2034,10 +2098,16 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (22, _migration_22),
     (23, _migration_23),
     (24, _migration_24),
+    (25, _migration_25),
+    (26, _migration_26),
+    (27, _migration_27),
 )
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
+    # Direct migration callers also need the exact deterministic function before
+    # SQLite builds expression indexes over existing legacy rows.
+    conn.create_function("netctl_normalize_mac", 1, normalize_mac, deterministic=True)
     conn.execute("SAVEPOINT apply_migrations")
     try:
         conn.execute(

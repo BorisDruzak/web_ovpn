@@ -21,6 +21,7 @@ COLLECTOR_INTERVAL = timedelta(minutes=5)
 AVAILABILITY_INTERVAL = timedelta(minutes=5)
 PASSIVE_EVIDENCE_FRESHNESS = COLLECTOR_INTERVAL * 2
 AVAILABILITY_FRESHNESS = AVAILABILITY_INTERVAL * 2
+SQL_IN_CHUNK_SIZE = 400
 TARGET_NEGATIVE_CONNECT_ERRNOS = frozenset(
     {
         errno.ECONNREFUSED,
@@ -845,6 +846,290 @@ def _fresh_at(value: Any, *, now: datetime, budget: timedelta) -> bool:
     return observed is not None and timedelta(0) <= now - observed <= budget
 
 
+def _value_chunks(values: set[str] | set[int]) -> tuple[tuple[str | int, ...], ...]:
+    ordered = tuple(sorted(values))
+    return tuple(
+        ordered[index:index + SQL_IN_CHUNK_SIZE]
+        for index in range(0, len(ordered), SQL_IN_CHUNK_SIZE)
+    )
+
+
+def _in_clause(values: tuple[str | int, ...]) -> str:
+    return ", ".join("?" for _ in values)
+
+
+def _monitored_rule_from_rules(rules: tuple[Any, ...], ip: str) -> Any | None:
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if address.version != 4:
+        return None
+    matches = [
+        rule
+        for rule in rules
+        if address in rule.network
+        and (
+            rule.network.prefixlen >= 31
+            or address not in (rule.network.network_address, rule.network.broadcast_address)
+        )
+    ]
+    if not matches:
+        return None
+    return sorted(matches, key=lambda rule: (-rule.network.prefixlen, rule.segment_id))[0]
+
+
+@dataclass
+class AvailabilityProjectionContext:
+    now: str | datetime
+    rules: tuple[Any, ...]
+    force_monitors: dict[str, dict[str, object]]
+    arp_by_ip: dict[str, list[dict[str, Any]]]
+    dhcp_by_ip: dict[str, list[dict[str, Any]]]
+    bridge_by_mac: dict[str, list[dict[str, Any]]]
+    fdb_by_mac: dict[str, list[dict[str, Any]]]
+    manual_by_segment_ip: dict[tuple[str, str], dict[str, Any]]
+    run_by_cidr: dict[str, dict[str, Any]]
+    result_by_cidr_ip_run: dict[tuple[str, str, int], dict[str, Any]]
+
+    @classmethod
+    def load(
+        cls,
+        conn: sqlite3.Connection,
+        hosts: list[dict[str, Any]],
+        *,
+        now: str | datetime,
+    ) -> AvailabilityProjectionContext:
+        ips = {str(host["ip"]) for host in hosts}
+        macs = {mac for host in hosts if (mac := normalize_mac(host.get("mac")))}
+        conn.create_function("netctl_normalize_mac", 1, normalize_mac, deterministic=True)
+        rules = load_active_availability_segments(conn)
+        rules_by_ip = {
+            ip: rule
+            for ip in ips
+            if (rule := _monitored_rule_from_rules(rules, ip)) is not None
+        }
+        arp_by_ip: dict[str, list[dict[str, Any]]] = {}
+        dhcp_by_ip: dict[str, list[dict[str, Any]]] = {}
+        bridge_by_mac: dict[str, list[dict[str, Any]]] = {}
+        fdb_by_mac: dict[str, list[dict[str, Any]]] = {}
+        force_monitors: dict[str, dict[str, object]] = {}
+        for values in _value_chunks(ips):
+            placeholders = _in_clause(values)
+            for row in conn.execute(
+                """SELECT entries.ip, entries.mac, entries.complete, entries.last_seen_at,
+                          sources.enabled AS source_enabled, sources.last_status AS source_status,
+                          sources.last_collect_at AS source_collected_at
+                   FROM arp_entries AS entries
+                   JOIN network_sources AS sources ON sources.id = entries.source_id
+                   WHERE entries.ip IN (""" + placeholders + ")",
+                values,
+            ):
+                item = dict(row)
+                arp_by_ip.setdefault(str(item["ip"]), []).append(item)
+            for row in conn.execute(
+                """SELECT leases.ip, leases.mac, leases.status, leases.last_seen_at,
+                          sources.enabled AS source_enabled, sources.last_status AS source_status,
+                          sources.last_collect_at AS source_collected_at
+                   FROM dhcp_leases AS leases
+                   JOIN network_sources AS sources ON sources.id = leases.source_id
+                   WHERE leases.ip IN (""" + placeholders + ")",
+                values,
+            ):
+                item = dict(row)
+                dhcp_by_ip.setdefault(str(item["ip"]), []).append(item)
+            for row in conn.execute(
+                """SELECT ip, enabled, enabled_at, updated_at
+                   FROM availability_force_monitors
+                   WHERE ip IN (""" + placeholders + ")",
+                values,
+            ):
+                item = dict(row)
+                force_monitors[str(item["ip"])] = {
+                    "ip": str(item["ip"]),
+                    "enabled": bool(item["enabled"]),
+                    "enabled_at": str(item["enabled_at"]),
+                    "updated_at": str(item["updated_at"]),
+                }
+        for values in _value_chunks(macs):
+            placeholders = _in_clause(values)
+            for row in conn.execute(
+                """SELECT hosts.mac, hosts.last_seen_at,
+                          sources.enabled AS source_enabled, sources.last_status AS source_status,
+                          sources.last_collect_at AS source_collected_at
+                   FROM bridge_hosts AS hosts
+                   JOIN network_sources AS sources ON sources.id = hosts.source_id
+                   WHERE netctl_normalize_mac(hosts.mac) IN (""" + placeholders + ")",
+                values,
+            ):
+                item = dict(row)
+                mac = normalize_mac(item["mac"])
+                if mac:
+                    bridge_by_mac.setdefault(mac, []).append(item)
+            for row in conn.execute(
+                (
+                    """SELECT f.mac, f.last_seen_at,
+                          sources.enabled AS source_enabled, sources.last_status AS source_status,
+                          sources.last_collect_at AS source_collected_at
+                   FROM current_switch_fdb AS f
+                   JOIN switch_collection_runs AS runs
+                     ON runs.id = f.collector_run_id AND runs.source_id = f.source_id
+                   JOIN network_sources AS sources ON sources.id = f.source_id
+                   WHERE netctl_normalize_mac(f.mac) IN ("""
+                    + placeholders
+                    + """)
+                     AND runs.status = 'success'
+                     AND lower(f.status) NOT IN ('self', 'mgmt')"""
+                ),
+                values,
+            ):
+                item = dict(row)
+                mac = normalize_mac(item["mac"])
+                if mac:
+                    fdb_by_mac.setdefault(mac, []).append(item)
+
+        manual_by_segment_ip: dict[tuple[str, str], dict[str, Any]] = {}
+        segment_ids = {str(rule.segment_id) for rule in rules_by_ip.values()}
+        for segment_values in _value_chunks(segment_ids):
+            segment_placeholders = _in_clause(segment_values)
+            for ip_values in _value_chunks(ips):
+                ip_placeholders = _in_clause(ip_values)
+                for row in conn.execute(
+                    (
+                        """SELECT id, segment_id, ip, active_state, active_method, checked_at
+                       FROM (
+                           SELECT id, segment_id, ip, active_state, active_method, checked_at,
+                                  ROW_NUMBER() OVER (
+                                      PARTITION BY segment_id, ip
+                                      ORDER BY checked_at DESC, id DESC
+                                  ) AS row_number
+                           FROM availability_manual_results
+                           WHERE segment_id IN ("""
+                        + segment_placeholders
+                        + """)
+                         AND ip IN ("""
+                        + ip_placeholders
+                        + """)
+                       )
+                       WHERE row_number = 1"""
+                    ),
+                    segment_values + ip_values,
+                ):
+                    item = dict(row)
+                    manual_by_segment_ip[(str(item["segment_id"]), str(item["ip"]))] = item
+
+        run_by_cidr: dict[str, dict[str, Any]] = {}
+        cidrs = {str(rule.network) for rule in rules_by_ip.values()}
+        for values in _value_chunks(cidrs):
+            placeholders = _in_clause(values)
+            for row in conn.execute(
+                (
+                    """SELECT id, cidr, status, finished_at, error_class
+                   FROM (
+                       SELECT id, cidr, status, finished_at, error_class,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY cidr
+                                  ORDER BY finished_at DESC, id DESC
+                              ) AS row_number
+                       FROM availability_runs
+                       WHERE cidr IN ("""
+                    + placeholders
+                    + """)
+                   )
+                   WHERE row_number = 1"""
+                ),
+                values,
+            ):
+                item = dict(row)
+                run_by_cidr[str(item["cidr"])] = item
+
+        result_by_cidr_ip_run: dict[tuple[str, str, int], dict[str, Any]] = {}
+        run_ids = {int(row["id"]) for row in run_by_cidr.values()}
+        for run_values in _value_chunks(run_ids):
+            run_placeholders = _in_clause(run_values)
+            for ip_values in _value_chunks(ips):
+                ip_placeholders = _in_clause(ip_values)
+                for row in conn.execute(
+                    (
+                        """SELECT cidr, ip, run_id, active_state, active_method, checked_at
+                       FROM availability_results
+                       WHERE run_id IN ("""
+                        + run_placeholders
+                        + """)
+                         AND ip IN ("""
+                        + ip_placeholders
+                        + ")"""
+                    ),
+                    run_values + ip_values,
+                ):
+                    item = dict(row)
+                    result_by_cidr_ip_run[
+                        (str(item["cidr"]), str(item["ip"]), int(item["run_id"]))
+                    ] = item
+        return cls(
+            now=now,
+            rules=rules,
+            force_monitors=force_monitors,
+            arp_by_ip=arp_by_ip,
+            dhcp_by_ip=dhcp_by_ip,
+            bridge_by_mac=bridge_by_mac,
+            fdb_by_mac=fdb_by_mac,
+            manual_by_segment_ip=manual_by_segment_ip,
+            run_by_cidr=run_by_cidr,
+            result_by_cidr_ip_run=result_by_cidr_ip_run,
+        )
+
+    def force_monitor_state(self, ip: str) -> dict[str, object]:
+        address = ipaddress.ip_address(ip)
+        if address.version != 4:
+            raise ValueError("force monitor requires IPv4")
+        normalized = str(address)
+        return self.force_monitors.get(
+            normalized,
+            {"ip": normalized, "enabled": False, "enabled_at": "", "updated_at": ""},
+        )
+
+    def passive_evidence(self, *, ip: str, mac: str | None, now: datetime) -> list[str]:
+        if not mac:
+            return []
+        evidence: list[str] = []
+        for row in self.arp_by_ip.get(ip, []):
+            if (
+                bool(row["complete"])
+                and normalize_mac(row["mac"]) == mac
+                and _healthy_passive_source(row, now=now)
+                and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+            ):
+                evidence.append("mikrotik_arp")
+                break
+        for row in self.dhcp_by_ip.get(ip, []):
+            if (
+                str(row["status"] or "").lower() in {"bound", "online"}
+                and normalize_mac(row["mac"]) == mac
+                and _healthy_passive_source(row, now=now)
+                and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+            ):
+                evidence.append("mikrotik_dhcp")
+                break
+        for row in self.bridge_by_mac.get(mac, []):
+            if (
+                normalize_mac(row["mac"]) == mac
+                and _healthy_passive_source(row, now=now)
+                and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+            ):
+                evidence.append("mikrotik_bridge")
+                break
+        for row in self.fdb_by_mac.get(mac, []):
+            if (
+                normalize_mac(row["mac"]) == mac
+                and _healthy_passive_source(row, now=now)
+                and _fresh_at(row["last_seen_at"], now=now, budget=PASSIVE_EVIDENCE_FRESHNESS)
+            ):
+                evidence.append("snmp_fdb")
+                break
+        return evidence
+
+
 def _availability_cidr(conn: sqlite3.Connection, ip: str) -> str | None:
     rule = monitored_rule_for_ip(conn, ip)
     return str(rule.network) if rule is not None else None
@@ -1084,3 +1369,121 @@ def project_host_availability(conn: sqlite3.Connection, host: dict[str, Any], *,
         check_origin=check_origin,
     )
     return _attach_force_monitor(projected, force_monitor)
+
+
+def project_host_from_context(
+    host: dict[str, Any],
+    context: AvailabilityProjectionContext,
+    *,
+    now: str | datetime,
+) -> dict[str, Any]:
+    """Project one host from already-loaded availability evidence without SQL."""
+    projected = dict(host)
+    ip = str(host["ip"])
+    force_monitor = context.force_monitor_state(ip)
+    rule = _monitored_rule_from_rules(context.rules, ip)
+    if bool(host.get("openvpn_connected")):
+        projected["status"] = "connected"
+        projected["availability"] = (
+            _availability_payload(
+                state="connected", cidr=str(rule.network), active_method=None, checked_at=None,
+                run_status="", passive_evidence=[], reason="openvpn_management",
+            )
+            if rule is not None else None
+        )
+        return _attach_force_monitor(projected, force_monitor)
+    timestamp = _as_utc(now)
+    if timestamp is None:
+        raise ValueError("now must be a UTC timestamp")
+    evidence = context.passive_evidence(
+        ip=ip,
+        mac=normalize_mac(host.get("mac")),
+        now=timestamp,
+    )
+    if rule is None:
+        projected["status"] = "seen" if evidence else "stale"
+        projected["availability"] = _availability_payload(
+            state="not_monitored",
+            cidr=None,
+            active_method=None,
+            checked_at=None,
+            run_status="",
+            passive_evidence=evidence,
+            reason="not_monitored",
+        )
+        return _attach_force_monitor(projected, force_monitor)
+
+    cidr = str(rule.network)
+    freshness = timedelta(minutes=rule.availability_interval_minutes * 2)
+    manual = context.manual_by_segment_ip.get((str(rule.segment_id), ip))
+    if manual is not None and _fresh_at(manual["checked_at"], now=timestamp, budget=freshness):
+        reason = ""
+        result = manual
+        run_status = "success"
+        checked_at = str(manual["checked_at"])
+        check_origin = "manual"
+    else:
+        result = None
+        run_status = ""
+        checked_at = None
+        check_origin = "scheduled"
+        reason = ""
+    run = context.run_by_cidr.get(cidr)
+    if result is None:
+        if run is None:
+            reason = "missing_run"
+        elif str(run["status"]) != "success":
+            reason = "run_failed"
+        elif not _fresh_at(run["finished_at"], now=timestamp, budget=freshness):
+            reason = "run_stale"
+        else:
+            result = context.result_by_cidr_ip_run.get((cidr, ip, int(run["id"])))
+            reason = "missing_result" if result is None else ""
+        run_status = str(run["status"]) if run is not None else ""
+        checked_at = (
+            str(result["checked_at"])
+            if result is not None
+            else (str(run["finished_at"]) if run is not None else None)
+        )
+    if result is not None and str(result["active_state"]) == "reachable":
+        projected["status"] = "online"
+        projected["availability"] = _availability_payload(
+            state="online", cidr=cidr, active_method=str(result["active_method"]) or None,
+            checked_at=checked_at, run_status=run_status, passive_evidence=[], reason="active_probe",
+            check_origin=check_origin,
+        )
+        return _attach_force_monitor(projected, force_monitor)
+    if reason:
+        projected["status"] = "stale"
+        projected["availability"] = _availability_payload(
+            state="stale", cidr=cidr, active_method=None, checked_at=checked_at,
+            run_status=run_status, passive_evidence=[], reason=reason,
+            check_origin=check_origin,
+        )
+        return _attach_force_monitor(projected, force_monitor)
+    if evidence:
+        projected["status"] = "seen"
+        projected["availability"] = _availability_payload(
+            state="seen", cidr=cidr, active_method=None, checked_at=checked_at,
+            run_status=run_status, passive_evidence=evidence, reason="passive_evidence",
+            check_origin=check_origin,
+        )
+        return _attach_force_monitor(projected, force_monitor)
+    projected["status"] = "offline"
+    projected["availability"] = _availability_payload(
+        state="offline", cidr=cidr, active_method=None, checked_at=checked_at,
+        run_status=run_status, passive_evidence=[], reason="active_negative_no_passive_evidence",
+        check_origin=check_origin,
+    )
+    return _attach_force_monitor(projected, force_monitor)
+
+
+def bulk_project_host_availability(
+    conn: sqlite3.Connection,
+    hosts: list[dict[str, Any]],
+    *,
+    now: str | datetime,
+) -> list[dict[str, Any]]:
+    """Project a host batch with bounded SQL evidence loading."""
+    context = AvailabilityProjectionContext.load(conn, hosts, now=now)
+    return [project_host_from_context(host, context, now=context.now) for host in hosts]
