@@ -346,15 +346,24 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
     }
 
 
-def test_configure_preview_describes_only_explicit_selected_components() -> None:
+@pytest.mark.parametrize(
+    "software,remote,selected",
+    [
+        ("core-apps", "none", ["install_core_apps"]),
+        ("base", "krfb", ["configure_krfb"]),
+        ("core-apps", "krfb", ["install_core_apps", "configure_krfb"]),
+    ],
+)
+def test_configure_preview_describes_only_explicit_selected_components(
+    software: str, remote: str, selected: list[str],
+) -> None:
     machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
     machines = SimpleNamespace(get=lambda machine_uuid: machine)
-    request = ConfigureRequest.from_mapping(valid_request() | {"software_profile": "core-apps", "remote_access_profile": "krfb", "assigned_domain_user": "pilot.user"}, expected_uuid=MACHINE_UUID)
+    request = ConfigureRequest.from_mapping(valid_request() | {"software_profile": software, "remote_access_profile": remote, "assigned_domain_user": "pilot.user"}, expected_uuid=MACHINE_UUID)
     preview = ConfigurePlanner(SimpleNamespace(), machines=machines).preview(MACHINE_UUID, request)
     assert "install_standard_packages" not in preview["actions"]
-    assert "install_core_apps" not in preview["actions"]
-    assert "configure_krfb" not in preview["actions"]
-    assert preview["deferred_actions"] == ["install_core_apps", "configure_krfb"]
+    assert preview["actions"][4:] == selected + ["verify_domain_workstation"]
+    assert preview["deferred_actions"] == []
 
 
 def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
@@ -682,7 +691,7 @@ def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:
 
 @pytest.mark.parametrize(
     "scalar",
-    ["obscured", "'obscured'", '"obscured"', "'null'", '"true"'],
+    ["obscured", "'obscured'", '"obscured"', "'null'", '"true"', "'123'", "'[]'", "'{}'"],
 )
 def test_krfb_vault_gate_accepts_only_present_string_scalars(scalar: str) -> None:
     from alt_deploy.vault import VaultHealthChecker
@@ -722,6 +731,26 @@ def test_krfb_vault_gate_accepts_only_present_string_scalars(scalar: str) -> Non
         "false",
         "False",
         "'mismatch\"",
+        "[]",
+        "{}",
+        "[] # comment",
+        "[obscured]",
+        "{password: obscured}",
+        "123",
+        "123 # comment",
+        "-42",
+        "0xAB",
+        "3.14",
+        "1e3",
+        ".inf",
+        ".NaN",
+        "yes",
+        "off",
+        "&anchor obscured",
+        "*anchor",
+        "!!str obscured",
+        "- obscured",
+        "password: obscured",
     ],
 )
 def test_krfb_vault_gate_rejects_blank_null_boolean_or_malformed_scalars(

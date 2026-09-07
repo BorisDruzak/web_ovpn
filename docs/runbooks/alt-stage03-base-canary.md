@@ -158,10 +158,18 @@ sudo -u altserver /usr/local/sbin/workstationctl --json configure start \
 Этот runbook описывает базовый canary; остальные профили запускаются только
 через тот же `configure preview` → review → `configure start` маршрут.
 
+В preview выбранные `install_core_apps` и `configure_krfb` находятся в
+`actions` перед `verify_domain_workstation`; `deferred_actions` пуст.
+Для `base`/`none` состав действий остаётся базовым. Preview описывает выбор,
+а доступность артефактов и остальные gates проверяются при start.
+
 Для `software_profile: core-apps` start допустим только после успешного
 preflight каждого выбранного approved artifact. При любом missing, checksum,
-package-metadata или executable failure весь профиль останавливается до
-установки компонентов. В публичный результат записываются только boolean
+package-metadata или несоответствии фиксированного executable в каталоге весь
+профиль останавливается до установки компонентов. Aggregate preflight проверяет
+имя, EVR, архитектуру и epoch обоих RPM на контроллере, а также фиксированный
+набор пакетов Nextcloud. Наличие установленных executable проверяется уже
+после установки в каждой роли. В публичный результат записываются только boolean
 факты `software_browser`, `software_onlyoffice` и
 `software_nextcloud_desktop`.
 
@@ -173,6 +181,14 @@ package-metadata или executable failure весь профиль остана�
 - `ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED=true` на контроллере;
 - отдельное evidence, что существующая VPN/firewall policy ограничивает TCP
   5900.
+
+Короткое имя назначенного пользователя преобразуется в UPN домена
+`sosnadmin.local`. KRFB запрашивает passwd только через NSS-провайдер `sss`
+и требует возврата того же полного доменного имени. Локальная учётная запись
+или ответ SSSD только с коротким именем не проходят эту проверку.
+Vault gate принимает непустые строковые значения: коллекции, числа и boolean
+без кавычек отклоняются. Числоподобный текст должен быть заключён в кавычки;
+наружу возвращаются только boolean-признаки присутствия.
 
 Этот gate не открывает порт и не изменяет firewall/VPN. KRFB не запускается
 контроллером; после успешной настройки он может появиться только в обычном

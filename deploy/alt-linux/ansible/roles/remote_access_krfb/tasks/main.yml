@@ -19,18 +19,28 @@
       - remote_access_profile == 'krfb'
       - assigned_domain_user is string
       - assigned_domain_user | trim | length > 0
+      - assigned_domain_user | trim | lower is match('^[a-z0-9][a-z0-9._-]{0,62}(@sosnadmin[.]local)?$')
       - alt_deploy_krfb_tcp_5900_restricted_confirmed is defined
       - alt_deploy_krfb_tcp_5900_restricted_confirmed is boolean
       - alt_deploy_krfb_tcp_5900_restricted_confirmed
     fail_msg: KRFB security prerequisites are not satisfied
   no_log: true
 
+- name: Normalize the assigned user to the fixed domain UPN
+  ansible.builtin.set_fact:
+    krfb_assigned_upn: >-
+      {{ (assigned_domain_user | trim | lower).split('@')[0] ~ '@sosnadmin.local' }}
+  no_log: true
+
+# Query only the domain NSS provider: a local passwd shadow must never win.
 - name: Resolve the assigned domain user
   ansible.builtin.command:
     argv:
       - getent
+      - -s
+      - sss
       - passwd
-      - "{{ assigned_domain_user }}"
+      - "{{ krfb_assigned_upn }}"
   register: remote_access_krfb_passwd
   changed_when: false
   failed_when: false
@@ -54,6 +64,7 @@
 - name: Require a safe resolved user identity and home path
   ansible.builtin.assert:
     that:
+      - krfb_account_fields[0] | lower == krfb_assigned_upn
       - krfb_account_fields[2] is match('^[0-9]+$')
       - krfb_account_fields[3] is match('^[0-9]+$')
       - krfb_account_fields[5] is match('^/home/.+')

@@ -27,6 +27,7 @@
           - software_catalog.browser.package_name == 'yandex-browser-stable'
           - software_catalog.browser.package_evr is string
           - software_catalog.browser.package_evr | trim | length > 0
+          - software_catalog.browser.package_evr == '26.4.4.968-1'
           - software_catalog.browser.architecture == 'x86_64'
           - software_catalog.browser.executable == '/usr/bin/yandex-browser-stable'
         fail_msg: Approved software catalog validation failed

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -21,7 +22,9 @@ AD_JOIN_USER_VARIABLE = "vault_ad_join_user"
 AD_JOIN_PASSWORD_VARIABLE = "vault_ad_join_password"
 KRFB_DESKTOP_PASSWORD_VARIABLE = "vault_krfb_desktop_password_obscured"
 KRFB_UNATTENDED_PASSWORD_VARIABLE = "vault_krfb_unattended_password_obscured"
-_UNQUOTED_NON_STRING_SCALARS = frozenset({"null", "~", "true", "false"})
+_UNQUOTED_NON_STRING_SCALARS = frozenset(
+    {"null", "~", "true", "false", "yes", "no", "on", "off"}
+)
 
 
 def extract_execution_password_hashes(decrypted_text: str) -> dict[str, str]:
@@ -206,7 +209,7 @@ class VaultHealthChecker:
                 )
                 continue
 
-            if value[0] in {"|", ">"}:
+            if value[0] in "|>[]{}&*!%@`":
                 present = False
                 continue
 
@@ -214,6 +217,14 @@ class VaultHealthChecker:
             present = bool(
                 scalar
                 and scalar.casefold() not in _UNQUOTED_NON_STRING_SCALARS
+                and not re.search(r":(?:\s|$)", scalar)
+                and not re.match(r"[-?:](?:\s|$)", scalar)
+                # Presence checks deliberately accept only unambiguous plain
+                # strings. Quote numeric-looking material in the Vault YAML.
+                and not re.match(
+                    r"^[+-]?(?:[0-9]|\.[0-9]|\.(?:inf|nan)$)",
+                    scalar, re.IGNORECASE,
+                )
             )
 
         return present

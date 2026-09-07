@@ -58,10 +58,44 @@
   loop_control:
     loop_var: selected_component
 
+- name: Assert the fixed browser contract before any component mutation
+  ansible.builtin.assert:
+    that:
+      - software_catalog.browser.source == 'rpm'
+      - software_catalog.browser.artifact_path == '/opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm'
+      - software_catalog.browser.package_name == 'yandex-browser-stable'
+      - software_catalog.browser.package_evr == '26.4.4.968-1'
+      - software_catalog.browser.architecture == 'x86_64'
+      - software_catalog.browser.executable == '/usr/bin/yandex-browser-stable'
+    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
+  when: "'browser' in selected_software_components"
+
+- name: Assert the fixed OnlyOffice contract before any component mutation
+  ansible.builtin.assert:
+    that:
+      - software_catalog.onlyoffice.source == 'rpm'
+      - software_catalog.onlyoffice.artifact_path == '/opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm'
+      - software_catalog.onlyoffice.package_name == 'onlyoffice-desktopeditors'
+      - software_catalog.onlyoffice.package_evr == '9.4.0-epm1.repacked.130'
+      - software_catalog.onlyoffice.architecture == 'x86_64'
+      - software_catalog.onlyoffice.executable == '/usr/bin/onlyoffice-desktopeditors'
+    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
+  when: "'onlyoffice' in selected_software_components"
+
+- name: Assert the fixed Nextcloud repository contract before any component mutation
+  ansible.builtin.assert:
+    that:
+      - software_catalog.nextcloud_desktop.source == 'alt-repository'
+      - software_catalog.nextcloud_desktop.packages == ['nextcloud-client', 'nextcloud-client-kde']
+      - software_catalog.nextcloud_desktop.executable == '/usr/bin/nextcloud'
+    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
+  when: "'nextcloud_desktop' in selected_software_components"
+
 - name: Inspect selected RPM artifacts on the controller
   ansible.builtin.stat:
     path: "{{ software_catalog[selected_component].artifact_path }}"
     checksum_algorithm: sha256
+    follow: false
   delegate_to: localhost
   become: false
   register: selected_software_component_artifacts
@@ -81,6 +115,38 @@
   loop_control:
     loop_var: selected_artifact
   when: not (selected_artifact.skipped | default(false) | bool)
+
+- name: Read all selected controller RPM identities
+  ansible.builtin.command:
+    argv: [rpm, -qp, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "{{ software_catalog[selected_component].artifact_path }}"]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  register: selected_software_component_metadata
+  loop: "{{ selected_software_components }}"
+  loop_control:
+    loop_var: selected_component
+  when: software_catalog[selected_component].source == 'rpm'
+
+- name: Assert all selected controller RPM identities before any component mutation
+  ansible.builtin.assert:
+    that:
+      - selected_metadata.rc == 0
+      - >-
+        selected_metadata.stdout in [
+          software_catalog[selected_metadata.selected_component].package_name ~ '|' ~
+          software_catalog[selected_metadata.selected_component].package_evr ~ '|' ~
+          software_catalog[selected_metadata.selected_component].architecture ~ '|(none)',
+          software_catalog[selected_metadata.selected_component].package_name ~ '|' ~
+          software_catalog[selected_metadata.selected_component].package_evr ~ '|' ~
+          software_catalog[selected_metadata.selected_component].architecture ~ '|0'
+        ]
+    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
+  loop: "{{ selected_software_component_metadata.results | default([]) }}"
+  loop_control:
+    loop_var: selected_metadata
+  when: not (selected_metadata.skipped | default(false) | bool)
 
 - name: Record successful component catalog preflight
   ansible.builtin.set_fact:

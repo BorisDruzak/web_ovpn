@@ -225,8 +225,10 @@ def test_krfb_role_requires_exact_user_home_and_network_confirmation() -> None:
     lookup = next(task for task in tasks if task["name"] == "Resolve the assigned domain user")
     assert lookup["ansible.builtin.command"]["argv"] == [
         "getent",
+        "-s",
+        "sss",
         "passwd",
-        "{{ assigned_domain_user }}",
+        "{{ krfb_assigned_upn }}",
     ]
     assert lookup["changed_when"] is False
     assert lookup["failed_when"] is False

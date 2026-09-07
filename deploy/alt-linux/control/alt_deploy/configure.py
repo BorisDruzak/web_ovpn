@@ -325,15 +325,16 @@ class ConfigureRequest:
 
     def actions(self) -> list[str]:
         actions = list(CONFIGURE_ACTIONS)
+        component_actions: list[str] = []
+        if self.software_profile == "core-apps":
+            component_actions.append("install_core_apps")
+        if self.remote_access_profile == "krfb":
+            component_actions.append("configure_krfb")
+        actions[-1:-1] = component_actions
         return actions
 
     def deferred_actions(self) -> list[str]:
-        actions: list[str] = []
-        if self.software_profile == "core-apps":
-            actions.append("install_core_apps")
-        if self.remote_access_profile == "krfb":
-            actions.append("configure_krfb")
-        return actions
+        return []
 
 
 CONFIGURE_ACTIONS = [

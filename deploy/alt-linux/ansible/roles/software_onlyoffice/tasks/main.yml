@@ -27,6 +27,7 @@
           - software_catalog.onlyoffice.package_name == 'onlyoffice-desktopeditors'
           - software_catalog.onlyoffice.package_evr is string
           - software_catalog.onlyoffice.package_evr | trim | length > 0
+          - software_catalog.onlyoffice.package_evr == '9.4.0-epm1.repacked.130'
           - software_catalog.onlyoffice.architecture == 'x86_64'
           - software_catalog.onlyoffice.executable == '/usr/bin/onlyoffice-desktopeditors'
         fail_msg: Approved software catalog validation failed
