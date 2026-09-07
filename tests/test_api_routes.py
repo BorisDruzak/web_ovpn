@@ -106,6 +106,42 @@ def test_hosts_invalid_filters_rejected_before_subprocess(tmp_path, monkeypatch,
     assert client.get(f"/api/v1/network/hosts?{query}", headers=headers).status_code == 422
 
 
+def test_host_filter_arguments_preserve_dash_prefixed_values_in_real_parser():
+    from app.api import host_snapshot_args
+    from netctl.cli import build_parser
+
+    args = host_snapshot_args({
+        "q": "--status=offline", "category": "-printer", "status": "current",
+        "source": "-source name", "network": "203.0.113.0/24",
+        "has_hostname": "yes", "has_mac": "no", "seen_within": "all",
+    }, 2, 5)
+    parsed = build_parser().parse_args(args)
+    assert parsed.q == "--status=offline"
+    assert parsed.category == "-printer"
+    assert parsed.source == "-source name"
+    assert parsed.status == "current"
+    assert parsed.network == "203.0.113.0/24"
+    assert parsed.has_hostname == "yes"
+    assert parsed.has_mac == "no"
+    assert parsed.seen_within == "all"
+    assert (parsed.page, parsed.limit) == (2, 5)
+
+
+def test_hosts_api_accepts_dash_prefixed_query_with_real_snapshot(tmp_path, monkeypatch):
+    from netctl.db import connect
+
+    client, headers = make_api_client(tmp_path, monkeypatch)
+    snapshot_netctl(tmp_path, monkeypatch, count=2)
+    conn = connect(f"sqlite:///{(tmp_path / 'hosts.sqlite').as_posix()}")
+    conn.execute("UPDATE network_host_current_state SET search_text='office-printer' WHERE ip='203.0.113.2'")
+    conn.commit()
+    conn.close()
+    response = client.get("/api/v1/network/hosts", params={"q": "-printer"}, headers=headers)
+    assert response.status_code == 200
+    assert [row["ip"] for row in response.json()["data"]["hosts"]] == ["203.0.113.2"]
+    assert response.json()["data"]["pagination"]["total"] == 1
+
+
 def make_fake_vpnctl(path: Path) -> Path:
     script_path = path.with_suffix(".py") if os.name == "nt" else path
     script_path.write_text(

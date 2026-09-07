@@ -1252,7 +1252,7 @@ def host_snapshot_args(filters: dict[str, str], page: int, limit: int) -> list[s
     args = ["hosts", "list"]
     for key in ("q", "category", "status", "source", "network", "has_hostname", "has_mac", "seen_within"):
         if filters.get(key):
-            args.extend(["--" + key.replace("_", "-"), filters[key]])
+            args.append("--" + key.replace("_", "-") + "=" + filters[key])
     args.extend(["--page", str(max(1, page)), "--limit", str(min(250, max(1, limit)))])
     return args
 

@@ -76,7 +76,11 @@ if cmd[:2] == ["hosts", "list"]:
         {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "legacy-host:desk?old", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": collected_at},
         {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "device_key": "mac:E0:1C:FC:AE:82:9B", "device_type": "server", "device_confidence": 80, "device_evidence": ["category:mgmt"], "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": collected_at}
     ]
-    options = dict(zip(cmd[2::2], cmd[3::2]))
+    options = {}
+    arguments = iter(cmd[2:])
+    for argument in arguments:
+        name, separator, value = argument.partition('=')
+        options[name] = value if separator else next(arguments)
     if options.get('--q'):
         hosts = [host for host in hosts if options['--q'].lower() in ' '.join(str(value) for value in host.values()).lower()]
     selected = options.get('--status', 'current')
@@ -536,7 +540,7 @@ def test_network_hosts_get_uses_only_read_only_snapshot_commands(tmp_path, monke
     calls = invoked.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 1
     assert calls[0].startswith("hosts list ")
-    assert "--status current" in calls[0]
+    assert "--status=current" in calls[0]
     assert "--page 1 --limit 100" in calls[0]
 
 
@@ -576,6 +580,27 @@ def test_single_host_detail_does_not_depend_on_first_snapshot_page(tmp_path, mon
     page = client.get("/network/hosts/203.0.113.200")
     assert page.status_code == 200
     assert "beyond first page" in page.text
+
+
+def test_hosts_page_accepts_dash_prefixed_query_with_real_snapshot(tmp_path, monkeypatch):
+    from test_api_routes import snapshot_netctl
+    from netctl.db import connect
+    import app.api as api
+    import app.main as main
+
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    snapshot_netctl(tmp_path, monkeypatch, count=2)
+    conn = connect(f"sqlite:///{(tmp_path / 'hosts.sqlite').as_posix()}")
+    conn.execute("UPDATE network_host_current_state SET search_text='office-printer' WHERE ip='203.0.113.2'")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(main, "net_cli_call", lambda request, args, timeout=None: (api.run_netctl(args), None))
+    monkeypatch.setattr(main, "cli_call", lambda *a, **kw: pytest.fail("list invoked vpnctl"))
+    page = client.get("/network/hosts", params={"q": "-printer", "seen_within": "all"})
+    assert page.status_code == 200
+    assert [row["ip"] for row in page.context["hosts"]] == ["203.0.113.2"]
+    assert page.context["pagination"]["total"] == 1
 
 
 def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path, monkeypatch):
@@ -1241,7 +1266,9 @@ def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_pa
     def fake_netctl(args, timeout=None):
         netctl_calls.append(args)
         if args[:2] == ["hosts", "list"]:
-            status = args[args.index("--status") + 1]
+            from netctl.cli import build_parser
+
+            status = build_parser().parse_args(args).status
             selected = [host for host in hosts if status == "all" or (host["status"] in {"online", "seen", "connected"} if status == "current" else host["status"] == status)]
             return {"hosts": selected, "pagination": {"page": 1, "limit": 100, "total": len(selected), "pages": 1}, "snapshot": {"snapshot_id": 1, "generated_at": "2026-09-07T10:00:00Z", "total_hosts": 4, "duration_ms": 1}}
         raise AssertionError(args)
@@ -1263,7 +1290,9 @@ def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_pa
     assert stale.json()["data"]["hosts"][0]["availability"]["reason"] == "run_failed"
     assert "socket timeout" not in stale.text
     assert invalid.status_code == 422
-    assert [args[args.index("--status") + 1] for args in netctl_calls] == ["current", "all", "offline", "stale"]
+    from netctl.cli import build_parser
+
+    assert [build_parser().parse_args(args).status for args in netctl_calls] == ["current", "all", "offline", "stale"]
 
 
 def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp_path, monkeypatch):
@@ -1290,7 +1319,9 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
 
     def fake_netctl(request, args, timeout=None):
         if args[:2] == ["hosts", "list"]:
-            status = args[args.index("--status") + 1] if "--status" in args else "current"
+            from netctl.cli import build_parser
+
+            status = build_parser().parse_args(args).status or "current"
             return {"hosts": hosts if status in {"all", "stale"} else []}, None
         if args == ["sources", "list"]:
             return {"sources": []}, None
