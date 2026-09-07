@@ -17,6 +17,7 @@ CRITICAL_ROLES = [
     "workstation_network",
     "domain_join",
     "alt_group_policy_client",
+    "domain_login_baseline",
     "domain_verify",
 ]
 
@@ -223,7 +224,10 @@ def test_domain_verify_accepts_short_name_or_upn() -> None:
     assert "domain_test_user if '@' in domain_test_user" in content
 
 
-def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
+def test_domain_login_baseline_enables_sssd_home_creation_and_verify_checks_it() -> None:
+    baseline_path = ANSIBLE_ROOT / "roles" / "domain_login_baseline" / "tasks" / "main.yml"
+    assert baseline_path.exists()
+    baseline = baseline_path.read_text(encoding="utf-8")
     content = (
         ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
     ).read_text(encoding="utf-8")
@@ -232,6 +236,8 @@ def test_domain_verify_enables_and_checks_sssd_home_creation() -> None:
     assert "pam_mkhomedir.so" in content
     assert "skel=/etc/skel umask=0077" in content
     assert "grep" in content
+    assert "ansible.builtin.lineinfile" in baseline
+    assert "ansible.builtin.lineinfile" not in content
 
 
 def test_workstation_base_manages_desktop_session_with_x11_default() -> None:
@@ -286,7 +292,7 @@ def test_domain_join_rejects_untrusted_existing_computer_before_join_write() -> 
     assert "ldapsearch" in content
     assert "-Y" in content
     assert "GSSAPI" in content
-    assert "{{ computer_ou }}" in content
+    assert "alt_createcomputer_path" in content
     assert "(sAMAccountName={{ final_hostname }}$)" in content
     assert "ALT_PREFLIGHT_FAILURE:domain_computer_conflict" in content
     assert content.index("kinit") < content.index("ldapsearch")

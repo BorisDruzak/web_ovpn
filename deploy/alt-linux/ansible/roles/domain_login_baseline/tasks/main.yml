@@ -1,0 +1,9 @@
+---
+- name: Enable automatic home creation for SSSD domain users
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/system-auth-sss-only
+    regexp: '^session\s+required\s+pam_mkhomedir\.so(?:\s.*)?$'
+    line: 'session required pam_mkhomedir.so skel=/etc/skel umask=0077'
+    owner: root
+    group: root
+    mode: "0644"

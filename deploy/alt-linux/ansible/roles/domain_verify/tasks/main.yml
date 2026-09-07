@@ -1,44 +1,72 @@
 ---
-- name: Verify ALT domain membership
-  ansible.builtin.command:
-    argv: [net, ads, testjoin]
-  register: domain_verify_join
-  changed_when: false
+- name: Verify domain core readiness and preserve observed facts
+  block:
+    - name: Verify ALT domain membership
+      ansible.builtin.command:
+        argv: [net, ads, testjoin]
+      register: domain_verify_join
+      changed_when: false
+      retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+      delay: "{{ alt_transient_retry_delay }}"
+      until: >-
+        domain_verify_join.rc == 0
+        or (domain_verify_join_output | regex_search(alt_domain_transient_pattern)) is none
+        or (domain_verify_join_output | regex_search(alt_group_policy_fatal_pattern)) is not none
+      vars:
+        domain_verify_join_output: >-
+          {{ domain_verify_join.stdout | default('') }} {{ domain_verify_join.stderr | default('') }}
+      no_log: true
+      environment:
+        LC_ALL: C
 
-- name: Verify SSSD service
-  ansible.builtin.command:
-    argv: [systemctl, is-active, sssd]
-  register: domain_verify_sssd
-  changed_when: false
+    - name: Verify SSSD service
+      ansible.builtin.command:
+        argv: [systemctl, is-active, sssd]
+      register: domain_verify_sssd
+      changed_when: false
+      retries: "{{ (alt_service_retry_attempts | int) - 1 }}"
+      delay: "{{ alt_service_retry_delay }}"
+      until: >-
+        (domain_verify_sssd.rc == 0 and domain_verify_sssd.stdout | trim == 'active')
+        or domain_verify_sssd.rc not in [0, 3]
 
-- name: Enable automatic home creation for SSSD domain users
-  ansible.builtin.lineinfile:
-    path: /etc/pam.d/system-auth-sss-only
-    regexp: '^session[[:space:]]+required[[:space:]]+pam_mkhomedir\.so.*$'
-    line: 'session required pam_mkhomedir.so skel=/etc/skel umask=0077'
-    owner: root
-    group: root
-    mode: "0644"
+    - name: Verify automatic home creation for SSSD domain users
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Fx
+          - 'session required pam_mkhomedir.so skel=/etc/skel umask=0077'
+          - /etc/pam.d/system-auth-sss-only
+      register: domain_verify_home
+      changed_when: false
 
-- name: Verify automatic home creation for SSSD domain users
-  ansible.builtin.command:
-    argv:
-      - grep
-      - -Fx
-      - 'session required pam_mkhomedir.so skel=/etc/skel umask=0077'
-      - /etc/pam.d/system-auth-sss-only
-  changed_when: false
+    - name: Verify domain user lookup
+      ansible.builtin.command:
+        argv: [getent, passwd, "{{ domain_test_user if '@' in domain_test_user else domain_test_user ~ '@' ~ ad_domain }}"]
+      register: domain_verify_user
+      changed_when: false
+      retries: "{{ (alt_service_retry_attempts | int) - 1 }}"
+      delay: "{{ alt_service_retry_delay }}"
+      # getent rc=2 means the requested key was not found; other nonzero
+      # statuses are command/database errors, not SSSD propagation delays.
+      until: domain_verify_user.rc != 2
+      no_log: true
 
-- name: Verify domain user lookup
-  ansible.builtin.command:
-    argv: [getent, passwd, "{{ domain_test_user if '@' in domain_test_user else domain_test_user ~ '@' ~ ad_domain }}"]
-  register: domain_verify_user
-  changed_when: false
-
-- name: Validate domain verification result
-  ansible.builtin.assert:
-    that:
-      - domain_verify_join.rc == 0
-      - domain_verify_sssd.stdout | trim == 'active'
-      - domain_verify_user.rc == 0
-    fail_msg: ALT_PREFLIGHT_FAILURE:domain_verification_failed domain verification failed
+    - name: Validate domain verification result
+      ansible.builtin.assert:
+        that:
+          - domain_verify_join.rc == 0
+          - domain_verify_sssd.stdout | trim == 'active'
+          - domain_verify_home.rc == 0
+          - domain_verify_user.rc == 0
+        fail_msg: ALT_PREFLIGHT_FAILURE:domain_verification_failed domain verification failed
+  always:
+    - name: Publish safe domain verification facts for the stage result
+      ansible.builtin.set_fact:
+        domain_verification:
+          domain_join: "{{ (domain_verify_join | default({})).get('rc', 1) == 0 }}"
+          sssd: >-
+            {{ (domain_verify_sssd | default({})).get('rc', 1) == 0
+               and (domain_verify_sssd | default({})).get('stdout', '') | trim == 'active' }}
+          domain_user_lookup: "{{ (domain_verify_user | default({})).get('rc', 1) == 0 }}"
+          home_creation: "{{ (domain_verify_home | default({})).get('rc', 1) == 0 }}"
