@@ -58,21 +58,11 @@ sudo -u altserver /usr/local/sbin/workstationctl --json controller readiness
 `true`. Эта проверка также убеждается в доступности Vault, runtime-файлов и
 остальных базовых проверок контроллера.
 
-Для явной проверки только stage 03 (пути ниже — значения по умолчанию) можно
-повторить syntax check:
-
-```bash
-sudo -u altserver sh -c '
-  cd /home/altserver/ansible &&
-  ANSIBLE_CONFIG=/home/altserver/ansible/ansible.cfg \
-    /usr/bin/ansible-playbook --syntax-check \
-    playbooks/03-configure-domain-workstation.yml
-'
-```
-
-Если у контроллера переопределены `ALT_DEPLOY_ANSIBLE_PROJECT`,
-`ALT_DEPLOY_ANSIBLE_PLAYBOOK` или иной путь runtime, используйте фактические
-значения этих настроек, а не заменяйте их значениями из примера.
+Проверка синтаксиса stage 03 входит в readiness и выполняется контроллером.
+Оператор не запускает `ansible-playbook` напрямую. Если у контроллера
+переопределены `ALT_DEPLOY_ANSIBLE_PROJECT`, `ALT_DEPLOY_ANSIBLE_PLAYBOOK` или
+иной путь runtime, проверяйте фактическое значение через разрешённый
+controller readiness result, а не обходите fixed path.
 
 При ошибке readiness или syntax check остановитесь: не запускайте canary,
 не исправляйте проблему ручным запуском playbook на рабочей станции и не
@@ -155,6 +145,32 @@ sudo -u altserver /usr/local/sbin/workstationctl --json configure start \
 Повторный base/none запуск после успешного canary должен подтвердить уже
 существующее доверие Samba, не выполнять повторное присоединение и не изменять
 существующий компьютерный объект AD.
+
+## 5a. Профильные gates (без изменения base canary)
+
+Этот runbook описывает базовый canary; остальные профили запускаются только
+через тот же `configure preview` → review → `configure start` маршрут.
+
+Для `software_profile: core-apps` start допустим только после успешного
+preflight каждого выбранного approved artifact. При любом missing, checksum,
+package-metadata или executable failure весь профиль останавливается до
+установки компонентов. В публичный результат записываются только boolean
+факты `software_browser`, `software_onlyoffice` и
+`software_nextcloud_desktop`.
+
+Для `remote_access_profile: krfb` до start отдельно подтверждаются:
+
+- наличие обоих требуемых Vault-полей (проверка присутствия, без чтения или
+  записи значения);
+- один явно указанный уже существующий domain user;
+- `ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED=true` на контроллере;
+- отдельное evidence, что существующая VPN/firewall policy ограничивает TCP
+  5900.
+
+Этот gate не открывает порт и не изменяет firewall/VPN. KRFB не запускается
+контроллером; после успешной настройки он может появиться только в обычном
+графическом входе назначенного пользователя. При отсутствии любого evidence
+остановитесь и не пытайтесь обойти gate.
 
 ## 6. Остановка и диагностика
 
