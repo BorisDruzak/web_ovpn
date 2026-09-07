@@ -2009,6 +2009,22 @@ def _migration_24(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_25(conn: sqlite3.Connection) -> None:
+    """Index the bounded availability projection lookups."""
+    for statement in (
+        "CREATE INDEX arp_entries_ip_idx ON arp_entries(ip)",
+        "CREATE INDEX dhcp_leases_ip_idx ON dhcp_leases(ip)",
+        "CREATE INDEX bridge_hosts_mac_idx ON bridge_hosts(mac)",
+        "DROP INDEX current_switch_fdb_mac_idx",
+        "CREATE INDEX current_switch_fdb_mac_idx ON current_switch_fdb(mac)",
+        """CREATE INDEX availability_manual_results_segment_ip_checked_idx
+           ON availability_manual_results(segment_id, ip, checked_at DESC, id DESC)""",
+        """CREATE INDEX availability_results_cidr_ip_run_idx
+           ON availability_results(cidr, ip, run_id)""",
+    ):
+        conn.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2034,6 +2050,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (22, _migration_22),
     (23, _migration_23),
     (24, _migration_24),
+    (25, _migration_25),
 )
 
 

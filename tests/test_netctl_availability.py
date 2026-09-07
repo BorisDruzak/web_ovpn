@@ -249,6 +249,34 @@ def test_bulk_projection_uses_bounded_sql_for_large_host_list(conn, seeded_hosts
     assert len(statements) < 80
 
 
+def test_project_host_from_context_performs_no_sql(conn, seeded_hosts):
+    """A per-host projection must use only the evidence captured in its batch context."""
+    from netctl.availability import AvailabilityProjectionContext, project_host_from_context
+
+    context = AvailabilityProjectionContext.load(conn, seeded_hosts, now=NOW)
+    statements = []
+    conn.set_trace_callback(statements.append)
+
+    projected = project_host_from_context(seeded_hosts[0], context, now=context.now)
+
+    assert projected["ip"] == seeded_hosts[0]["ip"]
+    assert statements == []
+
+
+@pytest.mark.parametrize("passive_source", ("mikrotik_bridge", "snmp_fdb"))
+def test_bulk_projection_matches_legacy_for_normalized_mac_evidence(conn, passive_source):
+    """Batch lookup must retain legacy MAC normalization across stored punctuation styles."""
+    from netctl.availability import bulk_project_host_availability, project_host_availability
+
+    host = _projection_host(conn, mac="AA:BB:CC:DD:EE:08")
+    _negative_projection_run(conn, host["ip"])
+    _fresh_passive(conn, passive_source, ip=host["ip"], mac="aabb.ccdd.ee08")
+    conn.commit()
+
+    expected = project_host_availability(conn, host, now=NOW)
+    assert bulk_project_host_availability(conn, [host], now=NOW) == [expected]
+
+
 def test_availability_targets_include_recent_hosts_management_and_forced_history(conn):
     """Scheduled checks must use observed intent, never all usable CIDR addresses."""
     from netctl.availability import availability_targets, set_force_monitor
