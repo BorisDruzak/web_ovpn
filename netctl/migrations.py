@@ -2065,6 +2065,14 @@ def _migration_26(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migration_27(conn: sqlite3.Connection) -> None:
+    """Seek normalized MAC batches while retaining raw indexes for other readers."""
+    for table in ("bridge_hosts", "current_switch_fdb"):
+        conn.execute(
+            f"CREATE INDEX {table}_normalized_mac_idx ON {table}(netctl_normalize_mac(mac))"
+        )
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2092,10 +2100,14 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (24, _migration_24),
     (25, _migration_25),
     (26, _migration_26),
+    (27, _migration_27),
 )
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
+    # Direct migration callers also need the exact deterministic function before
+    # SQLite builds expression indexes over existing legacy rows.
+    conn.create_function("netctl_normalize_mac", 1, normalize_mac, deterministic=True)
     conn.execute("SAVEPOINT apply_migrations")
     try:
         conn.execute(

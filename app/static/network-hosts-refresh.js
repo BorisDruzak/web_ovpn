@@ -208,6 +208,9 @@
       const nextMeta = metaPayload.data?.snapshot;
       if (!isSnapshot(nextMeta)) throw new Error("invalid metadata response");
       if (nextMeta.snapshot_id === currentSnapshotId) {
+        const freshness = snapshotTextFor(nextMeta);
+        snapshotState.dataset.state = freshness.state;
+        snapshotState.textContent = freshness.text;
         clearWarning();
         return;
       }

@@ -249,6 +249,61 @@ def test_bulk_projection_uses_bounded_sql_for_large_host_list(conn, seeded_hosts
     assert len(statements) < 80
 
 
+def test_bulk_mac_queries_search_expression_indexes(conn, seeded_hosts):
+    """A normalized predicate must seek evidence indexes, including every chunk."""
+    from netctl.availability import bulk_project_host_availability
+
+    statements = []
+    conn.set_trace_callback(statements.append)
+    bulk_project_host_availability(conn, seeded_hosts, now=NOW)
+    conn.set_trace_callback(None)
+    queries = [sql for sql in statements if "WHERE netctl_normalize_mac(" in sql]
+    assert len(queries) == 6
+    for query in queries:
+        plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + query)]
+        alias, index = ("hosts", "bridge_hosts_normalized_mac_idx") if "FROM bridge_hosts" in query else ("f", "current_switch_fdb_normalized_mac_idx")
+        assert any(f"SEARCH {alias} USING INDEX {index} (<expr>=?)" in line for line in plan), plan
+        assert not any(f"SCAN {alias}" in line for line in plan), plan
+
+
+def test_normalized_mac_index_migration_preserves_legacy_rows_and_tracks_writes(conn, seeded_hosts, tmp_path):
+    import sqlite3
+    from netctl.db import connect, connect_read_only
+    from netctl.migrations import apply_migrations
+
+    for table in ("bridge_hosts", "current_switch_fdb"):
+        conn.execute(f"DROP INDEX IF EXISTS {table}_normalized_mac_idx")
+        conn.execute(f"UPDATE {table} SET mac=' \taa-bb.cc dd Ee:08\n' WHERE rowid=(SELECT min(rowid) FROM {table})")
+    conn.execute("DELETE FROM schema_migrations WHERE version=27")
+    conn.commit()
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    migrated = sqlite3.connect(tmp_path / "netctl.sqlite")
+    try:
+        apply_migrations(migrated)
+        apply_migrations(migrated)
+        for table in ("bridge_hosts", "current_switch_fdb"):
+            query = f"SELECT mac FROM {table} WHERE netctl_normalize_mac(mac)=?"
+            assert migrated.execute(query, ("AA:BB:CC:DD:EE:08",)).fetchone()[0] == ' \taa-bb.cc dd Ee:08\n'
+            plan = [row[3] for row in migrated.execute("EXPLAIN QUERY PLAN " + query, ("AA:BB:CC:DD:EE:08",))]
+            assert any(f"USING INDEX {table}_normalized_mac_idx" in line for line in plan), plan
+        assert migrated.execute("SELECT count(*) FROM schema_migrations WHERE version=27").fetchone()[0] == 1
+    finally:
+        migrated.close()
+    writer = connect(db_url)
+    try:
+        for table in ("bridge_hosts", "current_switch_fdb"):
+            writer.execute(f"UPDATE {table} SET mac='aa-bb-cc-dd-ee-09' WHERE netctl_normalize_mac(mac)=?", ("AA:BB:CC:DD:EE:08",))
+        writer.commit()
+    finally:
+        writer.close()
+    reader = connect_read_only(db_url)
+    try:
+        for table in ("bridge_hosts", "current_switch_fdb"):
+            assert reader.execute(f"SELECT mac FROM {table} WHERE netctl_normalize_mac(mac)=?", ("AA:BB:CC:DD:EE:09",)).fetchone()[0] == "aa-bb-cc-dd-ee-09"
+    finally:
+        reader.close()
+
+
 def test_project_host_from_context_performs_no_sql(conn, seeded_hosts):
     """A per-host projection must use only the evidence captured in its batch context."""
     from netctl.availability import AvailabilityProjectionContext, project_host_from_context
@@ -617,6 +672,50 @@ class FakeExecutor:
     def connect(self, ip, port):
         self.calls.append(("tcp", ip, port))
         return self.tcp.get((ip, port), False)
+
+
+@pytest.mark.parametrize("command", ["probe", "force"])
+def test_manual_availability_action_publishes_snapshot_under_collection_lock(conn, tmp_path, monkeypatch, command):
+    from contextlib import contextmanager
+    import netctl.cli as cli
+    from netctl.db import connect
+    from netctl.host_snapshot import refresh_host_snapshot, list_host_snapshot
+
+    host = _projection_host(conn, ip="192.0.2.1")
+    conn.commit()
+    first = refresh_host_snapshot(conn, now=NOW)
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    locked = False
+
+    @contextmanager
+    def lock(_db):
+        nonlocal locked
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+
+    def publish(connection, *, now):
+        assert locked, "publication must happen before releasing CollectLock"
+        return refresh_host_snapshot(connection, now=now)
+
+    monkeypatch.setattr(cli, "CollectLock", lock)
+    monkeypatch.setattr(cli, "prepare_conn", lambda args: connect(args.db))
+    monkeypatch.setattr(cli, "utc_now", lambda: NOW)
+    monkeypatch.setattr(cli, "default_probe_executor", lambda: FakeExecutor(icmp={host["ip"]: True}))
+    monkeypatch.setattr(cli, "refresh_host_snapshot", publish)
+    args = ["--db", db_url, "availability", command, "--ip", host["ip"]]
+    if command == "force":
+        args += ["--enabled", "true"]
+    rc, data = cli.dispatch(cli.build_parser().parse_args(args))
+    assert rc == 0, data
+    page = list_host_snapshot(conn, {"status": "all"}, 1, 100)
+    assert page["snapshot"]["snapshot_id"] == first.snapshot_id + 1
+    if command == "probe":
+        assert page["hosts"][0]["status"] == "online"
+    else:
+        assert page["hosts"][0]["availability"]["force_monitor"]["enabled"] is True
 
 
 def test_due_collection_skips_segment_until_selected_interval_expires(conn):

@@ -150,7 +150,26 @@ The API exposes `GET /api/v1/network/hosts` and the inexpensive metadata endpoin
 authenticated browser session. The page polls metadata every 15 seconds and
 fetches its filtered page when the snapshot ID changes, preserving current rows
 when refresh fails. Metadata includes ID, generation time, host count and refresh
-duration so pending and stale data can be identified.
+duration and a `stale` boolean. A published snapshot becomes stale after more
+than 20 minutes (two expected ten-minute collection cycles); invalid or future
+generation timestamps are also stale. Pending snapshots have `stale=false` and
+ID zero. Freshness is calculated from the stored generation timestamp on every
+read, without a database write, and the 15-second metadata poll updates its
+label even when the snapshot ID is unchanged. Successful manual availability
+`probe` and `force` commands publish a new snapshot inside the collection lock,
+making their saved results visible on the next poll. If publication fails, the
+command reports `host_snapshot_failed`; its saved manual result remains intact
+and the previous complete snapshot remains visible until a successful refresh.
+
+Migration 27 adds expression indexes on `netctl_normalize_mac(mac)` for bridge
+and switch FDB evidence. The deterministic function uses the existing full MAC
+normalizer (including case, whitespace and separator handling), and is
+registered before migration and on all netctl writable/read-only connections.
+Raw MAC values and raw indexes remain intact; SQLite maintains the expression
+indexes on writes. Maintenance tools that write these tables must use
+`netctl.db.connect` or register this same deterministic function first. For a
+rollback to code predating this registration, restore the matching database
+backup together with the old code. No device configuration changes are required.
 
 At INFO level, snapshot refresh and completed list reads log only snapshot ID,
 counts, pagination and elapsed milliseconds. Payloads and filter values are never

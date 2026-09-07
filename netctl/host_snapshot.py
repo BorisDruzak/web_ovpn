@@ -8,7 +8,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from .availability import bulk_project_host_availability
@@ -16,6 +16,9 @@ from .store import decode_host
 
 
 logger = logging.getLogger(__name__)
+# Two expected ten-minute collection cycles. Freshness is derived on reads so
+# a stopped collector can become stale without a write or a network operation.
+HOST_SNAPSHOT_MAX_AGE = timedelta(minutes=20)
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,7 @@ class HostSnapshotStatus:
     generated_at: str | None = None
     total_hosts: int = 0
     duration_ms: int = 0
+    stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -32,14 +36,26 @@ class BuiltHostSnapshot:
     sources: tuple[tuple[str, str], ...]
 
 
-def snapshot_status(conn: sqlite3.Connection) -> HostSnapshotStatus:
+def _reference_time(now: str | datetime | None) -> datetime:
+    value = datetime.fromisoformat(now.replace("Z", "+00:00")) if isinstance(now, str) else now
+    return (value or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+
+def snapshot_status(conn: sqlite3.Connection, *, now: str | datetime | None = None) -> HostSnapshotStatus:
     # Older read-only databases are valid but have no published snapshot yet.
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'network_host_snapshot_meta'").fetchone() is None:
         return HostSnapshotStatus()
     row = conn.execute(
         "SELECT snapshot_id, generated_at, total_hosts, duration_ms FROM network_host_snapshot_meta WHERE singleton = 1"
     ).fetchone()
-    return HostSnapshotStatus(*row) if row else HostSnapshotStatus()
+    if row is None:
+        return HostSnapshotStatus()
+    try:
+        generated = datetime.fromisoformat(row[1].replace("Z", "+00:00"))
+        stale = generated.tzinfo is None or not timedelta(0) <= _reference_time(now) - generated <= HOST_SNAPSHOT_MAX_AGE
+    except (TypeError, ValueError):
+        stale = True
+    return HostSnapshotStatus(*row, stale=stale)
 
 
 def build_host_snapshot(conn: sqlite3.Connection, *, now: str | datetime) -> BuiltHostSnapshot:
@@ -166,15 +182,16 @@ def refresh_host_snapshot(conn: sqlite3.Connection, *, now: str | datetime) -> H
     return status
 
 
-def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], page: int, limit: int) -> dict[str, Any]:
+def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], page: int, limit: int, *, now: str | datetime | None = None) -> dict[str, Any]:
     started = time.monotonic()
+    reference_time = _reference_time(now)
     if not isinstance(page, int) or not isinstance(limit, int):
         raise ValueError("invalid host pagination")
     page, limit = max(1, page), min(250, max(1, limit))
     # The metadata, count and page must come from one SQLite read snapshot.
     conn.execute("SAVEPOINT read_host_snapshot")
     try:
-        metadata = snapshot_status(conn)
+        metadata = snapshot_status(conn, now=reference_time)
         clauses = ["h.snapshot_id = ?"]
         params: list[Any] = [metadata.snapshot_id]
         category = filters.get("category") or "all"
@@ -204,7 +221,7 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
         if seen_within != "all":
             if seen_within not in windows:
                 raise ValueError("invalid seen_within filter")
-            cutoff_reference = datetime.now(timezone.utc).isoformat()
+            cutoff_reference = reference_time.isoformat()
             clauses.append(
                 "((julianday(h.last_seen_at) BETWEEN julianday(?) - ? AND julianday(?)) "
                 "OR (coalesce(h.last_seen_at, '') = '' AND h.status IN ('online', 'seen', 'connected')))"

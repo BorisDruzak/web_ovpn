@@ -84,10 +84,30 @@ async function obsoleteMetadataDoesNotWarnAfterNewerSuccess() {
   await settle();
 
   assert.equal(env.warning.hidden, true);
-  assert.equal(env.snapshotState.textContent, "snapshot before refresh");
+  assert.equal(env.snapshotState.dataset.state, "ready");
+}
+
+async function unchangedSnapshotShowsFreshnessTransitionsWithoutFetchingRows() {
+  let stale = false;
+  const env = await start((url) => {
+    assert.ok(url.endsWith("/meta"), "unchanged snapshot must only fetch metadata");
+    return Promise.resolve(response({ status: "ok", data: { snapshot: { ...snapshot(1), stale } } }));
+  });
+  assert.equal(env.snapshotState.dataset.state, "ready");
+  stale = true;
+  env.interval();
+  await settle();
+  assert.equal(env.snapshotState.dataset.state, "stale");
+  assert.match(env.snapshotState.textContent, /устарел/);
+  stale = false;
+  env.interval();
+  await settle();
+  assert.equal(env.snapshotState.dataset.state, "ready");
+  assert.deepEqual(env.rows.children, [env.oldRow]);
 }
 
 (async () => {
   await malformedRowsPreserveCurrentDom();
   await obsoleteMetadataDoesNotWarnAfterNewerSuccess();
+  await unchangedSnapshotShowsFreshnessTransitionsWithoutFetchingRows();
 })();

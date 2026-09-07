@@ -597,6 +597,28 @@ def test_hosts_snapshot_api_allows_session_only_for_snapshot_reads(tmp_path, mon
     assert client.get("/api/v1/network/hosts/meta", headers=headers).status_code == 200
 
 
+@pytest.mark.parametrize("at, state", [("2026-09-07T10:20:00+00:00", "ready"), ("2026-09-07T10:20:01+00:00", "stale")])
+def test_snapshot_freshness_reaches_real_page_and_api_views(tmp_path, monkeypatch, at, state):
+    from datetime import datetime
+    from test_api_routes import snapshot_netctl
+    import app.api as api
+    import app.main as main
+    import netctl.host_snapshot as snapshot
+
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    snapshot_netctl(tmp_path, monkeypatch, count=1)
+    monkeypatch.setattr(snapshot, "_reference_time", lambda now=None: datetime.fromisoformat(at))
+    monkeypatch.setattr(main, "net_cli_call", lambda request, args, timeout=None: (api.run_netctl(args), None))
+    page = client.get("/network/hosts")
+    assert page.status_code == 200
+    assert f'data-host-snapshot-state data-state="{state}"' in page.text
+    for path in ("/api/v1/network/hosts", "/api/v1/network/hosts/meta"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.json()["data"]["snapshot"]["stale"] is (state == "stale")
+
+
 @pytest.mark.parametrize("count", [0, 210])
 def test_host_page_pagination_uses_real_snapshot_and_pending_state(tmp_path, monkeypatch, count):
     from test_api_routes import snapshot_netctl

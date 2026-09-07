@@ -495,6 +495,7 @@ def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     default_probe_executor(),
                     utc_now(),
                 )
+                _refresh_host_snapshot_locked(conn, now=utc_now())
             return 0, ok(
                 result={
                     "ip": result.ip,
@@ -517,6 +518,7 @@ def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     enabled=args.enabled == "true",
                     now=utc_now(),
                 )
+                _refresh_host_snapshot_locked(conn, now=utc_now())
             return 0, ok(force_monitor=state)
         with CollectLock(args.db):
             collection = collect_due_availability(

@@ -84,7 +84,7 @@ def test_hosts_missing_database_is_pending_without_creating_files(tmp_path, comm
     args = cli.build_parser().parse_args(["--db", f"sqlite:///{path.as_posix()}", "hosts", command])
     rc, data = cli.dispatch(args)
     assert rc == 0
-    assert data["snapshot"] == {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0}
+    assert data["snapshot"] == {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0, "stale": False}
     assert not path.exists()
 
 
@@ -106,18 +106,29 @@ def test_snapshot_current_status_and_mac_filters_apply_before_decode(conn):
 
 
 def test_snapshot_seen_within_and_arbitrary_ipv6_network_filter(conn):
-    from datetime import datetime, timezone
     from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
 
     for address in ["2001:db8::2", "2001:db8::10", "2001:db8:1::1"]:
         add_host(conn, address)
-    now = datetime.now(timezone.utc).isoformat()
+    now = NOW
     conn.execute("UPDATE network_hosts SET last_seen_at='2000-01-01T00:00:00Z'")
     conn.execute("UPDATE network_hosts SET last_seen_at=? WHERE ip='2001:db8::2'", (now,))
     conn.commit()
     refresh_host_snapshot(conn, now=now)
     assert [host["ip"] for host in list_host_snapshot(conn, {"status": "all", "network": "2001:db8::/80"}, 1, 100)["hosts"]] == ["2001:db8::2", "2001:db8::10"]
-    assert [host["ip"] for host in list_host_snapshot(conn, {"status": "all", "seen_within": "1h"}, 1, 100)["hosts"]] == ["2001:db8::2"]
+    assert [host["ip"] for host in list_host_snapshot(conn, {"status": "all", "seen_within": "1h"}, 1, 100, now=now)["hosts"]] == ["2001:db8::2"]
+    assert list_host_snapshot(conn, {"status": "all", "seen_within": "1h"}, 1, 100, now="2026-09-07T11:00:01Z")["hosts"] == []
+
+
+@pytest.mark.parametrize("now, stale", [(NOW, False), ("2026-09-07T10:20:00Z", False), ("2026-09-07T10:20:01Z", True)])
+def test_snapshot_freshness_uses_two_ten_minute_cycles(conn, now, stale):
+    from netctl.host_snapshot import refresh_host_snapshot, snapshot_status, list_host_snapshot
+
+    add_host(conn, "203.0.113.1")
+    refresh_host_snapshot(conn, now=NOW)
+    assert snapshot_status(conn, now=now).stale is stale
+    page = list_host_snapshot(conn, {"status": "all"}, 1, 100, now=now)
+    assert page["snapshot"]["stale"] is stale
 
 
 def test_refresh_publishes_complete_replacement_snapshot(conn):
@@ -153,7 +164,7 @@ def test_failed_snapshot_publication_preserves_previous_rows(conn, monkeypatch, 
     monkeypatch.setattr(snapshot, failure_point, fail)
     with pytest.raises(sqlite3.Error):
         snapshot.refresh_host_snapshot(conn, now=LATER)
-    assert snapshot.snapshot_status(conn) == previous
+    assert snapshot.snapshot_status(conn, now=NOW) == previous
     assert snapshot.list_host_snapshot(conn, {"status": "all"}, 1, 50) == original
 
 
