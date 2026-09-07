@@ -357,7 +357,7 @@ def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
             "error": {
                 "code": "domain_join_failed",
                 "class": "DomainJoinError",
-                "message": "Domain join failed",
+                "safe_message": "Domain join failed",
             },
         },
     ],
@@ -385,7 +385,7 @@ def test_configure_start_accepts_valid_structured_results(
             "error": {
                 "code": "domain_join_failed\nsecret",
                 "class": "DomainJoinError",
-                "message": "Domain join failed",
+                "safe_message": "Domain join failed",
             },
         },
         valid_structured_result() | {"phase": "untrusted_phase"},
@@ -401,6 +401,68 @@ def test_configure_start_rejects_untrusted_structured_results(
 
     assert exc.value.code == "domain_verification_failed"
     assert set(exc.value.details) == {"run_id"}
+
+
+@pytest.mark.parametrize(
+    ("code", "accepted"),
+    [
+        ("a", False),
+        ("ab", True),
+        ("a" + "x" * 64, True),
+        ("a" + "x" * 79, True),
+        ("a" + "x" * 80, False),
+    ],
+    ids=["one", "minimum", "sixty_five", "maximum", "eighty_one"],
+)
+def test_configure_start_enforces_failed_error_code_boundaries(
+    run_configure,
+    code: str,
+    accepted: bool,
+) -> None:
+    result_payload = valid_structured_result() | {
+        "status": "failed",
+        "phase": "domain_join",
+        "error": {
+            "code": code,
+            "class": "DomainJoinError",
+            "safe_message": "Domain join failed",
+        },
+    }
+
+    if accepted:
+        assert run_configure(result_payload)["error"] == result_payload["error"]
+    else:
+        with pytest.raises(ControlError) as exc:
+            run_configure(result_payload)
+        assert exc.value.code == "domain_verification_failed"
+
+
+@pytest.mark.parametrize(
+    ("safe_message", "accepted"),
+    [("", False), ("x" * 240, True), ("x" * 241, False)],
+    ids=["empty", "maximum", "two_hundred_forty_one"],
+)
+def test_configure_start_enforces_failed_safe_message_boundaries(
+    run_configure,
+    safe_message: str,
+    accepted: bool,
+) -> None:
+    result_payload = valid_structured_result() | {
+        "status": "failed",
+        "phase": "domain_join",
+        "error": {
+            "code": "domain_join_failed",
+            "class": "DomainJoinError",
+            "safe_message": safe_message,
+        },
+    }
+
+    if accepted:
+        assert run_configure(result_payload)["error"] == result_payload["error"]
+    else:
+        with pytest.raises(ControlError) as exc:
+            run_configure(result_payload)
+        assert exc.value.code == "domain_verification_failed"
 
 
 @pytest.mark.parametrize(
@@ -421,7 +483,7 @@ def test_configure_start_rejects_untrusted_structured_results(
             "error": {
                 "code": "domain_join_failed",
                 "class": "DomainJoinError",
-                "message": "Domain join failed",
+                "safe_message": "Domain join failed",
             }
         },
         {"status": "failed", "error": None},

@@ -68,7 +68,7 @@ CONFIGURE_RESULT_PHASES = frozenset(
         "finalize",
     }
 )
-CONFIGURE_ERROR_FIELDS = frozenset({"code", "class", "message"})
+CONFIGURE_ERROR_FIELDS = frozenset({"code", "class", "safe_message"})
 
 HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
 HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
@@ -80,9 +80,11 @@ DOMAIN_USER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
 DOMAIN_USER_UPN_RE = re.compile(
     r"^[a-z0-9][a-z0-9._-]{0,62}@sosnadmin\.local$"
 )
-CONFIGURE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+CONFIGURE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,79}$")
 CONFIGURE_ERROR_CLASS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
-CONFIGURE_ERROR_MESSAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,;:()/_-]{0,511}$")
+CONFIGURE_ERROR_SAFE_MESSAGE_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9 .,;:()/_-]{0,239}$"
+)
 
 
 def _invalid_request(message: str) -> ControlError:
@@ -160,8 +162,8 @@ def _read_configure_result(
         or not CONFIGURE_ERROR_CODE_RE.fullmatch(error["code"])
         or not isinstance(error["class"], str)
         or not CONFIGURE_ERROR_CLASS_RE.fullmatch(error["class"])
-        or not isinstance(error["message"], str)
-        or not CONFIGURE_ERROR_MESSAGE_RE.fullmatch(error["message"])
+        or not isinstance(error["safe_message"], str)
+        or not CONFIGURE_ERROR_SAFE_MESSAGE_RE.fullmatch(error["safe_message"])
     ):
         raise ValueError("Configure result error is invalid")
 
