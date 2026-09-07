@@ -263,17 +263,81 @@ def test_project_host_from_context_performs_no_sql(conn, seeded_hosts):
     assert statements == []
 
 
+def test_bulk_context_uses_only_latest_manual_and_run_history(conn):
+    """History volume must not change the batch's current manual/run projection state."""
+    from netctl.availability import AvailabilityProjectionContext, project_host_from_context
+
+    host = _projection_host(conn)
+    _negative_projection_run(conn, host["ip"])
+    scheduled_host = _projection_host(conn, ip="203.0.113.9")
+    current_run = conn.execute(
+        """SELECT id FROM availability_runs
+           WHERE cidr = '203.0.113.0/24'
+           ORDER BY finished_at DESC, id DESC LIMIT 1"""
+    ).fetchone()["id"]
+    revision = conn.execute(
+        "SELECT id FROM context_revisions WHERE context_id = 'availability-test'"
+    ).fetchone()["id"]
+    old_manuals = [
+        ("projection", host["ip"], f"2026-07-01T00:{index // 60:02}:{index % 60:02}Z")
+        for index in range(240)
+    ]
+    conn.executemany(
+        """INSERT INTO availability_manual_results
+           (segment_id, ip, requested_at, checked_at, active_state, active_method)
+           VALUES (?, ?, ?, ?, 'unreachable', '')""",
+        [(segment_id, ip, checked_at, checked_at) for segment_id, ip, checked_at in old_manuals],
+    )
+    conn.execute(
+        """INSERT INTO availability_manual_results
+           (segment_id, ip, requested_at, checked_at, active_state, active_method)
+           VALUES ('projection', ?, ?, ?, 'reachable', 'icmp')""",
+        (host["ip"], NOW, NOW),
+    )
+    conn.executemany(
+        """INSERT INTO availability_runs
+           (context_revision_id, cidr, started_at, finished_at, status,
+            target_count, completed_target_count, error_class)
+           VALUES (?, '203.0.113.0/24', ?, ?, 'success', 1, 1, '')""",
+        [
+            (revision, f"2026-07-01T00:{index // 60:02}:{index % 60:02}Z", f"2026-07-01T00:{index // 60:02}:{index % 60:02}Z")
+            for index in range(240)
+        ],
+    )
+    conn.commit()
+    statements = []
+    conn.set_trace_callback(statements.append)
+
+    context = AvailabilityProjectionContext.load(conn, [host, scheduled_host], now=NOW)
+
+    assert len(context.manual_by_segment_ip) == 1
+    manual = context.manual_by_segment_ip[("projection", host["ip"])]
+    assert manual["active_state"] == "reachable"
+    assert manual["checked_at"] == NOW
+    assert context.run_by_cidr["203.0.113.0/24"]["id"] == current_run
+    assert project_host_from_context(host, context, now=NOW)["status"] == "online"
+    scheduled_projection = project_host_from_context(scheduled_host, context, now=NOW)
+    assert scheduled_projection["availability"]["reason"] == "missing_result"
+    assert scheduled_projection["availability"]["checked_at"] == NOW
+    assert len(statements) < 20
+
+
 @pytest.mark.parametrize("passive_source", ("mikrotik_bridge", "snmp_fdb"))
-def test_bulk_projection_matches_legacy_for_normalized_mac_evidence(conn, passive_source):
+@pytest.mark.parametrize(
+    "stored_mac",
+    ("aabb.ccdd.ee08", "Aa:Bb:Cc:Dd:Ee:08", "  AA:BB:CC:DD:EE:08  "),
+)
+def test_bulk_projection_matches_legacy_for_normalized_mac_evidence(conn, passive_source, stored_mac):
     """Batch lookup must retain legacy MAC normalization across stored punctuation styles."""
     from netctl.availability import bulk_project_host_availability, project_host_availability
 
     host = _projection_host(conn, mac="AA:BB:CC:DD:EE:08")
     _negative_projection_run(conn, host["ip"])
-    _fresh_passive(conn, passive_source, ip=host["ip"], mac="aabb.ccdd.ee08")
+    _fresh_passive(conn, passive_source, ip=host["ip"], mac=stored_mac)
     conn.commit()
 
     expected = project_host_availability(conn, host, now=NOW)
+    assert expected["status"] == "seen"
     assert bulk_project_host_availability(conn, [host], now=NOW) == [expected]
 
 

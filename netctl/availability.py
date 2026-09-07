@@ -858,17 +858,6 @@ def _in_clause(values: tuple[str | int, ...]) -> str:
     return ", ".join("?" for _ in values)
 
 
-def _mac_lookup_values(mac: str) -> set[str]:
-    compact = mac.replace(":", "")
-    variants = {
-        mac,
-        compact,
-        "-".join(compact[index:index + 2] for index in range(0, 12, 2)),
-        ".".join(compact[index:index + 4] for index in range(0, 12, 4)),
-    }
-    return variants | {value.lower() for value in variants}
-
-
 def _monitored_rule_from_rules(rules: tuple[Any, ...], ip: str) -> Any | None:
     try:
         address = ipaddress.ip_address(ip)
@@ -912,12 +901,8 @@ class AvailabilityProjectionContext:
         now: str | datetime,
     ) -> AvailabilityProjectionContext:
         ips = {str(host["ip"]) for host in hosts}
-        macs = {
-            variant
-            for host in hosts
-            if (mac := normalize_mac(host.get("mac")))
-            for variant in _mac_lookup_values(mac)
-        }
+        macs = {mac for host in hosts if (mac := normalize_mac(host.get("mac")))}
+        conn.create_function("netctl_normalize_mac", 1, normalize_mac, deterministic=True)
         rules = load_active_availability_segments(conn)
         rules_by_ip = {
             ip: rule
@@ -974,7 +959,7 @@ class AvailabilityProjectionContext:
                           sources.last_collect_at AS source_collected_at
                    FROM bridge_hosts AS hosts
                    JOIN network_sources AS sources ON sources.id = hosts.source_id
-                   WHERE hosts.mac IN (""" + placeholders + ")",
+                   WHERE netctl_normalize_mac(hosts.mac) IN (""" + placeholders + ")",
                 values,
             ):
                 item = dict(row)
@@ -990,7 +975,7 @@ class AvailabilityProjectionContext:
                    JOIN switch_collection_runs AS runs
                      ON runs.id = f.collector_run_id AND runs.source_id = f.source_id
                    JOIN network_sources AS sources ON sources.id = f.source_id
-                   WHERE f.mac IN ("""
+                   WHERE netctl_normalize_mac(f.mac) IN ("""
                     + placeholders
                     + """)
                      AND runs.status = 'success'
@@ -1012,21 +997,26 @@ class AvailabilityProjectionContext:
                 for row in conn.execute(
                     (
                         """SELECT id, segment_id, ip, active_state, active_method, checked_at
-                       FROM availability_manual_results
-                       WHERE segment_id IN ("""
+                       FROM (
+                           SELECT id, segment_id, ip, active_state, active_method, checked_at,
+                                  ROW_NUMBER() OVER (
+                                      PARTITION BY segment_id, ip
+                                      ORDER BY checked_at DESC, id DESC
+                                  ) AS row_number
+                           FROM availability_manual_results
+                           WHERE segment_id IN ("""
                         + segment_placeholders
                         + """)
                          AND ip IN ("""
                         + ip_placeholders
                         + """)
-                       ORDER BY segment_id, ip, checked_at DESC, id DESC"""
+                       )
+                       WHERE row_number = 1"""
                     ),
                     segment_values + ip_values,
                 ):
                     item = dict(row)
-                    manual_by_segment_ip.setdefault(
-                        (str(item["segment_id"]), str(item["ip"])), item
-                    )
+                    manual_by_segment_ip[(str(item["segment_id"]), str(item["ip"]))] = item
 
         run_by_cidr: dict[str, dict[str, Any]] = {}
         cidrs = {str(rule.network) for rule in rules_by_ip.values()}
@@ -1035,16 +1025,23 @@ class AvailabilityProjectionContext:
             for row in conn.execute(
                 (
                     """SELECT id, cidr, status, finished_at, error_class
-                   FROM availability_runs
-                   WHERE cidr IN ("""
+                   FROM (
+                       SELECT id, cidr, status, finished_at, error_class,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY cidr
+                                  ORDER BY finished_at DESC, id DESC
+                              ) AS row_number
+                       FROM availability_runs
+                       WHERE cidr IN ("""
                     + placeholders
                     + """)
-                   ORDER BY cidr, finished_at DESC, id DESC"""
+                   )
+                   WHERE row_number = 1"""
                 ),
                 values,
             ):
                 item = dict(row)
-                run_by_cidr.setdefault(str(item["cidr"]), item)
+                run_by_cidr[str(item["cidr"])] = item
 
         result_by_cidr_ip_run: dict[tuple[str, str, int], dict[str, Any]] = {}
         run_ids = {int(row["id"]) for row in run_by_cidr.values()}
