@@ -179,11 +179,13 @@ def test_domain_join_credentials_and_trust_checks_remain_secret_and_cleanup_is_u
     assert block["always"][-1]["failed_when"] is False
 
 
-@pytest.mark.parametrize("register", ["domain_join_reconcile", "domain_join_retry_reconcile"])
+@pytest.mark.parametrize("register", ["domain_join_testjoin", "domain_join_reconcile", "domain_join_retry_reconcile"])
 @pytest.mark.parametrize("rc, message, attempt, stop", [
     (0, "", 1, True), (1, "Connection timed out", 1, False),
     (1, "Connection timed out", 4, True), (1, "Invalid credentials", 1, True),
     (1, "Unknown failure", 1, True),
+    (1, "Cannot contact any KDC", 1, False),
+    (1, "Invalid credentials; Connection timed out", 1, True),
 ])
 def test_trust_reconciliation_retries_reads_but_retains_last_failure_for_safe_join_decision(register, rc, message, attempt, stop):
     task = by_register("domain_join", register)
@@ -193,6 +195,21 @@ def test_trust_reconciliation_retries_reads_but_retains_last_failure_for_safe_jo
     assert task["failed_when"] is False
     assert env().from_string(task["retries"]).render(values) == 3
     assert task["no_log"] is True
+    assert task["environment"]["LC_ALL"] == "C"
+
+
+def test_initial_trust_probe_finishes_before_deciding_whether_to_skip_join():
+    tasks = list(flatten(role("domain_join")))
+    probe = by_register("domain_join", "domain_join_testjoin")
+    assert "until" in probe
+    decision = fact("domain_join", "domain_join_already_joined")
+    assert tasks.index(probe) < tasks.index(decision)
+    template = decision["ansible.builtin.set_fact"]["domain_join_already_joined"]
+    assert env().from_string(template).render(domain_join_testjoin={"rc": 0}) is True
+    assert env().from_string(template).render(domain_join_testjoin={"rc": 1}) is False
+    assert probe["failed_when"] is False
+    values = task_values(probe, {"domain_join_testjoin": {"rc": 1, "stderr": "", "attempts": 1}})
+    assert env().from_string(probe["delay"]).render(values) == 5
 
 
 def test_login_baseline_owns_pam_write_and_immediately_precedes_verification():

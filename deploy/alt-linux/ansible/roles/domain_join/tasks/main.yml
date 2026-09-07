@@ -25,6 +25,21 @@
   changed_when: false
   failed_when: false
   no_log: true
+  retries: "{{ (alt_transient_retry_attempts | int) - 1 }}"
+  delay: "{{ alt_transient_retry_delay }}"
+  # Preserve an unjoined/exhausted result for the LDAP safety check, while
+  # allowing a valid existing trust to recover from transient KDC failures.
+  until: >-
+    domain_join_testjoin.rc == 0
+    or (domain_join_testjoin_output | regex_search(alt_domain_transient_pattern)) is none
+    or (domain_join_testjoin_output | regex_search(domain_join_fatal_pattern)) is not none
+    or (domain_join_testjoin.attempts | default(1) | int) >= (alt_transient_retry_attempts | int)
+  environment:
+    LC_ALL: C
+  vars:
+    domain_join_testjoin_output: >-
+      {{ domain_join_testjoin.stdout | default('') }} {{ domain_join_testjoin.stderr | default('') }}
+    domain_join_fatal_pattern: &domain_join_fatal_pattern '(?i)(access denied|permission denied|invalid credentials|preauthentication failed|client not found in Kerberos database|insufficient access|constraint violation|already exists)'
 
 - name: Determine whether the requested domain is already joined
   ansible.builtin.set_fact:
@@ -253,5 +268,5 @@
   environment:
     LC_ALL: C
   vars:
-    domain_join_fatal_pattern: '(?i)(access denied|permission denied|invalid credentials|preauthentication failed|client not found in Kerberos database|insufficient access|constraint violation|already exists)'
+    domain_join_fatal_pattern: *domain_join_fatal_pattern
   when: not domain_join_already_joined
