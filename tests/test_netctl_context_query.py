@@ -617,10 +617,11 @@ def test_inspect_asset_context_bounds_confirmed_port_peers(tmp_path: Path) -> No
         conn.close()
 
 
-def test_inspect_asset_context_returns_named_path_history_and_freshness(tmp_path: Path) -> None:
+def test_inspect_asset_context_returns_named_path_history_and_freshness(tmp_path: Path, monkeypatch) -> None:
     """Fails if path edges, recent attachment history, or run freshness are omitted."""
     from netctl.context_query import inspect_asset_context
 
+    monkeypatch.setattr("netctl.context_query.utc_now", lambda: "2026-07-26T10:06:00Z")
     conn = _context_db(tmp_path)
     try:
         context = inspect_asset_context(conn, "mac:AA:BB:CC:DD:EE:01")

@@ -91,7 +91,8 @@ read savepoint, so failed reads are not reported as successful completion.
 | Command | Result |
 | --- | --- |
 | `pytest tests/test_netctl_availability.py tests/test_netctl_cli.py tests/test_api_routes.py tests/test_web_network_observer.py tests/test_ui_snapshot_cache.py tests/test_netctl_host_snapshot.py -v` | Exit 0; 288 passed, 1 skipped, 26,860 warnings in 95.54 s |
-| `pytest -q` | Exit 1; 1 failed, 1,664 passed, 11 skipped, 44,588 warnings in 314.12 s |
+| `pytest -q` (initial run) | Exit 1; 1 failed, 1,664 passed, 11 skipped, 44,588 warnings in 314.12 s |
+| `pytest -q` (after deterministic fixture correction) | Exit 0; 1,665 passed, 11 skipped, 44,588 warnings in 311.98 s |
 | `python -m compileall -q app netctl` | Exit 0 |
 | `node --check app/static/network-hosts-refresh.js` | Exit 0 |
 | `node tests/network_hosts_refresh.test.js` | Exit 0 |
@@ -103,7 +104,7 @@ FastAPI/Starlette coroutine detection, startup hooks and template invocation.
 The Node fixture exercises malformed-row preservation and metadata response races;
 it is not a production browser smoke test.
 
-The full-suite failure is
+The initial full-suite failure was
 `tests/test_netctl_context_query.py::test_inspect_asset_context_returns_named_path_history_and_freshness`
 at line 632: its fixed event timestamp, `2026-07-26T10:05:00Z`, is outside the
 30-day history window on the verification date. The unchanged
@@ -114,8 +115,13 @@ The exact single-test command reproduced the failure (exit 1, one failed in
 0.73 s). A diagnostic in-memory override of `context_query.utc_now` to
 `2026-07-26T10:06:00Z`, followed by `pytest.main` for the same single test, passed
 (exit 0, one passed in 0.41 s), confirming the date-dependent fixture assumption.
-No source or test was altered by that diagnostic. The full suite is therefore
-not green; correcting the existing clock-sensitive fixture remains separate work.
+No source or test was altered by that diagnostic. The controller then authorized
+a separate test-only correction: the one test now fixes `context_query.utc_now`
+with pytest's `monkeypatch` to the fixture's timeline. Its July 26 event remains
+inside the 30-day window and its June 25 event remains outside, preserving the
+history-filter assertion. Production context behavior is unchanged. The exact
+single-test pytest command now passes without diagnostic overrides (exit 0,
+one passed in 0.48 s). The full-suite rerun then passed as recorded above.
 
 ## Production follow-up — pending
 
