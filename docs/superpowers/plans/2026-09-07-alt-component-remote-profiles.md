@@ -176,12 +176,43 @@ Commit: `feat(alt): preflight selected software components`
   `software_nextcloud_desktop_verified` booleans plus matching structured
   component result fields.
 
-- [ ] **Step 1: Obtain the required external approval record before changing an entry to enabled**
+- [ ] **Step 1: Use the read-only verified controller artifact record**
 
-For each component, record the controller-side immutable artifact path,
-SHA-256, `rpm -qp --qf '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}'` output and
-expected executable path. Use a checked controller artifact release path; do
-not download a package or use a file under a user home directory.
+The ALT controller at `altserver-100-17` was inspected read-only on 2026-09-07.
+Enable exactly these catalog entries; their artifacts are under the controlled
+`/opt/alt-deploy-control/artifacts` root, never a user home:
+
+```yaml
+software_catalog:
+  browser:
+    enabled: true
+    source: rpm
+    artifact_path: /opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm
+    sha256: 7fbce78e9799ae36ebfcf750d5880f27d829d5546e9ac77f1868afb9657d9a89
+    package_name: yandex-browser-stable
+    package_evr: 26.4.4.968-1
+    architecture: x86_64
+    executable: /usr/bin/yandex-browser-stable
+  onlyoffice:
+    enabled: true
+    source: rpm
+    artifact_path: /opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm
+    sha256: b8dd26405b5cd79da8a80afc7089007de608a53e7e90ea6a247379bebfe54c9f
+    package_name: onlyoffice-desktopeditors
+    package_evr: 9.4.0-epm1.repacked.130
+    architecture: x86_64
+    executable: /usr/bin/onlyoffice-desktopeditors
+  nextcloud_desktop:
+    enabled: true
+    source: alt-repository
+    packages: [nextcloud-client, nextcloud-client-kde]
+    executable: /usr/bin/nextcloud
+```
+
+The checked RPM metadata is respectively
+`yandex-browser-stable|26.4.4.968-1|x86_64` and
+`onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64`. Do not download a
+package, add a repository, or use a file under a user home directory.
 
 - [ ] **Step 2: Write failing tests for fixed role selection and redaction**
 
