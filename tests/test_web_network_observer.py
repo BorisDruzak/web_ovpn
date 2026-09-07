@@ -71,11 +71,22 @@ if invoked_cli_path:
     with open(invoked_cli_path, "a", encoding="utf-8") as invoked_cli:
         invoked_cli.write(" ".join(cmd) + "\\n")
 if cmd[:2] == ["hosts", "list"]:
-    print(json.dumps({"status": "ok", "hosts": [
+    hosts = [
         {"ip": "192.168.100.55", "mac": "AA:BB:CC:DD:EE:01", "hostname": "pc-buh-01", "display_name": "desktop pc-buh-01", "manual_name": "Finance workstation", "category": "local_device", "device_key": "mac:AA:BB:CC:DD:EE:01", "device_type": "pc", "device_confidence": 70, "device_evidence": ["text:pc"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": collected_at},
         {"ip": "192.168.0.12", "mac": "84:D8:1B:EF:3C:6F", "hostname": "Archer_C24", "display_name": "Archer_C24", "category": "telephony", "device_key": "legacy-host:desk?old", "device_type": "phone", "device_confidence": 85, "device_evidence": ["category:telephony"], "status": "online", "sources": ["mikrotik_dhcp", "mikrotik_arp"], "site": "main", "last_seen_at": collected_at},
         {"ip": "10.83.1.11", "mac": "E0:1C:FC:AE:82:9B", "hostname": "", "display_name": "PVE1 MGMT", "category": "mgmt", "device_key": "mac:E0:1C:FC:AE:82:9B", "device_type": "server", "device_confidence": 80, "device_evidence": ["category:mgmt"], "status": "seen", "sources": ["mikrotik_dhcp"], "site": "main", "last_seen_at": collected_at}
-    ]}))
+    ]
+    options = dict(zip(cmd[2::2], cmd[3::2]))
+    if options.get('--q'):
+        hosts = [host for host in hosts if options['--q'].lower() in ' '.join(str(value) for value in host.values()).lower()]
+    selected = options.get('--status', 'current')
+    if selected == 'current':
+        hosts = [host for host in hosts if host['status'] in ('online', 'seen', 'connected')]
+    elif selected != 'all':
+        hosts = [host for host in hosts if host['status'] == selected]
+    page, limit = int(options.get('--page', 1)), int(options.get('--limit', 100))
+    total = len(hosts)
+    print(json.dumps({'status': 'ok', 'hosts': hosts[(page - 1) * limit:page * limit], 'sources': [{'name': 'mikrotik-main'}], 'pagination': {'page': page, 'limit': limit, 'total': total, 'pages': (total + limit - 1) // limit}, 'snapshot': {'snapshot_id': 1, 'generated_at': collected_at, 'total_hosts': 3, 'duration_ms': 1}}))
 elif cmd[:2] == ["hosts", "inspect"]:
     print(json.dumps({"status": "ok", "host": {"ip": cmd[2], "display_name": "pc-buh-01"}, "observations": []}))
 elif cmd[:2] == ["context-view", "search"]:
@@ -206,6 +217,7 @@ def make_client(tmp_path, monkeypatch, *, include_telemetry: bool = False):
     import app.config
     import app.db
     import app.main
+    import app.endpoint_agent_network
 
     app.config.reset_settings_cache()
     app.db.reset_engine_cache()
@@ -481,7 +493,7 @@ process.stdout.write(JSON.stringify(JSON.parse(process.argv[2]).map(context.runt
     assert "unavailable" in redacted[0]
 
 
-def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch):
+def test_web_network_hosts_page_renders_persisted_hosts(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
 
@@ -490,7 +502,7 @@ def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch
     assert page.status_code == 200
     assert "Все IP и устройства" in page.text
     assert "Finance workstation" in page.text
-    assert "alpha" in page.text
+    assert "alpha" not in page.text
     assert "Обычная сеть" in page.text
     assert "ПК" in page.text
     assert "Телефон" in page.text
@@ -500,7 +512,7 @@ def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch
     assert "192.168.0.12" in page.text
     assert "10.83.1.11" in page.text
     assert "VPN" in page.text
-    assert "192.168.50.10" in page.text
+    assert "192.168.50.10" not in page.text
     assert "192.168.100.55" in page.text
 
 
@@ -510,11 +522,60 @@ def test_network_hosts_get_uses_only_read_only_snapshot_commands(tmp_path, monke
     login(client)
     invoked = tmp_path / "netctl-invoked-cli.txt"
     invoked.write_text("", encoding="utf-8")
+    import app.main
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("host list must not invoke vpnctl or background refresh")
+
+    monkeypatch.setattr(app.main, "cli_call", forbidden)
+    monkeypatch.setattr(app.endpoint_agent_network, "refresh_endpoint_agent_network", forbidden)
 
     page = client.get("/network/hosts")
 
     assert page.status_code == 200
-    assert invoked.read_text(encoding="utf-8").splitlines() == ["hosts list --status all", "sources list"]
+    calls = invoked.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1
+    assert calls[0].startswith("hosts list ")
+    assert "--status current" in calls[0]
+    assert "--page 1 --limit 100" in calls[0]
+
+
+@pytest.mark.parametrize("count", [0, 210])
+def test_host_page_pagination_uses_real_snapshot_and_pending_state(tmp_path, monkeypatch, count):
+    from test_api_routes import snapshot_netctl
+    import app.api as api
+    import app.main as main
+
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    snapshot_netctl(tmp_path, monkeypatch, count=count)
+    monkeypatch.setattr(main, "net_cli_call", lambda request, args, timeout=None: (api.run_netctl(args), None))
+    monkeypatch.setattr(main, "cli_call", lambda *a, **kw: pytest.fail("list invoked vpnctl"))
+    monkeypatch.setattr(main, "attach_endpoint_agent_statuses", lambda *a, **kw: pytest.fail("list loaded external status"))
+    page = client.get("/network/hosts?page=2&limit=100&seen_within=all")
+    assert page.status_code == 200
+    assert page.context["pagination"] == {"page": 2, "limit": 100, "total": count, "pages": 3 if count else 0}
+    assert len(page.context["hosts"]) == (100 if count else 0)
+    assert page.context["snapshot"]["snapshot_id"] == (1 if count else 0)
+    if count:
+        assert page.context["hosts"][0]["endpoint_agent"]["state"] == "unknown"
+        assert "No agent" not in page.text
+
+
+def test_single_host_detail_does_not_depend_on_first_snapshot_page(tmp_path, monkeypatch):
+    import app.main as main
+
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    def inspect(request, args, timeout=None):
+        assert args == ["hosts", "inspect", "203.0.113.200"]
+        return {"host": {"ip": "203.0.113.200", "display_name": "beyond first page", "status": "seen"}}, None
+
+    monkeypatch.setattr(main, "net_cli_call", inspect)
+    page = client.get("/network/hosts/203.0.113.200")
+    assert page.status_code == 200
+    assert "beyond first page" in page.text
 
 
 def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path, monkeypatch):
@@ -528,7 +589,7 @@ def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path,
     assert 'href="/network/hosts/192.168.100.55"' in page.text
     all_hosts = client.get("/network/hosts")
     assert 'href="/network/assets/legacy-host%3Adesk%3Fold"' in all_hosts.text
-    assert 'href="/network/hosts/192.168.50.10"' in all_hosts.text
+    assert 'href="/network/hosts/192.168.0.12"' in all_hosts.text
 
 
 def test_network_hosts_url_encodes_reserved_asset_key_and_routes_exact_key(tmp_path, monkeypatch):
@@ -1110,17 +1171,16 @@ def test_network_asset_card_renders_readable_cyrillic_freshness_and_confirmed_co
     assert "\u0420\u045e\u0420\u0455\u0420\u0457\u0420\u0455\u0420\u00bb\u0420\u0455\u0420\u0456\u0420\u0451\u0421\u040f" not in page.text
 
 
-def test_network_api_hosts_returns_unified_rows(tmp_path, monkeypatch):
+def test_network_api_hosts_returns_snapshot_rows(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
 
     response = client.get("/api/v1/network/hosts", headers=headers)
 
     assert response.status_code == 200
     rows = response.json()["data"]["hosts"]
-    assert {row["ip"] for row in rows} == {"192.168.100.55", "192.168.0.12", "10.83.1.11", "192.168.50.10"}
-    vpn = next(row for row in rows if row["ip"] == "192.168.50.10")
-    assert vpn["category"] == "vpn_client"
-    assert vpn["vpn_client"]["common_name"] == "alpha"
+    assert {row["ip"] for row in rows} == {"192.168.100.55", "192.168.0.12", "10.83.1.11"}
+    assert response.json()["data"]["pagination"]["total"] == 3
+    assert response.json()["data"]["snapshot"]["snapshot_id"] == 1
     phone = next(row for row in rows if row["ip"] == "192.168.0.12")
     assert phone["device_type"] == "phone"
     assert phone["device_confidence"] == 85
@@ -1180,10 +1240,10 @@ def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_pa
 
     def fake_netctl(args, timeout=None):
         netctl_calls.append(args)
-        if args == ["hosts", "list"]:
-            return {"hosts": [host for host in hosts if host["status"] in {"online", "seen"}]}
-        if args == ["hosts", "list", "--status", "all"]:
-            return {"hosts": hosts}
+        if args[:2] == ["hosts", "list"]:
+            status = args[args.index("--status") + 1]
+            selected = [host for host in hosts if status == "all" or (host["status"] in {"online", "seen", "connected"} if status == "current" else host["status"] == status)]
+            return {"hosts": selected, "pagination": {"page": 1, "limit": 100, "total": len(selected), "pages": 1}, "snapshot": {"snapshot_id": 1, "generated_at": "2026-09-07T10:00:00Z", "total_hosts": 4, "duration_ms": 1}}
         raise AssertionError(args)
 
     monkeypatch.setattr(app.api, "call_netctl", fake_netctl)
@@ -1203,12 +1263,7 @@ def test_network_hosts_api_defaults_to_current_and_rejects_unknown_status(tmp_pa
     assert stale.json()["data"]["hosts"][0]["availability"]["reason"] == "run_failed"
     assert "socket timeout" not in stale.text
     assert invalid.status_code == 422
-    assert netctl_calls == [
-        ["hosts", "list"],
-        ["hosts", "list", "--status", "all"],
-        ["hosts", "list", "--status", "all"],
-        ["hosts", "list", "--status", "all"],
-    ]
+    assert [args[args.index("--status") + 1] for args in netctl_calls] == ["current", "all", "offline", "stale"]
 
 
 def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp_path, monkeypatch):
@@ -1234,10 +1289,9 @@ def test_network_hosts_page_renders_sanitized_availability_and_not_monitored(tmp
     ]
 
     def fake_netctl(request, args, timeout=None):
-        if args == ["hosts", "list"]:
-            return {"hosts": [hosts[1]]}, None
-        if args == ["hosts", "list", "--status", "all"]:
-            return {"hosts": hosts}, None
+        if args[:2] == ["hosts", "list"]:
+            status = args[args.index("--status") + 1] if "--status" in args else "current"
+            return {"hosts": hosts if status in {"all", "stale"} else []}, None
         if args == ["sources", "list"]:
             return {"sources": []}, None
         if args == ["hosts", "inspect", "192.168.99.46"]:
@@ -1424,7 +1478,7 @@ def test_openvpn_only_host_is_connected_but_never_online():
     assert availability_status_label(host) == "VPN подключён"
 
 
-def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeypatch):
+def test_host_list_uses_snapshot_while_details_keep_openvpn_view(tmp_path, monkeypatch):
     client, headers = make_client(tmp_path, monkeypatch)
     import app.api
     import app.main
@@ -1440,8 +1494,8 @@ def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeyp
     connected = [{"common_name": "alpha", "virtual_address": "192.168.99.44"}]
 
     def api_netctl(args, timeout=None):
-        if args == ["hosts", "list"]:
-            return {"hosts": [host]}
+        if args[:2] == ["hosts", "list"]:
+            return {"hosts": [host], "pagination": {"page": 1, "limit": 100, "total": 1, "pages": 1}, "snapshot": {"snapshot_id": 1, "generated_at": "2026-09-07T10:00:00Z", "total_hosts": 1, "duration_ms": 1}}
         if args == ["hosts", "inspect", "192.168.99.44"]:
             return {"host": host, "observations": []}
         raise AssertionError(args)
@@ -1469,7 +1523,8 @@ def test_host_list_and_details_share_openvpn_availability_view(tmp_path, monkeyp
     page_detail = client.get("/network/hosts/192.168.99.44")
 
     assert listed.status_code == api_detail.status_code == page_detail.status_code == 200
-    assert listed.json()["data"]["hosts"][0]["status"] == "connected"
+    assert listed.json()["data"]["hosts"][0]["status"] == "online"
+    assert listed.json()["data"]["hosts"][0]["availability"]["reason"] == "active_probe"
     assert api_detail.json()["data"]["host"]["status"] == "connected"
     assert "<dt>Статус</dt><dd>online · ICMP</dd>" in page_detail.text
     assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"
@@ -1888,7 +1943,7 @@ def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(t
     }
 
     def fake_netctl(request, args, timeout=None):
-        if args in (["hosts", "list"], ["hosts", "list", "--status", "all"]):
+        if args[:2] == ["hosts", "list"]:
             return {"hosts": [host]}, None
         if args == ["hosts", "inspect", "192.168.99.44"]:
             return {"host": host, "observations": []}, None

@@ -27,6 +27,98 @@ def add_host(conn, ip, *, hostname="", sources=("arp",)):
     conn.commit()
 
 
+def test_snapshot_sql_filters_match_public_fields_before_decode(conn):
+    from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
+
+    add_host(conn, "203.0.113.2", sources=("dhcp",))
+    add_host(conn, "203.0.113.10", sources=("arp",))
+    add_host(conn, "203.0.114.1", sources=("arp",))
+    conn.execute("UPDATE network_hosts SET display_name='Named printer', device_type='printer', last_source='router-a', tags_json=? WHERE ip='203.0.113.2'", (json.dumps({"sources": ["dhcp"], "tags": ["office-blue"]}),))
+    conn.execute("UPDATE network_hosts SET category='noise' WHERE ip='203.0.113.10'")
+    conn.commit()
+    refresh_host_snapshot(conn, now=NOW)
+    # Poison irrelevant JSON: any post-decode filtering fails immediately.
+    conn.execute("UPDATE network_host_current_state SET payload_json='invalid-json' WHERE ip != '203.0.113.2'")
+    conn.commit()
+    for extra in [
+        {"q": " PRINTER "}, {"q": "office-blue"}, {"has_hostname": "yes"},
+        {"source": "router-a"}, {"source": "dhcp"}, {"network": "203.0.113.0/25"},
+    ]:
+        result = list_host_snapshot(conn, {"status": "all", "category": "all", **extra}, 1, 100)
+        assert [host["ip"] for host in result["hosts"]] == ["203.0.113.2"]
+        assert result["total"] == 1
+
+
+def test_snapshot_pagination_clamps_page_and_limit(conn):
+    from netctl.host_snapshot import list_host_snapshot
+
+    assert list_host_snapshot(conn, {}, -10, 999)["limit"] == 250
+    assert list_host_snapshot(conn, {}, 0, 0)["page"] == 1
+    assert list_host_snapshot(conn, {}, 0, 0)["limit"] == 1
+
+
+def test_hosts_cli_pagination_without_writable_prepare(tmp_path, monkeypatch):
+    import netctl.cli as cli
+    from netctl.host_snapshot import refresh_host_snapshot
+
+    db_url = f"sqlite:///{(tmp_path / 'cli.sqlite').as_posix()}"
+    conn = connect(db_url)
+    add_host(conn, "203.0.113.10")
+    add_host(conn, "203.0.113.2")
+    refresh_host_snapshot(conn, now=NOW)
+    conn.close()
+    monkeypatch.setattr(cli, "prepare_conn", lambda *a: pytest.fail("list opened writable connection"))
+    args = cli.build_parser().parse_args(["--db", db_url, "hosts", "list", "--status", "all", "--page", "2", "--limit", "1", "--network", "203.0.113.0/25"])
+    rc, data = cli.dispatch(args)
+    assert rc == 0
+    assert [host["ip"] for host in data["hosts"]] == ["203.0.113.10"]
+    assert data["pagination"] == {"page": 2, "limit": 1, "total": 2, "pages": 2}
+
+
+@pytest.mark.parametrize("command", ["list", "snapshot-status"])
+def test_hosts_missing_database_is_pending_without_creating_files(tmp_path, command):
+    import netctl.cli as cli
+
+    path = tmp_path / "missing.sqlite"
+    args = cli.build_parser().parse_args(["--db", f"sqlite:///{path.as_posix()}", "hosts", command])
+    rc, data = cli.dispatch(args)
+    assert rc == 0
+    assert data["snapshot"] == {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0}
+    assert not path.exists()
+
+
+def test_snapshot_current_status_and_mac_filters_apply_before_decode(conn):
+    from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
+
+    for number in range(1, 6):
+        add_host(conn, f"203.0.113.{number}")
+    conn.execute("UPDATE network_hosts SET mac='AA:BB:CC:DD:EE:01' WHERE ip='203.0.113.1'")
+    conn.commit()
+    refresh_host_snapshot(conn, now=NOW)
+    for number, status in enumerate(["online", "seen", "connected", "offline", "stale"], 1):
+        conn.execute("UPDATE network_host_current_state SET status=?, payload_json=json_set(payload_json, '$.status', ?) WHERE ip=?", (status, status, f"203.0.113.{number}"))
+    conn.execute("UPDATE network_host_current_state SET payload_json='invalid-json' WHERE status IN ('offline', 'stale')")
+    conn.commit()
+    assert [host["status"] for host in list_host_snapshot(conn, {"status": "current"}, 1, 100)["hosts"]] == ["online", "seen", "connected"]
+    assert [host["ip"] for host in list_host_snapshot(conn, {"has_mac": "yes"}, 1, 100)["hosts"]] == ["203.0.113.1"]
+    assert list_host_snapshot(conn, {}, 10**100, 100)["hosts"] == []
+
+
+def test_snapshot_seen_within_and_arbitrary_ipv6_network_filter(conn):
+    from datetime import datetime, timezone
+    from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
+
+    for address in ["2001:db8::2", "2001:db8::10", "2001:db8:1::1"]:
+        add_host(conn, address)
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE network_hosts SET last_seen_at='2000-01-01T00:00:00Z'")
+    conn.execute("UPDATE network_hosts SET last_seen_at=? WHERE ip='2001:db8::2'", (now,))
+    conn.commit()
+    refresh_host_snapshot(conn, now=now)
+    assert [host["ip"] for host in list_host_snapshot(conn, {"status": "all", "network": "2001:db8::/80"}, 1, 100)["hosts"]] == ["2001:db8::2", "2001:db8::10"]
+    assert [host["ip"] for host in list_host_snapshot(conn, {"status": "all", "seen_within": "1h"}, 1, 100)["hosts"]] == ["2001:db8::2"]
+
+
 def test_refresh_publishes_complete_replacement_snapshot(conn):
     from netctl.host_snapshot import refresh_host_snapshot, list_host_snapshot
 

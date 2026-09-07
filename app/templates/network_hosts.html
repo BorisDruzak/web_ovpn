@@ -75,6 +75,8 @@
           <span class="badge warn">Stale cached result</span> {{ host.endpoint_agent.device_display_name or "" }}
           {% elif host.endpoint_agent.state == "updating" %}
           <span class="badge muted">Updating</span>
+          {% elif host.endpoint_agent.state == "unknown" %}
+          <span class="muted">—</span>
           {% else %}
           <span class="badge muted">No agent</span>
           {% endif %}

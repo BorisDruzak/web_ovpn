@@ -75,16 +75,29 @@ def build_host_snapshot(conn: sqlite3.Connection, *, now: str | datetime) -> Bui
         except ValueError:
             ip_sort = b"\xff"
             network = ""
-        search_text = "\n".join(str(host.get(key) or "") for key in (
-            "ip", "mac", "hostname", "display_name", "device_key", "manual_name"
-        )).lower()
+        search_text = " ".join([
+            *(str(host.get(key) or "") for key in (
+                "ip", "mac", "hostname", "manual_name", "display_name", "device_type", "device_key"
+            )),
+            *(str(tag) for tag in host.get("tags", [])),
+        ]).lower()
+        seen_at = host.get("last_seen_at")
+        if seen_at:
+            try:
+                observed = datetime.fromisoformat(str(seen_at).replace("Z", "+00:00"))
+                seen_at = observed.astimezone(timezone.utc).isoformat() if observed.tzinfo else "invalid"
+            except ValueError:
+                seen_at = "invalid"
         state_rows.append((
             ip, ip_sort, str(host.get("category") or ""), str(host.get("status") or ""),
-            network, int(bool(host.get("hostname"))), int(bool(host.get("mac"))),
-            host.get("last_seen_at"), search_text,
+            network, int(bool(host.get("hostname") or host.get("display_name"))), int(bool(host.get("mac"))),
+            seen_at, search_text,
             json.dumps(host, ensure_ascii=False, separators=(",", ":"), allow_nan=False),
         ))
-        source_rows.extend((ip, source) for source in sorted(set(host.get("sources") or [])))
+        sources = set(host.get("sources") or [])
+        if host.get("last_source"):
+            sources.add(str(host["last_source"]))
+        source_rows.extend((ip, source) for source in sorted(sources))
     return BuiltHostSnapshot(tuple(state_rows), tuple(source_rows))
 
 
@@ -154,28 +167,48 @@ def refresh_host_snapshot(conn: sqlite3.Connection, *, now: str | datetime) -> H
 
 
 def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], page: int, limit: int) -> dict[str, Any]:
-    if not isinstance(page, int) or not isinstance(limit, int) or page < 1 or limit < 1 or limit > 500:
+    if not isinstance(page, int) or not isinstance(limit, int):
         raise ValueError("invalid host pagination")
+    page, limit = max(1, page), min(250, max(1, limit))
     # The metadata, count and page must come from one SQLite read snapshot.
     conn.execute("SAVEPOINT read_host_snapshot")
     try:
         metadata = snapshot_status(conn)
         clauses = ["h.snapshot_id = ?"]
         params: list[Any] = [metadata.snapshot_id]
-        for key in ("category", "network"):
-            value = filters.get(key)
-            if value and value != "all":
-                clauses.append(f"h.{key} = ?")
-                params.append(value)
+        category = filters.get("category") or "all"
+        if category == "all":
+            clauses.append("h.category != 'noise'")
+        else:
+            clauses.append("h.category = ?")
+            params.append(category)
+        network = filters.get("network") or "all"
+        if network != "all":
+            subnet = ipaddress.ip_network(network, strict=False)
+            clauses.append("h.ip_sort BETWEEN ? AND ?")
+            params.extend(bytes([subnet.version]) + int(address).to_bytes(16, "big")
+                          for address in (subnet.network_address, subnet.broadcast_address))
         status = filters.get("status") or "current"
         if status == "current":
             clauses.append("h.status IN ('online', 'seen', 'connected')")
         elif status != "all":
             clauses.append("h.status = ?")
             params.append(status)
-        if filters.get("q"):
+        query = str(filters.get("q") or "").strip().lower()
+        if query:
             clauses.append("instr(h.search_text, ?) > 0")
-            params.append(str(filters["q"]).lower())
+            params.append(query)
+        seen_within = filters.get("seen_within") or "all"
+        windows = {"1h": 1 / 24, "24h": 1, "7d": 7, "30d": 30}
+        if seen_within != "all":
+            if seen_within not in windows:
+                raise ValueError("invalid seen_within filter")
+            cutoff_reference = datetime.now(timezone.utc).isoformat()
+            clauses.append(
+                "((julianday(h.last_seen_at) BETWEEN julianday(?) - ? AND julianday(?)) "
+                "OR (coalesce(h.last_seen_at, '') = '' AND h.status IN ('online', 'seen', 'connected')))"
+            )
+            params.extend((cutoff_reference, windows[seen_within], cutoff_reference))
         for key in ("has_hostname", "has_mac"):
             value = filters.get(key)
             if value is not None and value != "":
@@ -191,8 +224,13 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
         rows = conn.execute(
             f"SELECT h.payload_json FROM network_host_current_state h WHERE {where} ORDER BY h.ip_sort, h.ip LIMIT ? OFFSET ?",
             (*params, limit, (page - 1) * limit),
+        ).fetchall() if metadata.snapshot_id and (page - 1) * limit < total else []
+        sources = conn.execute(
+            "SELECT DISTINCT source FROM network_host_current_sources WHERE snapshot_id = ? ORDER BY source",
+            (metadata.snapshot_id,),
         ).fetchall() if metadata.snapshot_id else []
         return {"hosts": [json.loads(row[0]) for row in rows], "total": total, "page": page,
-                "limit": limit, "pages": (total + limit - 1) // limit, "snapshot": asdict(metadata)}
+                "limit": limit, "pages": (total + limit - 1) // limit, "snapshot": asdict(metadata),
+                "sources": [{"name": row[0]} for row in sources]}
     finally:
         conn.execute("RELEASE SAVEPOINT read_host_snapshot")

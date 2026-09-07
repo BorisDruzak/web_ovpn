@@ -28,7 +28,7 @@ from .endpoint_platform_client import (
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
 from .models import NetworkChangeIdempotency, utcnow
-from .network_observer import filter_unified_hosts, list_from as network_list_from, merge_unified_hosts, normalize_netctl_host
+from .network_observer import list_from as network_list_from, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .vpnctl_client import VpnctlError, run_vpnctl
@@ -1225,31 +1225,46 @@ def api_network_hosts(
     network: str = Query(default="all"),
     has_hostname: str = Query(default=""),
     has_mac: str = Query(default=""),
+    page: int = Query(default=1),
+    limit: int = Query(default=100),
 ):
-    netctl_args = ["hosts", "list"]
-    if status in {"all", "offline", "stale"}:
-        netctl_args.extend(["--status", "all"])
-    net_hosts = call_netctl(netctl_args)
-    connected = call_vpnctl(["connected", "--source", "auto"])
-    clients = call_vpnctl(["list"])
-    rows = merge_unified_hosts(
-        network_list_from(net_hosts, "hosts"),
-        network_list_from(connected, "connected"),
-        network_list_from(clients, "clients"),
-    )
-    rows = filter_unified_hosts(
-        rows,
-        {
-            "q": q,
-            "category": category,
-            "status": status,
-            "source": source,
-            "network": network,
-            "has_hostname": has_hostname,
-            "has_mac": has_mac,
-        },
-    )
-    return api_response({"hosts": rows})
+    data = call_netctl(host_snapshot_args({
+        "q": q, "category": category, "status": status, "source": source,
+        "network": network, "has_hostname": has_hostname, "has_mac": has_mac,
+    }, page, limit))
+    return api_response({
+        "hosts": [normalize_netctl_host(host) for host in network_list_from(data, "hosts")],
+        "pagination": data["pagination"], "snapshot": data["snapshot"],
+    })
+
+
+def host_snapshot_args(filters: dict[str, str], page: int, limit: int) -> list[str]:
+    """Validate UI filters and keep all row selection inside snapshot SQL."""
+    network = filters.get("network") or "all"
+    if network != "all":
+        try:
+            ipaddress.ip_network(network, strict=False)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid network filter") from exc
+    for key in ("has_hostname", "has_mac"):
+        if filters.get(key, "") not in ("", "yes", "no", "true", "false", "1", "0"):
+            raise HTTPException(status_code=422, detail=f"invalid {key} filter")
+    args = ["hosts", "list"]
+    for key in ("q", "category", "status", "source", "network", "has_hostname", "has_mac", "seen_within"):
+        if filters.get(key):
+            args.extend(["--" + key.replace("_", "-"), filters[key]])
+    args.extend(["--page", str(max(1, page)), "--limit", str(min(250, max(1, limit)))])
+    return args
+
+
+@router.get("/network/hosts/meta")
+def api_network_hosts_meta(actor: str = Depends(require_api_actor)):
+    # Keep the service-account boundary, but use only the existing SQLite metadata command.
+    try:
+        data = run_netctl(["hosts", "snapshot-status"])
+    except NetctlError as exc:
+        raise HTTPException(status_code=502, detail="host snapshot metadata unavailable") from exc
+    return api_response({"snapshot": data["snapshot"]})
 
 
 @router.get("/network/hosts/{ip}")

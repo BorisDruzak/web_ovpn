@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from .audit import write_audit
-from .api import router as api_router
+from .api import host_snapshot_args, router as api_router
 from .auth import authenticate_user, csrf_token, current_user, require_user, verify_csrf
 from .auto_sync import force_client_sync
 from .config import get_settings
@@ -39,12 +39,10 @@ from .models import (
 from .netctl_client import NetctlError, run_netctl
 from .network_actions import acquire_network_action
 from .endpoint_agent_network import (
-    acquire_refresh_lease,
     attach_endpoint_agent_statuses,
     endpoint_agent_refresh_status,
-    refresh_endpoint_agent_network,
 )
-from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_FILTERS, NETWORK_FILTERS, SOURCE_LABELS, filter_unified_hosts, merge_unified_hosts, normalize_netctl_host
+from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_FILTERS, NETWORK_FILTERS, SOURCE_LABELS, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
 from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
@@ -1790,20 +1788,17 @@ def network_path_detail(role: str, request: Request, db: Session = Depends(get_d
 
 
 def unified_network_rows(
-    request: Request, *, status: str = "current"
+    request: Request, netctl_hosts: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], str | None]:
-    netctl_args = ["hosts", "list"]
-    if status in {"all", "offline", "stale"}:
-        netctl_args.extend(["--status", "all"])
-    hosts_data, hosts_error = net_cli_call(request, netctl_args)
+    """Enrich only inspected detail hosts; never depend on a paginated list."""
     connected_data, connected_error = cli_call(request, ["connected", "--source", "auto"])
     clients_data, clients_error = cli_call(request, ["list"])
     rows = merge_unified_hosts(
-        list_from(hosts_data, "hosts"),
+        netctl_hosts,
         list_from(connected_data, "connected"),
         list_from(clients_data, "clients"),
     )
-    return rows, hosts_error or connected_error or clients_error
+    return rows, connected_error or clients_error
 
 
 def is_runtime_asset_key(value: object) -> bool:
@@ -1937,7 +1932,6 @@ def normalize_asset_fingerprint_panel(context: object) -> dict[str, Any]:
 @app.get("/network/hosts", response_class=HTMLResponse)
 def network_hosts(
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     require_user(request, db)
@@ -1950,10 +1944,6 @@ def network_hosts(
         else "current"
     )
 
-    all_rows, error = unified_network_rows(request, status="all")
-    if acquire_refresh_lease(db, utcnow()):
-        db.commit()
-        background_tasks.add_task(refresh_endpoint_agent_network, [dict(row) for row in all_rows])
     requested_seen_within = request.query_params.get("seen_within") or "24h"
     filters = {
         "q": request.query_params.get("q") or "",
@@ -1965,20 +1955,28 @@ def network_hosts(
         "has_mac": request.query_params.get("has_mac") or "",
         "seen_within": requested_seen_within if requested_seen_within in {"1h", "24h", "7d", "30d", "all"} else "24h",
     }
-    rows = filter_unified_hosts(all_rows, filters)
-    endpoint_agent_refresh_state = attach_endpoint_agent_statuses(db, rows)
-    sources_data, sources_error = net_cli_call(request, ["sources", "list"])
+    try:
+        page = int(request.query_params.get("page", "1"))
+        limit = int(request.query_params.get("limit", "100"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid host pagination") from exc
+    data, error = net_cli_call(request, host_snapshot_args(filters, page, limit))
+    rows = [normalize_netctl_host(row) for row in list_from(data, "hosts")]
+    for row in rows:
+        row["endpoint_agent"] = {"state": "unknown"}
     return render(
         request,
         "network_hosts.html",
         {
             "hosts": rows,
             "filters": filters,
-            "sources": sources_data.get("sources", []),
+            "sources": data.get("sources", []),
+            "pagination": data.get("pagination", {"page": max(1, page), "limit": min(250, max(1, limit)), "total": 0, "pages": 0}),
+            "snapshot": data.get("snapshot", {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0}),
             "network_filters": NETWORK_FILTERS,
             "is_runtime_asset_key": is_runtime_asset_key,
-            "endpoint_agent_refresh_state": endpoint_agent_refresh_state,
-            "error": error or sources_error,
+            "endpoint_agent_refresh_state": "idle",
+            "error": error,
         },
         db,
     )
@@ -2320,7 +2318,7 @@ def network_host_detail(ip: str, request: Request, db: Session = Depends(get_db)
         if not error and isinstance(data.get("host"), dict)
         else None
     )
-    rows, unified_error = unified_network_rows(request)
+    rows, unified_error = unified_network_rows(request, [netctl_host] if netctl_host else [])
     vpn_row = next((row for row in rows if row.get("ip") == valid_ip), None)
     host = vpn_row or normalize_netctl_host(netctl_host or {})
     endpoint_agent_refresh_state = attach_endpoint_agent_statuses(db, [host])

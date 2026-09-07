@@ -7,6 +7,104 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import pytest
+
+
+def snapshot_netctl(tmp_path, monkeypatch, *, count=210):
+    """Use the real CLI and SQLite; replace only the privileged process boundary."""
+    import app.api as api
+    import netctl.cli as cli
+    import netctl.host_snapshot as snapshot
+    from netctl.db import connect
+
+    db_url = f"sqlite:///{(tmp_path / 'hosts.sqlite').as_posix()}"
+    conn = connect(db_url)
+    conn.executemany(
+        "INSERT INTO network_hosts (ip, hostname, category, status, last_seen_at) VALUES (?, 'fixture', 'unknown', 'seen', '2026-09-07T10:00:00Z')",
+        [(f"203.0.113.{number}",) for number in range(1, count + 1)],
+    )
+    conn.commit()
+    if count:
+        snapshot.refresh_host_snapshot(conn, now="2026-09-07T10:00:00Z")
+        # Supply a published current-state fixture independently of probe configuration.
+        conn.execute("UPDATE network_host_current_state SET status='seen', payload_json=json_set(payload_json, '$.status', 'seen')")
+        conn.commit()
+    conn.close()
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        parsed = cli.build_parser().parse_args(["--db", db_url, *args])
+        rc, data = cli.dispatch(parsed)
+        assert rc == 0, data
+        return data
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("snapshot GET must not prepare, project, refresh, or call vpnctl")
+
+    monkeypatch.setattr(api, "run_netctl", run)
+    monkeypatch.setattr(api, "call_vpnctl", forbidden)
+    monkeypatch.setattr(cli, "prepare_conn", forbidden)
+    monkeypatch.setattr(cli, "refresh_host_snapshot", forbidden)
+    monkeypatch.setattr(snapshot, "bulk_project_host_availability", forbidden)
+    return calls
+
+
+def test_hosts_list_paginates_snapshot_without_live_commands(tmp_path, monkeypatch):
+    client, headers = make_api_client(tmp_path, monkeypatch)
+    snapshot_netctl(tmp_path, monkeypatch)
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'hosts.sqlite').as_posix()}")
+    conn.execute("UPDATE network_host_current_state SET payload_json='invalid-json' WHERE CAST(substr(ip, 11) AS INTEGER) <= 100 OR CAST(substr(ip, 11) AS INTEGER) > 200")
+    conn.commit()
+    conn.close()
+    response = client.get("/api/v1/network/hosts?status=current&page=2&limit=100", headers=headers)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["pagination"] == {"page": 2, "limit": 100, "total": 210, "pages": 3}
+    assert len(data["hosts"]) == 100
+    assert data["hosts"][0]["ip"] == "203.0.113.101"
+    assert data["hosts"][-1]["ip"] == "203.0.113.200"
+    assert data["snapshot"]["generated_at"] == "2026-09-07T10:00:00Z"
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_hosts_meta_does_not_call_projection_or_vpn_list(tmp_path, monkeypatch, count):
+    import app.api as api
+
+    client, headers = make_api_client(tmp_path, monkeypatch)
+    calls = snapshot_netctl(tmp_path, monkeypatch, count=count)
+    monkeypatch.setattr(api, "call_netctl", lambda *a, **kw: pytest.fail("meta used list/projection helper"))
+    response = client.get("/api/v1/network/hosts/meta", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["data"]["snapshot"]["total_hosts"] == count
+    assert response.json()["data"]["snapshot"]["snapshot_id"] == (1 if count else 0)
+    assert calls == [["hosts", "snapshot-status"]]
+    assert client.get("/api/v1/network/hosts/meta").status_code == 401
+
+
+def test_hosts_pagination_clamps_and_missing_snapshot_is_empty(tmp_path, monkeypatch):
+    client, headers = make_api_client(tmp_path, monkeypatch)
+    snapshot_netctl(tmp_path, monkeypatch, count=0)
+    for query, limit in [("page=-3&limit=999", 250), ("page=0&limit=0", 1)]:
+        response = client.get(f"/api/v1/network/hosts?{query}", headers=headers)
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["hosts"] == []
+        assert data["pagination"] == {"page": 1, "limit": limit, "total": 0, "pages": 0}
+        assert data["snapshot"]["generated_at"] is None
+
+
+@pytest.mark.parametrize("query", ["network=invalid", "has_hostname=maybe", "has_mac=maybe", "page=abc", "limit=abc"])
+def test_hosts_invalid_filters_rejected_before_subprocess(tmp_path, monkeypatch, query):
+    import app.api as api
+
+    client, headers = make_api_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(api, "run_netctl", lambda *a, **kw: pytest.fail("invalid filter reached subprocess"))
+    assert client.get(f"/api/v1/network/hosts?{query}", headers=headers).status_code == 422
+
 
 def make_fake_vpnctl(path: Path) -> Path:
     script_path = path.with_suffix(".py") if os.name == "nt" else path

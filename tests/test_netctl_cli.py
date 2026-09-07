@@ -2071,6 +2071,10 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     assert data["summary"]["runtime_findings_open"] >= 0
     assert data["summary"]["context_classifier_fallback"] is True
 
+    # Publication is explicit; list requests never project freshly collected rows.
+    rc, _ = run_cli(["--config", str(config_path), "--db", db_url, "hosts", "snapshot-refresh"], capsys)
+    assert rc == 0
+
     _, local_hosts = run_cli(
         ["--json", "--config", str(config_path), "--db", db_url, "hosts", "list", "--category", "local_device"],
         capsys,
@@ -2092,6 +2096,10 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
             ("Finance workstation", "mac:AA:BB:CC:DD:EE:FF"),
         )
         conn.commit()
+        from netctl.host_snapshot import refresh_host_snapshot
+        from netctl.util import utc_now
+
+        refresh_host_snapshot(conn, now=utc_now())
     finally:
         conn.close()
 
@@ -2113,7 +2121,8 @@ def test_hosts_list_reads_the_existing_sqlite_snapshot_without_writes(tmp_path, 
     import netctl.cli as cli
     from netctl.db import connect
 
-    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"
+    conn = connect(db_url)
     conn.execute(
         """INSERT INTO network_hosts
            (ip, category, status, first_seen_at, last_seen_at, last_source, tags_json)
@@ -2121,16 +2130,20 @@ def test_hosts_list_reads_the_existing_sqlite_snapshot_without_writes(tmp_path, 
                    '2026-07-29T12:00:00Z', 'test', '{}')"""
     )
     conn.commit()
+    from netctl.host_snapshot import refresh_host_snapshot
+
+    refresh_host_snapshot(conn, now="2026-07-29T12:00:00Z")
     conn.execute("PRAGMA query_only = ON")
     statements = []
     conn.set_trace_callback(statements.append)
-    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+    monkeypatch.setattr(cli, "connect_read_only", lambda _db: conn)
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: pytest.fail("list must not prepare writable connection"))
 
-    rc, data = run_cli(["--json", "hosts", "list", "--status", "all"], capsys)
+    rc, data = run_cli(["--json", "--db", db_url, "hosts", "list", "--status", "all"], capsys)
 
     assert rc == 0
     assert [host["ip"] for host in data["hosts"]] == ["203.0.113.8"]
-    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+    assert all(statement.lstrip().upper().startswith(("SELECT", "SAVEPOINT", "RELEASE SAVEPOINT")) for statement in statements)
 
 
 def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, capsys):
