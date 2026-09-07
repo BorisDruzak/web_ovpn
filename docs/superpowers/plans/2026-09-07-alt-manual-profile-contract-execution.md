@@ -52,7 +52,10 @@ consume only a validated, structured result from stage 03.
    safe error details. It returns a result with `run_id` only after validation.
 4. Do not change Ansible role execution in this task. Preserve the existing
    manual stage by accepting only its exact legacy result shape after identity
-   validation; an absent, extra-field, or mismatched legacy result remains
+   validation: `machine_uuid`, `hostname`, `profile`, `domain`,
+   `already_joined`, `reboot_required`, and `verification`. The domain must
+   match the request; the two flags must be booleans; verification must be a
+   mapping. An absent, extra-field, or mismatched legacy result remains
    `domain_verification_failed`. This compatibility reader is removed only
    after stage 03 itself emits the structured schema.
 5. Re-run focused tests.
