@@ -1,0 +1,9 @@
+---
+- name: Write structured configure result on controller
+  ansible.builtin.copy:
+    content: "{{ configure_result | to_nice_json }}"
+    dest: "{{ configure_result_file }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  run_once: true

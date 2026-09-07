@@ -8,28 +8,105 @@ import yaml
 ANSIBLE_ROOT = (
     Path(__file__).resolve().parents[1] / "deploy" / "alt-linux" / "ansible"
 )
+CRITICAL_ROLES = [
+    "manual_preflight",
+    "workstation_identity",
+    "prejoin_upgrade",
+    "workstation_base",
+    "alt_group_policy_prerequisites",
+    "workstation_network",
+    "domain_join",
+    "alt_group_policy_client",
+    "domain_verify",
+]
 
 
-def test_domain_playbook_uses_only_the_manual_domain_roles() -> None:
+def test_domain_playbook_delegates_to_the_critical_phase_contract() -> None:
     playbook_path = ANSIBLE_ROOT / "playbooks" / "03-configure-domain-workstation.yml"
     playbook = yaml.safe_load(playbook_path.read_text(encoding="utf-8"))
 
-    assert playbook[0]["roles"] == [
-        "manual_preflight",
-        "workstation_identity",
-        "prejoin_upgrade",
-        "workstation_base",
-        "alt_group_policy_prerequisites",
-        "workstation_network",
-        "domain_join",
-        "alt_group_policy_client",
-        "standard_software",
-        "domain_verify",
+    assert "roles" not in playbook[0]
+    assert playbook[0]["tasks"] == [
+        {
+            "name": "Configure critical manual workstation phase",
+            "ansible.builtin.import_tasks": "tasks/configure_critical_phase.yml",
+        }
     ]
     assert playbook[0]["vars_files"] == [
         "../group_vars/all.yml",
         "../group_vars/vault.yml",
     ]
+
+
+def test_critical_phase_runs_only_the_base_roles_in_controller_order() -> None:
+    phase_path = ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_critical_phase.yml"
+    rendered = phase_path.read_text(encoding="utf-8")
+
+    expected_includes = [
+        f"name: {role}" for role in CRITICAL_ROLES
+    ]
+    positions = [rendered.index(include) for include in expected_includes]
+
+    assert positions == sorted(positions)
+    assert rendered.count("ansible.builtin.include_role:") == len(CRITICAL_ROLES)
+    assert "standard_software" not in rendered
+    assert "loop:" not in rendered
+
+
+def test_critical_phase_writes_exact_structured_success_result() -> None:
+    phase_path = ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_critical_phase.yml"
+    finalizer_path = ANSIBLE_ROOT / "playbooks" / "tasks" / "write_configure_result.yml"
+    phase = yaml.safe_load(phase_path.read_text(encoding="utf-8"))
+    finalizer = yaml.safe_load(finalizer_path.read_text(encoding="utf-8"))
+    result = phase[0]["ansible.builtin.set_fact"]["configure_result"]
+
+    assert set(result) == {
+        "schema_version",
+        "machine_uuid",
+        "hostname",
+        "profile",
+        "status",
+        "phase",
+        "retryable",
+        "recovered",
+        "reboot_required",
+        "error",
+        "components",
+        "verification",
+    }
+    assert result["schema_version"] == 1
+    assert result["status"] == "successful"
+    assert result["phase"] == "finalize"
+    assert result["error"] is None
+    assert finalizer[0]["ansible.builtin.copy"]["content"] == (
+        "{{ configure_result | to_nice_json }}"
+    )
+    assert finalizer[0]["delegate_to"] == "localhost"
+    assert finalizer[0]["become"] is False
+    assert finalizer[0]["run_once"] is True
+
+
+def test_critical_phase_persists_safe_failed_result_before_terminal_failure() -> None:
+    phase_path = ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_critical_phase.yml"
+    rendered = phase_path.read_text(encoding="utf-8")
+
+    finalizer_index = rendered.index("write_configure_result.yml")
+    fail_index = rendered.index("ansible.builtin.fail:")
+
+    assert finalizer_index < fail_index
+    assert "'status': 'failed'" in rendered
+    assert "'configure_critical_phase_failed'" in rendered
+    assert "'fatal-invariant'" in rendered
+    assert "'error':" in rendered
+
+
+def test_domain_verify_does_not_write_a_legacy_configure_result() -> None:
+    content = (
+        ANSIBLE_ROOT / "roles" / "domain_verify" / "tasks" / "main.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Write public configure result on controller" not in content
+    assert "configure_result_file" not in content
 
 
 def test_domain_join_uses_kerberos_stdin_and_never_password_arguments() -> None:

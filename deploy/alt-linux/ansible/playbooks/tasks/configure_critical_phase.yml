@@ -1,0 +1,133 @@
+---
+- name: Initialize structured configure result
+  ansible.builtin.set_fact:
+    configure_result:
+      schema_version: 1
+      machine_uuid: "{{ machine_uuid }}"
+      hostname: "{{ final_hostname }}"
+      profile: "{{ profile }}"
+      status: successful
+      phase: finalize
+      retryable: false
+      recovered: false
+      reboot_required: false
+      error: null
+      components: {}
+      verification: {}
+
+- name: Configure critical workstation roles
+  block:
+    - name: Set configure phase to preflight
+      ansible.builtin.set_fact:
+        configure_result: "{{ configure_result | combine({'phase': 'preflight'}) }}"
+
+    - name: Run manual preflight
+      ansible.builtin.include_role:
+        name: manual_preflight
+
+    - name: Set configure phase to identity
+      ansible.builtin.set_fact:
+        configure_result: "{{ configure_result | combine({'phase': 'identity'}) }}"
+
+    - name: Run workstation identity
+      ansible.builtin.include_role:
+        name: workstation_identity
+
+    - name: Set configure phase to upgrade
+      ansible.builtin.set_fact:
+        configure_result: "{{ configure_result | combine({'phase': 'upgrade'}) }}"
+
+    - name: Run prejoin upgrade
+      ansible.builtin.include_role:
+        name: prejoin_upgrade
+
+    - name: Run workstation base
+      ansible.builtin.include_role:
+        name: workstation_base
+
+    - name: Set configure phase to network prerequisites
+      ansible.builtin.set_fact:
+        configure_result: "{{ configure_result | combine({'phase': 'network'}) }}"
+
+    - name: Run group policy prerequisites
+      ansible.builtin.include_role:
+        name: alt_group_policy_prerequisites
+
+    - name: Run workstation network
+      ansible.builtin.include_role:
+        name: workstation_network
+
+    - name: Set configure phase to domain join
+      ansible.builtin.set_fact:
+        configure_result: "{{ configure_result | combine({'phase': 'domain_join'}) }}"
+
+    - name: Run domain join
+      ansible.builtin.include_role:
+        name: domain_join
+
+    - name: Set configure phase to domain core verification
+      ansible.builtin.set_fact:
+        configure_result: "{{ configure_result | combine({'phase': 'domain_core_verify'}) }}"
+
+    - name: Run group policy client
+      ansible.builtin.include_role:
+        name: alt_group_policy_client
+
+    - name: Run domain verification
+      ansible.builtin.include_role:
+        name: domain_verify
+
+    - name: Finalize successful configure result
+      ansible.builtin.set_fact:
+        configure_result: >-
+          {{ configure_result | combine({
+            'status': 'successful',
+            'phase': 'finalize',
+            'retryable': false,
+            'recovered': false,
+            'reboot_required': false,
+            'error': none,
+            'components': {
+              'manual_preflight': true,
+              'workstation_identity': true,
+              'prejoin_upgrade': true,
+              'workstation_base': true,
+              'alt_group_policy_prerequisites': true,
+              'workstation_network': true,
+              'domain_join': true,
+              'alt_group_policy_client': true,
+              'domain_verify': true
+            },
+            'verification': {
+              'domain_join': true,
+              'sssd': true,
+              'domain_user_lookup': true,
+              'group_policy': true
+            }
+          }) }}
+
+    - name: Persist successful configure result
+      ansible.builtin.include_tasks: write_configure_result.yml
+
+  rescue:
+    - name: Build failed configure result
+      ansible.builtin.set_fact:
+        configure_result: >-
+          {{ configure_result | combine({
+            'status': 'failed',
+            'retryable': false,
+            'recovered': false,
+            'reboot_required': false,
+            'error': {
+              'code': 'configure_critical_phase_failed',
+              'class': 'fatal-invariant',
+              'safe_message': 'Critical phase configuration failed'
+            }
+          }) }}
+
+    - name: Persist failed configure result
+      ansible.builtin.include_tasks: write_configure_result.yml
+
+    - name: Fail critical workstation configuration
+      ansible.builtin.fail:
+        msg: Critical workstation configuration failed
