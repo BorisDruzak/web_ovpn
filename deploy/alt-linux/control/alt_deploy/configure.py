@@ -205,7 +205,7 @@ class ConfigureRequest:
         }
 
     def actions(self) -> list[str]:
-        actions = [*CONFIGURE_ACTIONS, "apply_plasma_baseline"]
+        actions = list(CONFIGURE_ACTIONS)
         if self.software_profile == "core-apps":
             actions.append("install_core_apps")
         if self.remote_access_profile == "krfb":
