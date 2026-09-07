@@ -634,3 +634,51 @@ def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
 
     assert exc.value.code == "hostname_mismatch"
     assert set(exc.value.details) == {"run_id"}
+
+
+def test_configure_start_maps_long_running_timeout_without_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from alt_deploy.config import Settings
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = Settings(
+        registration_root=tmp_path / "registration", state_root=tmp_path / "state",
+        jobs_dir=tmp_path / "state" / "jobs", assignments_dir=tmp_path / "state" / "assignments",
+        lock_file=tmp_path / "state" / "lock", ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=tmp_path / "known_hosts", private_key_file=tmp_path / "id_ed25519",
+        ansible_playbook_path=tmp_path / "ansible-playbook", systemd_run_path=tmp_path / "systemd-run",
+        worker_path=tmp_path / "worker", job_stage_helper_path=tmp_path / "stage-helper",
+        workstationctl_path=tmp_path / "workstationctl",
+    )
+    for path in (settings.known_hosts_file, settings.private_key_file, settings.ansible_playbook_path):
+        path.write_text("fixture", encoding="utf-8")
+    playbook = settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+    playbook.parent.mkdir(parents=True)
+    playbook.write_text("---\n- hosts: all\n", encoding="utf-8")
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    timeout_error = subprocess.TimeoutExpired(["ansible-playbook"], 5400)
+    timeouts: list[int] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs["timeout"])  # type: ignore[arg-type]
+        raise timeout_error
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
+
+    with pytest.raises(ControlError) as exc:
+        ConfigurePlanner(
+            settings, machines=SimpleNamespace(get=lambda _: machine)
+        ).start(
+            MACHINE_UUID,
+            ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID),
+        )
+
+    assert timeouts == [5400]
+    assert exc.value.code == "domain_join_timeout"
+    assert exc.value.exit_code == 7
+    assert exc.value.message == "Ansible domain configure timed out"
+    assert set(exc.value.details) == {"run_id"}
+    assert isinstance(exc.value.details["run_id"], str)
+    assert exc.value.__cause__ is timeout_error

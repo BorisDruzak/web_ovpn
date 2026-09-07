@@ -406,9 +406,17 @@ class ConfigurePlanner:
         environment["ANSIBLE_CONFIG"] = str(
             self.settings.ansible_project_dir / "ansible.cfg"
         )
-        with log_path.open("w", encoding="utf-8") as log_stream:
-            os.chmod(log_path, 0o600)
-            completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=1800, check=False, cwd=self.settings.ansible_project_dir, env=environment)
+        try:
+            with log_path.open("w", encoding="utf-8") as log_stream:
+                os.chmod(log_path, 0o600)
+                completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=5400, check=False, cwd=self.settings.ansible_project_dir, env=environment)
+        except subprocess.TimeoutExpired as exc:
+            raise ControlError(
+                code="domain_join_timeout",
+                message="Ansible domain configure timed out",
+                exit_code=7,
+                details={"run_id": run_id},
+            ) from exc
 
         if completed.returncode != 0:
             error_code = "domain_join_failed"

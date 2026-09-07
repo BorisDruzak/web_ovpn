@@ -25,6 +25,7 @@ EXPECTED_CHECKS = {
     "static_http_health",
     "ansible_preflight_syntax",
     "ansible_provision_syntax",
+    "ansible_manual_configure_syntax",
 }
 
 

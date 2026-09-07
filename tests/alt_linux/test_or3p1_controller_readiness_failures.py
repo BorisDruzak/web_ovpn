@@ -29,6 +29,7 @@ CHECK_NAMES = (
     "static_http_health",
     "ansible_preflight_syntax",
     "ansible_provision_syntax",
+    "ansible_manual_configure_syntax",
 )
 
 
@@ -91,6 +92,10 @@ def test_controller_readiness_reports_each_failed_boundary_exactly(
         and not (
             failed_check == "ansible_provision_syntax"
             and name == "02-provision-account.yml"
+        )
+        and not (
+            failed_check == "ansible_manual_configure_syntax"
+            and name == "03-configure-domain-workstation.yml"
         ),
     )
 

@@ -372,6 +372,11 @@ class ControllerReadinessChecker:
                     "02-provision-account.yml"
                 )
             ),
+            "ansible_manual_configure_syntax": (
+                self.ansible_syntax_ok(
+                    "03-configure-domain-workstation.yml"
+                )
+            ),
         }
         result: dict[str, object] = {
             "ready": all(checks.values()),
