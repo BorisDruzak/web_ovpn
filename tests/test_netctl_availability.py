@@ -703,6 +703,24 @@ def test_due_collection_with_no_due_segments_does_not_call_executor(conn):
     assert executor.calls == []
 
 
+@pytest.mark.parametrize("already_collected", [False, True])
+def test_completed_availability_collection_can_publish_snapshot_without_outer_transaction(conn, already_collected):
+    from netctl.availability import collect_due_availability
+    from netctl.cli import _refresh_host_snapshot_locked
+    from netctl.host_snapshot import snapshot_status
+
+    _observed_targets(conn, seen_at=NOW)
+    if already_collected:
+        assert collect_due_availability(conn, FakeExecutor(), now=lambda: NOW).status == "success"
+    collection = collect_due_availability(conn, FakeExecutor(), now=lambda: NOW)
+    assert collection.status == "success"
+    assert bool(collection.runs) is not already_collected
+    assert not conn.in_transaction
+    _refresh_host_snapshot_locked(conn, now=NOW)
+    assert snapshot_status(conn).total_hosts == 4
+    assert not conn.in_transaction
+
+
 def test_due_collection_fails_closed_when_active_context_is_missing(tmp_path):
     """Treating missing context as an intentional empty schedule would hide collector failure."""
     from netctl.availability import collect_due_availability

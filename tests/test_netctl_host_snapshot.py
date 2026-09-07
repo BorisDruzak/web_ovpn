@@ -128,23 +128,56 @@ def test_partial_insert_failure_restores_both_state_and_sources(conn):
     assert [tuple(row) for row in conn.execute("SELECT snapshot_id, ip, source FROM network_host_current_sources")] == [(1, "203.0.113.1", "old-source")]
 
 
-def test_publication_failure_keeps_callers_pending_work(conn, monkeypatch):
+@pytest.mark.parametrize("pending_write", [False, True])
+def test_refresh_rejects_callers_transaction_without_altering_it(conn, monkeypatch, pending_write):
     import netctl.host_snapshot as snapshot
 
     add_host(conn, "203.0.113.1")
     snapshot.refresh_host_snapshot(conn, now=NOW)
-    conn.execute("UPDATE network_hosts SET hostname = 'pending-name'")
+    conn.execute("BEGIN")
+    if pending_write:
+        conn.execute("UPDATE network_hosts SET hostname = 'pending-name'")
+    else:
+        conn.execute("SELECT hostname FROM network_hosts").fetchall()
 
     def fail(*args, **kwargs):
-        raise sqlite3.OperationalError("metadata failed")
+        pytest.fail("refresh must reject caller transaction before building")
 
-    monkeypatch.setattr(snapshot, "_replace_snapshot_metadata", fail)
-    with pytest.raises(sqlite3.Error):
+    monkeypatch.setattr(snapshot, "build_host_snapshot", fail)
+    with pytest.raises(sqlite3.ProgrammingError, match="requires no active transaction"):
         snapshot.refresh_host_snapshot(conn, now=LATER)
     assert conn.in_transaction
-    assert conn.execute("SELECT hostname FROM network_hosts").fetchone()[0] == "pending-name"
+    assert conn.execute("SELECT hostname FROM network_hosts").fetchone()[0] == ("pending-name" if pending_write else "")
     assert snapshot.snapshot_status(conn).snapshot_id == 1
     conn.rollback()
+
+
+def test_competing_host_comment_write_during_projection_does_not_block_publication(conn, monkeypatch):
+    import netctl.host_snapshot as snapshot
+
+    add_host(conn, "203.0.113.1")
+    first = snapshot.refresh_host_snapshot(conn, now=NOW)
+    path = conn.execute("PRAGMA database_list").fetchone()[2]
+    writer = sqlite3.connect(path)
+    project = snapshot.bulk_project_host_availability
+
+    def project_with_competing_writer(*args, **kwargs):
+        writer.execute("UPDATE network_hosts SET comment = 'concurrent-comment'")
+        writer.commit()
+        return project(*args, **kwargs)
+
+    monkeypatch.setattr(snapshot, "bulk_project_host_availability", project_with_competing_writer)
+    try:
+        second = snapshot.refresh_host_snapshot(conn, now=LATER)
+        assert second.snapshot_id == first.snapshot_id + 1
+        assert not conn.in_transaction
+        assert conn.execute("SELECT comment FROM network_hosts").fetchone()[0] == "concurrent-comment"
+        page = snapshot.list_host_snapshot(conn, {"status": "all"}, 1, 50)
+        assert page["total"] == 1
+        # The built payload remains a consistent source snapshot from before the write.
+        assert page["hosts"][0]["comment"] is None
+    finally:
+        writer.close()
 
 
 def test_separate_reader_sees_old_complete_snapshot_until_publication(conn, monkeypatch):

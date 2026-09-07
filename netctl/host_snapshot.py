@@ -115,23 +115,36 @@ def refresh_host_snapshot(conn: sqlite3.Connection, *, now: str | datetime) -> H
     count = 0
     logger.info("host_snapshot.refresh.start id=%d count=%d duration_ms=0", snapshot_id, count)
     try:
-        # A savepoint establishes one consistent read view and safely nests in caller work.
-        # No replacement writes occur until projection and JSON serialization both finish.
-        conn.execute("SAVEPOINT publish_host_snapshot")
+        if conn.in_transaction:
+            # Releasing a nested savepoint would not release the caller's WAL read view.
+            # Never commit or roll back work owned by a refresh caller.
+            raise sqlite3.ProgrammingError("host snapshot refresh requires no active transaction")
+        # Build from one consistent source view, then release it before taking a
+        # writer lock. An unrelated writer may commit while projection runs.
+        conn.execute("BEGIN")
         try:
             snapshot = build_host_snapshot(conn, now=now)
-            count = len(snapshot.rows)
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        count = len(snapshot.rows)
+        generated_at = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if isinstance(now, datetime) else now
+        # Acquire write ownership before reading the latest published id. This
+        # transaction never upgrades the potentially stale source-read snapshot.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             snapshot_id = snapshot_status(conn).snapshot_id + 1
-            generated_at = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if isinstance(now, datetime) else now
             conn.execute("DELETE FROM network_host_current_sources")
             conn.execute("DELETE FROM network_host_current_state")
             _insert_snapshot_rows(conn, snapshot, snapshot_id)
             status = HostSnapshotStatus(snapshot_id, generated_at, count, int((time.monotonic() - started) * 1000))
             _replace_snapshot_metadata(conn, status)
-            conn.execute("RELEASE SAVEPOINT publish_host_snapshot")
+            conn.execute("COMMIT")
         except BaseException:
-            conn.execute("ROLLBACK TO SAVEPOINT publish_host_snapshot")
-            conn.execute("RELEASE SAVEPOINT publish_host_snapshot")
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
             raise
     except Exception:
         logger.error("host_snapshot.refresh.error id=%d count=%d duration_ms=%d", snapshot_id, count, int((time.monotonic() - started) * 1000))
