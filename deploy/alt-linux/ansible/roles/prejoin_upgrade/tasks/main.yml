@@ -13,7 +13,8 @@
 - name: Detect whether the workstation is already domain joined
   ansible.builtin.set_fact:
     prejoin_upgrade_already_joined: >-
-      {{ prejoin_upgrade_auth_status.stdout | trim | lower is match('^ad\\s+') }}
+      {{ (prejoin_upgrade_auth_status.stdout | lower).split() | length > 1 and
+         (prejoin_upgrade_auth_status.stdout | lower).split() | first == 'ad' }}
 
 - name: Refresh ALT package metadata before first domain join
   ansible.builtin.command:

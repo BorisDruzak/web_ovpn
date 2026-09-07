@@ -131,6 +131,34 @@
         - workstation_network_persistent_write is defined
         - workstation_network_persistent_write.backup_file is defined
 
+    # copy creates no backup_file when only ownership or mode changed.
+    # The pre-write stat still provides all metadata needed for that rollback.
+    - name: Restore original active resolver metadata
+      ansible.builtin.file:
+        path: /etc/resolv.conf
+        state: file
+        follow: false
+        owner: "{{ workstation_network_active_resolver.stat.uid }}"
+        group: "{{ workstation_network_active_resolver.stat.gid }}"
+        mode: "{{ workstation_network_active_resolver.stat.mode }}"
+      when:
+        - workstation_network_active_resolver.stat.exists
+        - workstation_network_active_write is defined
+        - workstation_network_active_write is changed
+
+    - name: Restore original persistent resolver metadata
+      ansible.builtin.file:
+        path: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
+        state: file
+        follow: false
+        owner: "{{ workstation_network_persistent_resolver.stat.uid }}"
+        group: "{{ workstation_network_persistent_resolver.stat.gid }}"
+        mode: "{{ workstation_network_persistent_resolver.stat.mode }}"
+      when:
+        - workstation_network_persistent_resolver.stat.exists
+        - workstation_network_persistent_write is defined
+        - workstation_network_persistent_write is changed
+
     - name: Remove only the newly created persistent resolver
       ansible.builtin.file:
         path: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"

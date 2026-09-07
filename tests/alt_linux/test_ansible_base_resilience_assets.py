@@ -134,9 +134,18 @@ def test_upgrade_reboot_fact_tracks_completed_upgrade_without_rebooting():
                and "prejoin_upgrade_dist_upgrade is changed" in t.get("when", []) for t in tasks)
     joined = next(t["ansible.builtin.set_fact"]["prejoin_upgrade_already_joined"] for t in tasks
                   if "prejoin_upgrade_already_joined" in t.get("ansible.builtin.set_fact", {}))
-    expression = joined.strip()[2:-2].strip()
-    assert evaluate(expression, {"prejoin_upgrade_auth_status": {"stdout": "AD example.test"}})
-    assert not evaluate(expression, {"prejoin_upgrade_auth_status": {"stdout": "local"}})
+    # This folded scalar reaches Ansible's backslash escaping before Jinja.
+    # Enforce an escape-free guard so ordinary Jinja cannot hide the original
+    # double-escaped regex bug. Render the full template, not a stripped expression.
+    assert "\\" not in joined
+    for stdout, expected in [
+        ("AD example.test", "True"), (" ad\texample.test\n", "True"),
+        ("local", "False"), ("", "False"), ("AD", "False"),
+    ]:
+        rendered = environment().from_string(joined).render(
+            prejoin_upgrade_auth_status={"stdout": stdout}
+        )
+        assert rendered == expected
 
 
 def test_resolver_guards_reject_links_and_non_root_files_before_writes():
@@ -181,7 +190,8 @@ def test_resolver_transaction_backs_up_both_files_validates_system_dns_and_rolls
         assert task["ansible.builtin.copy"]["mode"] == "preserve"
         assert "backup_file" in task["ansible.builtin.copy"]["src"]
         assert "backup_file is defined" in str(task["when"])
-    deletes = [t for t in transaction["rescue"] if "ansible.builtin.file" in t]
+    deletes = [t for t in transaction["rescue"]
+               if t.get("ansible.builtin.file", {}).get("state") == "absent"]
     assert len(deletes) == 1
     assert deletes[0]["ansible.builtin.file"]["path"] != "/etc/resolv.conf"
     assert "not workstation_network_persistent_resolver.stat.exists" in deletes[0]["when"]
@@ -197,9 +207,56 @@ def test_group_policy_proves_setup_exists_and_success_before_publishing():
     update = next(t for t in commands if t["ansible.builtin.command"]["argv"][0] == "gpupdate")
     assert "until" in update
     assert evaluate(update["until"], {update["register"]: {"rc": 0}})
-    assert not evaluate(update["until"], {update["register"]: {"rc": 1}})
+    transient = {"rc": 1, "stderr": "Connection timed out"}
+    assert not evaluate(update["until"], task_values(update, transient))
     assert "alt_transient_retry_attempts" in update["retries"]
     guards = [t for t in tasks if "ansible.builtin.assert" in t]
     assert any(setup["register"] + ".rc == 0" in str(t) for t in guards)
     assert tasks.index(update) < len(tasks) - 1
     assert tasks[-1]["ansible.builtin.set_fact"]["alt_group_policy_machine_updated"] is True
+
+
+@pytest.mark.parametrize("message, stop", [
+    ("Connection timed out", False),
+    ("Can't contact LDAP server", False),
+    ("Temporary failure in name resolution", False),
+    ("Access denied", True),
+    ("Invalid credentials", True),
+    ("Unknown gpupdate failure", True),
+    ("Access denied; Connection timed out", True),
+])
+def test_group_policy_retries_only_recognized_transient_failures(message, stop):
+    task = next(t for t in role("alt_group_policy_client")
+                if t.get("ansible.builtin.command", {}).get("argv", [None])[0] == "gpupdate")
+    result = {"rc": 1, "stdout": "", "stderr": message, "msg": ""}
+    assert bool(evaluate(task["until"], task_values(task, result))) is stop
+    # A stop decision on an error must preserve command failure.
+    assert task.get("failed_when") is not False
+
+
+@pytest.mark.parametrize("kind, path", [
+    ("active", "/etc/resolv.conf"),
+    ("persistent", "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"),
+])
+def test_resolver_rollback_restores_metadata_without_a_content_backup(kind, path):
+    transaction = next(t for t in role("workstation_network") if "rescue" in t)
+    restore = next((t for t in transaction["rescue"]
+                    if t.get("ansible.builtin.file", {}).get("state") == "file"
+                    and t["ansible.builtin.file"]["path"] == path), None)
+    assert restore is not None
+    arguments = restore["ansible.builtin.file"]
+    assert arguments["follow"] is False
+    stat_register = "workstation_network_" + kind + "_resolver"
+    write_register = "workstation_network_" + kind + "_write"
+    before = {"exists": True, "uid": 0, "gid": 42, "mode": "0640"}
+    values = {stat_register: {"stat": before}, write_register: {"changed": True}}
+    # No backup_file key: copy changes only metadata when bytes already match.
+    assert evaluate(restore["when"], values)
+    for parameter, expected in [("owner", "0"), ("group", "42"), ("mode", "0640")]:
+        assert environment().from_string(arguments[parameter]).render(values) == expected
+    assert not evaluate(restore["when"], values | {
+        stat_register: {"stat": {"exists": False}}
+    })
+    assert not evaluate(restore["when"], values | {
+        write_register: {"changed": False}
+    })

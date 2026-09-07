@@ -29,6 +29,8 @@ alt_package_lock_pattern: '(?i)(could not get lock|unable to acquire.*lock|anoth
 alt_package_transient_pattern: '(?i)(temporary failure resolving|could not resolve|connection timed out|connection refused|could not connect|network is unreachable)'
 alt_package_fatal_pattern: '(?i)(signature|checksum|hash sum mismatch|unmet dependencies|dependency problems|broken packages|no_pubkey)'
 alt_domain_transient_pattern: "(?i)(cannot contact any KDC|cannot find KDC|can.t contact LDAP server|connection timed out|connection refused|network is unreachable|temporary failure in name resolution)"
+alt_group_policy_transient_pattern: "(?i)(cannot contact any KDC|can.t contact LDAP server|connection timed out|connection refused|network is unreachable|temporary failure in name resolution)"
+alt_group_policy_fatal_pattern: '(?i)(access denied|permission denied|invalid credentials|preauthentication failed|insufficient access)'
 alt_group_policy_prerequisite_packages:
   - gpupdate
   - alterator-gpupdate
