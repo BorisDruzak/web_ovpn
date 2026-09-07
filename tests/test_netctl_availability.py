@@ -105,11 +105,14 @@ def seeded_hosts(conn):
         ("203.0.113.10", "AA:BB:CC:00:00:0A", "online"),
         ("203.0.113.11", "AA:BB:CC:00:00:0B", "online"),
         ("203.0.114.8", "AA:BB:CC:00:00:0C", "online"),
+        ("203.0.114.9", "AA:BB:CC:00:00:0D", "online"),
+        ("203.0.114.10", "AA:BC:00:00:00:01", "online"),
+        ("203.0.114.11", "AA:BD:00:00:00:01", "online"),
         ("203.0.115.8", "AA:BB:CC:00:00:0D", "online"),
     ]
     generated_hosts = [
         (f"10.200.{index // 254}.{index % 254 + 1}", f"AA:BB:DD:{index >> 16:02X}:{index >> 8 & 255:02X}:{index & 255:02X}", "online")
-        for index in range(1190)
+        for index in range(1187)
     ]
     conn.executemany(
         """INSERT INTO network_hosts
@@ -145,7 +148,7 @@ def seeded_hosts(conn):
     )
     conn.executemany(
         "INSERT INTO dhcp_leases (source_id, ip, mac, status, last_seen_at) VALUES (?, ?, ?, 'bound', ?)",
-        [(mikrotik_source, "203.0.113.11", "AA:BB:CC:00:00:0B", NOW)],
+        [(mikrotik_source, "203.0.114.9", "AA:BB:CC:00:00:0D", NOW)],
     )
     conn.executemany(
         "INSERT INTO bridge_hosts (source_id, mac, bridge, interface, last_seen_at) VALUES (?, ?, 'bridge', 'ether2', ?)",
@@ -176,7 +179,13 @@ def seeded_hosts(conn):
         conn,
         AvailabilityRun.success(
             "203.0.114.0/24", started=NOW, finished=NOW,
-            results=[AvailabilityResult("203.0.114.8", "unreachable", None)], target_count=1,
+            results=[
+                AvailabilityResult("203.0.114.8", "unreachable", None),
+                AvailabilityResult("203.0.114.9", "unreachable", None),
+                AvailabilityResult("203.0.114.10", "unreachable", None),
+                AvailabilityResult("203.0.114.11", "unreachable", None),
+            ],
+            target_count=4,
         ),
     )
     save_availability_run(
@@ -207,10 +216,22 @@ def seeded_hosts(conn):
 
 
 def test_bulk_projection_matches_legacy_for_every_status(conn, seeded_hosts):
-    from netctl.availability import bulk_project_host_availability, project_host_availability
+    from netctl.availability import project_host_availability
 
     expected = [project_host_availability(conn, host, now=NOW) for host in seeded_hosts]
     assert {host["status"] for host in expected} == {"connected", "offline", "online", "seen", "stale"}
+    assert {
+        host["ip"]: host["availability"]["passive_evidence"]
+        for host in expected
+        if host["ip"] in {"203.0.114.8", "203.0.114.9", "203.0.114.10", "203.0.114.11"}
+    } == {
+        "203.0.114.8": ["mikrotik_arp"],
+        "203.0.114.9": ["mikrotik_dhcp"],
+        "203.0.114.10": ["mikrotik_bridge"],
+        "203.0.114.11": ["snmp_fdb"],
+    }
+
+    from netctl.availability import bulk_project_host_availability
 
     assert bulk_project_host_availability(conn, seeded_hosts, now=NOW) == expected
 

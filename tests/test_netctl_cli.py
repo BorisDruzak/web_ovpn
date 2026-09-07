@@ -2013,6 +2013,31 @@ def test_collect_creates_run_and_hosts_filters(tmp_path, capsys):
     assert dashboard["sources"][0]["name"] == "mock-main"
 
 
+def test_hosts_list_reads_the_existing_sqlite_snapshot_without_writes(tmp_path, capsys, monkeypatch):
+    """A host-list GET must not trigger collection, probing, or any database mutation."""
+    import netctl.cli as cli
+    from netctl.db import connect
+
+    conn = connect(f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}")
+    conn.execute(
+        """INSERT INTO network_hosts
+           (ip, category, status, first_seen_at, last_seen_at, last_source, tags_json)
+           VALUES ('203.0.113.8', 'unknown', 'seen', '2026-07-29T12:00:00Z',
+                   '2026-07-29T12:00:00Z', 'test', '{}')"""
+    )
+    conn.commit()
+    conn.execute("PRAGMA query_only = ON")
+    statements = []
+    conn.set_trace_callback(statements.append)
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: conn)
+
+    rc, data = run_cli(["--json", "hosts", "list", "--status", "all"], capsys)
+
+    assert rc == 0
+    assert [host["ip"] for host in data["hosts"]] == ["203.0.113.8"]
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in statements)
+
+
 def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, capsys):
     config_path = tmp_path / "netctl.yaml"
     db_url = f"sqlite:///{(tmp_path / 'netctl.sqlite').as_posix()}"

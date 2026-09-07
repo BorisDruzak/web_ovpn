@@ -504,6 +504,19 @@ def test_web_network_hosts_page_unifies_netctl_and_openvpn(tmp_path, monkeypatch
     assert "192.168.100.55" in page.text
 
 
+def test_network_hosts_get_uses_only_read_only_snapshot_commands(tmp_path, monkeypatch):
+    """Rendering the host list must not start collection, probing, or network reconciliation."""
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+    invoked = tmp_path / "netctl-invoked-cli.txt"
+    invoked.write_text("", encoding="utf-8")
+
+    page = client.get("/network/hosts")
+
+    assert page.status_code == 200
+    assert invoked.read_text(encoding="utf-8").splitlines() == ["hosts list --status all", "sources list"]
+
+
 def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)
