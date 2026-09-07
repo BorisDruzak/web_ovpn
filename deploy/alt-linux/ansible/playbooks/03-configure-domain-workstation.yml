@@ -6,6 +6,7 @@
   vars_files:
     - ../group_vars/all.yml
     - ../group_vars/vault.yml
+    - ../group_vars/software_catalog.yml
   tasks:
     - name: Configure critical manual workstation phase
       ansible.builtin.import_tasks: tasks/configure_critical_phase.yml

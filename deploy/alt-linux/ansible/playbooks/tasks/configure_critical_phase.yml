@@ -21,6 +21,9 @@
       ansible.builtin.set_fact:
         configure_result: "{{ configure_result | combine({'phase': 'preflight'}) }}"
 
+    - name: Run component catalog preflight
+      ansible.builtin.include_tasks: configure_component_preflight.yml
+
     - name: Run manual preflight
       ansible.builtin.include_role:
         name: manual_preflight

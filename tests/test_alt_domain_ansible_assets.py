@@ -36,6 +36,7 @@ def test_domain_playbook_delegates_to_the_critical_phase_contract() -> None:
     assert playbook[0]["vars_files"] == [
         "../group_vars/all.yml",
         "../group_vars/vault.yml",
+        "../group_vars/software_catalog.yml",
     ]
 
 
@@ -52,6 +53,33 @@ def test_critical_phase_runs_only_the_base_roles_in_controller_order() -> None:
     assert rendered.count("ansible.builtin.include_role:") == len(CRITICAL_ROLES)
     assert "standard_software" not in rendered
     assert "loop:" not in rendered
+
+
+def test_selected_components_are_preflighted_before_component_roles() -> None:
+    text = (ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_critical_phase.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "configure_component_preflight.yml" in text
+    assert text.index("configure_component_preflight.yml") < text.index("Run manual preflight")
+
+
+def test_stage03_loads_the_nonsecret_component_catalog() -> None:
+    text = (ANSIBLE_ROOT / "playbooks" / "03-configure-domain-workstation.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "../group_vars/software_catalog.yml" in text
+
+
+def test_component_preflight_rejects_disabled_catalog_entries() -> None:
+    text = (
+        ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_component_preflight.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "software_component_catalog_invalid" in text
+    assert "checksum_algorithm: sha256" in text
+    assert "delegate_to: localhost" in text
 
 
 def test_critical_phase_writes_exact_structured_success_result() -> None:
