@@ -326,9 +326,9 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
             "verify_or_change_hostname",
             "configure_domain_dns",
             "join_or_verify_domain",
-            "install_standard_packages",
             "verify_domain_workstation",
         ],
+        "deferred_actions": [],
     }
 
 
@@ -337,7 +337,10 @@ def test_configure_preview_describes_only_explicit_selected_components() -> None
     machines = SimpleNamespace(get=lambda machine_uuid: machine)
     request = ConfigureRequest.from_mapping(valid_request() | {"software_profile": "core-apps", "remote_access_profile": "krfb", "assigned_domain_user": "pilot.user"}, expected_uuid=MACHINE_UUID)
     preview = ConfigurePlanner(SimpleNamespace(), machines=machines).preview(MACHINE_UUID, request)
-    assert preview["actions"][-2:] == ["install_core_apps", "configure_krfb"]
+    assert "install_standard_packages" not in preview["actions"]
+    assert "install_core_apps" not in preview["actions"]
+    assert "configure_krfb" not in preview["actions"]
+    assert preview["deferred_actions"] == ["install_core_apps", "configure_krfb"]
 
 
 def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:

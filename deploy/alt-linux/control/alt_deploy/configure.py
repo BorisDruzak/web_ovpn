@@ -314,6 +314,10 @@ class ConfigureRequest:
 
     def actions(self) -> list[str]:
         actions = list(CONFIGURE_ACTIONS)
+        return actions
+
+    def deferred_actions(self) -> list[str]:
+        actions: list[str] = []
         if self.software_profile == "core-apps":
             actions.append("install_core_apps")
         if self.remote_access_profile == "krfb":
@@ -326,7 +330,6 @@ CONFIGURE_ACTIONS = [
     "verify_or_change_hostname",
     "configure_domain_dns",
     "join_or_verify_domain",
-    "install_standard_packages",
     "verify_domain_workstation",
 ]
 
@@ -366,6 +369,7 @@ class ConfigurePlanner:
             "playbook": "03-configure-domain-workstation.yml",
             "request": request.to_dict(),
             "actions": request.actions(),
+            "deferred_actions": request.deferred_actions(),
         }
 
     @property
