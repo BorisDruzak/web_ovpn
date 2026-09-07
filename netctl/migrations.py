@@ -2025,6 +2025,46 @@ def _migration_25(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migration_26(conn: sqlite3.Connection) -> None:
+    """Persist one complete public host projection without changing legacy state."""
+    for statement in (
+        """CREATE TABLE network_host_snapshot_meta (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            snapshot_id INTEGER NOT NULL,
+            generated_at TEXT NOT NULL,
+            total_hosts INTEGER NOT NULL,
+            duration_ms INTEGER NOT NULL
+        )""",
+        """CREATE TABLE network_host_current_state (
+            snapshot_id INTEGER NOT NULL,
+            ip TEXT NOT NULL PRIMARY KEY,
+            ip_sort BLOB NOT NULL,
+            category TEXT NOT NULL,
+            status TEXT NOT NULL,
+            network TEXT NOT NULL,
+            has_hostname INTEGER NOT NULL CHECK (has_hostname IN (0, 1)),
+            has_mac INTEGER NOT NULL CHECK (has_mac IN (0, 1)),
+            last_seen_at TEXT,
+            search_text TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            UNIQUE (snapshot_id, ip)
+        )""",
+        """CREATE TABLE network_host_current_sources (
+            snapshot_id INTEGER NOT NULL,
+            ip TEXT NOT NULL,
+            source TEXT NOT NULL,
+            PRIMARY KEY (snapshot_id, ip, source),
+            FOREIGN KEY (snapshot_id, ip)
+                REFERENCES network_host_current_state(snapshot_id, ip)
+        )""",
+        "CREATE INDEX network_host_snapshot_sort_idx ON network_host_current_state(snapshot_id, ip_sort, ip)",
+        "CREATE INDEX network_host_snapshot_filter_idx ON network_host_current_state(snapshot_id, category, status, network)",
+        "CREATE INDEX network_host_snapshot_status_idx ON network_host_current_state(snapshot_id, status, ip_sort, ip)",
+        "CREATE INDEX network_host_snapshot_source_idx ON network_host_current_sources(snapshot_id, source, ip)",
+    ):
+        conn.execute(statement)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1),
     (2, _migration_2),
@@ -2051,6 +2091,7 @@ MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (23, _migration_23),
     (24, _migration_24),
     (25, _migration_25),
+    (26, _migration_26),
 )
 
 

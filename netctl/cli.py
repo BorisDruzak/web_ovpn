@@ -52,6 +52,7 @@ from .nmap.runner import run_nmap_fingerprint
 from .nmap.store import ensure_fingerprint, fingerprint_status
 from .fingerprint.providers import replace_endpoint_agent_evidence
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, query_hosts, related_for_host, remove_device_tag, save_collection, set_device_tags
+from .host_snapshot import refresh_host_snapshot, snapshot_status
 from .switch_queries import (
     DEFAULT_PAGE_SIZE,
     OPTIONAL_STATE_DEFAULT_PAGE_SIZE,
@@ -450,6 +451,14 @@ def effective_availability_rules(conn):
     ]
 
 
+def _refresh_host_snapshot_locked(conn, *, now: str) -> None:
+    """Refresh inside the caller's lock without exposing projection/write errors."""
+    try:
+        refresh_host_snapshot(conn, now=now)
+    except Exception:
+        raise RuntimeError("host_snapshot_failed") from None
+
+
 def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     conn = prepare_conn(args)
     try:
@@ -516,6 +525,8 @@ def cmd_availability(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 now=utc_now,
             )
             payload = _availability_payload(collection)
+            if collection.status == "success":
+                _refresh_host_snapshot_locked(conn, now=utc_now())
             return (0 if collection.status == "success" else 1), payload
     except RuntimeError as exc:
         return 1, err(str(exc))
@@ -571,6 +582,7 @@ def reconcile_current_locked(conn, observed_at: str) -> dict[str, Any]:
     watermark = collection_source_watermark(conn)
     topology = reconcile_topology(conn, observed_at, watermark)
     attachments = reconcile_attachments(conn, observed_at, watermark)
+    _refresh_host_snapshot_locked(conn, now=observed_at)
     return {
         "topology_run_id": topology["run_id"],
         "attachment_run_id": attachments["run_id"],
@@ -602,6 +614,8 @@ def cmd_collect(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                     if rc != 0:
                         return rc, ok(results=results, reconciliation_skipped="collection_failed")
                     return 0, ok(results=results, reconciliation=reconcile_current_locked(conn, utc_now()))
+                if rc == 0 and availability["status"] == "success":
+                    _refresh_host_snapshot_locked(conn, now=utc_now())
                 return rc, ok(results=results)
             validate_source_name(args.source)
             return collect_one(conn, args, args.source)
@@ -699,6 +713,22 @@ def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.hosts_command in {"snapshot-refresh", "snapshot-status"}:
+        conn = None
+        try:
+            if args.hosts_command == "snapshot-status":
+                conn = connect_read_only(args.db)
+                return 0, ok(snapshot=asdict(snapshot_status(conn)))
+            with CollectLock(args.db):
+                conn = prepare_conn(args)
+                return 0, ok(snapshot=asdict(refresh_host_snapshot(conn, now=utc_now())))
+        except (RuntimeError, sqlite3.Error, OSError, ValueError) as exc:
+            if str(exc) == "collection already running":
+                return 1, err("collection already running")
+            return 1, err("host_snapshot_failed")
+        finally:
+            if conn is not None:
+                conn.close()
     conn = prepare_conn(args)
     try:
         if args.hosts_command == "list":
@@ -1637,6 +1667,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     hosts = sub.add_parser("hosts")
     hosts_sub = hosts.add_subparsers(dest="hosts_command", required=True)
+    hosts_sub.add_parser("snapshot-refresh")
+    hosts_sub.add_parser("snapshot-status")
     hosts_list = hosts_sub.add_parser("list")
     hosts_list.add_argument("--q", default="")
     hosts_list.add_argument("--category", default="")

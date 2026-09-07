@@ -29,6 +29,95 @@ def run_cli(args, capsys):
     return rc, json.loads(captured.out)
 
 
+def test_host_snapshot_cli_refresh_and_read_only_status(tmp_path, capsys, monkeypatch):
+    import netctl.cli as cli
+    from netctl.db import connect
+
+    db_url = f"sqlite:///{(tmp_path / 'snapshot.sqlite').as_posix()}"
+    conn = connect(db_url)
+    conn.execute("INSERT INTO network_hosts (ip, category, status) VALUES ('203.0.113.2', 'unknown', 'seen')")
+    conn.commit()
+    conn.close()
+    prefix = ["--db", db_url, "--config", str(tmp_path / "missing.yaml")]
+    rc, refreshed = run_cli([*prefix, "hosts", "snapshot-refresh"], capsys)
+    assert rc == 0
+    assert refreshed["snapshot"]["snapshot_id"] == 1
+    assert refreshed["snapshot"]["total_hosts"] == 1
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("snapshot-status must not prepare writable connection or refresh")
+
+    monkeypatch.setattr(cli, "prepare_conn", forbidden)
+    monkeypatch.setattr(cli, "refresh_host_snapshot", forbidden)
+    rc, status = run_cli([*prefix, "hosts", "snapshot-status"], capsys)
+    assert rc == 0
+    assert status == refreshed
+
+
+@pytest.mark.parametrize(("command", "collection_status", "expected_id"), [
+    (["reconcile"], "success", 1),
+    (["collect", "all", "--reconcile"], "success", 1),
+    (["collect", "all"], "success", 1),
+    (["availability", "collect"], "success", 1),
+    (["availability", "collect"], "failed", 0),
+    (["availability", "collect"], "partial", 0),
+])
+def test_complete_collector_commands_publish_host_snapshot(tmp_path, monkeypatch, command, collection_status, expected_id):
+    import netctl.cli as cli
+    from netctl.availability import AvailabilityCollection
+    from netctl.db import connect
+
+    db_url = f"sqlite:///{(tmp_path / 'snapshot.sqlite').as_posix()}"
+    with connect(db_url) as conn:
+        conn.execute("INSERT INTO network_hosts (ip, category, status) VALUES ('203.0.113.2', 'unknown', 'seen')")
+    conn.close()
+    monkeypatch.setattr(cli, "collect_all_locked", lambda *_: (0, []))
+    monkeypatch.setattr(cli, "collect_due_availability", lambda *_args, **_kwargs: AvailabilityCollection(collection_status, (), {}))
+    args = cli.build_parser().parse_args(["--db", db_url, "--config", str(tmp_path / "missing.yaml"), *command])
+    rc, _ = cli.dispatch(args)
+    conn = connect(db_url)
+    try:
+        row = conn.execute("SELECT snapshot_id, total_hosts FROM network_host_snapshot_meta").fetchone()
+        assert (row[0] if row else 0) == expected_id
+        if expected_id:
+            assert row[1] == 1
+    finally:
+        conn.close()
+    assert rc == (0 if collection_status == "success" else 1)
+
+
+def test_snapshot_refresh_acquires_lock_before_preparing_database(tmp_path, monkeypatch):
+    import netctl.cli as cli
+
+    def locked(_db):
+        raise RuntimeError("collection already running")
+
+    monkeypatch.setattr(cli, "CollectLock", locked)
+    monkeypatch.setattr(cli, "prepare_conn", lambda _args: pytest.fail("database prepared before collection lock"))
+    args = cli.build_parser().parse_args(["hosts", "snapshot-refresh"])
+    rc, data = cli.dispatch(args)
+    assert rc == 1
+    assert data["message"] == "collection already running"
+
+
+@pytest.mark.parametrize("command", [["reconcile"], ["availability", "collect"], ["collect", "all", "--reconcile"], ["collect", "all"]])
+def test_background_snapshot_failure_returns_sanitized_error(tmp_path, monkeypatch, command):
+    import netctl.cli as cli
+    import netctl.host_snapshot as snapshot
+    from netctl.availability import AvailabilityCollection
+
+    def fail(*args, **kwargs):
+        raise ValueError("PRIVATE-SNAPSHOT-ERROR")
+
+    monkeypatch.setattr(snapshot, "build_host_snapshot", fail)
+    monkeypatch.setattr(cli, "collect_due_availability", lambda *_args, **_kwargs: AvailabilityCollection("success", (), {}))
+    monkeypatch.setattr(cli, "collect_all_locked", lambda *_args: (0, []))
+    args = cli.build_parser().parse_args(["--db", f"sqlite:///{(tmp_path / 'snapshot.sqlite').as_posix()}", "--config", str(tmp_path / "missing.yaml"), *command])
+    rc, payload = cli.dispatch(args)
+    assert rc == 1
+    assert payload == {"status": "error", "message": "host_snapshot_failed"}
+
+
 @pytest.mark.parametrize(
     ("evidence", "expected"),
     [
@@ -177,6 +266,8 @@ def test_context_view_asset_exposes_safe_reasons_for_ambiguous_attachment(tmp_pa
 def test_collect_all_reconciles_after_all_enabled_sources_succeed(monkeypatch):
     """Removing the all-success gate must prevent correlation from running."""
     import netctl.cli as cli
+
+    monkeypatch.setattr(cli, "refresh_host_snapshot", lambda *_args, **_kwargs: None)
 
     calls = []
     watermarks = []
@@ -355,6 +446,8 @@ def test_availability_collect_returns_only_sanitized_collection_fields(monkeypat
 def test_availability_collect_runs_active_probe_despite_partial_passive_source(monkeypatch):
     """Partial FDB telemetry must not suppress independent ICMP/TCP evidence."""
     import netctl.cli as cli
+
+    monkeypatch.setattr(cli, "refresh_host_snapshot", lambda *_args, **_kwargs: None)
 
     parser = cli.build_parser()
     conn = type("Connection", (), {"close": lambda self: None})()
@@ -703,6 +796,8 @@ def test_collect_all_skips_reconciliation_after_a_failed_source(monkeypatch):
 def test_collect_all_reconciles_after_a_partial_snmp_result(monkeypatch):
     """Treating a partial SNMP collection as failure would block useful correlation."""
     import netctl.cli as cli
+
+    monkeypatch.setattr(cli, "refresh_host_snapshot", lambda *_args, **_kwargs: None)
 
     calls = []
     parser = cli.build_parser()
@@ -2059,7 +2154,7 @@ def test_runtime_assets_status_reports_identity_operational_summary(tmp_path, ca
     summary = data["runtime_identity"]
     assert summary["schema_migration_versions"] == [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-        20, 21, 22, 23, 24, 25,
+        20, 21, 22, 23, 24, 25, 26,
     ]
     assert summary["counts"]["assets"] >= 1
     assert summary["counts"]["interfaces"] >= 1
