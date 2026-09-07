@@ -15,5 +15,16 @@
     - workstation_network
     - domain_join
     - alt_group_policy_client
+    - plasma_baseline
+    - organization_ca
+    - software_endpoint_agent
+    - software_cryptopro
+    - software_cryptopro_cades
+    - software_gosuslugi_plugin
+    - software_onlyoffice
+    - software_nextcloud_desktop
     - standard_software
+    - desktop_shortcuts
+    - role: remote_access_krfb
+      when: remote_access_profile == 'krfb'
     - domain_verify

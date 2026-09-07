@@ -1,0 +1,47 @@
+---
+- name: Inspect installed Nextcloud Desktop package version
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_nextcloud_desktop_catalog.package_name }}"]
+  register: software_nextcloud_desktop_existing_evr
+  changed_when: false
+  failed_when: false
+
+- name: Install Nextcloud Desktop from approved ALT repository
+  block:
+    - name: Refresh approved ALT repository metadata for Nextcloud Desktop
+      ansible.builtin.command:
+        argv: [apt-get, update]
+      changed_when: false
+
+    - name: Install Nextcloud Desktop package
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, "{{ software_nextcloud_desktop_catalog.package_name }}"]
+      register: software_nextcloud_desktop_install
+      changed_when: software_nextcloud_desktop_install.rc == 0
+  when: software_nextcloud_desktop_existing_evr.rc != 0
+
+- name: Verify installed Nextcloud Desktop package version
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_nextcloud_desktop_catalog.package_name }}"]
+  register: software_nextcloud_desktop_installed_evr
+  changed_when: false
+
+- name: Verify Nextcloud Desktop executable
+  ansible.builtin.stat:
+    path: "{{ software_nextcloud_desktop_catalog.executable }}"
+  register: software_nextcloud_desktop_executable
+
+- name: Require verified Nextcloud Desktop installation
+  ansible.builtin.assert:
+    that:
+      - software_nextcloud_desktop_installed_evr.rc == 0
+      - software_nextcloud_desktop_installed_evr.stdout | trim | length > 0
+      - software_nextcloud_desktop_executable.stat.exists
+      - software_nextcloud_desktop_executable.stat.isreg
+      - software_nextcloud_desktop_executable.stat.executable
+    fail_msg: ALT_PREFLIGHT_FAILURE:nextcloud_desktop_install_verification_failed
+
+- name: Publish Nextcloud Desktop verification facts
+  ansible.builtin.set_fact:
+    nextcloud_desktop_ok: true
+    nextcloud_desktop_version: "{{ software_nextcloud_desktop_installed_evr.stdout | trim }}"

@@ -29,11 +29,14 @@ REQUEST_FIELDS = frozenset(
         "workgroup",
         "computer_ou",
         "domain_test_user",
+        "remote_access_profile",
+        "assigned_domain_user",
     }
 )
 
 HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
 HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
+REMOTE_ACCESS_PROFILES = frozenset({"none", "krfb"})
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -68,6 +71,18 @@ def _required_string(payload: Mapping[str, object], field: str) -> str:
     return normalized
 
 
+def _optional_string(payload: Mapping[str, object], field: str) -> str | None:
+    value = payload[field]
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _invalid_request(f"Configure request field {field} must be text or null")
+    normalized = value.strip()
+    if not normalized:
+        raise _invalid_request(f"Configure request field {field} must be text or null")
+    return normalized
+
+
 @dataclass(frozen=True)
 class ConfigureRequest:
     machine_uuid: str
@@ -79,6 +94,8 @@ class ConfigureRequest:
     workgroup: str
     computer_ou: str
     domain_test_user: str
+    remote_access_profile: str
+    assigned_domain_user: str | None
 
     @classmethod
     def from_mapping(
@@ -110,6 +127,10 @@ class ConfigureRequest:
         workgroup = _required_string(payload, "workgroup").upper()
         computer_ou = _required_string(payload, "computer_ou")
         domain_test_user = _required_string(payload, "domain_test_user").lower()
+        remote_access_profile = _required_string(
+            payload, "remote_access_profile"
+        ).lower()
+        assigned_domain_user = _optional_string(payload, "assigned_domain_user")
 
         if (
             profile != "standard-domain"
@@ -131,6 +152,26 @@ class ConfigureRequest:
         ):
             raise _invalid_request("Configure domain test user is invalid")
 
+        if remote_access_profile not in REMOTE_ACCESS_PROFILES:
+            raise _invalid_request("Configure remote access profile is unsupported")
+
+        if remote_access_profile == "none" and assigned_domain_user is not None:
+            raise _invalid_request(
+                "Configure assigned domain user is unsupported without remote access"
+            )
+
+        if remote_access_profile == "krfb":
+            if assigned_domain_user is None:
+                raise _invalid_request(
+                    "Configure assigned domain user is required for KRFB"
+                )
+            assigned_domain_user = assigned_domain_user.lower()
+            if not (
+                DOMAIN_USER_RE.fullmatch(assigned_domain_user)
+                or DOMAIN_USER_UPN_RE.fullmatch(assigned_domain_user)
+            ):
+                raise _invalid_request("Configure assigned domain user is invalid")
+
         return cls(
             machine_uuid=machine_uuid,
             final_hostname=final_hostname,
@@ -141,9 +182,11 @@ class ConfigureRequest:
             workgroup=workgroup,
             computer_ou=computer_ou,
             domain_test_user=domain_test_user,
+            remote_access_profile=remote_access_profile,
+            assigned_domain_user=assigned_domain_user,
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | None]:
         return {
             "machine_uuid": self.machine_uuid,
             "final_hostname": self.final_hostname,
@@ -154,17 +197,34 @@ class ConfigureRequest:
             "workgroup": self.workgroup,
             "computer_ou": self.computer_ou,
             "domain_test_user": self.domain_test_user,
+            "remote_access_profile": self.remote_access_profile,
+            "assigned_domain_user": self.assigned_domain_user,
         }
 
 
-CONFIGURE_ACTIONS = [
+BASE_CONFIGURE_ACTIONS = (
     "manual_preflight",
     "verify_or_change_hostname",
     "configure_domain_dns",
     "join_or_verify_domain",
+    "apply_plasma_baseline",
+    "install_organization_ca",
+    "install_endpoint_agent",
+    "install_cryptopro",
+    "install_cryptopro_cades_update",
+    "install_gosuslugi_plugin",
+    "install_onlyoffice",
+    "install_nextcloud_desktop",
     "install_standard_packages",
-    "verify_domain_workstation",
-]
+)
+
+
+def _configure_actions(request: ConfigureRequest) -> list[str]:
+    actions = list(BASE_CONFIGURE_ACTIONS)
+    if request.remote_access_profile == "krfb":
+        actions.append("configure_krfb")
+    actions.append("verify_domain_workstation")
+    return actions
 
 
 class ConfigurePlanner:
@@ -201,7 +261,7 @@ class ConfigurePlanner:
             "target_ip": machine.ip,
             "playbook": "03-configure-domain-workstation.yml",
             "request": request.to_dict(),
-            "actions": list(CONFIGURE_ACTIONS),
+            "actions": _configure_actions(request),
         }
 
     @property
@@ -223,7 +283,12 @@ class ConfigurePlanner:
         if missing:
             raise ControlError(code="configure_not_configured", message="Domain configure is not fully configured", exit_code=5, details={"missing": missing})
 
-        VaultHealthChecker(self.settings).check_ad_join()
+        vault_checker = VaultHealthChecker(self.settings)
+        vault_checker.check_ad_join()
+        vault_checker.check_endpoint_provisioning()
+        vault_checker.check_cryptopro()
+        if request.remote_access_profile == "krfb":
+            vault_checker.check_krfb()
 
         run_id = uuid.uuid4().hex
         run_dir = self.settings.state_root / "configure-runs" / run_id

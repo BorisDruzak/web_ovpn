@@ -1,0 +1,201 @@
+---
+- name: Inspect approved CryptoPro archive on controller
+  ansible.builtin.stat:
+    path: "{{ software_cryptopro_catalog.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: software_cryptopro_artifact
+  no_log: true
+
+- name: Validate approved CryptoPro archive
+  ansible.builtin.assert:
+    that:
+      - software_cryptopro_artifact.stat.exists
+      - software_cryptopro_artifact.stat.isreg
+      - software_cryptopro_artifact.stat.checksum == software_cryptopro_catalog.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_artifact_invalid
+  no_log: true
+
+- name: Inspect installed CryptoPro package versions
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
+  loop: "{{ software_cryptopro_catalog.packages }}"
+  register: software_cryptopro_existing_evr
+  changed_when: false
+  failed_when: false
+
+- name: Initialize CryptoPro installation requirement
+  ansible.builtin.set_fact:
+    software_cryptopro_install_required: false
+
+- name: Determine whether CryptoPro installation is required
+  ansible.builtin.set_fact:
+    software_cryptopro_install_required: true
+  when: item.rc != 0 or (item.stdout | trim) != item.item.package_evr
+  loop: "{{ software_cryptopro_existing_evr.results }}"
+
+- name: Install and verify approved CryptoPro CSP
+  block:
+    - name: Create temporary CryptoPro directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: approved-cryptopro-
+      register: software_cryptopro_tempdir
+      when: software_cryptopro_install_required
+
+    - name: Set permissions for temporary CryptoPro directory
+      ansible.builtin.file:
+        path: "{{ software_cryptopro_tempdir.path }}"
+        owner: root
+        group: root
+        mode: "0755"
+      when: software_cryptopro_install_required
+
+    - name: Copy approved CryptoPro archive
+      ansible.builtin.copy:
+        src: "{{ software_cryptopro_catalog.artifact_path }}"
+        dest: "{{ software_cryptopro_tempdir.path }}/linux-amd64.tgz"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Unpack approved CryptoPro archive
+      ansible.builtin.unarchive:
+        src: "{{ software_cryptopro_tempdir.path }}/linux-amd64.tgz"
+        dest: "{{ software_cryptopro_tempdir.path }}"
+        remote_src: true
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Find each approved CryptoPro RPM
+      ansible.builtin.find:
+        paths: "{{ software_cryptopro_tempdir.path }}"
+        patterns: "{{ item.filename }}"
+        recurse: true
+        file_type: file
+      loop: "{{ software_cryptopro_catalog.packages }}"
+      register: software_cryptopro_rpm_files
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Require exactly one copy of each approved CryptoPro RPM
+      ansible.builtin.assert:
+        that:
+          - item.matched | int == 1
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_archive_content_invalid
+      loop: "{{ software_cryptopro_rpm_files.results }}"
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Inspect approved CryptoPro RPM metadata
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -qp
+          - --qf
+          - "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}"
+          - "{{ item.files[0].path }}"
+      loop: "{{ software_cryptopro_rpm_files.results }}"
+      register: software_cryptopro_rpm_metadata
+      changed_when: false
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Require expected CryptoPro RPM metadata
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == item.item.item.package_name ~ '|' ~ item.item.item.package_evr ~ '|' ~ item.item.item.architecture
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_rpm_metadata_invalid
+      loop: "{{ software_cryptopro_rpm_metadata.results }}"
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Collect approved CryptoPro RPM paths
+      ansible.builtin.set_fact:
+        software_cryptopro_rpm_paths: >-
+          {{ software_cryptopro_rpm_paths | default([]) + [item.files[0].path] }}
+      loop: "{{ software_cryptopro_rpm_files.results }}"
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Install CryptoPro prerequisite package
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, cryptopro-preinstall]
+      register: software_cryptopro_preinstall
+      changed_when: software_cryptopro_preinstall.rc == 0
+      when: software_cryptopro_install_required
+
+    - name: Install approved CryptoPro RPMs in one transaction
+      ansible.builtin.command:
+        argv: "{{ ['apt-get', '-y', 'install'] + software_cryptopro_rpm_paths }}"
+      register: software_cryptopro_install
+      changed_when: software_cryptopro_install.rc == 0
+      no_log: true
+      when: software_cryptopro_install_required
+
+    - name: Inspect applied CryptoPro license without disclosing it
+      ansible.builtin.command:
+        argv: ["{{ software_cryptopro_license_tool }}", -license, -view]
+      register: software_cryptopro_license_view
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Apply CryptoPro license from private Vault
+      ansible.builtin.command:
+        argv: ["{{ software_cryptopro_license_tool }}", -license, -set, "{{ vault_cryptopro_license }}"]
+      when: vault_cryptopro_license not in software_cryptopro_license_view.stdout
+      register: software_cryptopro_license_set
+      changed_when: software_cryptopro_license_set.rc == 0
+      no_log: true
+
+    - name: Verify installed CryptoPro package versions
+      ansible.builtin.command:
+        argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
+      loop: "{{ software_cryptopro_catalog.packages }}"
+      register: software_cryptopro_installed_evr
+      changed_when: false
+
+    - name: Require installed CryptoPro package versions
+      ansible.builtin.assert:
+        that:
+          - item.rc == 0
+          - item.stdout | trim == item.item.package_evr
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_install_verification_failed
+      loop: "{{ software_cryptopro_installed_evr.results }}"
+
+    - name: Enable PCSC socket activation after CryptoPro installation
+      ansible.builtin.systemd:
+        name: pcscd.socket
+        enabled: true
+        state: started
+      when: software_cryptopro_install_required
+
+    - name: Verify PCSC socket activation
+      ansible.builtin.command:
+        argv: [systemctl, is-active, pcscd.socket]
+      register: software_cryptopro_pcscd_state
+      changed_when: false
+
+    - name: Require active PCSC socket activation
+      ansible.builtin.assert:
+        that:
+          - software_cryptopro_pcscd_state.rc == 0
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_pcscd_socket_inactive
+
+    - name: Publish CryptoPro verification facts
+      ansible.builtin.set_fact:
+        cryptopro_ok: true
+        cryptopro_version: "{{ software_cryptopro_catalog.package_evr }}"
+  always:
+    - name: Remove temporary CryptoPro directory
+      ansible.builtin.file:
+        path: "{{ software_cryptopro_tempdir.path | default('') }}"
+        state: absent
+      when: software_cryptopro_tempdir is defined
+      no_log: true

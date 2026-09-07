@@ -1,0 +1,111 @@
+---
+- name: Inspect approved OnlyOffice RPM on controller
+  ansible.builtin.stat:
+    path: "{{ software_onlyoffice_catalog.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: software_onlyoffice_artifact
+  no_log: true
+
+- name: Validate approved OnlyOffice RPM
+  ansible.builtin.assert:
+    that:
+      - software_onlyoffice_artifact.stat.exists
+      - software_onlyoffice_artifact.stat.isreg
+      - software_onlyoffice_artifact.stat.checksum == software_onlyoffice_catalog.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:onlyoffice_artifact_invalid
+  no_log: true
+
+- name: Inspect approved OnlyOffice RPM metadata on controller
+  ansible.builtin.command:
+    argv: [rpm, -qp, --qf, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}", "{{ software_onlyoffice_catalog.artifact_path }}"]
+  delegate_to: localhost
+  become: false
+  register: software_onlyoffice_artifact_metadata
+  changed_when: false
+  no_log: true
+
+- name: Require approved OnlyOffice RPM metadata
+  ansible.builtin.assert:
+    that:
+      - software_onlyoffice_artifact_metadata.stdout | trim == software_onlyoffice_catalog.package_name ~ '|' ~ software_onlyoffice_catalog.package_evr ~ '|' ~ software_onlyoffice_catalog.architecture
+    fail_msg: ALT_PREFLIGHT_FAILURE:onlyoffice_rpm_metadata_invalid
+  no_log: true
+
+- name: Inspect installed OnlyOffice package version
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_onlyoffice_catalog.package_name }}"]
+  register: software_onlyoffice_existing_evr
+  changed_when: false
+  failed_when: false
+
+- name: Install approved OnlyOffice RPM
+  block:
+    - name: Create temporary OnlyOffice directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: approved-onlyoffice-
+      register: software_onlyoffice_tempdir
+
+    - name: Set permissions for temporary OnlyOffice directory
+      ansible.builtin.file:
+        path: "{{ software_onlyoffice_tempdir.path }}"
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Copy approved OnlyOffice RPM
+      ansible.builtin.copy:
+        src: "{{ software_onlyoffice_catalog.artifact_path }}"
+        dest: "{{ software_onlyoffice_tempdir.path }}/onlyoffice.rpm"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Install approved OnlyOffice RPM through APT
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, "{{ software_onlyoffice_tempdir.path }}/onlyoffice.rpm"]
+      register: software_onlyoffice_install
+      changed_when: software_onlyoffice_install.rc == 0
+      no_log: true
+  always:
+    - name: Remove temporary OnlyOffice directory
+      ansible.builtin.file:
+        path: "{{ software_onlyoffice_tempdir.path | default('') }}"
+        state: absent
+      when: software_onlyoffice_tempdir is defined
+      no_log: true
+  when: >-
+    software_onlyoffice_existing_evr.rc != 0 or
+    (software_onlyoffice_existing_evr.stdout | trim) != software_onlyoffice_catalog.package_evr
+
+- name: Verify installed OnlyOffice package version
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_onlyoffice_catalog.package_name }}"]
+  register: software_onlyoffice_installed_evr
+  changed_when: false
+
+- name: Verify OnlyOffice executable
+  ansible.builtin.stat:
+    path: "{{ software_onlyoffice_catalog.executable }}"
+    follow: true
+  register: software_onlyoffice_executable
+
+- name: Require verified OnlyOffice installation
+  ansible.builtin.assert:
+    that:
+      - software_onlyoffice_installed_evr.rc == 0
+      - software_onlyoffice_installed_evr.stdout | trim == software_onlyoffice_catalog.package_evr
+      - software_onlyoffice_executable.stat.exists
+      - software_onlyoffice_executable.stat.isreg
+      - software_onlyoffice_executable.stat.executable
+    fail_msg: ALT_PREFLIGHT_FAILURE:onlyoffice_install_verification_failed
+
+- name: Publish OnlyOffice verification facts
+  ansible.builtin.set_fact:
+    onlyoffice_ok: true
+    onlyoffice_version: "{{ software_onlyoffice_catalog.package_evr }}"

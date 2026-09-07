@@ -3,14 +3,26 @@
   ansible.builtin.set_fact:
     workstation_network_interface: "{{ ansible_default_ipv4.interface }}"
 
-- name: Configure domain DNS without replacing interface profile
-  ansible.builtin.copy:
-    dest: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
-    content: |
+- name: Build approved resolver configuration
+  ansible.builtin.set_fact:
+    workstation_network_resolver_content: |
       search {{ ad_domain }}
       {% for server in ad_dns_servers %}
       nameserver {{ server }}
       {% endfor %}
+
+- name: Configure persistent resolver source without replacing interface profile
+  ansible.builtin.copy:
+    dest: "/etc/net/ifaces/{{ workstation_network_interface }}/resolv.conf"
+    content: "{{ workstation_network_resolver_content }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Synchronize active resolver with approved persistent source
+  ansible.builtin.copy:
+    dest: /etc/resolv.conf
+    content: "{{ workstation_network_resolver_content }}"
     owner: root
     group: root
     mode: "0644"

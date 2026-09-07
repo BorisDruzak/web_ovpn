@@ -1,0 +1,137 @@
+---
+- name: Verify KRFB is installed
+  ansible.builtin.stat:
+    path: "{{ krfb_binary_path }}"
+  register: krfb_binary
+
+- name: Require installed KRFB binary
+  ansible.builtin.assert:
+    that:
+      - krfb_binary.stat.exists
+      - krfb_binary.stat.executable
+    fail_msg: ALT_PREFLIGHT_FAILURE:krfb_unavailable
+
+- name: Resolve explicitly assigned domain user for KRFB
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ assigned_domain_user }}"]
+  register: krfb_user_lookup
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Parse explicitly assigned domain user for KRFB
+  ansible.builtin.set_fact:
+    krfb_passwd_fields: "{{ krfb_user_lookup.stdout | trim | split(':') }}"
+  no_log: true
+
+- name: Validate explicitly assigned domain user for KRFB
+  ansible.builtin.assert:
+    that:
+      - krfb_user_lookup.rc == 0
+      - krfb_passwd_fields | length == 7
+      - krfb_passwd_fields[2] | int > 0
+      - krfb_passwd_fields[3] | int > 0
+      - krfb_passwd_fields[5].startswith('/home/')
+    fail_msg: ALT_PREFLIGHT_FAILURE:krfb_assigned_user_unavailable
+  no_log: true
+
+- name: Define assigned user KRFB paths
+  ansible.builtin.set_fact:
+    krfb_config_uid: "{{ krfb_passwd_fields[2] | int }}"
+    krfb_config_gid: "{{ krfb_passwd_fields[3] | int }}"
+    krfb_config_home: "{{ krfb_passwd_fields[5] }}"
+  no_log: true
+
+- name: Inspect assigned domain user home before KRFB preconfiguration
+  ansible.builtin.stat:
+    path: "{{ krfb_config_home }}"
+  register: krfb_config_home_stat
+  no_log: true
+
+- name: Create missing assigned domain user home for KRFB preconfiguration
+  ansible.builtin.file:
+    path: "{{ krfb_config_home }}"
+    state: directory
+    owner: "{{ krfb_config_uid }}"
+    group: "{{ krfb_config_gid }}"
+    mode: "0700"
+  no_log: true
+  when: not krfb_config_home_stat.stat.exists
+
+- name: Copy Plasma defaults into a newly prepared KRFB home
+  ansible.builtin.copy:
+    src: /etc/skel/.config/
+    dest: "{{ krfb_config_home }}/.config/"
+    remote_src: true
+    owner: "{{ krfb_config_uid }}"
+    group: "{{ krfb_config_gid }}"
+    mode: preserve
+  no_log: true
+  when: not krfb_config_home_stat.stat.exists
+
+- name: Create assigned user KRFB configuration directory
+  ansible.builtin.file:
+    path: "{{ krfb_config_home }}/.config"
+    state: directory
+    owner: "{{ krfb_config_uid }}"
+    group: "{{ krfb_config_gid }}"
+    mode: "0700"
+  no_log: true
+
+- name: Create assigned user Plasma autostart directory for KRFB
+  ansible.builtin.file:
+    path: "{{ krfb_config_home }}/.config/autostart"
+    state: directory
+    owner: "{{ krfb_config_uid }}"
+    group: "{{ krfb_config_gid }}"
+    mode: "0700"
+  no_log: true
+
+- name: Write protected KRFB unattended access configuration
+  ansible.builtin.template:
+    src: krfbrc.j2
+    dest: "{{ krfb_config_home }}/.config/krfbrc"
+    owner: "{{ krfb_config_uid }}"
+    group: "{{ krfb_config_gid }}"
+    mode: "0600"
+  no_log: true
+
+- name: Add KRFB to assigned user Plasma autostart
+  ansible.builtin.template:
+    src: org.sosn.krfb.desktop.j2
+    dest: "{{ krfb_config_home }}/.config/autostart/org.sosn.krfb.desktop"
+    owner: "{{ krfb_config_uid }}"
+    group: "{{ krfb_config_gid }}"
+    mode: "0644"
+  no_log: true
+
+- name: Verify protected KRFB configuration ownership and permissions
+  ansible.builtin.stat:
+    path: "{{ krfb_config_home }}/.config/krfbrc"
+  register: krfb_config_stat
+  no_log: true
+
+- name: Verify KRFB autostart ownership and permissions
+  ansible.builtin.stat:
+    path: "{{ krfb_config_home }}/.config/autostart/org.sosn.krfb.desktop"
+  register: krfb_autostart_stat
+  no_log: true
+
+- name: Require configured KRFB files
+  ansible.builtin.assert:
+    that:
+      - krfb_config_stat.stat.exists
+      - krfb_config_stat.stat.uid == krfb_config_uid | int
+      - krfb_config_stat.stat.gid == krfb_config_gid | int
+      - krfb_config_stat.stat.mode == '0600'
+      - krfb_autostart_stat.stat.exists
+      - krfb_autostart_stat.stat.uid == krfb_config_uid | int
+      - krfb_autostart_stat.stat.gid == krfb_config_gid | int
+      - krfb_autostart_stat.stat.mode == '0644'
+    fail_msg: ALT_PREFLIGHT_FAILURE:krfb_configuration_verification_failed
+  no_log: true
+
+- name: Publish non-secret KRFB configuration facts
+  ansible.builtin.set_fact:
+    krfb_configured: true
+    krfb_autostart_configured: true

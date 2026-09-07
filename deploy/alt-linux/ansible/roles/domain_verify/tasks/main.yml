@@ -52,7 +52,20 @@
           'verification': {'ssh': true, 'sudo': true, 'dns': true, 'time': true,
           'domain_join': true, 'sssd': true, 'domain_user_lookup': true,
           'packages': true,
+          'organization_ca_ok': organization_ca_ok | default(false),
+          'endpoint_agent_ok': endpoint_agent_verified | default(false),
+          'endpoint_agent_version': endpoint_agent_version | default(null),
+          'cryptopro_ok': cryptopro_ok | default(false),
+          'cryptopro_native_host_ok': cryptopro_native_host_ok | default(false),
+          'cryptopro_cades_ok': cryptopro_cades_ok | default(false),
+          'gosuslugi_plugin_ok': gosuslugi_plugin_ok | default(false),
+          'gosuslugi_plugin_native_host_ok': gosuslugi_plugin_native_host_ok | default(false),
+          'onlyoffice_ok': onlyoffice_ok | default(false),
+          'nextcloud_desktop_ok': nextcloud_desktop_ok | default(false),
           'browser': software_browser_verified | default(false),
+          'remote_access': {'profile': remote_access_profile,
+          'configured': remote_access_profile == 'none' or
+          (krfb_configured | default(false) and krfb_autostart_configured | default(false))},
           'group_policy': alt_group_policy_enabled | default(false) and
           alt_group_policy_machine_updated | default(false)}} | to_nice_json }}
     dest: "{{ configure_result_file }}"

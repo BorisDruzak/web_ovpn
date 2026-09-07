@@ -1,0 +1,9 @@
+---
+software_endpoint_agent_catalog: "{{ software_catalog.endpoint_agent }}"
+software_endpoint_agent_gateway_host: endpoint.sosnadmin.local
+software_endpoint_agent_gateway_url: https://endpoint.sosnadmin.local
+software_endpoint_agent_ca_source: "{{ playbook_dir }}/../files/organization_ca/sosnadmin-local-ca.crt"
+software_endpoint_agent_bootstrap_dir: /etc/endpoint-agent/bootstrap
+software_endpoint_agent_credential_path: /var/lib/endpoint-agent/device-credential
+software_endpoint_agent_enrollment_retries: 45
+software_endpoint_agent_enrollment_delay: 2

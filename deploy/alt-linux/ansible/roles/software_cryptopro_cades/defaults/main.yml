@@ -1,0 +1,4 @@
+---
+software_cryptopro_cades_catalog: "{{ software_catalog.cryptopro_cades }}"
+software_cryptopro_cades_native_host: /opt/cprocsp/bin/amd64/nmcades
+software_cryptopro_cades_native_manifest: /etc/opt/chrome/native-messaging-hosts/ru.cryptopro.nmcades.json

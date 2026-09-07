@@ -1,0 +1,4 @@
+---
+software_gosuslugi_plugin_catalog: "{{ software_catalog.gosuslugi_plugin }}"
+software_gosuslugi_plugin_native_host: /opt/iitrust/gosuslugi_plugin/bin/gosuslugi_plugin
+software_gosuslugi_plugin_native_manifest: /etc/opt/chrome/native-messaging-hosts/chrome.gosuslugi.plugin.json

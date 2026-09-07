@@ -1,0 +1,3 @@
+---
+software_cryptopro_catalog: "{{ software_catalog.cryptopro }}"
+software_cryptopro_license_tool: /opt/cprocsp/sbin/amd64/cpconfig

@@ -4,7 +4,7 @@ preflight_min_home_bytes: 2147483648
 # Use vendor-supported Plasma Wayland for new LightDM logins.
 workstation_desktop_session: wayland
 ad_dns_servers:
-  - 192.168.100.11
+  - 192.168.100.1
 ad_ldap_uri: ldap://ad-main.sosnadmin.local
 ad_domain: sosnadmin.local
 ad_realm: SOSNADMIN.LOCAL
@@ -20,7 +20,88 @@ standard_packages: []
 organization_packages: []
 approved_software_components:
   - browser
+endpoint_enrollment_campaign_id: null
+remote_access_profile: none
+assigned_domain_user: null
 software_catalog:
+  cryptopro:
+    artifact_path: /opt/alt-deploy-control/artifacts/cryptopro/linux-amd64.tgz
+    sha256: dcab1fb326397c1993bf52e55732096793037caeec9f374586fc4e6ff0d739d4
+    package_evr: 5.0.13600-7
+    packages:
+      - filename: lsb-cprocsp-base-5.0.13600-7.noarch.rpm
+        package_name: lsb-cprocsp-base
+        package_evr: 5.0.13600-7
+        architecture: noarch
+      - filename: lsb-cprocsp-capilite-64-5.0.13600-7.x86_64.rpm
+        package_name: lsb-cprocsp-capilite-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+      - filename: lsb-cprocsp-kc1-64-5.0.13600-7.x86_64.rpm
+        package_name: lsb-cprocsp-kc1-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+      - filename: lsb-cprocsp-rdr-64-5.0.13600-7.x86_64.rpm
+        package_name: lsb-cprocsp-rdr-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+      - filename: cprocsp-rdr-gui-gtk-64-5.0.13600-7.x86_64.rpm
+        package_name: cprocsp-rdr-gui-gtk-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+      - filename: cprocsp-cptools-gtk-64-5.0.13600-7.x86_64.rpm
+        package_name: cprocsp-cptools-gtk-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+      - filename: cprocsp-rdr-pcsc-64-5.0.13600-7.x86_64.rpm
+        package_name: cprocsp-rdr-pcsc-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+      - filename: cprocsp-rdr-jacarta-64-5.0.13600-7.x86_64.rpm
+        package_name: cprocsp-rdr-jacarta-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+      - filename: lsb-cprocsp-pkcs11-64-5.0.13600-7.x86_64.rpm
+        package_name: lsb-cprocsp-pkcs11-64
+        package_evr: 5.0.13600-7
+        architecture: x86_64
+  cryptopro_cades:
+    artifact_path: /opt/alt-deploy-control/artifacts/cryptopro-cades/cades-linux-amd64.tar.gz
+    sha256: 9559cff6c818c6031fb7f182493830e9e138bda85616848d0f54620bf523c137
+    package_evr: 2.0.15700-1
+    packages:
+      - filename: cprocsp-pki-cades-64-2.0.15700-1.amd64.rpm
+        package_name: cprocsp-pki-cades-64
+        package_evr: 2.0.15700-1
+        architecture: x86_64
+      - filename: cprocsp-pki-plugin-64-2.0.15700-1.amd64.rpm
+        package_name: cprocsp-pki-plugin-64
+        package_evr: 2.0.15700-1
+        architecture: x86_64
+  gosuslugi_plugin:
+    artifact_path: /opt/alt-deploy-control/artifacts/gosuslugi/Gosplugin_Alt-RedOS_Installer.rpm.zip
+    sha256: 2160e85de15830462eeb49a965e5f99bea371fa90379a0956ac3a65ccaa7c085
+    package_name: gosuslugi-plugin
+    package_evr: 1.3.42.0-1
+    architecture: x86_64
+    installer_filename: Gosplugin_Alt-RedOS_Installer.rpm.sh
+    payload_filename: gosuslugi-plugin-1.3.42.0-1.x86_64.rpm
+  onlyoffice:
+    artifact_path: /opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm
+    sha256: b8dd26405b5cd79da8a80afc7089007de608a53e7e90ea6a247379bebfe54c9f
+    package_name: onlyoffice-desktopeditors
+    package_evr: 9.4.0-epm1.repacked.130
+    architecture: x86_64
+    executable: /usr/bin/desktopeditors
+  nextcloud_desktop:
+    package_name: nextcloud-client
+    executable: /usr/bin/nextcloud
+  endpoint_agent:
+    artifact_path: /opt/alt-deploy-control/artifacts/endpoint-agent/endpoint-agent-0.1.0-6.x86_64.rpm
+    sha256: c7e3a1476ae831611cfb593f34ac4b7c43ff6c6602a6d7717c2032049cb752ac
+    package_name: endpoint-agent
+    package_evr: 0.1.0-6
+    architecture: x86_64
   browser:
     artifact_path: /opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm
     sha256: 7fbce78e9799ae36ebfcf750d5880f27d829d5546e9ac77f1868afb9657d9a89

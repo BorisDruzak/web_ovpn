@@ -1,0 +1,5 @@
+---
+- name: Refresh system certificate trust
+  ansible.builtin.command:
+    argv: [/bin/update-ca-trust]
+  changed_when: true

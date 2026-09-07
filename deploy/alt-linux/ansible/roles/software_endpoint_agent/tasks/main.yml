@@ -1,0 +1,267 @@
+---
+- name: Inspect installed Endpoint Agent package
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_endpoint_agent_catalog.package_name }}"]
+  register: software_endpoint_agent_existing_evr
+  changed_when: false
+  failed_when: false
+
+- name: Inspect Endpoint Agent durable credential
+  ansible.builtin.stat:
+    path: "{{ software_endpoint_agent_credential_path }}"
+    follow: false
+  register: software_endpoint_agent_credential
+  changed_when: false
+
+- name: Classify Endpoint Agent enrollment state
+  ansible.builtin.set_fact:
+    software_endpoint_agent_first_install_required: "{{ software_endpoint_agent_existing_evr.rc != 0 }}"
+    software_endpoint_agent_existing_enrollment_valid: >-
+      {{
+        software_endpoint_agent_existing_evr.rc == 0 and
+        software_endpoint_agent_credential.stat.exists and
+        software_endpoint_agent_credential.stat.isreg and
+        not software_endpoint_agent_credential.stat.islnk and
+        software_endpoint_agent_credential.stat.pw_name == 'endpoint-agent' and
+        software_endpoint_agent_credential.stat.gr_name == 'endpoint-agent' and
+        software_endpoint_agent_credential.stat.mode == '0600'
+      }}
+
+- name: Refuse to replace an incomplete Endpoint Agent enrollment
+  ansible.builtin.assert:
+    that:
+      - software_endpoint_agent_existing_enrollment_valid
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_recovery_required
+  when: not software_endpoint_agent_first_install_required
+
+- name: Require an enrollment campaign for Endpoint first installation
+  ansible.builtin.assert:
+    that:
+      - endpoint_enrollment_campaign_id is string
+      - endpoint_enrollment_campaign_id is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_enrollment_campaign_missing
+  when: software_endpoint_agent_first_install_required
+
+- name: Check Gateway DNS before Endpoint first installation
+  ansible.builtin.command:
+    argv: [getent, hosts, endpoint.sosnadmin.local]
+  changed_when: false
+  when: software_endpoint_agent_first_install_required
+
+- name: Check Endpoint fingerprint extraction tools
+  ansible.builtin.command:
+    argv: [sh, -c, "command -v rpm2cpio >/dev/null && command -v cpio >/dev/null"]
+  register: software_endpoint_agent_fingerprint_tools
+  changed_when: false
+  failed_when: false
+  when: software_endpoint_agent_first_install_required
+
+- name: Require Endpoint fingerprint extraction tools
+  ansible.builtin.assert:
+    that:
+      - software_endpoint_agent_fingerprint_tools.rc == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_fingerprint_tools_missing
+  when: software_endpoint_agent_first_install_required
+
+- name: Inspect approved Endpoint Agent RPM on controller
+  ansible.builtin.stat:
+    path: "{{ software_endpoint_agent_catalog.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: software_endpoint_agent_artifact
+  no_log: true
+  when: software_endpoint_agent_first_install_required
+
+- name: Validate approved Endpoint Agent RPM
+  ansible.builtin.assert:
+    that:
+      - software_endpoint_agent_artifact.stat.exists
+      - software_endpoint_agent_artifact.stat.isreg
+      - software_endpoint_agent_artifact.stat.checksum == software_endpoint_agent_catalog.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_artifact_invalid
+  no_log: true
+  when: software_endpoint_agent_first_install_required
+
+- name: Inspect approved Endpoint Agent RPM metadata on controller
+  ansible.builtin.command:
+    argv: [rpm, -qp, --qf, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}", "{{ software_endpoint_agent_catalog.artifact_path }}"]
+  delegate_to: localhost
+  become: false
+  register: software_endpoint_agent_artifact_metadata
+  changed_when: false
+  no_log: true
+  when: software_endpoint_agent_first_install_required
+
+- name: Require approved Endpoint Agent RPM metadata
+  ansible.builtin.assert:
+    that:
+      - software_endpoint_agent_artifact_metadata.stdout | trim == software_endpoint_agent_catalog.package_name ~ '|' ~ software_endpoint_agent_catalog.package_evr ~ '|' ~ software_endpoint_agent_catalog.architecture
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_rpm_metadata_invalid
+  no_log: true
+  when: software_endpoint_agent_first_install_required
+
+- name: Enroll Endpoint Agent from the approved RPM
+  block:
+    - name: Create protected Endpoint Agent staging directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: endpoint-agent-first-install-
+      register: software_endpoint_agent_tempdir
+
+    - name: Set permissions for Endpoint Agent staging directory
+      ansible.builtin.file:
+        path: "{{ software_endpoint_agent_tempdir.path }}"
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Copy approved Endpoint Agent RPM
+      ansible.builtin.copy:
+        src: "{{ software_endpoint_agent_catalog.artifact_path }}"
+        dest: "{{ software_endpoint_agent_tempdir.path }}/endpoint-agent.rpm"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Derive hardware fingerprint from the exact RPM payload
+      ansible.builtin.shell: |
+        set -euo pipefail
+        mkdir -p "{{ software_endpoint_agent_tempdir.path }}/fingerprint"
+        cd "{{ software_endpoint_agent_tempdir.path }}/fingerprint"
+        rpm2cpio "{{ software_endpoint_agent_tempdir.path }}/endpoint-agent.rpm" |
+          cpio -idm --quiet './usr/lib64/endpoint-agent/release-bundle/*'
+        exec "{{ software_endpoint_agent_tempdir.path }}/fingerprint/usr/lib64/endpoint-agent/release-bundle/pc_agent/pc_agent" --print-hardware-fingerprint
+      args:
+        executable: /bin/bash
+      register: software_endpoint_agent_fingerprint
+      changed_when: false
+
+    - name: Require canonical Endpoint Agent hardware fingerprint
+      ansible.builtin.assert:
+        that:
+          - software_endpoint_agent_fingerprint.stdout | trim is match('^sha256:[0-9a-f]{64}$')
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_fingerprint_invalid
+
+    - name: Create protected Endpoint Agent bootstrap directory
+      ansible.builtin.file:
+        path: "{{ software_endpoint_agent_bootstrap_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Install Endpoint Gateway CA bootstrap file
+      ansible.builtin.copy:
+        src: "{{ software_endpoint_agent_ca_source }}"
+        dest: "{{ software_endpoint_agent_bootstrap_dir }}/ca.crt"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Install host-specific Endpoint installation ID
+      ansible.builtin.copy:
+        content: "endpoint-{{ inventory_hostname }}\n"
+        dest: "{{ software_endpoint_agent_bootstrap_dir }}/installation-id"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Issue one-time Endpoint enrollment claim
+      ansible.builtin.uri:
+        url: "{{ software_endpoint_agent_gateway_url }}/api/v1/provisioning/install-claims"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ vault_endpoint_provisioning_token }}"
+        body_format: json
+        body:
+          campaign_id: "{{ endpoint_enrollment_campaign_id }}"
+          install_session_id: "endpoint-{{ inventory_hostname }}"
+          hardware_fingerprint: "{{ software_endpoint_agent_fingerprint.stdout | trim }}"
+        status_code: 201
+        return_content: true
+        validate_certs: true
+        ca_path: "{{ software_endpoint_agent_ca_source }}"
+        use_proxy: false
+      delegate_to: localhost
+      become: false
+      register: software_endpoint_agent_claim
+      no_log: true
+
+    - name: Validate one-time Endpoint enrollment claim response
+      ansible.builtin.assert:
+        that:
+          - software_endpoint_agent_claim.json.install_session_id == 'endpoint-' ~ inventory_hostname
+          - software_endpoint_agent_claim.json.claim is match('^ic_[0-9a-f]{32}\.[A-Za-z0-9_-]{43}$')
+        fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_claim_invalid
+      no_log: true
+
+    - name: Install one-time Endpoint enrollment claim
+      ansible.builtin.copy:
+        content: "{{ software_endpoint_agent_claim.json.claim }}"
+        dest: "{{ software_endpoint_agent_bootstrap_dir }}/provisioning-claim"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Install Endpoint Agent RPM immediately after claim issuance
+      ansible.builtin.command:
+        argv: [rpm, -Uvh, "{{ software_endpoint_agent_tempdir.path }}/endpoint-agent.rpm"]
+      register: software_endpoint_agent_install
+      changed_when: software_endpoint_agent_install.rc == 0
+
+    - name: Wait for Endpoint enrollment completion and claim finalization
+      ansible.builtin.shell: >-
+        test -f {{ software_endpoint_agent_credential_path | quote }} &&
+        test ! -e {{ (software_endpoint_agent_bootstrap_dir ~ '/provisioning-claim') | quote }} &&
+        test ! -e /etc/endpoint-agent/provisioning-claim
+      register: software_endpoint_agent_enrollment
+      retries: "{{ software_endpoint_agent_enrollment_retries }}"
+      delay: "{{ software_endpoint_agent_enrollment_delay }}"
+      until: software_endpoint_agent_enrollment.rc == 0
+      changed_when: false
+  always:
+    - name: Remove Endpoint Agent staging directory
+      ansible.builtin.file:
+        path: "{{ software_endpoint_agent_tempdir.path | default('') }}"
+        state: absent
+      when: software_endpoint_agent_tempdir is defined
+  when: software_endpoint_agent_first_install_required
+
+- name: Verify Endpoint Agent durable credential
+  ansible.builtin.stat:
+    path: "{{ software_endpoint_agent_credential_path }}"
+    follow: false
+  register: software_endpoint_agent_verified_credential
+  changed_when: false
+
+- name: Verify Endpoint Agent services
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - endpoint-agent.service
+      - endpoint-agent-update.path
+      - endpoint-agent-finalize.path
+  register: software_endpoint_agent_services
+  changed_when: false
+
+- name: Require verified Endpoint Agent installation
+  ansible.builtin.assert:
+    that:
+      - software_endpoint_agent_verified_credential.stat.exists
+      - software_endpoint_agent_verified_credential.stat.isreg
+      - not software_endpoint_agent_verified_credential.stat.islnk
+      - software_endpoint_agent_verified_credential.stat.pw_name == 'endpoint-agent'
+      - software_endpoint_agent_verified_credential.stat.gr_name == 'endpoint-agent'
+      - software_endpoint_agent_verified_credential.stat.mode == '0600'
+      - software_endpoint_agent_services.rc == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:endpoint_agent_install_verification_failed
+
+- name: Publish Endpoint Agent verification fact
+  ansible.builtin.set_fact:
+    endpoint_agent_verified: true
+    endpoint_agent_version: "{{ software_endpoint_agent_existing_evr.stdout | trim if not software_endpoint_agent_first_install_required else software_endpoint_agent_catalog.package_evr }}"

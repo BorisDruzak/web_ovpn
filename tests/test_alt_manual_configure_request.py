@@ -49,7 +49,7 @@ if sys.platform == "win32":
 MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
 
 
-def valid_request() -> dict[str, str]:
+def valid_request() -> dict[str, object]:
     return {
         "machine_uuid": MACHINE_UUID,
         "final_hostname": "alt-a1-pc3",
@@ -60,6 +60,8 @@ def valid_request() -> dict[str, str]:
         "workgroup": "SOSNADM",
         "computer_ou": "OU=Workstations,DC=sosnadmin,DC=local",
         "domain_test_user": "pilot.user",
+        "remote_access_profile": "none",
+        "assigned_domain_user": None,
     }
 
 
@@ -99,6 +101,21 @@ def test_configure_request_accepts_domain_test_user_upn() -> None:
     assert request.domain_test_user == "alt-test-user@sosnadmin.local"
 
 
+def test_configure_request_accepts_explicit_krfb_user_and_normalizes_it() -> None:
+    payload = valid_request()
+    payload.update(
+        {
+            "remote_access_profile": "KRFB",
+            "assigned_domain_user": "ALT-TEST-2@SOSNADMIN.LOCAL",
+        }
+    )
+
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert request.remote_access_profile == "krfb"
+    assert request.assigned_domain_user == "alt-test-2@sosnadmin.local"
+
+
 @pytest.mark.parametrize(
     ("change", "expected_code"),
     [
@@ -109,6 +126,8 @@ def test_configure_request_accepts_domain_test_user_upn() -> None:
         ({"workgroup": ""}, "configure_request_invalid"),
         ({"computer_ou": ""}, "configure_request_invalid"),
         ({"domain_test_user": ""}, "configure_request_invalid"),
+        ({"remote_access_profile": "other"}, "configure_request_invalid"),
+        ({"remote_access_profile": "krfb"}, "configure_request_invalid"),
         ({"machine_uuid": "not-a-uuid"}, "configure_request_invalid"),
         ({"hostname_mode": "change"}, "configure_request_invalid"),
     ],
@@ -127,6 +146,16 @@ def test_configure_request_rejects_untrusted_input(
         )
 
     assert exc.value.code == expected_code
+
+
+def test_configure_request_rejects_assigned_user_when_remote_access_is_disabled() -> None:
+    payload = valid_request()
+    payload["assigned_domain_user"] = "pilot.user"
+
+    with pytest.raises(ControlError) as exc:
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert exc.value.code == "configure_request_invalid"
 
 
 @pytest.mark.parametrize(
@@ -176,11 +205,40 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
             "manual_preflight",
             "verify_or_change_hostname",
             "configure_domain_dns",
-            "join_or_verify_domain",
-            "install_standard_packages",
+                "join_or_verify_domain",
+                "apply_plasma_baseline",
+                "install_organization_ca",
+                "install_endpoint_agent",
+                "install_cryptopro",
+                "install_cryptopro_cades_update",
+                "install_gosuslugi_plugin",
+                "install_onlyoffice",
+                "install_nextcloud_desktop",
+                "install_standard_packages",
             "verify_domain_workstation",
         ],
     }
+
+
+def test_configure_preview_lists_krfb_only_for_the_explicit_krfb_profile() -> None:
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    payload = valid_request()
+    payload.update(
+        {
+            "remote_access_profile": "krfb",
+            "assigned_domain_user": "pilot.user",
+        }
+    )
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    preview = ConfigurePlanner(
+        SimpleNamespace(), machines=SimpleNamespace(get=lambda _: machine)
+    ).preview(MACHINE_UUID, request)
+
+    assert preview["actions"][-2:] == [
+        "configure_krfb",
+        "verify_domain_workstation",
+    ]
 
 
 def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
@@ -243,6 +301,8 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
+    monkeypatch.setattr(VaultHealthChecker, "check_endpoint_provisioning", lambda _self: {"status": "ok"})
+    monkeypatch.setattr(VaultHealthChecker, "check_cryptopro", lambda _self: {"status": "ok"})
     request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
     result = ConfigurePlanner(settings, machines=SimpleNamespace(get=lambda _: machine)).start(MACHINE_UUID, request)
 
@@ -265,6 +325,64 @@ def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:
         "status": "ok",
         "checks": {"ad_join_user_present": True, "ad_join_password_present": True},
     }
+
+
+def test_krfb_vault_gate_reports_only_presence_checks() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = (  # type: ignore[method-assign]
+        lambda: "vault_krfb_desktop_password_obscured: encrypted-a\n"
+        "vault_krfb_unattended_password_obscured: encrypted-b\n"
+    )
+
+    assert checker.check_krfb() == {
+        "status": "ok",
+        "checks": {
+            "krfb_desktop_password_present": True,
+            "krfb_unattended_password_present": True,
+        },
+    }
+
+
+def test_cryptopro_vault_gate_reports_only_license_presence() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: "vault_cryptopro_license: secret\n"  # type: ignore[method-assign]
+
+    assert checker.check_cryptopro() == {
+        "status": "ok",
+        "checks": {"cryptopro_license_present": True},
+    }
+
+
+def test_endpoint_provisioning_vault_gate_reports_only_token_presence() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = (  # type: ignore[method-assign]
+        lambda: "vault_endpoint_provisioning_token: protected-token\n"
+    )
+
+    assert checker.check_endpoint_provisioning() == {
+        "status": "ok",
+        "checks": {"endpoint_provisioning_token_present": True},
+    }
+
+
+def test_configure_preview_includes_endpoint_agent_first_installation() -> None:
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
+
+    preview = ConfigurePlanner(
+        SimpleNamespace(), machines=SimpleNamespace(get=lambda _: machine)
+    ).preview(MACHINE_UUID, request)
+
+    assert "install_endpoint_agent" in preview["actions"]
 
 
 def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
@@ -295,6 +413,8 @@ def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
+    monkeypatch.setattr(VaultHealthChecker, "check_endpoint_provisioning", lambda _self: {"status": "ok"})
+    monkeypatch.setattr(VaultHealthChecker, "check_cryptopro", lambda _self: {"status": "ok"})
 
     with pytest.raises(ControlError) as exc:
         ConfigurePlanner(
