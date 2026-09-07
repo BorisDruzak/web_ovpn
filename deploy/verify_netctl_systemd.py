@@ -71,7 +71,7 @@ EXPECTED_PROPERTIES = {
     },
     "netctl-availability.timer": {
         "TimersMonotonic": ("OnBootUSec=6min",),
-        "TimersCalendar": "*-*-* *:3/5:00",
+        "TimersCalendar": "*-*-* *:03/5:00",
         "AccuracyUSec": "30s",
         "Persistent": "yes",
         "Unit": "netctl-availability.service",
