@@ -142,9 +142,12 @@ sudo -u netctl /usr/local/sbin/netctl --json hosts snapshot-status
 sudo -u netctl /usr/local/sbin/netctl --json hosts list --status all --page 1 --limit 50
 ```
 
-Only `snapshot-refresh` above writes the local snapshot. Status and list open a
-read-only database connection; a missing database or unpublished snapshot yields
-an empty pending result. List limits are clamped to 1–250 and pages to at least 1.
+The direct `snapshot-refresh` command above explicitly writes the local snapshot.
+Status and list open a read-only database connection; a missing database or
+unpublished snapshot yields an empty pending result. Successful collection,
+reconciliation, and manual availability `probe` or `force` commands also publish
+snapshots as described below. List limits are clamped to 1–250 and pages to at
+least 1.
 The API exposes `GET /api/v1/network/hosts` and the inexpensive metadata endpoint
 `GET /api/v1/network/hosts/meta`; both accept bearer authorization or an existing
 authenticated browser session. The page polls metadata every 15 seconds and
