@@ -122,6 +122,41 @@ Main files:
 - `netctl-reconcile.timer` - five-minute recovery reconciliation for current topology and attachments.
 - `netctl-retention.timer` - daily 03:17 cleanup of local Netctl history older than 30 days. It does not run `VACUUM`; see the [backup-first compaction runbook](docs/runbooks/netctl-retention-compact.md) for the separate operator procedure.
 
+### Persistent host snapshots
+
+The Network Hosts page and host-list API read a persisted, versioned SQLite
+snapshot. Availability is projected in batches during snapshot refresh; host
+filters and pagination run in SQL before the selected page is decoded. Host
+list GET requests do not start collection, probes, reconciliation, or live VPN
+lookups. The Endpoint Agent column remains neutral until that integration exists.
+
+Migrations 25 and 26 add projection indexes and the current host snapshot tables.
+Successful complete collection/reconciliation and availability collection publish
+a replacement snapshot under the collection lock. Failed publication preserves
+the previous snapshot. After installing the migrations, an operator can publish
+the initial snapshot from existing local observations as the `netctl` service user:
+
+```bash
+sudo -u netctl /usr/local/sbin/netctl --json hosts snapshot-refresh
+sudo -u netctl /usr/local/sbin/netctl --json hosts snapshot-status
+sudo -u netctl /usr/local/sbin/netctl --json hosts list --status all --page 1 --limit 50
+```
+
+Only `snapshot-refresh` above writes the local snapshot. Status and list open a
+read-only database connection; a missing database or unpublished snapshot yields
+an empty pending result. List limits are clamped to 1–250 and pages to at least 1.
+The API exposes `GET /api/v1/network/hosts` and the inexpensive metadata endpoint
+`GET /api/v1/network/hosts/meta`; both accept bearer authorization or an existing
+authenticated browser session. The page polls metadata every 15 seconds and
+fetches its filtered page when the snapshot ID changes, preserving current rows
+when refresh fails. Metadata includes ID, generation time, host count and refresh
+duration so pending and stale data can be identified.
+
+At INFO level, snapshot refresh and completed list reads log only snapshot ID,
+counts, pagination and elapsed milliseconds. Payloads and filter values are never
+included. Local SQL counts, regression results and pending production checks are
+recorded in the [host snapshot verification record](docs/verification/2026-09-07-network-host-snapshot.md).
+
 ### Read-only SNMP switch readiness
 
 PR 3A provides a disabled-by-default SNMPv2c switch collector core and the

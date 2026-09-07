@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 
 import pytest
@@ -202,6 +203,29 @@ def test_refresh_log_does_not_include_failed_payload(conn, monkeypatch, caplog):
     assert "host_snapshot.refresh.start" in caplog.text
     assert "host_snapshot.refresh.error" in caplog.text
     assert "PRIVATE-CREDENTIAL" not in caplog.text
+
+
+@pytest.mark.parametrize("page, expected_count", [(1, 1), (2, 0)])
+def test_snapshot_logs_include_non_sensitive_measurements(conn, caplog, page, expected_count):
+    from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
+
+    add_host(conn, "203.0.113.1", hostname="private-host", sources=("private-source",))
+    with caplog.at_level("INFO", logger="netctl.host_snapshot"):
+        refresh_host_snapshot(conn, now=NOW)
+        result = list_host_snapshot(conn, {"status": "all", "q": "private-host", "source": "private-source"}, page, 1)
+
+    messages = [record.getMessage() for record in caplog.records if record.name == "netctl.host_snapshot"]
+    assert len(result["hosts"]) == expected_count
+    assert any(re.fullmatch(r"host_snapshot.refresh.finish id=1 count=1 duration_ms=\d+", message) for message in messages)
+    assert any(re.fullmatch(
+        rf"host_snapshot.list.finish id=1 count={expected_count} total=1 page={page} limit=1 duration_ms=\d+",
+        message,
+    ) for message in messages)
+    # Only numeric measurements may accompany event names, including raw log arguments.
+    for record in caplog.records:
+        if record.name == "netctl.host_snapshot":
+            assert re.fullmatch(r"host_snapshot\.[a-z.]+(?: (?:id|count|total|page|limit|duration_ms)=\d+)+", record.getMessage())
+            assert all(isinstance(value, int) for value in record.args)
 
 
 def test_partial_insert_failure_restores_both_state_and_sources(conn):

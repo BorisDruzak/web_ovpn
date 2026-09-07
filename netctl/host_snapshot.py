@@ -167,6 +167,7 @@ def refresh_host_snapshot(conn: sqlite3.Connection, *, now: str | datetime) -> H
 
 
 def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], page: int, limit: int) -> dict[str, Any]:
+    started = time.monotonic()
     if not isinstance(page, int) or not isinstance(limit, int):
         raise ValueError("invalid host pagination")
     page, limit = max(1, page), min(250, max(1, limit))
@@ -229,8 +230,14 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
             "SELECT DISTINCT source FROM network_host_current_sources WHERE snapshot_id = ? ORDER BY source",
             (metadata.snapshot_id,),
         ).fetchall() if metadata.snapshot_id else []
-        return {"hosts": [json.loads(row[0]) for row in rows], "total": total, "page": page,
+        result = {"hosts": [json.loads(row[0]) for row in rows], "total": total, "page": page,
                 "limit": limit, "pages": (total + limit - 1) // limit, "snapshot": asdict(metadata),
                 "sources": [{"name": row[0]} for row in sources]}
     finally:
         conn.execute("RELEASE SAVEPOINT read_host_snapshot")
+    logger.info(
+        "host_snapshot.list.finish id=%d count=%d total=%d page=%d limit=%d duration_ms=%d",
+        metadata.snapshot_id, len(result["hosts"]), total, page, limit,
+        int((time.monotonic() - started) * 1000),
+    )
+    return result
