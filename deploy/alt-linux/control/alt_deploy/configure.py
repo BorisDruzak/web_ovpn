@@ -31,6 +31,11 @@ REQUEST_FIELDS = frozenset(
         "domain_test_user",
     }
 )
+PROFILE_FIELDS = frozenset(
+    {"software_profile", "remote_access_profile", "assigned_domain_user"}
+)
+SOFTWARE_PROFILES = frozenset({"base", "core-apps"})
+REMOTE_ACCESS_PROFILES = frozenset({"none", "krfb"})
 
 HOSTNAME_RE = re.compile(r"^(lin|alt|win|deb)-[a-z][0-9]?-(pc[1-9][0-9]*)$")
 HOSTNAME_MODES = frozenset({"verify", "change_confirmed"})
@@ -79,6 +84,9 @@ class ConfigureRequest:
     workgroup: str
     computer_ou: str
     domain_test_user: str
+    software_profile: str = "base"
+    remote_access_profile: str = "none"
+    assigned_domain_user: str | None = None
 
     @classmethod
     def from_mapping(
@@ -88,7 +96,7 @@ class ConfigureRequest:
         expected_uuid: str,
     ) -> "ConfigureRequest":
         payload_keys = set(payload)
-        if payload_keys != REQUEST_FIELDS:
+        if payload_keys not in (REQUEST_FIELDS, REQUEST_FIELDS | PROFILE_FIELDS):
             raise _invalid_request("Configure request fields are not allowed")
 
         expected = expected_uuid.strip().lower()
@@ -110,6 +118,40 @@ class ConfigureRequest:
         workgroup = _required_string(payload, "workgroup").upper()
         computer_ou = _required_string(payload, "computer_ou")
         domain_test_user = _required_string(payload, "domain_test_user").lower()
+        if payload_keys == REQUEST_FIELDS:
+            software_profile = "base"
+            remote_access_profile = "none"
+            assigned_domain_user = None
+        else:
+            software_profile = _required_string(payload, "software_profile").lower()
+            remote_access_profile = _required_string(
+                payload, "remote_access_profile"
+            ).lower()
+            if (
+                software_profile not in SOFTWARE_PROFILES
+                or remote_access_profile not in REMOTE_ACCESS_PROFILES
+            ):
+                raise _invalid_request("Configure profile is unsupported")
+            assigned_value = payload["assigned_domain_user"]
+            if assigned_value is None:
+                assigned_domain_user = None
+            elif isinstance(assigned_value, str):
+                assigned_domain_user = assigned_value.strip().lower()
+                if not assigned_domain_user:
+                    raise _invalid_request("Configure assigned domain user is required")
+                if not (
+                    DOMAIN_USER_RE.fullmatch(assigned_domain_user)
+                    or DOMAIN_USER_UPN_RE.fullmatch(assigned_domain_user)
+                ):
+                    raise _invalid_request("Configure assigned domain user is invalid")
+            else:
+                raise _invalid_request("Configure assigned domain user must be text or null")
+
+            if (
+                (software_profile == "core-apps" or remote_access_profile == "krfb")
+                and assigned_domain_user is None
+            ):
+                raise _invalid_request("Configure assigned domain user is required")
 
         if (
             profile != "standard-domain"
@@ -141,9 +183,12 @@ class ConfigureRequest:
             workgroup=workgroup,
             computer_ou=computer_ou,
             domain_test_user=domain_test_user,
+            software_profile=software_profile,
+            remote_access_profile=remote_access_profile,
+            assigned_domain_user=assigned_domain_user,
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "machine_uuid": self.machine_uuid,
             "final_hostname": self.final_hostname,
@@ -154,7 +199,18 @@ class ConfigureRequest:
             "workgroup": self.workgroup,
             "computer_ou": self.computer_ou,
             "domain_test_user": self.domain_test_user,
+            "software_profile": self.software_profile,
+            "remote_access_profile": self.remote_access_profile,
+            "assigned_domain_user": self.assigned_domain_user,
         }
+
+    def actions(self) -> list[str]:
+        actions = [*CONFIGURE_ACTIONS, "apply_plasma_baseline"]
+        if self.software_profile == "core-apps":
+            actions.append("install_core_apps")
+        if self.remote_access_profile == "krfb":
+            actions.append("configure_krfb")
+        return actions
 
 
 CONFIGURE_ACTIONS = [
@@ -201,7 +257,7 @@ class ConfigurePlanner:
             "target_ip": machine.ip,
             "playbook": "03-configure-domain-workstation.yml",
             "request": request.to_dict(),
-            "actions": list(CONFIGURE_ACTIONS),
+            "actions": request.actions(),
         }
 
     @property

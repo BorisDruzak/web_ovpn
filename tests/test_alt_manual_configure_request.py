@@ -75,7 +75,52 @@ def test_configure_request_normalizes_safe_values() -> None:
     assert request.to_dict() == {
         **valid_request(),
         "final_hostname": "alt-a1-pc3",
+        "software_profile": "base",
+        "remote_access_profile": "none",
+        "assigned_domain_user": None,
     }
+
+
+def test_legacy_configure_request_receives_safe_profile_defaults() -> None:
+    request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
+    assert request.software_profile == "base"
+    assert request.remote_access_profile == "none"
+    assert request.assigned_domain_user is None
+
+
+def test_core_apps_profile_requires_assigned_user() -> None:
+    payload = valid_request() | {"software_profile": "core-apps", "remote_access_profile": "none", "assigned_domain_user": "Pilot.User@SOSNADMIN.LOCAL"}
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    assert request.software_profile == "core-apps"
+    assert request.assigned_domain_user == "pilot.user@sosnadmin.local"
+
+
+def test_core_apps_profile_rejects_missing_assigned_user() -> None:
+    payload = valid_request() | {"software_profile": "core-apps", "remote_access_profile": "none", "assigned_domain_user": None}
+    with pytest.raises(ControlError, match="assigned domain user"):
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+
+def test_krfb_profile_requires_assigned_user() -> None:
+    payload = valid_request() | {"software_profile": "base", "remote_access_profile": "krfb", "assigned_domain_user": "pilot.user"}
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    assert request.remote_access_profile == "krfb"
+    assert request.assigned_domain_user == "pilot.user"
+
+
+@pytest.mark.parametrize("change", [
+    {"software_profile": "unsupported", "remote_access_profile": "none", "assigned_domain_user": None},
+    {"software_profile": "base", "remote_access_profile": "unsupported", "assigned_domain_user": None},
+    {"software_profile": "base", "remote_access_profile": "none"},
+    {"software_profile": "base", "assigned_domain_user": None},
+    {"software_profile": "base", "remote_access_profile": "none", "assigned_domain_user": "bad user"},
+])
+def test_configure_request_rejects_unsupported_or_partial_profiles(change: dict[str, object]) -> None:
+    payload = valid_request()
+    payload.update(change)  # type: ignore[arg-type]
+    with pytest.raises(ControlError) as exc:
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    assert exc.value.code == "configure_request_invalid"
 
 
 def test_configure_request_accepts_explicit_confirmed_hostname_change() -> None:
@@ -171,7 +216,7 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
         "machine_uuid": MACHINE_UUID,
         "target_ip": "192.168.101.56",
         "playbook": "03-configure-domain-workstation.yml",
-        "request": valid_request(),
+        "request": {**valid_request(), "software_profile": "base", "remote_access_profile": "none", "assigned_domain_user": None},
         "actions": [
             "manual_preflight",
             "verify_or_change_hostname",
@@ -179,8 +224,17 @@ def test_configure_preview_uses_registered_ip_without_assignment_check() -> None
             "join_or_verify_domain",
             "install_standard_packages",
             "verify_domain_workstation",
+            "apply_plasma_baseline",
         ],
     }
+
+
+def test_configure_preview_describes_only_explicit_selected_components() -> None:
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    machines = SimpleNamespace(get=lambda machine_uuid: machine)
+    request = ConfigureRequest.from_mapping(valid_request() | {"software_profile": "core-apps", "remote_access_profile": "krfb", "assigned_domain_user": "pilot.user"}, expected_uuid=MACHINE_UUID)
+    preview = ConfigurePlanner(SimpleNamespace(), machines=machines).preview(MACHINE_UUID, request)
+    assert preview["actions"][-3:] == ["apply_plasma_baseline", "install_core_apps", "configure_krfb"]
 
 
 def test_cli_accepts_only_configure_preview_and_start_with_vars_file() -> None:
