@@ -551,6 +551,12 @@ def test_hosts_page_progressively_fetches_only_when_snapshot_changes():
     assert "window.location.reload" not in script
 
 
+def test_hosts_refresh_rejects_malformed_rows_and_ignores_stale_metadata():
+    script = Path(__file__).resolve().parent / "network_hosts_refresh.test.js"
+
+    subprocess.run(["node", str(script)], check=True)
+
+
 def test_hosts_page_omits_source_filters_absent_from_snapshot_rows(tmp_path, monkeypatch):
     client, _ = make_client(tmp_path, monkeypatch)
     login(client)

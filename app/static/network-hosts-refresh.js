@@ -76,7 +76,7 @@
     row.append(node);
     return node;
   };
-  const addHostRow = (host) => {
+  const createHostRow = (host) => {
     const row = document.createElement("tr");
     cell(row, host.ip, "mono");
     cell(row, host.mac, "mono");
@@ -116,33 +116,80 @@
       : `/network/hosts/${encodeURIComponent(host.ip || "")}`;
     action.textContent = "Открыть";
     actionsCell.append(action);
-    rows.append(row);
+    return row;
   };
-  const replaceRows = (data) => {
-    const hosts = Array.isArray(data.hosts) ? data.hosts : [];
-    rows.replaceChildren();
+  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const isString = (value) => typeof value === "string";
+  const isNullableString = (value) => value === null || isString(value);
+  const isStringArray = (value) => Array.isArray(value) && value.every(isString);
+  const isNonNegativeInteger = (value) => Number.isInteger(value) && value >= 0;
+  const isSnapshot = (value) => isObject(value)
+    && isNonNegativeInteger(value.snapshot_id)
+    && isNullableString(value.generated_at)
+    && isNonNegativeInteger(value.total_hosts)
+    && isNonNegativeInteger(value.duration_ms)
+    && (value.stale === undefined || typeof value.stale === "boolean");
+  const isPagination = (value) => isObject(value)
+    && Number.isInteger(value.page) && value.page >= 1
+    && Number.isInteger(value.limit) && value.limit >= 1
+    && isNonNegativeInteger(value.total)
+    && isNonNegativeInteger(value.pages);
+  const isAvailability = (value) => value === null || (
+    isObject(value)
+    && ["state", "active_method", "checked_at", "run_status", "cidr", "check_origin", "reason"]
+      .every((key) => value[key] === undefined || isString(value[key]))
+    && (value.passive_evidence === undefined || isStringArray(value.passive_evidence))
+  );
+  const isHost = (value) => isObject(value)
+    && isString(value.ip) && value.ip.length > 0
+    && ["mac", "hostname", "manual_name"].every((key) => isNullableString(value[key]))
+    && ["display_name", "category", "device_key", "device_type", "status", "site", "last_seen_at", "last_source"]
+      .every((key) => isString(value[key]))
+    && typeof value.device_confidence === "number" && Number.isFinite(value.device_confidence)
+    && ["device_evidence", "tags", "manual_tags", "sources"].every((key) => isStringArray(value[key]))
+    && isAvailability(value.availability)
+    && value.vpn_client === null;
+  const replacementFor = (payload) => {
+    if (!isObject(payload) || payload.status !== "ok" || !isObject(payload.data)) {
+      throw new Error("invalid snapshot page envelope");
+    }
+    const { hosts, pagination: nextPagination, snapshot } = payload.data;
+    if (!Array.isArray(hosts) || !hosts.every(isHost) || !isPagination(nextPagination) || !isSnapshot(snapshot)) {
+      throw new Error("invalid snapshot page data");
+    }
+    const fragment = document.createDocumentFragment();
     if (!hosts.length) {
       const row = document.createElement("tr");
       const empty = cell(row, "Нет данных. Запустите сбор.", "empty");
       empty.colSpan = 14;
-      rows.append(row);
-    } else hosts.forEach(addHostRow);
-    const snapshot = data.snapshot || {};
-    currentSnapshotId = Number(snapshot.snapshot_id || 0);
-    root.dataset.snapshotId = String(currentSnapshotId);
-    renderSnapshot(snapshot);
-    renderPagination(data.pagination || {});
+      fragment.append(row);
+    } else hosts.forEach((host) => fragment.append(createHostRow(host)));
+    return {
+      fragment,
+      paginationText: `Страница ${nextPagination.page} из ${nextPagination.pages} · ${nextPagination.total} устройств по текущему фильтру.`,
+      snapshot,
+      snapshotText: snapshotTextFor(snapshot),
+    };
   };
-  const renderSnapshot = (snapshot) => {
-    const snapshotId = Number(snapshot.snapshot_id || 0);
-    const stale = Boolean(snapshot.stale);
+  const snapshotTextFor = (snapshot) => {
+    const snapshotId = snapshot.snapshot_id;
+    const stale = snapshot.stale === true;
     const state = !snapshotId ? "pending" : stale ? "stale" : "ready";
-    snapshotState.dataset.state = state;
-    if (!snapshotId) snapshotState.textContent = "Снимок ещё не опубликован. Ожидание данных.";
-    else snapshotState.textContent = `Снимок №${snapshotId} от ${text(snapshot.generated_at)}${stale ? " устарел" : ""} · ${Number(snapshot.total_hosts || 0)} устройств.`;
+    return {
+      state,
+      text: !snapshotId
+        ? "Снимок ещё не опубликован. Ожидание данных."
+        : `Снимок №${snapshotId} от ${text(snapshot.generated_at)}${stale ? " устарел" : ""} · ${snapshot.total_hosts} устройств.`,
+    };
   };
-  const renderPagination = (page) => {
-    pagination.textContent = `Страница ${Number(page.page || 1)} из ${Number(page.pages || 0)} · ${Number(page.total || 0)} устройств по текущему фильтру.`;
+  const replaceRows = (payload) => {
+    const replacement = replacementFor(payload);
+    rows.replaceChildren(replacement.fragment);
+    root.dataset.snapshotId = String(replacement.snapshot.snapshot_id);
+    currentSnapshotId = replacement.snapshot.snapshot_id;
+    snapshotState.dataset.state = replacement.snapshotText.state;
+    snapshotState.textContent = replacement.snapshotText.text;
+    pagination.textContent = replacement.paginationText;
   };
   const showWarning = (message) => {
     warning.textContent = message;
@@ -154,20 +201,28 @@
     const metaRequest = ++metaSequence;
     try {
       const metaResponse = await fetch("/api/v1/network/hosts/meta", { credentials: "same-origin" });
+      if (metaRequest !== metaSequence) return;
       if (!metaResponse.ok) throw new Error("metadata request failed");
-      const nextMeta = (await metaResponse.json()).data?.snapshot;
-      if (!nextMeta || metaRequest !== metaSequence) throw new Error("invalid metadata response");
-      clearWarning();
-      if (Number(nextMeta.snapshot_id || 0) === currentSnapshotId) return;
+      const metaPayload = await metaResponse.json();
+      if (metaRequest !== metaSequence) return;
+      const nextMeta = metaPayload.data?.snapshot;
+      if (!isSnapshot(nextMeta)) throw new Error("invalid metadata response");
+      if (nextMeta.snapshot_id === currentSnapshotId) {
+        clearWarning();
+        return;
+      }
       controller?.abort();
       controller = new AbortController();
       const sequence = ++requestSequence;
       const response = await fetch(currentListUrl(), { signal: controller.signal, credentials: "same-origin" });
       if (!response.ok) throw new Error("snapshot page request failed");
       const payload = await response.json();
-      if (requestSequence === sequence) replaceRows(payload.data || {});
+      if (metaRequest !== metaSequence || requestSequence !== sequence) return;
+      replaceRows(payload);
+      clearWarning();
     } catch (error) {
-      if (error.name !== "AbortError") showWarning("Не удалось обновить снимок. Показаны ранее загруженные данные.");
+      if (metaRequest !== metaSequence || error.name === "AbortError") return;
+      showWarning("Не удалось обновить снимок. Показаны ранее загруженные данные.");
     }
   };
   poll();
