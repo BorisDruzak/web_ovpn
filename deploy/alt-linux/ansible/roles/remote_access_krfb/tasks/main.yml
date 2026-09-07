@@ -83,9 +83,41 @@
     that:
       - remote_access_krfb_home.stat.exists
       - remote_access_krfb_home.stat.isdir
+      - not remote_access_krfb_home.stat.islnk
       - remote_access_krfb_home.stat.uid == krfb_resolved_uid | int
       - remote_access_krfb_home.stat.gid == krfb_resolved_gid | int
     fail_msg: The assigned domain user home is unavailable or incorrectly owned
+  no_log: true
+
+- name: Inspect existing assigned-user KRFB paths
+  ansible.builtin.stat:
+    path: "{{ krfb_path.path }}"
+    follow: false
+  loop:
+    - path: "{{ krfb_config_home }}/.config"
+      mode: "0700"
+    - path: "{{ krfb_config_home }}/.config/autostart"
+      mode: "0700"
+  loop_control:
+    loop_var: krfb_path
+  register: remote_access_krfb_existing_paths
+  no_log: true
+
+- name: Reject unsafe existing assigned-user KRFB paths
+  ansible.builtin.assert:
+    that:
+      - not krfb_existing_path.stat.exists or krfb_existing_path.stat.isdir
+      - not krfb_existing_path.stat.exists or not krfb_existing_path.stat.islnk
+      - >-
+        not krfb_existing_path.stat.exists or
+        krfb_existing_path.stat.uid == krfb_resolved_uid | int
+      - >-
+        not krfb_existing_path.stat.exists or
+        krfb_existing_path.stat.gid == krfb_resolved_gid | int
+    fail_msg: An existing assigned-user KRFB path is unsafe
+  loop: "{{ remote_access_krfb_existing_paths.results }}"
+  loop_control:
+    loop_var: krfb_existing_path
   no_log: true
 
 - name: Install the fixed KRFB package
@@ -93,33 +125,27 @@
     name: krfb
     state: present
 
-- name: Create only the assigned user's KRFB directories
+- name: Create absent assigned-user KRFB directories
   ansible.builtin.file:
-    path: "{{ krfb_config_home }}/{{ krfb_directory.path }}"
+    path: "{{ krfb_existing_path.krfb_path.path }}"
     state: directory
     owner: "{{ krfb_resolved_uid }}"
     group: "{{ krfb_resolved_gid }}"
-    mode: "{{ krfb_directory.mode }}"
-  loop:
-    - path: .config
-      mode: "0700"
-    - path: .config/autostart
-      mode: "0700"
+    mode: "{{ krfb_existing_path.krfb_path.mode }}"
+    follow: false
+  loop: "{{ remote_access_krfb_existing_paths.results }}"
   loop_control:
-    loop_var: krfb_directory
+    loop_var: krfb_existing_path
+  when: not krfb_existing_path.stat.exists
   no_log: true
 
 - name: Inspect the assigned user's KRFB directories
   ansible.builtin.stat:
-    path: "{{ krfb_config_home }}/{{ krfb_directory.path }}"
+    path: "{{ krfb_existing_path.krfb_path.path }}"
     follow: false
-  loop:
-    - path: .config
-      mode: "0700"
-    - path: .config/autostart
-      mode: "0700"
+  loop: "{{ remote_access_krfb_existing_paths.results }}"
   loop_control:
-    loop_var: krfb_directory
+    loop_var: krfb_existing_path
   register: remote_access_krfb_directories
   no_log: true
 
@@ -131,7 +157,10 @@
       - not krfb_directory_result.stat.islnk
       - krfb_directory_result.stat.uid == krfb_resolved_uid | int
       - krfb_directory_result.stat.gid == krfb_resolved_gid | int
-      - krfb_directory_result.stat.mode == krfb_directory_result.krfb_directory.mode
+      - >-
+        krfb_directory_result.krfb_existing_path.stat.exists or
+        krfb_directory_result.stat.mode ==
+        krfb_directory_result.krfb_existing_path.krfb_path.mode
     fail_msg: The assigned user's KRFB directory is unsafe
   loop: "{{ remote_access_krfb_directories.results }}"
   loop_control:

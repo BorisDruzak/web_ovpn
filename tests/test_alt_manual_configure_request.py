@@ -714,6 +714,8 @@ def test_krfb_vault_gate_accepts_only_present_string_scalars(scalar: str) -> Non
         "NULL",
         "null # comment",
         "~",
+        "|",
+        ">",
         "true",
         "TRUE",
         "true # comment",
@@ -745,6 +747,31 @@ def test_krfb_vault_gate_rejects_blank_null_boolean_or_malformed_scalars(
         }
     }
     assert "obscured-too" not in str(exc.value.to_dict())
+
+
+def test_krfb_vault_gate_ignores_nested_variable_names() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: (  # type: ignore[method-assign]
+        "nested:\n"
+        "  vault_krfb_desktop_password_obscured: nested-desktop\n"
+        "  vault_krfb_unattended_password_obscured: nested-unattended\n"
+    )
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {
+        "checks": {
+            "krfb_desktop_password_present": False,
+            "krfb_unattended_password_present": False,
+        }
+    }
+    assert "nested-desktop" not in str(exc.value.to_dict())
+    assert "nested-unattended" not in str(exc.value.to_dict())
 
 
 def test_krfb_vault_gate_does_not_decrypt_after_base_vault_failure() -> None:

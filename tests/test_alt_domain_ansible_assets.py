@@ -240,20 +240,35 @@ def test_krfb_role_requires_exact_user_home_and_network_confirmation() -> None:
     assert any(".stat.gid" in check for check in home_checks)
     assert "state: directory\n    path: \"{{ krfb_config_home }}\"" not in rendered
 
-    directory_check = next(
-        task for task in tasks if task["name"] == "Inspect the assigned user's KRFB directories"
+    existing_path_check = next(
+        task for task in tasks if task["name"] == "Inspect existing assigned-user KRFB paths"
     )
-    assert directory_check["ansible.builtin.stat"]["follow"] is False
-    directory_gate = next(
-        task for task in tasks if task["name"] == "Require safe assigned-user KRFB directories"
+    assert existing_path_check["ansible.builtin.stat"]["follow"] is False
+    unsafe_path_gate = next(
+        task for task in tasks if task["name"] == "Reject unsafe existing assigned-user KRFB paths"
     )
-    directory_checks = directory_gate["ansible.builtin.assert"]["that"]
-    assert any("isdir" in check for check in directory_checks)
-    assert any(".stat.uid" in check for check in directory_checks)
-    assert any(".stat.gid" in check for check in directory_checks)
-    assert tasks.index(directory_gate) < next(
-        index for index, task in enumerate(tasks) if "ansible.builtin.template" in task
+    unsafe_path_checks = unsafe_path_gate["ansible.builtin.assert"]["that"]
+    assert any("isdir" in check for check in unsafe_path_checks)
+    assert any("islnk" in check for check in unsafe_path_checks)
+    assert any(".stat.uid" in check for check in unsafe_path_checks)
+    assert any(".stat.gid" in check for check in unsafe_path_checks)
+
+    unsafe_gate_index = tasks.index(unsafe_path_gate)
+    root_mutation_index = min(
+        index
+        for index, task in enumerate(tasks)
+        if "ansible.builtin.package" in task
+        or "ansible.builtin.file" in task
+        or "ansible.builtin.template" in task
     )
+    assert unsafe_gate_index < root_mutation_index
+
+    directory_create = next(
+        task for task in tasks if task["name"] == "Create absent assigned-user KRFB directories"
+    )
+    assert directory_create["ansible.builtin.file"]["follow"] is False
+    assert directory_create["when"] == "not krfb_existing_path.stat.exists"
+    assert unsafe_gate_index < tasks.index(directory_create)
 
 
 def test_krfb_role_uses_fixed_package_and_protected_outputs() -> None:

@@ -186,12 +186,12 @@ class VaultHealthChecker:
             return False
 
         present = False
+        prefix = f"{variable_name}:"
         for line in decrypted_text.splitlines():
-            name, separator, raw_value = line.strip().partition(":")
-            if not separator or name.strip() != variable_name:
+            if not line.startswith(prefix):
                 continue
 
-            value = raw_value.strip()
+            value = line[len(prefix):].strip()
             if not value or value.startswith("#"):
                 present = False
                 continue
@@ -204,6 +204,10 @@ class VaultHealthChecker:
                     and value[0] == value[-1]
                     and value[1:-1]
                 )
+                continue
+
+            if value[0] in {"|", ">"}:
+                present = False
                 continue
 
             scalar = value.split(" #", 1)[0].rstrip()
