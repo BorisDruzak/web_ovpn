@@ -309,7 +309,7 @@ Run: `git diff --check`
 
 Commit: `feat(alt): configure assigned-user krfb profile`
 
-### Task 5: Document and validate a controller canary
+### Task 5: Document managed profiles and local verification
 
 **Files:**
 - Modify: `docs/ALT_MANUAL_ANSIBLE_MVP.md`
@@ -317,24 +317,28 @@ Commit: `feat(alt): configure assigned-user krfb profile`
 - Create: `docs/verification/ALT_WORKSTATION_PROFILE_ACCEPTANCE.md`
 
 **Interfaces:**
-- Consumes approved artifact records, a registered test machine, a domain test
-  user and the controller run result.
-- Produces a non-secret acceptance record for base, core-apps and, if approved,
-  KRFB.
+- Consumes the implemented profile gates and approved artifact records.
+- Produces a non-secret acceptance template for base, core-apps and KRFB;
+  it does not deploy or select a machine.
 
 - [ ] **Step 1: Document the fixed operator route**
 
 Require `workstationctl --json configure preview` before `start`; state that
-`core-apps` is unavailable until every catalog entry is enabled and that KRFB
-requires the Vault gate, an explicit user and a separately approved restricted
-port-5900 path.
+`core-apps` runs only after every selected artifact preflight passes, and that
+KRFB requires both Vault-presence checks, an explicit existing domain user,
+`ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED=true`, and a separately
+confirmed restricted port-5900 path. Do not include a secret, request-field
+override, firewall command or direct playbook invocation.
 
-- [ ] **Step 2: Validate on ALT after separately approved deployment**
+- [ ] **Step 2: Create the acceptance template**
 
-Run the controller readiness command and its stage-03 syntax check, then canary
-one already installed workstation. Capture only run ID, status, hostname,
-boolean verification facts and reboot flag. Confirm Samba trust, SSSD lookup,
-GPO processing and a single reboot only when requested.
+Create `docs/verification/ALT_WORKSTATION_PROFILE_ACCEPTANCE.md` with three
+separate checklists. Base covers preview/start, DNS/KDC, Samba trust, SSSD,
+GPO and one conditional reboot. Core-apps additionally records only component
+booleans and executable checks. KRFB additionally requires evidence of the
+pre-existing restricted TCP-5900 policy, the exact controller confirmation
+setting (without a secret), one assigned domain user, owned mode-0600 `krfbrc`
+and mode-0644 autostart file, and no controller-started KRFB process.
 
 - [ ] **Step 3: Final local verification and commit**
 
@@ -344,10 +348,49 @@ Run: `git diff --check`
 
 Commit: `docs(alt): document managed component profiles`
 
+### Task 6: Validate an approved deployed controller and canary
+
+**Files:**
+- Modify: `docs/verification/ALT_WORKSTATION_PROFILE_ACCEPTANCE.md`
+
+**Interfaces:**
+- Consumes an explicitly deployed controller release, a designated already
+  installed canary, a domain test user and the Task 5 acceptance template.
+- Produces dated, non-secret command status and observation evidence.
+
+- [ ] **Step 1: Obtain the separate deployment and service-start authority**
+
+Do not deploy from this branch, restart an inactive controller unit, alter
+Vault, select a target or execute `configure start` without the operator's
+explicit authorization. The current controller's readiness must be `ok` before
+the canary; a prior read-only observation found `alt-deploy-process.path`
+inactive, so a successful readiness result is mandatory evidence.
+
+- [ ] **Step 2: Run controller readiness and stage-03 syntax validation**
+
+Run `sudo -u altserver /usr/local/sbin/workstationctl --json controller
+readiness` and require `controller_readiness.ready: true` plus
+`ansible_manual_configure_syntax: true`. Then run the fixed stage-03 syntax
+check from the controller Ansible project. Stop on either failure.
+
+- [ ] **Step 3: Canary base, core-apps and KRFB only when their gates pass**
+
+Use `configure preview` then `configure start` for one designated already
+installed workstation per requested profile. Retain only run ID, status,
+hostname, boolean facts and reboot flag. Never copy private logs or secrets.
+For KRFB, verify the Task 5 prerequisite evidence before start; the exact
+environment gate is not an authorization to open a port.
+
+- [ ] **Step 4: Record outcomes and commit evidence only when approved**
+
+Append dated non-secret observations to the acceptance file. Run the local
+ALT-focused suite and `git diff --check` before committing documentation. Do
+not claim runtime acceptance from Windows static tests.
+
 ## Self-review
 
 - The specification's five completion items map respectively to Tasks 1, 2,
-  3, 4 and 5.
+  3, 4 and Tasks 5–6.
 - The plan introduces no topology, DNS, firewall, `netctl`, installer or
   browser-policy changes.
 - Search the final plan for `TODO`, `TBD`, `implement later`, and `similar to`
