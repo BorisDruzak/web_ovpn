@@ -1,5 +1,12 @@
 # ALT Playbook Modernization Implementation Plan
 
+> **Implemented-scope update (2026-08-09):** Plasma is managed as the Wayland
+> default. The approved baseline is limited to `/etc/skel/.config/powerdevilrc`
+> and `/etc/skel/.config/kxkbrc`: no `kscreenlockerrc`, no whole user-config
+> copy, and no change to existing domain homes. KRFB remains per explicitly
+> assigned existing AD user; it writes `krfbrc` and Plasma autostart only and
+> never launches the process.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the dormant, direct-run workstation playbooks with one controller-managed, testable ALT profile that preserves the proven manual bootstrap and AD-join flow, installs the approved Plasma baseline, CryptoPro, Справки БК, browser, and KRFB remote access, and applies browser configuration solely through AD Group Policy.
@@ -877,6 +884,8 @@ git commit -m "docs(alt): record workstation profile acceptance"
 ```
 
 ## Plan self-review
+
+- **Mandatory crypto profile update:** The baseline profile now installs the public Sosnadmin Local CA, CryptoPro CSP and ГосПлагин from fixed controller artifacts. Artifact SHA-256 and RPM metadata are checked before installation; the CryptoPro license is verified only as a private Vault presence check. IFCPlugin is excluded and browser extensions remain controlled by AD GPO.
 
 - **Spec coverage:** The plan preserves the manual bootstrap → registration → controller-only AD join contract, keeps hostname verification/change modes and ALT 11.x compatibility, retains Plasma X11, excludes every named obsolete subsystem, and introduces each approved new item through a separate role. Task 1A creates the AD Central Store procedure, copies `admx-basealt` and `admx-yandex-browser`, scopes the browser GPO to Pilot, adds `--gpo` on first join, and enables `gpupdate` on both new and existing machines. KRFB is included as Task 5 with an explicit assigned user, Vault-only credentials, mode `0600`, Plasma autostart, no prelaunch, and a port-5900 network gate.
 - **Safety coverage:** No task accepts a caller-selected playbook, arbitrary package name, URL, password, or route/DNS/firewall setting. Software remains disabled until artifact metadata is approved. Legacy files are inventoried but never deleted or silently invoked.

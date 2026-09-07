@@ -1,0 +1,155 @@
+---
+- name: Inspect approved CryptoPro CAdES archive on controller
+  ansible.builtin.stat:
+    path: "{{ software_cryptopro_cades_catalog.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: software_cryptopro_cades_artifact
+  no_log: true
+
+- name: Validate approved CryptoPro CAdES archive
+  ansible.builtin.assert:
+    that:
+      - software_cryptopro_cades_artifact.stat.exists
+      - software_cryptopro_cades_artifact.stat.isreg
+      - software_cryptopro_cades_artifact.stat.checksum == software_cryptopro_cades_catalog.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_artifact_invalid
+  no_log: true
+
+- name: Inspect installed CryptoPro CAdES package versions
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
+  loop: "{{ software_cryptopro_cades_catalog.packages }}"
+  register: software_cryptopro_cades_existing_evr
+  changed_when: false
+  failed_when: false
+
+- name: Initialize CryptoPro CAdES installation requirement
+  ansible.builtin.set_fact:
+    software_cryptopro_cades_install_required: false
+
+- name: Determine whether CryptoPro CAdES installation is required
+  ansible.builtin.set_fact:
+    software_cryptopro_cades_install_required: true
+  when: item.rc != 0 or (item.stdout | trim) != item.item.package_evr
+  loop: "{{ software_cryptopro_cades_existing_evr.results }}"
+
+- name: Install approved CryptoPro CAdES update
+  block:
+    - name: Create temporary CryptoPro CAdES directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: approved-cryptopro-cades-
+      register: software_cryptopro_cades_tempdir
+
+    - name: Copy approved CryptoPro CAdES archive
+      ansible.builtin.copy:
+        src: "{{ software_cryptopro_cades_catalog.artifact_path }}"
+        dest: "{{ software_cryptopro_cades_tempdir.path }}/cades-linux-amd64.tar.gz"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Unpack approved CryptoPro CAdES archive
+      ansible.builtin.unarchive:
+        src: "{{ software_cryptopro_cades_tempdir.path }}/cades-linux-amd64.tar.gz"
+        dest: "{{ software_cryptopro_cades_tempdir.path }}"
+        remote_src: true
+      no_log: true
+
+    - name: Find each approved CryptoPro CAdES RPM
+      ansible.builtin.find:
+        paths: "{{ software_cryptopro_cades_tempdir.path }}"
+        patterns: "{{ item.filename }}"
+        recurse: true
+        file_type: file
+      loop: "{{ software_cryptopro_cades_catalog.packages }}"
+      register: software_cryptopro_cades_rpm_files
+      no_log: true
+
+    - name: Require exactly one copy of each approved CryptoPro CAdES RPM
+      ansible.builtin.assert:
+        that:
+          - item.matched | int == 1
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_archive_content_invalid
+      loop: "{{ software_cryptopro_cades_rpm_files.results }}"
+      no_log: true
+
+    - name: Inspect approved CryptoPro CAdES RPM metadata
+      ansible.builtin.command:
+        argv: [rpm, -qp, --qf, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}", "{{ item.files[0].path }}"]
+      loop: "{{ software_cryptopro_cades_rpm_files.results }}"
+      register: software_cryptopro_cades_rpm_metadata
+      changed_when: false
+      no_log: true
+
+    - name: Require expected CryptoPro CAdES RPM metadata
+      ansible.builtin.assert:
+        that:
+          - item.stdout | trim == item.item.item.package_name ~ '|' ~ item.item.item.package_evr ~ '|' ~ item.item.item.architecture
+        fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_rpm_metadata_invalid
+      loop: "{{ software_cryptopro_cades_rpm_metadata.results }}"
+      no_log: true
+
+    - name: Collect approved CryptoPro CAdES RPM paths
+      ansible.builtin.set_fact:
+        software_cryptopro_cades_rpm_paths: >-
+          {{ software_cryptopro_cades_rpm_paths | default([]) + [item.files[0].path] }}
+      loop: "{{ software_cryptopro_cades_rpm_files.results }}"
+      no_log: true
+
+    - name: Install approved CryptoPro CAdES RPMs in one transaction
+      ansible.builtin.command:
+        argv: "{{ ['apt-get', '-y', 'install'] + software_cryptopro_cades_rpm_paths }}"
+      register: software_cryptopro_cades_install
+      changed_when: software_cryptopro_cades_install.rc == 0
+      no_log: true
+  always:
+    - name: Remove temporary CryptoPro CAdES directory
+      ansible.builtin.file:
+        path: "{{ software_cryptopro_cades_tempdir.path | default('') }}"
+        state: absent
+      when: software_cryptopro_cades_tempdir is defined
+      no_log: true
+  when: software_cryptopro_cades_install_required
+
+- name: Verify installed CryptoPro CAdES package versions
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
+  loop: "{{ software_cryptopro_cades_catalog.packages }}"
+  register: software_cryptopro_cades_installed_evr
+  changed_when: false
+
+- name: Require installed CryptoPro CAdES package versions
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout | trim == item.item.package_evr
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_install_verification_failed
+  loop: "{{ software_cryptopro_cades_installed_evr.results }}"
+
+- name: Verify CryptoPro CAdES browser integration files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ software_cryptopro_cades_native_host }}"
+    - "{{ software_cryptopro_cades_native_manifest }}"
+  register: software_cryptopro_cades_runtime_files
+
+- name: Require CryptoPro CAdES browser integration files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_cades_native_host_missing
+  loop: "{{ software_cryptopro_cades_runtime_files.results }}"
+
+- name: Publish CryptoPro CAdES verification facts
+  ansible.builtin.set_fact:
+    cryptopro_cades_ok: true
+    cryptopro_native_host_ok: true
+    cryptopro_cades_version: "{{ software_cryptopro_cades_catalog.package_evr }}"

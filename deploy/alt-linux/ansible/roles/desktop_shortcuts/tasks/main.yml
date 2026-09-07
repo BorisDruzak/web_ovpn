@@ -1,0 +1,145 @@
+---
+- name: Create desktop directory for future domain users
+  ansible.builtin.file:
+    path: "{{ desktop_shortcuts_skel_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Inspect installed desktop application entries
+  ansible.builtin.stat:
+    path: "{{ desktop_shortcuts_applications_dir }}/{{ item }}"
+  loop: "{{ desktop_shortcuts_application_entries }}"
+  register: desktop_shortcuts_application_entry_stats
+
+- name: Require installed desktop application entries
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+    fail_msg: "ALT_PREFLIGHT_FAILURE:desktop_shortcut_application_missing"
+  loop: "{{ desktop_shortcuts_application_entry_stats.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Copy application launchers into future domain user desktops
+  ansible.builtin.copy:
+    src: "{{ desktop_shortcuts_applications_dir }}/{{ item }}"
+    dest: "{{ desktop_shortcuts_skel_dir }}/{{ item }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ desktop_shortcuts_application_entries }}"
+
+- name: Create folder links in future domain user desktops
+  ansible.builtin.file:
+    src: "{{ item.src }}"
+    dest: "{{ desktop_shortcuts_skel_dir }}/{{ item.name }}"
+    state: link
+    force: true
+  loop: "{{ desktop_shortcuts_relative_links }}"
+
+- name: Create Nextcloud autostart directory for future domain users
+  ansible.builtin.file:
+    path: "{{ desktop_shortcuts_nextcloud_autostart_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Add Nextcloud to future domain user autostart
+  ansible.builtin.copy:
+    src: "{{ desktop_shortcuts_applications_dir }}/{{ desktop_shortcuts_nextcloud_entry }}"
+    dest: "{{ desktop_shortcuts_nextcloud_autostart_dir }}/{{ desktop_shortcuts_nextcloud_entry }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Resolve domain test user for existing desktop shortcuts
+  ansible.builtin.command:
+    argv: [getent, passwd, "{{ domain_test_user }}"]
+  register: desktop_shortcuts_user_lookup
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Parse existing domain test user identity
+  ansible.builtin.set_fact:
+    desktop_shortcuts_user_fields: "{{ desktop_shortcuts_user_lookup.stdout | trim | split(':') }}"
+  when: desktop_shortcuts_user_lookup.rc == 0
+  no_log: true
+
+- name: Inspect existing domain test user home
+  ansible.builtin.stat:
+    path: "{{ desktop_shortcuts_user_fields[5] }}"
+  register: desktop_shortcuts_user_home
+  when:
+    - desktop_shortcuts_user_lookup.rc == 0
+    - desktop_shortcuts_user_fields | length == 7
+  no_log: true
+
+- name: Create existing domain test user desktop directory
+  ansible.builtin.file:
+    path: "{{ desktop_shortcuts_user_fields[5] }}/{{ desktop_shortcuts_user_desktop_name }}"
+    state: directory
+    owner: "{{ desktop_shortcuts_user_fields[2] | int }}"
+    group: "{{ desktop_shortcuts_user_fields[3] | int }}"
+    mode: "0755"
+  when:
+    - desktop_shortcuts_user_home is defined
+    - desktop_shortcuts_user_home.stat.exists
+  no_log: true
+
+- name: Copy application launchers into existing domain test user desktop
+  ansible.builtin.copy:
+    src: "{{ desktop_shortcuts_applications_dir }}/{{ item }}"
+    dest: "{{ desktop_shortcuts_user_fields[5] }}/{{ desktop_shortcuts_user_desktop_name }}/{{ item }}"
+    remote_src: true
+    owner: "{{ desktop_shortcuts_user_fields[2] | int }}"
+    group: "{{ desktop_shortcuts_user_fields[3] | int }}"
+    mode: "0755"
+  loop: "{{ desktop_shortcuts_application_entries }}"
+  when:
+    - desktop_shortcuts_user_home is defined
+    - desktop_shortcuts_user_home.stat.exists
+  no_log: true
+
+- name: Create Nextcloud autostart directory for existing domain test user
+  ansible.builtin.file:
+    path: "{{ desktop_shortcuts_user_fields[5] }}/.config/autostart"
+    state: directory
+    owner: "{{ desktop_shortcuts_user_fields[2] | int }}"
+    group: "{{ desktop_shortcuts_user_fields[3] | int }}"
+    mode: "0700"
+  when:
+    - desktop_shortcuts_user_home is defined
+    - desktop_shortcuts_user_home.stat.exists
+  no_log: true
+
+- name: Add Nextcloud to existing domain test user autostart
+  ansible.builtin.copy:
+    src: "{{ desktop_shortcuts_applications_dir }}/{{ desktop_shortcuts_nextcloud_entry }}"
+    dest: "{{ desktop_shortcuts_user_fields[5] }}/.config/autostart/{{ desktop_shortcuts_nextcloud_entry }}"
+    remote_src: true
+    owner: "{{ desktop_shortcuts_user_fields[2] | int }}"
+    group: "{{ desktop_shortcuts_user_fields[3] | int }}"
+    mode: "0644"
+  when:
+    - desktop_shortcuts_user_home is defined
+    - desktop_shortcuts_user_home.stat.exists
+  no_log: true
+
+- name: Create folder links in existing domain test user desktop
+  ansible.builtin.file:
+    src: "{{ item.src }}"
+    dest: "{{ desktop_shortcuts_user_fields[5] }}/{{ desktop_shortcuts_user_desktop_name }}/{{ item.name }}"
+    state: link
+    force: true
+  loop: "{{ desktop_shortcuts_relative_links }}"
+  when:
+    - desktop_shortcuts_user_home is defined
+    - desktop_shortcuts_user_home.stat.exists
+  no_log: true

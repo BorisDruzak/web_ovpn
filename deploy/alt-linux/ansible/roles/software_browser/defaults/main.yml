@@ -1,0 +1,3 @@
+---
+software_browser_temp_rpm: /var/tmp/approved-yandex-browser.rpm
+software_browser_catalog: "{{ software_catalog.browser }}"

@@ -1,0 +1,28 @@
+---
+- name: Install Sosnadmin organization CA anchor
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/organization_ca/sosnadmin-local-ca.crt"
+    dest: "{{ organization_ca_anchor_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Refresh system certificate trust
+
+- name: Refresh CA trust before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify Sosnadmin organization CA in system trust
+  ansible.builtin.command:
+    argv: [trust, list, --filter, ca-anchors]
+  register: organization_ca_trust
+  changed_when: false
+
+- name: Require Sosnadmin organization CA in system trust
+  ansible.builtin.assert:
+    that:
+      - organization_ca_subject in organization_ca_trust.stdout
+    fail_msg: ALT_PREFLIGHT_FAILURE:organization_ca_verification_failed
+
+- name: Publish organization CA verification fact
+  ansible.builtin.set_fact:
+    organization_ca_ok: true

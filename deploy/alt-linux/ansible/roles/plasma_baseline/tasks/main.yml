@@ -1,0 +1,24 @@
+---
+- name: Create Plasma defaults directory for future domain users
+  ansible.builtin.file:
+    path: "{{ plasma_baseline_skel_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Set approved Plasma power defaults for future domain users
+  ansible.builtin.template:
+    src: powerdevilrc.j2
+    dest: /etc/skel/.config/powerdevilrc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set approved Plasma keyboard layout behavior for future domain users
+  ansible.builtin.template:
+    src: kxkbrc.j2
+    dest: /etc/skel/.config/kxkbrc
+    owner: root
+    group: root
+    mode: "0644"

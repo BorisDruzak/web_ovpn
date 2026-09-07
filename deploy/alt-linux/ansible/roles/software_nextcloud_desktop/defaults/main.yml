@@ -1,0 +1,2 @@
+---
+software_nextcloud_desktop_catalog: "{{ software_catalog.nextcloud_desktop }}"

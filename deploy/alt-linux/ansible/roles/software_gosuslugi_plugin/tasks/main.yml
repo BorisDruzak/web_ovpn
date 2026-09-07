@@ -1,0 +1,197 @@
+---
+- name: Inspect approved ГосПлагин ZIP archive on controller
+  ansible.builtin.stat:
+    path: "{{ software_gosuslugi_plugin_catalog.artifact_path }}"
+    get_checksum: true
+    checksum_algorithm: sha256
+  delegate_to: localhost
+  become: false
+  register: software_gosuslugi_plugin_artifact
+  no_log: true
+
+- name: Validate approved ГосПлагин ZIP archive
+  ansible.builtin.assert:
+    that:
+      - software_gosuslugi_plugin_artifact.stat.exists
+      - software_gosuslugi_plugin_artifact.stat.isreg
+      - software_gosuslugi_plugin_artifact.stat.checksum == software_gosuslugi_plugin_catalog.sha256
+    fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_artifact_invalid
+  no_log: true
+
+- name: Inspect installed ГосПлагин RPM version
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_gosuslugi_plugin_catalog.package_name }}"]
+  register: software_gosuslugi_plugin_existing_evr
+  changed_when: false
+  failed_when: false
+
+- name: Determine whether ГосПлагин installation is required
+  ansible.builtin.set_fact:
+    software_gosuslugi_plugin_install_required: >-
+      {{ software_gosuslugi_plugin_existing_evr.rc != 0 or
+      (software_gosuslugi_plugin_existing_evr.stdout | trim) !=
+      software_gosuslugi_plugin_catalog.package_evr }}
+
+- name: Install approved ГосПлагин payload without running vendor installer
+  block:
+    - name: Install ZIP extraction prerequisite
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, unzip]
+      register: software_gosuslugi_plugin_unzip
+      changed_when: software_gosuslugi_plugin_unzip.rc == 0
+
+    - name: Create temporary ГосПлагин directory
+      ansible.builtin.tempfile:
+        state: directory
+        path: /var/tmp
+        prefix: approved-gosuslugi-plugin-
+      register: software_gosuslugi_plugin_tempdir
+
+    - name: Copy approved ГосПлагин ZIP archive
+      ansible.builtin.copy:
+        src: "{{ software_gosuslugi_plugin_catalog.artifact_path }}"
+        dest: "{{ software_gosuslugi_plugin_tempdir.path }}/gosuslugi-plugin.zip"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Extract vendor installer without executing it
+      ansible.builtin.unarchive:
+        src: "{{ software_gosuslugi_plugin_tempdir.path }}/gosuslugi-plugin.zip"
+        dest: "{{ software_gosuslugi_plugin_tempdir.path }}"
+        remote_src: true
+        creates: "{{ software_gosuslugi_plugin_tempdir.path }}/{{ software_gosuslugi_plugin_catalog.installer_filename }}"
+      no_log: true
+
+    - name: Read ГосПлагин self-extracting payload marker
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -a
+          - -n
+          - -x
+          - "PAYLOAD:"
+          - "{{ software_gosuslugi_plugin_tempdir.path }}/{{ software_gosuslugi_plugin_catalog.installer_filename }}"
+      register: software_gosuslugi_plugin_payload_marker
+      changed_when: false
+      no_log: true
+
+    - name: Require exactly one ГосПлагин payload marker
+      ansible.builtin.assert:
+        that:
+          - software_gosuslugi_plugin_payload_marker.stdout_lines | length == 1
+          - software_gosuslugi_plugin_payload_marker.stdout is match('^[0-9]+:PAYLOAD:$')
+        fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_payload_marker_invalid
+      no_log: true
+
+    - name: Create ГосПлагин payload directory
+      ansible.builtin.file:
+        path: "{{ software_gosuslugi_plugin_tempdir.path }}/payload"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Extract ГосПлагин RPM payload without running vendor installer
+      ansible.builtin.command:
+        argv:
+          - /bin/bash
+          - -o
+          - pipefail
+          - -c
+          - >-
+            tail -n +$(({{ software_gosuslugi_plugin_payload_marker.stdout |
+            regex_replace(':PAYLOAD:$', '') | int + 1 }})) "{{ software_gosuslugi_plugin_tempdir.path }}/{{
+            software_gosuslugi_plugin_catalog.installer_filename }}" |
+            tar -xC "{{ software_gosuslugi_plugin_tempdir.path }}/payload"
+      changed_when: false
+      no_log: true
+
+    - name: Find approved ГосПлагин RPM payload
+      ansible.builtin.find:
+        paths: "{{ software_gosuslugi_plugin_tempdir.path }}/payload"
+        patterns: "{{ software_gosuslugi_plugin_catalog.payload_filename }}"
+        recurse: true
+        file_type: file
+      register: software_gosuslugi_plugin_rpm_files
+      no_log: true
+
+    - name: Require exactly one approved ГосПлагин RPM payload
+      ansible.builtin.assert:
+        that:
+          - software_gosuslugi_plugin_rpm_files.matched | int == 1
+        fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_payload_invalid
+      no_log: true
+
+    - name: Inspect approved ГосПлагин RPM metadata
+      ansible.builtin.command:
+        argv:
+          - rpm
+          - -qp
+          - --qf
+          - "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}"
+          - "{{ software_gosuslugi_plugin_rpm_files.files[0].path }}"
+      register: software_gosuslugi_plugin_metadata
+      changed_when: false
+      no_log: true
+
+    - name: Require expected ГосПлагин RPM metadata
+      ansible.builtin.assert:
+        that:
+          - software_gosuslugi_plugin_metadata.stdout | trim == software_gosuslugi_plugin_catalog.package_name ~ '|' ~ software_gosuslugi_plugin_catalog.package_evr ~ '|' ~ software_gosuslugi_plugin_catalog.architecture
+        fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_metadata_invalid
+      no_log: true
+
+    - name: Install approved ГосПлагин RPM payload
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, "{{ software_gosuslugi_plugin_rpm_files.files[0].path }}"]
+      register: software_gosuslugi_plugin_install
+      changed_when: software_gosuslugi_plugin_install.rc == 0
+      no_log: true
+  always:
+    - name: Remove temporary ГосПлагин directory
+      ansible.builtin.file:
+        path: "{{ software_gosuslugi_plugin_tempdir.path | default('') }}"
+        state: absent
+      when: software_gosuslugi_plugin_tempdir is defined
+      no_log: true
+  when: software_gosuslugi_plugin_install_required
+
+- name: Verify installed ГосПлагин RPM version
+  ansible.builtin.command:
+    argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_gosuslugi_plugin_catalog.package_name }}"]
+  register: software_gosuslugi_plugin_installed_evr
+  changed_when: false
+
+- name: Require installed ГосПлагин RPM version
+  ansible.builtin.assert:
+    that:
+      - software_gosuslugi_plugin_installed_evr.rc == 0
+      - software_gosuslugi_plugin_installed_evr.stdout | trim == software_gosuslugi_plugin_catalog.package_evr
+    fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_install_verification_failed
+
+- name: Read ГосПлагин native messaging manifest
+  ansible.builtin.slurp:
+    src: "{{ software_gosuslugi_plugin_native_manifest }}"
+  register: software_gosuslugi_plugin_manifest
+
+- name: Verify ГосПлагин native host
+  ansible.builtin.stat:
+    path: "{{ software_gosuslugi_plugin_native_host }}"
+  register: software_gosuslugi_plugin_native_host_stat
+
+- name: Require ГосПлагин browser integration
+  ansible.builtin.assert:
+    that:
+      - software_gosuslugi_plugin_native_host_stat.stat.exists
+      - software_gosuslugi_plugin_native_host_stat.stat.isreg
+      - "'jabjbhgjaidecageckilhonbggakppme' in (software_gosuslugi_plugin_manifest.content | b64decode)"
+      - software_gosuslugi_plugin_native_host in (software_gosuslugi_plugin_manifest.content | b64decode)
+    fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_native_host_missing
+
+- name: Publish ГосПлагин verification facts
+  ansible.builtin.set_fact:
+    gosuslugi_plugin_ok: true
+    gosuslugi_plugin_native_host_ok: true
+    gosuslugi_plugin_version: "{{ software_gosuslugi_plugin_catalog.package_evr }}"
