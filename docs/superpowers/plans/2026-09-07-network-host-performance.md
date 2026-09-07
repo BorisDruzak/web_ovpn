@@ -315,4 +315,3 @@ ssh ui-vpn-deploy "curl --noproxy '*' -fsS --max-time 5 http://127.0.0.1:8088/ap
 ~~~
 
 Expected: non-empty snapshot, active openvpn-web, HTTP success in five seconds, and no new netctl timeout log.
-
