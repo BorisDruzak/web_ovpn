@@ -1,0 +1,5 @@
+---
+software_catalog:
+  browser: {enabled: false}
+  onlyoffice: {enabled: false}
+  nextcloud_desktop: {enabled: false}
