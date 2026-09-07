@@ -13,6 +13,7 @@ def test_catalog_components_are_disabled_or_complete() -> None:
         if item["enabled"]:
             assert item["source"] in {"rpm", "alt-repository"}, name
             assert {"enabled", "source", "executable"} <= set(item), name
+            assert isinstance(item["executable"], str) and item["executable"], name
             if item["source"] == "rpm":
                 assert {"artifact_path", "sha256", "package_name", "package_evr", "architecture"} <= set(item), name
             else:
