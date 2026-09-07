@@ -11,14 +11,14 @@ NEW = "2026-07-01T00:00:00Z"
 NOW = "2026-07-29T12:00:00Z"
 
 
-def _projection_segment(conn, cidr: str = "203.0.113.0/24") -> None:
+def _projection_segment(conn, cidr: str = "203.0.113.0/24", segment_id: str = "projection") -> None:
     """Add one approved monitored segment without changing collector fixtures."""
     revision = conn.execute("SELECT id FROM context_revisions WHERE context_id = 'availability-test'").fetchone()[0]
     conn.execute(
         """INSERT INTO intent_segments
            (context_revision_id, stable_id, lifecycle, canonical_json, canonical_hash, origin_context_revision_id)
-           VALUES (?, 'projection', 'active', ?, 'projection-hash', ?)""",
-        (revision, json.dumps({"id": "projection", "cidr": cidr, "availability_monitoring": True}, sort_keys=True), revision),
+           VALUES (?, ?, 'active', ?, ?, ?)""",
+        (revision, segment_id, json.dumps({"id": segment_id, "cidr": cidr, "availability_monitoring": True}, sort_keys=True), f"{segment_id}-hash", revision),
     )
 
 
@@ -85,6 +85,147 @@ def _set_segment(
         tcp_ports=tcp_ports,
         interval_minutes=interval_minutes,
     )
+
+
+@pytest.fixture
+def seeded_hosts(conn):
+    """Seed production-scale host evidence spanning every availability outcome."""
+    from netctl.availability import AvailabilityResult, AvailabilityRun, save_availability_run, set_force_monitor
+
+    _projection_segment(conn, "203.0.113.0/24", "projection-stale")
+    _projection_segment(conn, "203.0.114.0/24", "projection-seen")
+    _projection_segment(conn, "203.0.115.0/24", "projection-missing")
+    special_hosts = [
+        ("192.0.2.1", "AA:BB:CC:00:00:01", "online"),
+        ("192.0.2.2", "AA:BB:CC:00:00:02", "online"),
+        ("198.51.100.1", "AA:BB:CC:00:00:03", "online"),
+        ("198.51.100.2", "AA:BB:CC:00:00:04", "online"),
+        ("203.0.113.8", "AA:BB:CC:00:00:08", "online"),
+        ("203.0.113.9", "AA:BB:CC:00:00:09", "online"),
+        ("203.0.113.10", "AA:BB:CC:00:00:0A", "online"),
+        ("203.0.113.11", "AA:BB:CC:00:00:0B", "online"),
+        ("203.0.114.8", "AA:BB:CC:00:00:0C", "online"),
+        ("203.0.115.8", "AA:BB:CC:00:00:0D", "online"),
+    ]
+    generated_hosts = [
+        (f"10.200.{index // 254}.{index % 254 + 1}", f"AA:BB:DD:{index >> 16:02X}:{index >> 8 & 255:02X}:{index & 255:02X}", "online")
+        for index in range(1190)
+    ]
+    conn.executemany(
+        """INSERT INTO network_hosts
+           (ip, mac, category, status, first_seen_at, last_seen_at, last_source, tags_json)
+           VALUES (?, ?, 'unknown', ?, ?, ?, 'test', '{}')""",
+        [(ip, mac, status, NOW, NOW) for ip, mac, status in special_hosts + generated_hosts],
+    )
+    mikrotik_source = conn.execute(
+        """INSERT INTO network_sources
+           (name, driver, host, port, username, secret_ref, enabled, created_at, updated_at,
+            last_collect_at, last_status)
+           VALUES ('projection-mikrotik', 'mikrotik_api', '192.0.2.254', 8729, '', '', 1, ?, ?, ?, 'ok')""",
+        (NOW, NOW, NOW),
+    ).lastrowid
+    switch_source = conn.execute(
+        """INSERT INTO network_sources
+           (name, driver, host, port, username, secret_ref, enabled, created_at, updated_at,
+            last_collect_at, last_status)
+           VALUES ('projection-switch', 'snmp_switch', '192.0.2.253', 161, '', '', 1, ?, ?, ?, 'success')""",
+        (NOW, NOW, NOW),
+    ).lastrowid
+    switch_run = conn.execute(
+        """INSERT INTO switch_collection_runs (source_id, started_at, finished_at, status, outcomes_json)
+           VALUES (?, ?, ?, 'success', '{}')""",
+        (switch_source, NOW, NOW),
+    ).lastrowid
+    conn.executemany(
+        "INSERT INTO arp_entries (source_id, ip, mac, complete, last_seen_at) VALUES (?, ?, ?, 1, ?)",
+        [
+            (mikrotik_source, "203.0.113.10", "AA:BB:CC:00:00:0A", NOW),
+            (mikrotik_source, "203.0.114.8", "AA:BB:CC:00:00:0C", NOW),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO dhcp_leases (source_id, ip, mac, status, last_seen_at) VALUES (?, ?, ?, 'bound', ?)",
+        [(mikrotik_source, "203.0.113.11", "AA:BB:CC:00:00:0B", NOW)],
+    )
+    conn.executemany(
+        "INSERT INTO bridge_hosts (source_id, mac, bridge, interface, last_seen_at) VALUES (?, ?, 'bridge', 'ether2', ?)",
+        [(mikrotik_source, f"AA:BC:00:{index >> 8:02X}:{index & 255:02X}:01", NOW) for index in range(300)],
+    )
+    conn.executemany(
+        """INSERT INTO current_switch_fdb
+           (source_id, vlan_key, mac, port_key, status, first_seen_at, last_seen_at, collector_run_id)
+           VALUES (?, '1', ?, 'physical:1', 'learned', ?, ?, ?)""",
+        [
+            (switch_source, f"AA:BD:00:{index >> 8:02X}:{index & 255:02X}:01", NOW, NOW, switch_run)
+            for index in range(2000)
+        ],
+    )
+    conn.commit()
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "192.0.2.0/30", started=NOW, finished=NOW,
+            results=[
+                AvailabilityResult("192.0.2.1", "reachable", "icmp"),
+                AvailabilityResult("192.0.2.2", "unreachable", None),
+            ],
+            target_count=2,
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "203.0.114.0/24", started=NOW, finished=NOW,
+            results=[AvailabilityResult("203.0.114.8", "unreachable", None)], target_count=1,
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.failed(
+            "198.51.100.0/30", started=NOW, finished=NOW, error_class="deadline_exceeded", target_count=2,
+        ),
+    )
+    save_availability_run(
+        conn,
+        AvailabilityRun.success(
+            "203.0.113.0/24", started=OLD, finished=OLD,
+            results=[AvailabilityResult("203.0.113.8", "unreachable", None)], target_count=1,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO availability_manual_results
+           (segment_id, ip, requested_at, checked_at, active_state, active_method)
+           VALUES ('projection-stale', '203.0.113.9', ?, ?, 'reachable', 'tcp')""",
+        (NOW, NOW),
+    )
+    set_force_monitor(conn, "192.0.2.2", enabled=True, now=NOW)
+    set_force_monitor(conn, "198.51.100.1", enabled=False, now=NOW)
+    conn.commit()
+    hosts = [dict(row) for row in conn.execute("SELECT * FROM network_hosts ORDER BY ip")]
+    next(host for host in hosts if host["ip"] == "203.0.113.10")["openvpn_connected"] = True
+    return hosts
+
+
+def test_bulk_projection_matches_legacy_for_every_status(conn, seeded_hosts):
+    from netctl.availability import bulk_project_host_availability, project_host_availability
+
+    expected = [project_host_availability(conn, host, now=NOW) for host in seeded_hosts]
+    assert {host["status"] for host in expected} == {"connected", "offline", "online", "seen", "stale"}
+
+    assert bulk_project_host_availability(conn, seeded_hosts, now=NOW) == expected
+
+
+def test_bulk_projection_uses_bounded_sql_for_large_host_list(conn, seeded_hosts):
+    from netctl.availability import bulk_project_host_availability
+
+    assert len(seeded_hosts) == 1200
+    assert conn.execute("SELECT count(*) FROM current_switch_fdb").fetchone()[0] == 2000
+    assert conn.execute("SELECT count(*) FROM bridge_hosts").fetchone()[0] == 300
+    statements = []
+    conn.set_trace_callback(statements.append)
+    bulk_project_host_availability(conn, seeded_hosts, now=NOW)
+
+    assert len(statements) < 80
 
 
 def test_availability_targets_include_recent_hosts_management_and_forced_history(conn):
