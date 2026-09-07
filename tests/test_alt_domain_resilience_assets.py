@@ -212,7 +212,7 @@ def test_initial_trust_probe_finishes_before_deciding_whether_to_skip_join():
     assert env().from_string(probe["delay"]).render(values) == 5
 
 
-def test_login_baseline_owns_pam_write_and_immediately_precedes_verification():
+def test_login_baseline_owns_pam_write_and_precedes_software_and_verification():
     baseline = role("domain_login_baseline")
     assert any(task.get("ansible.builtin.lineinfile", {}).get("path") == "/etc/pam.d/system-auth-sss-only" for task in baseline)
     verify = list(flatten(role("domain_verify")))
@@ -221,7 +221,7 @@ def test_login_baseline_owns_pam_write_and_immediately_precedes_verification():
     names = [task["ansible.builtin.include_role"]["name"] for task in flatten(phase) if "ansible.builtin.include_role" in task]
     assert names == ["manual_preflight", "workstation_identity", "prejoin_upgrade", "workstation_base",
                      "alt_group_policy_prerequisites", "workstation_network", "domain_join",
-                     "alt_group_policy_client", "domain_login_baseline", "domain_verify"]
+                     "alt_group_policy_client", "domain_login_baseline", "standard_software", "domain_verify"]
 
 
 @pytest.mark.parametrize("line", [
@@ -286,7 +286,7 @@ def test_finalizer_preserves_reboot_facts_and_verification_for_success_and_failu
     section = phase["rescue"] if failed else phase["block"]
     task = next(task for task in section if task.get("name") == ("Build failed configure result" if failed else "Finalize successful configure result"))
     rendered = env().from_string(task["ansible.builtin.set_fact"]["configure_result"]).render(
-        configure_result={"phase": "domain_core_verify"}, prejoin_upgrade_reboot_required=upgrade,
+        configure_result={"phase": "domain_core_verify", "components": {}, "verification": {}}, prejoin_upgrade_reboot_required=upgrade,
         domain_join_reboot_required=joined, domain_join_recovered=True,
         domain_verification={"domain_join": True, "sssd": False, "domain_user_lookup": False, "home_creation": True},
         alt_group_policy_machine_updated=True,
@@ -308,3 +308,57 @@ def test_stage03_roles_and_playbooks_never_reboot_or_delete_domain_accounts():
             argv = task.get("ansible.builtin.command", {}).get("argv", [])
             assert not (argv and argv[0] in ["reboot", "shutdown", "ldapdelete"])
             assert argv[:3] != ["net", "ads", "leave"]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_component_finalizer_preserves_partial_results_and_redacts_failure_details(failed):
+    result = {"phase": "components", "components": {}, "verification": {}, "error": None}
+    for component in ["browser", "onlyoffice"]:
+        tasks = role("software_" + component)
+        result = env().from_string(tasks[0]["ansible.builtin.set_fact"]["configure_result"]).render(
+            configure_result=result
+        )
+        if component == "browser" or not failed:
+            result = env().from_string(tasks[-1]["ansible.builtin.set_fact"]["configure_result"]).render(
+                configure_result=result
+            )
+    phase = load("playbooks/tasks/configure_critical_phase.yml")[1]
+    section = phase["rescue"] if failed else phase["block"]
+    name = "Build failed configure result" if failed else "Finalize successful configure result"
+    task = next(task for task in section if task["name"] == name)
+    rendered = env().from_string(task["ansible.builtin.set_fact"]["configure_result"]).render(
+        configure_result=result,
+        ansible_failed_result={"stdout": "private package output", "stderr": "private artifact path"},
+        domain_verification={"domain_join": True},
+    )
+    assert rendered["components"]["browser"] == {"status": "ok", "verified": True}
+    assert rendered["components"]["onlyoffice"] == {
+        "status": "failed" if failed else "ok", "verified": not failed,
+    }
+    assert rendered["verification"] == {
+        "software_browser": True, "software_onlyoffice": not failed,
+        "domain_join": True, "group_policy": False,
+    }
+    assert "private" not in str(rendered)
+    assert rendered["status"] == ("failed" if failed else "successful")
+    assert rendered["error"] == ({
+        "code": "configure_critical_phase_failed", "class": "fatal-invariant",
+        "safe_message": "Critical phase configuration failed",
+    } if failed else None)
+
+
+def test_base_software_profile_selects_no_roles_and_does_not_change_result():
+    selection = load("playbooks/tasks/configure_component_preflight.yml")[0]
+    selected = env().from_string(selection["ansible.builtin.set_fact"]["selected_software_components"]).render(
+        software_profile="base"
+    )
+    assert selected == []
+    tasks = role("standard_software")
+    values = {"software_profile": "base", "selected_software_components": selected,
+              "configure_component_preflight_passed": True}
+    assert evaluate(tasks[0]["ansible.builtin.assert"]["that"], values)
+    for task in tasks:
+        if "ansible.builtin.set_fact" in task:
+            assert not evaluate(task["when"], values)
+        if "ansible.builtin.include_role" in task:
+            assert env().from_string(task["loop"]).render(values) == []

@@ -80,6 +80,10 @@
       ansible.builtin.include_role:
         name: domain_login_baseline
 
+    - name: Run selected standard software
+      ansible.builtin.include_role:
+        name: standard_software
+
     - name: Run domain verification
       ansible.builtin.include_role:
         name: domain_verify
@@ -95,7 +99,7 @@
             'reboot_required': (prejoin_upgrade_reboot_required | default(false) | bool)
               or (domain_join_reboot_required | default(false) | bool),
             'error': none,
-            'components': {
+            'components': configure_result.components | combine({
               'manual_preflight': true,
               'workstation_identity': true,
               'prejoin_upgrade': true,
@@ -106,8 +110,8 @@
               'alt_group_policy_client': true,
               'domain_login_baseline': true,
               'domain_verify': true
-            },
-            'verification': (domain_verification | default({})) | combine({
+            }),
+            'verification': configure_result.verification | combine(domain_verification | default({})) | combine({
               'group_policy': alt_group_policy_machine_updated | default(false) | bool
             })
           }) }}
@@ -125,7 +129,7 @@
             'recovered': domain_join_recovered | default(false) | bool,
             'reboot_required': (prejoin_upgrade_reboot_required | default(false) | bool)
               or (domain_join_reboot_required | default(false) | bool),
-            'verification': (domain_verification | default({})) | combine({
+            'verification': configure_result.verification | combine(domain_verification | default({})) | combine({
               'group_policy': alt_group_policy_machine_updated | default(false) | bool
             }),
             'error': {

@@ -1,0 +1,154 @@
+---
+# A pessimistic record survives any failure; success is published after cleanup.
+- name: Initialize browser verification and safe failure record
+  ansible.builtin.set_fact:
+    software_browser_verified: false
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'browser': {'status': 'failed', 'verified': false}
+        }),
+        'verification': configure_result.verification | combine({'software_browser': false})
+      }) }}
+
+- name: Install and verify the approved browser RPM
+  no_log: true
+  block:
+    - name: Revalidate the fixed browser catalog contract
+      ansible.builtin.assert:
+        that:
+          - configure_component_preflight_passed | default(false) | bool
+          - "'browser' in selected_software_components"
+          - software_catalog.browser.enabled is boolean
+          - software_catalog.browser.enabled
+          - software_catalog.browser.source == 'rpm'
+          - software_catalog.browser.artifact_path == '/opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm'
+          - software_catalog.browser.sha256 is match('^[0-9a-f]{64}$')
+          - software_catalog.browser.package_name == 'yandex-browser-stable'
+          - software_catalog.browser.package_evr is string
+          - software_catalog.browser.package_evr | trim | length > 0
+          - software_catalog.browser.architecture == 'x86_64'
+          - software_catalog.browser.executable == '/usr/bin/yandex-browser-stable'
+        fail_msg: Approved software catalog validation failed
+
+    - name: Recheck the controller browser artifact checksum
+      ansible.builtin.stat:
+        path: "{{ software_catalog.browser.artifact_path }}"
+        checksum_algorithm: sha256
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: software_browser_controller_artifact
+
+    - name: Require the regular checksum-valid controller browser artifact
+      ansible.builtin.assert:
+        that:
+          - software_browser_controller_artifact.stat.exists
+          - software_browser_controller_artifact.stat.isreg
+          - software_browser_controller_artifact.stat.checksum == software_catalog.browser.sha256
+        fail_msg: Approved software artifact verification failed
+
+    # These approved EVRs have no epoch; reject a hidden nonzero RPM epoch.
+    - name: Read the controller browser RPM identity
+      ansible.builtin.command:
+        argv: [rpm, -qp, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "{{ software_catalog.browser.artifact_path }}"]
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: software_browser_controller_metadata
+
+    - name: Require the exact controller browser RPM identity
+      ansible.builtin.assert:
+        that:
+          - >-
+            software_browser_controller_metadata.stdout in [
+              software_catalog.browser.package_name ~ '|' ~ software_catalog.browser.package_evr ~ '|' ~ software_catalog.browser.architecture ~ '|(none)',
+              software_catalog.browser.package_name ~ '|' ~ software_catalog.browser.package_evr ~ '|' ~ software_catalog.browser.architecture ~ '|0'
+            ]
+        fail_msg: Approved software RPM metadata verification failed
+
+    - name: Create a private temporary browser RPM path
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .rpm
+        prefix: alt-browser-
+      register: software_browser_temporary
+
+    - name: Copy the approved browser RPM into the private temporary path
+      ansible.builtin.copy:
+        src: "{{ software_catalog.browser.artifact_path }}"
+        dest: "{{ software_browser_temporary.path }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Verify the transferred browser RPM checksum
+      ansible.builtin.stat:
+        path: "{{ software_browser_temporary.path }}"
+        checksum_algorithm: sha256
+        follow: false
+      register: software_browser_target_artifact
+
+    - name: Require the exact transferred browser RPM bytes
+      ansible.builtin.assert:
+        that:
+          - software_browser_target_artifact.stat.exists
+          - software_browser_target_artifact.stat.isreg
+          - software_browser_target_artifact.stat.mode == '0600'
+          - software_browser_target_artifact.stat.checksum == software_catalog.browser.sha256
+        fail_msg: Transferred software artifact verification failed
+
+    - name: Read the transferred browser RPM identity
+      ansible.builtin.command:
+        argv: [rpm, -qp, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "{{ software_browser_temporary.path }}"]
+      changed_when: false
+      register: software_browser_target_metadata
+
+    - name: Require the exact transferred browser RPM identity
+      ansible.builtin.assert:
+        that:
+          - software_browser_target_metadata.stdout == software_browser_controller_metadata.stdout
+        fail_msg: Transferred software RPM metadata verification failed
+
+    - name: Install exactly the verified temporary browser RPM
+      ansible.builtin.command:
+        argv: [apt-get, -y, install, "{{ software_browser_temporary.path }}"]
+
+    - name: Query the installed browser package identity
+      ansible.builtin.command:
+        argv: [rpm, -q, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "yandex-browser-stable"]
+      changed_when: false
+      register: software_browser_installed_metadata
+
+    - name: Inspect the installed browser executable
+      ansible.builtin.stat:
+        path: "/usr/bin/yandex-browser-stable"
+        follow: true
+      register: software_browser_executable
+
+    - name: Require exact installed browser EVR architecture and executable
+      ansible.builtin.assert:
+        that:
+          - software_browser_installed_metadata.stdout == software_browser_controller_metadata.stdout
+          - software_browser_executable.stat.exists
+          - software_browser_executable.stat.isreg
+          - software_browser_executable.stat.executable
+        fail_msg: Installed software verification failed
+
+  always:
+    - name: Remove the private temporary browser RPM
+      ansible.builtin.file:
+        path: "{{ software_browser_temporary.path }}"
+        state: absent
+      when: software_browser_temporary.path is defined
+
+- name: Record verified browser success
+  ansible.builtin.set_fact:
+    software_browser_verified: true
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'browser': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_browser': true})
+      }) }}

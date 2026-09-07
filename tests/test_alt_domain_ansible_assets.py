@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
+from jinja2 import StrictUndefined
+from jinja2.nativetypes import NativeEnvironment
 
 
 ANSIBLE_ROOT = (
@@ -18,6 +21,7 @@ CRITICAL_ROLES = [
     "domain_join",
     "alt_group_policy_client",
     "domain_login_baseline",
+    "standard_software",
     "domain_verify",
 ]
 
@@ -40,7 +44,7 @@ def test_domain_playbook_delegates_to_the_critical_phase_contract() -> None:
     ]
 
 
-def test_critical_phase_runs_only_the_base_roles_in_controller_order() -> None:
+def test_critical_phase_runs_components_between_login_baseline_and_verification() -> None:
     phase_path = ANSIBLE_ROOT / "playbooks" / "tasks" / "configure_critical_phase.yml"
     rendered = phase_path.read_text(encoding="utf-8")
 
@@ -51,8 +55,139 @@ def test_critical_phase_runs_only_the_base_roles_in_controller_order() -> None:
 
     assert positions == sorted(positions)
     assert rendered.count("ansible.builtin.include_role:") == len(CRITICAL_ROLES)
-    assert "standard_software" not in rendered
     assert "loop:" not in rendered
+
+
+def test_standard_software_uses_a_fixed_role_map() -> None:
+    text = (ANSIBLE_ROOT / "roles/standard_software/tasks/main.yml").read_text()
+    tasks = yaml.safe_load(text)
+    include = next(task for task in tasks if "ansible.builtin.include_role" in task)
+    assert include["vars"]["software_component_role_map"] == {
+        "browser": "software_browser",
+        "onlyoffice": "software_onlyoffice",
+        "nextcloud_desktop": "software_nextcloud_desktop",
+    }
+    assert include["ansible.builtin.include_role"]["name"] == (
+        "{{ software_component_role_map[software_component] }}"
+    )
+    assert include["loop"] == "{{ selected_software_components }}"
+    assert "{{ item }}" not in text
+    assert "standard_packages" not in text
+    assert "organization_packages" not in text
+
+
+@pytest.mark.parametrize("component", ["browser", "onlyoffice"])
+def test_component_rpm_roles_recheck_private_payload_and_always_remove_it(component: str) -> None:
+    path = ANSIBLE_ROOT / f"roles/software_{component}/tasks/main.yml"
+    assert path.exists(), "selected RPM component role must exist"
+    tasks = yaml.safe_load(path.read_text())
+    protected = next(task for task in tasks if "always" in task)
+    assert protected["no_log"] is True
+    block = protected["block"]
+    checks = [task for task in block if "ansible.builtin.stat" in task]
+    assert len([task for task in checks if task["ansible.builtin.stat"].get("checksum_algorithm") == "sha256"]) == 2
+    controller_check = next(task for task in checks if task.get("delegate_to") == "localhost")
+    assert controller_check["become"] is False
+    copy = next(task for task in block if "ansible.builtin.copy" in task)
+    assert copy["ansible.builtin.copy"]["mode"] == "0600"
+    argv = [task["ansible.builtin.command"]["argv"] for task in block if "ansible.builtin.command" in task]
+    install = next(command for command in argv if command[:3] == ["apt-get", "-y", "install"])
+    assert install[3:] == [f"{{{{ software_{component}_temporary.path }}}}"]
+    assert len([command for command in argv if command[:2] == ["rpm", "-qp"]]) == 2
+    assert any(command[:2] == ["rpm", "-q"] and "%{EPOCH}" in command[3] for command in argv)
+    cleanup = protected["always"][0]
+    assert cleanup["ansible.builtin.file"] == {
+        "path": f"{{{{ software_{component}_temporary.path }}}}", "state": "absent"
+    }
+    assert cleanup["when"] == f"software_{component}_temporary.path is defined"
+    assert "rescue" not in protected
+    assert tasks[-1]["ansible.builtin.set_fact"][f"software_{component}_verified"] is True
+    assert "/policies/managed/" not in path.read_text()
+
+
+@pytest.mark.parametrize("component", ["browser", "onlyoffice"])
+@pytest.mark.parametrize("field,value,allowed", [
+    ("epoch", "(none)", True), ("epoch", "0", True), ("epoch", "1", False),
+    ("package_name", "other-package", False), ("package_evr", "0.0-1", False),
+    ("architecture", "aarch64", False),
+])
+def test_rpm_metadata_gate_rejects_an_unapproved_package_identity(component, field, value, allowed):
+    catalog = yaml.safe_load((ANSIBLE_ROOT / "group_vars/software_catalog.yml").read_text())["software_catalog"]
+    actual = catalog[component] | {"epoch": "(none)", field: value}
+    metadata = "|".join(actual[key] for key in ["package_name", "package_evr", "architecture", "epoch"])
+    tasks = yaml.safe_load((ANSIBLE_ROOT / f"roles/software_{component}/tasks/main.yml").read_text())
+    assertion = next(task for task in tasks[1]["block"] if task["name"] == f"Require the exact controller {component} RPM identity")
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    assert environment.compile_expression(assertion["ansible.builtin.assert"]["that"][0])(**{
+        "software_catalog": catalog, f"software_{component}_controller_metadata": {"stdout": metadata}
+    }) is allowed
+
+
+@pytest.mark.parametrize("component", ["browser", "onlyoffice"])
+@pytest.mark.parametrize("field,value,allowed", [
+    ("mode", "0600", True), ("mode", "0644", False),
+    ("checksum", "wrong-digest", False), ("isreg", False, False),
+])
+def test_rpm_transfer_gate_rejects_changed_or_public_payload(component, field, value, allowed):
+    catalog = yaml.safe_load((ANSIBLE_ROOT / "group_vars/software_catalog.yml").read_text())["software_catalog"]
+    stat = {"exists": True, "isreg": True, "mode": "0600", "checksum": catalog[component]["sha256"]} | {field: value}
+    tasks = yaml.safe_load((ANSIBLE_ROOT / f"roles/software_{component}/tasks/main.yml").read_text())
+    assertion = next(task for task in tasks[1]["block"] if task["name"] == f"Require the exact transferred {component} RPM bytes")
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    context = {"software_catalog": catalog, f"software_{component}_target_artifact": {"stat": stat}}
+    assert all(environment.compile_expression(expression)(**context)
+               for expression in assertion["ansible.builtin.assert"]["that"]) is allowed
+
+
+def test_nextcloud_installs_and_queries_only_the_approved_repository_packages() -> None:
+    path = ANSIBLE_ROOT / "roles/software_nextcloud_desktop/tasks/main.yml"
+    assert path.exists(), "selected repository component role must exist"
+    tasks = yaml.safe_load(path.read_text())
+    commands = [task["ansible.builtin.command"]["argv"] for task in tasks if "ansible.builtin.command" in task]
+    assert ["apt-get", "-y", "install", "nextcloud-client", "nextcloud-client-kde"] in commands
+    query = next(task for task in tasks if task.get("ansible.builtin.command", {}).get("argv", [])[:2] == ["rpm", "-q"])
+    assert query["loop"] == ["nextcloud-client", "nextcloud-client-kde"]
+    assert tasks[-1]["ansible.builtin.set_fact"]["software_nextcloud_desktop_verified"] is True
+
+
+@pytest.mark.parametrize("component", ["browser", "onlyoffice", "nextcloud_desktop"])
+def test_component_result_is_pessimistic_until_role_verification(component: str) -> None:
+    path = ANSIBLE_ROOT / f"roles/software_{component}/tasks/main.yml"
+    assert path.exists(), "component role must record safe failure and verified success"
+    tasks = yaml.safe_load(path.read_text())
+    initial = tasks[0]["ansible.builtin.set_fact"]
+    assert initial[f"software_{component}_verified"] is False
+    assert "'status': 'failed'" in initial["configure_result"]
+    assert "'verified': false" in initial["configure_result"]
+    success = tasks[-1]["ansible.builtin.set_fact"]
+    assert "'status': 'ok'" in success["configure_result"]
+    assert "'verified': true" in success["configure_result"]
+    assert "configure_result.components | combine" in success["configure_result"]
+    assert "ansible_failed_result" not in path.read_text()
+
+
+def test_finalizer_preserves_component_records_and_verification() -> None:
+    tasks = yaml.safe_load((ANSIBLE_ROOT / "playbooks/tasks/configure_critical_phase.yml").read_text())
+    critical = tasks[1]
+    success = next(task for task in critical["block"] if task["name"] == "Finalize successful configure result")
+    text = success["ansible.builtin.set_fact"]["configure_result"]
+    assert "configure_result.components | combine" in text
+    assert "configure_result.verification | combine" in text
+    assert "'error': none" in text
+    failed = critical["rescue"][0]["ansible.builtin.set_fact"]["configure_result"]
+    assert "'components':" not in failed
+    assert "configure_result.verification | combine" in failed
+
+
+def test_software_phase_is_restored_before_domain_verification() -> None:
+    tasks = yaml.safe_load((ANSIBLE_ROOT / "roles/standard_software/tasks/main.yml").read_text())
+    assert tasks[1]["ansible.builtin.set_fact"]["configure_result"] == (
+        "{{ configure_result | combine({'phase': 'components'}) }}"
+    )
+    assert tasks[-1].get("ansible.builtin.set_fact", {}).get("configure_result") == (
+        "{{ configure_result | combine({'phase': 'domain_core_verify'}) }}"
+    )
+    assert tasks[-1]["when"] == "selected_software_components | length > 0"
 
 
 def test_selected_components_are_preflighted_before_component_roles() -> None:

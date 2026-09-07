@@ -1,6 +1,30 @@
 ---
-- name: Install approved standard workstation packages
-  ansible.builtin.package:
-    name: "{{ standard_packages + organization_packages }}"
-    state: present
-  when: (standard_packages + organization_packages) | length > 0
+- name: Require the completed component preflight and fixed selection
+  ansible.builtin.assert:
+    that:
+      - configure_component_preflight_passed | default(false) | bool
+      - selected_software_components == ([] if software_profile == 'base' else ['browser', 'onlyoffice', 'nextcloud_desktop'])
+      - software_profile in ['base', 'core-apps']
+    fail_msg: Software component selection is invalid
+
+- name: Set configure phase to software components
+  ansible.builtin.set_fact:
+    configure_result: "{{ configure_result | combine({'phase': 'components'}) }}"
+  when: selected_software_components | length > 0
+
+- name: Run selected approved software roles
+  ansible.builtin.include_role:
+    name: "{{ software_component_role_map[software_component] }}"
+  vars:
+    software_component_role_map:
+      browser: software_browser
+      onlyoffice: software_onlyoffice
+      nextcloud_desktop: software_nextcloud_desktop
+  loop: "{{ selected_software_components }}"
+  loop_control:
+    loop_var: software_component
+
+- name: Return to the domain verification phase after successful software roles
+  ansible.builtin.set_fact:
+    configure_result: "{{ configure_result | combine({'phase': 'domain_core_verify'}) }}"
+  when: selected_software_components | length > 0
