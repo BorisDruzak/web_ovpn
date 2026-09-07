@@ -10,6 +10,57 @@ This is a temporary, controller-managed path for a manually installed ALT
 Workstation K 11.x. It does not replace managed ISO or legacy ai curl=
 installation.
 
+## Execution path
+
+The path begins only after ALT Workstation K 11.x is installed manually. The
+sequence is fixed; the workstation never runs Ansible itself and the operator
+never supplies a domain password to it.
+
+1. The operator creates the local `osn-admin` recovery account, configures
+   DHCP and sets the approved final hostname during the manual installation.
+2. `osn-admin` starts `bootstrap.sh` as root. It validates the installed ALT
+   release and network, installs the minimal SSH/Ansible dependencies, creates
+   the restricted `ansible` technical account and registers the station.
+3. The controller processes the registration: it waits for SSH, records the
+   initial host key in its isolated known-hosts file, runs an Ansible ping and
+   the fixed `workstationctl preflight`. Only a station that passes all three
+   checks advances to `awaiting_assignment`; the controller then becomes the
+   only side that can start configuration.
+4. The controller operator runs `configure preview`. This validates the
+   request, registered UUID and target IP without contacting or changing the
+   workstation.
+5. The controller operator runs `configure start`. It validates the Ansible
+   assets, SSH identity, known-hosts file and AD join Vault values; then it
+   creates a private run directory and invokes only
+   `03-configure-domain-workstation.yml`.
+6. The playbook runs these roles in order:
+   `manual_preflight` → `workstation_identity` → `prejoin_upgrade` →
+   `workstation_base` → `alt_group_policy_prerequisites` →
+   `workstation_network` → `domain_join` → `alt_group_policy_client` →
+   `domain_login_baseline` → selected software components → selected remote
+   profile → `domain_verify`.
+7. `manual_preflight` verifies release, DMI UUID, passwordless sudo, default
+   route, NTP and AD DNS. `workstation_identity` either verifies the approved
+   hostname or changes it only in `change_confirmed` mode.
+8. Before a first domain join, `prejoin_upgrade` performs the configured full
+   ALT upgrade when selected and records whether a reboot is required. Neither
+   the role nor the controller reboots the workstation automatically; a
+   previously joined machine skips this step.
+9. The remaining roles install domain and Group Policy prerequisites, set AD
+   DNS for the active interface, obtain a temporary Kerberos ticket, create a
+   new computer account only when no account with the requested name exists in
+   the target OU, join through `system-auth`, enable and apply machine Group
+   Policy, then verify Samba trust, SSSD and a specified domain-user lookup.
+10. `domain_verify` writes the public result on the controller. A newly joined
+    workstation can report `reboot_required: true`; the controller does not
+    reboot it automatically. The operator reboots it and the domain user signs
+    in.
+
+The controller readiness check syntax-checks this manual playbook alongside
+the older preflight and local-account playbooks. A configuration run that
+exceeds 90 minutes returns `domain_join_timeout` together with its `run_id`;
+use that identifier to inspect the private controller log.
+
 ## Operator preparation
 
 The employee's domain account must already exist in sosnadmin.local; this flow
