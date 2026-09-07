@@ -11,6 +11,7 @@ from jinja2.nativetypes import NativeEnvironment
 ANSIBLE_ROOT = (
     Path(__file__).resolve().parents[1] / "deploy" / "alt-linux" / "ansible"
 )
+ROLES = ANSIBLE_ROOT / "roles"
 CRITICAL_ROLES = [
     "manual_preflight",
     "workstation_identity",
@@ -22,6 +23,7 @@ CRITICAL_ROLES = [
     "alt_group_policy_client",
     "domain_login_baseline",
     "standard_software",
+    "remote_access_krfb",
     "domain_verify",
 ]
 
@@ -188,6 +190,114 @@ def test_software_phase_is_restored_before_domain_verification() -> None:
         "{{ configure_result | combine({'phase': 'domain_core_verify'}) }}"
     )
     assert tasks[-1]["when"] == "selected_software_components | length > 0"
+
+
+def test_krfb_role_targets_one_explicit_user_and_never_starts_a_process() -> None:
+    text = (ROLES / "remote_access_krfb/tasks/main.yml").read_text()
+
+    assert "assigned_domain_user" in text and "getent" in text
+    assert "no_log: true" in text
+    assert "systemctl --user" not in text and "loginctl" not in text
+    assert all(
+        forbidden not in text
+        for forbidden in ("pkill", "killall", "firewalld", "iptables", "nftables")
+    )
+
+
+def test_krfb_template_has_vault_placeholders_not_password_literals() -> None:
+    text = (ROLES / "remote_access_krfb/templates/krfbrc.j2").read_text()
+
+    assert "{{ vault_krfb_desktop_password_obscured }}" in text
+    assert "{{ vault_krfb_unattended_password_obscured }}" in text
+
+
+def test_krfb_role_requires_exact_user_home_and_network_confirmation() -> None:
+    tasks = yaml.safe_load((ROLES / "remote_access_krfb/tasks/main.yml").read_text())
+    rendered = (ROLES / "remote_access_krfb/tasks/main.yml").read_text()
+
+    network_gate = next(
+        task for task in tasks if task["name"] == "Require confirmed restricted KRFB access"
+    )
+    network_checks = network_gate["ansible.builtin.assert"]["that"]
+    assert any("alt_deploy_krfb_tcp_5900_restricted_confirmed is boolean" in check for check in network_checks)
+    assert any("alt_deploy_krfb_tcp_5900_restricted_confirmed" == check for check in network_checks)
+
+    lookup = next(task for task in tasks if task["name"] == "Resolve the assigned domain user")
+    assert lookup["ansible.builtin.command"]["argv"] == [
+        "getent",
+        "passwd",
+        "{{ assigned_domain_user }}",
+    ]
+    assert lookup["changed_when"] is False
+    assert lookup["failed_when"] is False
+
+    home_check = next(task for task in tasks if task["name"] == "Inspect the assigned user home")
+    assert home_check["ansible.builtin.stat"]["follow"] is False
+    home_gate = next(task for task in tasks if task["name"] == "Require the existing assigned user home")
+    home_checks = home_gate["ansible.builtin.assert"]["that"]
+    assert any("isdir" in check for check in home_checks)
+    assert any(".stat.uid" in check for check in home_checks)
+    assert any(".stat.gid" in check for check in home_checks)
+    assert "state: directory\n    path: \"{{ krfb_config_home }}\"" not in rendered
+
+    directory_check = next(
+        task for task in tasks if task["name"] == "Inspect the assigned user's KRFB directories"
+    )
+    assert directory_check["ansible.builtin.stat"]["follow"] is False
+    directory_gate = next(
+        task for task in tasks if task["name"] == "Require safe assigned-user KRFB directories"
+    )
+    directory_checks = directory_gate["ansible.builtin.assert"]["that"]
+    assert any("isdir" in check for check in directory_checks)
+    assert any(".stat.uid" in check for check in directory_checks)
+    assert any(".stat.gid" in check for check in directory_checks)
+    assert tasks.index(directory_gate) < next(
+        index for index, task in enumerate(tasks) if "ansible.builtin.template" in task
+    )
+
+
+def test_krfb_role_uses_fixed_package_and_protected_outputs() -> None:
+    tasks = yaml.safe_load((ROLES / "remote_access_krfb/tasks/main.yml").read_text())
+
+    package = next(task for task in tasks if task["name"] == "Install the fixed KRFB package")
+    assert package["ansible.builtin.package"] == {"name": "krfb", "state": "present"}
+
+    templates = [task for task in tasks if "ansible.builtin.template" in task]
+    assert {
+        task["ansible.builtin.template"]["dest"]: (
+            task["ansible.builtin.template"]["mode"], task.get("no_log")
+        )
+        for task in templates
+    } == {
+        "{{ krfb_config_home }}/.config/krfbrc": ("0600", True),
+        "{{ krfb_config_home }}/.config/autostart/org.sosn.krfb.desktop": ("0644", True),
+    }
+
+    success = tasks[-1]["ansible.builtin.set_fact"]
+    assert success["krfb_configured"] is True
+    assert "configure_result.components | combine" in success["configure_result"]
+    assert "configure_result.verification | combine" in success["configure_result"]
+    assert "krfb_configured" in success["configure_result"]
+
+
+def test_krfb_runs_after_selected_software_and_only_when_requested() -> None:
+    tasks = yaml.safe_load(
+        (ANSIBLE_ROOT / "playbooks/tasks/configure_critical_phase.yml").read_text()
+    )
+    block = tasks[1]["block"]
+    software_index = next(
+        index for index, task in enumerate(block) if task["name"] == "Run selected standard software"
+    )
+    krfb_index = next(
+        index for index, task in enumerate(block) if task["name"] == "Run requested KRFB profile"
+    )
+    verify_index = next(
+        index for index, task in enumerate(block) if task["name"] == "Run domain verification"
+    )
+
+    assert software_index < krfb_index < verify_index
+    assert block[krfb_index]["ansible.builtin.include_role"] == {"name": "remote_access_krfb"}
+    assert block[krfb_index]["when"] == "remote_access_profile == 'krfb'"
 
 
 def test_selected_components_are_preflighted_before_component_roles() -> None:

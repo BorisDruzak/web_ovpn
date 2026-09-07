@@ -212,6 +212,20 @@ def test_krfb_profile_rejects_missing_assigned_user() -> None:
         ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
 
 
+def test_krfb_network_confirmation_is_not_a_request_field() -> None:
+    payload = valid_request() | {
+        "software_profile": "base",
+        "remote_access_profile": "krfb",
+        "assigned_domain_user": "pilot.user",
+        "ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED": "true",
+    }
+
+    with pytest.raises(ControlError) as exc:
+        ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+
+    assert exc.value.code == "configure_request_invalid"
+
+
 @pytest.mark.parametrize("change", [
     {"software_profile": "unsupported", "remote_access_profile": "none", "assigned_domain_user": None},
     {"software_profile": "base", "remote_access_profile": "unsupported", "assigned_domain_user": None},
@@ -664,6 +678,307 @@ def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:
         "status": "ok",
         "checks": {"ad_join_user_present": True, "ad_join_password_present": True},
     }
+
+
+@pytest.mark.parametrize(
+    "scalar",
+    ["obscured", "'obscured'", '"obscured"', "'null'", '"true"'],
+)
+def test_krfb_vault_gate_accepts_only_present_string_scalars(scalar: str) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: (  # type: ignore[method-assign]
+        f"vault_krfb_desktop_password_obscured: {scalar}\n"
+        "vault_krfb_unattended_password_obscured: obscured-too\n"
+    )
+
+    assert checker.check_krfb() == {
+        "status": "ok",
+        "checks": {
+            "krfb_desktop_password_present": True,
+            "krfb_unattended_password_present": True,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "scalar",
+    [
+        "",
+        "# comment only",
+        "''",
+        '\"\"',
+        "null",
+        "NULL",
+        "null # comment",
+        "~",
+        "true",
+        "TRUE",
+        "true # comment",
+        "false",
+        "False",
+        "'mismatch\"",
+    ],
+)
+def test_krfb_vault_gate_rejects_blank_null_boolean_or_malformed_scalars(
+    scalar: str,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: (  # type: ignore[method-assign]
+        f"vault_krfb_desktop_password_obscured: {scalar}\n"
+        "vault_krfb_unattended_password_obscured: obscured-too\n"
+    )
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {
+        "checks": {
+            "krfb_desktop_password_present": False,
+            "krfb_unattended_password_present": True,
+        }
+    }
+    assert "obscured-too" not in str(exc.value.to_dict())
+
+
+def test_krfb_vault_gate_does_not_decrypt_after_base_vault_failure() -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": False}  # type: ignore[method-assign]
+
+    def unexpected_decrypt() -> str:
+        raise AssertionError("KRFB gate must stop at the base Vault gate")
+
+    checker._decrypt = unexpected_decrypt  # type: ignore[method-assign]
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {
+        "checks": {
+            "krfb_desktop_password_present": False,
+            "krfb_unattended_password_present": False,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("missing_variable", "expected_checks"),
+    [
+        (
+            "vault_krfb_desktop_password_obscured",
+            {
+                "krfb_desktop_password_present": False,
+                "krfb_unattended_password_present": True,
+            },
+        ),
+        (
+            "vault_krfb_unattended_password_obscured",
+            {
+                "krfb_desktop_password_present": True,
+                "krfb_unattended_password_present": False,
+            },
+        ),
+    ],
+)
+def test_krfb_vault_gate_requires_both_named_fields(
+    missing_variable: str,
+    expected_checks: dict[str, bool],
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    values = {
+        "vault_krfb_desktop_password_obscured": "desktop-fixture",
+        "vault_krfb_unattended_password_obscured": "unattended-fixture",
+    }
+    values.pop(missing_variable)
+    checker = VaultHealthChecker(SimpleNamespace())
+    checker._build_checks = lambda: {"decryptable": True}  # type: ignore[method-assign]
+    checker._decrypt = lambda: "".join(  # type: ignore[method-assign]
+        f"{name}: {value}\n" for name, value in values.items()
+    )
+
+    with pytest.raises(ControlError) as exc:
+        checker.check_krfb()
+
+    assert exc.value.code == "remote_access_credentials_unavailable"
+    assert exc.value.details == {"checks": expected_checks}
+
+
+def _configured_settings(tmp_path: Path):
+    from alt_deploy.config import Settings
+
+    settings = Settings(
+        registration_root=tmp_path / "registration", state_root=tmp_path / "state",
+        jobs_dir=tmp_path / "state" / "jobs", assignments_dir=tmp_path / "state" / "assignments",
+        lock_file=tmp_path / "state" / "lock", ansible_project_dir=tmp_path / "ansible",
+        known_hosts_file=tmp_path / "known_hosts", private_key_file=tmp_path / "id_ed25519",
+        ansible_playbook_path=tmp_path / "ansible-playbook", systemd_run_path=tmp_path / "systemd-run",
+        worker_path=tmp_path / "worker", job_stage_helper_path=tmp_path / "stage-helper",
+        workstationctl_path=tmp_path / "workstationctl",
+    )
+    for path in (
+        settings.known_hosts_file,
+        settings.private_key_file,
+        settings.ansible_playbook_path,
+    ):
+        path.write_text("fixture", encoding="utf-8")
+    playbook = settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
+    playbook.parent.mkdir(parents=True)
+    playbook.write_text("---\n- hosts: all\n", encoding="utf-8")
+    return settings
+
+
+@pytest.mark.parametrize(
+    "confirmation",
+    [None, "false", "TRUE", "1", "yes", " true", "true "],
+)
+def test_configure_start_krfb_requires_exact_network_confirmation_after_vault(
+    confirmation: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = _configured_settings(tmp_path)
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_ad_join", lambda _self: calls.append("ad_join")
+    )
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_krfb", lambda _self: calls.append("krfb")
+    )
+    if confirmation is None:
+        monkeypatch.delenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", raising=False)
+    else:
+        monkeypatch.setenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", confirmation)
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("Ansible must not run without exact network confirmation")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_run)
+    request = ConfigureRequest.from_mapping(
+        valid_request()
+        | {
+            "software_profile": "base",
+            "remote_access_profile": "krfb",
+            "assigned_domain_user": "pilot.user",
+        },
+        expected_uuid=MACHINE_UUID,
+    )
+
+    with pytest.raises(ControlError) as exc:
+        ConfigurePlanner(
+            settings, machines=SimpleNamespace(get=lambda _uuid: machine)
+        ).start(MACHINE_UUID, request)
+
+    assert calls == ["ad_join", "krfb"]
+    assert exc.value.code == "remote_access_network_restriction_unconfirmed"
+    assert not (settings.state_root / "configure-runs").exists()
+
+
+def test_configure_start_passes_krfb_confirmation_only_after_controller_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = _configured_settings(tmp_path)
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    events: list[str] = []
+    captured: list[str] = []
+    captured_environment: dict[str, str] = {}
+    request_payload: dict[str, object] = {}
+    monkeypatch.setenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", "true")
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_ad_join", lambda _self: events.append("ad_join")
+    )
+    monkeypatch.setattr(
+        VaultHealthChecker, "check_krfb", lambda _self: events.append("krfb")
+    )
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        events.append("ansible")
+        captured.extend(command)
+        captured_environment.update(kwargs["env"])  # type: ignore[arg-type]
+        request_arg = next(item for item in command if item.startswith("@"))
+        request_payload.update(json.loads(Path(request_arg[1:]).read_text(encoding="utf-8")))
+        result_arg = next(item for item in command if item.startswith("configure_result_file="))
+        Path(result_arg.split("=", 1)[1]).write_text(
+            json.dumps(valid_structured_result()), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    request = ConfigureRequest.from_mapping(
+        valid_request()
+        | {
+            "software_profile": "base",
+            "remote_access_profile": "krfb",
+            "assigned_domain_user": "pilot.user",
+        },
+        expected_uuid=MACHINE_UUID,
+    )
+
+    ConfigurePlanner(
+        settings, machines=SimpleNamespace(get=lambda _uuid: machine)
+    ).start(MACHINE_UUID, request)
+
+    assert events == ["ad_join", "krfb", "ansible"]
+    confirmation_arg = next(
+        item for item in captured if "krfb_tcp_5900_restricted_confirmed" in item
+    )
+    assert json.loads(confirmation_arg) == {
+        "alt_deploy_krfb_tcp_5900_restricted_confirmed": True
+    }
+    assert not any("krfb_tcp_5900_restricted_confirmed=true" in item for item in captured)
+    assert "ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED" not in captured_environment
+    assert "alt_deploy_krfb_tcp_5900_restricted_confirmed" not in request_payload
+    assert "ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED" not in request_payload
+
+
+def test_configure_start_base_none_does_not_require_or_pass_krfb_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alt_deploy.vault import VaultHealthChecker
+
+    settings = _configured_settings(tmp_path)
+    machine = SimpleNamespace(uuid=MACHINE_UUID, ip="192.168.101.56")
+    captured: list[str] = []
+    monkeypatch.delenv("ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED", raising=False)
+    monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: None)
+
+    def unexpected_krfb(_self: object) -> None:
+        raise AssertionError("base/none must not check KRFB Vault fields")
+
+    monkeypatch.setattr(VaultHealthChecker, "check_krfb", unexpected_krfb, raising=False)
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.extend(command)
+        result_arg = next(item for item in command if item.startswith("configure_result_file="))
+        Path(result_arg.split("=", 1)[1]).write_text(
+            json.dumps(valid_structured_result()), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
+
+    ConfigurePlanner(
+        settings, machines=SimpleNamespace(get=lambda _uuid: machine)
+    ).start(MACHINE_UUID, request)
+
+    assert not any("krfb_tcp_5900" in argument for argument in captured)
 
 
 def test_configure_start_maps_known_hostname_marker_without_log_disclosure(

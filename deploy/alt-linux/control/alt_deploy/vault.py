@@ -19,6 +19,9 @@ EXECUTION_ROOT_VARIABLE = "vault_install_root_password_hash"
 EXECUTION_ADMIN_VARIABLE = "vault_install_admin_password_hash"
 AD_JOIN_USER_VARIABLE = "vault_ad_join_user"
 AD_JOIN_PASSWORD_VARIABLE = "vault_ad_join_password"
+KRFB_DESKTOP_PASSWORD_VARIABLE = "vault_krfb_desktop_password_obscured"
+KRFB_UNATTENDED_PASSWORD_VARIABLE = "vault_krfb_unattended_password_obscured"
+_UNQUOTED_NON_STRING_SCALARS = frozenset({"null", "~", "true", "false"})
 
 
 def extract_execution_password_hashes(decrypted_text: str) -> dict[str, str]:
@@ -174,6 +177,43 @@ class VaultHealthChecker:
 
         return None
 
+    @staticmethod
+    def _has_present_string_scalar(
+        decrypted_text: str | None,
+        variable_name: str,
+    ) -> bool:
+        if decrypted_text is None:
+            return False
+
+        present = False
+        for line in decrypted_text.splitlines():
+            name, separator, raw_value = line.strip().partition(":")
+            if not separator or name.strip() != variable_name:
+                continue
+
+            value = raw_value.strip()
+            if not value or value.startswith("#"):
+                present = False
+                continue
+
+            begins_quoted = value[0] in {"'", '"'}
+            ends_quoted = value[-1] in {"'", '"'}
+            if begins_quoted or ends_quoted:
+                present = bool(
+                    len(value) >= 2
+                    and value[0] == value[-1]
+                    and value[1:-1]
+                )
+                continue
+
+            scalar = value.split(" #", 1)[0].rstrip()
+            present = bool(
+                scalar
+                and scalar.casefold() not in _UNQUOTED_NON_STRING_SCALARS
+            )
+
+        return present
+
     def _build_checks(self) -> dict[str, bool]:
         expected_uid = self._service_uid()
         vault_exists = self.vault_file.is_file()
@@ -251,6 +291,28 @@ class VaultHealthChecker:
             raise ControlError(
                 code="domain_join_credentials_unavailable",
                 message="AD join credentials are unavailable",
+                exit_code=7,
+                details={"checks": checks},
+            )
+        return {"status": "ok", "checks": checks}
+
+    def check_krfb(self) -> dict[str, object]:
+        base_checks = self._build_checks()
+        decrypted_text = self._decrypt() if all(base_checks.values()) else None
+        checks = {
+            "krfb_desktop_password_present": self._has_present_string_scalar(
+                decrypted_text,
+                KRFB_DESKTOP_PASSWORD_VARIABLE,
+            ),
+            "krfb_unattended_password_present": self._has_present_string_scalar(
+                decrypted_text,
+                KRFB_UNATTENDED_PASSWORD_VARIABLE,
+            ),
+        }
+        if not all(base_checks.values()) or not all(checks.values()):
+            raise ControlError(
+                code="remote_access_credentials_unavailable",
+                message="KRFB credentials are unavailable",
                 exit_code=7,
                 details={"checks": checks},
             )

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import re
+import json
 import os
+import re
 import subprocess
 import uuid
 from collections.abc import Mapping
@@ -36,6 +37,12 @@ PROFILE_FIELDS = frozenset(
 )
 SOFTWARE_PROFILES = frozenset({"base", "core-apps"})
 REMOTE_ACCESS_PROFILES = frozenset({"none", "krfb"})
+KRFB_NETWORK_CONFIRMATION_VARIABLE = (
+    "ALT_DEPLOY_KRFB_TCP_5900_RESTRICTED_CONFIRMED"
+)
+KRFB_ANSIBLE_CONFIRMATION_VARIABLE = (
+    "alt_deploy_krfb_tcp_5900_restricted_confirmed"
+)
 CONFIGURE_RESULT_FIELDS = frozenset(
     {
         "schema_version",
@@ -117,6 +124,10 @@ def _required_string(payload: Mapping[str, object], field: str) -> str:
         raise _invalid_request(f"Configure request field {field} is required")
 
     return normalized
+
+
+def _krfb_network_restriction_confirmed() -> bool:
+    return os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE, "false") == "true"
 
 
 def _read_configure_result(
@@ -391,7 +402,20 @@ class ConfigurePlanner:
         if missing:
             raise ControlError(code="configure_not_configured", message="Domain configure is not fully configured", exit_code=5, details={"missing": missing})
 
-        VaultHealthChecker(self.settings).check_ad_join()
+        vault_checker = VaultHealthChecker(self.settings)
+        vault_checker.check_ad_join()
+        krfb_network_restriction_confirmed = False
+        if request.remote_access_profile == "krfb":
+            vault_checker.check_krfb()
+            krfb_network_restriction_confirmed = (
+                _krfb_network_restriction_confirmed()
+            )
+            if not krfb_network_restriction_confirmed:
+                raise ControlError(
+                    code="remote_access_network_restriction_unconfirmed",
+                    message="Restricted TCP 5900 access is not confirmed",
+                    exit_code=7,
+                )
 
         run_id = uuid.uuid4().hex
         run_dir = self.settings.state_root / "configure-runs" / run_id
@@ -415,9 +439,20 @@ class ConfigurePlanner:
             "-e", "ansible_python_interpreter=/usr/bin/python3",
             "-e", f"@{request_path}",
             "-e", f"configure_result_file={result_path}",
-            str(self.configure_playbook),
         ]
+        if krfb_network_restriction_confirmed:
+            command.extend(
+                [
+                    "-e",
+                    json.dumps(
+                        {KRFB_ANSIBLE_CONFIRMATION_VARIABLE: True},
+                        separators=(",", ":"),
+                    ),
+                ]
+            )
+        command.append(str(self.configure_playbook))
         environment = os.environ.copy()
+        environment.pop(KRFB_NETWORK_CONFIRMATION_VARIABLE, None)
         environment["ANSIBLE_CONFIG"] = str(
             self.settings.ansible_project_dir / "ansible.cfg"
         )

@@ -84,6 +84,11 @@
       ansible.builtin.include_role:
         name: standard_software
 
+    - name: Run requested KRFB profile
+      ansible.builtin.include_role:
+        name: remote_access_krfb
+      when: remote_access_profile == 'krfb'
+
     - name: Run domain verification
       ansible.builtin.include_role:
         name: domain_verify

@@ -1,0 +1,201 @@
+---
+- name: Record pending KRFB configuration
+  ansible.builtin.set_fact:
+    krfb_configured: false
+    configure_result: >-
+      {{ configure_result | combine({
+        'phase': 'components',
+        'components': configure_result.components | combine({
+          'remote_access_krfb': {'status': 'failed', 'verified': false}
+        }),
+        'verification': configure_result.verification | combine({
+          'krfb_configured': false
+        })
+      }) }}
+
+- name: Require confirmed restricted KRFB access
+  ansible.builtin.assert:
+    that:
+      - remote_access_profile == 'krfb'
+      - assigned_domain_user is string
+      - assigned_domain_user | trim | length > 0
+      - alt_deploy_krfb_tcp_5900_restricted_confirmed is defined
+      - alt_deploy_krfb_tcp_5900_restricted_confirmed is boolean
+      - alt_deploy_krfb_tcp_5900_restricted_confirmed
+    fail_msg: KRFB security prerequisites are not satisfied
+  no_log: true
+
+- name: Resolve the assigned domain user
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - "{{ assigned_domain_user }}"
+  register: remote_access_krfb_passwd
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Require one resolved passwd entry
+  ansible.builtin.assert:
+    that:
+      - remote_access_krfb_passwd.rc == 0
+      - remote_access_krfb_passwd.stdout_lines | length == 1
+      - remote_access_krfb_passwd.stdout | trim | length > 0
+      - (remote_access_krfb_passwd.stdout | trim).split(':') | length == 7
+    fail_msg: The assigned domain user is unavailable
+  no_log: true
+
+- name: Record the resolved assigned user fields
+  ansible.builtin.set_fact:
+    krfb_account_fields: "{{ (remote_access_krfb_passwd.stdout | trim).split(':') }}"
+  no_log: true
+
+- name: Require a safe resolved user identity and home path
+  ansible.builtin.assert:
+    that:
+      - krfb_account_fields[2] is match('^[0-9]+$')
+      - krfb_account_fields[3] is match('^[0-9]+$')
+      - krfb_account_fields[5] is match('^/home/.+')
+      - "'/../' not in krfb_account_fields[5]"
+      - not krfb_account_fields[5].endswith('/..')
+      - not krfb_account_fields[5].endswith('/.')
+      - "'//' not in krfb_account_fields[5]"
+    fail_msg: The assigned domain user identity is invalid
+  no_log: true
+
+- name: Record the assigned user ownership and home
+  ansible.builtin.set_fact:
+    krfb_resolved_uid: "{{ krfb_account_fields[2] | int }}"
+    krfb_resolved_gid: "{{ krfb_account_fields[3] | int }}"
+    krfb_config_home: "{{ krfb_account_fields[5] }}"
+  no_log: true
+
+- name: Inspect the assigned user home
+  ansible.builtin.stat:
+    path: "{{ krfb_config_home }}"
+    follow: false
+  register: remote_access_krfb_home
+  no_log: true
+
+- name: Require the existing assigned user home
+  ansible.builtin.assert:
+    that:
+      - remote_access_krfb_home.stat.exists
+      - remote_access_krfb_home.stat.isdir
+      - remote_access_krfb_home.stat.uid == krfb_resolved_uid | int
+      - remote_access_krfb_home.stat.gid == krfb_resolved_gid | int
+    fail_msg: The assigned domain user home is unavailable or incorrectly owned
+  no_log: true
+
+- name: Install the fixed KRFB package
+  ansible.builtin.package:
+    name: krfb
+    state: present
+
+- name: Create only the assigned user's KRFB directories
+  ansible.builtin.file:
+    path: "{{ krfb_config_home }}/{{ krfb_directory.path }}"
+    state: directory
+    owner: "{{ krfb_resolved_uid }}"
+    group: "{{ krfb_resolved_gid }}"
+    mode: "{{ krfb_directory.mode }}"
+  loop:
+    - path: .config
+      mode: "0700"
+    - path: .config/autostart
+      mode: "0700"
+  loop_control:
+    loop_var: krfb_directory
+  no_log: true
+
+- name: Inspect the assigned user's KRFB directories
+  ansible.builtin.stat:
+    path: "{{ krfb_config_home }}/{{ krfb_directory.path }}"
+    follow: false
+  loop:
+    - path: .config
+      mode: "0700"
+    - path: .config/autostart
+      mode: "0700"
+  loop_control:
+    loop_var: krfb_directory
+  register: remote_access_krfb_directories
+  no_log: true
+
+- name: Require safe assigned-user KRFB directories
+  ansible.builtin.assert:
+    that:
+      - krfb_directory_result.stat.exists
+      - krfb_directory_result.stat.isdir
+      - not krfb_directory_result.stat.islnk
+      - krfb_directory_result.stat.uid == krfb_resolved_uid | int
+      - krfb_directory_result.stat.gid == krfb_resolved_gid | int
+      - krfb_directory_result.stat.mode == krfb_directory_result.krfb_directory.mode
+    fail_msg: The assigned user's KRFB directory is unsafe
+  loop: "{{ remote_access_krfb_directories.results }}"
+  loop_control:
+    loop_var: krfb_directory_result
+  no_log: true
+
+- name: Render the protected KRFB configuration
+  ansible.builtin.template:
+    src: krfbrc.j2
+    dest: "{{ krfb_config_home }}/.config/krfbrc"
+    owner: "{{ krfb_resolved_uid }}"
+    group: "{{ krfb_resolved_gid }}"
+    mode: "0600"
+  no_log: true
+  diff: false
+
+- name: Render the KRFB Plasma autostart entry
+  ansible.builtin.template:
+    src: org.sosn.krfb.desktop.j2
+    dest: "{{ krfb_config_home }}/.config/autostart/org.sosn.krfb.desktop"
+    owner: "{{ krfb_resolved_uid }}"
+    group: "{{ krfb_resolved_gid }}"
+    mode: "0644"
+  no_log: true
+  diff: false
+
+- name: Inspect the protected KRFB outputs
+  ansible.builtin.stat:
+    path: "{{ krfb_output.path }}"
+    follow: false
+  loop:
+    - path: "{{ krfb_config_home }}/.config/krfbrc"
+      mode: "0600"
+    - path: "{{ krfb_config_home }}/.config/autostart/org.sosn.krfb.desktop"
+      mode: "0644"
+  loop_control:
+    loop_var: krfb_output
+  register: remote_access_krfb_outputs
+  no_log: true
+
+- name: Require protected correctly owned KRFB outputs
+  ansible.builtin.assert:
+    that:
+      - krfb_output_result.stat.exists
+      - krfb_output_result.stat.isreg
+      - krfb_output_result.stat.uid == krfb_resolved_uid | int
+      - krfb_output_result.stat.gid == krfb_resolved_gid | int
+      - krfb_output_result.stat.mode == krfb_output_result.krfb_output.mode
+    fail_msg: KRFB output ownership or mode is invalid
+  loop: "{{ remote_access_krfb_outputs.results }}"
+  loop_control:
+    loop_var: krfb_output_result
+  no_log: true
+
+- name: Record verified KRFB configuration
+  ansible.builtin.set_fact:
+    krfb_configured: true
+    configure_result: >-
+      {{ configure_result | combine({
+        'phase': 'domain_core_verify',
+        'components': configure_result.components | combine({
+          'remote_access_krfb': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({
+          'krfb_configured': true
+        })
+      }) }}
