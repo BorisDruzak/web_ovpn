@@ -544,6 +544,53 @@ def test_network_hosts_get_uses_only_read_only_snapshot_commands(tmp_path, monke
     assert "--page 1 --limit 100" in calls[0]
 
 
+def test_hosts_page_progressively_fetches_only_when_snapshot_changes():
+    script = (Path(__file__).resolve().parents[1] / "app/static/network-hosts-refresh.js").read_text()
+    assert "AbortController" in script
+    assert "/api/v1/network/hosts/meta" in script
+    assert "window.location.reload" not in script
+
+
+def test_hosts_page_omits_source_filters_absent_from_snapshot_rows(tmp_path, monkeypatch):
+    client, _ = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    page = client.get("/network/hosts")
+
+    assert page.status_code == 200
+    assert '<option value="openvpn"' not in page.text
+
+
+def test_hosts_snapshot_api_allows_session_only_for_snapshot_reads(tmp_path, monkeypatch):
+    client, headers = make_client(tmp_path, monkeypatch)
+    import app.api as api
+
+    assert client.get("/api/v1/network/hosts").status_code == 401
+    assert client.get("/api/v1/network/hosts/meta").status_code == 401
+    assert client.get("/api/v1/status").status_code == 401
+
+    monkeypatch.setattr(
+        api,
+        "call_netctl",
+        lambda args: {
+            "hosts": [], "pagination": {"page": 1, "limit": 100, "total": 0, "pages": 0},
+            "snapshot": {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0},
+        },
+    )
+    monkeypatch.setattr(
+        api,
+        "run_netctl",
+        lambda args: {"snapshot": {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0}},
+    )
+    login(client)
+
+    assert client.get("/api/v1/network/hosts").status_code == 200
+    assert client.get("/api/v1/network/hosts/meta").status_code == 200
+    assert client.get("/api/v1/status").status_code == 401
+    assert client.get("/api/v1/network/hosts", headers=headers).status_code == 200
+    assert client.get("/api/v1/network/hosts/meta", headers=headers).status_code == 200
+
+
 @pytest.mark.parametrize("count", [0, 210])
 def test_host_page_pagination_uses_real_snapshot_and_pending_state(tmp_path, monkeypatch, count):
     from test_api_routes import snapshot_netctl

@@ -24,7 +24,6 @@
   </select>
   <select name="source">
     <option value="all">Все источники</option>
-    <option value="openvpn" {% if filters.source == "openvpn" %}selected{% endif %}>OpenVPN</option>
     {% for source in sources %}
     <option value="{{ source.name }}" {% if filters.source == source.name %}selected{% endif %}>{{ source.name }}</option>
     {% endfor %}
@@ -47,10 +46,21 @@
   </select>
   <button class="button secondary" type="submit">Фильтр</button>
 </form>
-<section class="table-wrap">
+<section class="table-wrap" data-network-hosts data-snapshot-id="{{ snapshot.snapshot_id }}">
+  <p class="muted" data-host-snapshot-state data-state="{{ snapshot_state }}">
+    {% if snapshot_state == "pending" %}
+    Снимок ещё не опубликован. Ожидание данных.
+    {% elif snapshot_state == "stale" %}
+    Снимок №{{ snapshot.snapshot_id }} от {{ snapshot.generated_at or "-" }} устарел · {{ snapshot.total_hosts }} устройств.
+    {% else %}
+    Снимок №{{ snapshot.snapshot_id }} от {{ snapshot.generated_at or "-" }} · {{ snapshot.total_hosts }} устройств.
+    {% endif %}
+  </p>
+  <p class="muted" data-host-pagination>Страница {{ pagination.page }} из {{ pagination.pages }} · {{ pagination.total }} устройств по текущему фильтру.</p>
+  <p class="alert bad" data-host-refresh-warning role="status" hidden></p>
   <table>
     <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Endpoint Agent</th><th>Last active check</th><th>Evidence</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
-    <tbody>
+    <tbody data-hosts-rows>
       {% for host in hosts %}
       <tr>
         <td class="mono">{{ host.ip }}</td>
@@ -106,14 +116,12 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="13" class="empty">Нет данных. Запустите сбор.</td></tr>
+      <tr><td colspan="14" class="empty">Нет данных. Запустите сбор.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
 {% endblock %}
 {% block page_scripts %}
-{% if endpoint_agent_refresh_state == "updating" %}
-<script src="{{ url_for('static', path='endpoint-agent-status.js') }}"></script>
-{% endif %}
+<script src="{{ url_for('static', path='network-hosts-refresh.js') }}"></script>
 {% endblock %}

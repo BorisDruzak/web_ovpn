@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .audit import write_audit
-from .auth import authorize_network_change, verify_api_csrf
+from .auth import authorize_network_change, current_user, verify_api_csrf
 from .auto_sync import force_client_sync
 from .config import get_settings
 from .context_contract import ContextCursorError, decode_search_cursor, encode_search_cursor
@@ -210,6 +210,20 @@ def require_api_actor(authorization: str | None = Header(default=None)) -> str:
     if not hmac.compare_digest(digest, settings.api_token_hash):
         raise HTTPException(status_code=401, detail="Invalid bearer token")
     return settings.api_actor
+
+
+def require_host_snapshot_actor(
+    request: Request,
+    db: Session = Depends(get_db),
+    authorization: str | None = Header(default=None),
+) -> str:
+    """Authorize only browser-safe snapshot reads with the existing web session."""
+    if authorization:
+        return require_api_actor(authorization)
+    user = current_user(request, db)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Bearer token or authenticated session required")
+    return user.username
 
 
 def call_vpnctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
@@ -1217,7 +1231,7 @@ def api_network_path_detail(role: str, actor: str = Depends(require_api_actor)):
 
 @router.get("/network/hosts")
 def api_network_hosts(
-    actor: str = Depends(require_api_actor),
+    actor: str = Depends(require_host_snapshot_actor),
     q: str = Query(default=""),
     category: str = Query(default="all"),
     status: Literal["current", "all", "online", "seen", "offline", "stale", "connected"] = Query(default="current"),
@@ -1225,12 +1239,13 @@ def api_network_hosts(
     network: str = Query(default="all"),
     has_hostname: str = Query(default=""),
     has_mac: str = Query(default=""),
+    seen_within: str = Query(default="24h"),
     page: int = Query(default=1),
     limit: int = Query(default=100),
 ):
     data = call_netctl(host_snapshot_args({
         "q": q, "category": category, "status": status, "source": source,
-        "network": network, "has_hostname": has_hostname, "has_mac": has_mac,
+        "network": network, "has_hostname": has_hostname, "has_mac": has_mac, "seen_within": seen_within,
     }, page, limit))
     return api_response({
         "hosts": [normalize_netctl_host(host) for host in network_list_from(data, "hosts")],
@@ -1258,7 +1273,7 @@ def host_snapshot_args(filters: dict[str, str], page: int, limit: int) -> list[s
 
 
 @router.get("/network/hosts/meta")
-def api_network_hosts_meta(actor: str = Depends(require_api_actor)):
+def api_network_hosts_meta(actor: str = Depends(require_host_snapshot_actor)):
     # Keep the service-account boundary, but use only the existing SQLite metadata command.
     try:
         data = run_netctl(["hosts", "snapshot-status"])

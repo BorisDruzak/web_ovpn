@@ -1964,6 +1964,8 @@ def network_hosts(
     rows = [normalize_netctl_host(row) for row in list_from(data, "hosts")]
     for row in rows:
         row["endpoint_agent"] = {"state": "unknown"}
+    snapshot = data.get("snapshot", {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0})
+    snapshot_state = "pending" if not snapshot.get("snapshot_id") else "stale" if snapshot.get("stale") else "ready"
     return render(
         request,
         "network_hosts.html",
@@ -1972,7 +1974,8 @@ def network_hosts(
             "filters": filters,
             "sources": data.get("sources", []),
             "pagination": data.get("pagination", {"page": max(1, page), "limit": min(250, max(1, limit)), "total": 0, "pages": 0}),
-            "snapshot": data.get("snapshot", {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0}),
+            "snapshot": snapshot,
+            "snapshot_state": snapshot_state,
             "network_filters": NETWORK_FILTERS,
             "is_runtime_asset_key": is_runtime_asset_key,
             "endpoint_agent_refresh_state": "idle",
