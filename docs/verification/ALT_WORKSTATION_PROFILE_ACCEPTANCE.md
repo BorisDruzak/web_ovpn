@@ -1,10 +1,15 @@
 # ALT workstation profile acceptance (non-secret template)
 
+> **Scope/status:** This is a local/static procedure and evidence template. No
+> deployed controller canary has been executed or proven by this document.
+> Runtime acceptance requires Task 6 after a separately authorized deployment
+> and successful controller readiness.
+
 This template records acceptance evidence for an already installed workstation.
 It is a checklist, not authorization to select a machine, deploy a controller,
-run a playbook, change network policy, or change Vault. Use placeholders and
-boolean results only. Never paste passwords, Vault values, private logs,
-artifact contents, or private keys.
+run a playbook, invoke `netctl`, modify bootstrap, change network policy, or
+change Vault. Use placeholders and boolean results only. Never paste passwords,
+Vault values, private logs, artifact contents, or private keys.
 
 ## Common run record
 

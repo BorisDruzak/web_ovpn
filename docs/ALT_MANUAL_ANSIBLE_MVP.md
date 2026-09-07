@@ -1,5 +1,11 @@
 # ALT Workstation: manual bootstrap and domain join MVP
 
+> **Scope/status:** This document is a local/static operator procedure. It does
+> not prove that a deployed controller canary has run; runtime acceptance is a
+> Task 6 activity after separately authorized deployment and successful
+> controller readiness. Nothing here authorizes machine selection, `netctl`,
+> bootstrap modification, network-policy changes, or Vault changes.
+
 This is a temporary, controller-managed path for a manually installed ALT
 Workstation K 11.x. It does not replace managed ISO or legacy ai curl=
 installation.
