@@ -38,9 +38,10 @@ Vault presence gate plus one explicitly supplied AD user.
 **Interfaces:**
 - Produces `software_catalog` entries for `browser`, `onlyoffice`, and
   `nextcloud_desktop`; all begin with `enabled: false`.
-- An enabled entry must have exactly `artifact_path`, `sha256`, `package_name`,
-  `package_evr`, `architecture`, and `executable` for RPM artifacts, or the
-  fixed repository-package schema for a repository component.
+- An enabled entry must declare `source: rpm` or `source: alt-repository`.
+  RPM entries require `artifact_path`, `sha256`, `package_name`, `package_evr`,
+  `architecture`, and `executable`; repository entries require non-empty fixed
+  `packages` and `executable` fields.
 
 - [ ] **Step 1: Write the catalog schema test**
 
@@ -49,10 +50,13 @@ def test_catalog_components_are_disabled_or_complete() -> None:
     catalog = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))["software_catalog"]
     assert set(catalog) == {"browser", "onlyoffice", "nextcloud_desktop"}
     for name, item in catalog.items():
-        assert item["enabled"] is False or {
-            "enabled", "artifact_path", "sha256", "package_name",
-            "package_evr", "architecture", "executable",
-        } <= set(item), name
+        if item["enabled"]:
+            assert item["source"] in {"rpm", "alt-repository"}, name
+            assert {"enabled", "source", "executable"} <= set(item), name
+            if item["source"] == "rpm":
+                assert {"artifact_path", "sha256", "package_name", "package_evr", "architecture"} <= set(item), name
+            else:
+                assert isinstance(item.get("packages"), list) and item["packages"], name
 ```
 
 - [ ] **Step 2: Run the focused test and confirm it fails because the catalog is absent**
@@ -129,11 +133,13 @@ Expected: FAIL because the component preflight task is absent.
 For `base`, set `selected_software_components: []`. For `core-apps`, set
 `["browser", "onlyoffice", "nextcloud_desktop"]`; do not derive role names
 from request input. Assert every selected entry is enabled and schema-complete.
-On localhost, `stat` each artifact with `checksum_algorithm: sha256`; require a
-regular file whose checksum exactly matches the catalog before any component
-role can execute. Include this task immediately after the structured result is
-initialized and before `Run manual preflight`; set the success fact only after
-all assertions pass.
+For every RPM source, run localhost `stat` with `checksum_algorithm: sha256`
+and require a regular file whose checksum exactly matches the catalog. For an
+`alt-repository` source, require only its fixed non-empty package list and
+executable schema; repository availability is verified by that component role.
+Include this task immediately after the structured result is initialized and
+before `Run manual preflight`; set the success fact only after all assertions
+pass.
 
 - [ ] **Step 4: Preserve stage-03 result semantics**
 
@@ -157,7 +163,6 @@ Commit: `feat(alt): preflight selected software components`
 - Create: `deploy/alt-linux/ansible/roles/software_onlyoffice/tasks/main.yml`
 - Create: `deploy/alt-linux/ansible/roles/software_nextcloud_desktop/tasks/main.yml`
 - Modify: `deploy/alt-linux/ansible/playbooks/tasks/configure_critical_phase.yml`
-- Create: `deploy/alt-linux/ansible/playbooks/tasks/configure_component.yml`
 - Modify: `tests/test_alt_domain_ansible_assets.py`
 
 **Interfaces:**
@@ -195,11 +200,11 @@ copies any RPM to a private mode-0600 temporary path, installs exactly that
 path through `apt-get -y install`, removes the temporary copy in `always`, and
 verifies exact package EVR plus executable. Do not write browser policy files.
 `standard_software` maps known component IDs to fixed role names and has no
-free package-list input. Execute `standard_software` only after the critical
-domain roles and before the final result is persisted. `configure_component.yml`
-adds only a selected component's `ok` or `failed` record to the structured
-result; a component failure is terminal and follows the existing result-write
-before fail path.
+free package-list input. Execute `standard_software` after
+`domain_login_baseline` and immediately before `domain_verify`, then append an
+`ok` component record only after each selected role verifies successfully. A
+component failure is terminal and follows the existing result-write before fail
+path; it must not claim the failed component succeeded.
 
 - [ ] **Step 4: Verify and commit each approved component group**
 
