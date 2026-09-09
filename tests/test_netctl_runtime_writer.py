@@ -126,6 +126,80 @@ def test_successful_collection_commits_legacy_and_runtime_together(
     assert counts["runtime_findings_open"] == 0
 
 
+def test_bridge_host_refreshes_the_unique_known_ip_for_its_mac(
+    runtime_conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netctl.store as store
+
+    source = _source(30, site="central")
+    _seed_source(runtime_conn, source)
+    runtime_conn.commit()
+    monkeypatch.setattr(store, "utc_now", lambda: "2026-09-01T00:00:00Z")
+    save_collection(
+        runtime_conn,
+        source,
+        _collection_snapshot("192.168.101.171", "C0:9B:F4:61:37:15"),
+        "2026-09-01T00:00:00Z",
+    )
+
+    monkeypatch.setattr(store, "utc_now", lambda: "2026-09-09T02:15:00Z")
+    save_collection(
+        runtime_conn,
+        source,
+        {
+            "identity": [], "interfaces": [], "routes": [], "dhcp_leases": [], "arp": [],
+            "neighbors": [],
+            "bridge_hosts": [{"mac": "C0:9B:F4:61:37:15", "bridge": "bridge-lan", "interface": "ether6", "dynamic": True, "local": False}],
+            "firewall_address_lists": [],
+        },
+        "2026-09-09T02:15:00Z",
+    )
+
+    row = runtime_conn.execute(
+        "SELECT last_seen_at, status, last_source FROM network_hosts WHERE ip = '192.168.101.171'"
+    ).fetchone()
+    assert tuple(row) == ("2026-09-09T02:15:00Z", "seen", "source-30")
+
+
+def test_bridge_host_does_not_refresh_ambiguous_historical_mac(
+    runtime_conn: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import netctl.store as store
+
+    source = _source(31, site="central")
+    _seed_source(runtime_conn, source)
+    runtime_conn.executemany(
+        """INSERT INTO network_hosts
+           (ip, mac, category, status, site, first_seen_at, last_seen_at, last_source, tags_json)
+           VALUES (?, 'C0:9B:F4:61:37:15', 'unknown', 'seen', 'central', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z', 'source-31', '{}')""",
+        [("192.168.101.171",), ("192.168.101.172",)],
+    )
+    runtime_conn.commit()
+    monkeypatch.setattr(store, "utc_now", lambda: "2026-09-09T02:15:00Z")
+
+    save_collection(
+        runtime_conn,
+        source,
+        {
+            "identity": [], "interfaces": [], "routes": [], "dhcp_leases": [], "arp": [],
+            "neighbors": [],
+            "bridge_hosts": [{"mac": "C0:9B:F4:61:37:15", "bridge": "bridge-lan", "interface": "ether6", "dynamic": True, "local": False}],
+            "firewall_address_lists": [],
+        },
+        "2026-09-09T02:15:00Z",
+    )
+
+    rows = runtime_conn.execute(
+        "SELECT ip, last_seen_at FROM network_hosts WHERE mac = 'C0:9B:F4:61:37:15' ORDER BY ip"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("192.168.101.171", "2026-08-01T00:00:00Z"),
+        ("192.168.101.172", "2026-08-01T00:00:00Z"),
+    ]
+
+
 def test_runtime_writer_exception_rolls_back_all_collection_writes(
     runtime_conn: sqlite3.Connection,
     monkeypatch: pytest.MonkeyPatch,

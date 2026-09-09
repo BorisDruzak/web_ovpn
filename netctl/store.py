@@ -302,6 +302,29 @@ def _demote_absent_noise_hosts(
         )
 
 
+def _refresh_unique_hosts_from_bridge_observations(
+    conn: sqlite3.Connection,
+    source: dict[str, Any],
+    bridge_hosts: list[dict[str, Any]],
+    observed_at: str,
+) -> None:
+    """Mark a known IP as seen when its MAC is uniquely present on the bridge."""
+    for mac in {normalize_mac(item.get("mac")) for item in bridge_hosts} - {None}:
+        rows = conn.execute(
+            """SELECT id FROM network_hosts
+               WHERE upper(replace(mac, ':', '')) = upper(replace(?, ':', ''))""",
+            (mac,),
+        ).fetchall()
+        if len(rows) != 1:
+            continue
+        conn.execute(
+            """UPDATE network_hosts
+               SET status = 'seen', last_seen_at = ?, last_source = ?
+               WHERE id = ?""",
+            (observed_at, source["name"], rows[0]["id"]),
+        )
+
+
 def save_collection(
     conn: sqlite3.Connection,
     source: dict[str, Any],
@@ -462,6 +485,12 @@ def _save_collection(
             ),
         )
         _insert_observation(conn, source_id, observed_at, "bridge_host", item)
+    _refresh_unique_hosts_from_bridge_observations(
+        conn,
+        source,
+        list(snapshot.get("bridge_hosts", [])),
+        observed_at,
+    )
     for item in snapshot.get("neighbors", []):
         conn.execute(
             """
