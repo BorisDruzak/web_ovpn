@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}OpenVPN Web{% endblock %}</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', path='inventory.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}?v=d7c1a62">
+  <link rel="stylesheet" href="{{ url_for('static', path='inventory.css') }}?v=d7c1a62">
 </head>
 <body>
   <button class="mobile-nav-toggle" type="button" aria-controls="primary-navigation" aria-expanded="false" aria-label="Открыть меню">
@@ -65,7 +65,7 @@
 
   {% block content %}{% endblock %}
   </main>
-  <script src="{{ url_for('static', path='app.js') }}"></script>
+  <script src="{{ url_for('static', path='app.js') }}?v=d7c1a62"></script>
   {% block page_scripts %}{% endblock %}
 </body>
 </html>
