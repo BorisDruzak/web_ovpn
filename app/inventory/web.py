@@ -260,6 +260,18 @@ async def inventory_update_location(location_id: str, request: Request, name: st
     return _redirect(f"/inventory/locations/{location.id}")
 
 
+@router.post("/inventory/location/select")
+async def inventory_select_location(request: Request, location_id: str = Form(), db: Session = Depends(get_db)) -> RedirectResponse:
+    require_user(request, db)
+    await verify_csrf(request)
+    if location_id == "__new__":
+        return _redirect("/inventory/locations/new")
+    if db.get(InventoryLocation, location_id) is None:
+        raise HTTPException(status_code=404, detail="inventory location not found")
+    request.session["inventory_current_location_id"] = location_id
+    return _redirect(f"/inventory/locations/{location_id}")
+
+
 @router.get("/inventory/assets/new", response_class=HTMLResponse)
 def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, parent_asset_id: str = "", manual: bool = False, request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)

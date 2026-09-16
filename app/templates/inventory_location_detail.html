@@ -4,14 +4,17 @@
 {% block content %}
 <section class="inventory-mobile">
   <a class="button secondary" href="/inventory">К СПИСКУ ЛОКАЦИЙ</a>
-  <form method="post" action="/inventory/locations/{{ location.id }}" class="inventory-location-comment">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label for="location-name">Название локации</label>
-    <input id="location-name" name="name" value="{{ location.name or '' }}" required>
-    <label for="location-comment">Комментарий к локации</label>
-    <textarea id="location-comment" name="comment" rows="4" placeholder="Общая информация о помещении">{{ location.comment or '' }}</textarea>
-    <button class="button secondary" type="submit">СОХРАНИТЬ ЛОКАЦИЮ</button>
-  </form>
+  <details class="inventory-location-edit">
+    <summary class="button secondary">РЕДАКТИРОВАТЬ ЛОКАЦИЮ</summary>
+    <form method="post" action="/inventory/locations/{{ location.id }}" class="inventory-location-comment">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label for="location-name">Название локации</label>
+      <input id="location-name" name="name" value="{{ location.name or '' }}" required>
+      <label for="location-comment">Комментарий к локации</label>
+      <textarea id="location-comment" name="comment" rows="4" placeholder="Общая информация о помещении">{{ location.comment or '' }}</textarea>
+      <button class="button secondary" type="submit">СОХРАНИТЬ ЛОКАЦИЮ</button>
+    </form>
+  </details>
 
   <div class="inventory-tree">
     {% for asset in tree.top_level_assets %}

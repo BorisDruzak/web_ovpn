@@ -109,9 +109,26 @@ def test_location_detail_edits_location_on_tree_screen(tmp_path, monkeypatch):
     created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"}, follow_redirects=False)
     location_id = created.headers["location"].rsplit("/", 1)[-1]
     page = client.get(f"/inventory/locations/{location_id}")
+    assert '<details class="inventory-location-edit">' in page.text
+    assert "РЕДАКТИРОВАТЬ ЛОКАЦИЮ" in page.text
     response = client.post(f"/inventory/locations/{location_id}", data={"csrf_token": _csrf(page.text), "name": "ИТ-отдел", "comment": "Подвал"}, follow_redirects=False)
     assert response.headers["location"] == f"/inventory/locations/{location_id}"
     assert "ИТ-отдел" in client.get(response.headers["location"]).text
+
+
+def test_inventory_location_select_compatibility_redirects_to_location(tmp_path, monkeypatch):
+    client, csrf = _client(tmp_path, monkeypatch)
+    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"}, follow_redirects=False)
+    location_url = created.headers["location"]
+
+    response = client.post(
+        "/inventory/location/select",
+        data={"csrf_token": csrf, "location_id": location_url.rsplit("/", 1)[-1]},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == location_url
 
 
 def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_path, monkeypatch):
