@@ -1,0 +1,1 @@
+"""Standalone physical inventory domain."""

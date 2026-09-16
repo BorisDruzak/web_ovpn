@@ -36,6 +36,7 @@ def reset_engine_cache() -> None:
 
 def init_db() -> None:
     from . import models  # noqa: F401
+    from .inventory import models as inventory_models  # noqa: F401
     from .auth import ensure_admin_user
 
     engine = get_engine()
