@@ -25,6 +25,14 @@ def _positive_float_env(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -59,6 +67,8 @@ class Settings:
     endpoint_platform_token_file: Path
     endpoint_platform_ca_file: Path
     endpoint_platform_timeout_seconds: float
+    inventory_photo_root: Path
+    inventory_photo_max_bytes: int
     download_ttl_minutes: int
     session_cookie_name: str
 
@@ -120,6 +130,8 @@ def get_settings() -> Settings:
             "ENDPOINT_PLATFORM_CA_FILE", "/etc/openvpn-web/endpoint-platform-ca.pem"
         ),
         endpoint_platform_timeout_seconds=_positive_float_env("ENDPOINT_PLATFORM_TIMEOUT_SECONDS", 5.0),
+        inventory_photo_root=_path_env("INVENTORY_PHOTO_ROOT", "/var/lib/openvpn-web/inventory-photos"),
+        inventory_photo_max_bytes=_positive_int_env("INVENTORY_PHOTO_MAX_BYTES", 10 * 1024 * 1024),
         download_ttl_minutes=int(os.environ.get("DOWNLOAD_TOKEN_TTL_MINUTES", "15")),
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
     )
