@@ -46,6 +46,16 @@ ASSET_LABELS = {
     InventoryAssetType.UPS: "ИБП",
     InventoryAssetType.OTHER: "ДРУГОЕ",
 }
+ASSET_STATUS_LABELS = {
+    InventoryAssetStatus.IN_USE: "В эксплуатации",
+    InventoryAssetStatus.STORAGE: "На хранении",
+    InventoryAssetStatus.RESERVE: "Резерв",
+    InventoryAssetStatus.BROKEN: "Неисправно",
+    InventoryAssetStatus.REPAIR: "В ремонте",
+    InventoryAssetStatus.TO_WRITEOFF: "К списанию",
+    InventoryAssetStatus.WRITTEN_OFF: "Списано",
+    InventoryAssetStatus.UNKNOWN: "Неизвестно",
+}
 
 
 def _redirect(path: str) -> RedirectResponse:
@@ -178,7 +188,14 @@ def inventory_home(request: Request, db: Session = Depends(get_db)) -> HTMLRespo
     return _render(
         request,
         "inventory.html",
-        {"location": location, "locations": locations, "tree": tree, "asset_labels": ASSET_LABELS, "walk_session": walk_session},
+        {
+            "location": location,
+            "locations": locations,
+            "tree": tree,
+            "asset_labels": ASSET_LABELS,
+            "walk_session": walk_session,
+            "show_new_location": bool(request.session.pop("inventory_location_form_open", False)),
+        },
         db,
     )
 
@@ -187,8 +204,14 @@ def inventory_home(request: Request, db: Session = Depends(get_db)) -> HTMLRespo
 async def inventory_create_location(request: Request, name: str = Form(default=""), comment: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
-    location = service.create_location(db, name=name, comment=comment)
+    normalized_name = name.strip()
+    if not normalized_name:
+        request.session["inventory_location_form_open"] = True
+        _flash(request, "bad", "Введите название локации")
+        return _redirect("/inventory")
+    location = service.create_location(db, name=normalized_name, comment=comment)
     request.session["inventory_current_location_id"] = location.id
+    request.session.pop("inventory_location_form_open", None)
     write_audit(db, request, user, "inventory.location.create", "ok", location.name or "", target_client=location.id)
     _flash(request, "ok", "Локация сохранена")
     return _redirect("/inventory")
@@ -212,6 +235,9 @@ async def inventory_update_location_comment(request: Request, comment: str = For
 async def inventory_select_location(request: Request, location_id: str = Form(), db: Session = Depends(get_db)) -> RedirectResponse:
     require_user(request, db)
     await verify_csrf(request)
+    if location_id == "__new__":
+        request.session["inventory_location_form_open"] = True
+        return _redirect("/inventory")
     if db.get(InventoryLocation, location_id) is None:
         raise HTTPException(status_code=404, detail="inventory location not found")
     request.session["inventory_current_location_id"] = location_id
@@ -222,7 +248,7 @@ async def inventory_select_location(request: Request, location_id: str = Form(),
 def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, parent_asset_id: str = "", request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)
     location = _current_location(request, db)
-    return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "location": location, "asset_labels": ASSET_LABELS, "details": {}, "identifiers": {}, "asset_statuses": InventoryAssetStatus, "walk_session": None}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": {}, "identifiers": {}, "asset_statuses": InventoryAssetStatus, "walk_session": None}, db)
 
 
 @router.get("/inventory/assets/{asset_id}", response_class=HTMLResponse)
@@ -237,7 +263,7 @@ def inventory_asset_detail(asset_id: str, request: Request, db: Session = Depend
     session_id = str(request.session.get("inventory_current_session_id") or "")
     walk_session = db.get(InventorySession, session_id) if session_id else None
     lookup_result = request.session.pop(f"inventory_lookup_{asset.id}", None)
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "location": location, "asset_labels": ASSET_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "asset_statuses": InventoryAssetStatus, "walk_session": walk_session if walk_session and walk_session.finished_at is None else None, "lookup_result": lookup_result}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "asset_statuses": InventoryAssetStatus, "walk_session": walk_session if walk_session and walk_session.finished_at is None else None, "lookup_result": lookup_result}, db)
 
 
 @router.post("/inventory/assets")

@@ -12,7 +12,7 @@
     <label>Модель<input name="model" value="{{ asset.model or '' if asset else '' }}" autocomplete="off"></label>
     <label>Serial<input name="serial_number" value="{{ asset.serial_number or '' if asset else '' }}" autocomplete="off"></label>
     <label>Инвентарный номер<input name="inventory_number" value="{{ asset.inventory_number or '' if asset else '' }}" autocomplete="off"></label>
-    <label>Статус<select name="status"><option value="">Не указан</option>{% for item in asset_statuses %}<option value="{{ item.value }}" {% if asset and asset.status == item %}selected{% endif %}>{{ item.value }}</option>{% endfor %}</select></label>
+    <label>Статус<select name="status"><option value="">Не указан</option>{% for item in asset_statuses %}<option value="{{ item.value }}" {% if asset and asset.status == item %}selected{% endif %}>{{ asset_status_labels[item] }}</option>{% endfor %}</select></label>
     <label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
     <label>MAC-адрес<input name="mac_address" value="{{ identifiers.get('mac') or '' }}" autocomplete="off"></label>
     <label>Hostname<input name="hostname" value="{{ identifiers.get('hostname') or '' }}" autocomplete="off"></label>
@@ -38,7 +38,7 @@
   </form>
   {% if asset %}
   {% if walk_session %}<form method="post" action="/inventory/assets/{{ asset.id }}/confirm"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><label>Заметка обхода<textarea name="notes" rows="2"></textarea></label><button class="button inventory-primary" type="submit">ПОДТВЕРДИТЬ НА МЕСТЕ</button></form>{% endif %}
-  <form method="post" action="/inventory/assets/{{ asset.id }}/lookup"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><label>IP, MAC или hostname для поиска<input name="identifier" required autocomplete="off"></label><button class="button secondary" type="submit">НАЙТИ В СЕТИ</button></form>
+  <form method="post" action="/inventory/assets/{{ asset.id }}/lookup" class="inventory-network-lookup"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><strong>ПОИСК В СЕТИ</strong><label>IP-адрес, MAC-адрес или hostname<input name="identifier" required autocomplete="off" placeholder="Например, AA:BB:CC:DD:EE:FF"></label><small>Введите MAC-адрес, IP-адрес или имя хоста. Для MAC поиск при необходимости обновит снимок сети.</small><button class="button secondary" type="submit">НАЙТИ ПО IP / MAC / HOSTNAME</button></form>
   {% if lookup_result %}<section class="inventory-lookup"><strong>Поиск: {{ lookup_result.status }}</strong><small>{{ lookup_result.message }}</small>{% for field, value in lookup_result.suggestions.items() %}{% if field in ['ip', 'mac', 'hostname'] %}<button type="button" class="button secondary inventory-apply-suggestion" data-field="{{ field }}" data-value="{{ value }}">ПОДСТАВИТЬ {{ field }}: {{ value }}</button>{% else %}<small>{{ field }}: {{ value }}</small>{% endif %}{% endfor %}</section>{% endif %}
   <form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">

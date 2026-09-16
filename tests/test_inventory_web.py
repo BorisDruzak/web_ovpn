@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import base64
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -105,6 +106,72 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
     after = client.get("/inventory")
     assert after.text.count("AOC 24B2X") == 1
     assert "Kyocera M2040" in after.text
+
+
+def test_mobile_inventory_rejects_blank_location_name(tmp_path, monkeypatch):
+    """A blank location must never become an invisible selectable record."""
+    client, csrf = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/inventory/locations",
+        data={"csrf_token": csrf, "name": "   ", "comment": "Не должно сохраниться"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    page = client.get("/inventory")
+    assert "Введите название локации" in page.text
+    assert "Без названия" not in page.text
+
+
+def test_mobile_inventory_offers_inline_location_and_unbound_device_types(tmp_path, monkeypatch):
+    """Technicians can add a named location and any standalone device from the location screen."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    assert client.post(
+        "/inventory/locations",
+        data={"csrf_token": csrf, "name": "ИТ отдел"},
+        follow_redirects=False,
+    ).status_code == 303
+
+    page = client.get("/inventory")
+
+    assert "+ Новая локация…" in page.text
+    assert "СМЕНИТЬ / ДОБАВИТЬ ЛОКАЦИЮ" not in page.text
+    assert "ВЫБРАТЬ ЛОКАЦИЮ" in page.text
+    assert "Отдельное устройство на локации" in page.text
+    assert "/inventory/assets/new?asset_type=MONITOR" in page.text
+    assert "/inventory/assets/new?asset_type=PRINTER" in page.text
+
+
+def test_mobile_inventory_keeps_new_location_form_hidden_until_requested(tmp_path, monkeypatch):
+    """The inline new-location form must not take space until the selector requests it."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "219"}, follow_redirects=False).status_code == 303
+
+    page = client.get("/inventory")
+    css = Path("app/static/inventory.css").read_text(encoding="utf-8")
+
+    assert 'id="new-location-form" hidden' in page.text
+    assert ".inventory-mobile form[hidden] { display: none; }" in css
+
+
+def test_mobile_asset_form_localizes_status_and_explains_mac_lookup(tmp_path, monkeypatch):
+    """A saved device form presents Russian statuses and an explicit MAC lookup control."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "218"}, follow_redirects=False).status_code == 303
+    page = client.get("/inventory")
+    created = client.post(
+        "/inventory/assets",
+        data={"csrf_token": _csrf(page.text), "asset_type": "MONITOR", "custom_name": "AOC"},
+        follow_redirects=False,
+    )
+
+    detail = client.get(created.headers["location"])
+
+    assert "В эксплуатации" in detail.text
+    assert "ПОИСК В СЕТИ" in detail.text
+    assert "IP-адрес, MAC-адрес или hostname" in detail.text
+    assert "AA:BB:CC:DD:EE:FF" in detail.text
 
 
 def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):

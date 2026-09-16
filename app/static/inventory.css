@@ -1,5 +1,6 @@
 .inventory-mobile { max-width: 720px; margin: 0 auto; display: grid; gap: 16px; padding-bottom: 28px; }
 .inventory-mobile form, .inventory-card { display: grid; gap: 10px; padding: 16px; border: 1px solid #d7dde7; border-radius: 12px; background: #fff; }
+.inventory-mobile form[hidden] { display: none; }
 .inventory-mobile label { display: grid; gap: 6px; font-weight: 650; }
 .inventory-mobile input, .inventory-mobile select, .inventory-mobile textarea { box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px; font: inherit; }
 .inventory-mobile textarea { min-height: 96px; resize: vertical; }
@@ -14,4 +15,9 @@
 .inventory-draft-controls { display: grid; gap: 8px; }
 .inventory-draft-controls .button { width: 100%; }
 .inventory-lookup { display: grid; gap: 8px; padding: 12px; border-radius: 10px; background: #eef5ff; }
+.inventory-device-picker { display: grid; gap: 8px; padding: 4px 0; }
+.inventory-device-picker h2 { margin: 0; font-size: 1rem; }
+.inventory-device-picker p { margin: 0; }
+.inventory-device-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.inventory-network-lookup { display: grid; gap: 10px; }
 @media (max-width: 780px) { .sidebar { display: none; } .shell { margin-left: 0; padding: 12px; } .topbar { padding: 8px 0 18px; } .request-id { display: none; } .inventory-mobile { max-width: none; } .button { min-height: 44px; width: 100%; text-align: center; } }
