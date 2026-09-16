@@ -77,6 +77,19 @@ def test_inventory_page_requires_login_and_has_mobile_capture_controls(tmp_path,
     assert "ИНВЕНТАРИЗАЦИЯ" in page.text
     assert "inventory-mobile" in page.text
     assert "/static/inventory.css" in page.text
+    assert 'class="mobile-nav-toggle"' in page.text
+    assert 'aria-controls="primary-navigation"' in page.text
+    assert 'id="primary-navigation"' in page.text
+    assert 'class="mobile-nav-backdrop" hidden' in page.text
+
+    app_css = Path("app/static/app.css").read_text(encoding="utf-8")
+    app_js = Path("app/static/app.js").read_text(encoding="utf-8")
+    assert ".sidebar.mobile-open" in app_css
+    assert "mobile-nav-open" in app_css
+    assert "mobile-nav-toggle" in app_js
+    assert "Escape" in app_js
+    assert "mobileNav.inert" in app_js
+    assert '"aria-hidden"' in app_js
 
 
 def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_path, monkeypatch):

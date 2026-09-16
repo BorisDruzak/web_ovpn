@@ -9,7 +9,12 @@
   <link rel="stylesheet" href="{{ url_for('static', path='inventory.css') }}">
 </head>
 <body>
-  <aside class="sidebar">
+  <button class="mobile-nav-toggle" type="button" aria-controls="primary-navigation" aria-expanded="false" aria-label="Открыть меню">
+    <span aria-hidden="true">☰</span>
+    <span>Меню</span>
+  </button>
+  <div class="mobile-nav-backdrop" hidden></div>
+  <aside class="sidebar" id="primary-navigation">
     <div class="brand">OpenVPN Web</div>
     <nav>
       <a href="/" class="{{ 'active' if request.url.path == '/' else '' }}">Панель</a>

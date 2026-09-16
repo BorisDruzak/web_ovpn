@@ -186,6 +186,46 @@ function scheduleVpnRuntimeHealth() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  const mobileNavToggle = document.querySelector(".mobile-nav-toggle");
+  const mobileNav = document.querySelector("#primary-navigation");
+  const mobileNavBackdrop = document.querySelector(".mobile-nav-backdrop");
+
+  if (mobileNavToggle && mobileNav && mobileNavBackdrop) {
+    const mobileBreakpoint = window.matchMedia("(max-width: 900px)");
+    const setMobileNavOpen = (requestedOpen) => {
+      const wasOpen = mobileNav.classList.contains("mobile-open");
+      const open = mobileBreakpoint.matches && requestedOpen;
+      mobileNav.classList.toggle("mobile-open", open);
+      mobileNavToggle.setAttribute("aria-expanded", String(open));
+      mobileNavToggle.setAttribute("aria-label", open ? "Свернуть меню" : "Открыть меню");
+      mobileNavBackdrop.hidden = !open;
+      document.body.classList.toggle("mobile-nav-open", open);
+      mobileNav.inert = mobileBreakpoint.matches && !open;
+      if (mobileBreakpoint.matches) {
+        mobileNav.setAttribute("aria-hidden", String(!open));
+      } else {
+        mobileNav.removeAttribute("aria-hidden");
+      }
+
+      if (open) {
+        mobileNav.querySelector("a.active, a")?.focus();
+      } else if (wasOpen) {
+        mobileNavToggle.focus();
+      }
+    };
+
+    mobileNavToggle.addEventListener("click", () => {
+      setMobileNavOpen(!mobileNav.classList.contains("mobile-open"));
+    });
+    mobileNavBackdrop.addEventListener("click", () => setMobileNavOpen(false));
+    mobileNav.querySelectorAll("a").forEach((link) => link.addEventListener("click", () => setMobileNavOpen(false)));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") setMobileNavOpen(false);
+    });
+    mobileBreakpoint.addEventListener("change", () => setMobileNavOpen(false));
+    setMobileNavOpen(false);
+  }
+
   const hasDashboard = Boolean(document.querySelector("[data-dashboard-url]"));
   if (hasDashboard) scheduleDashboardData();
   const copyButton = document.querySelector("[data-copy-observer-key]");
