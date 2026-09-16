@@ -503,6 +503,20 @@ def test_unlocated_legacy_asset_detail_and_photo_keep_owner_card_available(tmp_p
     assert "legacy.png" in client.get(uploaded.headers["location"]).text
 
 
+def test_saved_asset_hides_legacy_walk_confirmation_controls(tmp_path, monkeypatch):
+    """An active legacy walk session must not restore confirmation controls to the device card."""
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+    detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
+    started = client.post("/inventory/sessions", data={"csrf_token": _csrf(detail.text)}, follow_redirects=False)
+    assert started.status_code == 303
+
+    active_detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
+
+    assert "Заметка обхода" not in active_detail.text
+    assert "ПОДТВЕРДИТЬ НА МЕСТЕ" not in active_detail.text
+    assert f'action="/inventory/assets/{asset_id}/confirm"' not in active_detail.text
+
+
 def test_related_phone_offers_manual_entry_before_network_search(tmp_path, monkeypatch):
     """A technician can skip discovery and fill a related phone card by hand."""
     client, csrf = _client(tmp_path, monkeypatch)

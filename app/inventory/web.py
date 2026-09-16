@@ -399,9 +399,7 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
         location = _location_or_error(db, asset.location_id)
     photos = list(db.scalars(select(InventoryAssetPhoto).where(InventoryAssetPhoto.asset_id == asset.id).order_by(InventoryAssetPhoto.created_at, InventoryAssetPhoto.id)))
     identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
-    session_id = str(request.session.get("inventory_current_session_id") or "")
-    walk_session = db.get(InventorySession, session_id) if session_id else None
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "walk_session": walk_session if walk_session and walk_session.finished_at is None else None, "prelookup": None}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None}, db)
 
 
 @router.post("/inventory/assets")

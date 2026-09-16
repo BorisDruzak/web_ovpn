@@ -40,7 +40,6 @@
     {% if not asset %}<button class="button secondary" type="submit" name="save_next" value="1">СОХРАНИТЬ И СЛЕДУЮЩЕЕ</button>{% endif %}
   </form>
   {% if asset %}
-  {% if walk_session %}<form method="post" action="/inventory/assets/{{ asset.id }}/confirm"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="return_location_id" value="{{ return_location_id }}"><label>Заметка обхода<textarea name="notes" rows="2"></textarea></label><button class="button inventory-primary" type="submit">ПОДТВЕРДИТЬ НА МЕСТЕ</button></form>{% endif %}
   <section class="inventory-device-photos"><strong>ФОТО ЭТОГО УСТРОЙСТВА</strong><form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="return_location_id" value="{{ return_location_id }}">
