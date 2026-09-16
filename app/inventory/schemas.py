@@ -5,7 +5,19 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .models import InventoryAssetStatus, InventoryAssetType
+from .models import (
+    InventoryAssetStatus,
+    InventoryAssetType,
+    InventoryCheckResult,
+    InventoryIdentifierType,
+    InventoryObservationSource,
+)
+
+
+class IdentifierPayload(BaseModel):
+    identifier_type: InventoryIdentifierType
+    value: str = Field(min_length=1, max_length=255)
+    source: InventoryObservationSource = InventoryObservationSource.MANUAL
 
 
 class LocationCreate(BaseModel):
@@ -31,16 +43,18 @@ class AssetPayload(BaseModel):
     description: str | None = None
     notes: str | None = None
     last_verified_at: datetime | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    identifiers: list[IdentifierPayload] | None = None
 
     def asset_fields(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"asset_type", "location_id"}, exclude_unset=True)
+        return self.model_dump(exclude={"asset_type", "location_id", "details", "identifiers"}, exclude_unset=True)
 
 
 class AssetUpdate(AssetPayload):
     asset_type: InventoryAssetType | None = None
 
     def asset_fields(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"asset_type", "location_id"}, exclude_unset=True)
+        return self.model_dump(exclude={"asset_type", "location_id", "details", "identifiers"}, exclude_unset=True)
 
 
 class WorkplacePCPayload(AssetPayload):
@@ -61,7 +75,15 @@ class RelationCreate(BaseModel):
 
 class LookupRequest(BaseModel):
     identifier: str = Field(min_length=1, max_length=255)
+    asset_id: str | None = None
 
 
 class SessionCreate(BaseModel):
     pass
+
+
+class SessionCheckCreate(BaseModel):
+    asset_id: str
+    location_id: str | None = None
+    result: InventoryCheckResult
+    notes: str | None = None

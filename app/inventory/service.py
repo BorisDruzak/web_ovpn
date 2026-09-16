@@ -9,10 +9,23 @@ from sqlalchemy.orm import Session
 
 from .models import (
     InventoryAsset,
+    InventoryAssetIdentifier,
     InventoryAssetRelation,
     InventoryAssetType,
+    InventoryCheck,
+    InventoryCheckResult,
+    InventoryIdentifierType,
     InventoryLocation,
+    InventoryMonitorDetails,
+    InventoryPCDetails,
+    InventoryPhoneDetails,
+    InventoryPrinterDetails,
+    InventoryObservation,
+    InventoryObservationSource,
+    InventoryUPSDetails,
+    InventorySession,
 )
+from .lookup import InventoryLookupError, classify_identifier
 
 
 class InventoryValidationError(ValueError):
@@ -43,6 +56,13 @@ ASSET_FIELDS = frozenset(
         "last_verified_at",
     }
 )
+DETAIL_MODELS = {
+    InventoryAssetType.PC: (InventoryPCDetails, frozenset({"os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb"})),
+    InventoryAssetType.PRINTER: (InventoryPrinterDetails, frozenset({"page_counter"})),
+    InventoryAssetType.PHONE: (InventoryPhoneDetails, frozenset({"extension"})),
+    InventoryAssetType.MONITOR: (InventoryMonitorDetails, frozenset({"diagonal_inches"})),
+    InventoryAssetType.UPS: (InventoryUPSDetails, frozenset({"power_va", "battery_replaced_at"})),
+}
 
 
 class InventoryService:
@@ -76,6 +96,101 @@ class InventoryService:
         for name, value in fields.items():
             setattr(asset, name, value)
         return asset
+
+    def update_details(self, db: Session, asset: InventoryAsset, fields: Mapping[str, Any]) -> dict[str, Any]:
+        detail_spec = DETAIL_MODELS.get(asset.asset_type)
+        if detail_spec is None:
+            if fields:
+                raise InventoryValidationError("asset type has no detail fields")
+            return {}
+        detail_model, allowed = detail_spec
+        unexpected = set(fields) - allowed
+        if unexpected:
+            raise InventoryValidationError("detail fields do not belong to this asset type")
+        detail = db.get(detail_model, asset.id)
+        if detail is None:
+            detail = detail_model(asset_id=asset.id)
+            db.add(detail)
+        for name, value in fields.items():
+            setattr(detail, name, value)
+        db.flush()
+        return self.details_for(db, asset)
+
+    def details_for(self, db: Session, asset: InventoryAsset) -> dict[str, Any]:
+        detail_spec = DETAIL_MODELS.get(asset.asset_type)
+        if detail_spec is None:
+            return {}
+        detail_model, allowed = detail_spec
+        detail = db.get(detail_model, asset.id)
+        if detail is None:
+            return {name: None for name in allowed}
+        return {name: getattr(detail, name) for name in allowed}
+
+    def sync_identifiers(self, db: Session, asset: InventoryAsset, identifiers: Sequence[Any]) -> list[InventoryAssetIdentifier]:
+        """Replace active identifier values while retaining prior values as history."""
+        desired: dict[tuple[InventoryIdentifierType, str], tuple[str, InventoryObservationSource]] = {}
+        for raw in identifiers:
+            identifier_type = raw.identifier_type if hasattr(raw, "identifier_type") else raw["identifier_type"]
+            value = raw.value if hasattr(raw, "value") else raw["value"]
+            source = raw.source if hasattr(raw, "source") else raw.get("source", InventoryObservationSource.MANUAL)
+            try:
+                kind = identifier_type if isinstance(identifier_type, InventoryIdentifierType) else InventoryIdentifierType(str(identifier_type))
+                observed_from = source if isinstance(source, InventoryObservationSource) else InventoryObservationSource(str(source))
+                normalized = self._normalize_identifier(kind, str(value))
+            except (ValueError, InventoryLookupError) as exc:
+                raise InventoryValidationError("invalid inventory identifier") from exc
+            desired[(kind, normalized)] = (str(value).strip(), observed_from)
+
+        current = list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True))))
+        by_key = {(item.identifier_type, item.normalized_value): item for item in current}
+        now = datetime.now(timezone.utc)
+        for item in current:
+            if (item.identifier_type, item.normalized_value) not in desired:
+                item.is_current = False
+        for (kind, normalized), (value, source) in desired.items():
+            item = by_key.get((kind, normalized))
+            if item is None:
+                item = InventoryAssetIdentifier(
+                    asset_id=asset.id,
+                    identifier_type=kind,
+                    value=value,
+                    normalized_value=normalized,
+                    source=source,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+                db.add(item)
+            else:
+                item.value = value
+                item.source = source
+                item.last_seen_at = now
+        db.flush()
+        return self.identifiers_for(db, asset)
+
+    def identifiers_for(self, db: Session, asset: InventoryAsset) -> list[InventoryAssetIdentifier]:
+        return list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True)).order_by(InventoryAssetIdentifier.identifier_type, InventoryAssetIdentifier.normalized_value)))
+
+    def record_observation(self, db: Session, *, asset_id: str | None, source: InventoryObservationSource, data: Mapping[str, Any]) -> InventoryObservation:
+        if asset_id is not None:
+            self._asset_or_error(db, asset_id)
+        record = InventoryObservation(asset_id=asset_id, source=source, data_json=dict(data))
+        db.add(record)
+        db.flush()
+        return record
+
+    def record_check(self, db: Session, *, session_id: str, asset_id: str, actor: str, result: InventoryCheckResult, location_id: str | None = None, notes: str | None = None) -> InventoryCheck:
+        session = db.get(InventorySession, session_id)
+        if session is None:
+            raise InventoryValidationError("inventory session not found")
+        if session.finished_at is not None:
+            raise InventoryValidationError("inventory session is already finished")
+        asset = self._asset_or_error(db, asset_id)
+        check = InventoryCheck(session_id=session.id, asset_id=asset.id, location_id=location_id or asset.location_id, checked_by=actor, result=result, notes=self._nullable_text(notes))
+        db.add(check)
+        if result is InventoryCheckResult.CONFIRMED:
+            asset.last_verified_at = datetime.now(timezone.utc)
+        db.flush()
+        return check
 
     def create_workplace(
         self,
@@ -184,6 +299,28 @@ class InventoryService:
         return value.strip() if isinstance(value, str) and value.strip() else None
 
     @staticmethod
+    def _normalize_identifier(identifier_type: InventoryIdentifierType, value: str) -> str:
+        if identifier_type is InventoryIdentifierType.IP:
+            kind, normalized = classify_identifier(value)
+            if kind != "ip":
+                raise InventoryLookupError("invalid identifier")
+            return normalized
+        if identifier_type is InventoryIdentifierType.MAC:
+            kind, normalized = classify_identifier(value)
+            if kind != "mac":
+                raise InventoryLookupError("invalid identifier")
+            return normalized
+        if identifier_type is InventoryIdentifierType.HOSTNAME:
+            kind, normalized = classify_identifier(value)
+            if kind != "hostname":
+                raise InventoryLookupError("invalid identifier")
+            return normalized
+        normalized = value.strip().casefold()
+        if not normalized:
+            raise InventoryLookupError("invalid identifier")
+        return normalized
+
+    @staticmethod
     def _validate_asset_fields(fields: Mapping[str, Any]) -> None:
         unexpected = set(fields) - ASSET_FIELDS
         if unexpected:
@@ -195,3 +332,5 @@ class InventoryService:
         if asset is None:
             raise InventoryValidationError("inventory asset not found")
         return asset
+    InventoryObservation,
+    InventoryObservationSource,

@@ -3,6 +3,11 @@
 {% block page_title %}ИНВЕНТАРИЗАЦИЯ{% endblock %}
 {% block content %}
 <section class="inventory-mobile">
+  {% if walk_session %}
+  <form method="post" action="/inventory/sessions/{{ walk_session.id }}/finish" class="inventory-walk"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><strong>Обход активен</strong><small>Начат: {{ walk_session.started_at }}</small><button class="button secondary" type="submit">ЗАВЕРШИТЬ ОБХОД</button></form>
+  {% else %}
+  <form method="post" action="/inventory/sessions" class="inventory-walk"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button inventory-primary" type="submit">НАЧАТЬ ОБХОД</button></form>
+  {% endif %}
   {% if location %}
   <form method="post" action="/inventory/location/select" class="inventory-location-select">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">

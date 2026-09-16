@@ -9,4 +9,9 @@
 .inventory-children { margin: 0; padding-left: 24px; display: grid; gap: 8px; }
 .inventory-primary { min-height: 52px; display: grid; place-items: center; font-weight: 700; }
 .inventory-empty { padding: 24px 4px; color: #586174; }
+.inventory-draft { display: grid; gap: 10px; border-top: 1px solid #d7dde7; padding-top: 12px; }
+.inventory-draft h2 { font-size: 1rem; margin: 0; }
+.inventory-draft-controls { display: grid; gap: 8px; }
+.inventory-draft-controls .button { width: 100%; }
+.inventory-lookup { display: grid; gap: 8px; padding: 12px; border-radius: 10px; background: #eef5ff; }
 @media (max-width: 780px) { .sidebar { display: none; } .shell { margin-left: 0; padding: 12px; } .topbar { padding: 8px 0 18px; } .request-id { display: none; } .inventory-mobile { max-width: none; } .button { min-height: 44px; width: 100%; text-align: center; } }

@@ -114,3 +114,70 @@ def test_inventory_photo_api_stores_authorized_image_and_deletes_it(tmp_path, mo
     assert client.get(f"/api/v1/inventory/photos/{photo['id']}", headers=headers).content == PNG_BYTES
     assert client.delete(f"/api/v1/inventory/photos/{photo['id']}", headers=headers).status_code == 200
     assert not list((tmp_path / "photos").iterdir())
+
+
+def test_inventory_asset_api_persists_type_specific_details(tmp_path, monkeypatch):
+    """PC hardware fields must remain outside the common asset record and survive a read."""
+    client, headers = _client(tmp_path, monkeypatch)
+    created = client.post(
+        "/api/v1/inventory/assets",
+        headers=headers,
+        json={"asset_type": "PC", "custom_name": "BUH-PC-01", "details": {"os_name": "Windows 11", "ram_gb": 16}},
+    )
+    assert created.status_code == 201
+    assert created.json()["data"]["details"] == {"os_name": "Windows 11", "cpu_model": None, "cpu_generation": None, "ram_type": None, "ram_gb": 16, "storage_type": None, "storage_gb": None}
+    fetched = client.get(f"/api/v1/inventory/assets/{created.json()['data']['id']}", headers=headers)
+    assert fetched.json()["data"]["details"]["ram_gb"] == 16
+
+
+def test_inventory_api_keeps_identifiers_workplace_details_and_walk_check(tmp_path, monkeypatch):
+    """A mobile walk can save a complete PC workplace and its confirmation without a second system."""
+    client, headers = _client(tmp_path, monkeypatch)
+    location_id = client.post("/api/v1/inventory/locations", headers=headers, json={"name": "215"}).json()["data"]["id"]
+
+    workplace = client.post(
+        "/api/v1/inventory/workplaces",
+        headers=headers,
+        json={
+            "location_id": location_id,
+            "pc": {
+                "custom_name": "BUH-PC-02",
+                "details": {"os_name": "Windows 11", "ram_gb": 16},
+                "identifiers": [{"identifier_type": "ip", "value": "192.168.100.25"}],
+            },
+            "children": [{"asset_type": "MONITOR", "custom_name": "AOC", "details": {"diagonal_inches": "24"}}],
+        },
+    )
+    assert workplace.status_code == 201
+    pc = workplace.json()["data"]["pc"]
+    assert pc["details"]["ram_gb"] == 16
+    assert pc["identifiers"] == [{"identifier_type": "ip", "value": "192.168.100.25", "normalized_value": "192.168.100.25", "source": "manual", "is_current": True}]
+    assert workplace.json()["data"]["children"][0]["details"]["diagonal_inches"] == "24"
+
+    walk = client.post("/api/v1/inventory/sessions", headers=headers)
+    checked = client.post(
+        f"/api/v1/inventory/sessions/{walk.json()['data']['id']}/checks",
+        headers=headers,
+        json={"asset_id": pc["id"], "result": "confirmed", "notes": "На месте"},
+    )
+    assert checked.status_code == 201
+    assert checked.json()["data"]["location_id"] == location_id
+    assert checked.json()["data"]["result"] == "confirmed"
+
+
+def test_lookup_for_asset_records_audit_observation_not_only_a_transient_hint(tmp_path, monkeypatch):
+    """Network data must be traceable after the operator leaves the mobile form."""
+    client, headers = _client(tmp_path, monkeypatch)
+    asset_id = client.post("/api/v1/inventory/assets", headers=headers, json={"asset_type": "PC"}).json()["data"]["id"]
+    monkeypatch.setattr("app.inventory.api.run_netctl", lambda args, timeout=None: {"hosts": [{"ip": "192.168.100.87", "hostname": "C1-BUH-07"}]})
+
+    result = client.post("/api/v1/inventory/lookup", headers=headers, json={"asset_id": asset_id, "identifier": "192.168.100.87"})
+    assert result.status_code == 200
+
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryObservation
+
+    with get_sessionmaker()() as db:
+        observation = db.query(InventoryObservation).one()
+    assert observation.asset_id == asset_id
+    assert observation.data_json["hostname"] == "C1-BUH-07"

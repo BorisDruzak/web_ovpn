@@ -126,3 +126,72 @@ def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
     )
     assert uploaded.status_code == 303
     assert "label.png" in client.get(f"/inventory/assets/{asset_id}").text
+
+
+def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
+    """A mobile PC form must not discard RAM and OS while saving common asset fields."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "214"}, follow_redirects=False)
+    page = client.get("/inventory")
+    created = client.post(
+        "/inventory/assets",
+        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-01", "os_name": "Windows 11", "ram_gb": "16"},
+        follow_redirects=False,
+    )
+    asset_id = created.headers["location"].rsplit("/", 1)[-1]
+    detail = client.get(f"/inventory/assets/{asset_id}")
+    assert 'name="ram_gb"' in detail.text
+    assert 'value="16"' in detail.text
+    assert 'value="None"' not in detail.text
+
+
+def test_mobile_pc_draft_saves_related_devices_in_one_submit(tmp_path, monkeypatch):
+    """The first PC save must keep the technician's draft monitor instead of requiring a second pass."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "216"}, follow_redirects=False)
+    page = client.get("/inventory")
+    created = client.post(
+        "/inventory/assets",
+        data={
+            "csrf_token": _csrf(page.text),
+            "asset_type": "PC",
+            "custom_name": "PC-03",
+            "related_devices_json": '[{"asset_type":"MONITOR","custom_name":"AOC 24"},{"asset_type":"PHONE","custom_name":"Yealink"}]',
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    home = client.get("/inventory")
+    assert "PC-03" in home.text
+    assert "AOC 24" in home.text
+    assert "Yealink" in home.text
+
+
+def test_mobile_asset_lookup_shows_editable_network_suggestions(tmp_path, monkeypatch):
+    """The mobile form exposes read-only lookup output and lets the operator apply it deliberately."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217"}, follow_redirects=False)
+    page = client.get("/inventory")
+    created = client.post("/inventory/assets", data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-04"}, follow_redirects=False)
+    asset_id = created.headers["location"].rsplit("/", 1)[-1]
+    monkeypatch.setattr("app.inventory.web.run_netctl", lambda args, timeout=None: {"hosts": [{"ip": "192.168.100.88", "hostname": "BUH-PC-04"}]})
+
+    lookup = client.post(f"/inventory/assets/{asset_id}/lookup", data={"csrf_token": _csrf(client.get(f'/inventory/assets/{asset_id}').text), "identifier": "192.168.100.88"}, follow_redirects=False)
+    assert lookup.status_code == 303
+    detail = client.get(f"/inventory/assets/{asset_id}").text
+    assert "BUH-PC-04" in detail
+    assert "ПОДСТАВИТЬ" in detail
+
+
+def test_mobile_form_rejects_bad_identifier_without_server_error(tmp_path, monkeypatch):
+    """A typo from a physical label must remain an editable form error, not a 500 response."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "218"}, follow_redirects=False)
+    page = client.get("/inventory")
+    response = client.post(
+        "/inventory/assets",
+        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-05", "mac_address": "not-a-mac"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "invalid inventory identifier" in client.get("/inventory").text

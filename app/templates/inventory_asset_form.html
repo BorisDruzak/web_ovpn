@@ -7,18 +7,39 @@
   <form method="post" action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% endif %}
-    <label>Название<input name="custom_name" value="{{ asset.custom_name if asset else '' }}" autocomplete="off"></label>
-    <label>Производитель<input name="manufacturer" value="{{ asset.manufacturer if asset else '' }}" autocomplete="off"></label>
-    <label>Модель<input name="model" value="{{ asset.model if asset else '' }}" autocomplete="off"></label>
-    <label>Serial<input name="serial_number" value="{{ asset.serial_number if asset else '' }}" autocomplete="off"></label>
-    <label>Инвентарный номер<input name="inventory_number" value="{{ asset.inventory_number if asset else '' }}" autocomplete="off"></label>
-    {% if asset_type.value == 'PC' or asset_type.value == 'PHONE' %}<label>Ответственный<input name="assigned_person_name" value="{{ asset.assigned_person_name if asset else '' }}" autocomplete="off"></label><label>Логин<input name="login_name" value="{{ asset.login_name if asset else '' }}" autocomplete="off"></label>{% endif %}
-    <label>Описание<textarea name="description" rows="3">{{ asset.description if asset else '' }}</textarea></label>
-    <label>Комментарий<textarea name="notes" rows="3">{{ asset.notes if asset else '' }}</textarea></label>
+    <label>Название<input name="custom_name" value="{{ asset.custom_name or '' if asset else '' }}" autocomplete="off"></label>
+    <label>Производитель<input name="manufacturer" value="{{ asset.manufacturer or '' if asset else '' }}" autocomplete="off"></label>
+    <label>Модель<input name="model" value="{{ asset.model or '' if asset else '' }}" autocomplete="off"></label>
+    <label>Serial<input name="serial_number" value="{{ asset.serial_number or '' if asset else '' }}" autocomplete="off"></label>
+    <label>Инвентарный номер<input name="inventory_number" value="{{ asset.inventory_number or '' if asset else '' }}" autocomplete="off"></label>
+    <label>Статус<select name="status"><option value="">Не указан</option>{% for item in asset_statuses %}<option value="{{ item.value }}" {% if asset and asset.status == item %}selected{% endif %}>{{ item.value }}</option>{% endfor %}</select></label>
+    <label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
+    <label>MAC-адрес<input name="mac_address" value="{{ identifiers.get('mac') or '' }}" autocomplete="off"></label>
+    <label>Hostname<input name="hostname" value="{{ identifiers.get('hostname') or '' }}" autocomplete="off"></label>
+    {% if asset_type.value == 'PC' %}<label>ОС<input name="os_name" value="{{ details.get('os_name') or '' }}"></label><label>Процессор<input name="cpu_model" value="{{ details.get('cpu_model') or '' }}"></label><label>Поколение процессора<input name="cpu_generation" value="{{ details.get('cpu_generation') or '' }}"></label><label>Тип RAM<input name="ram_type" value="{{ details.get('ram_type') or '' }}"></label><label>Объём RAM, ГБ<input type="number" min="0" name="ram_gb" value="{{ details.get('ram_gb') or '' }}"></label><label>Тип накопителя<input name="storage_type" value="{{ details.get('storage_type') or '' }}"></label><label>Объём накопителя, ГБ<input type="number" min="0" name="storage_gb" value="{{ details.get('storage_gb') or '' }}"></label>{% endif %}
+    {% if asset_type.value == 'PRINTER' %}<label>Счётчик страниц<input type="number" min="0" name="page_counter" value="{{ details.get('page_counter') or '' }}"></label>{% endif %}
+    {% if asset_type.value == 'PHONE' %}<label>Внутренний номер<input name="extension" value="{{ details.get('extension') or '' }}"></label>{% endif %}
+    {% if asset_type.value == 'MONITOR' %}<label>Диагональ<input name="diagonal_inches" value="{{ details.get('diagonal_inches') or '' }}"></label>{% endif %}
+    {% if asset_type.value == 'UPS' %}<label>Мощность VA<input type="number" min="0" name="power_va" value="{{ details.get('power_va') or '' }}"></label><label>Дата замены АКБ<input type="date" name="battery_replaced_at" value="{{ details.get('battery_replaced_at') or '' }}"></label>{% endif %}
+    {% if asset_type.value == 'PC' or asset_type.value == 'PHONE' %}<label>Ответственный<input name="assigned_person_name" value="{{ asset.assigned_person_name or '' if asset else '' }}" autocomplete="off"></label><label>Логин<input name="login_name" value="{{ asset.login_name or '' if asset else '' }}" autocomplete="off"></label>{% endif %}
+    <label>Описание<textarea name="description" rows="3">{{ asset.description or '' if asset else '' }}</textarea></label>
+    <label>Комментарий<textarea name="notes" rows="3">{{ asset.notes or '' if asset else '' }}</textarea></label>
+    {% if not asset and asset_type.value == 'PC' %}
+    <section class="inventory-draft" id="related-device-drafts">
+      <h2>Связанные устройства</h2>
+      <p class="muted">Сохранится вместе с ПК одной операцией.</p>
+      <div class="inventory-draft-controls"><select id="draft-device-type"><option value="MONITOR">Монитор</option><option value="PRINTER">МФУ / принтер</option><option value="PHONE">Телефон</option><option value="UPS">ИБП</option><option value="OTHER">Другое</option></select><input id="draft-device-name" placeholder="Название или модель"><button class="button secondary" type="button" id="add-related-device">ДОБАВИТЬ</button></div>
+      <ul class="inventory-children" id="related-device-list"></ul>
+      <input type="hidden" name="related_devices_json" id="related-devices-json" value="[]">
+    </section>
+    {% endif %}
     <button class="button inventory-primary" type="submit">СОХРАНИТЬ</button>
     {% if not asset %}<button class="button secondary" type="submit" name="save_next" value="1">СОХРАНИТЬ И СЛЕДУЮЩЕЕ</button>{% endif %}
   </form>
   {% if asset %}
+  {% if walk_session %}<form method="post" action="/inventory/assets/{{ asset.id }}/confirm"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><label>Заметка обхода<textarea name="notes" rows="2"></textarea></label><button class="button inventory-primary" type="submit">ПОДТВЕРДИТЬ НА МЕСТЕ</button></form>{% endif %}
+  <form method="post" action="/inventory/assets/{{ asset.id }}/lookup"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><label>IP, MAC или hostname для поиска<input name="identifier" required autocomplete="off"></label><button class="button secondary" type="submit">НАЙТИ В СЕТИ</button></form>
+  {% if lookup_result %}<section class="inventory-lookup"><strong>Поиск: {{ lookup_result.status }}</strong><small>{{ lookup_result.message }}</small>{% for field, value in lookup_result.suggestions.items() %}{% if field in ['ip', 'mac', 'hostname'] %}<button type="button" class="button secondary inventory-apply-suggestion" data-field="{{ field }}" data-value="{{ value }}">ПОДСТАВИТЬ {{ field }}: {{ value }}</button>{% else %}<small>{{ field }}: {{ value }}</small>{% endif %}{% endfor %}</section>{% endif %}
   <form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <label>Фото<input type="file" name="photo" accept="image/*" capture="environment" required></label>
@@ -30,4 +51,39 @@
   {% if asset and asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/new?asset_type=MONITOR&parent_asset_id={{ asset.id }}">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
   <a class="button secondary" href="/inventory">К ЛОКАЦИИ</a>
 </section>
+{% endblock %}
+{% block page_scripts %}
+{% if asset and lookup_result %}
+<script>
+document.querySelectorAll('.inventory-apply-suggestion').forEach((button) => button.addEventListener('click', () => {
+  const input = document.querySelector(`[name="${button.dataset.field}_address"]`) || document.querySelector(`[name="${button.dataset.field}"]`);
+  if (input) input.value = button.dataset.value;
+}));
+</script>
+{% endif %}
+{% if not asset and asset_type.value == 'PC' %}
+<script>
+(() => {
+  const items = [];
+  const output = document.getElementById('related-devices-json');
+  const list = document.getElementById('related-device-list');
+  const type = document.getElementById('draft-device-type');
+  const name = document.getElementById('draft-device-name');
+  function render() {
+    output.value = JSON.stringify(items);
+    list.replaceChildren(...items.map((item, index) => {
+      const row = document.createElement('li');
+      row.textContent = `${item.asset_type}: ${item.custom_name || 'Без названия'} `;
+      const remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'button secondary'; remove.textContent = 'Убрать';
+      remove.addEventListener('click', () => { items.splice(index, 1); render(); });
+      row.append(remove); return row;
+    }));
+  }
+  document.getElementById('add-related-device').addEventListener('click', () => {
+    items.push({asset_type: type.value, custom_name: name.value.trim()}); name.value = ''; render();
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}
