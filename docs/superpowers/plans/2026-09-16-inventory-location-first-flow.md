@@ -236,4 +236,3 @@ git commit -m "docs(inventory): document location-first workflow"
 - [ ] **Step 4: Deploy backup-first and perform mobile acceptance**
 
 Create /opt/openvpn-web/.deploy-backups/pre-inventory-location-flow-<timestamp>/files.tgz with every changed deployment file. Preserve file owners/groups, restart openvpn-web.service, wait for readiness, verify /login is 200 and anonymous /inventory is 303, and compare local/remote SHA-256 values. On a 797 px browser viewport check that the location list has no walk button, location tree has nesting and a relation action beside a PC, a related form has no parent summary, and the saved-device photo form remains on the owning card.
-
