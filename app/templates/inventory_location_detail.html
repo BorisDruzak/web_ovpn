@@ -26,9 +26,12 @@
     <article class="inventory-card {{ 'inventory-pc' if asset.asset_type.value == 'PC' else '' }}">
       <a class="inventory-asset-link" href="/inventory/assets/{{ asset.id }}?location_id={{ location.id }}"><strong>{{ asset.custom_name or asset.model or asset_labels[asset.asset_type] }}</strong><span>{{ asset.assigned_person_name or asset.manufacturer or asset.asset_type.value }}</span></a>
       {% if tree.related_by_parent.get(asset.id) %}
-      <ul class="inventory-children">
-        {% for child in tree.related_by_parent[asset.id] %}<li><a href="/inventory/assets/{{ child.id }}?location_id={{ location.id }}">{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</a></li>{% endfor %}
-      </ul>
+      <section class="inventory-related-devices" aria-label="Связанные устройства">
+        <h2>СВЯЗАННЫЕ УСТРОЙСТВА</h2>
+        <ul class="inventory-children">
+          {% for child in tree.related_by_parent[asset.id] %}<li><a class="inventory-related-asset-link" href="/inventory/assets/{{ child.id }}?location_id={{ location.id }}"><strong>{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</strong><span>{{ asset_labels[child.asset_type] }}</span></a></li>{% endfor %}
+        </ul>
+      </section>
       {% endif %}
       {% if asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/{{ asset.id }}/related/new?location_id={{ location.id }}">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
     </article>

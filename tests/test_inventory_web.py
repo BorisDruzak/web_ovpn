@@ -203,6 +203,24 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
     assert "Kyocera M2040" in after.text
 
 
+def test_location_tree_visually_groups_related_devices_under_their_pc(tmp_path, monkeypatch):
+    """Related devices must be visibly separated from their parent PC card."""
+    client, location_id, pc_id = _create_location_and_pc(tmp_path, monkeypatch)
+    page = _prepare_manual_asset_form(client, monkeypatch, "MONITOR", pc_id)
+    created = client.post(
+        "/inventory/assets",
+        data={"csrf_token": _csrf(page.text), "asset_type": "MONITOR", "custom_name": "AOC 24B2X", "parent_asset_id": pc_id},
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+
+    tree = client.get(f"/inventory/locations/{location_id}")
+
+    assert '<section class="inventory-related-devices"' in tree.text
+    assert "СВЯЗАННЫЕ УСТРОЙСТВА" in tree.text
+    assert "AOC 24B2X" in tree.text
+
+
 def test_mobile_inventory_rejects_blank_location_name(tmp_path, monkeypatch):
     """A blank location must never become an invisible selectable record."""
     client, csrf = _client(tmp_path, monkeypatch)
