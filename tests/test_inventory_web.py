@@ -330,27 +330,119 @@ def test_mobile_pc_draft_saves_related_devices_in_one_submit(tmp_path, monkeypat
     assert "Yealink" in detail.text
 
 
-def test_related_device_picker_collapses_parent_and_opens_manual_full_monitor_form(tmp_path, monkeypatch):
-    """A related monitor starts from a type picker, then shows its full form beside a collapsed parent."""
+def _create_location_and_pc(tmp_path, monkeypatch) -> tuple[TestClient, str, str]:
+    """Create a PC through the existing legacy flow for location-aware route tests."""
     client, csrf = _client(tmp_path, monkeypatch)
-    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217"}, follow_redirects=False)
+    location = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"}, follow_redirects=False)
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
     created = client.post("/inventory/assets", data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-04"}, follow_redirects=False)
-    asset_id = created.headers["location"].rsplit("/", 1)[-1]
+    assert created.status_code == 303
 
-    picker = client.get(f"/inventory/assets/{asset_id}/related/new")
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+
+    with get_sessionmaker()() as db:
+        asset_id = db.query(InventoryAsset).filter_by(custom_name="PC-04").one().id
+    return client, location.headers["location"].rsplit("/", 1)[-1], asset_id
+
+
+def test_related_device_form_shows_only_child_and_returns_to_location(tmp_path, monkeypatch):
+    """A related-device flow must carry its location without rendering its PC parent."""
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+
+    picker = client.get(f"/inventory/assets/{asset_id}/related/new?location_id={location_id}")
     assert picker.status_code == 200
     assert "ВЫБЕРИТЕ ТИП СВЯЗАННОГО УСТРОЙСТВА" in picker.text
-    assert f'/inventory/assets/new?asset_type=MONITOR&amp;parent_asset_id={asset_id}&amp;manual=1' in picker.text
-    assert '<details class="inventory-parent-card">' in picker.text
-    assert "PC-04" in picker.text
+    assert "ПК:" not in picker.text
+    assert "inventory-parent-card" not in picker.text
+    assert f"location_id={location_id}" in picker.text
 
-    form = client.get(f"/inventory/assets/new?asset_type=MONITOR&parent_asset_id={asset_id}&manual=1")
+    form = client.get(f"/inventory/assets/new?asset_type=MONITOR&location_id={location_id}&parent_asset_id={asset_id}&manual=1")
     assert form.status_code == 200
-    assert '<details class="inventory-parent-card">' in form.text
+    assert "ПК:" not in form.text
+    assert "inventory-parent-card" not in form.text
+    assert "Локация: ИТ отдел" in form.text
     assert 'name="manufacturer"' in form.text
     assert 'name="mac_address"' in form.text
     assert "НАЙТИ УСТРОЙСТВО" not in form.text
+
+    discovery = client.get(f"/inventory/assets/new?asset_type=PHONE&location_id={location_id}&parent_asset_id={asset_id}")
+    assert "inventory-parent-card" not in discovery.text
+
+
+def test_location_tree_puts_related_action_next_to_pc(tmp_path, monkeypatch):
+    """Only the PC card in a location tree may launch a related-device flow."""
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+
+    page = client.get(f"/inventory/locations/{location_id}")
+
+    assert f'/inventory/assets/{asset_id}/related/new?location_id={location_id}' in page.text
+    assert page.text.count("+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО") == 1
+
+
+def test_location_scoped_asset_create_and_update_return_to_location_tree(tmp_path, monkeypatch):
+    """Saving a scoped card must return to its explicit location tree, not a device card."""
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+    form = client.get(f"/inventory/assets/new?asset_type=MONITOR&location_id={location_id}&parent_asset_id={asset_id}&manual=1")
+
+    created = client.post(
+        "/inventory/assets",
+        data={
+            "csrf_token": _csrf(form.text),
+            "asset_type": "MONITOR",
+            "custom_name": "AOC",
+            "parent_asset_id": asset_id,
+            "manual_mode": "1",
+            "return_location_id": location_id,
+        },
+        follow_redirects=False,
+    )
+    assert created.headers["location"] == f"/inventory/locations/{location_id}"
+
+    detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
+    updated = client.post(
+        f"/inventory/assets/{asset_id}",
+        data={"csrf_token": _csrf(detail.text), "custom_name": "PC-04", "return_location_id": location_id},
+        follow_redirects=False,
+    )
+    assert updated.headers["location"] == f"/inventory/locations/{location_id}"
+
+
+def test_location_scoped_parent_must_belong_to_requested_location(tmp_path, monkeypatch):
+    """A parent from another location cannot be attached through a forged location ID."""
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+    other = client.post("/inventory/locations", data={"csrf_token": _csrf(client.get(f'/inventory/locations/{location_id}').text), "name": "Другая"}, follow_redirects=False)
+    other_location_id = other.headers["location"].rsplit("/", 1)[-1]
+
+    response = client.get(f"/inventory/assets/new?asset_type=MONITOR&location_id={other_location_id}&parent_asset_id={asset_id}&manual=1")
+
+    assert response.status_code == 404
+
+
+def test_location_scoped_photo_upload_returns_to_owning_card(tmp_path, monkeypatch):
+    """Photo outcomes stay on the saved asset card, preserving the image or error message."""
+    monkeypatch.setenv("INVENTORY_PHOTO_ROOT", str(tmp_path / "photos"))
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+    detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
+
+    uploaded = client.post(
+        f"/inventory/assets/{asset_id}/photos",
+        data={"csrf_token": _csrf(detail.text), "photo_type": "general", "return_location_id": location_id},
+        files={"photo": ("label.png", PNG_BYTES, "image/png")},
+        follow_redirects=False,
+    )
+    assert uploaded.headers["location"] == f"/inventory/assets/{asset_id}?location_id={location_id}"
+    assert "label.png" in client.get(uploaded.headers["location"]).text
+
+    detail = client.get(uploaded.headers["location"])
+    rejected = client.post(
+        f"/inventory/assets/{asset_id}/photos",
+        data={"csrf_token": _csrf(detail.text), "photo_type": "general", "return_location_id": location_id},
+        files={"photo": ("label.bin", b"not an image", "application/octet-stream")},
+        follow_redirects=False,
+    )
+    assert rejected.headers["location"] == f"/inventory/assets/{asset_id}?location_id={location_id}"
+    assert "image content is invalid" in client.get(rejected.headers["location"]).text
 
 
 def test_related_phone_offers_manual_entry_before_network_search(tmp_path, monkeypatch):

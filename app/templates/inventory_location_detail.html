@@ -24,13 +24,13 @@
   <div class="inventory-tree">
     {% for asset in tree.top_level_assets %}
     <article class="inventory-card {{ 'inventory-pc' if asset.asset_type.value == 'PC' else '' }}">
-      <a class="inventory-asset-link" href="/inventory/assets/{{ asset.id }}"><strong>{{ asset.custom_name or asset.model or asset_labels[asset.asset_type] }}</strong><span>{{ asset.assigned_person_name or asset.manufacturer or asset.asset_type.value }}</span></a>
+      <a class="inventory-asset-link" href="/inventory/assets/{{ asset.id }}?location_id={{ location.id }}"><strong>{{ asset.custom_name or asset.model or asset_labels[asset.asset_type] }}</strong><span>{{ asset.assigned_person_name or asset.manufacturer or asset.asset_type.value }}</span></a>
       {% if tree.related_by_parent.get(asset.id) %}
       <ul class="inventory-children">
-        {% for child in tree.related_by_parent[asset.id] %}<li><a href="/inventory/assets/{{ child.id }}">{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</a></li>{% endfor %}
+        {% for child in tree.related_by_parent[asset.id] %}<li><a href="/inventory/assets/{{ child.id }}?location_id={{ location.id }}">{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</a></li>{% endfor %}
       </ul>
       {% endif %}
-      {% if asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/{{ asset.id }}/related/new">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
+      {% if asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/{{ asset.id }}/related/new?location_id={{ location.id }}">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
     </article>
     {% endfor %}
   </div>
@@ -38,7 +38,7 @@
   <section class="inventory-device-picker">
     <h2>Устройства на локации</h2>
     <div class="inventory-device-choices">
-      {% for asset_type, label in asset_labels.items() %}<a class="button secondary" href="/inventory/assets/new?asset_type={{ asset_type.value }}">+ ДОБАВИТЬ УСТРОЙСТВО: {{ label }}</a>{% endfor %}
+      {% for asset_type, label in asset_labels.items() %}<a class="button secondary" href="/inventory/assets/new?asset_type={{ asset_type.value }}&amp;location_id={{ location.id }}">+ ДОБАВИТЬ УСТРОЙСТВО: {{ label }}</a>{% endfor %}
     </div>
   </section>
 </section>

@@ -3,7 +3,6 @@
 {% block page_title %}{{ asset_labels[asset_type] }}{% endblock %}
 {% block content %}
 <section class="inventory-mobile inventory-form">
-  {% if parent_asset %}<details class="inventory-parent-card"><summary>ПК: {{ parent_asset.custom_name or parent_asset.model or parent_asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary><a class="button secondary" href="/inventory/assets/{{ parent_asset.id }}">ОТКРЫТЬ КАРТОЧКУ ПК</a></details>{% endif %}
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
   <section class="inventory-card inventory-discovery">
     <h2>Сначала найдите устройство</h2>
@@ -11,6 +10,7 @@
     <form method="post" action="/inventory/assets/new/lookup">
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <input type="hidden" name="asset_type" value="{{ asset_type.value }}">
+      <input type="hidden" name="location_id" value="{{ return_location_id }}">
       <input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">
       <label>IP-адрес, MAC-адрес или hostname<input name="identifier" required autocomplete="off" value="{{ lookup_result.identifier if lookup_result else '' }}" placeholder="Например, AA:BB:CC:DD:EE:FF"></label>
       <button class="button inventory-primary" type="submit">НАЙТИ УСТРОЙСТВО</button>
@@ -23,11 +23,12 @@
   <form method="post" action="/inventory/assets/new/manual">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="asset_type" value="{{ asset_type.value }}">
+    <input type="hidden" name="location_id" value="{{ return_location_id }}">
     <input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">
     <input type="hidden" name="identifier" value="{{ lookup_result.identifier if lookup_result else '' }}">
     <button class="button secondary" type="submit">{% if parent_asset and not lookup_result %}ЗАПОЛНИТЬ ВРУЧНУЮ{% else %}ПРОДОЛЖИТЬ ВРУЧНУЮ{% endif %}</button>
   </form>
   {% endif %}
-  <a class="button secondary" href="/inventory">К ЛОКАЦИИ</a>
+  <a class="button secondary" href="{% if return_location_id %}/inventory/locations/{{ return_location_id }}{% else %}/inventory{% endif %}">К ЛОКАЦИИ</a>
 </section>
 {% endblock %}

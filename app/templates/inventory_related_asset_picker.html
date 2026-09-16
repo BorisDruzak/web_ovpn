@@ -3,18 +3,17 @@
 {% block page_title %}Связанное устройство{% endblock %}
 {% block content %}
 <section class="inventory-mobile inventory-form">
-  <details class="inventory-parent-card"><summary>ПК: {{ parent_asset.custom_name or parent_asset.model or parent_asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary><a class="button secondary" href="/inventory/assets/{{ parent_asset.id }}">ОТКРЫТЬ КАРТОЧКУ ПК</a></details>
   <section class="inventory-card inventory-device-picker">
     <h2>ВЫБЕРИТЕ ТИП СВЯЗАННОГО УСТРОЙСТВА</h2>
     <p class="muted">Для монитора, принтера, ИБП и другого оборудования сразу откроется полная карточка для ручного заполнения. Телефон сначала ищется в сети.</p>
     <div class="inventory-device-choices">
-      <a class="button secondary" href="/inventory/assets/new?asset_type=MONITOR&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ МОНИТОР</a>
-      <a class="button secondary" href="/inventory/assets/new?asset_type=PRINTER&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ МФУ / ПРИНТЕР</a>
-      <a class="button secondary" href="/inventory/assets/new?asset_type=PHONE&amp;parent_asset_id={{ parent_asset.id }}">+ ТЕЛЕФОН</a>
-      <a class="button secondary" href="/inventory/assets/new?asset_type=UPS&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ ИБП</a>
-      <a class="button secondary" href="/inventory/assets/new?asset_type=OTHER&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ ДРУГОЕ</a>
+      <a class="button secondary" href="/inventory/assets/new?asset_type=MONITOR&amp;location_id={{ return_location_id }}&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ МОНИТОР</a>
+      <a class="button secondary" href="/inventory/assets/new?asset_type=PRINTER&amp;location_id={{ return_location_id }}&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ МФУ / ПРИНТЕР</a>
+      <a class="button secondary" href="/inventory/assets/new?asset_type=PHONE&amp;location_id={{ return_location_id }}&amp;parent_asset_id={{ parent_asset.id }}">+ ТЕЛЕФОН</a>
+      <a class="button secondary" href="/inventory/assets/new?asset_type=UPS&amp;location_id={{ return_location_id }}&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ ИБП</a>
+      <a class="button secondary" href="/inventory/assets/new?asset_type=OTHER&amp;location_id={{ return_location_id }}&amp;parent_asset_id={{ parent_asset.id }}&amp;manual=1">+ ДРУГОЕ</a>
     </div>
   </section>
-  <a class="button secondary" href="/inventory/assets/{{ parent_asset.id }}">К КАРТОЧКЕ ПК</a>
+  <a class="button secondary" href="/inventory/locations/{{ return_location_id }}">К ЛОКАЦИИ</a>
 </section>
 {% endblock %}

@@ -103,27 +103,51 @@ def _current_location(request: Request, db: Session) -> InventoryLocation | None
     return location
 
 
+def _location_url(location_id: str) -> str:
+    return f"/inventory/locations/{location_id}"
+
+
+def _location_or_error(db: Session, location_id: str) -> InventoryLocation:
+    location = db.get(InventoryLocation, location_id)
+    if location is None:
+        raise HTTPException(status_code=404, detail="inventory location not found")
+    return location
+
+
+def _flow_location(request: Request, db: Session, location_id: str) -> InventoryLocation | None:
+    return _location_or_error(db, location_id) if location_id else _current_location(request, db)
+
+
+def _asset_url(asset_id: str, return_location_id: str = "") -> str:
+    suffix = f"?location_id={return_location_id}" if return_location_id else ""
+    return f"/inventory/assets/{asset_id}{suffix}"
+
+
 def _photo_storage() -> InventoryPhotoStorage:
     settings = get_settings()
     return InventoryPhotoStorage(settings.inventory_photo_root, max_bytes=settings.inventory_photo_max_bytes)
 
 
-def _new_asset_url(asset_type: InventoryAssetType, parent_asset_id: str = "", manual: bool = False) -> str:
-    suffix = f"&parent_asset_id={parent_asset_id}" if parent_asset_id else ""
+def _new_asset_url(asset_type: InventoryAssetType, parent_asset_id: str = "", manual: bool = False, location_id: str = "") -> str:
+    suffix = f"&location_id={location_id}" if location_id else ""
+    if parent_asset_id:
+        suffix += f"&parent_asset_id={parent_asset_id}"
     if manual:
         suffix += "&manual=1"
     return f"/inventory/assets/new?asset_type={asset_type.value}{suffix}"
 
 
-def _new_asset_flow_key(asset_type: InventoryAssetType, parent_asset_id: str) -> str:
-    return f"inventory_new_asset_flow:{asset_type.value}:{parent_asset_id}"
+def _new_asset_flow_key(asset_type: InventoryAssetType, parent_asset_id: str, location_id: str = "") -> str:
+    return f"inventory_new_asset_flow:{asset_type.value}:{location_id}:{parent_asset_id}"
 
 
-def _related_parent_or_error(db: Session, parent_asset_id: str) -> InventoryAsset | None:
+def _related_parent_or_error(db: Session, parent_asset_id: str, location: InventoryLocation | None = None) -> InventoryAsset | None:
     if not parent_asset_id:
         return None
     parent = db.get(InventoryAsset, parent_asset_id)
     if parent is None or parent.asset_type is not InventoryAssetType.PC:
+        raise HTTPException(status_code=404, detail="inventory parent asset not found")
+    if location is not None and parent.location_id != location.id:
         raise HTTPException(status_code=404, detail="inventory parent asset not found")
     return parent
 
@@ -273,34 +297,42 @@ async def inventory_select_location(request: Request, location_id: str = Form(),
 
 
 @router.get("/inventory/assets/new", response_class=HTMLResponse)
-def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, parent_asset_id: str = "", manual: bool = False, request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, location_id: str = "", parent_asset_id: str = "", manual: bool = False, request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)
-    location = _current_location(request, db)
-    parent_asset = _related_parent_or_error(db, parent_asset_id)
+    location = _flow_location(request, db, location_id)
+    parent_asset = _related_parent_or_error(db, parent_asset_id, location if location_id else None)
+    if parent_asset is not None and (location is None or parent_asset.location_id != location.id):
+        location = _location_or_error(db, parent_asset.location_id)
+    return_location_id = location.id if location is not None else ""
     manual_mode = bool(parent_asset and manual and asset_type in MANUAL_RELATED_ASSET_TYPES)
     if manual_mode:
-        return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "manual_mode": True, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": {}, "identifiers": {}, "prefill": {"custom_name": ""}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": {"source": "manual", "message": "Заполните полную карточку устройства вручную."}}, db)
-    flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id))
+        return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "manual_mode": True, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": {}, "identifiers": {}, "prefill": {"custom_name": ""}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": {"source": "manual", "message": "Заполните полную карточку устройства вручную."}}, db)
+    flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id, return_location_id))
     if not isinstance(flow, dict) or not flow.get("ready"):
-        return _render(request, "inventory_asset_discovery.html", {"asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "location": location, "asset_labels": ASSET_LABELS, "lookup_status_labels": LOOKUP_STATUS_LABELS, "lookup_result": flow}, db)
+        return _render(request, "inventory_asset_discovery.html", {"asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "lookup_status_labels": LOOKUP_STATUS_LABELS, "lookup_result": flow}, db)
     suggestions = flow.get("suggestions") if isinstance(flow.get("suggestions"), dict) else {}
     details = flow.get("details") if isinstance(flow.get("details"), dict) else {}
-    return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "manual_mode": False, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": details, "identifiers": suggestions, "prefill": {"custom_name": str(suggestions.get("display_name") or "")}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": flow}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "manual_mode": False, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": details, "identifiers": suggestions, "prefill": {"custom_name": str(suggestions.get("display_name") or "")}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": flow}, db)
 
 
 @router.get("/inventory/assets/{asset_id}/related/new", response_class=HTMLResponse)
-def inventory_related_asset_picker(asset_id: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_related_asset_picker(asset_id: str, request: Request, location_id: str = "", db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)
-    parent_asset = _related_parent_or_error(db, asset_id)
-    return _render(request, "inventory_related_asset_picker.html", {"parent_asset": parent_asset, "asset_labels": ASSET_LABELS}, db)
+    location = _flow_location(request, db, location_id)
+    parent_asset = _related_parent_or_error(db, asset_id, location if location_id else None)
+    if location is None or parent_asset.location_id != location.id:
+        location = _location_or_error(db, parent_asset.location_id)
+    return _render(request, "inventory_related_asset_picker.html", {"parent_asset": parent_asset, "return_location_id": location.id, "asset_labels": ASSET_LABELS}, db)
 
 
 @router.post("/inventory/assets/new/lookup")
-async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAssetType = Form(), parent_asset_id: str = Form(default=""), identifier: str = Form(), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAssetType = Form(), location_id: str = Form(default=""), parent_asset_id: str = Form(default=""), identifier: str = Form(), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
-    location = _current_location(request, db)
-    target_url = _new_asset_url(asset_type, parent_asset_id)
+    location = _flow_location(request, db, location_id)
+    if location is not None:
+        _related_parent_or_error(db, parent_asset_id, location if location_id else None)
+    target_url = _new_asset_url(asset_type, parent_asset_id, location_id=location.id if location is not None else "")
     if location is None:
         _flash(request, "bad", "Сначала создайте локацию")
         return _redirect("/inventory")
@@ -312,7 +344,7 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
     source = InventoryObservationSource.NMAP if result.source == "nmap" else InventoryObservationSource.NETCTL
     observation = service.record_observation(db, asset_id=None, source=source, data=result.observation)
     write_audit(db, request, user, "inventory.lookup", result.status, result.source, target_client=observation.id)
-    request.session[_new_asset_flow_key(asset_type, parent_asset_id)] = {
+    request.session[_new_asset_flow_key(asset_type, parent_asset_id, location.id)] = {
         "status": result.status,
         "source": result.source,
         "message": result.message,
@@ -325,12 +357,18 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
 
 
 @router.post("/inventory/assets/new/manual")
-async def inventory_continue_new_asset_manually(request: Request, asset_type: InventoryAssetType = Form(), parent_asset_id: str = Form(default=""), identifier: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_continue_new_asset_manually(request: Request, asset_type: InventoryAssetType = Form(), location_id: str = Form(default=""), parent_asset_id: str = Form(default=""), identifier: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     require_user(request, db)
     await verify_csrf(request)
-    target_url = _new_asset_url(asset_type, parent_asset_id)
-    parent_asset = _related_parent_or_error(db, parent_asset_id)
-    flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id))
+    location = _flow_location(request, db, location_id)
+    if location is None:
+        _flash(request, "bad", "Сначала создайте локацию")
+        return _redirect("/inventory")
+    parent_asset = _related_parent_or_error(db, parent_asset_id, location if location_id else None)
+    if parent_asset is not None and parent_asset.location_id != location.id:
+        location = _location_or_error(db, parent_asset.location_id)
+    target_url = _new_asset_url(asset_type, parent_asset_id, location_id=location.id)
+    flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id, location.id))
     if parent_asset is None and (not isinstance(flow, dict) or flow.get("status") not in {"not_found", "unavailable"}):
         _flash(request, "bad", "Сначала выполните поиск устройства")
         return _redirect(target_url)
@@ -341,39 +379,46 @@ async def inventory_continue_new_asset_manually(request: Request, asset_type: In
     except InventoryLookupError:
         identifier_type, normalized = "hostname", ""
     flow.update({"ready": True, "source": "manual", "message": "Данные не найдены: заполните карточку вручную.", "suggestions": {identifier_type: normalized} if normalized else {}})
-    request.session[_new_asset_flow_key(asset_type, parent_asset_id)] = flow
+    request.session[_new_asset_flow_key(asset_type, parent_asset_id, location.id)] = flow
     return _redirect(target_url)
 
 
 @router.get("/inventory/assets/{asset_id}", response_class=HTMLResponse)
-def inventory_asset_detail(asset_id: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "", db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)
     asset = db.get(InventoryAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
-    location = _current_location(request, db)
+    location = _flow_location(request, db, location_id)
+    if location_id and location is not None and asset.location_id != location.id:
+        raise HTTPException(status_code=404, detail="inventory asset not found")
+    if location is None or location.id != asset.location_id:
+        location = _location_or_error(db, asset.location_id)
     photos = list(db.scalars(select(InventoryAssetPhoto).where(InventoryAssetPhoto.asset_id == asset.id).order_by(InventoryAssetPhoto.created_at, InventoryAssetPhoto.id)))
     identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
     session_id = str(request.session.get("inventory_current_session_id") or "")
     walk_session = db.get(InventorySession, session_id) if session_id else None
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "parent_asset": None, "manual_mode": False, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "walk_session": walk_session if walk_session and walk_session.finished_at is None else None, "prelookup": None}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "walk_session": walk_session if walk_session and walk_session.finished_at is None else None, "prelookup": None}, db)
 
 
 @router.post("/inventory/assets")
-async def inventory_create_asset(request: Request, asset_type: InventoryAssetType = Form(), custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), notes: str = Form(default=""), parent_asset_id: str = Form(default=""), manual_mode: str = Form(default=""), related_devices_json: str = Form(default=""), save_next: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_create_asset(request: Request, asset_type: InventoryAssetType = Form(), custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), notes: str = Form(default=""), return_location_id: str = Form(default=""), parent_asset_id: str = Form(default=""), manual_mode: str = Form(default=""), related_devices_json: str = Form(default=""), save_next: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
-    location = _current_location(request, db)
+    has_explicit_return = bool(return_location_id)
+    location = _flow_location(request, db, return_location_id)
     if location is None:
         _flash(request, "bad", "Сначала создайте локацию")
         return _redirect("/inventory")
-    parent_asset = _related_parent_or_error(db, parent_asset_id)
-    flow_key = _new_asset_flow_key(asset_type, parent_asset_id)
+    parent_asset = _related_parent_or_error(db, parent_asset_id, location if return_location_id else None)
+    if parent_asset is not None and parent_asset.location_id != location.id:
+        location = _location_or_error(db, parent_asset.location_id)
+    flow_key = _new_asset_flow_key(asset_type, parent_asset_id, location.id)
     flow = request.session.get(flow_key)
     direct_manual = bool(parent_asset and manual_mode == "1" and asset_type in MANUAL_RELATED_ASSET_TYPES)
     if not direct_manual and (not isinstance(flow, dict) or not flow.get("ready")):
         _flash(request, "bad", "Сначала выполните поиск или выберите ручное заполнение")
-        return _redirect(_new_asset_url(asset_type, parent_asset_id))
+        return _redirect(_new_asset_url(asset_type, parent_asset_id, location_id=location.id if has_explicit_return else ""))
     try:
         common_fields = {"custom_name": custom_name or None, "manufacturer": manufacturer or None, "model": model or None, "serial_number": serial_number or None, "inventory_number": inventory_number or None, "status": _status_form(status), "assigned_person_name": assigned_person_name or None, "login_name": login_name or None, "description": description or None, "notes": notes or None}
         drafts = _workplace_drafts(related_devices_json) if asset_type is InventoryAssetType.PC else []
@@ -390,28 +435,32 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
             write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=asset.id)
     except InventoryValidationError as exc:
         _flash(request, "bad", str(exc))
-        return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual))
+        return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""))
     write_audit(db, request, user, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id)
     request.session.pop(flow_key, None)
     _flash(request, "ok", "Устройство сохранено")
     if save_next:
-        return _redirect(f"/inventory/assets/new?asset_type={asset_type.value}")
-    return _redirect(f"/inventory/assets/{asset.id}")
+        return _redirect(_new_asset_url(asset_type, location_id=location.id if has_explicit_return else ""))
+    return _redirect(_location_url(location.id) if has_explicit_return else _asset_url(asset.id))
 
 
 @router.post("/inventory/assets/{asset_id}")
-async def inventory_update_asset(asset_id: str, request: Request, custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), notes: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_update_asset(asset_id: str, request: Request, custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), notes: str = Form(default=""), return_location_id: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     asset = db.get(InventoryAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
+    if return_location_id:
+        location = _location_or_error(db, return_location_id)
+        if asset.location_id != location.id:
+            raise HTTPException(status_code=404, detail="inventory asset not found")
     service.update_asset(asset, custom_name=custom_name or None, manufacturer=manufacturer or None, model=model or None, serial_number=serial_number or None, inventory_number=inventory_number or None, status=_status_form(status), assigned_person_name=assigned_person_name or None, login_name=login_name or None, description=description or None, notes=notes or None)
     service.update_details(db, asset, await _detail_form(request, asset.asset_type))
     service.sync_identifiers(db, asset, await _identifier_form(request))
     write_audit(db, request, user, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id)
     _flash(request, "ok", "Устройство обновлено")
-    return _redirect(f"/inventory/assets/{asset.id}")
+    return _redirect(_location_url(return_location_id) if return_location_id else _asset_url(asset.id))
 
 
 @router.post("/inventory/sessions")
@@ -443,7 +492,7 @@ async def inventory_finish_session(session_id: str, request: Request, db: Sessio
 
 
 @router.post("/inventory/assets/{asset_id}/confirm")
-async def inventory_confirm_asset(asset_id: str, request: Request, notes: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_confirm_asset(asset_id: str, request: Request, notes: str = Form(default=""), return_location_id: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     session_id = str(request.session.get("inventory_current_session_id") or "")
@@ -451,29 +500,33 @@ async def inventory_confirm_asset(asset_id: str, request: Request, notes: str = 
         check = service.record_check(db, session_id=session_id, asset_id=asset_id, actor=user.username, result=InventoryCheckResult.CONFIRMED, notes=notes)
     except InventoryValidationError as exc:
         _flash(request, "bad", str(exc))
-        return _redirect(f"/inventory/assets/{asset_id}")
+        return _redirect(_asset_url(asset_id, return_location_id))
     write_audit(db, request, user, "inventory.check.create", check.result.value, check.notes or "", target_client=check.id)
     _flash(request, "ok", "Устройство подтверждено в обходе")
-    return _redirect(f"/inventory/assets/{asset_id}")
+    return _redirect(_asset_url(asset_id, return_location_id))
 
 
 @router.post("/inventory/assets/{asset_id}/lookup")
-async def inventory_lookup_asset(asset_id: str, request: Request, identifier: str = Form(), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_lookup_asset(asset_id: str, request: Request, identifier: str = Form(), return_location_id: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     asset = db.get(InventoryAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
+    if return_location_id:
+        location = _location_or_error(db, return_location_id)
+        if asset.location_id != location.id:
+            raise HTTPException(status_code=404, detail="inventory asset not found")
     try:
         result = InventoryLookup(run_netctl).lookup(identifier, actor=user.username)
     except InventoryLookupError as exc:
         _flash(request, "bad", str(exc))
-        return _redirect(f"/inventory/assets/{asset_id}")
+        return _redirect(_asset_url(asset_id, return_location_id))
     source = InventoryObservationSource.NMAP if result.source == "nmap" else InventoryObservationSource.NETCTL
     observation = service.record_observation(db, asset_id=asset.id, source=source, data=result.observation)
     write_audit(db, request, user, "inventory.lookup", result.status, result.source, target_client=observation.id)
     request.session[f"inventory_lookup_{asset.id}"] = {"status": result.status, "message": result.message, "suggestions": result.suggestions}
-    return _redirect(f"/inventory/assets/{asset_id}")
+    return _redirect(_asset_url(asset_id, return_location_id))
 
 
 @router.post("/inventory/relations/{relation_id}/detach")
@@ -491,18 +544,22 @@ async def inventory_detach_relation(relation_id: str, request: Request, db: Sess
 
 
 @router.post("/inventory/assets/{asset_id}/photos")
-async def inventory_upload_asset_photo(asset_id: str, request: Request, photo: UploadFile = File(), photo_type: InventoryPhotoType = Form(default=InventoryPhotoType.GENERAL), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_upload_asset_photo(asset_id: str, request: Request, photo: UploadFile = File(), photo_type: InventoryPhotoType = Form(default=InventoryPhotoType.GENERAL), return_location_id: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     asset = db.get(InventoryAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
+    if return_location_id:
+        location = _location_or_error(db, return_location_id)
+        if asset.location_id != location.id:
+            raise HTTPException(status_code=404, detail="inventory asset not found")
     storage = _photo_storage()
     try:
         stored = storage.save(photo.filename or "", photo.content_type or "", await _read_photo(photo, storage.max_bytes))
     except InventoryPhotoError as exc:
         _flash(request, "bad", str(exc))
-        return _redirect(f"/inventory/assets/{asset_id}")
+        return _redirect(_asset_url(asset_id, return_location_id))
     record = InventoryAssetPhoto(asset_id=asset.id, photo_type=photo_type, storage_path=stored.storage_path, original_filename=stored.original_filename, mime_type=stored.mime_type, size_bytes=stored.size_bytes, created_by=user.username)
     try:
         db.add(record)
@@ -513,7 +570,7 @@ async def inventory_upload_asset_photo(asset_id: str, request: Request, photo: U
         storage.cleanup_many((stored,))
         raise
     _flash(request, "ok", "Фотография добавлена")
-    return _redirect(f"/inventory/assets/{asset_id}")
+    return _redirect(_asset_url(asset_id, return_location_id))
 
 
 @router.get("/inventory/photos/{photo_id}")
