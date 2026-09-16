@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import base64
 
 from fastapi.testclient import TestClient
+
+
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL3NwAAAABJRU5ErkJggg=="
+)
 
 
 def _client(tmp_path, monkeypatch) -> tuple[TestClient, str]:
@@ -99,3 +105,24 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
     after = client.get("/inventory")
     assert after.text.count("AOC 24B2X") == 1
     assert "Kyocera M2040" in after.text
+
+
+def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
+    """The phone capture control must persist a validated image after an asset exists."""
+    monkeypatch.setenv("INVENTORY_PHOTO_ROOT", str(tmp_path / "photos"))
+    client, csrf = _client(tmp_path, monkeypatch)
+    assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "214"}, follow_redirects=False).status_code == 303
+    page = client.get("/inventory")
+    created = client.post(
+        "/inventory/assets", data={"csrf_token": _csrf(page.text), "asset_type": "MONITOR", "custom_name": "AOC"}, follow_redirects=False
+    )
+    asset_id = created.headers["location"].rsplit("/", 1)[-1]
+    detail = client.get(f"/inventory/assets/{asset_id}")
+    uploaded = client.post(
+        f"/inventory/assets/{asset_id}/photos",
+        data={"csrf_token": _csrf(detail.text), "photo_type": "general"},
+        files={"photo": ("label.png", PNG_BYTES, "image/png")},
+        follow_redirects=False,
+    )
+    assert uploaded.status_code == 303
+    assert "label.png" in client.get(f"/inventory/assets/{asset_id}").text

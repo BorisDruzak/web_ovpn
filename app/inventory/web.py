@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,8 +13,9 @@ from ..audit import write_audit
 from ..auth import csrf_token, current_user, require_user, verify_csrf
 from ..config import get_settings
 from ..db import get_db
-from .models import InventoryAsset, InventoryAssetRelation, InventoryAssetType, InventoryLocation
+from .models import InventoryAsset, InventoryAssetPhoto, InventoryAssetRelation, InventoryAssetType, InventoryLocation, InventoryPhotoType
 from .service import InventoryService, InventoryValidationError
+from .storage import InventoryPhotoError, InventoryPhotoStorage
 
 
 router = APIRouter(tags=["inventory-web"])
@@ -63,6 +64,24 @@ def _current_location(request: Request, db: Session) -> InventoryLocation | None
         if location is not None:
             request.session["inventory_current_location_id"] = location.id
     return location
+
+
+def _photo_storage() -> InventoryPhotoStorage:
+    settings = get_settings()
+    return InventoryPhotoStorage(settings.inventory_photo_root, max_bytes=settings.inventory_photo_max_bytes)
+
+
+async def _read_photo(upload: UploadFile, limit: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(64 * 1024)
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > limit:
+            raise InventoryPhotoError("image size exceeds the limit")
+        chunks.append(chunk)
 
 
 @router.get("/inventory", response_class=HTMLResponse)
@@ -128,7 +147,8 @@ def inventory_asset_detail(asset_id: str, request: Request, db: Session = Depend
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
     location = _current_location(request, db)
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "location": location, "asset_labels": ASSET_LABELS}, db)
+    photos = list(db.scalars(select(InventoryAssetPhoto).where(InventoryAssetPhoto.asset_id == asset.id).order_by(InventoryAssetPhoto.created_at, InventoryAssetPhoto.id)))
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "location": location, "asset_labels": ASSET_LABELS, "photos": photos}, db)
 
 
 @router.post("/inventory/assets")
@@ -179,3 +199,44 @@ async def inventory_detach_relation(relation_id: str, request: Request, db: Sess
     write_audit(db, request, user, "inventory.relation.end", "ok", "", target_client=relation.id)
     _flash(request, "ok", "Связь завершена; устройство осталось в локации")
     return _redirect("/inventory")
+
+
+@router.post("/inventory/assets/{asset_id}/photos")
+async def inventory_upload_asset_photo(asset_id: str, request: Request, photo: UploadFile = File(), photo_type: InventoryPhotoType = Form(default=InventoryPhotoType.GENERAL), db: Session = Depends(get_db)) -> RedirectResponse:
+    user = require_user(request, db)
+    await verify_csrf(request)
+    asset = db.get(InventoryAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="inventory asset not found")
+    storage = _photo_storage()
+    try:
+        stored = storage.save(photo.filename or "", photo.content_type or "", await _read_photo(photo, storage.max_bytes))
+    except InventoryPhotoError as exc:
+        _flash(request, "bad", str(exc))
+        return _redirect(f"/inventory/assets/{asset_id}")
+    record = InventoryAssetPhoto(asset_id=asset.id, photo_type=photo_type, storage_path=stored.storage_path, original_filename=stored.original_filename, mime_type=stored.mime_type, size_bytes=stored.size_bytes, created_by=user.username)
+    try:
+        db.add(record)
+        db.flush()
+        write_audit(db, request, user, "inventory.photo.add", "ok", record.mime_type, target_client=record.id)
+    except Exception:
+        db.rollback()
+        storage.cleanup_many((stored,))
+        raise
+    _flash(request, "ok", "Фотография добавлена")
+    return _redirect(f"/inventory/assets/{asset_id}")
+
+
+@router.get("/inventory/photos/{photo_id}")
+def inventory_photo_read(photo_id: str, request: Request, db: Session = Depends(get_db)) -> FileResponse:
+    require_user(request, db)
+    photo = db.get(InventoryAssetPhoto, photo_id)
+    if photo is None:
+        raise HTTPException(status_code=404, detail="inventory photo not found")
+    try:
+        path = _photo_storage().path_for(photo.storage_path)
+    except InventoryPhotoError as exc:
+        raise HTTPException(status_code=404, detail="inventory photo not found") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="inventory photo is unavailable")
+    return FileResponse(path, media_type=photo.mime_type, filename=photo.original_filename or "image")

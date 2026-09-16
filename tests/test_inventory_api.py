@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import base64
 
 from fastapi.testclient import TestClient
+
+
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL3NwAAAABJRU5ErkJggg=="
+)
 
 
 def _client(tmp_path, monkeypatch) -> tuple[TestClient, dict[str, str]]:
@@ -84,3 +90,27 @@ def test_inventory_api_creates_empty_asset_projects_workplace_and_audits(tmp_pat
     with get_sessionmaker()() as db:
         actions = {row.action for row in db.query(WebAuditLog).all()}
     assert {"inventory.location.create", "inventory.asset.create", "inventory.relation.create", "inventory.relation.end"} <= actions
+
+
+def test_inventory_photo_api_stores_authorized_image_and_deletes_it(tmp_path, monkeypatch):
+    """Photo metadata must not outlive a deleted file or become anonymously downloadable."""
+    monkeypatch.setenv("INVENTORY_PHOTO_ROOT", str(tmp_path / "photos"))
+    client, headers = _client(tmp_path, monkeypatch)
+    location = client.post("/api/v1/inventory/locations", headers=headers, json={"name": "214"}).json()["data"]
+    asset = client.post(
+        "/api/v1/inventory/assets", headers=headers, json={"asset_type": "MONITOR", "location_id": location["id"]}
+    ).json()["data"]
+
+    uploaded = client.post(
+        f"/api/v1/inventory/assets/{asset['id']}/photos",
+        headers=headers,
+        data={"photo_type": "general"},
+        files={"photo": ("../../label.png", PNG_BYTES, "image/png")},
+    )
+    assert uploaded.status_code == 201
+    photo = uploaded.json()["data"]
+    assert photo["original_filename"] == "label.png"
+    assert client.get(f"/api/v1/inventory/photos/{photo['id']}").status_code == 401
+    assert client.get(f"/api/v1/inventory/photos/{photo['id']}", headers=headers).content == PNG_BYTES
+    assert client.delete(f"/api/v1/inventory/photos/{photo['id']}", headers=headers).status_code == 200
+    assert not list((tmp_path / "photos").iterdir())

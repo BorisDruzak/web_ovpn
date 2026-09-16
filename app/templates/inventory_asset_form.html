@@ -15,10 +15,18 @@
     {% if asset_type.value == 'PC' or asset_type.value == 'PHONE' %}<label>Ответственный<input name="assigned_person_name" value="{{ asset.assigned_person_name if asset else '' }}" autocomplete="off"></label><label>Логин<input name="login_name" value="{{ asset.login_name if asset else '' }}" autocomplete="off"></label>{% endif %}
     <label>Описание<textarea name="description" rows="3">{{ asset.description if asset else '' }}</textarea></label>
     <label>Комментарий<textarea name="notes" rows="3">{{ asset.notes if asset else '' }}</textarea></label>
-    <label>Фото<input type="file" accept="image/*" capture="environment" disabled aria-describedby="photo-note"></label><small id="photo-note">Загрузка фотографии станет доступна после сохранения устройства.</small>
     <button class="button inventory-primary" type="submit">СОХРАНИТЬ</button>
     {% if not asset %}<button class="button secondary" type="submit" name="save_next" value="1">СОХРАНИТЬ И СЛЕДУЮЩЕЕ</button>{% endif %}
   </form>
+  {% if asset %}
+  <form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label>Фото<input type="file" name="photo" accept="image/*" capture="environment" required></label>
+    <label>Тип фото<select name="photo_type"><option value="general">Общее</option><option value="serial_label">Serial label</option><option value="inventory_label">Инвентарный номер</option><option value="status_page">Страница состояния</option><option value="damage">Повреждение</option><option value="other">Другое</option></select></label>
+    <button class="button secondary" type="submit">ДОБАВИТЬ ФОТО</button>
+  </form>
+  {% if photos %}<ul class="inventory-children">{% for photo in photos %}<li><a href="/inventory/photos/{{ photo.id }}">{{ photo.original_filename or 'Фото' }}</a></li>{% endfor %}</ul>{% endif %}
+  {% endif %}
   {% if asset and asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/new?asset_type=MONITOR&parent_asset_id={{ asset.id }}">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
   <a class="button secondary" href="/inventory">К ЛОКАЦИИ</a>
 </section>
