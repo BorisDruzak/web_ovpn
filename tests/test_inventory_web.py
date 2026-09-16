@@ -445,6 +445,64 @@ def test_location_scoped_photo_upload_returns_to_owning_card(tmp_path, monkeypat
     assert "image content is invalid" in client.get(rejected.headers["location"]).text
 
 
+def test_legacy_related_lookup_keeps_parent_location_when_session_changes(tmp_path, monkeypatch):
+    """A legacy related lookup must not turn its parent's location into the later session location."""
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+    location_page = client.get(f"/inventory/locations/{location_id}")
+    other = client.post(
+        "/inventory/locations",
+        data={"csrf_token": _csrf(location_page.text), "name": "Другая"},
+        follow_redirects=False,
+    )
+    other_location_id = other.headers["location"].rsplit("/", 1)[-1]
+    assert other_location_id != location_id
+
+    discovery = client.get(f"/inventory/assets/new?asset_type=PHONE&parent_asset_id={asset_id}")
+    monkeypatch.setattr("app.inventory.web.run_netctl", lambda args, timeout=None: {"hosts": []})
+    lookup = client.post(
+        "/inventory/assets/new/lookup",
+        data={
+            "csrf_token": _csrf(discovery.text),
+            "asset_type": "PHONE",
+            "parent_asset_id": asset_id,
+            "identifier": "legacy-phone",
+        },
+        follow_redirects=False,
+    )
+
+    assert lookup.headers["location"] == f"/inventory/assets/new?asset_type=PHONE&location_id={location_id}&parent_asset_id={asset_id}"
+    assert client.get(lookup.headers["location"]).status_code == 200
+
+
+def test_unlocated_legacy_asset_detail_and_photo_keep_owner_card_available(tmp_path, monkeypatch):
+    """Historical assets without a location must keep their card and photo flow available."""
+    monkeypatch.setenv("INVENTORY_PHOTO_ROOT", str(tmp_path / "photos"))
+    client, _ = _client(tmp_path, monkeypatch)
+
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset, InventoryAssetType
+
+    with get_sessionmaker()() as db:
+        asset = InventoryAsset(asset_type=InventoryAssetType.OTHER, location_id=None, custom_name="Старое устройство")
+        db.add(asset)
+        db.commit()
+        asset_id = asset.id
+
+    detail = client.get(f"/inventory/assets/{asset_id}")
+    assert detail.status_code == 200
+    assert 'name="return_location_id" value=""' in detail.text
+
+    uploaded = client.post(
+        f"/inventory/assets/{asset_id}/photos",
+        data={"csrf_token": _csrf(detail.text), "photo_type": "general"},
+        files={"photo": ("legacy.png", PNG_BYTES, "image/png")},
+        follow_redirects=False,
+    )
+
+    assert uploaded.headers["location"] == f"/inventory/assets/{asset_id}"
+    assert "legacy.png" in client.get(uploaded.headers["location"]).text
+
+
 def test_related_phone_offers_manual_entry_before_network_search(tmp_path, monkeypatch):
     """A technician can skip discovery and fill a related phone card by hand."""
     client, csrf = _client(tmp_path, monkeypatch)
