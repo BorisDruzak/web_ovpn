@@ -123,6 +123,29 @@ def test_fingerprint_ensure_executes_only_the_resolved_asset_ip(
     assert targets == ["192.168.100.55"]
 
 
+def test_fingerprint_inspect_ip_executes_one_validated_direct_target(
+    capsys, monkeypatch
+) -> None:
+    """A direct inventory lookup must not permit a subnet or caller-supplied nmap flags."""
+    import netctl.cli as cli
+
+    targets: list[str] = []
+    monkeypatch.setattr(
+        cli,
+        "run_nmap_fingerprint",
+        lambda ip: targets.append(ip) or _empty_fingerprint(),
+    )
+
+    rc, payload = _run_cli(
+        ["--json", "fingerprint", "inspect-ip", "--target", "192.168.100.77"], capsys
+    )
+
+    assert rc == 0
+    assert payload["status"] == "ok"
+    assert payload["fingerprint"]["nmap_version"] == "7.95"
+    assert targets == ["192.168.100.77"]
+
+
 def test_fingerprint_ensure_returns_sanitized_failure(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:

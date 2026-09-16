@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import hashlib
 import ipaddress
 import json
@@ -47,7 +48,7 @@ from .runtime_assets import (
     runtime_identity_status,
     set_asset_manual_name,
 )
-from .nmap.policy import FingerprintPolicyError, configured_fingerprint_profile
+from .nmap.policy import FingerprintPolicyError, configured_fingerprint_profile, validate_target_ipv4
 from .nmap.runner import run_nmap_fingerprint
 from .nmap.store import ensure_fingerprint, fingerprint_status
 from .fingerprint.providers import replace_endpoint_agent_evidence
@@ -1431,6 +1432,15 @@ def cmd_assets(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def cmd_fingerprint(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.fingerprint_command == "inspect-ip":
+        try:
+            target = validate_target_ipv4(args.target)
+            fingerprint = run_nmap_fingerprint(target)
+        except FingerprintPolicyError as exc:
+            return 2, err(str(exc))
+        except Exception:
+            return 1, err("fingerprint failed")
+        return 0, ok(fingerprint=asdict(fingerprint))
     if args.fingerprint_command == "agent-evidence-sync":
         raw_records = args.records_json
         if len(raw_records.encode("utf-8")) > 262_144:
@@ -1904,6 +1914,8 @@ def build_parser() -> argparse.ArgumentParser:
         fingerprint_command.add_argument("--asset-key", required=True)
     fingerprint_agent_sync = fingerprint_sub.add_parser("agent-evidence-sync")
     fingerprint_agent_sync.add_argument("--records-json", required=True)
+    fingerprint_inspect_ip = fingerprint_sub.add_parser("inspect-ip")
+    fingerprint_inspect_ip.add_argument("--target", required=True)
 
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
