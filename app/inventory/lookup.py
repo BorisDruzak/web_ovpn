@@ -91,10 +91,20 @@ class InventoryLookup:
         fingerprint = payload.get("fingerprint") if isinstance(payload, Mapping) else None
         if not isinstance(fingerprint, Mapping):
             return LookupResult("not_found", "nmap", {}, {"target_ip": normalized}, "Устройство не найдено.")
+        suggestions = {"ip": normalized}
+        os_matches = fingerprint.get("os_matches")
+        if isinstance(os_matches, list):
+            for match in os_matches:
+                if not isinstance(match, Mapping):
+                    continue
+                os_name = str(match.get("name") or "").strip()
+                if os_name:
+                    suggestions["os_name"] = os_name
+                    break
         return LookupResult(
             "found",
             "nmap",
-            {"ip": normalized},
+            suggestions,
             {"target_ip": normalized, "source": "nmap", "fingerprint": dict(fingerprint)},
         )
 

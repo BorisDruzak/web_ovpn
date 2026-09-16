@@ -4,10 +4,20 @@
 {% block content %}
 <section class="inventory-mobile inventory-form">
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
+  {% if not asset and prelookup %}
+  <section class="inventory-lookup">
+    {% if prelookup.source == 'manual' %}
+    <strong>Ручное заполнение</strong><small>{{ prelookup.message }}</small>
+    {% else %}
+    <strong>Данные сбора получены</strong><small>Результат: Найдено</small><small>Источник: {{ 'данные сбора' if prelookup.source == 'netctl' else 'Nmap' }}</small><small>{{ prelookup.message }}</small>
+    {% endif %}
+    <small>Проверьте и при необходимости измените поля перед сохранением.</small>
+  </section>
+  {% endif %}
   <form method="post" action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% endif %}
-    <label>Название<input name="custom_name" value="{{ asset.custom_name or '' if asset else '' }}" autocomplete="off"></label>
+    <label>Название<input name="custom_name" value="{{ asset.custom_name or '' if asset else prefill.get('custom_name', '') }}" autocomplete="off"></label>
     <label>Производитель<input name="manufacturer" value="{{ asset.manufacturer or '' if asset else '' }}" autocomplete="off"></label>
     <label>Модель<input name="model" value="{{ asset.model or '' if asset else '' }}" autocomplete="off"></label>
     <label>Serial<input name="serial_number" value="{{ asset.serial_number or '' if asset else '' }}" autocomplete="off"></label>

@@ -69,6 +69,7 @@ def test_ip_miss_uses_one_target_fingerprint_through_netctl_boundary():
 
     assert result.status == "found"
     assert result.source == "nmap"
+    assert result.suggestions == {"ip": "192.168.100.87", "os_name": "Windows 10"}
     assert result.observation["target_ip"] == "192.168.100.87"
     assert calls[-1] == ["fingerprint", "inspect-ip", "--target", "192.168.100.87"]
 

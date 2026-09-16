@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Поиск устройства · Инвентаризация{% endblock %}
+{% block page_title %}{{ asset_labels[asset_type] }}{% endblock %}
+{% block content %}
+<section class="inventory-mobile inventory-form">
+  {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
+  <section class="inventory-card inventory-discovery">
+    <h2>Сначала найдите устройство</h2>
+    <p class="muted">Введите IP-адрес, MAC-адрес или hostname. Сначала используются данные сбора; для IP при отсутствии данных запускается Nmap.</p>
+    <form method="post" action="/inventory/assets/new/lookup">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="asset_type" value="{{ asset_type.value }}">
+      <input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">
+      <label>IP-адрес, MAC-адрес или hostname<input name="identifier" required autocomplete="off" value="{{ lookup_result.identifier if lookup_result else '' }}" placeholder="Например, AA:BB:CC:DD:EE:FF"></label>
+      <button class="button inventory-primary" type="submit">НАЙТИ УСТРОЙСТВО</button>
+    </form>
+  </section>
+  {% if lookup_result %}
+  <section class="inventory-lookup"><strong>Результат: {{ lookup_status_labels.get(lookup_result.status, lookup_result.status) }}</strong><small>Источник: {{ 'данные сбора' if lookup_result.source == 'netctl' else 'Nmap' }}</small>{% if lookup_result.message %}<small>{{ lookup_result.message }}</small>{% endif %}{% for field, value in lookup_result.suggestions.items() %}<small>{{ field }}: {{ value }}</small>{% endfor %}</section>
+  {% if lookup_result.status in ['not_found', 'unavailable'] %}
+  <form method="post" action="/inventory/assets/new/manual">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="asset_type" value="{{ asset_type.value }}">
+    <input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">
+    <input type="hidden" name="identifier" value="{{ lookup_result.identifier }}">
+    <button class="button secondary" type="submit">ПРОДОЛЖИТЬ ВРУЧНУЮ</button>
+  </form>
+  {% endif %}
+  {% endif %}
+  <a class="button secondary" href="/inventory">К ЛОКАЦИИ</a>
+</section>
+{% endblock %}
