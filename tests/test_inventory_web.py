@@ -291,6 +291,33 @@ def test_related_device_picker_collapses_parent_and_opens_manual_full_monitor_fo
     assert "НАЙТИ УСТРОЙСТВО" not in form.text
 
 
+def test_related_phone_offers_manual_entry_before_network_search(tmp_path, monkeypatch):
+    """A technician can skip discovery and fill a related phone card by hand."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-phone"}, follow_redirects=False)
+    pc_form = _prepare_manual_asset_form(client, monkeypatch, "PC")
+    created = client.post(
+        "/inventory/assets",
+        data={"csrf_token": _csrf(pc_form.text), "asset_type": "PC", "custom_name": "PC-phone"},
+        follow_redirects=False,
+    )
+    asset_id = created.headers["location"].rsplit("/", 1)[-1]
+
+    discovery = client.get(f"/inventory/assets/new?asset_type=PHONE&parent_asset_id={asset_id}")
+    assert "ЗАПОЛНИТЬ ВРУЧНУЮ" in discovery.text
+
+    manual = client.post(
+        "/inventory/assets/new/manual",
+        data={"csrf_token": _csrf(discovery.text), "asset_type": "PHONE", "parent_asset_id": asset_id},
+        follow_redirects=False,
+    )
+    assert manual.status_code == 303
+    form = client.get(manual.headers["location"])
+    assert "Ручное заполнение" in form.text
+    assert 'name="custom_name"' in form.text
+    assert "НАЙТИ УСТРОЙСТВО" not in form.text
+
+
 def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_path, monkeypatch):
     """A malformed related-device label must not send the technician back to network discovery."""
     client, csrf = _client(tmp_path, monkeypatch)

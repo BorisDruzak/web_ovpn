@@ -18,15 +18,15 @@
   </section>
   {% if lookup_result %}
   <section class="inventory-lookup"><strong>Результат: {{ lookup_status_labels.get(lookup_result.status, lookup_result.status) }}</strong><small>Источник: {{ 'данные сбора' if lookup_result.source == 'netctl' else 'Nmap' }}</small>{% if lookup_result.message %}<small>{{ lookup_result.message }}</small>{% endif %}{% for field, value in lookup_result.suggestions.items() %}<small>{{ field }}: {{ value }}</small>{% endfor %}</section>
-  {% if lookup_result.status in ['not_found', 'unavailable'] %}
+  {% endif %}
+  {% if parent_asset or (lookup_result and lookup_result.status in ['not_found', 'unavailable']) %}
   <form method="post" action="/inventory/assets/new/manual">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="asset_type" value="{{ asset_type.value }}">
     <input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">
-    <input type="hidden" name="identifier" value="{{ lookup_result.identifier }}">
-    <button class="button secondary" type="submit">ПРОДОЛЖИТЬ ВРУЧНУЮ</button>
+    <input type="hidden" name="identifier" value="{{ lookup_result.identifier if lookup_result else '' }}">
+    <button class="button secondary" type="submit">{% if parent_asset and not lookup_result %}ЗАПОЛНИТЬ ВРУЧНУЮ{% else %}ПРОДОЛЖИТЬ ВРУЧНУЮ{% endif %}</button>
   </form>
-  {% endif %}
   {% endif %}
   <a class="button secondary" href="/inventory">К ЛОКАЦИИ</a>
 </section>

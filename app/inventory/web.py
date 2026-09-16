@@ -332,10 +332,13 @@ async def inventory_continue_new_asset_manually(request: Request, asset_type: In
     require_user(request, db)
     await verify_csrf(request)
     target_url = _new_asset_url(asset_type, parent_asset_id)
+    parent_asset = _related_parent_or_error(db, parent_asset_id)
     flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id))
-    if not isinstance(flow, dict) or flow.get("status") not in {"not_found", "unavailable"}:
+    if parent_asset is None and (not isinstance(flow, dict) or flow.get("status") not in {"not_found", "unavailable"}):
         _flash(request, "bad", "Сначала выполните поиск устройства")
         return _redirect(target_url)
+    if not isinstance(flow, dict):
+        flow = {"identifier": identifier.strip()}
     try:
         identifier_type, normalized = classify_identifier(identifier)
     except InventoryLookupError:
