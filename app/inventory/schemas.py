@@ -1,0 +1,67 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from .models import InventoryAssetStatus, InventoryAssetType
+
+
+class LocationCreate(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    comment: str | None = None
+
+
+class LocationUpdate(LocationCreate):
+    pass
+
+
+class AssetPayload(BaseModel):
+    asset_type: InventoryAssetType
+    location_id: str | None = None
+    custom_name: str | None = Field(default=None, max_length=255)
+    manufacturer: str | None = Field(default=None, max_length=255)
+    model: str | None = Field(default=None, max_length=255)
+    serial_number: str | None = Field(default=None, max_length=255)
+    inventory_number: str | None = Field(default=None, max_length=255)
+    status: InventoryAssetStatus | None = None
+    assigned_person_name: str | None = Field(default=None, max_length=255)
+    login_name: str | None = Field(default=None, max_length=255)
+    description: str | None = None
+    notes: str | None = None
+    last_verified_at: datetime | None = None
+
+    def asset_fields(self) -> dict[str, Any]:
+        return self.model_dump(exclude={"asset_type", "location_id"}, exclude_unset=True)
+
+
+class AssetUpdate(AssetPayload):
+    asset_type: InventoryAssetType | None = None
+
+    def asset_fields(self) -> dict[str, Any]:
+        return self.model_dump(exclude={"asset_type", "location_id"}, exclude_unset=True)
+
+
+class WorkplacePCPayload(AssetPayload):
+    asset_type: InventoryAssetType = InventoryAssetType.PC
+
+
+class WorkplaceCreate(BaseModel):
+    location_id: str | None = None
+    pc: WorkplacePCPayload
+    children: list[AssetPayload] = Field(default_factory=list)
+
+
+class RelationCreate(BaseModel):
+    parent_asset_id: str
+    child_asset_id: str
+    note: str | None = None
+
+
+class LookupRequest(BaseModel):
+    identifier: str = Field(min_length=1, max_length=255)
+
+
+class SessionCreate(BaseModel):
+    pass

@@ -21,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .audit import write_audit
 from .api import host_snapshot_args, router as api_router
+from .inventory.api import router as inventory_api_router
 from .auth import authenticate_user, csrf_token, current_user, require_user, verify_csrf
 from .auto_sync import force_client_sync
 from .config import get_settings
@@ -63,6 +64,7 @@ app.add_middleware(
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(api_router)
+app.include_router(inventory_api_router)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 dashboard_snapshot_cache = SnapshotCache()
