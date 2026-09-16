@@ -106,14 +106,24 @@ def test_inventory_home_lists_locations_without_walk_or_selector(tmp_path, monke
 
 def test_location_detail_edits_location_on_tree_screen(tmp_path, monkeypatch):
     client, csrf = _client(tmp_path, monkeypatch)
-    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"}, follow_redirects=False)
+    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел", "comment": "Подвал"}, follow_redirects=False)
     location_id = created.headers["location"].rsplit("/", 1)[-1]
     page = client.get(f"/inventory/locations/{location_id}")
+    assert '<p class="inventory-location-summary">Подвал</p>' in page.text
     assert '<details class="inventory-location-edit">' in page.text
     assert "РЕДАКТИРОВАТЬ ЛОКАЦИЮ" in page.text
     response = client.post(f"/inventory/locations/{location_id}", data={"csrf_token": _csrf(page.text), "name": "ИТ-отдел", "comment": "Подвал"}, follow_redirects=False)
     assert response.headers["location"] == f"/inventory/locations/{location_id}"
     assert "ИТ-отдел" in client.get(response.headers["location"]).text
+
+
+def test_location_detail_shows_comment_fallback_when_empty(tmp_path, monkeypatch):
+    client, csrf = _client(tmp_path, monkeypatch)
+    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"}, follow_redirects=False)
+
+    page = client.get(created.headers["location"])
+
+    assert '<p class="inventory-location-summary muted">Комментарий не указан</p>' in page.text
 
 
 def test_inventory_location_select_compatibility_redirects_to_location(tmp_path, monkeypatch):

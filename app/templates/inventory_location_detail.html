@@ -4,6 +4,11 @@
 {% block content %}
 <section class="inventory-mobile">
   <a class="button secondary" href="/inventory">К СПИСКУ ЛОКАЦИЙ</a>
+  {% if location.comment %}
+  <p class="inventory-location-summary">{{ location.comment }}</p>
+  {% else %}
+  <p class="inventory-location-summary muted">Комментарий не указан</p>
+  {% endif %}
   <details class="inventory-location-edit">
     <summary class="button secondary">РЕДАКТИРОВАТЬ ЛОКАЦИЮ</summary>
     <form method="post" action="/inventory/locations/{{ location.id }}" class="inventory-location-comment">
