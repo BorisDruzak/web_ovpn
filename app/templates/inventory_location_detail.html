@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ location.name or 'Локация' }} · Инвентаризация{% endblock %}
+{% block page_title %}{{ location.name or 'ЛОКАЦИЯ' }}{% endblock %}
+{% block content %}
+<section class="inventory-mobile">
+  <a class="button secondary" href="/inventory">К СПИСКУ ЛОКАЦИЙ</a>
+  <form method="post" action="/inventory/locations/{{ location.id }}" class="inventory-location-comment">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="location-name">Название локации</label>
+    <input id="location-name" name="name" value="{{ location.name or '' }}" required>
+    <label for="location-comment">Комментарий к локации</label>
+    <textarea id="location-comment" name="comment" rows="4" placeholder="Общая информация о помещении">{{ location.comment or '' }}</textarea>
+    <button class="button secondary" type="submit">СОХРАНИТЬ ЛОКАЦИЮ</button>
+  </form>
+
+  <div class="inventory-tree">
+    {% for asset in tree.top_level_assets %}
+    <article class="inventory-card {{ 'inventory-pc' if asset.asset_type.value == 'PC' else '' }}">
+      <a class="inventory-asset-link" href="/inventory/assets/{{ asset.id }}"><strong>{{ asset.custom_name or asset.model or asset_labels[asset.asset_type] }}</strong><span>{{ asset.assigned_person_name or asset.manufacturer or asset.asset_type.value }}</span></a>
+      {% if tree.related_by_parent.get(asset.id) %}
+      <ul class="inventory-children">
+        {% for child in tree.related_by_parent[asset.id] %}<li><a href="/inventory/assets/{{ child.id }}">{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</a></li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/{{ asset.id }}/related/new">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+
+  <section class="inventory-device-picker">
+    <h2>Устройства на локации</h2>
+    <div class="inventory-device-choices">
+      {% for asset_type, label in asset_labels.items() %}<a class="button secondary" href="/inventory/assets/new?asset_type={{ asset_type.value }}">+ ДОБАВИТЬ УСТРОЙСТВО: {{ label }}</a>{% endfor %}
+    </div>
+  </section>
+</section>
+{% endblock %}

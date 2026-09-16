@@ -208,27 +208,24 @@ async def _read_photo(upload: UploadFile, limit: int) -> bytes:
 @router.get("/inventory", response_class=HTMLResponse)
 def inventory_home(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)
-    location = _current_location(request, db)
-    tree = service.location_tree(db, location.id) if location else {"top_level_assets": [], "related_by_parent": {}}
     locations = list(db.scalars(select(InventoryLocation).order_by(InventoryLocation.name, InventoryLocation.id)))
-    session_id = str(request.session.get("inventory_current_session_id") or "")
-    walk_session = db.get(InventorySession, session_id) if session_id else None
-    if walk_session is not None and walk_session.finished_at is not None:
-        request.session.pop("inventory_current_session_id", None)
-        walk_session = None
-    return _render(
-        request,
-        "inventory.html",
-        {
-            "location": location,
-            "locations": locations,
-            "tree": tree,
-            "asset_labels": ASSET_LABELS,
-            "walk_session": walk_session,
-            "show_new_location": bool(request.session.pop("inventory_location_form_open", False)),
-        },
-        db,
-    )
+    return _render(request, "inventory.html", {"locations": locations}, db)
+
+
+@router.get("/inventory/locations/new", response_class=HTMLResponse)
+def inventory_new_location(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_user(request, db)
+    return _render(request, "inventory_location_form.html", {}, db)
+
+
+@router.get("/inventory/locations/{location_id}", response_class=HTMLResponse)
+def inventory_location_detail(location_id: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_user(request, db)
+    tree = service.location_tree(db, location_id)
+    if tree["location"] is None:
+        raise HTTPException(status_code=404, detail="inventory location not found")
+    request.session["inventory_current_location_id"] = location_id
+    return _render(request, "inventory_location_detail.html", {"location": tree["location"], "tree": tree, "asset_labels": ASSET_LABELS}, db)
 
 
 @router.post("/inventory/locations")
@@ -237,42 +234,30 @@ async def inventory_create_location(request: Request, name: str = Form(default="
     await verify_csrf(request)
     normalized_name = name.strip()
     if not normalized_name:
-        request.session["inventory_location_form_open"] = True
         _flash(request, "bad", "Введите название локации")
-        return _redirect("/inventory")
+        return _redirect("/inventory/locations/new")
     location = service.create_location(db, name=normalized_name, comment=comment)
     request.session["inventory_current_location_id"] = location.id
-    request.session.pop("inventory_location_form_open", None)
     write_audit(db, request, user, "inventory.location.create", "ok", location.name or "", target_client=location.id)
     _flash(request, "ok", "Локация сохранена")
-    return _redirect("/inventory")
+    return _redirect(f"/inventory/locations/{location.id}")
 
 
-@router.post("/inventory/location/comment")
-async def inventory_update_location_comment(request: Request, comment: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+@router.post("/inventory/locations/{location_id}")
+async def inventory_update_location(location_id: str, request: Request, name: str = Form(default=""), comment: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
-    location = _current_location(request, db)
+    location = db.get(InventoryLocation, location_id)
     if location is None:
-        _flash(request, "bad", "Сначала создайте локацию")
-        return _redirect("/inventory")
-    service.update_location(location, name=location.name, comment=comment)
-    write_audit(db, request, user, "inventory.location.update", "ok", "comment", target_client=location.id)
-    _flash(request, "ok", "Комментарий локации сохранён")
-    return _redirect("/inventory")
-
-
-@router.post("/inventory/location/select")
-async def inventory_select_location(request: Request, location_id: str = Form(), db: Session = Depends(get_db)) -> RedirectResponse:
-    require_user(request, db)
-    await verify_csrf(request)
-    if location_id == "__new__":
-        request.session["inventory_location_form_open"] = True
-        return _redirect("/inventory")
-    if db.get(InventoryLocation, location_id) is None:
         raise HTTPException(status_code=404, detail="inventory location not found")
-    request.session["inventory_current_location_id"] = location_id
-    return _redirect("/inventory")
+    normalized_name = name.strip()
+    if not normalized_name:
+        _flash(request, "bad", "Введите название локации")
+        return _redirect(f"/inventory/locations/{location.id}")
+    service.update_location(location, name=normalized_name, comment=comment)
+    write_audit(db, request, user, "inventory.location.update", "ok", location.name or "", target_client=location.id)
+    _flash(request, "ok", "Локация обновлена")
+    return _redirect(f"/inventory/locations/{location.id}")
 
 
 @router.get("/inventory/assets/new", response_class=HTMLResponse)

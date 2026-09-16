@@ -94,6 +94,26 @@ def test_inventory_page_requires_login_and_has_mobile_capture_controls(tmp_path,
     assert '"aria-hidden"' in app_js
 
 
+def test_inventory_home_lists_locations_without_walk_or_selector(tmp_path, monkeypatch):
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел", "comment": "Подвал"})
+    page = client.get("/inventory")
+    assert 'href="/inventory/locations/' in page.text
+    assert "+ ДОБАВИТЬ ЛОКАЦИЮ" in page.text
+    assert "НАЧАТЬ ОБХОД" not in page.text
+    assert '<select id="location_id"' not in page.text
+
+
+def test_location_detail_edits_location_on_tree_screen(tmp_path, monkeypatch):
+    client, csrf = _client(tmp_path, monkeypatch)
+    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"}, follow_redirects=False)
+    location_id = created.headers["location"].rsplit("/", 1)[-1]
+    page = client.get(f"/inventory/locations/{location_id}")
+    response = client.post(f"/inventory/locations/{location_id}", data={"csrf_token": _csrf(page.text), "name": "ИТ-отдел", "comment": "Подвал"}, follow_redirects=False)
+    assert response.headers["location"] == f"/inventory/locations/{location_id}"
+    assert "ИТ-отдел" in client.get(response.headers["location"]).text
+
+
 def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_path, monkeypatch):
     """A detached monitor must survive and be rendered once at its location top level."""
     client, csrf = _client(tmp_path, monkeypatch)
@@ -133,7 +153,8 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
         follow_redirects=False,
     ).status_code == 303
 
-    tree = client.get("/inventory")
+    location_id = created_location.headers["location"].rsplit("/", 1)[-1]
+    tree = client.get(f"/inventory/locations/{location_id}")
     assert "BUH-PC-01" in tree.text
     assert f'/inventory/assets/{pc_id}/related/new' in tree.text
     assert f'/inventory/assets/new?asset_type=MONITOR&amp;parent_asset_id={pc_id}' not in tree.text
@@ -150,7 +171,7 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
     detached = client.post(f"/inventory/relations/{relation_id}/detach", data={"csrf_token": csrf}, follow_redirects=False)
     assert detached.status_code == 303
 
-    after = client.get("/inventory")
+    after = client.get(f"/inventory/locations/{location_id}")
     assert after.text.count("AOC 24B2X") == 1
     assert "Kyocera M2040" in after.text
 
@@ -171,36 +192,35 @@ def test_mobile_inventory_rejects_blank_location_name(tmp_path, monkeypatch):
     assert "Без названия" not in page.text
 
 
-def test_mobile_inventory_offers_inline_location_and_unbound_device_types(tmp_path, monkeypatch):
+def test_mobile_inventory_location_screen_offers_unbound_device_types(tmp_path, monkeypatch):
     """Technicians can add a named location and any standalone device from the location screen."""
     client, csrf = _client(tmp_path, monkeypatch)
-    assert client.post(
+    created = client.post(
         "/inventory/locations",
         data={"csrf_token": csrf, "name": "ИТ отдел"},
         follow_redirects=False,
-    ).status_code == 303
+    )
+    assert created.status_code == 303
 
-    page = client.get("/inventory")
+    page = client.get(created.headers["location"])
 
-    assert "+ Новая локация…" in page.text
-    assert "СМЕНИТЬ / ДОБАВИТЬ ЛОКАЦИЮ" not in page.text
-    assert "ВЫБРАТЬ ЛОКАЦИЮ" not in page.text
-    assert "Отдельное устройство на локации" in page.text
+    assert "К СПИСКУ ЛОКАЦИЙ" in page.text
+    assert "+ ДОБАВИТЬ УСТРОЙСТВО" in page.text
     assert "/inventory/assets/new?asset_type=MONITOR" in page.text
     assert "/inventory/assets/new?asset_type=PRINTER" in page.text
 
 
-def test_mobile_inventory_keeps_new_location_form_hidden_until_requested(tmp_path, monkeypatch):
-    """The selector remains compact while retaining a no-script submit fallback."""
+def test_mobile_inventory_opens_new_location_form_on_its_own_screen(tmp_path, monkeypatch):
+    """The location list links to a dedicated creation form without a selector fallback."""
     client, csrf = _client(tmp_path, monkeypatch)
     assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "219"}, follow_redirects=False).status_code == 303
 
     page = client.get("/inventory")
-    css = Path("app/static/inventory.css").read_text(encoding="utf-8")
+    form = client.get("/inventory/locations/new")
 
-    assert 'id="new-location-form" hidden' in page.text
-    assert '<noscript><button class="button secondary" type="submit">ПРИМЕНИТЬ ВЫБОР</button></noscript>' in page.text
-    assert ".inventory-mobile form[hidden] { display: none; }" in css
+    assert 'href="/inventory/locations/new"' in page.text
+    assert '<select id="location_id"' not in page.text
+    assert 'action="/inventory/locations"' in form.text
 
 
 def test_saved_mobile_asset_card_can_collapse_without_a_second_network_lookup(tmp_path, monkeypatch):
@@ -264,7 +284,7 @@ def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
 def test_mobile_pc_draft_saves_related_devices_in_one_submit(tmp_path, monkeypatch):
     """The first PC save must keep the technician's draft monitor instead of requiring a second pass."""
     client, csrf = _client(tmp_path, monkeypatch)
-    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "216"}, follow_redirects=False)
+    location = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "216"}, follow_redirects=False)
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
     created = client.post(
         "/inventory/assets",
@@ -277,10 +297,10 @@ def test_mobile_pc_draft_saves_related_devices_in_one_submit(tmp_path, monkeypat
         follow_redirects=False,
     )
     assert created.status_code == 303
-    home = client.get("/inventory")
-    assert "PC-03" in home.text
-    assert "AOC 24" in home.text
-    assert "Yealink" in home.text
+    detail = client.get(location.headers["location"])
+    assert "PC-03" in detail.text
+    assert "AOC 24" in detail.text
+    assert "Yealink" in detail.text
 
 
 def test_related_device_picker_collapses_parent_and_opens_manual_full_monitor_form(tmp_path, monkeypatch):

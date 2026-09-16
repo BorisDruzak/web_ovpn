@@ -3,80 +3,19 @@
 {% block page_title %}ИНВЕНТАРИЗАЦИЯ{% endblock %}
 {% block content %}
 <section class="inventory-mobile">
-  {% if walk_session %}
-  <form method="post" action="/inventory/sessions/{{ walk_session.id }}/finish" class="inventory-walk"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><strong>Обход активен</strong><small>Начат: {{ walk_session.started_at }}</small><button class="button secondary" type="submit">ЗАВЕРШИТЬ ОБХОД</button></form>
-  {% else %}
-  <form method="post" action="/inventory/sessions" class="inventory-walk"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><button class="button inventory-primary" type="submit">НАЧАТЬ ОБХОД</button></form>
-  {% endif %}
-  {% if location %}
-  <form method="post" action="/inventory/location/select" class="inventory-location-select">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label for="location_id">Локация</label>
-    <select id="location_id" name="location_id">
-      {% for item in locations %}<option value="{{ item.id }}" {% if item.id == location.id %}selected{% endif %}>{{ item.name or 'Без названия' }}</option>{% endfor %}
-      <option value="__new__">+ Новая локация…</option>
-    </select>
-    <noscript><button class="button secondary" type="submit">ПРИМЕНИТЬ ВЫБОР</button></noscript>
-  </form>
-  <form method="post" action="/inventory/locations" class="inventory-new-location" id="new-location-form" {% if not show_new_location %}hidden{% endif %}>
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label for="location-name">Новая локация</label>
-    <input id="location-name" name="name" placeholder="Например, Бухгалтерия" autocomplete="off" required>
-    <textarea name="comment" rows="2" placeholder="Комментарий (необязательно)"></textarea>
-    <button class="button secondary" type="submit">СОХРАНИТЬ ЛОКАЦИЮ</button>
-  </form>
-  <form method="post" action="/inventory/location/comment" class="inventory-location-comment">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label for="comment">Комментарий к локации</label>
-    <textarea id="comment" name="comment" rows="4" placeholder="Общая информация о помещении">{{ location.comment or '' }}</textarea>
-    <button class="button secondary" type="submit">СОХРАНИТЬ КОММЕНТАРИЙ</button>
-  </form>
+  <div class="inventory-device-picker">
+    <a class="button inventory-primary" href="/inventory/locations/new">+ ДОБАВИТЬ ЛОКАЦИЮ</a>
+  </div>
+  {% if locations %}
   <div class="inventory-tree">
-    {% for asset in tree.top_level_assets %}
-    <article class="inventory-card {{ 'inventory-pc' if asset.asset_type.value == 'PC' else '' }}">
-      <a class="inventory-asset-link" href="/inventory/assets/{{ asset.id }}"><strong>{{ asset.custom_name or asset.model or asset_labels[asset.asset_type] }}</strong><span>{{ asset.assigned_person_name or asset.manufacturer or asset.asset_type.value }}</span></a>
-      {% if tree.related_by_parent.get(asset.id) %}
-      <ul class="inventory-children">
-        {% for child in tree.related_by_parent[asset.id] %}<li><a href="/inventory/assets/{{ child.id }}">{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</a></li>{% endfor %}
-      </ul>
-      {% endif %}
-      {% if asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/{{ asset.id }}/related/new">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
+    {% for location in locations %}
+    <article class="inventory-card">
+      <a class="inventory-asset-link" href="/inventory/locations/{{ location.id }}"><strong>{{ location.name or 'Без названия' }}</strong><span>{{ location.comment or 'Открыть состав локации' }}</span></a>
     </article>
     {% endfor %}
   </div>
-  <section class="inventory-device-picker">
-    <h2>Отдельное устройство на локации</h2>
-    <p class="muted">Добавьте технику, которая не привязана к ПК.</p>
-    <div class="inventory-device-choices">
-      {% for asset_type, label in asset_labels.items() %}<a class="button secondary" href="/inventory/assets/new?asset_type={{ asset_type.value }}">+ {{ label }}</a>{% endfor %}
-    </div>
-  </section>
   {% else %}
-  <p class="inventory-empty">Создайте первую локацию, чтобы начать обход.</p>
-  <form method="post" action="/inventory/locations" class="inventory-new-location" id="new-location-form">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label for="location-name">Новая локация</label>
-    <input id="location-name" name="name" placeholder="Например, Бухгалтерия" autocomplete="off" required>
-    <textarea name="comment" rows="2" placeholder="Комментарий (необязательно)"></textarea>
-    <button class="button secondary" type="submit">СОХРАНИТЬ ЛОКАЦИЮ</button>
-  </form>
+  <p class="inventory-empty">Пока нет локаций. Добавьте первую, чтобы начать инвентаризацию.</p>
   {% endif %}
 </section>
-{% endblock %}
-{% block page_scripts %}
-<script>
-  (() => {
-    const selector = document.getElementById("location_id");
-    const newLocationForm = document.getElementById("new-location-form");
-    if (!selector || !newLocationForm) return;
-    selector.addEventListener("change", () => {
-      if (selector.value === "__new__") {
-        newLocationForm.hidden = false;
-        newLocationForm.querySelector("input[name='name']")?.focus();
-        return;
-      }
-      selector.form.submit();
-    });
-  })();
-</script>
 {% endblock %}

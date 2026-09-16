@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Новая локация · Инвентаризация{% endblock %}
+{% block page_title %}НОВАЯ ЛОКАЦИЯ{% endblock %}
+{% block content %}
+<section class="inventory-mobile inventory-form">
+  <a class="button secondary" href="/inventory">К СПИСКУ ЛОКАЦИЙ</a>
+  <form method="post" action="/inventory/locations" class="inventory-new-location">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <label for="location-name">Название локации</label>
+    <input id="location-name" name="name" placeholder="Например, Бухгалтерия" autocomplete="off" required autofocus>
+    <label for="location-comment">Комментарий</label>
+    <textarea id="location-comment" name="comment" rows="4" placeholder="Общая информация о помещении"></textarea>
+    <button class="button inventory-primary" type="submit">СОХРАНИТЬ ЛОКАЦИЮ</button>
+  </form>
+</section>
+{% endblock %}
