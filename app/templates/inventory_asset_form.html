@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Устройство · Инвентаризация{% endblock %}
+{% block page_title %}{{ asset_labels[asset_type] }}{% endblock %}
+{% block content %}
+<section class="inventory-mobile inventory-form">
+  {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
+  <form method="post" action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% endif %}
+    <label>Название<input name="custom_name" value="{{ asset.custom_name if asset else '' }}" autocomplete="off"></label>
+    <label>Производитель<input name="manufacturer" value="{{ asset.manufacturer if asset else '' }}" autocomplete="off"></label>
+    <label>Модель<input name="model" value="{{ asset.model if asset else '' }}" autocomplete="off"></label>
+    <label>Serial<input name="serial_number" value="{{ asset.serial_number if asset else '' }}" autocomplete="off"></label>
+    <label>Инвентарный номер<input name="inventory_number" value="{{ asset.inventory_number if asset else '' }}" autocomplete="off"></label>
+    {% if asset_type.value == 'PC' or asset_type.value == 'PHONE' %}<label>Ответственный<input name="assigned_person_name" value="{{ asset.assigned_person_name if asset else '' }}" autocomplete="off"></label><label>Логин<input name="login_name" value="{{ asset.login_name if asset else '' }}" autocomplete="off"></label>{% endif %}
+    <label>Описание<textarea name="description" rows="3">{{ asset.description if asset else '' }}</textarea></label>
+    <label>Комментарий<textarea name="notes" rows="3">{{ asset.notes if asset else '' }}</textarea></label>
+    <label>Фото<input type="file" accept="image/*" capture="environment" disabled aria-describedby="photo-note"></label><small id="photo-note">Загрузка фотографии станет доступна после сохранения устройства.</small>
+    <button class="button inventory-primary" type="submit">СОХРАНИТЬ</button>
+    {% if not asset %}<button class="button secondary" type="submit" name="save_next" value="1">СОХРАНИТЬ И СЛЕДУЮЩЕЕ</button>{% endif %}
+  </form>
+  {% if asset and asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/new?asset_type=MONITOR&parent_asset_id={{ asset.id }}">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
+  <a class="button secondary" href="/inventory">К ЛОКАЦИИ</a>
+</section>
+{% endblock %}

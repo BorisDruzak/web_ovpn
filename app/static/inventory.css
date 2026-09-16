@@ -1,0 +1,12 @@
+.inventory-mobile { max-width: 720px; margin: 0 auto; display: grid; gap: 16px; padding-bottom: 28px; }
+.inventory-mobile form, .inventory-card { display: grid; gap: 10px; padding: 16px; border: 1px solid #d7dde7; border-radius: 12px; background: #fff; }
+.inventory-mobile label { display: grid; gap: 6px; font-weight: 650; }
+.inventory-mobile input, .inventory-mobile select, .inventory-mobile textarea { box-sizing: border-box; width: 100%; min-height: 44px; padding: 10px 12px; font: inherit; }
+.inventory-mobile textarea { min-height: 96px; resize: vertical; }
+.inventory-tree { display: grid; gap: 12px; }
+.inventory-asset-link { display: grid; gap: 4px; color: inherit; text-decoration: none; }
+.inventory-asset-link span, .inventory-children a, .inventory-form small { color: #586174; }
+.inventory-children { margin: 0; padding-left: 24px; display: grid; gap: 8px; }
+.inventory-primary { min-height: 52px; display: grid; place-items: center; font-weight: 700; }
+.inventory-empty { padding: 24px 4px; color: #586174; }
+@media (max-width: 780px) { .sidebar { display: none; } .shell { margin-left: 0; padding: 12px; } .topbar { padding: 8px 0 18px; } .request-id { display: none; } .inventory-mobile { max-width: none; } .button { min-height: 44px; width: 100%; text-align: center; } }
