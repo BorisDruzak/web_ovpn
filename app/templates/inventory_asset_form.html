@@ -3,6 +3,8 @@
 {% block page_title %}{{ asset_labels[asset_type] }}{% endblock %}
 {% block content %}
 <section class="inventory-mobile inventory-form">
+  {% if parent_asset %}<details class="inventory-parent-card"><summary>ПК: {{ parent_asset.custom_name or parent_asset.model or parent_asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary><a class="button secondary" href="/inventory/assets/{{ parent_asset.id }}">ОТКРЫТЬ КАРТОЧКУ ПК</a></details>{% endif %}
+  {% if asset %}<details class="inventory-asset-card" open><summary>{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary>{% endif %}
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
   {% if not asset and prelookup %}
   <section class="inventory-lookup">
@@ -16,7 +18,7 @@
   {% endif %}
   <form method="post" action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% endif %}
+    {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% if manual_mode %}<input type="hidden" name="manual_mode" value="1">{% endif %}{% endif %}
     <label>Название<input name="custom_name" value="{{ asset.custom_name or '' if asset else prefill.get('custom_name', '') }}" autocomplete="off"></label>
     <label>Производитель<input name="manufacturer" value="{{ asset.manufacturer or '' if asset else '' }}" autocomplete="off"></label>
     <label>Модель<input name="model" value="{{ asset.model or '' if asset else '' }}" autocomplete="off"></label>
@@ -48,29 +50,21 @@
   </form>
   {% if asset %}
   {% if walk_session %}<form method="post" action="/inventory/assets/{{ asset.id }}/confirm"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><label>Заметка обхода<textarea name="notes" rows="2"></textarea></label><button class="button inventory-primary" type="submit">ПОДТВЕРДИТЬ НА МЕСТЕ</button></form>{% endif %}
-  <form method="post" action="/inventory/assets/{{ asset.id }}/lookup" class="inventory-network-lookup"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><strong>ПОИСК В СЕТИ</strong><label>IP-адрес, MAC-адрес или hostname<input name="identifier" required autocomplete="off" placeholder="Например, AA:BB:CC:DD:EE:FF"></label><small>Введите MAC-адрес, IP-адрес или имя хоста. Для MAC поиск при необходимости обновит снимок сети.</small><button class="button secondary" type="submit">НАЙТИ ПО IP / MAC / HOSTNAME</button></form>
-  {% if lookup_result %}<section class="inventory-lookup"><strong>Поиск: {{ lookup_result.status }}</strong><small>{{ lookup_result.message }}</small>{% for field, value in lookup_result.suggestions.items() %}{% if field in ['ip', 'mac', 'hostname'] %}<button type="button" class="button secondary inventory-apply-suggestion" data-field="{{ field }}" data-value="{{ value }}">ПОДСТАВИТЬ {{ field }}: {{ value }}</button>{% else %}<small>{{ field }}: {{ value }}</small>{% endif %}{% endfor %}</section>{% endif %}
-  <form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
+  <section class="inventory-device-photos"><strong>ФОТО ЭТОГО УСТРОЙСТВА</strong><form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <label>Фото<input type="file" name="photo" accept="image/*" capture="environment" required></label>
     <label>Тип фото<select name="photo_type"><option value="general">Общее</option><option value="serial_label">Serial label</option><option value="inventory_label">Инвентарный номер</option><option value="status_page">Страница состояния</option><option value="damage">Повреждение</option><option value="other">Другое</option></select></label>
     <button class="button secondary" type="submit">ДОБАВИТЬ ФОТО</button>
   </form>
   {% if photos %}<ul class="inventory-children">{% for photo in photos %}<li><a href="/inventory/photos/{{ photo.id }}">{{ photo.original_filename or 'Фото' }}</a></li>{% endfor %}</ul>{% endif %}
+  </section>
   {% endif %}
-  {% if asset and asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/new?asset_type=MONITOR&parent_asset_id={{ asset.id }}">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
+  {% if asset and asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/{{ asset.id }}/related/new">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
   <a class="button secondary" href="/inventory">К ЛОКАЦИИ</a>
+  {% if asset %}</details>{% endif %}
 </section>
 {% endblock %}
 {% block page_scripts %}
-{% if asset and lookup_result %}
-<script>
-document.querySelectorAll('.inventory-apply-suggestion').forEach((button) => button.addEventListener('click', () => {
-  const input = document.querySelector(`[name="${button.dataset.field}_address"]`) || document.querySelector(`[name="${button.dataset.field}"]`);
-  if (input) input.value = button.dataset.value;
-}));
-</script>
-{% endif %}
 {% if not asset and asset_type.value == 'PC' %}
 <script>
 (() => {

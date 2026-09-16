@@ -16,7 +16,7 @@
       {% for item in locations %}<option value="{{ item.id }}" {% if item.id == location.id %}selected{% endif %}>{{ item.name or 'Без названия' }}</option>{% endfor %}
       <option value="__new__">+ Новая локация…</option>
     </select>
-    <button class="button secondary" type="submit">ВЫБРАТЬ ЛОКАЦИЮ</button>
+    <noscript><button class="button secondary" type="submit">ПРИМЕНИТЬ ВЫБОР</button></noscript>
   </form>
   <form method="post" action="/inventory/locations" class="inventory-new-location" id="new-location-form" {% if not show_new_location %}hidden{% endif %}>
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
@@ -40,7 +40,7 @@
         {% for child in tree.related_by_parent[asset.id] %}<li><a href="/inventory/assets/{{ child.id }}">{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</a></li>{% endfor %}
       </ul>
       {% endif %}
-      {% if asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/new?asset_type=MONITOR&parent_asset_id={{ asset.id }}">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
+      {% if asset.asset_type.value == 'PC' %}<a class="button secondary" href="/inventory/assets/{{ asset.id }}/related/new">+ ДОБАВИТЬ СВЯЗАННОЕ УСТРОЙСТВО</a>{% endif %}
     </article>
     {% endfor %}
   </div>

@@ -56,6 +56,12 @@ ASSET_STATUS_LABELS = {
     InventoryAssetStatus.WRITTEN_OFF: "Списано",
     InventoryAssetStatus.UNKNOWN: "Неизвестно",
 }
+MANUAL_RELATED_ASSET_TYPES = frozenset({
+    InventoryAssetType.MONITOR,
+    InventoryAssetType.PRINTER,
+    InventoryAssetType.UPS,
+    InventoryAssetType.OTHER,
+})
 LOOKUP_STATUS_LABELS = {
     "found": "Найдено",
     "not_found": "Не найдено",
@@ -102,13 +108,24 @@ def _photo_storage() -> InventoryPhotoStorage:
     return InventoryPhotoStorage(settings.inventory_photo_root, max_bytes=settings.inventory_photo_max_bytes)
 
 
-def _new_asset_url(asset_type: InventoryAssetType, parent_asset_id: str = "") -> str:
+def _new_asset_url(asset_type: InventoryAssetType, parent_asset_id: str = "", manual: bool = False) -> str:
     suffix = f"&parent_asset_id={parent_asset_id}" if parent_asset_id else ""
+    if manual:
+        suffix += "&manual=1"
     return f"/inventory/assets/new?asset_type={asset_type.value}{suffix}"
 
 
 def _new_asset_flow_key(asset_type: InventoryAssetType, parent_asset_id: str) -> str:
     return f"inventory_new_asset_flow:{asset_type.value}:{parent_asset_id}"
+
+
+def _related_parent_or_error(db: Session, parent_asset_id: str) -> InventoryAsset | None:
+    if not parent_asset_id:
+        return None
+    parent = db.get(InventoryAsset, parent_asset_id)
+    if parent is None or parent.asset_type is not InventoryAssetType.PC:
+        raise HTTPException(status_code=404, detail="inventory parent asset not found")
+    return parent
 
 
 async def _detail_form(request: Request, asset_type: InventoryAssetType) -> dict[str, Any]:
@@ -259,15 +276,26 @@ async def inventory_select_location(request: Request, location_id: str = Form(),
 
 
 @router.get("/inventory/assets/new", response_class=HTMLResponse)
-def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, parent_asset_id: str = "", request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, parent_asset_id: str = "", manual: bool = False, request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)
     location = _current_location(request, db)
+    parent_asset = _related_parent_or_error(db, parent_asset_id)
+    manual_mode = bool(parent_asset and manual and asset_type in MANUAL_RELATED_ASSET_TYPES)
+    if manual_mode:
+        return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "manual_mode": True, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": {}, "identifiers": {}, "prefill": {"custom_name": ""}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": {"source": "manual", "message": "Заполните полную карточку устройства вручную."}}, db)
     flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id))
     if not isinstance(flow, dict) or not flow.get("ready"):
-        return _render(request, "inventory_asset_discovery.html", {"asset_type": asset_type, "parent_asset_id": parent_asset_id, "location": location, "asset_labels": ASSET_LABELS, "lookup_status_labels": LOOKUP_STATUS_LABELS, "lookup_result": flow}, db)
+        return _render(request, "inventory_asset_discovery.html", {"asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "location": location, "asset_labels": ASSET_LABELS, "lookup_status_labels": LOOKUP_STATUS_LABELS, "lookup_result": flow}, db)
     suggestions = flow.get("suggestions") if isinstance(flow.get("suggestions"), dict) else {}
     details = flow.get("details") if isinstance(flow.get("details"), dict) else {}
-    return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": details, "identifiers": suggestions, "prefill": {"custom_name": str(suggestions.get("display_name") or "")}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": flow}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "manual_mode": False, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": details, "identifiers": suggestions, "prefill": {"custom_name": str(suggestions.get("display_name") or "")}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": flow}, db)
+
+
+@router.get("/inventory/assets/{asset_id}/related/new", response_class=HTMLResponse)
+def inventory_related_asset_picker(asset_id: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_user(request, db)
+    parent_asset = _related_parent_or_error(db, asset_id)
+    return _render(request, "inventory_related_asset_picker.html", {"parent_asset": parent_asset, "asset_labels": ASSET_LABELS}, db)
 
 
 @router.post("/inventory/assets/new/lookup")
@@ -328,21 +356,22 @@ def inventory_asset_detail(asset_id: str, request: Request, db: Session = Depend
     identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
     session_id = str(request.session.get("inventory_current_session_id") or "")
     walk_session = db.get(InventorySession, session_id) if session_id else None
-    lookup_result = request.session.pop(f"inventory_lookup_{asset.id}", None)
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "walk_session": walk_session if walk_session and walk_session.finished_at is None else None, "lookup_result": lookup_result, "prelookup": None}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "parent_asset": None, "manual_mode": False, "location": location, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "walk_session": walk_session if walk_session and walk_session.finished_at is None else None, "prelookup": None}, db)
 
 
 @router.post("/inventory/assets")
-async def inventory_create_asset(request: Request, asset_type: InventoryAssetType = Form(), custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), notes: str = Form(default=""), parent_asset_id: str = Form(default=""), related_devices_json: str = Form(default=""), save_next: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_create_asset(request: Request, asset_type: InventoryAssetType = Form(), custom_name: str = Form(default=""), manufacturer: str = Form(default=""), model: str = Form(default=""), serial_number: str = Form(default=""), inventory_number: str = Form(default=""), status: str = Form(default=""), assigned_person_name: str = Form(default=""), login_name: str = Form(default=""), description: str = Form(default=""), notes: str = Form(default=""), parent_asset_id: str = Form(default=""), manual_mode: str = Form(default=""), related_devices_json: str = Form(default=""), save_next: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     location = _current_location(request, db)
     if location is None:
         _flash(request, "bad", "Сначала создайте локацию")
         return _redirect("/inventory")
+    parent_asset = _related_parent_or_error(db, parent_asset_id)
     flow_key = _new_asset_flow_key(asset_type, parent_asset_id)
     flow = request.session.get(flow_key)
-    if not isinstance(flow, dict) or not flow.get("ready"):
+    direct_manual = bool(parent_asset and manual_mode == "1" and asset_type in MANUAL_RELATED_ASSET_TYPES)
+    if not direct_manual and (not isinstance(flow, dict) or not flow.get("ready")):
         _flash(request, "bad", "Сначала выполните поиск или выберите ручное заполнение")
         return _redirect(_new_asset_url(asset_type, parent_asset_id))
     try:
@@ -356,12 +385,12 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
             asset = service.create_asset(db, asset_type, location_id=location.id, **common_fields)
         service.update_details(db, asset, await _detail_form(request, asset_type))
         service.sync_identifiers(db, asset, await _identifier_form(request))
-        if parent_asset_id:
-            service.attach_existing_asset(db, parent_asset_id, asset.id, actor=user.username)
+        if parent_asset:
+            service.attach_existing_asset(db, parent_asset.id, asset.id, actor=user.username)
             write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=asset.id)
     except InventoryValidationError as exc:
         _flash(request, "bad", str(exc))
-        return _redirect("/inventory")
+        return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual))
     write_audit(db, request, user, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id)
     request.session.pop(flow_key, None)
     _flash(request, "ok", "Устройство сохранено")

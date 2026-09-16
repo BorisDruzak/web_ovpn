@@ -3,6 +3,7 @@
 {% block page_title %}{{ asset_labels[asset_type] }}{% endblock %}
 {% block content %}
 <section class="inventory-mobile inventory-form">
+  {% if parent_asset %}<details class="inventory-parent-card"><summary>ПК: {{ parent_asset.custom_name or parent_asset.model or parent_asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary><a class="button secondary" href="/inventory/assets/{{ parent_asset.id }}">ОТКРЫТЬ КАРТОЧКУ ПК</a></details>{% endif %}
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
   <section class="inventory-card inventory-discovery">
     <h2>Сначала найдите устройство</h2>

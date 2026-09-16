@@ -120,6 +120,8 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
 
     tree = client.get("/inventory")
     assert "BUH-PC-01" in tree.text
+    assert f'/inventory/assets/{pc_id}/related/new' in tree.text
+    assert f'/inventory/assets/new?asset_type=MONITOR&amp;parent_asset_id={pc_id}' not in tree.text
     assert "AOC 24B2X" in tree.text
     assert "Ippon" in tree.text
     assert "Kyocera M2040" in tree.text
@@ -167,14 +169,14 @@ def test_mobile_inventory_offers_inline_location_and_unbound_device_types(tmp_pa
 
     assert "+ Новая локация…" in page.text
     assert "СМЕНИТЬ / ДОБАВИТЬ ЛОКАЦИЮ" not in page.text
-    assert "ВЫБРАТЬ ЛОКАЦИЮ" in page.text
+    assert "ВЫБРАТЬ ЛОКАЦИЮ" not in page.text
     assert "Отдельное устройство на локации" in page.text
     assert "/inventory/assets/new?asset_type=MONITOR" in page.text
     assert "/inventory/assets/new?asset_type=PRINTER" in page.text
 
 
 def test_mobile_inventory_keeps_new_location_form_hidden_until_requested(tmp_path, monkeypatch):
-    """The inline new-location form must not take space until the selector requests it."""
+    """The selector remains compact while retaining a no-script submit fallback."""
     client, csrf = _client(tmp_path, monkeypatch)
     assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "219"}, follow_redirects=False).status_code == 303
 
@@ -182,11 +184,12 @@ def test_mobile_inventory_keeps_new_location_form_hidden_until_requested(tmp_pat
     css = Path("app/static/inventory.css").read_text(encoding="utf-8")
 
     assert 'id="new-location-form" hidden' in page.text
+    assert '<noscript><button class="button secondary" type="submit">ПРИМЕНИТЬ ВЫБОР</button></noscript>' in page.text
     assert ".inventory-mobile form[hidden] { display: none; }" in css
 
 
-def test_mobile_asset_form_localizes_status_and_explains_mac_lookup(tmp_path, monkeypatch):
-    """A saved device form presents Russian statuses and an explicit MAC lookup control."""
+def test_saved_mobile_asset_card_can_collapse_without_a_second_network_lookup(tmp_path, monkeypatch):
+    """A saved card stays expandable while discovery is not repeated after creation."""
     client, csrf = _client(tmp_path, monkeypatch)
     assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "218"}, follow_redirects=False).status_code == 303
     page = _prepare_manual_asset_form(client, monkeypatch, "MONITOR")
@@ -199,9 +202,10 @@ def test_mobile_asset_form_localizes_status_and_explains_mac_lookup(tmp_path, mo
     detail = client.get(created.headers["location"])
 
     assert "В эксплуатации" in detail.text
-    assert "ПОИСК В СЕТИ" in detail.text
-    assert "IP-адрес, MAC-адрес или hostname" in detail.text
-    assert "AA:BB:CC:DD:EE:FF" in detail.text
+    assert '<details class="inventory-asset-card" open>' in detail.text
+    assert "СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ" in detail.text
+    assert 'class="inventory-device-photos"' in detail.text
+    assert "ПОИСК В СЕТИ" not in detail.text
 
 
 def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
@@ -264,20 +268,58 @@ def test_mobile_pc_draft_saves_related_devices_in_one_submit(tmp_path, monkeypat
     assert "Yealink" in home.text
 
 
-def test_mobile_asset_lookup_shows_editable_network_suggestions(tmp_path, monkeypatch):
-    """The mobile form exposes read-only lookup output and lets the operator apply it deliberately."""
+def test_related_device_picker_collapses_parent_and_opens_manual_full_monitor_form(tmp_path, monkeypatch):
+    """A related monitor starts from a type picker, then shows its full form beside a collapsed parent."""
     client, csrf = _client(tmp_path, monkeypatch)
     client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217"}, follow_redirects=False)
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
     created = client.post("/inventory/assets", data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-04"}, follow_redirects=False)
     asset_id = created.headers["location"].rsplit("/", 1)[-1]
-    monkeypatch.setattr("app.inventory.web.run_netctl", lambda args, timeout=None: {"hosts": [{"ip": "192.168.100.88", "hostname": "BUH-PC-04"}]})
 
-    lookup = client.post(f"/inventory/assets/{asset_id}/lookup", data={"csrf_token": _csrf(client.get(f'/inventory/assets/{asset_id}').text), "identifier": "192.168.100.88"}, follow_redirects=False)
-    assert lookup.status_code == 303
-    detail = client.get(f"/inventory/assets/{asset_id}").text
-    assert "BUH-PC-04" in detail
-    assert "ПОДСТАВИТЬ" in detail
+    picker = client.get(f"/inventory/assets/{asset_id}/related/new")
+    assert picker.status_code == 200
+    assert "ВЫБЕРИТЕ ТИП СВЯЗАННОГО УСТРОЙСТВА" in picker.text
+    assert f'/inventory/assets/new?asset_type=MONITOR&amp;parent_asset_id={asset_id}&amp;manual=1' in picker.text
+    assert '<details class="inventory-parent-card">' in picker.text
+    assert "PC-04" in picker.text
+
+    form = client.get(f"/inventory/assets/new?asset_type=MONITOR&parent_asset_id={asset_id}&manual=1")
+    assert form.status_code == 200
+    assert '<details class="inventory-parent-card">' in form.text
+    assert 'name="manufacturer"' in form.text
+    assert 'name="mac_address"' in form.text
+    assert "НАЙТИ УСТРОЙСТВО" not in form.text
+
+
+def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_path, monkeypatch):
+    """A malformed related-device label must not send the technician back to network discovery."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-a"}, follow_redirects=False)
+    page = _prepare_manual_asset_form(client, monkeypatch, "PC")
+    created = client.post(
+        "/inventory/assets",
+        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-04-a"},
+        follow_redirects=False,
+    )
+    asset_id = created.headers["location"].rsplit("/", 1)[-1]
+
+    form = client.get(f"/inventory/assets/new?asset_type=MONITOR&parent_asset_id={asset_id}&manual=1")
+    rejected = client.post(
+        "/inventory/assets",
+        data={
+            "csrf_token": _csrf(form.text),
+            "asset_type": "MONITOR",
+            "parent_asset_id": asset_id,
+            "manual_mode": "1",
+            "custom_name": "Монитор с этикетки",
+            "mac_address": "not-a-mac",
+        },
+        follow_redirects=False,
+    )
+    assert rejected.headers["location"] == f"/inventory/assets/new?asset_type=MONITOR&parent_asset_id={asset_id}&manual=1"
+    returned_form = client.get(rejected.headers["location"])
+    assert 'name="manufacturer"' in returned_form.text
+    assert "НАЙТИ УСТРОЙСТВО" not in returned_form.text
 
 
 def test_new_mobile_asset_requires_discovery_and_prefills_collection_data(tmp_path, monkeypatch):
