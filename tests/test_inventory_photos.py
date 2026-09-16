@@ -24,18 +24,14 @@ def test_storage_uses_generated_name_and_validates_real_image_bytes(tmp_path):
     assert ".." not in stored.storage_path
 
 
-@pytest.mark.parametrize(
-    ("declared_mime", "content"),
-    [("text/plain", PNG_BYTES), ("image/png", b"not an image")],
-)
-def test_storage_rejects_invalid_declared_or_detected_mime(tmp_path, declared_mime, content):
-    """A MIME mismatch must leave no untrusted file in the photo root."""
+def test_storage_rejects_unknown_image_content(tmp_path):
+    """An unknown signature must leave no untrusted file in the photo root."""
     from app.inventory.storage import InventoryPhotoError, InventoryPhotoStorage
 
     storage = InventoryPhotoStorage(tmp_path / "photos", max_bytes=4096)
 
     with pytest.raises(InventoryPhotoError, match="image"):
-        storage.save("image.png", declared_mime, content)
+        storage.save("image.png", "image/png", b"not an image")
 
     assert not (tmp_path / "photos").exists() or list((tmp_path / "photos").iterdir()) == []
 

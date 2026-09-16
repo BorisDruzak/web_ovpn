@@ -271,7 +271,7 @@ def test_saved_mobile_asset_card_can_collapse_without_a_second_network_lookup(tm
 
 
 def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
-    """The phone capture control must persist a validated image after an asset exists."""
+    """The saved owner card accepts a camera image even if the browser reports the wrong MIME."""
     monkeypatch.setenv("INVENTORY_PHOTO_ROOT", str(tmp_path / "photos"))
     client, csrf = _client(tmp_path, monkeypatch)
     assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "214"}, follow_redirects=False).status_code == 303
@@ -281,10 +281,12 @@ def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
     )
     asset_id = created.headers["location"].rsplit("/", 1)[-1]
     detail = client.get(f"/inventory/assets/{asset_id}")
+    assert f'action="/inventory/assets/{asset_id}/photos"' in detail.text
+    assert 'capture="environment"' in detail.text
     uploaded = client.post(
         f"/inventory/assets/{asset_id}/photos",
         data={"csrf_token": _csrf(detail.text), "photo_type": "general"},
-        files={"photo": ("label.png", PNG_BYTES, "image/png")},
+        files={"photo": ("label.png", PNG_BYTES, "application/octet-stream")},
         follow_redirects=False,
     )
     assert uploaded.status_code == 303

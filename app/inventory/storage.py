@@ -33,8 +33,6 @@ class InventoryPhotoStorage:
         if not content or len(content) > self.max_bytes:
             raise InventoryPhotoError("image size exceeds the limit")
         mime_type, suffix = self._detect_image(content)
-        if declared_mime.strip().lower() != mime_type:
-            raise InventoryPhotoError("image MIME type is invalid")
         self.root.mkdir(parents=True, exist_ok=True)
         storage_path = f"{uuid4()}{suffix}"
         target = self._resolve(storage_path)
