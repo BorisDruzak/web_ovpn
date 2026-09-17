@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.inventory.models import (
@@ -487,3 +487,79 @@ def test_success_snapshot_unique_index_rolls_back_losing_identifier_update(db, s
         )
     ).all()
     assert len(successes) == 1
+
+
+def test_init_db_normalizes_legacy_duplicate_success_claims_before_unique_index(tmp_path, monkeypatch):
+    """Creating the claim index before cleanup would make legacy startup unavailable."""
+    from app.db import get_engine, get_sessionmaker, init_db, reset_engine_cache
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'legacy-ledger.sqlite'}")
+    reset_engine_cache()
+    engine = get_engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE inventory_identifier_sync_runs ("
+                "id VARCHAR(36) PRIMARY KEY, snapshot_id INTEGER, snapshot_generated_at DATETIME, "
+                "status VARCHAR(16) NOT NULL, started_at DATETIME NOT NULL, finished_at DATETIME, "
+                "matched_assets INTEGER NOT NULL DEFAULT 0, updated_assets INTEGER NOT NULL DEFAULT 0, "
+                "skipped_assets INTEGER NOT NULL DEFAULT 0, failure_reason TEXT)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_identifier_sync_runs "
+                "(id, snapshot_id, status, started_at, finished_at, failure_reason) VALUES "
+                "('older', 42, 'success', '2026-09-18T10:00:00+00:00', '2026-09-18T10:01:00+00:00', NULL), "
+                "('newer', 42, 'success', '2026-09-18T10:02:00+00:00', '2026-09-18T10:03:00+00:00', NULL), "
+                "('failed', 42, 'failed', '2026-09-18T10:04:00+00:00', '2026-09-18T10:04:00+00:00', 'original failure')"
+            )
+        )
+
+    init_db()
+
+    with get_sessionmaker()() as session:
+        rows = {row.id: row for row in session.scalars(select(InventoryIdentifierSyncRun)).all()}
+    assert rows["newer"].status == "success"
+    assert rows["older"].status == "skipped"
+    assert rows["older"].failure_reason == "superseded duplicate success during migration"
+    assert (rows["failed"].status, rows["failed"].failure_reason) == ("failed", "original failure")
+    with engine.connect() as connection:
+        index_sql = connection.execute(
+            text(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'uq_inventory_identifier_sync_success_snapshot'"
+            )
+        ).scalar_one()
+    assert "WHERE status = 'success'" in index_sql
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        {
+            1: _snapshot_page(page=1, pages=2, total=500, hosts=[{}] * 249),
+            2: _snapshot_page(page=2, pages=2, total=500, hosts=[{}] * 251),
+        },
+        {
+            1: _snapshot_page(page=1, pages=2, total=500, hosts=[{}] * 251),
+            2: _snapshot_page(page=2, pages=2, total=500, hosts=[{}] * 249),
+        },
+        {
+            1: _snapshot_page(page=1, pages=3, total=501, hosts=[{}] * 250),
+            2: _snapshot_page(page=2, pages=3, total=501, hosts=[{}] * 250),
+            3: _snapshot_page(page=3, pages=3, total=501, hosts=[{}] * 2),
+        },
+    ],
+)
+def test_worker_rejects_pages_with_wrong_cardinality(db, pages):
+    """Page sizes must exactly describe the immutable published total."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+
+    summary = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: pages[int(args[-3])],
+        session_factory=lambda: db,
+    )
+
+    assert summary.status == "failed"

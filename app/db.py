@@ -46,6 +46,40 @@ _TRANSFER_ASSET_NOTES = text(
     """
 )
 
+_NORMALIZE_DUPLICATE_INVENTORY_SYNC_SUCCESSES = text(
+    """
+    WITH ranked AS (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY snapshot_id
+                   ORDER BY finished_at DESC, started_at DESC, id DESC
+               ) AS row_number
+        FROM inventory_identifier_sync_runs
+        WHERE status = 'success' AND snapshot_id IS NOT NULL
+    )
+    UPDATE inventory_identifier_sync_runs
+    SET status = 'skipped',
+        failure_reason = 'superseded duplicate success during migration'
+    WHERE id IN (SELECT id FROM ranked WHERE row_number > 1)
+    """
+)
+
+_CREATE_INVENTORY_SYNC_SUCCESS_INDEX = text(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_identifier_sync_success_snapshot "
+    "ON inventory_identifier_sync_runs (snapshot_id) WHERE status = 'success'"
+)
+
+
+def _prepare_inventory_sync_claim_index(engine) -> None:
+    """Normalize legacy success races before metadata creates the SQLite partial index."""
+    if engine.dialect.name != "sqlite":
+        return
+    if "inventory_identifier_sync_runs" not in inspect(engine).get_table_names():
+        return
+    with engine.begin() as connection:
+        connection.execute(_NORMALIZE_DUPLICATE_INVENTORY_SYNC_SUCCESSES)
+        connection.execute(_CREATE_INVENTORY_SYNC_SUCCESS_INDEX)
+
 
 def _migrate_inventory_schema(engine) -> None:
     inspector = inspect(engine)
@@ -68,13 +102,6 @@ def _migrate_inventory_schema(engine) -> None:
             columns = {column["name"] for column in inspector.get_columns("inventory_assets")}
             if "notes" in columns:
                 connection.execute(_TRANSFER_ASSET_NOTES)
-        if engine.dialect.name == "sqlite" and "inventory_identifier_sync_runs" in table_names:
-            connection.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_identifier_sync_success_snapshot "
-                    "ON inventory_identifier_sync_runs (snapshot_id) WHERE status = 'success'"
-                )
-            )
 
 
 def init_db() -> None:
@@ -83,6 +110,7 @@ def init_db() -> None:
     from .auth import ensure_admin_user
 
     engine = get_engine()
+    _prepare_inventory_sync_claim_index(engine)
     Base.metadata.create_all(bind=engine)
     _migrate_inventory_schema(engine)
     with session_scope() as db:

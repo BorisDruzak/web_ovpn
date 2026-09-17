@@ -103,6 +103,14 @@ def read_current_snapshot(netctl_call: NetctlCall) -> NetctlSnapshot:
                 snapshot_id=snapshot_id,
                 generated_at=generated_at,
             )
+        if total > 0:
+            expected_page_count = limit if page < pages else total - limit * (pages - 1)
+            if len(page_hosts) != expected_page_count:
+                raise SnapshotReadError(
+                    "malformed netctl snapshot",
+                    snapshot_id=snapshot_id,
+                    generated_at=generated_at,
+                )
         hosts.extend(page_hosts)
         if page >= pages:
             if len(hosts) != total:
