@@ -60,6 +60,7 @@ class _PySnmpBackend:
         host: str,
         port: int,
         community: str,
+        snmp_version: str,
         timeout_seconds: int,
         retries: int,
         max_repetitions: int,
@@ -70,7 +71,7 @@ class _PySnmpBackend:
         self._retries = retries
         self._max_repetitions = max_repetitions
         self._engine = SnmpEngine()
-        self._auth = CommunityData(community, mpModel=1)
+        self._auth = CommunityData(community, mpModel=0 if snmp_version == "1" else 1)
         self._context = ContextData()
         self._target: object | None = None
 
@@ -282,7 +283,7 @@ class SnmpTransport:
         walk_deadline_seconds: float | None = None,
         backend_factory: BackendFactory | None = None,
     ) -> None:
-        if snmp_version != "2c":
+        if snmp_version not in {"1", "2c"}:
             raise ValueError("SNMP version is unsupported")
         if not isinstance(host, str) or not host.strip():
             raise ValueError("SNMP host is invalid")
@@ -333,6 +334,7 @@ class SnmpTransport:
                 host=host,
                 port=port,
                 community=community,
+                snmp_version=snmp_version,
                 timeout_seconds=timeout_seconds,
                 retries=retries,
                 max_repetitions=max_repetitions,

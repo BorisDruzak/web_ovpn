@@ -51,6 +51,7 @@ from .runtime_assets import (
 from .nmap.policy import FingerprintPolicyError, configured_fingerprint_profile, validate_target_ipv4
 from .nmap.runner import run_nmap_fingerprint
 from .nmap.store import ensure_fingerprint, fingerprint_status
+from .printer_snmp import inspect_printer_snmp
 from .fingerprint.providers import replace_endpoint_agent_evidence
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, related_for_host, remove_device_tag, save_collection, set_device_tags
 from .host_snapshot import HostSnapshotStatus, list_host_snapshot, refresh_host_snapshot, snapshot_status
@@ -1496,6 +1497,19 @@ def cmd_fingerprint(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     return 2, err("unsupported fingerprint command")
 
 
+def cmd_printer(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+    if args.printer_command != "inspect-ip":
+        return 2, err("unsupported printer command")
+    try:
+        target = validate_target_ipv4(args.target)
+    except FingerprintPolicyError as exc:
+        return 2, err(str(exc))
+    result = inspect_printer_snmp(target)
+    if result.get("status") == "found":
+        return 0, ok(printer=result)
+    return 1, err("printer_snmp_unavailable", printer=result)
+
+
 def resolve_context_schema(path: Path, explicit_schema: str) -> Path:
     candidates = [Path(explicit_schema)] if explicit_schema else []
     candidates.append(path.parent.parent / "schemas" / "network-context.schema.json")
@@ -1917,6 +1931,11 @@ def build_parser() -> argparse.ArgumentParser:
     fingerprint_inspect_ip = fingerprint_sub.add_parser("inspect-ip")
     fingerprint_inspect_ip.add_argument("--target", required=True)
 
+    printer = sub.add_parser("printer")
+    printer_sub = printer.add_subparsers(dest="printer_command", required=True)
+    printer_inspect = printer_sub.add_parser("inspect-ip")
+    printer_inspect.add_argument("--target", required=True)
+
     context = sub.add_parser("context")
     context_sub = context.add_subparsers(dest="context_command", required=True)
     for name in ("validate", "status", "import", "diff"):
@@ -2005,6 +2024,8 @@ def dispatch(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return cmd_assets(args)
     if args.command == "fingerprint":
         return cmd_fingerprint(args)
+    if args.command == "printer":
+        return cmd_printer(args)
     if args.command == "context":
         return cmd_context(args)
     return 2, err("unsupported command")

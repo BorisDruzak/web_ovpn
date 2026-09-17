@@ -12,21 +12,19 @@ NMAP_COMMAND = (
     "-n",
     "-Pn",
     "-sS",
-    "-O",
-    "--osscan-limit",
     "-sV",
     "--version-light",
     "--top-ports",
-    "100",
+    "20",
     "--max-retries",
-    "1",
+    "0",
     "--host-timeout",
-    "20s",
-    "-T3",
+    "15s",
+    "-T4",
     "-oX",
     "-",
 )
-NMAP_TIMEOUT_SECONDS = 25
+NMAP_TIMEOUT_SECONDS = 22
 SAFE_ENVIRONMENT = {
     "LANG": "C",
     "LC_ALL": "C",

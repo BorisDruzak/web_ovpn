@@ -20,7 +20,6 @@ from .lookup import InventoryLookup, InventoryLookupError, classify_identifier
 from .models import (
     InventoryAsset,
     InventoryAssetPhoto,
-    InventoryAssetRelation,
     InventoryAssetStatus,
     InventoryAssetType,
     InventoryCheckResult,
@@ -196,16 +195,16 @@ def _new_asset_form_context(
     suggestions = flow.get("suggestions") if isinstance(flow, dict) and isinstance(flow.get("suggestions"), dict) else {}
     details = flow.get("details") if isinstance(flow, dict) and isinstance(flow.get("details"), dict) else {}
     values = {
-        "custom_name": str(suggestions.get("display_name") or ""),
-        "manufacturer": "",
-        "model": "",
-        "serial_number": "",
-        "inventory_number": "",
-        "status": "",
-        "assigned_person_name": "",
-        "login_name": "",
-        "description": "",
-        "notes": "",
+        "custom_name": str(suggestions.get("custom_name") or suggestions.get("display_name") or ""),
+        "manufacturer": str(suggestions.get("manufacturer") or ""),
+        "model": str(suggestions.get("model") or ""),
+        "serial_number": str(suggestions.get("serial_number") or ""),
+        "inventory_number": str(suggestions.get("inventory_number") or ""),
+        "status": str(suggestions.get("status") or ""),
+        "assigned_person_name": str(suggestions.get("assigned_person_name") or ""),
+        "login_name": str(suggestions.get("login_name") or ""),
+        "description": str(suggestions.get("description") or ""),
+        "notes": str(suggestions.get("notes") or ""),
     }
     identifiers = {key: str(suggestions.get(key) or "") for key in ("ip", "mac", "hostname")}
     if draft:
@@ -440,6 +439,21 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
     except InventoryLookupError as exc:
         _flash(request, "bad", str(exc))
         return _redirect(target_url)
+    suggestions = dict(result.suggestions)
+    details = {field: value for field, value in result.suggestions.items() if field == "os_name"}
+    if asset_type is InventoryAssetType.PRINTER and result.status == "found" and suggestions.get("ip"):
+        try:
+            printer_payload = run_netctl(["printer", "inspect-ip", "--target", suggestions["ip"]], 20)
+        except Exception:
+            printer_payload = {}
+        printer = printer_payload.get("printer") if isinstance(printer_payload, dict) else None
+        if isinstance(printer, dict) and printer.get("status") == "found":
+            discovered = printer.get("suggestions")
+            printer_details = printer.get("details")
+            if isinstance(discovered, dict):
+                suggestions.update({key: str(value) for key, value in discovered.items() if isinstance(value, str) and value})
+            if isinstance(printer_details, dict):
+                details.update({key: value for key, value in printer_details.items() if key == "page_counter" and isinstance(value, int)})
     source = InventoryObservationSource.NMAP if result.source == "nmap" else InventoryObservationSource.NETCTL
     observation = service.record_observation(db, asset_id=None, source=source, data=result.observation)
     write_audit(db, request, user, "inventory.lookup", result.status, result.source, target_client=observation.id)
@@ -447,8 +461,8 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
         "status": result.status,
         "source": result.source,
         "message": result.message,
-        "suggestions": result.suggestions,
-        "details": {field: value for field, value in result.suggestions.items() if field == "os_name"},
+        "suggestions": suggestions,
+        "details": details,
         "identifier": identifier.strip(),
         "ready": result.status == "found",
     }

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import ipaddress
 import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from netctl.nmap.policy import FingerprintPolicyError, validate_target_ipv4
@@ -13,6 +13,7 @@ from netctl.nmap.policy import FingerprintPolicyError, validate_target_ipv4
 NetctlCall = Callable[[list[str], int | None], dict[str, Any]]
 _MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}([:-]?[0-9A-Fa-f]{2}){5}$")
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$")
+STALE_HOST_GRACE = timedelta(minutes=20)
 
 
 class InventoryLookupError(ValueError):
@@ -61,22 +62,36 @@ class InventoryLookup:
     _locks_guard = threading.Lock()
     _mac_refresh_locks: dict[str, threading.Lock] = {}
 
-    def __init__(self, netctl_call: NetctlCall) -> None:
+    def __init__(
+        self,
+        netctl_call: NetctlCall,
+        *,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
         self._netctl_call = netctl_call
+        self._now = now
 
     def lookup(self, value: str, *, actor: str) -> LookupResult:
         del actor  # Audit ownership is recorded by the route that invokes this service.
         identifier_type, normalized = classify_identifier(value)
         try:
-            hosts = self._search_hosts(normalized)
+            hosts = self._search_hosts(normalized, status="current")
         except Exception:
             return LookupResult("unavailable", "netctl", {}, {}, "Автоматический поиск сейчас недоступен.")
         if hosts:
             return self._netctl_result(hosts[0], identifier_type, normalized)
+        if identifier_type == "ip":
+            try:
+                stale_hosts = self._search_hosts(normalized, status="all")
+            except Exception:
+                return LookupResult("unavailable", "netctl", {}, {}, "Автоматический поиск сейчас недоступен.")
+            for host in stale_hosts:
+                if self._is_recent_exact_host(host, identifier_type, normalized):
+                    return self._netctl_result(host, identifier_type, normalized)
         if identifier_type == "mac":
             try:
                 self._refresh_for_mac(normalized)
-                hosts = self._search_hosts(normalized)
+                hosts = self._search_hosts(normalized, status="current")
             except Exception:
                 return LookupResult("unavailable", "netctl", {}, {}, "Автоматический поиск сейчас недоступен.")
             if hosts:
@@ -108,10 +123,36 @@ class InventoryLookup:
             {"target_ip": normalized, "source": "nmap", "fingerprint": dict(fingerprint)},
         )
 
-    def _search_hosts(self, query: str) -> list[dict[str, object]]:
-        payload = self._netctl_call(["hosts", "list", "--q", query, "--status", "current", "--limit", "25"], 60)
+    def _search_hosts(self, query: str, *, status: str) -> list[dict[str, object]]:
+        payload = self._netctl_call(["hosts", "list", "--q", query, "--status", status, "--limit", "25"], 60)
         hosts = payload.get("hosts", []) if isinstance(payload, Mapping) else []
         return [dict(host) for host in hosts if isinstance(host, Mapping)]
+
+    def _is_recent_exact_host(
+        self,
+        host: Mapping[str, object],
+        identifier_type: str,
+        normalized: str,
+    ) -> bool:
+        value = str(host.get(identifier_type) or "").strip()
+        if identifier_type == "mac":
+            try:
+                value = normalize_mac(value)
+            except InventoryLookupError:
+                return False
+        elif identifier_type == "hostname":
+            value = value.lower()
+        if value != normalized:
+            return False
+        raw_seen = host.get("last_seen_at")
+        try:
+            seen_at = datetime.fromisoformat(str(raw_seen).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return False
+        if seen_at.tzinfo is None:
+            return False
+        age = self._now().astimezone(UTC) - seen_at.astimezone(UTC)
+        return timedelta(0) <= age <= STALE_HOST_GRACE
 
     def _refresh_for_mac(self, mac: str) -> None:
         with self._locks_guard:

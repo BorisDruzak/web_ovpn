@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from datetime import UTC, datetime
 
 import pytest
 
@@ -45,6 +45,61 @@ def test_ip_netctl_hit_returns_editable_suggestions_without_nmap():
     assert result.suggestions["hostname"] == "C1-BUH-07"
     assert result.suggestions["ip"] == "192.168.100.87"
     assert calls == [["hosts", "list", "--q", "192.168.100.87", "--status", "current", "--limit", "25"]]
+
+
+def test_recent_exact_stale_ip_is_usable_during_availability_projection_gap():
+    """Fresh passive router evidence must remain usable while availability is briefly stale."""
+    from app.inventory.lookup import InventoryLookup
+
+    calls: list[list[str]] = []
+
+    def netctl(args: list[str], timeout: int | None = None):
+        calls.append(args)
+        if "--status" in args and args[args.index("--status") + 1] == "current":
+            return {"hosts": []}
+        return {
+            "hosts": [
+                {
+                    "ip": "192.168.100.150",
+                    "mac": "00:17:C8:62:C9:6B",
+                    "hostname": "printer-150",
+                    "last_seen_at": "2026-09-17T14:40:00Z",
+                    "last_source": "mikrotik_arp",
+                    "status": "stale",
+                }
+            ]
+        }
+
+    result = InventoryLookup(
+        netctl, now=lambda: datetime(2026, 9, 17, 14, 45, tzinfo=UTC)
+    ).lookup("192.168.100.150", actor="admin")
+
+    assert result.status == "found"
+    assert result.source == "netctl"
+    assert result.suggestions["mac"] == "00:17:C8:62:C9:6B"
+    assert calls == [
+        ["hosts", "list", "--q", "192.168.100.150", "--status", "current", "--limit", "25"],
+        ["hosts", "list", "--q", "192.168.100.150", "--status", "all", "--limit", "25"],
+    ]
+
+
+def test_old_or_fuzzy_stale_host_never_bypasses_nmap_fallback():
+    """A stale fuzzy match must not attach an inventory record to another device."""
+    from app.inventory.lookup import InventoryLookup
+
+    def netctl(args: list[str], timeout: int | None = None):
+        if args[:2] == ["hosts", "list"]:
+            if args[args.index("--status") + 1] == "current":
+                return {"hosts": []}
+            return {"hosts": [{"ip": "192.168.100.15", "last_seen_at": "2026-09-17T14:44:00Z"}]}
+        return {"fingerprint": {"nmap_version": "7.95", "ports": [], "os_matches": []}}
+
+    result = InventoryLookup(
+        netctl, now=lambda: datetime(2026, 9, 17, 14, 45, tzinfo=UTC)
+    ).lookup("192.168.100.150", actor="admin")
+
+    assert result.source == "nmap"
+    assert result.suggestions == {"ip": "192.168.100.150"}
 
 
 def test_ip_miss_uses_one_target_fingerprint_through_netctl_boundary():

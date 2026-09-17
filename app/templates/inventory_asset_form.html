@@ -25,9 +25,9 @@
     <label>Serial<input name="serial_number" value="{{ form_values.get('serial_number', '') }}" autocomplete="off"></label>
     <label>Инвентарный номер<input name="inventory_number" value="{{ form_values.get('inventory_number', '') }}" autocomplete="off"></label>
     <label>Статус<select name="status"><option value="">Не указан</option>{% for item in asset_statuses %}<option value="{{ item.value }}" {% if form_values.get('status') == item.value %}selected{% endif %}>{{ asset_status_labels[item] }}</option>{% endfor %}</select></label>
-    <label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
+    {% if asset_type.value in ('PC', 'PRINTER', 'PHONE', 'OTHER') %}<label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
     <label>MAC-адрес<input name="mac_address" value="{{ identifiers.get('mac') or '' }}" autocomplete="off"></label>
-    <label>Hostname<input name="hostname" value="{{ identifiers.get('hostname') or '' }}" autocomplete="off"></label>
+    <label>Hostname<input name="hostname" value="{{ identifiers.get('hostname') or '' }}" autocomplete="off"></label>{% endif %}
     {% if asset_type.value == 'PC' %}<label>ОС<input name="os_name" value="{{ details.get('os_name') or '' }}"></label><label>Процессор<input name="cpu_model" value="{{ details.get('cpu_model') or '' }}"></label><label>Поколение процессора<input name="cpu_generation" value="{{ details.get('cpu_generation') or '' }}"></label><label>Тип RAM<input name="ram_type" value="{{ details.get('ram_type') or '' }}"></label><label>Объём RAM, ГБ<input type="number" min="0" name="ram_gb" value="{{ details.get('ram_gb') or '' }}"></label><label>Тип накопителя<input name="storage_type" value="{{ details.get('storage_type') or '' }}"></label><label>Объём накопителя, ГБ<input type="number" min="0" name="storage_gb" value="{{ details.get('storage_gb') or '' }}"></label>{% endif %}
     {% if asset_type.value == 'PRINTER' %}<label>Счётчик страниц<input type="number" min="0" name="page_counter" value="{{ details.get('page_counter') or '' }}"></label>{% endif %}
     {% if asset_type.value == 'PHONE' %}<label>Внутренний номер<input name="extension" value="{{ details.get('extension') or '' }}"></label>{% endif %}

@@ -50,6 +50,9 @@ def init_db() -> None:
                 connection.execute(text("UPDATE web_users SET is_network_admin = 1 WHERE is_admin = 1"))
     with session_scope() as db:
         ensure_admin_user(db)
+        from .inventory.service import InventoryService
+
+        InventoryService().repair_detail_integrity(db)
 
 
 def get_db() -> Iterator[Session]:

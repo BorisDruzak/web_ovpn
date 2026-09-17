@@ -460,6 +460,27 @@ def test_unsupported_version_is_rejected_before_backend_factory() -> None:
     assert calls == 0
 
 
+def test_snmp_v1_passes_its_protocol_version_to_the_backend() -> None:
+    """Printer probes must be able to use legacy read-only SNMPv1 agents."""
+    from netctl.snmp.transport import SnmpTransport
+
+    received: dict[str, object] = {}
+
+    def backend_factory(**options: object) -> FakeBackend:
+        received.update(options)
+        return FakeBackend()
+
+    transport = SnmpTransport(
+        host="192.0.2.44",
+        community=SECRET,
+        snmp_version="1",
+        backend_factory=backend_factory,
+    )
+
+    assert received["snmp_version"] == "1"
+    assert "community=<redacted>" in repr(transport)
+
+
 @pytest.mark.parametrize("failure", [None, RuntimeError(SECRET)])
 def test_sync_walk_closes_backend_after_success_and_failure(
     failure: Exception | None,

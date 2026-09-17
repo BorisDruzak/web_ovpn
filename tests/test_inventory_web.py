@@ -4,6 +4,8 @@ import importlib
 import base64
 from pathlib import Path
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 
@@ -383,7 +385,7 @@ def test_related_device_form_shows_only_child_and_returns_to_location(tmp_path, 
     assert "inventory-parent-card" not in form.text
     assert "Локация: ИТ отдел" in form.text
     assert 'name="manufacturer"' in form.text
-    assert 'name="mac_address"' in form.text
+    assert 'name="mac_address"' not in form.text
     assert "НАЙТИ УСТРОЙСТВО" not in form.text
 
     discovery = client.get(f"/inventory/assets/new?asset_type=PHONE&location_id={location_id}&parent_asset_id={asset_id}")
@@ -594,7 +596,7 @@ def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_
     assert 'name="manufacturer"' in returned_form.text
     assert "НАЙТИ УСТРОЙСТВО" not in returned_form.text
     assert 'value="Монитор с этикетки"' in returned_form.text
-    assert 'value="not-a-mac"' in returned_form.text
+    assert 'name="mac_address"' not in returned_form.text
 
 
 def test_standalone_other_opens_a_manual_card_without_network_discovery(tmp_path, monkeypatch):
@@ -609,6 +611,18 @@ def test_standalone_other_opens_a_manual_card_without_network_discovery(tmp_path
     assert "Ручное заполнение" in form.text
     assert 'name="custom_name"' in form.text
     assert "НАЙТИ УСТРОЙСТВО" not in form.text
+
+
+@pytest.mark.parametrize("asset_type", ["MONITOR", "UPS"])
+def test_non_network_device_form_hides_network_identifiers(tmp_path, monkeypatch, asset_type):
+    """A monitor or UPS cannot use IP/MAC/hostname as inventory identifiers."""
+    client, _csrf_token = _client(tmp_path, monkeypatch)
+
+    form = _prepare_manual_asset_form(client, monkeypatch, asset_type)
+
+    assert 'name="ip_address"' not in form.text
+    assert 'name="mac_address"' not in form.text
+    assert 'name="hostname"' not in form.text
 
 
 def test_nmap_prefilled_asset_keeps_entered_fields_after_validation_error(tmp_path, monkeypatch):
@@ -651,6 +665,34 @@ def test_nmap_prefilled_asset_keeps_entered_fields_after_validation_error(tmp_pa
     assert 'value="HP"' in returned_form.text
     assert 'value="192.168.100.150"' in returned_form.text
     assert 'value="not-a-mac"' in returned_form.text
+
+
+def test_printer_lookup_prefills_only_verified_snmp_values(tmp_path, monkeypatch):
+    """Printer SNMP fields must remain editable prefill, not hidden collector state."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-snmp"}, follow_redirects=False)
+    location_id = created.headers["location"].rsplit("/", 1)[-1]
+    discovery = client.get(f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}")
+
+    def netctl(args, timeout=None):
+        if args[:2] == ["hosts", "list"]:
+            return {"hosts": [{"ip": "192.168.100.150", "mac": "00:17:C8:62:C9:6B"}]}
+        if args[:2] == ["printer", "inspect-ip"]:
+            return {"printer": {"status": "found", "suggestions": {"custom_name": "Kyocera M5526", "serial_number": "SERIAL-150", "description": "Kyocera ECOSYS"}, "details": {"page_counter": 1234}}}
+        raise AssertionError(args)
+
+    monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
+    lookup = client.post(
+        "/inventory/assets/new/lookup",
+        data={"csrf_token": _csrf(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.150"},
+        follow_redirects=False,
+    )
+    form = client.get(lookup.headers["location"])
+
+    assert 'value="Kyocera M5526"' in form.text
+    assert 'value="SERIAL-150"' in form.text
+    assert "Kyocera ECOSYS" in form.text
+    assert 'value="1234"' in form.text
 
 
 def test_new_mobile_asset_requires_discovery_and_prefills_collection_data(tmp_path, monkeypatch):

@@ -1,5 +1,6 @@
 [Unit]
 Description=Collect netctl host availability after boot recovery
+After=netctl-collect.service netctl-reconcile.service
 
 [Service]
 Type=oneshot

@@ -31,7 +31,9 @@ def test_availability_timer_runs_after_collection_and_reconcile_windows():
     timer = (ROOT / "deploy" / "netctl-availability.timer").read_text(encoding="utf-8")
 
     assert "OnBootSec=6min" in timer
-    assert "OnCalendar=*:3/5" in timer
+    assert "OnCalendar=*:4/5" in timer
+    service = (ROOT / "deploy" / "netctl-availability.service").read_text(encoding="utf-8")
+    assert "After=netctl-collect.service netctl-reconcile.service" in service
     assert "OnUnitActiveSec" not in timer
     assert "AccuracySec=30s" in timer
     assert "Persistent=true" in timer

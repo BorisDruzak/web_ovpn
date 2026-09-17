@@ -126,6 +126,26 @@ class InventoryService:
             return {name: None for name in allowed}
         return {name: getattr(detail, name) for name in allowed}
 
+    def repair_detail_integrity(self, db: Session) -> int:
+        """Replace legacy cross-type detail rows with the matching empty detail row."""
+        repaired_assets = 0
+        for asset in db.scalars(select(InventoryAsset)).all():
+            expected = DETAIL_MODELS.get(asset.asset_type)
+            removed = False
+            for detail_model, _fields in DETAIL_MODELS.values():
+                if expected is not None and detail_model is expected[0]:
+                    continue
+                detail = db.get(detail_model, asset.id)
+                if detail is not None:
+                    db.delete(detail)
+                    removed = True
+            if removed:
+                repaired_assets += 1
+                if expected is not None and db.get(expected[0], asset.id) is None:
+                    db.add(expected[0](asset_id=asset.id))
+        db.flush()
+        return repaired_assets
+
     def sync_identifiers(self, db: Session, asset: InventoryAsset, identifiers: Sequence[Any]) -> list[InventoryAssetIdentifier]:
         """Replace active identifier values while retaining prior values as history."""
         desired: dict[tuple[InventoryIdentifierType, str], tuple[str, InventoryObservationSource]] = {}
