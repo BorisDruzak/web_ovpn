@@ -65,6 +65,16 @@ DETAIL_MODELS = {
     InventoryAssetType.MONITOR: (InventoryMonitorDetails, frozenset({"diagonal_inches"})),
     InventoryAssetType.UPS: (InventoryUPSDetails, frozenset({"power_va", "battery_replaced_at"})),
 }
+PC_DETAIL_FIELDS = (
+    "os_name",
+    "os_version",
+    "cpu_model",
+    "cpu_generation",
+    "ram_type",
+    "ram_gb",
+    "storage_type",
+    "storage_gb",
+)
 
 
 def infer_printer_connection_type(
@@ -153,6 +163,19 @@ class InventoryService:
         if detail is None:
             return {name: None for name in allowed}
         return {name: getattr(detail, name) for name in allowed}
+
+    def normalize_existing_pc_details(self, db: Session) -> int:
+        """Canonicalize safe historic aliases without destroying unrecognized evidence."""
+        changed = 0
+        for detail in db.scalars(select(InventoryPCDetails)).all():
+            fields = {name: getattr(detail, name) for name in PC_DETAIL_FIELDS}
+            normalized = normalize_pc_details(fields, strict=False)
+            for name, value in normalized.items():
+                if fields.get(name) != value:
+                    setattr(detail, name, value)
+                    changed += 1
+        db.flush()
+        return changed
 
     def repair_detail_integrity(self, db: Session) -> int:
         """Replace legacy cross-type detail rows with the matching empty detail row."""
