@@ -371,6 +371,32 @@ def test_worker_skips_unseen_snapshot_that_is_not_newer_than_success(db, service
     ]
 
 
+def test_worker_compares_offset_snapshot_generations_as_utc(db, service):
+    """Treating SQLite's offset-free value as local time would skip the newer UTC snapshot."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    first = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: _snapshot_page(
+            snapshot_id=9,
+            generated_at="2026-09-18T10:00:00+05:00",
+            hosts=[{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.20"}],
+        ),
+        session_factory=lambda: db,
+    )
+    second = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: _snapshot_page(
+            snapshot_id=10,
+            generated_at="2026-09-18T06:00:00Z",
+            hosts=[{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.30"}],
+        ),
+        session_factory=lambda: db,
+    )
+
+    assert (first.status, second.status) == ("success", "success")
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.30"
+
+
 def test_worker_records_netctl_error_as_failure_without_mutation(db, service):
     """A command failure must not be mistaken for an empty snapshot."""
     from app.inventory.netctl_sync import synchronize_current_snapshot

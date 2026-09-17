@@ -294,7 +294,7 @@ def _parse_generated_at(value: object) -> datetime:
         raise SnapshotReadError("malformed netctl snapshot") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise SnapshotReadError("malformed netctl snapshot")
-    return parsed
+    return parsed.astimezone(timezone.utc)
 
 
 def _is_positive_int(value: object) -> bool:
