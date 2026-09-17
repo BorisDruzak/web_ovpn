@@ -46,6 +46,45 @@ def test_details_reject_fields_not_owned_by_asset_type(db):
         InventoryService().update_details(db, asset, {"ram_gb": 16})
 
 
+def test_pc_details_normalize_safe_select_values(db):
+    """Historic aliases must become the values offered by the mobile selects."""
+    from app.inventory.models import InventoryAssetType
+    from app.inventory.service import InventoryService
+
+    service = InventoryService()
+    asset = service.create_asset(db, InventoryAssetType.PC)
+
+    details = service.update_details(
+        db,
+        asset,
+        {
+            "os_name": "Windows 11",
+            "os_version": "",
+            "cpu_model": "intrl",
+            "cpu_generation": "11400",
+            "ram_type": "Ddr4",
+            "ram_gb": 16,
+        },
+    )
+
+    assert details["os_name"] == "Windows"
+    assert details["os_version"] == "11"
+    assert details["cpu_model"] == "Intel"
+    assert details["cpu_generation"] == "11400"
+    assert details["ram_type"] == "DDR4"
+
+
+def test_pc_details_reject_unsupported_select_value(db):
+    """The UI choices must also be enforced for direct mutation paths."""
+    from app.inventory.models import InventoryAssetType
+    from app.inventory.service import InventoryService, InventoryValidationError
+
+    asset = InventoryService().create_asset(db, InventoryAssetType.PC)
+
+    with pytest.raises(InventoryValidationError, match="операционной системы"):
+        InventoryService().update_details(db, asset, {"os_name": "macOS"})
+
+
 def test_printer_persists_connection_type_as_a_printer_detail(db):
     """A printer connection method must survive the same edit path as its page counter."""
     from app.inventory.models import InventoryAssetType
@@ -60,24 +99,40 @@ def test_printer_persists_connection_type_as_a_printer_detail(db):
 
 
 @pytest.mark.parametrize(
-    ("has_current_ip", "description", "notes", "expected"),
+    ("has_current_ip", "description", "expected"),
     [
-        (True, "Подключен по USB", None, "network"),
-        (False, "Подключен по ЮСБ", None, "usb"),
-        (False, None, "USB-кабель", "usb"),
-        (False, "Без сканера", None, None),
+        (True, "Подключен по USB", "network"),
+        (False, "Подключен по ЮСБ", "usb"),
+        (False, "USB-кабель", "usb"),
+        (False, "Без сканера", None),
     ],
 )
-def test_infers_printer_connection_type_from_current_ip_or_comment(has_current_ip, description, notes, expected):
+def test_infers_printer_connection_type_from_current_ip_or_description(has_current_ip, description, expected):
     from app.inventory import service as inventory_service
 
     result = inventory_service.infer_printer_connection_type(
         has_current_ip=has_current_ip,
         description=description,
-        notes=notes,
     )
 
     assert getattr(result, "value", result) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ({"os_name": "Win10"}, {"os_name": "Windows", "os_version": "10"}),
+        ({"os_name": "Alt Linux KDE 11.4"}, {"os_name": "Linux", "os_version": "Alt Linux KDE 11.4"}),
+        ({"cpu_model": "11400", "cpu_generation": "I5"}, {"cpu_model": "Intel", "cpu_generation": "i5 11400"}),
+        ({"ram_type": "ddr3"}, {"ram_type": "DDR3"}),
+    ],
+)
+def test_normalize_pc_details_repairs_known_legacy_values(raw, expected):
+    from app.inventory.normalization import normalize_pc_details
+
+    normalized = normalize_pc_details(raw, strict=False)
+
+    assert {key: normalized[key] for key in expected} == expected
 
 
 def test_detail_repair_replaces_cross_type_detail_row_with_the_asset_own_type(db):

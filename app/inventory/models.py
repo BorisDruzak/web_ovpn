@@ -139,6 +139,7 @@ class InventoryPCDetails(Base):
 
     asset_id: Mapped[str] = mapped_column(ForeignKey("inventory_assets.id"), primary_key=True)
     os_name: Mapped[str | None] = mapped_column(String(255))
+    os_version: Mapped[str | None] = mapped_column(String(255))
     cpu_model: Mapped[str | None] = mapped_column(String(255))
     cpu_generation: Mapped[str | None] = mapped_column(String(100))
     ram_type: Mapped[str | None] = mapped_column(String(100))

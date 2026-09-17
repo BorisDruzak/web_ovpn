@@ -27,6 +27,7 @@ from .models import (
     InventorySession,
 )
 from .lookup import InventoryLookupError, classify_identifier
+from .normalization import PCDetailNormalizationError, normalize_pc_details
 
 
 class InventoryValidationError(ValueError):
@@ -58,7 +59,7 @@ ASSET_FIELDS = frozenset(
     }
 )
 DETAIL_MODELS = {
-    InventoryAssetType.PC: (InventoryPCDetails, frozenset({"os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb"})),
+    InventoryAssetType.PC: (InventoryPCDetails, frozenset({"os_name", "os_version", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb"})),
     InventoryAssetType.PRINTER: (InventoryPrinterDetails, frozenset({"page_counter", "connection_type"})),
     InventoryAssetType.PHONE: (InventoryPhoneDetails, frozenset({"extension"})),
     InventoryAssetType.MONITOR: (InventoryMonitorDetails, frozenset({"diagonal_inches"})),
@@ -70,11 +71,10 @@ def infer_printer_connection_type(
     *,
     has_current_ip: bool,
     description: str | None,
-    notes: str | None,
 ) -> InventoryPrinterConnectionType | None:
     if has_current_ip:
         return InventoryPrinterConnectionType.NETWORK
-    comment_text = " ".join(value for value in (description, notes) if value).casefold()
+    comment_text = (description or "").casefold()
     if "usb" in comment_text or "\u044e\u0441\u0431" in comment_text:
         return InventoryPrinterConnectionType.USB
     return None
@@ -123,6 +123,11 @@ class InventoryService:
         if unexpected:
             raise InventoryValidationError("detail fields do not belong to this asset type")
         values = dict(fields)
+        if asset.asset_type is InventoryAssetType.PC:
+            try:
+                values = normalize_pc_details(values, strict=True)
+            except PCDetailNormalizationError as exc:
+                raise InventoryValidationError(str(exc)) from exc
         if asset.asset_type is InventoryAssetType.PRINTER and values.get("connection_type") is not None:
             try:
                 values["connection_type"] = InventoryPrinterConnectionType(
