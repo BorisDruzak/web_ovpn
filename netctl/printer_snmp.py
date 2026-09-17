@@ -7,7 +7,7 @@ from typing import Any
 from .config import load_secrets, snmp_community_env_name
 from .nmap.policy import validate_target_ipv4
 from .snmp.models import CapabilityResult
-from .snmp.oids import SYS_DESCR, numeric_oid
+from .snmp.oids import IF_PHYS_ADDRESS, SYS_DESCR, numeric_oid
 from .snmp.outcomes import SnmpOutcome
 from .snmp.transport import SnmpTransport, collect_on_worker_loop
 
@@ -16,9 +16,9 @@ PRINTER_SNMP_SECRET_REF = "printer_snmp"
 PRINTER_NAME = numeric_oid("1.3.6.1.2.1.43.5.1.1.16.1")
 PRINTER_SERIAL = numeric_oid("1.3.6.1.2.1.43.5.1.1.17.1")
 PRINTER_PAGE_COUNTER = numeric_oid("1.3.6.1.2.1.43.10.2.1.4.1.1")
-_REQUESTS = (
+_GET_REQUESTS = (
     ("description", SYS_DESCR),
-    ("custom_name", PRINTER_NAME),
+    ("model", PRINTER_NAME),
     ("serial_number", PRINTER_SERIAL),
     ("page_counter", PRINTER_PAGE_COUNTER),
 )
@@ -43,6 +43,21 @@ def _counter(result: CapabilityResult) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
+def _single_physical_mac(result: CapabilityResult) -> str:
+    """Return one unicast EUI-48 value, never guess between printer interfaces."""
+    if result.outcome is not SnmpOutcome.SUCCESS_WITH_ROWS:
+        return ""
+    values = {
+        ":".join(f"{part:02X}" for part in raw)
+        for row in result.rows
+        if isinstance((raw := row.value), bytes)
+        and len(raw) == 6
+        and any(raw)
+        and not raw[0] & 1
+    }
+    return next(iter(values)) if len(values) == 1 else ""
+
+
 async def _probe(
     host: str,
     community: str,
@@ -59,12 +74,14 @@ async def _probe(
     )
     async with transport:
         results = []
-        for name, oid in _REQUESTS:
+        for name, oid in _GET_REQUESTS:
             results.append(await transport.get(oid, capability=name))
+        get_results = tuple(results)
+        interface_mac = await transport.walk(IF_PHYS_ADDRESS, capability="interface_mac")
     suggestions: dict[str, str] = {}
     details: dict[str, int] = {}
-    result_values = tuple(results)
-    for (name, _oid), result in zip(_REQUESTS, result_values, strict=True):
+    result_values = (*get_results, interface_mac)
+    for (name, _oid), result in zip(_GET_REQUESTS, get_results, strict=True):
         if name == "page_counter":
             value = _counter(result)
             if value is not None:
@@ -73,6 +90,9 @@ async def _probe(
         value = _text(result)
         if value:
             suggestions[name] = value
+    mac = _single_physical_mac(interface_mac)
+    if mac:
+        suggestions["mac"] = mac
     return suggestions, details, result_values
 
 

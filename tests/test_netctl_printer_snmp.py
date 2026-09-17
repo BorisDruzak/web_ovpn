@@ -4,9 +4,11 @@ SECRET = "docs-only-community-marker"
 
 
 class FakeTransport:
-    def __init__(self, *, responses, **options):
+    def __init__(self, *, responses, walks=None, **options):
         self.responses = responses
+        self.walks = walks or {}
         self.options = options
+        self.walk_calls = []
 
     async def __aenter__(self):
         return self
@@ -16,6 +18,13 @@ class FakeTransport:
 
     async def get(self, oid, *, capability=""):
         return self.responses[oid]
+
+    async def walk(self, oid, *, capability=""):
+        from netctl.snmp.models import CapabilityResult
+        from netctl.snmp.outcomes import SnmpOutcome
+
+        self.walk_calls.append(oid)
+        return self.walks.get(oid, CapabilityResult(capability, SnmpOutcome.SUCCESS_EMPTY))
 
 
 def _success(oid, value_type, value):
@@ -27,6 +36,86 @@ def _success(oid, value_type, value):
         outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
         rows=(SnmpVarBind(oid=oid, value_type=value_type, value=value),),
     )
+
+
+def _success_rows(oid, value_type, values):
+    from netctl.snmp.models import CapabilityResult, SnmpVarBind
+    from netctl.snmp.outcomes import SnmpOutcome
+
+    return CapabilityResult(
+        capability="fixture",
+        outcome=SnmpOutcome.SUCCESS_WITH_ROWS,
+        rows=tuple(SnmpVarBind(oid=oid + (index,), value_type=value_type, value=value) for index, value in enumerate(values, start=1)),
+    )
+
+
+def test_printer_snmp_maps_single_physical_interface_mac_to_inventory_prefill():
+    """A printer with one physical interface can prefill MAC without a router snapshot."""
+    from netctl.printer_snmp import (
+        PRINTER_NAME,
+        PRINTER_PAGE_COUNTER,
+        PRINTER_SERIAL,
+        SYS_DESCR,
+        inspect_printer_snmp,
+    )
+    from netctl.snmp.oids import IF_PHYS_ADDRESS
+
+    responses = {
+        SYS_DESCR: _success(SYS_DESCR, "octet_string", b"KYOCERA Document Solutions Printing System"),
+        PRINTER_NAME: _success(PRINTER_NAME, "octet_string", b"ECOSYS M2540dn"),
+        PRINTER_SERIAL: _success(PRINTER_SERIAL, "octet_string", b"VCG7743744"),
+        PRINTER_PAGE_COUNTER: _success(PRINTER_PAGE_COUNTER, "integer", 67942),
+    }
+    transports = []
+
+    def factory(**options):
+        transport = FakeTransport(
+            responses=responses,
+            walks={IF_PHYS_ADDRESS: _success_rows(IF_PHYS_ADDRESS, "octet_string", [b"\x00\x17\xc8\x35\x93\x9a"])},
+            **options,
+        )
+        transports.append(transport)
+        return transport
+
+    result = inspect_printer_snmp(
+        "192.168.100.168",
+        secrets={"NETCTL_SECRET_PRINTER_SNMP_COMMUNITY": SECRET},
+        transport_factory=factory,
+    )
+
+    assert result["suggestions"] == {
+        "model": "ECOSYS M2540dn",
+        "serial_number": "VCG7743744",
+        "description": "KYOCERA Document Solutions Printing System",
+        "mac": "00:17:C8:35:93:9A",
+    }
+    assert result["details"] == {"page_counter": 67942}
+    assert transports[0].walk_calls == [IF_PHYS_ADDRESS]
+
+
+def test_printer_snmp_omits_ambiguous_interface_macs():
+    """A multi-interface device must not guess which physical MAC identifies the printer."""
+    from netctl.printer_snmp import PRINTER_NAME, PRINTER_PAGE_COUNTER, PRINTER_SERIAL, SYS_DESCR, inspect_printer_snmp
+    from netctl.snmp.oids import IF_PHYS_ADDRESS
+
+    responses = {
+        SYS_DESCR: _success(SYS_DESCR, "octet_string", b"Printer"),
+        PRINTER_NAME: _success(PRINTER_NAME, "octet_string", b"Model"),
+        PRINTER_SERIAL: _success(PRINTER_SERIAL, "octet_string", b"SERIAL"),
+        PRINTER_PAGE_COUNTER: _success(PRINTER_PAGE_COUNTER, "integer", 1),
+    }
+
+    result = inspect_printer_snmp(
+        "192.168.100.168",
+        secrets={"NETCTL_SECRET_PRINTER_SNMP_COMMUNITY": SECRET},
+        transport_factory=lambda **options: FakeTransport(
+            responses=responses,
+            walks={IF_PHYS_ADDRESS: _success_rows(IF_PHYS_ADDRESS, "octet_string", [b"\x00\x11\x22\x33\x44\x55", b"\x00\xaa\xbb\xcc\xdd\xee"])},
+            **options,
+        ),
+    )
+
+    assert "mac" not in result["suggestions"]
 
 
 def test_printer_snmp_prefers_v2c_and_returns_only_protocol_supplied_fields():
@@ -60,7 +149,7 @@ def test_printer_snmp_prefers_v2c_and_returns_only_protocol_supplied_fields():
     assert result["status"] == "found"
     assert result["snmp_version"] == "2c"
     assert result["suggestions"] == {
-        "custom_name": "Kyocera M5526",
+        "model": "Kyocera M5526",
         "serial_number": "SERIAL-150",
         "description": "Kyocera ECOSYS",
     }

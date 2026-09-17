@@ -230,6 +230,50 @@ def _new_asset_form_context(
     }
 
 
+def _augment_printer_suggestions(
+    suggestions: dict[str, str], details: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Add bounded printer SNMP values without replacing fresher collection identity."""
+    target_ip = suggestions.get("ip")
+    if not target_ip:
+        return None
+    try:
+        payload = run_netctl(["printer", "inspect-ip", "--target", target_ip], 20)
+    except Exception:
+        return None
+    printer = payload.get("printer") if isinstance(payload, dict) else None
+    if not isinstance(printer, dict) or printer.get("status") != "found":
+        return None
+    discovered = printer.get("suggestions")
+    accepted: dict[str, str] = {}
+    if isinstance(discovered, dict):
+        for key in ("model", "serial_number", "description", "mac"):
+            value = discovered.get(key)
+            if not isinstance(value, str) or not value or suggestions.get(key):
+                continue
+            suggestions[key] = value
+            accepted[key] = value
+    printer_details = printer.get("details")
+    accepted_details: dict[str, int] = {}
+    if isinstance(printer_details, dict):
+        page_counter = printer_details.get("page_counter")
+        if (
+            isinstance(page_counter, int)
+            and not isinstance(page_counter, bool)
+            and page_counter >= 0
+            and "page_counter" not in details
+        ):
+            details["page_counter"] = page_counter
+            accepted_details["page_counter"] = page_counter
+    version = printer.get("snmp_version")
+    return {
+        "status": "found",
+        "snmp_version": version if isinstance(version, str) else "",
+        "suggestions": accepted,
+        "details": accepted_details,
+    }
+
+
 def _related_parent_or_error(db: Session, parent_asset_id: str, location: InventoryLocation | None = None) -> InventoryAsset | None:
     if not parent_asset_id:
         return None
@@ -441,21 +485,16 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
         return _redirect(target_url)
     suggestions = dict(result.suggestions)
     details = {field: value for field, value in result.suggestions.items() if field == "os_name"}
-    if asset_type is InventoryAssetType.PRINTER and result.status == "found" and suggestions.get("ip"):
-        try:
-            printer_payload = run_netctl(["printer", "inspect-ip", "--target", suggestions["ip"]], 20)
-        except Exception:
-            printer_payload = {}
-        printer = printer_payload.get("printer") if isinstance(printer_payload, dict) else None
-        if isinstance(printer, dict) and printer.get("status") == "found":
-            discovered = printer.get("suggestions")
-            printer_details = printer.get("details")
-            if isinstance(discovered, dict):
-                suggestions.update({key: str(value) for key, value in discovered.items() if isinstance(value, str) and value})
-            if isinstance(printer_details, dict):
-                details.update({key: value for key, value in printer_details.items() if key == "page_counter" and isinstance(value, int)})
+    printer_snmp = (
+        _augment_printer_suggestions(suggestions, details)
+        if asset_type is InventoryAssetType.PRINTER and result.status == "found"
+        else None
+    )
     source = InventoryObservationSource.NMAP if result.source == "nmap" else InventoryObservationSource.NETCTL
-    observation = service.record_observation(db, asset_id=None, source=source, data=result.observation)
+    observation_data = dict(result.observation)
+    if printer_snmp is not None:
+        observation_data["printer_snmp"] = printer_snmp
+    observation = service.record_observation(db, asset_id=None, source=source, data=observation_data)
     write_audit(db, request, user, "inventory.lookup", result.status, result.source, target_client=observation.id)
     request.session[_new_asset_flow_key(asset_type, parent_asset_id, location.id)] = {
         "status": result.status,

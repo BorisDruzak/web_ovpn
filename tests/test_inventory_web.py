@@ -667,18 +667,21 @@ def test_nmap_prefilled_asset_keeps_entered_fields_after_validation_error(tmp_pa
     assert 'value="not-a-mac"' in returned_form.text
 
 
-def test_printer_lookup_prefills_only_verified_snmp_values(tmp_path, monkeypatch):
-    """Printer SNMP fields must remain editable prefill, not hidden collector state."""
+def test_printer_lookup_prefills_verified_snmp_values_without_replacing_fresh_collection_mac(tmp_path, monkeypatch):
+    """SNMP augments a printer form but authoritative collection identifiers retain priority."""
     client, csrf = _client(tmp_path, monkeypatch)
     created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-snmp"}, follow_redirects=False)
     location_id = created.headers["location"].rsplit("/", 1)[-1]
     discovery = client.get(f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}")
 
+    calls = []
+
     def netctl(args, timeout=None):
+        calls.append(args)
         if args[:2] == ["hosts", "list"]:
             return {"hosts": [{"ip": "192.168.100.150", "mac": "00:17:C8:62:C9:6B"}]}
         if args[:2] == ["printer", "inspect-ip"]:
-            return {"printer": {"status": "found", "suggestions": {"custom_name": "Kyocera M5526", "serial_number": "SERIAL-150", "description": "Kyocera ECOSYS"}, "details": {"page_counter": 1234}}}
+            return {"printer": {"status": "found", "snmp_version": "2c", "suggestions": {"model": "Kyocera M5526", "serial_number": "SERIAL-150", "description": "Kyocera ECOSYS", "mac": "00:17:C8:35:93:9A"}, "details": {"page_counter": 1234}}}
         raise AssertionError(args)
 
     monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
@@ -689,10 +692,49 @@ def test_printer_lookup_prefills_only_verified_snmp_values(tmp_path, monkeypatch
     )
     form = client.get(lookup.headers["location"])
 
-    assert 'value="Kyocera M5526"' in form.text
+    assert 'name="model" value="Kyocera M5526"' in form.text
     assert 'value="SERIAL-150"' in form.text
     assert "Kyocera ECOSYS" in form.text
     assert 'value="1234"' in form.text
+    assert 'name="mac_address" value="00:17:C8:62:C9:6B"' in form.text
+    assert calls == [
+        ["hosts", "list", "--q", "192.168.100.150", "--status", "current", "--limit", "25"],
+        ["printer", "inspect-ip", "--target", "192.168.100.150"],
+    ]
+
+
+def test_printer_snmp_runs_only_after_a_single_nmap_fallback(tmp_path, monkeypatch):
+    """An IP miss follows collection, one bounded Nmap lookup, then one SNMP enrichment."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-printer-order"}, follow_redirects=False)
+    location_id = created.headers["location"].rsplit("/", 1)[-1]
+    discovery = client.get(f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}")
+    calls = []
+
+    def netctl(args, timeout=None):
+        calls.append(args)
+        if args[:2] == ["hosts", "list"]:
+            return {"hosts": []}
+        if args[:2] == ["fingerprint", "inspect-ip"]:
+            return {"fingerprint": {"nmap_version": "7.95", "ports": [], "os_matches": []}}
+        if args[:2] == ["printer", "inspect-ip"]:
+            return {"printer": {"status": "found", "snmp_version": "2c", "suggestions": {"model": "Kyocera M2540dn", "mac": "00:17:C8:35:93:9A"}, "details": {"page_counter": 1}}}
+        raise AssertionError(args)
+
+    monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
+    lookup = client.post(
+        "/inventory/assets/new/lookup",
+        data={"csrf_token": _csrf(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.168"},
+        follow_redirects=False,
+    )
+
+    assert lookup.status_code == 303
+    assert calls == [
+        ["hosts", "list", "--q", "192.168.100.168", "--status", "current", "--limit", "25"],
+        ["hosts", "list", "--q", "192.168.100.168", "--status", "all", "--limit", "25"],
+        ["fingerprint", "inspect-ip", "--target", "192.168.100.168"],
+        ["printer", "inspect-ip", "--target", "192.168.100.168"],
+    ]
 
 
 def test_new_mobile_asset_requires_discovery_and_prefills_collection_data(tmp_path, monkeypatch):
