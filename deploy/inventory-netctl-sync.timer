@@ -1,0 +1,10 @@
+[Unit]
+Description=Synchronize Network Observer identifiers into inventory periodically
+
+[Timer]
+OnCalendar=*-*-* *:01/5:00
+Persistent=true
+Unit=inventory-netctl-sync.service
+
+[Install]
+WantedBy=timers.target

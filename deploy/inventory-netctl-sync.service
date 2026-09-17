@@ -1,0 +1,14 @@
+[Unit]
+Description=Synchronize Network Observer identifiers into inventory
+
+[Service]
+Type=oneshot
+User=openvpn-web
+Group=openvpn-web
+WorkingDirectory=/opt/openvpn-web
+EnvironmentFile=/etc/openvpn-web/openvpn-web.env
+ExecStart=/opt/openvpn-web/.venv/bin/python -m app.inventory.netctl_sync
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+TimeoutStartSec=2min

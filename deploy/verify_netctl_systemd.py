@@ -47,6 +47,11 @@ EXPECTED_EXEC_STARTS = {
         "availability",
         "collect",
     ],
+    "inventory-netctl-sync.service": [
+        "/opt/openvpn-web/.venv/bin/python",
+        "-m",
+        "app.inventory.netctl_sync",
+    ],
 }
 
 EXPECTED_PROPERTIES = {
@@ -75,6 +80,21 @@ EXPECTED_PROPERTIES = {
         "AccuracyUSec": "30s",
         "Persistent": "yes",
         "Unit": "netctl-availability.service",
+    },
+    "inventory-netctl-sync.service": {
+        "User": "openvpn-web",
+        "Group": "openvpn-web",
+        "WorkingDirectory": "/opt/openvpn-web",
+        "EnvironmentFiles": "/etc/openvpn-web/openvpn-web.env (ignore_errors=no)",
+        "NoNewPrivileges": "yes",
+        "PrivateTmp": "yes",
+        "ProtectHome": "yes",
+        "TimeoutStartUSec": "2min",
+    },
+    "inventory-netctl-sync.timer": {
+        "TimersCalendar": "*-*-* *:01/5:00",
+        "Persistent": "yes",
+        "Unit": "inventory-netctl-sync.service",
     },
 }
 

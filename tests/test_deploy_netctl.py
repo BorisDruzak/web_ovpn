@@ -200,6 +200,55 @@ def test_availability_unit_uses_only_fixed_netctl_argv() -> None:
     ]
 
 
+def test_inventory_sync_unit_uses_only_worker_entrypoint() -> None:
+    """The timer must run only the isolated identifier-sync worker."""
+    verifier = runpy.run_path(str(VERIFIER))
+
+    assert verifier["EXPECTED_EXEC_STARTS"]["inventory-netctl-sync.service"] == [
+        "/opt/openvpn-web/.venv/bin/python",
+        "-m",
+        "app.inventory.netctl_sync",
+    ]
+
+
+def test_inventory_sync_units_apply_the_worker_hardening_contract() -> None:
+    """A less-restricted worker could acquire access beyond its existing sudo allowlist."""
+    service = (ROOT / "deploy" / "inventory-netctl-sync.service").read_text(encoding="utf-8")
+    timer = (ROOT / "deploy" / "inventory-netctl-sync.timer").read_text(encoding="utf-8")
+
+    for property_line in (
+        "User=openvpn-web",
+        "Group=openvpn-web",
+        "WorkingDirectory=/opt/openvpn-web",
+        "EnvironmentFile=/etc/openvpn-web/openvpn-web.env",
+        "NoNewPrivileges=true",
+        "PrivateTmp=true",
+        "ProtectHome=true",
+        "TimeoutStartSec=2min",
+    ):
+        assert property_line in service
+    assert "OnCalendar=*-*-* *:01/5:00" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=inventory-netctl-sync.service" in timer
+
+
+def test_installer_enables_inventory_sync_after_verification(tmp_path: Path) -> None:
+    """An unverified inventory worker timer must never be scheduled."""
+    result, _bin_dir, calls_path, environment = _run_installer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    calls = calls_path.read_text(encoding="utf-8").splitlines()
+    sudo_calls = Path(environment["SUDO_CALLS"]).read_text(encoding="utf-8").splitlines()
+    verification_index = next(
+        index
+        for index, call in enumerate(sudo_calls)
+        if call.startswith("/usr/local/sbin/verify-netctl-systemd")
+    )
+    inventory_enable = "enable --now inventory-netctl-sync.timer"
+    assert calls.index("daemon-reload") < calls.index(inventory_enable)
+    assert verification_index < sudo_calls.index(f"systemctl {inventory_enable}")
+
+
 @pytest.mark.parametrize(
     "unit_name",
     ("netctl-collect.service", "netctl-availability.service"),
