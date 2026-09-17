@@ -14,6 +14,26 @@ from app.inventory.models import (
 from app.inventory.service import InventoryService
 
 
+def _snapshot_page(
+    *,
+    snapshot_id: int = 7,
+    generated_at: str = "2026-09-18T10:00:00Z",
+    stale: bool = False,
+    page: int = 1,
+    pages: int = 1,
+    hosts: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "snapshot": {
+            "snapshot_id": snapshot_id,
+            "generated_at": generated_at,
+            "stale": stale,
+        },
+        "hosts": hosts or [],
+        "pagination": {"page": page, "limit": 250, "total": len(hosts or []), "pages": pages},
+    }
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'inventory.sqlite'}")
@@ -191,3 +211,165 @@ def test_reconcile_marks_manual_ip_historical_before_netctl_replacement(db, serv
         ("192.168.100.10", False, InventoryObservationSource.MANUAL),
         ("192.168.100.20", True, InventoryObservationSource.NETCTL),
     }
+
+
+def test_worker_pages_one_current_snapshot(db):
+    """Changing page arguments or accepting mixed snapshots must fail this test."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+
+    calls = []
+
+    def fake_netctl(args, timeout=None):
+        assert not set(args) & {"collect", "refresh", "nmap", "snmp", "availability"}
+        calls.append(args)
+        return _snapshot_page(page=int(args[-3]), pages=2)
+
+    summary = synchronize_current_snapshot(netctl_call=fake_netctl, session_factory=lambda: db)
+
+    assert summary.status == "success"
+    assert calls == [
+        ["hosts", "list", "--status=current", "--page", "1", "--limit", "250"],
+        ["hosts", "list", "--status=current", "--page", "2", "--limit", "250"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        _snapshot_page(stale=True),
+        _snapshot_page(generated_at="2026-09-18T10:00:00"),
+        {"snapshot": {"snapshot_id": 7, "generated_at": "2026-09-18T10:00:00Z", "stale": False}, "hosts": [], "pagination": {"page": 1}},
+    ],
+)
+def test_worker_rejects_stale_or_malformed_snapshot_without_identifier_changes(db, service, page):
+    """A stale or structurally incomplete publication must never reach reconciliation."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    db.commit()
+    summary = synchronize_current_snapshot(netctl_call=lambda args, timeout=None: page, session_factory=lambda: db)
+
+    expected_status = "skipped" if page.get("snapshot", {}).get("stale") else "failed"
+    assert summary.status == expected_status
+    assert _current_values(db, asset.id) == {"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.10"}
+    ledger = db.scalar(select(InventoryIdentifierSyncRun).order_by(InventoryIdentifierSyncRun.started_at.desc()))
+    assert ledger is not None
+    assert ledger.status == expected_status
+
+
+@pytest.mark.parametrize(
+    ("snapshot_id", "generated_at"),
+    [
+        (8, "2026-09-18T10:00:00Z"),
+        (7, "2026-09-18T10:02:00Z"),
+    ],
+)
+def test_worker_rejects_snapshot_identity_change_during_pagination(db, snapshot_id, generated_at):
+    """Reading page two from another publication could mix device identities."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    def fake_netctl(args, timeout=None):
+        page = int(args[-3])
+        return _snapshot_page(
+            page=page,
+            pages=2,
+            snapshot_id=snapshot_id if page == 2 else 7,
+            generated_at=generated_at if page == 2 else "2026-09-18T10:00:00Z",
+        )
+
+    summary = synchronize_current_snapshot(netctl_call=fake_netctl, session_factory=lambda: db)
+
+    assert summary.status == "failed"
+    assert db.scalar(select(InventoryIdentifierSyncRun.status)) == "failed"
+
+
+def test_worker_skips_previously_successful_snapshot_id_without_second_reconciliation(db, service):
+    """Removing the successful-ID guard would overwrite a later manual correction."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    db.commit()
+    page = _snapshot_page(hosts=[{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.20"}])
+
+    first = synchronize_current_snapshot(netctl_call=lambda args, timeout=None: page, session_factory=lambda: db)
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.20"
+    first_ledger = db.scalar(select(InventoryIdentifierSyncRun).where(InventoryIdentifierSyncRun.status == "success"))
+    assert first_ledger is not None
+    assert (first_ledger.matched_assets, first_ledger.updated_assets, first_ledger.skipped_assets) == (1, 1, 0)
+    service.sync_identifiers(db, asset, [
+        {"identifier_type": "mac", "value": "AA:BB:CC:DD:EE:FF"},
+        {"identifier_type": "ip", "value": "192.168.100.99"},
+    ])
+    second = synchronize_current_snapshot(netctl_call=lambda args, timeout=None: page, session_factory=lambda: db)
+
+    assert first.status == "success"
+    assert second.status == "skipped"
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.99"
+    assert [row.status for row in db.scalars(select(InventoryIdentifierSyncRun).order_by(InventoryIdentifierSyncRun.started_at))] == [
+        "success",
+        "skipped",
+    ]
+
+
+def test_worker_records_netctl_error_as_failure_without_mutation(db, service):
+    """A command failure must not be mistaken for an empty snapshot."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+    from app.inventory.models import InventoryIdentifierSyncRun
+    from app.netctl_client import NetctlError
+
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    db.commit()
+    summary = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: (_ for _ in ()).throw(NetctlError("private payload")),
+        session_factory=lambda: db,
+    )
+
+    assert summary.status == "failed"
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.10"
+    ledger = db.scalar(select(InventoryIdentifierSyncRun))
+    assert ledger is not None
+    assert ledger.status == "failed"
+    assert ledger.failure_reason == "netctl snapshot unavailable"
+
+
+def test_worker_rolls_back_identifier_writes_before_recording_failure(db, service, monkeypatch):
+    """A reconciliation exception after a write must leave no partial identifier set."""
+    from app.inventory import netctl_sync
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    db.commit()
+    original = InventoryService.reconcile_netctl_identifiers
+
+    def fail_after_reconcile(self, session, hosts, *, observed_at):
+        original(self, session, hosts, observed_at=observed_at)
+        raise RuntimeError("private host details")
+
+    monkeypatch.setattr(netctl_sync.InventoryService, "reconcile_netctl_identifiers", fail_after_reconcile)
+    summary = netctl_sync.synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: _snapshot_page(hosts=[{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.20"}]),
+        session_factory=lambda: db,
+    )
+
+    assert summary.status == "failed"
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.10"
+    ledger = db.scalar(select(InventoryIdentifierSyncRun))
+    assert ledger is not None
+    assert ledger.status == "failed"
+    assert ledger.failure_reason == "database synchronization failed"
+
+
+def test_worker_main_returns_zero_for_skipped_and_one_for_failure(monkeypatch):
+    """The one-shot entry point must expose only service-friendly exit statuses."""
+    from app.inventory import netctl_sync
+
+    calls = []
+    monkeypatch.setattr(netctl_sync, "init_db", lambda: calls.append("init"))
+    monkeypatch.setattr(netctl_sync, "synchronize_current_snapshot", lambda: netctl_sync.SyncSummary(status="skipped"))
+    assert netctl_sync.main() == 0
+    monkeypatch.setattr(netctl_sync, "synchronize_current_snapshot", lambda: netctl_sync.SyncSummary(status="failed"))
+    assert netctl_sync.main() == 1
+    assert calls == ["init", "init"]
