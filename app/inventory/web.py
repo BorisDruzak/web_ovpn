@@ -80,6 +80,11 @@ NEW_ASSET_FORM_FIELDS = (
     "os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb",
     "page_counter", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json",
 )
+IDENTIFIER_FIELD_LABELS = {
+    "ip_address": "IP-адрес",
+    "mac_address": "MAC-адрес",
+    "hostname": "hostname",
+}
 LOOKUP_STATUS_LABELS = {
     "found": "Найдено",
     "not_found": "Не найдено",
@@ -161,6 +166,10 @@ def _new_asset_flow_key(asset_type: InventoryAssetType, parent_asset_id: str, lo
 
 def _new_asset_draft_key(asset_type: InventoryAssetType, parent_asset_id: str, location_id: str = "") -> str:
     return f"{_new_asset_flow_key(asset_type, parent_asset_id, location_id)}:draft"
+
+
+def _asset_edit_draft_key(asset_id: str) -> str:
+    return f"inventory_asset_edit_draft:{asset_id}"
 
 
 def _is_direct_manual_asset(asset_type: InventoryAssetType, parent_asset: InventoryAsset | None, manual: bool) -> bool:
@@ -251,11 +260,25 @@ async def _detail_form(request: Request, asset_type: InventoryAssetType) -> dict
 async def _identifier_form(request: Request) -> list[dict[str, str]]:
     form = await request.form()
     names = (("ip_address", InventoryIdentifierType.IP), ("mac_address", InventoryIdentifierType.MAC), ("hostname", InventoryIdentifierType.HOSTNAME))
-    return [
-        {"identifier_type": identifier_type.value, "value": value, "source": InventoryObservationSource.MANUAL.value}
-        for field, identifier_type in names
-        if (value := str(form.get(field) or "").strip())
-    ]
+    identifiers: list[dict[str, str]] = []
+    for field, identifier_type in names:
+        value = str(form.get(field) or "").strip()
+        if not value:
+            continue
+        try:
+            actual_type, _ = classify_identifier(value)
+        except InventoryLookupError as exc:
+            raise InventoryValidationError(
+                f"Проверьте поле «{IDENTIFIER_FIELD_LABELS[field]}»: значение имеет неверный формат."
+            ) from exc
+        if actual_type != identifier_type.value:
+            raise InventoryValidationError(
+                f"Проверьте поле «{IDENTIFIER_FIELD_LABELS[field]}»: значение имеет неверный формат."
+            )
+        identifiers.append(
+            {"identifier_type": identifier_type.value, "value": value, "source": InventoryObservationSource.MANUAL.value}
+        )
+    return identifiers
 
 
 def _workplace_drafts(raw: str) -> list[dict[str, str]]:
@@ -477,7 +500,13 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
     form_values = {field: str(getattr(asset, field) or "") for field in ("custom_name", "manufacturer", "model", "serial_number", "inventory_number", "assigned_person_name", "login_name", "description", "notes")}
     form_values["status"] = asset.status.value if asset.status is not None else ""
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "form_values": form_values, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None}, db)
+    details = service.details_for(db, asset)
+    draft = request.session.get(_asset_edit_draft_key(asset.id))
+    if isinstance(draft, dict):
+        form_values.update({field: draft[field] for field in form_values if field in draft})
+        identifiers.update({identifier: draft[field] for field, identifier in (("ip_address", "ip"), ("mac_address", "mac"), ("hostname", "hostname")) if field in draft})
+        details = {**details, **{field: draft[field] for field in DETAIL_FIELD_NAMES.get(asset.asset_type, ()) if field in draft}}
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "form_values": form_values, "details": details, "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None}, db)
 
 
 @router.post("/inventory/assets")
@@ -537,10 +566,17 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
         location = _location_or_error(db, return_location_id)
         if asset.location_id != location.id:
             raise HTTPException(status_code=404, detail="inventory asset not found")
-    service.update_asset(asset, custom_name=custom_name or None, manufacturer=manufacturer or None, model=model or None, serial_number=serial_number or None, inventory_number=inventory_number or None, status=_status_form(status), assigned_person_name=assigned_person_name or None, login_name=login_name or None, description=description or None, notes=notes or None)
-    service.update_details(db, asset, await _detail_form(request, asset.asset_type))
-    service.sync_identifiers(db, asset, await _identifier_form(request))
+    submitted_draft = await _new_asset_form_draft(request)
+    try:
+        service.update_asset(asset, custom_name=custom_name or None, manufacturer=manufacturer or None, model=model or None, serial_number=serial_number or None, inventory_number=inventory_number or None, status=_status_form(status), assigned_person_name=assigned_person_name or None, login_name=login_name or None, description=description or None, notes=notes or None)
+        service.update_details(db, asset, await _detail_form(request, asset.asset_type))
+        service.sync_identifiers(db, asset, await _identifier_form(request))
+    except InventoryValidationError as exc:
+        request.session[_asset_edit_draft_key(asset.id)] = submitted_draft
+        _flash(request, "bad", str(exc))
+        return _redirect(_asset_url(asset.id, return_location_id))
     write_audit(db, request, user, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id)
+    request.session.pop(_asset_edit_draft_key(asset.id), None)
     _flash(request, "ok", "Устройство обновлено")
     return _redirect(_location_url(return_location_id) if return_location_id else _asset_url(asset.id))
 

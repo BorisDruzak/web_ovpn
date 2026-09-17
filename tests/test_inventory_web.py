@@ -646,7 +646,7 @@ def test_nmap_prefilled_asset_keeps_entered_fields_after_validation_error(tmp_pa
 
     assert rejected.headers["location"] == f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}"
     returned_form = client.get(rejected.headers["location"])
-    assert "invalid inventory identifier" in returned_form.text
+    assert "Проверьте поле «MAC-адрес»" in returned_form.text
     assert 'value="Принтер 150"' in returned_form.text
     assert 'value="HP"' in returned_form.text
     assert 'value="192.168.100.150"' in returned_form.text
@@ -750,4 +750,33 @@ def test_mobile_form_rejects_bad_identifier_without_server_error(tmp_path, monke
         follow_redirects=False,
     )
     assert response.status_code == 303
-    assert "invalid inventory identifier" in client.get("/inventory").text
+    assert "Проверьте поле «MAC-адрес»" in client.get("/inventory").text
+
+
+def test_asset_update_keeps_fields_after_identifier_validation_error(tmp_path, monkeypatch):
+    """Editing a saved card must return field feedback instead of a 500 or lost input."""
+    client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
+    detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
+
+    rejected = client.post(
+        f"/inventory/assets/{asset_id}",
+        data={
+            "csrf_token": _csrf(detail.text),
+            "return_location_id": location_id,
+            "custom_name": "PC-04 исправленный",
+            "manufacturer": "Iru",
+            "ip_address": "192.168.100.150",
+            "mac_address": "not-a-mac",
+            "hostname": "pc-04",
+        },
+        follow_redirects=False,
+    )
+
+    assert rejected.status_code == 303
+    assert rejected.headers["location"] == f"/inventory/assets/{asset_id}?location_id={location_id}"
+    returned_form = client.get(rejected.headers["location"])
+    assert "Проверьте поле «MAC-адрес»" in returned_form.text
+    assert 'value="PC-04 исправленный"' in returned_form.text
+    assert 'value="Iru"' in returned_form.text
+    assert 'value="192.168.100.150"' in returned_form.text
+    assert 'value="not-a-mac"' in returned_form.text
