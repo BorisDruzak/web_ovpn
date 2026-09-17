@@ -401,6 +401,7 @@ def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
             "cpu_generation": "i5-11400",
             "ram_type": "DDR4",
             "ram_gb": "16",
+            "storage_type": "SSD",
         },
         follow_redirects=False,
     )
@@ -409,6 +410,9 @@ def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
     assert 'name="ram_gb"' in detail.text
     assert 'value="16"' in detail.text
     assert 'name="os_version" value="11"' in detail.text
+    assert '<select name="storage_type">' in detail.text
+    assert '<option value="SSD" selected>SSD</option>' in detail.text
+    assert '<option value="M.2">M.2</option>' in detail.text
     assert 'name="notes"' not in detail.text
     assert 'value="None"' not in detail.text
 

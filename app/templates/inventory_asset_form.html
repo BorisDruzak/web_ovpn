@@ -57,7 +57,7 @@
     </fieldset>
     <fieldset class="inventory-field-group">
       <legend>Накопитель</legend>
-      <label>Тип накопителя<input name="storage_type" value="{{ details.get('storage_type') or '' }}"></label>
+      <label>Тип накопителя<select name="storage_type"><option value="">Не указан</option><option value="SSD"{% if details.get('storage_type') == 'SSD' %} selected{% endif %}>SSD</option><option value="M.2"{% if details.get('storage_type') == 'M.2' %} selected{% endif %}>M.2</option></select></label>
       <label>Объём накопителя, ГБ<input type="number" min="0" name="storage_gb" value="{{ details.get('storage_gb') or '' }}"></label>
     </fieldset>
     {% endif %}

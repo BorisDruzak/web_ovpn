@@ -125,6 +125,8 @@ def test_infers_printer_connection_type_from_current_ip_or_description(has_curre
         ({"os_name": "Alt Linux KDE 11.4"}, {"os_name": "Linux", "os_version": "Alt Linux KDE 11.4"}),
         ({"cpu_model": "11400", "cpu_generation": "I5"}, {"cpu_model": "Intel", "cpu_generation": "i5 11400"}),
         ({"ram_type": "ddr3"}, {"ram_type": "DDR3"}),
+        ({"storage_type": "ssd"}, {"storage_type": "SSD"}),
+        ({"storage_type": "m.2"}, {"storage_type": "M.2"}),
     ],
 )
 def test_normalize_pc_details_repairs_known_legacy_values(raw, expected):

@@ -7,6 +7,7 @@ from typing import Any
 PC_OS_FAMILIES = frozenset({"Windows", "Linux"})
 PC_CPU_VENDORS = frozenset({"Intel", "AMD"})
 PC_RAM_TYPES = frozenset({"DDR3", "DDR4"})
+PC_STORAGE_TYPES = frozenset({"SSD", "M.2"})
 
 
 class PCDetailNormalizationError(ValueError):
@@ -31,6 +32,13 @@ def normalize_pc_details(fields: Mapping[str, Any], *, strict: bool) -> dict[str
         allowed=PC_RAM_TYPES,
         strict=strict,
         field_label="типа оперативной памяти",
+    )
+    values["storage_type"] = _normalize_choice(
+        values.get("storage_type"),
+        aliases={"ssd": "SSD", "m.2": "M.2", "m2": "M.2"},
+        allowed=PC_STORAGE_TYPES,
+        strict=strict,
+        field_label="типа накопителя",
     )
     return values
 
