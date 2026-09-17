@@ -120,6 +120,21 @@ class InventoryAssetIdentifier(Base):
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class InventoryIdentifierSyncRun(Base):
+    __tablename__ = "inventory_identifier_sync_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
+    snapshot_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    snapshot_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    matched_assets: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_assets: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped_assets: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+
+
 class InventoryAssetRelation(Base):
     __tablename__ = "inventory_asset_relations"
 

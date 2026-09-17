@@ -40,6 +40,7 @@ def test_inventory_schema_allows_empty_location_and_assets(tmp_path, monkeypatch
         "inventory_checks",
         "inventory_asset_photos",
         "inventory_location_photos",
+        "inventory_identifier_sync_runs",
     } <= tables
 
 

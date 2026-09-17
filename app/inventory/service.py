@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,12 +27,19 @@ from .models import (
     InventoryUPSDetails,
     InventorySession,
 )
-from .lookup import InventoryLookupError, classify_identifier
+from .lookup import InventoryLookupError, classify_identifier, normalize_mac
 from .normalization import PCDetailNormalizationError, normalize_pc_details
 
 
 class InventoryValidationError(ValueError):
     """A request would violate the fixed two-level inventory model."""
+
+
+@dataclass(frozen=True)
+class InventoryIdentifierSyncResult:
+    matched_assets: int = 0
+    updated_assets: int = 0
+    skipped_assets: int = 0
 
 
 RELATED_DEVICE_TYPES = frozenset(
@@ -237,8 +245,131 @@ class InventoryService:
         db.flush()
         return self.identifiers_for(db, asset)
 
+    def reconcile_netctl_identifiers(
+        self,
+        db: Session,
+        hosts: Sequence[Mapping[str, object]],
+        *,
+        observed_at: datetime,
+    ) -> InventoryIdentifierSyncResult:
+        """Refresh only unambiguous IP and hostname values from a Netctl snapshot."""
+        inventory_by_mac: dict[str, set[str]] = {}
+        for identifier in db.scalars(
+            select(InventoryAssetIdentifier).where(
+                InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.MAC,
+                InventoryAssetIdentifier.is_current.is_(True),
+            )
+        ):
+            try:
+                normalized_mac = self._normalize_netctl_mac(identifier.value)
+            except InventoryLookupError:
+                continue
+            inventory_by_mac.setdefault(normalized_mac, set()).add(identifier.asset_id)
+
+        observed_by_mac: dict[str, list[tuple[Mapping[str, object], dict[InventoryIdentifierType, tuple[str, str]]]]] = {}
+        skipped_assets = 0
+        for host in hosts:
+            raw_mac = host.get("mac")
+            if not isinstance(raw_mac, str) or not raw_mac.strip():
+                skipped_assets += 1
+                continue
+            try:
+                normalized_mac = self._normalize_netctl_mac(raw_mac)
+                observed_values = self._netctl_observed_identifiers(host)
+            except InventoryLookupError:
+                skipped_assets += 1
+                continue
+            observed_by_mac.setdefault(normalized_mac, []).append((host, observed_values))
+
+        matched_assets = 0
+        updated_assets = 0
+        for normalized_mac, observed_hosts in observed_by_mac.items():
+            asset_ids = inventory_by_mac.get(normalized_mac, set())
+            if len(observed_hosts) != 1 or len(asset_ids) != 1:
+                if asset_ids or len(observed_hosts) > 1:
+                    skipped_assets += 1
+                continue
+            matched_assets += 1
+            asset_id = next(iter(asset_ids))
+            _host, observed_values = observed_hosts[0]
+            changed = False
+            for identifier_type, (value, normalized_value) in observed_values.items():
+                changed = self._replace_netctl_identifier(
+                    db,
+                    asset_id=asset_id,
+                    identifier_type=identifier_type,
+                    value=value,
+                    normalized_value=normalized_value,
+                    observed_at=observed_at,
+                ) or changed
+            if changed:
+                updated_assets += 1
+        db.flush()
+        return InventoryIdentifierSyncResult(matched_assets, updated_assets, skipped_assets)
+
     def identifiers_for(self, db: Session, asset: InventoryAsset) -> list[InventoryAssetIdentifier]:
         return list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True)).order_by(InventoryAssetIdentifier.identifier_type, InventoryAssetIdentifier.normalized_value)))
+
+    def _netctl_observed_identifiers(
+        self, host: Mapping[str, object]
+    ) -> dict[InventoryIdentifierType, tuple[str, str]]:
+        observed: dict[InventoryIdentifierType, tuple[str, str]] = {}
+        for identifier_type, field in (
+            (InventoryIdentifierType.IP, "ip"),
+            (InventoryIdentifierType.HOSTNAME, "hostname"),
+        ):
+            raw_value = host.get(field)
+            if raw_value is None:
+                continue
+            if not isinstance(raw_value, str) or not raw_value.strip():
+                continue
+            value = raw_value.strip()
+            observed[identifier_type] = (value, self._normalize_identifier(identifier_type, value))
+        return observed
+
+    @staticmethod
+    def _normalize_netctl_mac(value: str) -> str:
+        return normalize_mac(value)
+
+    @staticmethod
+    def _replace_netctl_identifier(
+        db: Session,
+        *,
+        asset_id: str,
+        identifier_type: InventoryIdentifierType,
+        value: str,
+        normalized_value: str,
+        observed_at: datetime,
+    ) -> bool:
+        current = list(
+            db.scalars(
+                select(InventoryAssetIdentifier).where(
+                    InventoryAssetIdentifier.asset_id == asset_id,
+                    InventoryAssetIdentifier.identifier_type == identifier_type,
+                    InventoryAssetIdentifier.is_current.is_(True),
+                )
+            )
+        )
+        matching = [item for item in current if item.normalized_value == normalized_value]
+        changed = False
+        for item in current:
+            if item.normalized_value != normalized_value:
+                item.is_current = False
+                changed = True
+        if not matching:
+            db.add(
+                InventoryAssetIdentifier(
+                    asset_id=asset_id,
+                    identifier_type=identifier_type,
+                    value=value,
+                    normalized_value=normalized_value,
+                    source=InventoryObservationSource.NETCTL,
+                    first_seen_at=observed_at,
+                    last_seen_at=observed_at,
+                )
+            )
+            changed = True
+        return changed
 
     def record_observation(self, db: Session, *, asset_id: str | None, source: InventoryObservationSource, data: Mapping[str, Any]) -> InventoryObservation:
         if asset_id is not None:
