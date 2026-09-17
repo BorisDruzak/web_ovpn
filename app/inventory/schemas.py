@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .models import (
     InventoryAssetStatus,
@@ -30,6 +30,8 @@ class LocationUpdate(LocationCreate):
 
 
 class AssetPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     asset_type: InventoryAssetType
     location_id: str | None = None
     custom_name: str | None = Field(default=None, max_length=255)
@@ -41,7 +43,6 @@ class AssetPayload(BaseModel):
     assigned_person_name: str | None = Field(default=None, max_length=255)
     login_name: str | None = Field(default=None, max_length=255)
     description: str | None = None
-    notes: str | None = None
     last_verified_at: datetime | None = None
     details: dict[str, Any] = Field(default_factory=dict)
     identifiers: list[IdentifierPayload] | None = None

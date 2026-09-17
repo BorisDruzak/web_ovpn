@@ -39,7 +39,6 @@ def _asset_dict(asset: InventoryAsset, db: Session | None = None) -> dict[str, A
         "assigned_person_name": asset.assigned_person_name,
         "login_name": asset.login_name,
         "description": asset.description,
-        "notes": asset.notes,
         "last_verified_at": asset.last_verified_at.isoformat() if asset.last_verified_at else None,
     }
     if db is not None:

@@ -122,12 +122,26 @@ def test_inventory_asset_api_persists_type_specific_details(tmp_path, monkeypatc
     created = client.post(
         "/api/v1/inventory/assets",
         headers=headers,
-        json={"asset_type": "PC", "custom_name": "BUH-PC-01", "details": {"os_name": "Windows 11", "ram_gb": 16}},
+        json={"asset_type": "PC", "custom_name": "BUH-PC-01", "details": {"os_name": "Windows", "os_version": "11", "ram_gb": 16}},
     )
     assert created.status_code == 201
-    assert created.json()["data"]["details"] == {"os_name": "Windows 11", "cpu_model": None, "cpu_generation": None, "ram_type": None, "ram_gb": 16, "storage_type": None, "storage_gb": None}
+    assert created.json()["data"]["details"] == {"os_name": "Windows", "os_version": "11", "cpu_model": None, "cpu_generation": None, "ram_type": None, "ram_gb": 16, "storage_type": None, "storage_gb": None}
+    assert "notes" not in created.json()["data"]
     fetched = client.get(f"/api/v1/inventory/assets/{created.json()['data']['id']}", headers=headers)
     assert fetched.json()["data"]["details"]["ram_gb"] == 16
+
+
+def test_inventory_asset_api_rejects_deprecated_card_notes(tmp_path, monkeypatch):
+    """The retired card comment must not silently return through the REST contract."""
+    client, headers = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/api/v1/inventory/assets",
+        headers=headers,
+        json={"asset_type": "PC", "notes": "legacy comment"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_inventory_api_keeps_identifiers_workplace_details_and_walk_check(tmp_path, monkeypatch):
@@ -142,7 +156,7 @@ def test_inventory_api_keeps_identifiers_workplace_details_and_walk_check(tmp_pa
             "location_id": location_id,
             "pc": {
                 "custom_name": "BUH-PC-02",
-                "details": {"os_name": "Windows 11", "ram_gb": 16},
+                "details": {"os_name": "Windows", "os_version": "11", "ram_gb": 16},
                 "identifiers": [{"identifier_type": "ip", "value": "192.168.100.25"}],
             },
             "children": [{"asset_type": "MONITOR", "custom_name": "AOC", "details": {"diagonal_inches": "24"}}],

@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from netctl.nmap.policy import FingerprintPolicyError, validate_target_ipv4
 
+from .normalization import normalize_pc_details
+
 
 NetctlCall = Callable[[list[str], int | None], dict[str, Any]]
 _MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}([:-]?[0-9A-Fa-f]{2}){5}$")
@@ -114,7 +116,11 @@ class InventoryLookup:
                     continue
                 os_name = str(match.get("name") or "").strip()
                 if os_name:
-                    suggestions["os_name"] = os_name
+                    normalized_details = normalize_pc_details({"os_name": os_name}, strict=False)
+                    if normalized_details.get("os_name") in {"Windows", "Linux"}:
+                        suggestions["os_name"] = normalized_details["os_name"]
+                        if normalized_details.get("os_version"):
+                            suggestions["os_version"] = normalized_details["os_version"]
                     break
         return LookupResult(
             "found",
