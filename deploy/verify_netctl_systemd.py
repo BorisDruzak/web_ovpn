@@ -86,7 +86,7 @@ EXPECTED_PROPERTIES = {
         "Group": "openvpn-web",
         "WorkingDirectory": "/opt/openvpn-web",
         "EnvironmentFiles": "/etc/openvpn-web/openvpn-web.env (ignore_errors=no)",
-        "NoNewPrivileges": "yes",
+        "NoNewPrivileges": "no",
         "PrivateTmp": "yes",
         "ProtectHome": "yes",
         "TimeoutStartUSec": "2min",

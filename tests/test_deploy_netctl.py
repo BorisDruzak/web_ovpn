@@ -161,6 +161,25 @@ def _parse_exec_start(raw: str) -> list[str]:
     return json.loads(result.stdout)
 
 
+def _run_show_properties_parser(raw: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-B", str(VERIFIER), "--parse-show-properties"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        input=raw,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _parse_show_properties(raw: str) -> dict[str, str]:
+    result = _run_show_properties_parser(raw)
+
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
 def test_installer_enables_the_collection_and_recovery_timers_after_reload(tmp_path: Path) -> None:
     result, _bin_dir, calls_path, _environment = _run_installer(tmp_path)
 
@@ -212,7 +231,7 @@ def test_inventory_sync_unit_uses_only_worker_entrypoint() -> None:
 
 
 def test_inventory_sync_units_apply_the_worker_hardening_contract() -> None:
-    """A less-restricted worker could acquire access beyond its existing sudo allowlist."""
+    """The worker needs the existing narrow sudo boundary, not a new privilege path."""
     service = (ROOT / "deploy" / "inventory-netctl-sync.service").read_text(encoding="utf-8")
     timer = (ROOT / "deploy" / "inventory-netctl-sync.timer").read_text(encoding="utf-8")
 
@@ -221,15 +240,70 @@ def test_inventory_sync_units_apply_the_worker_hardening_contract() -> None:
         "Group=openvpn-web",
         "WorkingDirectory=/opt/openvpn-web",
         "EnvironmentFile=/etc/openvpn-web/openvpn-web.env",
-        "NoNewPrivileges=true",
+        "NoNewPrivileges=false",
         "PrivateTmp=true",
         "ProtectHome=true",
         "TimeoutStartSec=2min",
     ):
         assert property_line in service
+    assert "NoNewPrivileges=true" not in service
     assert "OnCalendar=*-*-* *:01/5:00" in timer
     assert "Persistent=true" in timer
     assert "Unit=inventory-netctl-sync.service" in timer
+
+
+def test_inventory_worker_uses_existing_non_root_netctl_sudo_boundary(monkeypatch) -> None:
+    """Changing the worker's snapshot read must retain its authorized sudo argv."""
+    import app.config as config
+    from app.inventory.netctl_sync import read_current_snapshot
+    from app.netctl_client import run_netctl
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "snapshot": {"snapshot_id": 1, "generated_at": "2026-09-18T00:00:00+00:00", "stale": False},
+                    "pagination": {"page": 1, "total": 0, "limit": 250, "pages": 0},
+                    "hosts": [],
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setenv("NETCTL_PATH", "/usr/local/sbin/netctl")
+    monkeypatch.setenv("NETCTL_USE_SUDO", "1")
+    monkeypatch.setenv("NETCTL_SUDO_USER", "netctl")
+    config.reset_settings_cache()
+    monkeypatch.setattr("app.netctl_client.subprocess.run", fake_run)
+
+    try:
+        snapshot = read_current_snapshot(run_netctl)
+    finally:
+        config.reset_settings_cache()
+
+    assert snapshot.snapshot_id == 1
+    assert calls == [
+        [
+            "sudo",
+            "-n",
+            "-u",
+            "netctl",
+            "/usr/local/sbin/netctl",
+            "--json",
+            "hosts",
+            "list",
+            "--status=current",
+            "--page",
+            "1",
+            "--limit",
+            "250",
+        ]
+    ]
 
 
 def test_installer_enables_inventory_sync_after_verification(tmp_path: Path) -> None:
@@ -297,6 +371,7 @@ def test_installer_reports_a_no_systemd_verification_skip_and_enables_timers(tmp
     assert "netctl systemd verification skipped" in result.stdout
     enabled_timers = Path(environment["SYSTEMD_ENABLED"]).read_text(encoding="utf-8").splitlines()
     assert enabled_timers.index("netctl-collect.timer") < enabled_timers.index("netctl-reconcile.timer")
+    assert "inventory-netctl-sync.timer" not in enabled_timers
 
 
 def test_installer_does_not_enable_timers_after_verification_failure(tmp_path: Path) -> None:
@@ -331,6 +406,20 @@ def test_exec_start_parser_rejects_multiple_serialized_commands() -> None:
 
     assert result.returncode == 2
     assert "exactly one ExecStart command" in result.stderr
+
+
+def test_inventory_sync_property_parser_reads_captured_environment_and_timeout() -> None:
+    """Loaded systemd output must preserve the worker's environment and timeout boundary."""
+    raw = (FIXTURES / "inventory-netctl-sync.properties").read_text(encoding="utf-8")
+    verifier = runpy.run_path(str(VERIFIER))
+
+    properties = _parse_show_properties(raw)
+    expected = verifier["EXPECTED_PROPERTIES"]["inventory-netctl-sync.service"]
+    assert properties["EnvironmentFiles"] == "/etc/openvpn-web/openvpn-web.env (ignore_errors=no)"
+    assert properties["TimeoutStartUSec"] == "2min"
+    assert verifier["property_matches"]("EnvironmentFiles", properties["EnvironmentFiles"], expected["EnvironmentFiles"])
+    assert verifier["property_matches"]("TimeoutStartUSec", properties["TimeoutStartUSec"], expected["TimeoutStartUSec"])
+    assert expected["NoNewPrivileges"] == "no"
 
 
 def test_systemd_verifier_skips_cleanly_without_linux_systemd() -> None:

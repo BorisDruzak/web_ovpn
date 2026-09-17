@@ -282,8 +282,9 @@ sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.timer" /etc/systemd/s
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.service" /etc/systemd/system/vpn-runtime-health.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-runtime-health.timer" /etc/systemd/system/vpn-runtime-health.timer
 sudo_cmd systemctl daemon-reload
+inventory_sync_verifier_succeeded=0
 if sudo_cmd /usr/local/sbin/verify-netctl-systemd; then
-  :
+  inventory_sync_verifier_succeeded=1
 else
   netctl_verification_status=$?
   if [[ "$netctl_verification_status" -eq 77 ]]; then
@@ -297,7 +298,11 @@ sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now netctl-reconcile.timer
 sudo_cmd systemctl enable --now netctl-retention.timer
 sudo_cmd systemctl enable --now netctl-availability.timer
-sudo_cmd systemctl enable --now inventory-netctl-sync.timer
+if [[ "$inventory_sync_verifier_succeeded" -eq 1 ]]; then
+  sudo_cmd systemctl enable --now inventory-netctl-sync.timer
+else
+  printf '%s\n' 'inventory netctl sync timer not enabled: systemd verification was skipped'
+fi
 sudo_cmd systemctl enable vpn-policy.service
 sudo_cmd systemctl enable --now vpn-policy-reconcile.timer
 sudo_cmd systemctl enable --now vpn-runtime-health.timer
