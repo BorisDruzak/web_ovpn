@@ -266,7 +266,10 @@ class InventoryService:
                 continue
             inventory_by_mac.setdefault(normalized_mac, []).append(identifier.asset_id)
 
-        observed_by_mac: dict[str, list[tuple[Mapping[str, object], dict[InventoryIdentifierType, tuple[str, str]]]]] = {}
+        observed_by_mac: dict[
+            str,
+            list[tuple[Mapping[str, object], dict[InventoryIdentifierType, tuple[str, str]] | None]],
+        ] = {}
         skipped_assets = 0
         for host in hosts:
             raw_mac = host.get("mac")
@@ -275,11 +278,16 @@ class InventoryService:
                 continue
             try:
                 normalized_mac = self._normalize_netctl_mac(raw_mac)
-                observed_values = self._netctl_observed_identifiers(host)
             except InventoryLookupError:
                 skipped_assets += 1
                 continue
-            observed_by_mac.setdefault(normalized_mac, []).append((host, observed_values))
+            observations = observed_by_mac.setdefault(normalized_mac, [])
+            try:
+                observed_values = self._netctl_observed_identifiers(host)
+            except InventoryLookupError:
+                observations.append((host, None))
+                continue
+            observations.append((host, observed_values))
 
         matched_assets = 0
         updated_assets = 0
@@ -292,6 +300,9 @@ class InventoryService:
             matched_assets += 1
             asset_id = next(iter(asset_ids))
             _host, observed_values = observed_hosts[0]
+            if observed_values is None:
+                skipped_assets += 1
+                continue
             changed = False
             for identifier_type, (value, normalized_value) in observed_values.items():
                 changed = self._replace_netctl_identifier(

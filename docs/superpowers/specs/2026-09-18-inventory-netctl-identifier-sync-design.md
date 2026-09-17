@@ -95,6 +95,9 @@ point.  Its five-minute schedule is offset from `netctl-collect.timer`.
 opens the Netctl SQLite database directly.  A oneshot service, timeout, and
 systemd serialization prevent overlapping runs.  The installer copies,
 verifies, and enables both unit files alongside the current Netctl timers.
+The unit must set `NoNewPrivileges=false` as the narrow exception needed for
+the existing `sudo -n -u netctl` allowlisted command; it retains the remaining
+hardening controls such as `PrivateTmp=true` and `ProtectHome=true`.
 
 ## Failure handling and observability
 

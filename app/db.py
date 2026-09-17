@@ -81,6 +81,15 @@ def _prepare_inventory_sync_claim_index(engine) -> None:
         connection.execute(_CREATE_INVENTORY_SYNC_SUCCESS_INDEX)
 
 
+def init_inventory_identifier_sync_schema() -> None:
+    """Prepare only the inventory sync ledger required by the worker process."""
+    from .inventory.models import InventoryIdentifierSyncRun
+
+    engine = get_engine()
+    _prepare_inventory_sync_claim_index(engine)
+    InventoryIdentifierSyncRun.__table__.create(bind=engine, checkfirst=True)
+
+
 def _migrate_inventory_schema(engine) -> None:
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())

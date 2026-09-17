@@ -183,6 +183,10 @@ git commit -m "feat(inventory): add Netctl snapshot sync worker"
 
 - Produces exact worker command `/opt/openvpn-web/.venv/bin/python -m app.inventory.netctl_sync` and a persistent offset timer.
 - Unit `User`/`Group` are `openvpn-web`; existing Netctl sudo allowlist remains the only Netctl access path.
+- The worker requires `NoNewPrivileges=false` solely so the existing
+  `sudo -n -u netctl` allowlisted Netctl command can change to that account.
+  Retain `PrivateTmp=true`, `ProtectHome=true`, the protected environment file,
+  the fixed entrypoint, and all other unit hardening.
 
 - [ ] **Step 1: Write failing unit and installer tests**
 
@@ -201,7 +205,7 @@ def test_installer_enables_inventory_sync_after_verification(tmp_path):
     assert calls.index("daemon-reload") < calls.index("enable --now inventory-netctl-sync.timer")
 ```
 
-Assert service environment file, `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectHome=true`, `TimeoutStartSec=2min`; assert timer `OnCalendar=*-*-* *:01/5:00`, `Persistent=true`, and worker `Unit`.
+Assert service environment file, `NoNewPrivileges=false`, `PrivateTmp=true`, `ProtectHome=true`, `TimeoutStartSec=2min`; assert timer `OnCalendar=*-*-* *:01/5:00`, `Persistent=true`, and worker `Unit`.
 
 - [ ] **Step 2: Run deployment test and confirm failure**
 
@@ -219,7 +223,7 @@ Group=openvpn-web
 WorkingDirectory=/opt/openvpn-web
 EnvironmentFile=/etc/openvpn-web/openvpn-web.env
 ExecStart=/opt/openvpn-web/.venv/bin/python -m app.inventory.netctl_sync
-NoNewPrivileges=true
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectHome=true
 TimeoutStartSec=2min

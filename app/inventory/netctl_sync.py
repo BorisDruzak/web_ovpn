@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..db import init_db, session_scope
+from ..db import init_inventory_identifier_sync_schema, session_scope
 from ..netctl_client import NetctlError, run_netctl
 from .models import InventoryIdentifierSyncRun
 from .service import InventoryService
@@ -37,6 +37,7 @@ class SyncSummary:
     matched_assets: int = 0
     updated_assets: int = 0
     skipped_assets: int = 0
+    failure_reason: str | None = None
 
 
 class SnapshotReadError(ValueError):
@@ -160,15 +161,37 @@ def synchronize_current_snapshot(
                     InventoryIdentifierSyncRun.status == "success",
                 )
             )
-            if existing is not None:
+            latest_successful_at = db.scalar(
+                select(InventoryIdentifierSyncRun.snapshot_generated_at)
+                .where(
+                    InventoryIdentifierSyncRun.status == "success",
+                    InventoryIdentifierSyncRun.snapshot_generated_at.is_not(None),
+                )
+                .order_by(InventoryIdentifierSyncRun.snapshot_generated_at.desc())
+                .limit(1)
+            )
+            if latest_successful_at is not None and latest_successful_at.tzinfo is None:
+                latest_successful_at = latest_successful_at.replace(tzinfo=timezone.utc)
+            if existing is not None or (
+                latest_successful_at is not None and snapshot.generated_at <= latest_successful_at
+            ):
+                failure_reason = (
+                    "snapshot already synchronized"
+                    if existing is not None
+                    else "snapshot is not newer than successful run"
+                )
                 _add_run(
                     db,
                     status="skipped",
                     snapshot_id=snapshot.snapshot_id,
                     generated_at=snapshot.generated_at,
-                    failure_reason="snapshot already synchronized",
+                    failure_reason=failure_reason,
                 )
-                summary = SyncSummary(status="skipped", snapshot_id=snapshot.snapshot_id)
+                summary = SyncSummary(
+                    status="skipped",
+                    snapshot_id=snapshot.snapshot_id,
+                    failure_reason=failure_reason,
+                )
             else:
                 result = InventoryService().reconcile_netctl_identifiers(
                     db,
@@ -214,11 +237,15 @@ def synchronize_current_snapshot(
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the inventory snapshot synchronizer as a one-shot service command."""
     del argv
+    logging.basicConfig(level=logging.INFO)
     try:
-        init_db()
+        init_inventory_identifier_sync_schema()
         summary = synchronize_current_snapshot()
     except Exception:
-        log.error("inventory.netctl_sync outcome=failed snapshot_id=- matched_assets=0 updated_assets=0 skipped_assets=0")
+        log.error(
+            "inventory.netctl_sync outcome=failed snapshot_id=- matched_assets=0 updated_assets=0 "
+            "skipped_assets=0 failure_reason=worker schema unavailable"
+        )
         return 1
     return 0 if summary.status in {"success", "skipped"} else 1
 
@@ -312,7 +339,7 @@ def _record_terminal_run(
             )
     except Exception:
         pass
-    return SyncSummary(status=status, snapshot_id=snapshot_id)
+    return SyncSummary(status=status, snapshot_id=snapshot_id, failure_reason=failure_reason)
 
 
 def _add_run(
@@ -345,14 +372,32 @@ def _add_run(
 
 def _log_summary(summary: SyncSummary) -> None:
     snapshot_id = summary.snapshot_id if summary.snapshot_id is not None else "-"
+    failure_reason = _sanitize_failure_reason(summary.failure_reason)
     log.info(
-        "inventory.netctl_sync outcome=%s snapshot_id=%s matched_assets=%d updated_assets=%d skipped_assets=%d",
+        "inventory.netctl_sync outcome=%s snapshot_id=%s matched_assets=%d updated_assets=%d skipped_assets=%d failure_reason=%s",
         summary.status,
         snapshot_id,
         summary.matched_assets,
         summary.updated_assets,
         summary.skipped_assets,
+        failure_reason,
     )
+
+
+def _sanitize_failure_reason(reason: str | None) -> str:
+    allowed = {
+        "stale netctl snapshot",
+        "netctl snapshot unavailable",
+        "netctl snapshot changed during pagination",
+        "malformed netctl snapshot",
+        "snapshot already synchronized",
+        "snapshot is not newer than successful run",
+        "database synchronization conflict",
+        "database synchronization failed",
+    }
+    if reason is None:
+        return "-"
+    return reason if reason in allowed else "unspecified failure"
 
 
 if __name__ == "__main__":

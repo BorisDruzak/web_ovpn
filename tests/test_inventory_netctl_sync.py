@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 import pytest
@@ -217,6 +218,23 @@ def test_reconcile_marks_manual_ip_historical_before_netctl_replacement(db, serv
     }
 
 
+def test_reconcile_skips_duplicate_mac_when_one_payload_is_malformed(db, service):
+    """Ignoring an invalid duplicate payload could move an identity to the other host."""
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+
+    result = service.reconcile_netctl_identifiers(
+        db,
+        [
+            {"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.20"},
+            {"mac": "aa-bb-cc-dd-ee-ff", "ip": "999.999.999.999"},
+        ],
+        observed_at=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+
+    assert (result.matched_assets, result.updated_assets, result.skipped_assets) == (0, 0, 1)
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.10"
+
+
 def test_worker_pages_one_current_snapshot(db):
     """Changing page arguments or accepting mixed snapshots must fail this test."""
     from app.inventory.netctl_sync import synchronize_current_snapshot
@@ -320,6 +338,39 @@ def test_worker_skips_previously_successful_snapshot_id_without_second_reconcili
     ]
 
 
+def test_worker_skips_unseen_snapshot_that_is_not_newer_than_success(db, service):
+    """Replaying an older publication under a new ID must not overwrite cards."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    db.add(
+        InventoryIdentifierSyncRun(
+            snapshot_id=9,
+            snapshot_generated_at=datetime(2026, 9, 18, 10, 5, tzinfo=UTC),
+            status="success",
+            finished_at=datetime(2026, 9, 18, 10, 5, tzinfo=UTC),
+        )
+    )
+    db.commit()
+
+    summary = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: _snapshot_page(
+            snapshot_id=8,
+            generated_at="2026-09-18T10:00:00Z",
+            hosts=[{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.20"}],
+        ),
+        session_factory=lambda: db,
+    )
+
+    assert summary.status == "skipped"
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.10"
+    assert [row.status for row in db.scalars(select(InventoryIdentifierSyncRun).order_by(InventoryIdentifierSyncRun.snapshot_id))] == [
+        "skipped",
+        "success",
+    ]
+
+
 def test_worker_records_netctl_error_as_failure_without_mutation(db, service):
     """A command failure must not be mistaken for an empty snapshot."""
     from app.inventory.netctl_sync import synchronize_current_snapshot
@@ -369,16 +420,56 @@ def test_worker_rolls_back_identifier_writes_before_recording_failure(db, servic
 
 
 def test_worker_main_returns_zero_for_skipped_and_one_for_failure(monkeypatch):
-    """The one-shot entry point must expose only service-friendly exit statuses."""
+    """Stale or unavailable snapshots must not trigger broad inventory repair."""
     from app.inventory import netctl_sync
 
     calls = []
-    monkeypatch.setattr(netctl_sync, "init_db", lambda: calls.append("init"))
-    monkeypatch.setattr(netctl_sync, "synchronize_current_snapshot", lambda: netctl_sync.SyncSummary(status="skipped"))
+    configured = []
+    monkeypatch.setattr(netctl_sync, "init_db", lambda: pytest.fail("worker must not run broad init_db"), raising=False)
+    monkeypatch.setattr(netctl_sync, "init_inventory_identifier_sync_schema", lambda: calls.append("ready"))
+    monkeypatch.setattr(
+        InventoryService,
+        "normalize_existing_pc_details",
+        lambda *args: pytest.fail("worker must not normalize PC details"),
+    )
+    monkeypatch.setattr(
+        InventoryService,
+        "repair_detail_integrity",
+        lambda *args: pytest.fail("worker must not repair inventory cards"),
+    )
+    monkeypatch.setattr(netctl_sync.logging, "basicConfig", lambda **kwargs: configured.append(kwargs))
+    monkeypatch.setattr(
+        netctl_sync,
+        "synchronize_current_snapshot",
+        lambda: netctl_sync.SyncSummary(status="skipped", failure_reason="stale netctl snapshot"),
+    )
     assert netctl_sync.main() == 0
-    monkeypatch.setattr(netctl_sync, "synchronize_current_snapshot", lambda: netctl_sync.SyncSummary(status="failed"))
+    monkeypatch.setattr(
+        netctl_sync,
+        "synchronize_current_snapshot",
+        lambda: netctl_sync.SyncSummary(status="failed", failure_reason="netctl snapshot unavailable"),
+    )
     assert netctl_sync.main() == 1
-    assert calls == ["init", "init"]
+    assert calls == ["ready", "ready"]
+    assert configured == [{"level": logging.INFO}, {"level": logging.INFO}]
+
+
+def test_worker_summary_logs_only_sanitized_failure_reason(caplog):
+    """A temporary failure must remain diagnosable without exposing host payloads."""
+    from app.inventory.netctl_sync import SyncSummary, _log_summary
+
+    with caplog.at_level(logging.INFO, logger="app.inventory.netctl_sync"):
+        _log_summary(
+            SyncSummary(
+                status="failed",
+                snapshot_id=7,
+                failure_reason="private-host.example token=secret",
+            )
+        )
+
+    assert "failure_reason=unspecified failure" in caplog.text
+    assert "private-host.example" not in caplog.text
+    assert "token=secret" not in caplog.text
 
 
 @pytest.mark.parametrize(
