@@ -253,7 +253,7 @@ class InventoryService:
         observed_at: datetime,
     ) -> InventoryIdentifierSyncResult:
         """Refresh only unambiguous IP and hostname values from a Netctl snapshot."""
-        inventory_by_mac: dict[str, set[str]] = {}
+        inventory_by_mac: dict[str, list[str]] = {}
         for identifier in db.scalars(
             select(InventoryAssetIdentifier).where(
                 InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.MAC,
@@ -264,7 +264,7 @@ class InventoryService:
                 normalized_mac = self._normalize_netctl_mac(identifier.value)
             except InventoryLookupError:
                 continue
-            inventory_by_mac.setdefault(normalized_mac, set()).add(identifier.asset_id)
+            inventory_by_mac.setdefault(normalized_mac, []).append(identifier.asset_id)
 
         observed_by_mac: dict[str, list[tuple[Mapping[str, object], dict[InventoryIdentifierType, tuple[str, str]]]]] = {}
         skipped_assets = 0
@@ -284,7 +284,7 @@ class InventoryService:
         matched_assets = 0
         updated_assets = 0
         for normalized_mac, observed_hosts in observed_by_mac.items():
-            asset_ids = inventory_by_mac.get(normalized_mac, set())
+            asset_ids = inventory_by_mac.get(normalized_mac, [])
             if len(observed_hosts) != 1 or len(asset_ids) != 1:
                 if asset_ids or len(observed_hosts) > 1:
                     skipped_assets += 1

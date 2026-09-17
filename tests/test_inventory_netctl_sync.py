@@ -122,6 +122,53 @@ def test_reconcile_skips_invalid_or_ambiguous_macs(db, service):
     assert _current_values(db, unique.id) == {"mac": "11:22:33:44:55:66"}
 
 
+def test_reconcile_skips_duplicate_current_mac_rows_on_one_asset(db, service):
+    """Collapsing duplicate anchor rows to one asset can overwrite its identifiers."""
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    service.sync_identifiers(
+        db,
+        asset,
+        [
+            {"identifier_type": "mac", "value": "AA:BB:CC:DD:EE:FF"},
+            {"identifier_type": "ip", "value": "192.168.100.10"},
+            {"identifier_type": "hostname", "value": "pc-old"},
+        ],
+    )
+    db.add(
+        InventoryAssetIdentifier(
+            asset_id=asset.id,
+            identifier_type=InventoryIdentifierType.MAC,
+            value="AA-BB-CC-DD-EE-FF",
+            normalized_value="AA:BB:CC:DD:EE:FF",
+            source=InventoryObservationSource.MANUAL,
+        )
+    )
+    db.flush()
+
+    result = service.reconcile_netctl_identifiers(
+        db,
+        [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.20", "hostname": "pc-new"}],
+        observed_at=datetime(2026, 9, 18, tzinfo=UTC),
+    )
+
+    assert result.matched_assets == 0
+    assert result.updated_assets == 0
+    assert result.skipped_assets == 1
+    current = _current_values(db, asset.id)
+    current_mac_rows = list(
+        db.scalars(
+            select(InventoryAssetIdentifier).where(
+                InventoryAssetIdentifier.asset_id == asset.id,
+                InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.MAC,
+                InventoryAssetIdentifier.is_current.is_(True),
+            )
+        )
+    )
+    assert current["ip"] == "192.168.100.10"
+    assert current["hostname"] == "pc-old"
+    assert len(current_mac_rows) == 2
+
+
 def test_reconcile_marks_manual_ip_historical_before_netctl_replacement(db, service):
     """Overwriting manual values in place would destroy the required identifier history."""
     asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
