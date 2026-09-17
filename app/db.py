@@ -68,6 +68,13 @@ def _migrate_inventory_schema(engine) -> None:
             columns = {column["name"] for column in inspector.get_columns("inventory_assets")}
             if "notes" in columns:
                 connection.execute(_TRANSFER_ASSET_NOTES)
+        if engine.dialect.name == "sqlite" and "inventory_identifier_sync_runs" in table_names:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_identifier_sync_success_snapshot "
+                    "ON inventory_identifier_sync_runs (snapshot_id) WHERE status = 'success'"
+                )
+            )
 
 
 def init_db() -> None:

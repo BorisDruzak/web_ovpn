@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.inventory.models import (
     InventoryAssetIdentifier,
@@ -21,16 +22,19 @@ def _snapshot_page(
     stale: bool = False,
     page: int = 1,
     pages: int = 1,
+    limit: int = 250,
+    total: int | None = None,
     hosts: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
+    page_hosts = hosts or []
     return {
         "snapshot": {
             "snapshot_id": snapshot_id,
             "generated_at": generated_at,
             "stale": stale,
         },
-        "hosts": hosts or [],
-        "pagination": {"page": page, "limit": 250, "total": len(hosts or []), "pages": pages},
+        "hosts": page_hosts,
+        "pagination": {"page": page, "limit": limit, "total": len(page_hosts) if total is None else total, "pages": pages},
     }
 
 
@@ -222,7 +226,7 @@ def test_worker_pages_one_current_snapshot(db):
     def fake_netctl(args, timeout=None):
         assert not set(args) & {"collect", "refresh", "nmap", "snmp", "availability"}
         calls.append(args)
-        return _snapshot_page(page=int(args[-3]), pages=2)
+        return _snapshot_page(page=int(args[-3]), pages=2, total=500, hosts=[{}] * 250)
 
     summary = synchronize_current_snapshot(netctl_call=fake_netctl, session_factory=lambda: db)
 
@@ -236,7 +240,7 @@ def test_worker_pages_one_current_snapshot(db):
 @pytest.mark.parametrize(
     "page",
     [
-        _snapshot_page(stale=True),
+        _snapshot_page(stale=True, pages=0, total=0),
         _snapshot_page(generated_at="2026-09-18T10:00:00"),
         {"snapshot": {"snapshot_id": 7, "generated_at": "2026-09-18T10:00:00Z", "stale": False}, "hosts": [], "pagination": {"page": 1}},
     ],
@@ -277,6 +281,8 @@ def test_worker_rejects_snapshot_identity_change_during_pagination(db, snapshot_
             pages=2,
             snapshot_id=snapshot_id if page == 2 else 7,
             generated_at=generated_at if page == 2 else "2026-09-18T10:00:00Z",
+            total=500,
+            hosts=[{}] * 250,
         )
 
     summary = synchronize_current_snapshot(netctl_call=fake_netctl, session_factory=lambda: db)
@@ -373,3 +379,111 @@ def test_worker_main_returns_zero_for_skipped_and_one_for_failure(monkeypatch):
     monkeypatch.setattr(netctl_sync, "synchronize_current_snapshot", lambda: netctl_sync.SyncSummary(status="failed"))
     assert netctl_sync.main() == 1
     assert calls == ["init", "init"]
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        {
+            1: _snapshot_page(page=1, pages=2, total=500, hosts=[{}] * 250),
+            2: _snapshot_page(page=2, pages=1, total=500, hosts=[{}] * 250),
+        },
+        {
+            1: _snapshot_page(page=1, pages=2, total=500, hosts=[{}] * 250),
+            2: _snapshot_page(page=2, pages=3, total=750, hosts=[{}] * 250),
+            3: _snapshot_page(page=3, pages=3, total=750, hosts=[{}] * 250),
+        },
+        {
+            1: _snapshot_page(page=1, pages=2, total=500, hosts=[{}] * 250),
+            2: _snapshot_page(page=2, pages=2, limit=500, total=1000, hosts=[{}] * 250),
+        },
+    ],
+)
+def test_worker_rejects_changed_or_invalid_pagination_metadata(db, pages):
+    """Changing any page metadata can otherwise produce a mixed or partial snapshot."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+
+    summary = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: pages[int(args[-3])],
+        session_factory=lambda: db,
+    )
+
+    assert summary.status == "failed"
+
+
+def test_worker_rejects_incomplete_final_host_count(db):
+    """Returning success with fewer hosts than published total drops inventory evidence."""
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+
+    summary = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: _snapshot_page(total=2, hosts=[{}]),
+        session_factory=lambda: db,
+    )
+
+    assert summary.status == "failed"
+
+
+def test_worker_accepts_netctl_empty_snapshot_shape(db):
+    """Netctl publishes an empty current snapshot as page 1 of 0 pages."""
+    from app.inventory.netctl_sync import SyncSummary, synchronize_current_snapshot
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    summary = synchronize_current_snapshot(
+        netctl_call=lambda args, timeout=None: _snapshot_page(page=1, pages=0, total=0, hosts=[]),
+        session_factory=lambda: db,
+    )
+
+    assert summary == SyncSummary(
+        status="success",
+        snapshot_id=7,
+    )
+    ledger = db.scalar(select(InventoryIdentifierSyncRun))
+    assert ledger is not None
+    assert (ledger.status, ledger.matched_assets, ledger.updated_assets, ledger.skipped_assets) == ("success", 0, 0, 0)
+
+
+def test_success_snapshot_unique_index_rolls_back_losing_identifier_update(db, service):
+    """A second worker that passed its preflight must not commit a second success or IP."""
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryIdentifierSyncRun
+
+    asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
+    db.commit()
+    winner = get_sessionmaker()()
+    loser = get_sessionmaker()()
+    observed_at = datetime(2026, 9, 18, tzinfo=UTC)
+    try:
+        assert winner.scalar(select(InventoryIdentifierSyncRun).where(InventoryIdentifierSyncRun.snapshot_id == 88)) is None
+        assert loser.scalar(select(InventoryIdentifierSyncRun).where(InventoryIdentifierSyncRun.snapshot_id == 88)) is None
+        loser.rollback()
+
+        InventoryService().reconcile_netctl_identifiers(
+            winner,
+            [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.20"}],
+            observed_at=observed_at,
+        )
+        winner.add(InventoryIdentifierSyncRun(snapshot_id=88, status="success"))
+        winner.commit()
+
+        InventoryService().reconcile_netctl_identifiers(
+            loser,
+            [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.100.30"}],
+            observed_at=observed_at,
+        )
+        loser.add(InventoryIdentifierSyncRun(snapshot_id=88, status="success"))
+        with pytest.raises(IntegrityError):
+            loser.commit()
+        loser.rollback()
+    finally:
+        winner.close()
+        loser.close()
+
+    db.expire_all()
+    assert _current_values(db, asset.id)["ip"] == "192.168.100.20"
+    successes = db.scalars(
+        select(InventoryIdentifierSyncRun).where(
+            InventoryIdentifierSyncRun.snapshot_id == 88,
+            InventoryIdentifierSyncRun.status == "success",
+        )
+    ).all()
+    assert len(successes) == 1

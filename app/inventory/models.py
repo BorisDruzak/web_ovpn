@@ -4,7 +4,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, JSON, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -122,6 +122,14 @@ class InventoryAssetIdentifier(Base):
 
 class InventoryIdentifierSyncRun(Base):
     __tablename__ = "inventory_identifier_sync_runs"
+    __table_args__ = (
+        Index(
+            "uq_inventory_identifier_sync_success_snapshot",
+            "snapshot_id",
+            unique=True,
+            sqlite_where=text("status = 'success'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
     snapshot_id: Mapped[int | None] = mapped_column(Integer, index=True)

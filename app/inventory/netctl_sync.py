@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Iterator
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..db import init_db, session_scope
@@ -55,6 +56,9 @@ def read_current_snapshot(netctl_call: NetctlCall) -> NetctlSnapshot:
     page_number = 1
     snapshot_id: int | None = None
     generated_at: datetime | None = None
+    pagination_total: int | None = None
+    pagination_limit: int | None = None
+    pagination_pages: int | None = None
     hosts: list[dict[str, object]] = []
 
     while True:
@@ -68,7 +72,7 @@ def read_current_snapshot(netctl_call: NetctlCall) -> NetctlSnapshot:
         except Exception as exc:
             raise SnapshotReadError("netctl snapshot unavailable") from exc
 
-        page_snapshot_id, page_generated_at, stale, page, pages, page_hosts = _parse_page(payload)
+        page_snapshot_id, page_generated_at, stale, page, total, limit, pages, page_hosts = _parse_page(payload)
         if stale:
             raise StaleSnapshot(
                 "stale netctl snapshot",
@@ -78,7 +82,16 @@ def read_current_snapshot(netctl_call: NetctlCall) -> NetctlSnapshot:
         if snapshot_id is None:
             snapshot_id = page_snapshot_id
             generated_at = page_generated_at
-        elif snapshot_id != page_snapshot_id or generated_at != page_generated_at:
+            pagination_total = total
+            pagination_limit = limit
+            pagination_pages = pages
+        elif (
+            snapshot_id != page_snapshot_id
+            or generated_at != page_generated_at
+            or pagination_total != total
+            or pagination_limit != limit
+            or pagination_pages != pages
+        ):
             raise SnapshotReadError(
                 "netctl snapshot changed during pagination",
                 snapshot_id=snapshot_id,
@@ -92,6 +105,12 @@ def read_current_snapshot(netctl_call: NetctlCall) -> NetctlSnapshot:
             )
         hosts.extend(page_hosts)
         if page >= pages:
+            if len(hosts) != total:
+                raise SnapshotReadError(
+                    "malformed netctl snapshot",
+                    snapshot_id=snapshot_id,
+                    generated_at=generated_at,
+                )
             return NetctlSnapshot(snapshot_id=snapshot_id, generated_at=generated_at, hosts=tuple(hosts))
         page_number += 1
 
@@ -164,6 +183,14 @@ def synchronize_current_snapshot(
                     updated_assets=result.updated_assets,
                     skipped_assets=result.skipped_assets,
                 )
+    except IntegrityError:
+        summary = _record_terminal_run(
+            "failed",
+            session_factory=session_factory,
+            snapshot_id=snapshot.snapshot_id,
+            generated_at=snapshot.generated_at,
+            failure_reason="database synchronization conflict",
+        )
     except Exception:
         summary = _record_terminal_run(
             "failed",
@@ -188,7 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0 if summary.status in {"success", "skipped"} else 1
 
 
-def _parse_page(payload: Mapping[str, object]) -> tuple[int, datetime, bool, int, int, list[dict[str, object]]]:
+def _parse_page(payload: Mapping[str, object]) -> tuple[int, datetime, bool, int, int, int, int, list[dict[str, object]]]:
     if not isinstance(payload, Mapping):
         raise SnapshotReadError("malformed netctl snapshot")
     snapshot = payload.get("snapshot")
@@ -200,16 +227,27 @@ def _parse_page(payload: Mapping[str, object]) -> tuple[int, datetime, bool, int
     generated_at = _parse_generated_at(snapshot.get("generated_at"))
     stale = snapshot.get("stale")
     page = pagination.get("page")
+    total = pagination.get("total")
+    limit = pagination.get("limit")
     pages = pagination.get("pages")
     if (
         not _is_positive_int(snapshot_id)
         or not isinstance(stale, bool)
         or not _is_positive_int(page)
-        or not _is_positive_int(pages)
+        or not _is_nonnegative_int(total)
+        or not _is_positive_int(limit)
+        or not _is_nonnegative_int(pages)
         or not all(isinstance(host, Mapping) for host in hosts)
     ):
         raise SnapshotReadError("malformed netctl snapshot")
-    return snapshot_id, generated_at, stale, page, pages, [dict(host) for host in hosts]
+    if pages != (total + limit - 1) // limit:
+        raise SnapshotReadError("malformed netctl snapshot")
+    if total == 0:
+        if page != 1 or pages != 0 or hosts:
+            raise SnapshotReadError("malformed netctl snapshot")
+    elif page > pages:
+        raise SnapshotReadError("malformed netctl snapshot")
+    return snapshot_id, generated_at, stale, page, total, limit, pages, [dict(host) for host in hosts]
 
 
 def _parse_generated_at(value: object) -> datetime:
@@ -226,6 +264,10 @@ def _parse_generated_at(value: object) -> datetime:
 
 def _is_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _is_nonnegative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 @contextmanager
