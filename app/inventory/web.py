@@ -68,7 +68,7 @@ MANUAL_LOCATION_ASSET_TYPES = frozenset({
 })
 DETAIL_FIELD_NAMES = {
     InventoryAssetType.PC: ("os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb"),
-    InventoryAssetType.PRINTER: ("page_counter",),
+    InventoryAssetType.PRINTER: ("page_counter", "connection_type"),
     InventoryAssetType.PHONE: ("extension",),
     InventoryAssetType.MONITOR: ("diagonal_inches",),
     InventoryAssetType.UPS: ("power_va", "battery_replaced_at"),
@@ -77,7 +77,7 @@ NEW_ASSET_FORM_FIELDS = (
     "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status",
     "assigned_person_name", "login_name", "description", "notes", "ip_address", "mac_address", "hostname",
     "os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb",
-    "page_counter", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json",
+    "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json",
 )
 IDENTIFIER_FIELD_LABELS = {
     "ip_address": "IP-адрес",

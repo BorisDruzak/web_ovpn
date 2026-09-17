@@ -106,6 +106,39 @@ def test_inventory_home_lists_locations_without_walk_or_selector(tmp_path, monke
     assert '<select id="location_id"' not in page.text
 
 
+def test_printer_form_renders_and_persists_connection_type(tmp_path, monkeypatch):
+    """An operator must be able to select USB or network connection on a printer card."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"})
+
+    page = _prepare_manual_asset_form(client, monkeypatch, "PRINTER")
+
+    assert '<label>Тип подключения<select name="connection_type">' in page.text
+    assert '<option value="network">Сетевой</option>' in page.text
+    assert '<option value="usb">USB</option>' in page.text
+
+    created = client.post(
+        "/inventory/assets",
+        data={
+            "csrf_token": _csrf(page.text),
+            "asset_type": "PRINTER",
+            "custom_name": "Kyocera",
+            "connection_type": "network",
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    from app.inventory.service import InventoryService
+
+    asset_id = created.headers["location"].rsplit("/", 1)[-1]
+    with get_sessionmaker()() as db:
+        asset = db.get(InventoryAsset, asset_id)
+        assert InventoryService().details_for(db, asset)["connection_type"].value == "network"
+
+
 def test_location_detail_edits_location_on_tree_screen(tmp_path, monkeypatch):
     client, csrf = _client(tmp_path, monkeypatch)
     created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел", "comment": "Подвал"}, follow_redirects=False)

@@ -48,6 +48,11 @@ def init_db() -> None:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE web_users ADD COLUMN is_network_admin BOOLEAN NOT NULL DEFAULT 0"))
                 connection.execute(text("UPDATE web_users SET is_network_admin = 1 WHERE is_admin = 1"))
+    if "inventory_printer_details" in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns("inventory_printer_details")}
+        if "connection_type" not in columns:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE inventory_printer_details ADD COLUMN connection_type VARCHAR(7)"))
     with session_scope() as db:
         ensure_admin_user(db)
         from .inventory.service import InventoryService

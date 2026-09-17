@@ -67,6 +67,11 @@ class InventoryPhotoType(StrEnum):
     OTHER = "other"
 
 
+class InventoryPrinterConnectionType(StrEnum):
+    NETWORK = "network"
+    USB = "usb"
+
+
 class InventoryLocation(Base):
     __tablename__ = "inventory_locations"
 
@@ -147,6 +152,9 @@ class InventoryPrinterDetails(Base):
 
     asset_id: Mapped[str] = mapped_column(ForeignKey("inventory_assets.id"), primary_key=True)
     page_counter: Mapped[int | None] = mapped_column(Integer)
+    connection_type: Mapped[InventoryPrinterConnectionType | None] = mapped_column(
+        Enum(InventoryPrinterConnectionType)
+    )
 
 
 class InventoryPhoneDetails(Base):

@@ -46,6 +46,40 @@ def test_details_reject_fields_not_owned_by_asset_type(db):
         InventoryService().update_details(db, asset, {"ram_gb": 16})
 
 
+def test_printer_persists_connection_type_as_a_printer_detail(db):
+    """A printer connection method must survive the same edit path as its page counter."""
+    from app.inventory.models import InventoryAssetType
+    from app.inventory.service import InventoryService
+
+    service = InventoryService()
+    printer = service.create_asset(db, InventoryAssetType.PRINTER)
+
+    details = service.update_details(db, printer, {"connection_type": "network"})
+
+    assert getattr(details["connection_type"], "value", details["connection_type"]) == "network"
+
+
+@pytest.mark.parametrize(
+    ("has_current_ip", "description", "notes", "expected"),
+    [
+        (True, "Подключен по USB", None, "network"),
+        (False, "Подключен по ЮСБ", None, "usb"),
+        (False, None, "USB-кабель", "usb"),
+        (False, "Без сканера", None, None),
+    ],
+)
+def test_infers_printer_connection_type_from_current_ip_or_comment(has_current_ip, description, notes, expected):
+    from app.inventory import service as inventory_service
+
+    result = inventory_service.infer_printer_connection_type(
+        has_current_ip=has_current_ip,
+        description=description,
+        notes=notes,
+    )
+
+    assert getattr(result, "value", result) == expected
+
+
 def test_detail_repair_replaces_cross_type_detail_row_with_the_asset_own_type(db):
     """A printer must not retain a PC-details row after an old form mismatch."""
     from app.inventory.models import InventoryAssetType, InventoryPCDetails, InventoryPrinterDetails

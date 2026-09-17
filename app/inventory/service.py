@@ -19,6 +19,7 @@ from .models import (
     InventoryMonitorDetails,
     InventoryPCDetails,
     InventoryPhoneDetails,
+    InventoryPrinterConnectionType,
     InventoryPrinterDetails,
     InventoryObservation,
     InventoryObservationSource,
@@ -58,11 +59,25 @@ ASSET_FIELDS = frozenset(
 )
 DETAIL_MODELS = {
     InventoryAssetType.PC: (InventoryPCDetails, frozenset({"os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb"})),
-    InventoryAssetType.PRINTER: (InventoryPrinterDetails, frozenset({"page_counter"})),
+    InventoryAssetType.PRINTER: (InventoryPrinterDetails, frozenset({"page_counter", "connection_type"})),
     InventoryAssetType.PHONE: (InventoryPhoneDetails, frozenset({"extension"})),
     InventoryAssetType.MONITOR: (InventoryMonitorDetails, frozenset({"diagonal_inches"})),
     InventoryAssetType.UPS: (InventoryUPSDetails, frozenset({"power_va", "battery_replaced_at"})),
 }
+
+
+def infer_printer_connection_type(
+    *,
+    has_current_ip: bool,
+    description: str | None,
+    notes: str | None,
+) -> InventoryPrinterConnectionType | None:
+    if has_current_ip:
+        return InventoryPrinterConnectionType.NETWORK
+    comment_text = " ".join(value for value in (description, notes) if value).casefold()
+    if "usb" in comment_text or "\u044e\u0441\u0431" in comment_text:
+        return InventoryPrinterConnectionType.USB
+    return None
 
 
 class InventoryService:
@@ -107,11 +122,19 @@ class InventoryService:
         unexpected = set(fields) - allowed
         if unexpected:
             raise InventoryValidationError("detail fields do not belong to this asset type")
+        values = dict(fields)
+        if asset.asset_type is InventoryAssetType.PRINTER and values.get("connection_type") is not None:
+            try:
+                values["connection_type"] = InventoryPrinterConnectionType(
+                    str(values["connection_type"])
+                )
+            except ValueError as exc:
+                raise InventoryValidationError("неверный тип подключения принтера") from exc
         detail = db.get(detail_model, asset.id)
         if detail is None:
             detail = detail_model(asset_id=asset.id)
             db.add(detail)
-        for name, value in fields.items():
+        for name, value in values.items():
             setattr(detail, name, value)
         db.flush()
         return self.details_for(db, asset)
