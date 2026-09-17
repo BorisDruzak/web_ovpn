@@ -62,6 +62,24 @@ MANUAL_RELATED_ASSET_TYPES = frozenset({
     InventoryAssetType.UPS,
     InventoryAssetType.OTHER,
 })
+MANUAL_LOCATION_ASSET_TYPES = frozenset({
+    InventoryAssetType.MONITOR,
+    InventoryAssetType.UPS,
+    InventoryAssetType.OTHER,
+})
+DETAIL_FIELD_NAMES = {
+    InventoryAssetType.PC: ("os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb"),
+    InventoryAssetType.PRINTER: ("page_counter",),
+    InventoryAssetType.PHONE: ("extension",),
+    InventoryAssetType.MONITOR: ("diagonal_inches",),
+    InventoryAssetType.UPS: ("power_va", "battery_replaced_at"),
+}
+NEW_ASSET_FORM_FIELDS = (
+    "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status",
+    "assigned_person_name", "login_name", "description", "notes", "ip_address", "mac_address", "hostname",
+    "os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb",
+    "page_counter", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json",
+)
 LOOKUP_STATUS_LABELS = {
     "found": "Найдено",
     "not_found": "Не найдено",
@@ -141,6 +159,69 @@ def _new_asset_flow_key(asset_type: InventoryAssetType, parent_asset_id: str, lo
     return f"inventory_new_asset_flow:{asset_type.value}:{location_id}:{parent_asset_id}"
 
 
+def _new_asset_draft_key(asset_type: InventoryAssetType, parent_asset_id: str, location_id: str = "") -> str:
+    return f"{_new_asset_flow_key(asset_type, parent_asset_id, location_id)}:draft"
+
+
+def _is_direct_manual_asset(asset_type: InventoryAssetType, parent_asset: InventoryAsset | None, manual: bool) -> bool:
+    if not manual:
+        return False
+    allowed_types = MANUAL_RELATED_ASSET_TYPES if parent_asset is not None else MANUAL_LOCATION_ASSET_TYPES
+    return asset_type in allowed_types
+
+
+async def _new_asset_form_draft(request: Request) -> dict[str, str]:
+    form = await request.form()
+    return {field: str(form.get(field) or "") for field in NEW_ASSET_FORM_FIELDS if field in form}
+
+
+def _new_asset_form_context(
+    *,
+    asset_type: InventoryAssetType,
+    parent_asset_id: str,
+    manual_mode: bool,
+    location: InventoryLocation,
+    flow: dict[str, Any] | None,
+    draft: dict[str, str] | None,
+) -> dict[str, Any]:
+    suggestions = flow.get("suggestions") if isinstance(flow, dict) and isinstance(flow.get("suggestions"), dict) else {}
+    details = flow.get("details") if isinstance(flow, dict) and isinstance(flow.get("details"), dict) else {}
+    values = {
+        "custom_name": str(suggestions.get("display_name") or ""),
+        "manufacturer": "",
+        "model": "",
+        "serial_number": "",
+        "inventory_number": "",
+        "status": "",
+        "assigned_person_name": "",
+        "login_name": "",
+        "description": "",
+        "notes": "",
+    }
+    identifiers = {key: str(suggestions.get(key) or "") for key in ("ip", "mac", "hostname")}
+    if draft:
+        values.update({field: draft[field] for field in values if field in draft})
+        identifiers.update({identifier: draft[field] for field, identifier in (("ip_address", "ip"), ("mac_address", "mac"), ("hostname", "hostname")) if field in draft})
+        details = {**details, **{field: draft[field] for field in DETAIL_FIELD_NAMES.get(asset_type, ()) if field in draft}}
+    return {
+        "asset": None,
+        "asset_type": asset_type,
+        "parent_asset_id": parent_asset_id,
+        "manual_mode": manual_mode,
+        "location": location,
+        "return_location_id": location.id,
+        "asset_labels": ASSET_LABELS,
+        "asset_status_labels": ASSET_STATUS_LABELS,
+        "form_values": values,
+        "details": details,
+        "identifiers": identifiers,
+        "prefill": {"custom_name": values["custom_name"]},
+        "asset_statuses": InventoryAssetStatus,
+        "walk_session": None,
+        "prelookup": {"source": "manual", "message": "Заполните полную карточку устройства вручную."} if manual_mode else flow,
+    }
+
+
 def _related_parent_or_error(db: Session, parent_asset_id: str, location: InventoryLocation | None = None) -> InventoryAsset | None:
     if not parent_asset_id:
         return None
@@ -154,13 +235,7 @@ def _related_parent_or_error(db: Session, parent_asset_id: str, location: Invent
 
 async def _detail_form(request: Request, asset_type: InventoryAssetType) -> dict[str, Any]:
     form = await request.form()
-    names = {
-        InventoryAssetType.PC: ("os_name", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb"),
-        InventoryAssetType.PRINTER: ("page_counter",),
-        InventoryAssetType.PHONE: ("extension",),
-        InventoryAssetType.MONITOR: ("diagonal_inches",),
-        InventoryAssetType.UPS: ("power_va", "battery_replaced_at"),
-    }.get(asset_type, ())
+    names = DETAIL_FIELD_NAMES.get(asset_type, ())
     result: dict[str, Any] = {}
     for name in names:
         value = str(form.get(name) or "").strip()
@@ -304,15 +379,15 @@ def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, 
     if parent_asset is not None and (location is None or parent_asset.location_id != location.id):
         location = _location_or_error(db, parent_asset.location_id)
     return_location_id = location.id if location is not None else ""
-    manual_mode = bool(parent_asset and manual and asset_type in MANUAL_RELATED_ASSET_TYPES)
+    manual_mode = location is not None and _is_direct_manual_asset(asset_type, parent_asset, manual)
+    draft = request.session.get(_new_asset_draft_key(asset_type, parent_asset_id, return_location_id))
+    draft = draft if isinstance(draft, dict) else None
     if manual_mode:
-        return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "manual_mode": True, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": {}, "identifiers": {}, "prefill": {"custom_name": ""}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": {"source": "manual", "message": "Заполните полную карточку устройства вручную."}}, db)
+        return _render(request, "inventory_asset_form.html", _new_asset_form_context(asset_type=asset_type, parent_asset_id=parent_asset_id, manual_mode=True, location=location, flow=None, draft=draft), db)
     flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id, return_location_id))
     if not isinstance(flow, dict) or not flow.get("ready"):
         return _render(request, "inventory_asset_discovery.html", {"asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "lookup_status_labels": LOOKUP_STATUS_LABELS, "lookup_result": flow}, db)
-    suggestions = flow.get("suggestions") if isinstance(flow.get("suggestions"), dict) else {}
-    details = flow.get("details") if isinstance(flow.get("details"), dict) else {}
-    return _render(request, "inventory_asset_form.html", {"asset": None, "asset_type": asset_type, "parent_asset_id": parent_asset_id, "manual_mode": False, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "details": details, "identifiers": suggestions, "prefill": {"custom_name": str(suggestions.get("display_name") or "")}, "asset_statuses": InventoryAssetStatus, "walk_session": None, "prelookup": flow}, db)
+    return _render(request, "inventory_asset_form.html", _new_asset_form_context(asset_type=asset_type, parent_asset_id=parent_asset_id, manual_mode=False, location=location, flow=flow, draft=draft), db)
 
 
 @router.get("/inventory/assets/{asset_id}/related/new", response_class=HTMLResponse)
@@ -354,6 +429,7 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
         "identifier": identifier.strip(),
         "ready": result.status == "found",
     }
+    request.session.pop(_new_asset_draft_key(asset_type, parent_asset_id, location.id), None)
     return _redirect(target_url)
 
 
@@ -399,7 +475,9 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
         location = _location_or_error(db, asset.location_id)
     photos = list(db.scalars(select(InventoryAssetPhoto).where(InventoryAssetPhoto.asset_id == asset.id).order_by(InventoryAssetPhoto.created_at, InventoryAssetPhoto.id)))
     identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None}, db)
+    form_values = {field: str(getattr(asset, field) or "") for field in ("custom_name", "manufacturer", "model", "serial_number", "inventory_number", "assigned_person_name", "login_name", "description", "notes")}
+    form_values["status"] = asset.status.value if asset.status is not None else ""
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "form_values": form_values, "details": service.details_for(db, asset), "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None}, db)
 
 
 @router.post("/inventory/assets")
@@ -416,7 +494,8 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
         location = _location_or_error(db, parent_asset.location_id)
     flow_key = _new_asset_flow_key(asset_type, parent_asset_id, location.id)
     flow = request.session.get(flow_key)
-    direct_manual = bool(parent_asset and manual_mode == "1" and asset_type in MANUAL_RELATED_ASSET_TYPES)
+    direct_manual = _is_direct_manual_asset(asset_type, parent_asset, manual_mode == "1")
+    submitted_draft = await _new_asset_form_draft(request)
     if not direct_manual and (not isinstance(flow, dict) or not flow.get("ready")):
         _flash(request, "bad", "Сначала выполните поиск или выберите ручное заполнение")
         return _redirect(_new_asset_url(asset_type, parent_asset_id, location_id=location.id if has_explicit_return else ""))
@@ -435,10 +514,12 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
             service.attach_existing_asset(db, parent_asset.id, asset.id, actor=user.username)
             write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=asset.id)
     except InventoryValidationError as exc:
+        request.session[_new_asset_draft_key(asset_type, parent_asset_id, location.id)] = submitted_draft
         _flash(request, "bad", str(exc))
         return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""))
     write_audit(db, request, user, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id)
     request.session.pop(flow_key, None)
+    request.session.pop(_new_asset_draft_key(asset_type, parent_asset_id, location.id), None)
     _flash(request, "ok", "Устройство сохранено")
     if save_next:
         return _redirect(_new_asset_url(asset_type, location_id=location.id if has_explicit_return else ""))

@@ -41,7 +41,7 @@
   <section class="inventory-device-picker">
     <h2>Устройства на локации</h2>
     <div class="inventory-device-choices">
-      {% for asset_type, label in asset_labels.items() %}<a class="button secondary" href="/inventory/assets/new?asset_type={{ asset_type.value }}&amp;location_id={{ location.id }}">+ ДОБАВИТЬ УСТРОЙСТВО: {{ label }}</a>{% endfor %}
+      {% for asset_type, label in asset_labels.items() %}<a class="button secondary" href="/inventory/assets/new?asset_type={{ asset_type.value }}&amp;location_id={{ location.id }}{% if asset_type.value in ['MONITOR', 'UPS', 'OTHER'] %}&amp;manual=1{% endif %}">+ ДОБАВИТЬ УСТРОЙСТВО: {{ label }}</a>{% endfor %}
     </div>
   </section>
 </section>

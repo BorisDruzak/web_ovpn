@@ -565,7 +565,7 @@ def test_related_phone_offers_manual_entry_before_network_search(tmp_path, monke
 
 
 def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_path, monkeypatch):
-    """A malformed related-device label must not send the technician back to network discovery."""
+    """A malformed related-device label must keep the technician's entered related-card fields."""
     client, csrf = _client(tmp_path, monkeypatch)
     client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-a"}, follow_redirects=False)
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
@@ -593,6 +593,64 @@ def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_
     returned_form = client.get(rejected.headers["location"])
     assert 'name="manufacturer"' in returned_form.text
     assert "НАЙТИ УСТРОЙСТВО" not in returned_form.text
+    assert 'value="Монитор с этикетки"' in returned_form.text
+    assert 'value="not-a-mac"' in returned_form.text
+
+
+def test_standalone_other_opens_a_manual_card_without_network_discovery(tmp_path, monkeypatch):
+    """The standalone Other button must not force an irrelevant IP/MAC/hostname lookup."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    created = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-other"}, follow_redirects=False)
+    location_id = created.headers["location"].rsplit("/", 1)[-1]
+
+    form = client.get(f"/inventory/assets/new?asset_type=OTHER&location_id={location_id}&manual=1")
+
+    assert form.status_code == 200
+    assert "Ручное заполнение" in form.text
+    assert 'name="custom_name"' in form.text
+    assert "НАЙТИ УСТРОЙСТВО" not in form.text
+
+
+def test_nmap_prefilled_asset_keeps_entered_fields_after_validation_error(tmp_path, monkeypatch):
+    """A validation error after an Nmap prefill must not clear the asset card."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    created_location = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "217-nmap"}, follow_redirects=False)
+    location_id = created_location.headers["location"].rsplit("/", 1)[-1]
+    discovery = client.get(f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}")
+
+    def netctl(args, timeout=None):
+        if args[:2] == ["hosts", "list"]:
+            return {"hosts": []}
+        return {"fingerprint": {"nmap_version": "7.95", "ports": [], "os_matches": []}}
+
+    monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
+    lookup = client.post(
+        "/inventory/assets/new/lookup",
+        data={"csrf_token": _csrf(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.150"},
+        follow_redirects=False,
+    )
+    form = client.get(lookup.headers["location"])
+    rejected = client.post(
+        "/inventory/assets",
+        data={
+            "csrf_token": _csrf(form.text),
+            "asset_type": "PRINTER",
+            "return_location_id": location_id,
+            "custom_name": "Принтер 150",
+            "manufacturer": "HP",
+            "ip_address": "192.168.100.150",
+            "mac_address": "not-a-mac",
+        },
+        follow_redirects=False,
+    )
+
+    assert rejected.headers["location"] == f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}"
+    returned_form = client.get(rejected.headers["location"])
+    assert "invalid inventory identifier" in returned_form.text
+    assert 'value="Принтер 150"' in returned_form.text
+    assert 'value="HP"' in returned_form.text
+    assert 'value="192.168.100.150"' in returned_form.text
+    assert 'value="not-a-mac"' in returned_form.text
 
 
 def test_new_mobile_asset_requires_discovery_and_prefills_collection_data(tmp_path, monkeypatch):
