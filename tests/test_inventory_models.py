@@ -69,6 +69,7 @@ def test_init_db_migrates_pc_columns_transfers_notes_and_normalizes_details(tmp_
     reset_engine_cache()
     with get_engine().begin() as connection:
         Base.metadata.create_all(bind=connection, tables=[InventoryAsset.__table__])
+        connection.execute(text("ALTER TABLE inventory_assets ADD COLUMN notes TEXT"))
         connection.execute(
             text(
                 "CREATE TABLE inventory_pc_details ("
@@ -122,11 +123,13 @@ def test_init_db_transfers_note_into_blank_description(tmp_path, monkeypatch):
     """A comment is the description when the physical card did not have one yet."""
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'inventory-notes.sqlite'}")
 
-    from app.db import get_engine, init_db, reset_engine_cache
+    from app.db import Base, get_engine, init_db, reset_engine_cache
+    from app.inventory.models import InventoryAsset
 
     reset_engine_cache()
-    init_db()
     with get_engine().begin() as connection:
+        Base.metadata.create_all(bind=connection, tables=[InventoryAsset.__table__])
+        connection.execute(text("ALTER TABLE inventory_assets ADD COLUMN notes TEXT"))
         connection.execute(
             text(
                 "INSERT INTO inventory_assets "

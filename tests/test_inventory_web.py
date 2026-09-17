@@ -78,7 +78,7 @@ def test_inventory_page_requires_login_and_has_mobile_capture_controls(tmp_path,
     assert page.status_code == 200
     assert "ИНВЕНТАРИЗАЦИЯ" in page.text
     assert "inventory-mobile" in page.text
-    assert "/static/inventory.css?v=fb00d96" in page.text
+    assert "/static/inventory.css?v=430b4c6" in page.text
     assert "/static/app.css?v=d7c1a62" in page.text
     assert "/static/app.js?v=d7c1a62" in page.text
     assert 'class="mobile-nav-toggle"' in page.text
@@ -323,6 +323,44 @@ def test_saved_mobile_asset_card_can_collapse_without_a_second_network_lookup(tm
     assert "ПОИСК В СЕТИ" not in detail.text
 
 
+def test_pc_card_groups_fields_and_keeps_location_navigation_outside_details(tmp_path, monkeypatch):
+    """Collapsing a device card must not hide location navigation or its edit groups."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "218-groups"}, follow_redirects=False)
+    page = _prepare_manual_asset_form(client, monkeypatch, "PC")
+    created = client.post(
+        "/inventory/assets",
+        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-groups"},
+        follow_redirects=False,
+    )
+
+    detail = client.get(created.headers["location"])
+
+    assert '<fieldset class="inventory-field-group">' in detail.text
+    assert "<legend>Идентификация устройства</legend>" in detail.text
+    assert "<legend>Операционная система</legend>" in detail.text
+    assert '<select name="os_name">' in detail.text
+    assert '<option value="Windows">Windows</option>' in detail.text
+    assert '<select name="cpu_model">' in detail.text
+    assert '<option value="Intel">Intel</option>' in detail.text
+    assert '<select name="ram_type">' in detail.text
+    assert detail.text.index("</details>") < detail.text.index(">К ЛОКАЦИИ</a>")
+
+
+def test_monitor_card_excludes_network_and_pc_groups(tmp_path, monkeypatch):
+    """A monitor form stays focused on its own physical parameters."""
+    client, csrf = _client(tmp_path, monkeypatch)
+    client.post("/inventory/locations", data={"csrf_token": csrf, "name": "218-monitor"}, follow_redirects=False)
+
+    form = _prepare_manual_asset_form(client, monkeypatch, "MONITOR")
+
+    assert "<legend>Параметры устройства</legend>" in form.text
+    assert "<legend>Сеть</legend>" not in form.text
+    assert "<legend>Операционная система</legend>" not in form.text
+    assert "<legend>Процессор</legend>" not in form.text
+    assert "<legend>Оперативная память</legend>" not in form.text
+
+
 def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
     """The saved owner card accepts a camera image even if the browser reports the wrong MIME."""
     monkeypatch.setenv("INVENTORY_PHOTO_ROOT", str(tmp_path / "photos"))
@@ -353,13 +391,25 @@ def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
     created = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-01", "os_name": "Windows 11", "ram_gb": "16"},
+        data={
+            "csrf_token": _csrf(page.text),
+            "asset_type": "PC",
+            "custom_name": "PC-01",
+            "os_name": "Windows",
+            "os_version": "11",
+            "cpu_model": "Intel",
+            "cpu_generation": "i5-11400",
+            "ram_type": "DDR4",
+            "ram_gb": "16",
+        },
         follow_redirects=False,
     )
     asset_id = created.headers["location"].rsplit("/", 1)[-1]
     detail = client.get(f"/inventory/assets/{asset_id}")
     assert 'name="ram_gb"' in detail.text
     assert 'value="16"' in detail.text
+    assert 'name="os_version" value="11"' in detail.text
+    assert 'name="notes"' not in detail.text
     assert 'value="None"' not in detail.text
 
 
@@ -853,7 +903,8 @@ def test_new_mobile_asset_prefills_nmap_operating_system(tmp_path, monkeypatch):
 
     form = client.get(lookup.headers["location"])
     assert "Источник: Nmap" in form.text
-    assert 'value="Windows 11 Pro"' in form.text
+    assert '<option value="Windows" selected>Windows</option>' in form.text
+    assert 'name="os_version" value="11 Pro"' in form.text
 
 
 def test_mobile_form_rejects_bad_identifier_without_server_error(tmp_path, monkeypatch):
@@ -882,6 +933,8 @@ def test_asset_update_keeps_fields_after_identifier_validation_error(tmp_path, m
             "return_location_id": location_id,
             "custom_name": "PC-04 исправленный",
             "manufacturer": "Iru",
+            "os_name": "Windows",
+            "os_version": "11",
             "ip_address": "192.168.100.150",
             "mac_address": "not-a-mac",
             "hostname": "pc-04",
@@ -895,5 +948,6 @@ def test_asset_update_keeps_fields_after_identifier_validation_error(tmp_path, m
     assert "Проверьте поле «MAC-адрес»" in returned_form.text
     assert 'value="PC-04 исправленный"' in returned_form.text
     assert 'value="Iru"' in returned_form.text
+    assert 'name="os_version" value="11"' in returned_form.text
     assert 'value="192.168.100.150"' in returned_form.text
     assert 'value="not-a-mac"' in returned_form.text

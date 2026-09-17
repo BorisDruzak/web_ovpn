@@ -19,23 +19,68 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="return_location_id" value="{{ return_location_id }}">
     {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% if manual_mode %}<input type="hidden" name="manual_mode" value="1">{% endif %}{% endif %}
-    <label>Название<input name="custom_name" value="{{ form_values.get('custom_name', '') }}" autocomplete="off"></label>
-    <label>Производитель<input name="manufacturer" value="{{ form_values.get('manufacturer', '') }}" autocomplete="off"></label>
-    <label>Модель<input name="model" value="{{ form_values.get('model', '') }}" autocomplete="off"></label>
-    <label>Serial<input name="serial_number" value="{{ form_values.get('serial_number', '') }}" autocomplete="off"></label>
-    <label>Инвентарный номер<input name="inventory_number" value="{{ form_values.get('inventory_number', '') }}" autocomplete="off"></label>
-    <label>Статус<select name="status"><option value="">Не указан</option>{% for item in asset_statuses %}<option value="{{ item.value }}" {% if form_values.get('status') == item.value %}selected{% endif %}>{{ asset_status_labels[item] }}</option>{% endfor %}</select></label>
-    {% if asset_type.value in ('PC', 'PRINTER', 'PHONE', 'OTHER') %}<label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
-    <label>MAC-адрес<input name="mac_address" value="{{ identifiers.get('mac') or '' }}" autocomplete="off"></label>
-    <label>Hostname<input name="hostname" value="{{ identifiers.get('hostname') or '' }}" autocomplete="off"></label>{% endif %}
-    {% if asset_type.value == 'PC' %}<label>ОС<input name="os_name" value="{{ details.get('os_name') or '' }}"></label><label>Процессор<input name="cpu_model" value="{{ details.get('cpu_model') or '' }}"></label><label>Поколение процессора<input name="cpu_generation" value="{{ details.get('cpu_generation') or '' }}"></label><label>Тип RAM<input name="ram_type" value="{{ details.get('ram_type') or '' }}"></label><label>Объём RAM, ГБ<input type="number" min="0" name="ram_gb" value="{{ details.get('ram_gb') or '' }}"></label><label>Тип накопителя<input name="storage_type" value="{{ details.get('storage_type') or '' }}"></label><label>Объём накопителя, ГБ<input type="number" min="0" name="storage_gb" value="{{ details.get('storage_gb') or '' }}"></label>{% endif %}
-    {% if asset_type.value == 'PRINTER' %}<label>Тип подключения<select name="connection_type"><option value="">Не указан</option><option value="network"{% if details.get('connection_type') == 'network' or details.get('connection_type').value == 'network' %} selected{% endif %}>Сетевой</option><option value="usb"{% if details.get('connection_type') == 'usb' or details.get('connection_type').value == 'usb' %} selected{% endif %}>USB</option></select></label><label>Счётчик страниц<input type="number" min="0" name="page_counter" value="{{ details.get('page_counter') or '' }}"></label>{% endif %}
-    {% if asset_type.value == 'PHONE' %}<label>Внутренний номер<input name="extension" value="{{ details.get('extension') or '' }}"></label>{% endif %}
-    {% if asset_type.value == 'MONITOR' %}<label>Диагональ<input name="diagonal_inches" value="{{ details.get('diagonal_inches') or '' }}"></label>{% endif %}
-    {% if asset_type.value == 'UPS' %}<label>Мощность VA<input type="number" min="0" name="power_va" value="{{ details.get('power_va') or '' }}"></label><label>Дата замены АКБ<input type="date" name="battery_replaced_at" value="{{ details.get('battery_replaced_at') or '' }}"></label>{% endif %}
-    {% if asset_type.value == 'PC' or asset_type.value == 'PHONE' %}<label>Ответственный<input name="assigned_person_name" value="{{ form_values.get('assigned_person_name', '') }}" autocomplete="off"></label><label>Логин<input name="login_name" value="{{ form_values.get('login_name', '') }}" autocomplete="off"></label>{% endif %}
-    <label>Описание<textarea name="description" rows="3">{{ form_values.get('description', '') }}</textarea></label>
-    <label>Комментарий<textarea name="notes" rows="3">{{ form_values.get('notes', '') }}</textarea></label>
+    <fieldset class="inventory-field-group">
+      <legend>Основные данные</legend>
+      <label>Название<input name="custom_name" value="{{ form_values.get('custom_name', '') }}" autocomplete="off"></label>
+      <label>Инвентарный номер<input name="inventory_number" value="{{ form_values.get('inventory_number', '') }}" autocomplete="off"></label>
+      <label>Статус<select name="status"><option value="">Не указан</option>{% for item in asset_statuses %}<option value="{{ item.value }}" {% if form_values.get('status') == item.value %}selected{% endif %}>{{ asset_status_labels[item] }}</option>{% endfor %}</select></label>
+    </fieldset>
+    <fieldset class="inventory-field-group">
+      <legend>Идентификация устройства</legend>
+      <label>Производитель<input name="manufacturer" value="{{ form_values.get('manufacturer', '') }}" autocomplete="off"></label>
+      <label>Модель<input name="model" value="{{ form_values.get('model', '') }}" autocomplete="off"></label>
+      <label>Serial<input name="serial_number" value="{{ form_values.get('serial_number', '') }}" autocomplete="off"></label>
+    </fieldset>
+    {% if asset_type.value in ('PC', 'PRINTER', 'PHONE', 'OTHER') %}
+    <fieldset class="inventory-field-group">
+      <legend>Сеть</legend>
+      <label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
+      <label>MAC-адрес<input name="mac_address" value="{{ identifiers.get('mac') or '' }}" autocomplete="off"></label>
+      <label>Hostname<input name="hostname" value="{{ identifiers.get('hostname') or '' }}" autocomplete="off"></label>
+    </fieldset>
+    {% endif %}
+    {% if asset_type.value == 'PC' %}
+    <fieldset class="inventory-field-group">
+      <legend>Операционная система</legend>
+      <label>ОС<select name="os_name"><option value="">Не указана</option><option value="Windows"{% if details.get('os_name') == 'Windows' %} selected{% endif %}>Windows</option><option value="Linux"{% if details.get('os_name') == 'Linux' %} selected{% endif %}>Linux</option></select></label>
+      <label>Версия ОС<input name="os_version" value="{{ details.get('os_version') or '' }}"></label>
+    </fieldset>
+    <fieldset class="inventory-field-group">
+      <legend>Процессор</legend>
+      <label>Производитель<select name="cpu_model"><option value="">Не указан</option><option value="Intel"{% if details.get('cpu_model') == 'Intel' %} selected{% endif %}>Intel</option><option value="AMD"{% if details.get('cpu_model') == 'AMD' %} selected{% endif %}>AMD</option></select></label>
+      <label>Поколение / модель<input name="cpu_generation" value="{{ details.get('cpu_generation') or '' }}"></label>
+    </fieldset>
+    <fieldset class="inventory-field-group">
+      <legend>Оперативная память</legend>
+      <label>Тип RAM<select name="ram_type"><option value="">Не указан</option><option value="DDR3"{% if details.get('ram_type') == 'DDR3' %} selected{% endif %}>DDR3</option><option value="DDR4"{% if details.get('ram_type') == 'DDR4' %} selected{% endif %}>DDR4</option></select></label>
+      <label>Объём RAM, ГБ<input type="number" min="0" name="ram_gb" value="{{ details.get('ram_gb') or '' }}"></label>
+    </fieldset>
+    <fieldset class="inventory-field-group">
+      <legend>Накопитель</legend>
+      <label>Тип накопителя<input name="storage_type" value="{{ details.get('storage_type') or '' }}"></label>
+      <label>Объём накопителя, ГБ<input type="number" min="0" name="storage_gb" value="{{ details.get('storage_gb') or '' }}"></label>
+    </fieldset>
+    {% endif %}
+    {% if asset_type.value in ('PRINTER', 'PHONE', 'MONITOR', 'UPS') %}
+    <fieldset class="inventory-field-group">
+      <legend>Параметры устройства</legend>
+      {% if asset_type.value == 'PRINTER' %}<label>Тип подключения<select name="connection_type"><option value="">Не указан</option><option value="network"{% if details.get('connection_type') == 'network' or details.get('connection_type').value == 'network' %} selected{% endif %}>Сетевой</option><option value="usb"{% if details.get('connection_type') == 'usb' or details.get('connection_type').value == 'usb' %} selected{% endif %}>USB</option></select></label><label>Счётчик страниц<input type="number" min="0" name="page_counter" value="{{ details.get('page_counter') or '' }}"></label>{% endif %}
+      {% if asset_type.value == 'PHONE' %}<label>Внутренний номер<input name="extension" value="{{ details.get('extension') or '' }}"></label>{% endif %}
+      {% if asset_type.value == 'MONITOR' %}<label>Диагональ<input name="diagonal_inches" value="{{ details.get('diagonal_inches') or '' }}"></label>{% endif %}
+      {% if asset_type.value == 'UPS' %}<label>Мощность VA<input type="number" min="0" name="power_va" value="{{ details.get('power_va') or '' }}"></label><label>Дата замены АКБ<input type="date" name="battery_replaced_at" value="{{ details.get('battery_replaced_at') or '' }}"></label>{% endif %}
+    </fieldset>
+    {% endif %}
+    {% if asset_type.value == 'PC' or asset_type.value == 'PHONE' %}
+    <fieldset class="inventory-field-group">
+      <legend>Пользователь</legend>
+      <label>Ответственный<input name="assigned_person_name" value="{{ form_values.get('assigned_person_name', '') }}" autocomplete="off"></label>
+      <label>Логин<input name="login_name" value="{{ form_values.get('login_name', '') }}" autocomplete="off"></label>
+    </fieldset>
+    {% endif %}
+    <fieldset class="inventory-field-group">
+      <legend>Описание</legend>
+      <label>Описание<textarea name="description" rows="3">{{ form_values.get('description', '') }}</textarea></label>
+    </fieldset>
     <button class="button inventory-primary" type="submit">СОХРАНИТЬ</button>
     {% if not asset %}<button class="button secondary" type="submit" name="save_next" value="1">СОХРАНИТЬ И СЛЕДУЮЩЕЕ</button>{% endif %}
   </form>
@@ -49,8 +94,8 @@
   </form>
   {% if photos %}<ul class="inventory-children">{% for photo in photos %}<li><a href="/inventory/photos/{{ photo.id }}">{{ photo.original_filename or 'Фото' }}</a></li>{% endfor %}</ul>{% endif %}
   </section>
+  </details>
   {% endif %}
   <a class="button secondary" href="{% if return_location_id %}/inventory/locations/{{ return_location_id }}{% else %}/inventory{% endif %}">К ЛОКАЦИИ</a>
-  {% if asset %}</details>{% endif %}
 </section>
 {% endblock %}

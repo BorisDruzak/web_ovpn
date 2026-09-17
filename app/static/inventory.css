@@ -29,4 +29,7 @@
 .inventory-asset-card > summary, .inventory-parent-card > summary { cursor: pointer; font-weight: 700; }
 .inventory-asset-card[open] > summary { padding-bottom: 4px; }
 .inventory-device-photos { display: grid; gap: 10px; padding: 14px; border: 1px solid #d7dde7; border-radius: 12px; background: #fff; }
+.inventory-field-group { display: grid; gap: 10px; margin: 0; padding: 14px; border: 1px solid #d7dde7; border-radius: 10px; }
+.inventory-field-group legend { padding: 0 6px; font-weight: 700; }
+.inventory-form > .button.secondary { width: 100%; }
 @media (max-width: 900px) { .topbar { padding: 8px 0 18px; } .request-id { display: none; } .inventory-mobile { max-width: none; } .button { min-height: 44px; width: 100%; text-align: center; } }

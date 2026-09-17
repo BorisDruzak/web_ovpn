@@ -54,7 +54,6 @@ ASSET_FIELDS = frozenset(
         "assigned_person_name",
         "login_name",
         "description",
-        "notes",
         "last_verified_at",
     }
 )
