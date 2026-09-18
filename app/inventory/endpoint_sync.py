@@ -32,6 +32,7 @@ from ..endpoint_platform_client import (
 from ..netctl_client import run_netctl
 from .endpoint import (
     InventoryEndpointService,
+    PROFILE_FIELDS,
     STATE_MAX_AGE,
     endpoint_profile_freshness,
     _parsed,
@@ -254,6 +255,13 @@ def sync_confirmed_bindings(
                     if profile == "network_v1"
                     else {}
                 )
+                # A received profile replaces its current projection. Only an
+                # absent/hashless profile retains old fields as unavailable;
+                # omitted fields in a valid new snapshot must not inherit its date.
+                for field in PROFILE_FIELDS.get(profile, set()):
+                    context.pop(field, None)
+                if profile == "baseline_v1":
+                    context.pop("os_family", None)
                 context.update(fields)
                 if getattr(state, prefix + "_semantic_hash") != digest:
                     db.add(
@@ -470,8 +478,9 @@ def run_inventory_endpoint_sync(now: datetime | None = None, *, clock=None) -> i
             sync_confirmed_bindings(
                 db, prepared, applied_at, clock=clock, full_pass=prepared.full_pass
             )
-            statuses = _compatibility_statuses(db, applied_at)
-            rebuild_endpoint_agent_network_cache(db, applied_at)
+            projected_at = _utc(clock())
+            statuses = _compatibility_statuses(db, projected_at)
+            rebuild_endpoint_agent_network_cache(db, projected_at)
         # CLI IO is also outside the database transaction. Canonical Endpoint
         # state remains useful if the independent Netctl projection is unavailable.
         sync_endpoint_agent_fingerprint_evidence(

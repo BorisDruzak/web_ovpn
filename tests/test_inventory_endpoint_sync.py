@@ -494,3 +494,85 @@ def test_valid_snapshot_completed_during_remote_reads_uses_completion_clock(
     assert (
         context["freshness"]["endpoint"]["last_success_at"] == clock_time[0].isoformat()
     )
+
+
+def test_advancing_clock_keeps_healthy_cache_and_netctl_classification(
+    session, monkeypatch
+):
+    import json
+    from app.inventory import endpoint_sync as worker
+
+    pc(session)
+    session.commit()
+    ticks = [0]
+
+    def advancing_clock():
+        ticks[0] += 1
+        return NOW + timedelta(milliseconds=ticks[0])
+
+    calls = []
+    monkeypatch.setattr(worker, "get_endpoint_context_adapter", Adapter)
+    monkeypatch.setattr(
+        worker, "run_netctl", lambda args, timeout: calls.append(args) or {}
+    )
+    assert worker.run_inventory_endpoint_sync(NOW, clock=advancing_clock) == 0
+    session.expire_all()
+    assert session.get(EndpointAgentNetworkLink, "mac:" + MAC).state == "confirmed"
+    assert json.loads(calls[0][3]) == [
+        {
+            "asset_key": "mac:" + MAC,
+            "state": "confirmed",
+            "device_type": "pc",
+            "os_family": "windows",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "sections", [{}, {"hardware": {"cpu_model": "Replacement CPU"}}]
+)
+def test_partial_baseline_does_not_retimestamp_omitted_fields_or_republish_old_os(
+    session, monkeypatch, sections
+):
+    import json
+    from app.inventory import endpoint_sync as worker
+
+    asset = pc(session)
+    asset_id = asset.id
+    InventoryService().update_details(session, asset, {"ram_gb": 8})
+    worker.sync_confirmed_bindings(session, Adapter(), NOW)
+    session.commit()
+    later = NOW + timedelta(minutes=5)
+
+    class PartialAdapter(Adapter):
+        def read_profiles(self, device_id):
+            profiles = super().read_profiles(device_id)
+            profiles["baseline_v1"].update(
+                sections=sections,
+                semantic_hash="d" * 64,
+                collected_at=later.isoformat(),
+                id="partial-baseline",
+            )
+            return profiles
+
+    calls = []
+    monkeypatch.setattr(worker, "get_endpoint_context_adapter", PartialAdapter)
+    monkeypatch.setattr(
+        worker, "run_netctl", lambda args, timeout: calls.append(args) or {}
+    )
+    assert worker.run_inventory_endpoint_sync(later) == 0
+    session.expire_all()
+    context = InventoryEndpointService().asset_context(session, asset_id, later)
+    assert context["effective"]["ram_gb"]["value"] == 8
+    assert context["effective"]["ram_gb"]["source"] == "manual"
+    assert "ram_gb" not in context["sources"]["endpoint"]
+    assert "os_name" not in context["sources"]["endpoint"]
+    assert "storage_gb" not in context["sources"]["endpoint"]
+    if sections:
+        assert context["effective"]["cpu_model"]["value"] == "Replacement CPU"
+        assert context["effective"]["cpu_model"]["observed_at"] == later.isoformat()
+    assert session.get(EndpointAgentNetworkLink, "mac:" + MAC).device_id == DEVICE
+    assert json.loads(calls[0][3]) == [
+        {"asset_key": "mac:" + MAC, "state": "confirmed", "device_type": "pc"}
+    ]
+    assert any(row.data_json.get("ram_gb") == 16 for row in observations(session))
