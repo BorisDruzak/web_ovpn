@@ -30,8 +30,47 @@ def _project_device(value: Any) -> dict[str, Any]:
     return _pick(value, ("id", "device_identifier", "display_name", "retired_at"))
 
 
+def _project_section(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    return _pick(value, fields) if isinstance(value, dict) else {}
+
+
+def _project_section_list(value: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [_project_section(item, fields) for item in value if isinstance(item, dict)]
+
+
+def _project_snapshot_sections(profile: str, value: Any) -> dict[str, Any]:
+    """Copy only the published safe context profile shapes into web responses."""
+    if not isinstance(value, dict):
+        return {}
+    if profile == "baseline_v1":
+        return {
+            "system": _project_section(value.get("system"), ("platform", "distribution", "architecture")),
+            "hardware": _project_section(value.get("hardware"), ("manufacturer", "model", "cpu_model", "memory_bytes")),
+            "storage": _project_section_list(value.get("storage"), ("stable_key", "model", "size_bytes")),
+            "interfaces": _project_section_list(value.get("interfaces"), ("stable_key", "name", "link_type")),
+            "software": _project_section_list(value.get("software"), ("name", "version", "source")),
+        }
+    if profile == "health_v1":
+        return {
+            "resources": _project_section(value.get("resources"), ("uptime_seconds", "load_1m", "free_bytes")),
+            "services": _project_section_list(value.get("services"), ("name", "status")),
+        }
+    if profile == "network_v1":
+        return {
+            "default_route": _project_section(value.get("default_route"), ("interface", "gateway")),
+            "interfaces": _project_section_list(value.get("interfaces"), ("name", "addresses")),
+        }
+    return {}
+
+
 def _project_snapshot(value: Any) -> dict[str, Any]:
-    return _pick(value, ("id", "profile", "collected_at", "semantic_hash", "warnings", "sections"))
+    source = _dump(value)
+    return {
+        **_pick(source, ("id", "profile", "collected_at", "semantic_hash", "warnings")),
+        "sections": _project_snapshot_sections(str(source.get("profile", "")), source.get("sections")),
+    }
 
 
 def _project_collection(value: Any) -> dict[str, Any]:

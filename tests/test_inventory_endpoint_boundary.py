@@ -7,8 +7,13 @@ import pytest
 
 
 def test_inventory_endpoint_code_has_no_agent_transport_or_direct_http() -> None:
-    inventory_root = Path(__file__).resolve().parents[1] / "app" / "inventory"
-    source = "\n".join(path.read_text(encoding="utf-8") for path in inventory_root.glob("*.py"))
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    sources = [
+        *(app_root / "inventory").glob("*.py"),
+        app_root / "endpoint_platform_client.py",
+        app_root / "endpoint_context_adapter.py",
+    ]
+    source = "\n".join(path.read_text(encoding="utf-8") for path in sources)
 
     assert "websocket" not in source.lower()
     assert "httpx." not in source
@@ -47,12 +52,37 @@ def test_adapter_reads_all_known_profiles_without_fabricating_missing_profile() 
                     "collected_at": "2026-09-18T10:00:00Z",
                     "semantic_hash": "hash-1",
                     "warnings": [],
-                    "sections": {"system": {"platform": "windows"}},
+                    "sections": {
+                        "system": {
+                            "platform": "windows",
+                            "distribution": "Windows 11",
+                            "architecture": "x86_64",
+                            "unexpected": "must not escape",
+                        },
+                        "hardware": {
+                            "manufacturer": "Contoso",
+                            "model": "Workstation",
+                            "cpu_model": "CPU",
+                            "memory_bytes": 16,
+                            "serial_number": "must not escape",
+                        },
+                        "storage": [{"stable_key": "disk-1", "model": "SSD", "size_bytes": 1, "raw": "must not escape"}],
+                        "interfaces": [{"stable_key": "mac-001122334455", "name": "eth0", "link_type": "ethernet", "mac": "must not escape"}],
+                        "software": [{"name": "endpoint-agent", "version": "1", "source": "system", "token": "must not escape"}],
+                        "diagnostic": {"log_excerpt": "must not escape"},
+                    },
                 }
             return None
 
     profiles = EndpointContextAdapter(Client()).read_profiles(device_id)  # type: ignore[arg-type]
 
     assert profiles["baseline_v1"]["semantic_hash"] == "hash-1"
+    assert profiles["baseline_v1"]["sections"] == {
+        "system": {"platform": "windows", "distribution": "Windows 11", "architecture": "x86_64"},
+        "hardware": {"manufacturer": "Contoso", "model": "Workstation", "cpu_model": "CPU", "memory_bytes": 16},
+        "storage": [{"stable_key": "disk-1", "model": "SSD", "size_bytes": 1}],
+        "interfaces": [{"stable_key": "mac-001122334455", "name": "eth0", "link_type": "ethernet"}],
+        "software": [{"name": "endpoint-agent", "version": "1", "source": "system"}],
+    }
     assert profiles["health_v1"] is None
     assert profiles["network_v1"] is None

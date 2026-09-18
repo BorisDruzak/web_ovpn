@@ -112,6 +112,22 @@ def test_endpoint_platform_outage_returns_safe_degraded_response(tmp_path, monke
     assert response.json() == {"status": "degraded", "code": "endpoint_platform_unavailable"}
 
 
+def test_endpoint_platform_scope_denial_returns_distinct_redacted_degraded_response(tmp_path, monkeypatch):
+    client, auth_headers = make_endpoint_client(tmp_path, monkeypatch)
+    import app.api
+    from app.endpoint_platform_client import EndpointPlatformServiceScopeDenied
+
+    def scope_denied():
+        raise EndpointPlatformServiceScopeDenied()
+
+    monkeypatch.setattr(app.api, "get_endpoint_context_adapter", scope_denied)
+
+    response = client.get("/api/v1/endpoints", headers=auth_headers)
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "degraded", "code": "endpoint_platform_scope_denied"}
+
+
 def test_endpoint_routes_reject_diagnostic_collection_without_calling_adapter(tmp_path, monkeypatch):
     client, auth_headers = make_endpoint_client(tmp_path, monkeypatch)
     import app.api

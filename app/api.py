@@ -24,6 +24,7 @@ from .endpoint_context_adapter import get_endpoint_context_adapter
 from .endpoint_platform_client import (
     EndpointPlatformServiceDisabled,
     EndpointPlatformServiceError,
+    EndpointPlatformServiceScopeDenied,
 )
 from .netctl_client import NetctlError, run_netctl
 from .netopsctl_client import NetworkControlError, run_network_control
@@ -346,6 +347,8 @@ def _endpoint_context_operation(
         data = operation(adapter)
     except EndpointPlatformServiceDisabled:
         code = "endpoint_platform_disabled"
+    except EndpointPlatformServiceScopeDenied:
+        code = "endpoint_platform_scope_denied"
     except EndpointPlatformServiceError:
         code = "endpoint_platform_unavailable"
     except Exception:
