@@ -102,3 +102,4 @@ class EndpointDiscrepancyResolution(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action: Literal["accept_endpoint", "keep_manual", "mark_verified"]
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")

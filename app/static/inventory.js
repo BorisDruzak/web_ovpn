@@ -5,13 +5,23 @@ document.addEventListener("change", (event) => {
   }
 });
 
+const inventoryManualForm = document.querySelector("[data-inventory-asset-form]");
+const inventoryManualDraft = () => inventoryManualForm
+  ? new URLSearchParams(new FormData(inventoryManualForm)).toString() : "";
+const inventoryInitialDraft = inventoryManualDraft();
+
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-endpoint-action], [data-endpoint-read]");
   if (!button || button.disabled) return;
   const card = button.closest("[data-endpoint-card]");
   if (!card || card.dataset.busy === "true") return;
-  if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
   const feedback = card.querySelector("[data-endpoint-feedback]");
+  if (inventoryManualDraft() !== inventoryInitialDraft) {
+    feedback.textContent = "Сохраните изменения карточки перед действием с агентом. Несохранённые поля оставлены в форме.";
+    feedback.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
   const read = Boolean(button.dataset.endpointRead);
   const path = button.dataset.endpointRead || button.dataset.endpointAction;
   // Only the local Inventory API can be called by this UI.
@@ -27,7 +37,7 @@ document.addEventListener("click", async (event) => {
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": card.dataset.csrf },
       body: read ? undefined : JSON.stringify(button.dataset.resolution
-        ? { action: button.dataset.resolution } : { profile: "baseline_v1" }),
+        ? { action: button.dataset.resolution, expected_revision: button.dataset.revision } : { profile: "baseline_v1" }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -36,13 +46,17 @@ document.addEventListener("click", async (event) => {
         endpoint_platform_scope_denied: "Недостаточно прав сервиса Endpoint. Обратитесь к администратору.",
         endpoint_platform_unavailable: "Endpoint временно недоступен. Сохранённые данные доступны.",
       };
-      feedback.textContent = messages[result.code] || (response.status === 401
+      feedback.textContent = response.status === 409
+        ? "Данные расхождения изменились. Обновите карточку и проверьте новые значения перед решением."
+        : messages[result.code] || (response.status === 401
         ? "Сессия завершена. Войдите снова."
         : "Действие не выполнено. Обновите карточку и проверьте актуальность привязки.");
     } else if (response.status === 202) {
       feedback.textContent = "Обновление запрошено. Результат появится после плановой синхронизации; обновите карточку позже.";
     } else if (read && !result.data.length) {
       feedback.textContent = "Сохранённых кандидатов нет. Дождитесь плановой синхронизации и повторите поиск.";
+    } else if (inventoryManualDraft() !== inventoryInitialDraft) {
+      feedback.textContent = "Действие выполнено. Сохраните введённые изменения карточки перед обновлением страницы.";
     } else {
       window.location.reload();
     }

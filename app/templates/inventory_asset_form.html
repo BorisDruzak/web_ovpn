@@ -13,8 +13,8 @@
   {% set freshness_labels = {'fresh': 'Актуально', 'stale': 'Данные устарели', 'unavailable': 'Endpoint временно недоступен', 'missing': 'Данные ещё не получены'} %}
   {% set source_labels = {'endpoint': 'Endpoint', 'manual': 'Ручные данные', 'netctl': 'Netctl'} %}
   {% set fields = [('os_name', 'ОС'), ('os_version', 'Версия ОС'), ('os_build', 'Сборка ОС'), ('cpu_model', 'CPU'), ('cpu_generation', 'Модель CPU'), ('ram_gb', 'RAM, ГБ'), ('storage_type', 'Накопитель'), ('storage_gb', 'Объём, ГБ'), ('hostname', 'Hostname'), ('ip', 'IP-адрес'), ('mac', 'MAC-адрес'), ('serial_number', 'Serial')] %}
-  {% macro endpoint_action(path, label, action='', confirm='') %}
-  <button type="button" class="button secondary" data-endpoint-action="{{ api_root }}/{{ path }}"{% if action %} data-resolution="{{ action }}"{% endif %}{% if confirm %} data-confirm="{{ confirm }}"{% endif %}>{{ label }}</button>
+  {% macro endpoint_action(path, label, action='', confirm='', revision='') %}
+  <button type="button" class="button secondary" data-endpoint-action="{{ api_root }}/{{ path }}"{% if action %} data-resolution="{{ action }}" data-revision="{{ revision }}"{% endif %}{% if confirm %} data-confirm="{{ confirm }}"{% endif %}>{{ label }}</button>
   {% endmacro %}
   <section class="inventory-endpoint" data-endpoint-card data-csrf="{{ csrf_token(request) }}" aria-labelledby="endpoint-heading">
     <h2 id="endpoint-heading">АГЕНТ</h2>
@@ -63,9 +63,9 @@
         <p>Ручные данные: {{ item.manual }} · Endpoint: {{ item.endpoint }}</p>
         {% if item.disposition %}<small>Решение: {{ {'keep_manual': 'Оставить ручное', 'mark_verified': 'Проверено физически', 'accept_endpoint': 'Принять Endpoint'}.get(item.disposition.action, 'Зафиксировано') }}</small>{% endif %}
         <div class="inventory-endpoint-actions">
-          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Принять Endpoint', action='accept_endpoint', confirm='Заменить ручное значение этого поля данными Endpoint?') }}
-          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Оставить ручное', action='keep_manual') }}
-          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Проверено физически', action='mark_verified') }}
+          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Принять Endpoint', action='accept_endpoint', confirm='Заменить ручное значение этого поля данными Endpoint?', revision=item.revision) }}
+          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Оставить ручное', action='keep_manual', revision=item.revision) }}
+          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Проверено физически', action='mark_verified', revision=item.revision) }}
         </div>
       </div>
       {% endfor %}
@@ -86,7 +86,7 @@
     <small>Проверьте и при необходимости измените поля перед сохранением.</small>
   </section>
   {% endif %}
-  <form method="post" action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
+  <form method="post" data-inventory-asset-form action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="return_location_id" value="{{ return_location_id }}">
     {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% if manual_mode %}<input type="hidden" name="manual_mode" value="1">{% endif %}{% endif %}
@@ -171,5 +171,5 @@
 </section>
 {% endblock %}
 {% block page_scripts %}
-{% if asset and asset_type.value == 'PC' %}<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-1" defer></script>{% endif %}
+{% if asset and asset_type.value == 'PC' %}<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-2" defer></script>{% endif %}
 {% endblock %}

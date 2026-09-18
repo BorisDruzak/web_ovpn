@@ -106,8 +106,9 @@ def test_endpoint_display_values_are_escaped(web):
 def test_session_context_and_disposition_apply_without_bearer(web):
     asset, _ = seed()
     page = web.get(f"/inventory/assets/{asset}")
+    revision = page.text.split('data-revision="')[1].split('"')[0]
     response = web.post(f"/api/v1/inventory/assets/{asset}/discrepancies/ram_gb/resolve",
-                        headers={"X-CSRF-Token": _csrf(page.text)}, json={"action": "keep_manual"})
+                        headers={"X-CSRF-Token": _csrf(page.text)}, json={"action": "keep_manual", "expected_revision": revision})
     assert response.status_code == 200
     context = web.get(f"/api/v1/inventory/assets/{asset}/context")
     assert context.status_code == 200
@@ -137,3 +138,42 @@ def test_endpoint_session_auth_is_narrow_and_rejects_invalid_bearer(web, monkeyp
     assert TestClient(app).get(route).status_code == 401
     assert web.get(route, headers={"Authorization": "Bearer invalid"}).status_code == 401
     assert web.get("/api/v1/inventory/assets").status_code == 401
+
+
+@pytest.mark.parametrize("change", ["endpoint", "manual", "binding"])
+def test_rendered_discrepancy_rejects_changed_values_or_binding(web, change):
+    from app.db import get_sessionmaker
+    from app.inventory.endpoint import InventoryEndpointService
+    from app.inventory.models import InventoryPCDetails, InventoryObservation
+    from sqlalchemy import select
+    asset, binding = seed()
+    page = web.get(f"/inventory/assets/{asset}")
+    context = web.get(f"/api/v1/inventory/assets/{asset}/context").json()["data"]
+    rendered_revision = context["discrepancies"][0]["revision"]
+    with get_sessionmaker()() as db:
+        if change == "endpoint":
+            db.get(InventoryEndpointState, binding).safe_context_json = {"ram_gb": 32}
+        elif change == "manual":
+            db.get(InventoryPCDetails, asset).ram_gb = 4
+        else:
+            new = InventoryEndpointService().replace_binding(db, asset, binding,
+                "22222222-2222-2222-2222-222222222222", "fixture", datetime.now(timezone.utc))
+            db.add(InventoryEndpointState(binding_id=new.id, asset_id=asset,
+                endpoint_device_id=new.external_id, safe_context_json={"ram_gb": 16}))
+        db.commit()
+    response = web.post(f"/api/v1/inventory/assets/{asset}/discrepancies/ram_gb/resolve",
+                        headers={"X-CSRF-Token": _csrf(page.text)},
+                        json={"action": "accept_endpoint", "expected_revision": rendered_revision})
+    assert response.status_code == 409
+    with get_sessionmaker()() as db:
+        assert db.get(InventoryPCDetails, asset).ram_gb == (4 if change == "manual" else 8)
+        assert not any(row.data_json.get("kind") == "endpoint_disposition"
+                       for row in db.scalars(select(InventoryObservation)))
+
+
+def test_discrepancy_requires_rendered_revision(web):
+    asset, _ = seed()
+    page = web.get(f"/inventory/assets/{asset}")
+    response = web.post(f"/api/v1/inventory/assets/{asset}/discrepancies/ram_gb/resolve",
+                        headers={"X-CSRF-Token": _csrf(page.text)}, json={"action": "accept_endpoint"})
+    assert response.status_code == 422

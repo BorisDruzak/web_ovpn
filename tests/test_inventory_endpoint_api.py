@@ -160,7 +160,7 @@ def test_all_endpoint_routes_require_authentication(api, path, method):
     ("endpoint-bindings/binding/reject", None),
     ("endpoint-bindings/binding/detach", None),
     ("endpoint-refresh", {"profile": "baseline_v1"}),
-    ("discrepancies/ram_gb/resolve", {"action": "keep_manual"}),
+    ("discrepancies/ram_gb/resolve", {"action": "keep_manual", "expected_revision": "0" * 64}),
 ])
 def test_mutations_require_csrf_before_any_action(api, suffix, payload, monkeypatch):
     client, headers = api
@@ -175,7 +175,8 @@ def test_mutations_require_csrf_before_any_action(api, suffix, payload, monkeypa
 def test_discrepancy_actions_change_local_projection_and_leave_audit(api, action, expected):
     client, headers = api
     asset, _ = seed()
-    response = client.post(f"{ROOT}/assets/{asset}/discrepancies/ram_gb/resolve", headers=headers, json={"action": action})
+    revision = client.get(f"{ROOT}/assets/{asset}/context", headers=headers).json()["data"]["discrepancies"][0]["revision"]
+    response = client.post(f"{ROOT}/assets/{asset}/discrepancies/ram_gb/resolve", headers=headers, json={"action": action, "expected_revision": revision})
     assert response.status_code == 200
     context = client.get(f"{ROOT}/assets/{asset}/context", headers=headers).json()["data"]
     assert context["effective"]["ram_gb"]["value"] == expected
@@ -264,7 +265,7 @@ def test_refresh_rejects_non_pc_unbound_and_unsafe_profile_before_remote_call(ap
         assert client.post(f"{ROOT}/assets/{asset}/endpoint-refresh", headers=headers, json={"profile": "baseline_v1"}).status_code == 400
     assert client.get(f"{ROOT}/assets/{monitor}/endpoint-candidates", headers=headers).status_code == 400
     assert client.post(f"{ROOT}/assets/{candidate}/endpoint-refresh", headers=headers, json={"profile": "diagnostic_v1"}).status_code == 422
-    assert client.post(f"{ROOT}/assets/{candidate}/discrepancies/location_id/resolve", headers=headers, json={"action": "accept_endpoint"}).status_code == 400
+    assert client.post(f"{ROOT}/assets/{candidate}/discrepancies/location_id/resolve", headers=headers, json={"action": "accept_endpoint", "expected_revision": "0" * 64}).status_code == 400
 
 
 def test_missing_asset_context_returns_not_found(api):

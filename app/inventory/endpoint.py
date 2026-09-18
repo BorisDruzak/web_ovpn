@@ -6,6 +6,8 @@ normalized state in the worker; this service never commits the caller's session.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
@@ -57,6 +59,15 @@ PROFILE_FIELDS = {
     - {"online", "last_seen_at", "current_user", "agent_version"},
     "network_v1": {"ip", "mac"},
 }
+
+
+class InventoryEndpointConflict(InventoryValidationError):
+    """The rendered discrepancy no longer identifies the current comparison."""
+
+
+def _discrepancy_revision(asset_id: str, binding_id: str, device_id: str, field: str, manual: Any, endpoint: Any) -> str:
+    value = json.dumps([asset_id, binding_id, device_id, field, manual, endpoint], separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _utc(value: datetime) -> datetime:
@@ -681,6 +692,7 @@ class InventoryEndpointService:
                     "field": field,
                     "manual": manual_value,
                     "endpoint": endpoint_value,
+                    "revision": _discrepancy_revision(asset_id, binding.id, binding.external_id, field, manual_value, endpoint_value),
                     "disposition": disposition,
                 }
             )
@@ -763,6 +775,7 @@ class InventoryEndpointService:
         action: str,
         actor: str,
         now: datetime,
+        expected_revision: str | None = None,
     ) -> InventoryObservation:
         actor = self._actor(actor)
         asset = self._pc(db, asset_id)
@@ -776,6 +789,10 @@ class InventoryEndpointService:
         discrepancy = next(
             (d for d in context["discrepancies"] if d["field"] == field), None
         )
+        if expected_revision is not None and (
+            discrepancy is None or discrepancy["revision"] != expected_revision
+        ):
+            raise InventoryEndpointConflict("inventory_endpoint_discrepancy_changed")
         if discrepancy is None:
             raise InventoryValidationError("current Endpoint discrepancy not found")
         old, endpoint_value = discrepancy["manual"], discrepancy["endpoint"]

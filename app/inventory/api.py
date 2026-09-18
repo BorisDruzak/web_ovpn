@@ -19,7 +19,7 @@ from ..endpoint_context_adapter import get_endpoint_context_adapter
 from ..endpoint_platform_client import EndpointPlatformServiceDisabled, EndpointPlatformServiceScopeDenied
 from ..netctl_client import run_netctl
 from .lookup import InventoryLookup, InventoryLookupError
-from .endpoint import InventoryEndpointService
+from .endpoint import InventoryEndpointConflict, InventoryEndpointService
 from .models import InventoryAsset, InventoryAssetPhoto, InventoryAssetRelation, InventoryAssetType, InventoryExternalBinding, InventoryExternalBindingStatus, InventoryLocation, InventoryObservationSource, InventoryPhotoType, InventorySession
 from .schemas import AssetPayload, AssetUpdate, EndpointDiscrepancyResolution, EndpointRefreshRequest, LocationCreate, LocationUpdate, LookupRequest, RelationCreate, SessionCheckCreate, WorkplaceCreate
 from .service import InventoryService, InventoryValidationError
@@ -212,7 +212,9 @@ def resolve_endpoint_discrepancy(asset_id: str, field: str, payload: EndpointDis
     _mutation(request, csrf)
     _endpoint_asset(db, asset_id)
     try:
-        observation = endpoint_service.resolve_discrepancy(db, asset_id, field, payload.action, actor, datetime.now(timezone.utc))
+        observation = endpoint_service.resolve_discrepancy(db, asset_id, field, payload.action, actor, datetime.now(timezone.utc), expected_revision=payload.expected_revision)
+    except InventoryEndpointConflict as exc:
+        raise HTTPException(status_code=409, detail="inventory_endpoint_discrepancy_changed") from exc
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     write_audit(db, request, actor, "inventory.endpoint.discrepancy.resolve", "ok", f"{field}:{payload.action}", target_client=asset_id)
