@@ -4,7 +4,20 @@ from datetime import date, datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Index, Integer, JSON, String, Text, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..db import Base
@@ -47,6 +60,15 @@ class InventoryObservationSource(StrEnum):
     NETCTL = "netctl"
     NMAP = "nmap"
     MANUAL = "manual"
+    ENDPOINT = "endpoint"
+
+
+class InventoryExternalBindingStatus(StrEnum):
+    CANDIDATE = "candidate"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+    REPLACED = "replaced"
+    ENDED = "ended"
 
 
 class InventoryCheckResult(StrEnum):
@@ -118,6 +140,138 @@ class InventoryAssetIdentifier(Base):
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class InventoryExternalBinding(Base):
+    __tablename__ = "inventory_external_bindings"
+    __table_args__ = (
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 100",
+            name="ck_inventory_binding_confidence",
+        ),
+        Index(
+            "uq_inventory_endpoint_confirmed_asset",
+            "asset_id",
+            "source",
+            unique=True,
+            sqlite_where=text("status = 'confirmed' AND ended_at IS NULL"),
+            postgresql_where=text("status = 'confirmed' AND ended_at IS NULL"),
+        ),
+        Index(
+            "uq_inventory_endpoint_confirmed_device",
+            "source",
+            "external_id",
+            unique=True,
+            sqlite_where=text("status = 'confirmed' AND ended_at IS NULL"),
+            postgresql_where=text("status = 'confirmed' AND ended_at IS NULL"),
+        ),
+        Index(
+            "uq_inventory_endpoint_active_candidate",
+            "asset_id",
+            "source",
+            "external_id",
+            unique=True,
+            sqlite_where=text("status = 'candidate' AND ended_at IS NULL"),
+            postgresql_where=text("status = 'candidate' AND ended_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=new_inventory_id
+    )
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("inventory_assets.id"), index=True, nullable=False
+    )
+    source: Mapped[str] = mapped_column(
+        String(64), default="endpoint_platform", nullable=False
+    )
+    external_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    status: Mapped[InventoryExternalBindingStatus] = mapped_column(
+        Enum(
+            InventoryExternalBindingStatus,
+            values_callable=lambda enum_type: [member.value for member in enum_type],
+            native_enum=False,
+        ),
+        nullable=False,
+    )
+    binding_method: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_json: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class InventoryEndpointState(Base):
+    __tablename__ = "inventory_endpoint_state"
+
+    binding_id: Mapped[str] = mapped_column(
+        ForeignKey("inventory_external_bindings.id"), primary_key=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        ForeignKey("inventory_assets.id"), index=True, nullable=False
+    )
+    endpoint_device_id: Mapped[str] = mapped_column(
+        String(255), index=True, nullable=False
+    )
+    online: Mapped[bool | None] = mapped_column(Boolean)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    agent_version: Mapped[str | None] = mapped_column(String(128))
+    baseline_snapshot_id: Mapped[str | None] = mapped_column(String(255))
+    health_snapshot_id: Mapped[str | None] = mapped_column(String(255))
+    network_snapshot_id: Mapped[str | None] = mapped_column(String(255))
+    baseline_semantic_hash: Mapped[str | None] = mapped_column(String(64))
+    health_semantic_hash: Mapped[str | None] = mapped_column(String(64))
+    network_semantic_hash: Mapped[str | None] = mapped_column(String(64))
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    unavailable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    safe_context_json: Mapped[dict[str, object]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class InventoryEndpointSyncControl(Base):
+    __tablename__ = "inventory_endpoint_sync_control"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_inventory_endpoint_sync_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    lease_owner: Mapped[str | None] = mapped_column(String(255))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_presence_sync_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_full_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_safe_error_code: Mapped[str | None] = mapped_column(String(64))
+    last_reconciliation_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
 
 class InventoryIdentifierSyncRun(Base):
@@ -210,6 +364,14 @@ class InventoryObservation(Base):
     source: Mapped[InventoryObservationSource] = mapped_column(Enum(InventoryObservationSource), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     data_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("inventory_external_bindings.id"), index=True
+    )
+    endpoint_device_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    profile: Mapped[str | None] = mapped_column(String(32))
+    snapshot_id: Mapped[str | None] = mapped_column(String(255))
+    semantic_hash: Mapped[str | None] = mapped_column(String(64))
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class InventorySession(Base):

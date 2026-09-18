@@ -70,6 +70,134 @@ _CREATE_INVENTORY_SYNC_SUCCESS_INDEX = text(
 )
 
 
+_NORMALIZE_DUPLICATE_ENDPOINT_CONFIRMED_ASSETS = text(
+    """
+    WITH ranked AS (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY asset_id, source
+                   ORDER BY last_verified_at DESC, updated_at DESC, created_at DESC, id DESC
+               ) AS row_number
+        FROM inventory_external_bindings
+        WHERE status = 'confirmed' AND ended_at IS NULL
+    )
+    UPDATE inventory_external_bindings
+    SET status = 'replaced',
+        ended_at = COALESCE(last_verified_at, updated_at, created_at, CURRENT_TIMESTAMP)
+    WHERE id IN (SELECT id FROM ranked WHERE row_number > 1)
+    """
+)
+
+_NORMALIZE_DUPLICATE_ENDPOINT_CONFIRMED_DEVICES = text(
+    """
+    WITH ranked AS (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY source, external_id
+                   ORDER BY last_verified_at DESC, updated_at DESC, created_at DESC, id DESC
+               ) AS row_number
+        FROM inventory_external_bindings
+        WHERE status = 'confirmed' AND ended_at IS NULL
+    )
+    UPDATE inventory_external_bindings
+    SET status = 'replaced',
+        ended_at = COALESCE(last_verified_at, updated_at, created_at, CURRENT_TIMESTAMP)
+    WHERE id IN (SELECT id FROM ranked WHERE row_number > 1)
+    """
+)
+
+_NORMALIZE_DUPLICATE_ENDPOINT_CANDIDATES = text(
+    """
+    WITH ranked AS (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY asset_id, source, external_id
+                   ORDER BY last_verified_at DESC, updated_at DESC, created_at DESC, id DESC
+               ) AS row_number
+        FROM inventory_external_bindings
+        WHERE status = 'candidate' AND ended_at IS NULL
+    )
+    UPDATE inventory_external_bindings
+    SET status = 'ended',
+        ended_at = COALESCE(last_verified_at, updated_at, created_at, CURRENT_TIMESTAMP)
+    WHERE id IN (SELECT id FROM ranked WHERE row_number > 1)
+    """
+)
+
+_CREATE_ENDPOINT_CONFIRMED_ASSET_INDEX = text(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_endpoint_confirmed_asset "
+    "ON inventory_external_bindings (asset_id, source) "
+    "WHERE status = 'confirmed' AND ended_at IS NULL"
+)
+
+_CREATE_ENDPOINT_CONFIRMED_DEVICE_INDEX = text(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_endpoint_confirmed_device "
+    "ON inventory_external_bindings (source, external_id) "
+    "WHERE status = 'confirmed' AND ended_at IS NULL"
+)
+
+_CREATE_ENDPOINT_ACTIVE_CANDIDATE_INDEX = text(
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_endpoint_active_candidate "
+    "ON inventory_external_bindings (asset_id, source, external_id) "
+    "WHERE status = 'candidate' AND ended_at IS NULL"
+)
+
+_CREATE_ENDPOINT_BINDING_PC_INSERT_TRIGGER = text(
+    """
+    CREATE TRIGGER IF NOT EXISTS ck_inventory_endpoint_binding_pc_insert
+    BEFORE INSERT ON inventory_external_bindings
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1 FROM inventory_assets
+        WHERE id = NEW.asset_id AND asset_type = 'PC'
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'inventory external binding requires a PC asset');
+    END
+    """
+)
+
+_CREATE_ENDPOINT_BINDING_PC_UPDATE_TRIGGER = text(
+    """
+    CREATE TRIGGER IF NOT EXISTS ck_inventory_endpoint_binding_pc_update
+    BEFORE UPDATE OF asset_id ON inventory_external_bindings
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1 FROM inventory_assets
+        WHERE id = NEW.asset_id AND asset_type = 'PC'
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'inventory external binding requires a PC asset');
+    END
+    """
+)
+
+_CREATE_ENDPOINT_BOUND_ASSET_PC_TRIGGER = text(
+    """
+    CREATE TRIGGER IF NOT EXISTS ck_inventory_endpoint_bound_asset_pc
+    BEFORE UPDATE OF asset_type ON inventory_assets
+    FOR EACH ROW
+    WHEN NEW.asset_type <> 'PC' AND EXISTS (
+        SELECT 1 FROM inventory_external_bindings
+        WHERE asset_id = OLD.id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'an Endpoint-bound inventory asset must remain a PC');
+    END
+    """
+)
+
+_CREATE_ENDPOINT_OBSERVATION_BINDING_INDEX = text(
+    "CREATE INDEX IF NOT EXISTS ix_inventory_observations_binding_id "
+    "ON inventory_observations (binding_id)"
+)
+
+_CREATE_ENDPOINT_OBSERVATION_DEVICE_INDEX = text(
+    "CREATE INDEX IF NOT EXISTS ix_inventory_observations_endpoint_device_id "
+    "ON inventory_observations (endpoint_device_id)"
+)
+
+
 def _prepare_inventory_sync_claim_index(engine) -> None:
     """Normalize legacy success races before metadata creates the SQLite partial index."""
     if engine.dialect.name != "sqlite":
@@ -88,6 +216,54 @@ def init_inventory_identifier_sync_schema() -> None:
     engine = get_engine()
     _prepare_inventory_sync_claim_index(engine)
     InventoryIdentifierSyncRun.__table__.create(bind=engine, checkfirst=True)
+
+
+def _prepare_inventory_endpoint_constraints(engine) -> None:
+    """Prepare only Endpoint binding constraints and observation lookup indexes."""
+    if engine.dialect.name != "sqlite":
+        return
+    table_names = set(inspect(engine).get_table_names())
+    with engine.begin() as connection:
+        if "inventory_external_bindings" in table_names:
+            connection.execute(_NORMALIZE_DUPLICATE_ENDPOINT_CONFIRMED_ASSETS)
+            connection.execute(_NORMALIZE_DUPLICATE_ENDPOINT_CONFIRMED_DEVICES)
+            connection.execute(_NORMALIZE_DUPLICATE_ENDPOINT_CANDIDATES)
+            connection.execute(_CREATE_ENDPOINT_CONFIRMED_ASSET_INDEX)
+            connection.execute(_CREATE_ENDPOINT_CONFIRMED_DEVICE_INDEX)
+            connection.execute(_CREATE_ENDPOINT_ACTIVE_CANDIDATE_INDEX)
+            if "inventory_assets" in table_names:
+                connection.execute(_CREATE_ENDPOINT_BINDING_PC_INSERT_TRIGGER)
+                connection.execute(_CREATE_ENDPOINT_BINDING_PC_UPDATE_TRIGGER)
+                connection.execute(_CREATE_ENDPOINT_BOUND_ASSET_PC_TRIGGER)
+        if "inventory_observations" in table_names:
+            observation_columns = {
+                column["name"]
+                for column in inspect(engine).get_columns("inventory_observations")
+            }
+            if "binding_id" in observation_columns:
+                connection.execute(_CREATE_ENDPOINT_OBSERVATION_BINDING_INDEX)
+            if "endpoint_device_id" in observation_columns:
+                connection.execute(_CREATE_ENDPOINT_OBSERVATION_DEVICE_INDEX)
+
+
+def init_inventory_endpoint_schema() -> None:
+    """Prepare only the Inventory Endpoint tables required by the sync worker."""
+    from .inventory.models import (
+        InventoryEndpointState,
+        InventoryEndpointSyncControl,
+        InventoryExternalBinding,
+    )
+
+    engine = get_engine()
+    Base.metadata.create_all(
+        bind=engine,
+        tables=[
+            InventoryExternalBinding.__table__,
+            InventoryEndpointState.__table__,
+            InventoryEndpointSyncControl.__table__,
+        ],
+    )
+    _migrate_inventory_schema(engine)
 
 
 def _migrate_inventory_schema(engine) -> None:
@@ -111,6 +287,28 @@ def _migrate_inventory_schema(engine) -> None:
             columns = {column["name"] for column in inspector.get_columns("inventory_assets")}
             if "notes" in columns:
                 connection.execute(_TRANSFER_ASSET_NOTES)
+        if "inventory_observations" in table_names:
+            columns = {
+                column["name"]
+                for column in inspector.get_columns("inventory_observations")
+            }
+            missing_columns = {
+                "binding_id": "VARCHAR(36)",
+                "endpoint_device_id": "VARCHAR(255)",
+                "profile": "VARCHAR(32)",
+                "snapshot_id": "VARCHAR(255)",
+                "semantic_hash": "VARCHAR(64)",
+                "collected_at": "DATETIME",
+            }
+            for column_name, column_type in missing_columns.items():
+                if column_name not in columns:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE inventory_observations "
+                            f"ADD COLUMN {column_name} {column_type}"
+                        )
+                    )
+    _prepare_inventory_endpoint_constraints(engine)
 
 
 def init_db() -> None:
