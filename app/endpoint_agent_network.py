@@ -6,15 +6,10 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import UUID
 
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from .db import session_scope
-from .endpoint_context_adapter import get_endpoint_context_adapter
-from .endpoint_platform_client import EndpointPlatformServiceDisabled
 from .models import EndpointAgentNetworkLink, EndpointAgentNetworkRefresh
 from .netctl_client import run_netctl
 
@@ -213,11 +208,9 @@ def mark_endpoint_agent_refresh_failed(db: Session, code: str) -> None:
     """Release a failed refresh without deleting the last successful safe cache."""
     refresh = _refresh_row(db)
     refresh.lease_expires_at = None
-    refresh.last_error_code = (
-        "endpoint_platform_disabled"
-        if code == "endpoint_platform_disabled"
-        else "endpoint_platform_unavailable"
-    )
+    refresh.last_error_code = code if code in {
+        "endpoint_platform_disabled", "endpoint_platform_scope_denied"
+    } else "endpoint_platform_unavailable"
 
 
 def store_endpoint_agent_statuses(
@@ -228,7 +221,9 @@ def store_endpoint_agent_statuses(
     for asset_key, status in statuses.items():
         state = status.get("state")
         evidence_kind = status.get("evidence_kind")
-        if state not in {"confirmed", "ambiguous"} or evidence_kind != "baseline_interface_mac":
+        if state not in {"confirmed", "ambiguous"} or evidence_kind not in {
+            "baseline_interface_mac", "inventory_confirmed_binding"
+        }:
             continue
         profiles = status.get("profiles")
         profile_summary = ",".join(
@@ -243,7 +238,7 @@ def store_endpoint_agent_statuses(
                 gateway_last_seen_at=_parse_timestamp(status.get("gateway_last_seen_at")),
                 baseline_collected_at=_parse_timestamp(status.get("baseline_collected_at")),
                 profile_summary=profile_summary,
-                evidence_kind="baseline_interface_mac",
+                evidence_kind=evidence_kind,
                 calculated_at=calculated_at,
             )
         )
@@ -290,33 +285,12 @@ def endpoint_agent_refresh_status(
 
 
 def refresh_endpoint_agent_network(inventory: list[dict[str, object]]) -> None:
-    """Fetch, correlate and commit a full safe cache replacement in a worker session."""
-    adapter = None
-    try:
-        adapter = get_endpoint_context_adapter()
-        statuses = correlate_endpoint_agents(inventory, adapter.list_agent_network_identities())
-        for status in statuses.values():
-            device_id = status.get("device_id")
-            if status.get("state") != "confirmed" or not isinstance(device_id, str):
-                continue
-            try:
-                os_family = adapter.get_agent_os_family(UUID(device_id))
-            except ValueError:
-                continue
-            if os_family in {"linux", "windows"}:
-                status["os_family"] = os_family
-        sync_endpoint_agent_fingerprint_evidence(inventory, statuses)
-        with session_scope() as db:
-            store_endpoint_agent_statuses(db, statuses, datetime.now(UTC))
-    except EndpointPlatformServiceDisabled:
-        with session_scope() as db:
-            mark_endpoint_agent_refresh_failed(db, "endpoint_platform_disabled")
-    except Exception:
-        with session_scope() as db:
-            mark_endpoint_agent_refresh_failed(db, "endpoint_platform_unavailable")
-    finally:
-        if adapter is not None:
-            adapter.close()
+    """Retired entrypoint; the scheduled Inventory worker owns all refreshes.
+
+    Kept as a no-op for old background callers during a rolling restart. In
+    particular, an old render request cannot overwrite canonical binding state.
+    """
+    del inventory
 
 
 def attach_endpoint_agent_statuses(db: Session, rows: Iterable[dict[str, object]]) -> str:

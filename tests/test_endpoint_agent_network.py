@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
@@ -240,7 +239,7 @@ def test_endpoint_adapter_reads_authoritative_os_from_existing_baseline_snapshot
     assert "raw_payload" not in repr(payload)
 
 
-def test_successful_endpoint_refresh_syncs_fingerprint_evidence_before_cache(
+def test_retired_endpoint_refresh_does_not_publish_mac_only_relationships(
     monkeypatch,
 ) -> None:
     import app.endpoint_agent_network as network
@@ -248,49 +247,22 @@ def test_successful_endpoint_refresh_syncs_fingerprint_evidence_before_cache(
     inventory = [
         {"device_key": "mac:AA:BB:CC:DD:EE:01", "mac": "AA:BB:CC:DD:EE:01"}
     ]
-    identity = _identity(
-        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", ["mac-aabbccddee01"]
-    )
-    events: list[str] = []
+    def forbidden(*args, **kwargs):
+        raise AssertionError("legacy refresh must not publish independent evidence")
 
-    class Adapter:
-        def list_agent_network_identities(self):
-            return [identity]
-
-        def get_agent_os_family(self, device_id: UUID) -> str:
-            events.append(f"resolve:{device_id}")
-            return "windows"
-
-        def close(self) -> None:
-            events.append("closed")
-
-    @contextmanager
-    def fake_session_scope():
-        yield object()
-
-    monkeypatch.setattr(network, "get_endpoint_context_adapter", lambda: Adapter())
-    monkeypatch.setattr(network, "session_scope", fake_session_scope)
     monkeypatch.setattr(
         network,
         "sync_endpoint_agent_fingerprint_evidence",
-        lambda actual_inventory, statuses: events.append(
-            f"sync:{statuses['mac:AA:BB:CC:DD:EE:01'].get('os_family')}"
-        ),
+        forbidden,
     )
     monkeypatch.setattr(
         network,
         "store_endpoint_agent_statuses",
-        lambda _db, _statuses, _now: events.append("cache"),
+        forbidden,
     )
 
     network.refresh_endpoint_agent_network(inventory)
 
-    assert events == [
-        "resolve:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        "sync:windows",
-        "cache",
-        "closed",
-    ]
 
 
 def test_safe_cache_persists_confirmed_result_without_mac_or_ip() -> None:
