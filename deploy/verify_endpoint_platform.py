@@ -19,7 +19,6 @@ import math
 import os
 from pathlib import Path
 import re
-import shlex
 import ssl
 import stat
 import subprocess
@@ -127,22 +126,30 @@ def service_group() -> int:
 
 
 def load_environment(path: Path, service_gid: int) -> None:
-    # Parse only Endpoint keys; never source a shell script or print env values.
+    # Supported systemd EnvironmentFile subset: single-line assignments, optional
+    # enclosing quotes, literal inline #, and ignored surrounding whitespace.
+    # Reject continuations/escapes/multiline quoting anywhere, including other
+    # keys, so an Endpoint assignment cannot be hidden inside another value.
     content = check_managed_file(path, service_gid, secret=True).decode("utf-8")
     values = {}
     try:
         for line in content.splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
+            line = line.strip()
+            if not line or line.startswith(("#", ";")):
                 continue
             key, separator, raw = line.partition("=")
+            key, raw = key.strip(), raw.strip()
+            if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or "\\" in raw:
+                raise ValueError()
+            if raw.startswith(("'", '"')):
+                if len(raw) < 2 or not raw.endswith(raw[0]) or raw[0] in raw[1:-1]:
+                    raise ValueError()
+                raw = raw[1:-1]
             if not key.startswith("ENDPOINT_PLATFORM_"):
                 continue
-            if not separator or key in values:
+            if key in values:
                 raise ValueError()
-            parts = shlex.split(raw, comments=True)
-            if len(parts) > 1:
-                raise ValueError()
-            values[key] = parts[0] if parts else ""
+            values[key] = raw
         # Environment file, not caller shell state, is authoritative.
         for key in list(os.environ):
             if key.startswith("ENDPOINT_PLATFORM_"):

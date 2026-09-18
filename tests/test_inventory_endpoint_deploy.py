@@ -197,6 +197,56 @@ def test_disabled_install_does_not_require_artifact_or_contact_sdk(verifier, mon
     assert sdk[1] == []
 
 
+@pytest.mark.parametrize("line,value", [
+    ("  ENDPOINT_PLATFORM_ENABLED = 1  ", "1"),
+    ("ENDPOINT_PLATFORM_TOKEN_FILE=/etc/token#blue", "/etc/token#blue"),
+    ("ENDPOINT_PLATFORM_TOKEN_FILE=/etc/token #blue", "/etc/token #blue"),
+    ('ENDPOINT_PLATFORM_TOKEN_FILE="/etc/token #blue"', "/etc/token #blue"),
+])
+def test_environment_matches_systemd_whitespace_and_literal_hash(verifier, monkeypatch, tmp_path, line, value):
+    env = tmp_path / "environment"
+    env.write_text(line + "\n")
+    monkeypatch.setattr(verifier, "validate_file_metadata", lambda *args, **kwargs: None)
+    verifier.load_environment(env, 123)
+    key = "ENDPOINT_PLATFORM_ENABLED" if "ENABLED" in line else "ENDPOINT_PLATFORM_TOKEN_FILE"
+    assert os.environ[key] == value
+
+
+@pytest.mark.parametrize("line", [
+    'APP_SECRET_KEY="unterminated\nENDPOINT_PLATFORM_ENABLED=1',
+    "APP_SECRET_KEY=value\\\nENDPOINT_PLATFORM_ENABLED=1",
+    'ENDPOINT_PLATFORM_TOKEN_FILE="/etc/token" trailing',
+])
+def test_environment_rejects_ambiguous_multiline_or_quoting(verifier, monkeypatch, tmp_path, line):
+    env = tmp_path / "environment"
+    env.write_text(line + "\n")
+    monkeypatch.setattr(verifier, "validate_file_metadata", lambda *args, **kwargs: None)
+    with pytest.raises(verifier.VerificationError, match="config_invalid"):
+        verifier.load_environment(env, 123)
+
+
+@pytest.mark.parametrize("state,status,success", [("not-found", 4, True), ("loaded", 0, True), ("", 1, False)])
+def test_quiesce_handles_missing_units_but_refuses_unknown_manager_state(state, status, success):
+    source = (ROOT / "deploy/install-openvpn-web.sh").read_text()
+    start = source.index("endpoint_platform_quiesce() {")
+    function = source[start:source.index("\n}\n", start) + 3]
+    harness = f'''set -eu
+sudo_cmd() {{
+  if [[ "$*" == *show* ]]; then printf '%s\\n' '{state}'; return {status}; fi
+  printf '%s\\n' "$*"
+}}
+{function}
+endpoint_platform_quiesce
+'''
+    result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+    assert (result.returncode == 0) == success
+    if state == "not-found":
+        assert "disable" not in result.stdout
+    if state == "loaded":
+        assert "disable --now inventory-endpoint-sync.timer" in result.stdout
+        assert "stop inventory-endpoint-sync.service" in result.stdout
+
+
 @pytest.mark.parametrize("status,analyzer_status,enabled", [(0, 0, True), (1, 0, False), (77, 0, False), (0, 9, False)])
 def test_installer_gate_disables_previous_timer_and_enables_only_verified(tmp_path, status, analyzer_status, enabled):
     source = (ROOT / "deploy/install-openvpn-web.sh").read_text()

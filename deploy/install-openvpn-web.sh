@@ -10,6 +10,25 @@ sudo_cmd() {
   printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' "$@"
 }
 
+endpoint_platform_quiesce() {
+  local unit load_state
+  for unit in inventory-endpoint-sync.timer inventory-endpoint-sync.service; do
+    if ! load_state="$(sudo_cmd systemctl show --property=LoadState --value "$unit")"; then
+      [[ "$load_state" == not-found ]] || return 1
+    fi
+    case "$load_state" in
+      not-found) continue ;;
+      loaded|masked) ;;
+      *) printf '%s\n' 'cannot establish Endpoint unit state' >&2; return 1 ;;
+    esac
+    if [[ "$unit" == *.timer ]]; then
+      sudo_cmd systemctl disable --now "$unit" || return
+    else
+      sudo_cmd systemctl stop "$unit" || return
+    fi
+  done
+}
+
 endpoint_platform_gate() {
   # Stop a previously enabled timer too: a failed upgrade must fail closed.
   sudo_cmd systemctl disable --now inventory-endpoint-sync.timer
@@ -23,7 +42,7 @@ endpoint_platform_gate() {
     local endpoint_status=$?
     if [[ "$endpoint_status" -ne 77 ]]; then
       # Preserve local Inventory operation; retries require an explicit smoke.
-      sudo_cmd sed -i 's/^ENDPOINT_PLATFORM_ENABLED=.*/ENDPOINT_PLATFORM_ENABLED=0/' "$ENV_PATH"
+      sudo_cmd sed -i 's/^[[:space:]]*ENDPOINT_PLATFORM_ENABLED[[:space:]]*=.*/ENDPOINT_PLATFORM_ENABLED=0/' "$ENV_PATH"
       printf '%s\n' 'Endpoint verification failed; feature and timer disabled'
     fi
   fi
@@ -49,6 +68,11 @@ validate_netctl_directory() {
 
 SRC="${SRC:-/tmp/openvpn-web-src}"
 APP="${APP:-/opt/openvpn-web}"
+
+# Quiesce an existing installation before replacing code or dependencies.
+# An early or late installer failure must never restart an unverified worker.
+trap 'installer_status=$?; if [[ "$installer_status" -ne 0 ]]; then endpoint_platform_quiesce || true; fi' EXIT
+endpoint_platform_quiesce
 
 if [[ ! -d "$SRC/app" ]]; then
   echo "missing source: $SRC" >&2
@@ -257,7 +281,7 @@ ENV_FILE
     'ENDPOINT_PLATFORM_TIMEOUT_SECONDS=5' \
     'ENDPOINT_PLATFORM_SMOKE_DEVICE_ID='; do
     key="${line%%=*}"
-    if ! sudo_cmd grep -q "^${key}=" "$TMP_ENV"; then
+    if ! sudo_cmd grep -q "^[[:space:]]*${key}[[:space:]]*=" "$TMP_ENV"; then
       printf '%s\n' "$line" | sudo_cmd tee -a "$TMP_ENV" >/dev/null
       changed_env=1
     fi

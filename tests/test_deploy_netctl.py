@@ -30,6 +30,19 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$SYSTEMCTL_CALLS"
 
 case "${1:-}" in
+  show)
+    printf '%s\n' loaded
+    ;;
+  disable)
+    if [[ "$*" == *inventory-endpoint-sync.timer* ]]; then
+      printf '%s\n' disabled > "$ENDPOINT_TIMER_STATE"
+    fi
+    ;;
+  stop)
+    if [[ "$*" == *inventory-endpoint-sync.service* ]]; then
+      printf '%s\n' stopped > "$ENDPOINT_SERVICE_STATE"
+    fi
+    ;;
   daemon-reload)
     touch "$SYSTEMD_RELOADED"
     ;;
@@ -87,6 +100,12 @@ case "$command_name" in
   /usr/local/sbin/verify-netctl-systemd)
     exit "${NETCTL_VERIFIER_EXIT_CODE:-0}"
     ;;
+  rm|cp)
+    if [[ "$*" == *app* ]] && [[ "${CHECK_ENDPOINT_QUIESCED:-0}" == 1 ]]; then
+      [[ "$(cat "$ENDPOINT_TIMER_STATE")" == disabled ]] || exit 96
+      [[ "$(cat "$ENDPOINT_SERVICE_STATE")" == stopped ]] || exit 97
+    fi
+    ;;
   systemctl)
     command systemctl "$@"
     ;;
@@ -103,7 +122,7 @@ def _install_python_double(bin_dir: Path) -> None:
 
 
 def _run_installer(
-    tmp_path: Path, *, verifier_exit_code: int = 0
+    tmp_path: Path, *, verifier_exit_code: int = 0, endpoint_upgrade: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, dict[str, str]]:
     bash = shutil.which("bash")
     if bash is None:
@@ -119,6 +138,10 @@ def _run_installer(
     enabled = tmp_path / "enabled-timers"
     sudo_calls = tmp_path / "sudo-calls"
     reloaded = tmp_path / "daemon-reloaded"
+    timer_state = tmp_path / "endpoint-timer-state"
+    service_state = tmp_path / "endpoint-service-state"
+    timer_state.write_text("enabled\n")
+    service_state.write_text("running\n")
     environment = os.environ | {
         "APP": str(tmp_path / "app"),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -129,6 +152,9 @@ def _run_installer(
         "SYSTEMD_ENABLED": str(enabled),
         "SYSTEMD_RELOADED": str(reloaded),
         "NETCTL_VERIFIER_EXIT_CODE": str(verifier_exit_code),
+        "ENDPOINT_TIMER_STATE": str(timer_state),
+        "ENDPOINT_SERVICE_STATE": str(service_state),
+        "CHECK_ENDPOINT_QUIESCED": "1" if endpoint_upgrade else "0",
     }
     result = subprocess.run(
         [bash, str(ROOT / "deploy" / "install-openvpn-web.sh")],
@@ -140,6 +166,14 @@ def _run_installer(
         env=environment,
     )
     return result, bin_dir, systemctl_calls, environment
+
+
+def test_endpoint_upgrade_quiesces_before_replacement_and_stays_off_on_netctl_failure(tmp_path):
+    result, _, _, environment = _run_installer(tmp_path, verifier_exit_code=9, endpoint_upgrade=True)
+    assert result.returncode == 9, result.stderr
+    assert Path(environment["ENDPOINT_TIMER_STATE"]).read_text().strip() == "disabled"
+    assert Path(environment["ENDPOINT_SERVICE_STATE"]).read_text().strip() == "stopped"
+    assert not Path(environment["SYSTEMD_ENABLED"]).exists()
 
 
 def _run_exec_start_parser(raw: str) -> subprocess.CompletedProcess[str]:
