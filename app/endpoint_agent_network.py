@@ -221,7 +221,7 @@ def store_endpoint_agent_statuses(
     for asset_key, status in statuses.items():
         state = status.get("state")
         evidence_kind = status.get("evidence_kind")
-        if state not in {"confirmed", "ambiguous"} or evidence_kind not in {
+        if state not in {"confirmed", "ambiguous", "stale"} or evidence_kind not in {
             "baseline_interface_mac", "inventory_confirmed_binding"
         }:
             continue

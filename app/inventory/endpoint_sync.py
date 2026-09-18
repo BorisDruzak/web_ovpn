@@ -30,7 +30,14 @@ from ..endpoint_platform_client import (
     EndpointPlatformServiceUnavailable,
 )
 from ..netctl_client import run_netctl
-from .endpoint import InventoryEndpointService, _parsed, _text, _utc
+from .endpoint import (
+    InventoryEndpointService,
+    STATE_MAX_AGE,
+    endpoint_profile_freshness,
+    _parsed,
+    _text,
+    _utc,
+)
 from .lookup import InventoryLookupError, normalize_mac
 from .models import (
     InventoryAssetIdentifier,
@@ -61,6 +68,7 @@ class SyncResult:
 class _PreparedAdapter:
     identities: list
     snapshots: dict
+    full_pass: bool
 
     def list_agent_network_identities(self):
         return self.identities
@@ -156,14 +164,19 @@ def _network_fields(snapshot):
     return {}
 
 
-def sync_confirmed_bindings(db, adapter, now: datetime) -> SyncResult:
+def sync_confirmed_bindings(
+    db, adapter, now: datetime, *, clock=None, full_pass=None
+) -> SyncResult:
     """Read a bounded safe pass and persist it in the caller's transaction."""
     now = _utc(now)
+    clock = clock or (lambda: now)
     control = _control(db)
     full = (
         control.last_full_sync_at is None
         or now - control.last_full_sync_at >= FULL_INTERVAL
     )
+    if full_pass is not None:
+        full = full_pass
     identities = adapter.list_agent_network_identities()
     if len(identities) > MAX_DEVICES:
         raise EndpointPlatformServiceUnavailable()
@@ -191,6 +204,11 @@ def sync_confirmed_bindings(db, adapter, now: datetime) -> SyncResult:
             db.add(state)
         state.last_checked_at = now
         identity = by_device.get(binding.external_id)
+        context = dict(state.safe_context_json)
+        context["identity_status"] = (
+            "available" if identity is not None else "unavailable"
+        )
+        context["identity_checked_at"] = now.isoformat()
         if identity is not None:
             last_seen = _parsed(identity.get("last_seen_at"))
             if last_seen is not None and last_seen <= now:
@@ -198,9 +216,14 @@ def sync_confirmed_bindings(db, adapter, now: datetime) -> SyncResult:
         # UUID is already stable: a changed/missing MAC never reassigns a binding.
         if full:
             profiles = adapter.read_profiles(UUID(binding.external_id))
-            context = dict(state.safe_context_json)
+            checked_at = _utc(clock())
+            state.last_checked_at = checked_at
+            collected_dates = dict(context.get("profile_collected_at") or {})
+            checked_dates = dict(context.get("profile_checked_at") or {})
+            success_dates = dict(context.get("profile_last_success_at") or {})
             statuses = {}
             for profile, prefix in PROFILES.items():
+                checked_dates[profile] = checked_at.isoformat()
                 snapshot = profiles.get(profile)
                 statuses[profile] = (
                     "available" if snapshot is not None else "unavailable"
@@ -218,7 +241,7 @@ def sync_confirmed_bindings(db, adapter, now: datetime) -> SyncResult:
                 if (
                     snapshot.get("profile") != profile
                     or collected is None
-                    or collected > now
+                    or collected > checked_at
                     or not digest
                     or len(digest) > 64
                     or not snapshot_id
@@ -251,10 +274,21 @@ def sync_confirmed_bindings(db, adapter, now: datetime) -> SyncResult:
                 setattr(state, prefix + "_snapshot_id", snapshot_id)
                 setattr(state, prefix + "_semantic_hash", digest)
                 state.refreshed_at = max(state.refreshed_at or collected, collected)
+                collected_dates[profile] = collected.isoformat()
+                success_dates[profile] = checked_at.isoformat()
             context["profile_status"] = statuses
-            state.safe_context_json = context
-        state.last_success_at = now
-        state.unavailable_since = None
+            context["profile_collected_at"] = collected_dates
+            context["profile_checked_at"] = checked_dates
+            context["profile_last_success_at"] = success_dates
+            if identity is not None and statuses.get("baseline_v1") == "available":
+                state.last_success_at = checked_at
+                state.unavailable_since = None
+        if (
+            identity is None
+            or context.get("profile_status", {}).get("baseline_v1") != "available"
+        ):
+            state.unavailable_since = state.unavailable_since or state.last_checked_at
+        state.safe_context_json = context
     control.last_presence_sync_at = now
     if full:
         control.last_full_sync_at = now
@@ -263,7 +297,7 @@ def sync_confirmed_bindings(db, adapter, now: datetime) -> SyncResult:
     return SyncResult(len(bindings), observations, full)
 
 
-def _compatibility_statuses(db):
+def _compatibility_statuses(db, now):
     """Project canonical bindings onto unique current MAC runtime asset keys."""
     owners = defaultdict(set)
     for identifier in db.scalars(
@@ -290,35 +324,45 @@ def _compatibility_statuses(db):
             or state.endpoint_device_id != binding.external_id
         ):
             continue
+        freshness = endpoint_profile_freshness(state, now)
+        current = (
+            not state.unavailable_since
+            and state.safe_context_json.get("identity_status") == "available"
+            and state.last_seen_at is not None
+            and timedelta(0) <= _utc(now) - state.last_seen_at <= STATE_MAX_AGE
+            and freshness.get("baseline_v1", {}).get("status") == "fresh"
+        )
         for mac, asset_ids in owners.items():
             if asset_ids != {binding.asset_id}:
                 continue
             statuses["mac:" + mac] = {
-                "state": "confirmed",
+                "state": "confirmed" if current else "stale",
                 "device_id": binding.external_id,
                 "device_display_name": None,
                 "gateway_last_seen_at": state.last_seen_at.isoformat()
                 if state.last_seen_at
                 else None,
-                "baseline_collected_at": state.refreshed_at.isoformat()
-                if state.refreshed_at
-                else None,
+                "baseline_collected_at": freshness.get("baseline_v1", {}).get(
+                    "collected_at"
+                ),
                 "profiles": [
                     profile
                     for profile, prefix in PROFILES.items()
-                    if getattr(state, prefix + "_snapshot_id")
+                    if freshness.get(profile, {}).get("status") == "fresh"
                 ],
                 "evidence_kind": "inventory_confirmed_binding",
-                "device_type": "pc",
-                "os_family": state.safe_context_json.get("os_family")
-                if state.safe_context_json.get("os_family") in {"windows", "linux"}
-                else None,
             }
+            if current:
+                statuses["mac:" + mac]["device_type"] = "pc"
+                if state.safe_context_json.get("os_family") in {"windows", "linux"}:
+                    statuses["mac:" + mac]["os_family"] = state.safe_context_json[
+                        "os_family"
+                    ]
     return statuses
 
 
 def rebuild_endpoint_agent_network_cache(db, now: datetime) -> None:
-    store_endpoint_agent_statuses(db, _compatibility_statuses(db), _utc(now))
+    store_endpoint_agent_statuses(db, _compatibility_statuses(db, now), _utc(now))
     db.flush()
 
 
@@ -390,11 +434,16 @@ def _prepare_pass(adapter, owner, now):
         for device_id in device_ids:
             snapshots[device_id] = adapter.read_profiles(UUID(device_id))
             _renew(owner, now + timedelta(seconds=time.monotonic() - started))
-    return _PreparedAdapter(identities, snapshots)
+    return _PreparedAdapter(identities, snapshots, full)
 
 
-def run_inventory_endpoint_sync(now: datetime | None = None) -> int:
-    now = _utc(now or datetime.now(timezone.utc))
+def run_inventory_endpoint_sync(now: datetime | None = None, *, clock=None) -> int:
+    # Supplying now preserves deterministic one-shot/replay tests; normal service
+    # execution reads the live clock again after upstream calls complete.
+    clock = clock or (
+        (lambda: now) if now is not None else (lambda: datetime.now(timezone.utc))
+    )
+    now = _utc(now or clock())
     owner = None
     adapter = None
     try:
@@ -405,6 +454,7 @@ def run_inventory_endpoint_sync(now: datetime | None = None) -> int:
             owner = db.get(InventoryEndpointSyncControl, 1).lease_owner
         adapter = get_endpoint_context_adapter()
         prepared = _prepare_pass(adapter, owner, now)
+        applied_at = _utc(clock())
         with session_scope() as db:
             # Fence ownership and hold the control row write lock for the pass.
             held = db.execute(
@@ -417,9 +467,11 @@ def run_inventory_endpoint_sync(now: datetime | None = None) -> int:
             )
             if held.rowcount != 1:
                 return 0
-            sync_confirmed_bindings(db, prepared, now)
-            statuses = _compatibility_statuses(db)
-            rebuild_endpoint_agent_network_cache(db, now)
+            sync_confirmed_bindings(
+                db, prepared, applied_at, clock=clock, full_pass=prepared.full_pass
+            )
+            statuses = _compatibility_statuses(db, applied_at)
+            rebuild_endpoint_agent_network_cache(db, applied_at)
         # CLI IO is also outside the database transaction. Canonical Endpoint
         # state remains useful if the independent Netctl projection is unavailable.
         sync_endpoint_agent_fingerprint_evidence(

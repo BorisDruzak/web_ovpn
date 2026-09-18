@@ -370,3 +370,127 @@ def test_remote_wait_does_not_hold_database_write_lock(session, monkeypatch):
         session.get(InventoryAsset, asset_id).custom_name
         == "Manual edit during remote wait"
     )
+
+
+@pytest.mark.parametrize("missing", ["absent", "hashless"])
+def test_context_exposes_retained_profile_as_unavailable_without_new_success(
+    session, missing
+):
+    from app.inventory.endpoint_sync import sync_confirmed_bindings
+
+    asset = pc(session)
+    adapter = Adapter()
+    sync_confirmed_bindings(session, adapter, NOW)
+    if missing == "absent":
+        adapter.absent = True
+    else:
+        adapter.hash = None
+    later = NOW + timedelta(minutes=5)
+    sync_confirmed_bindings(session, adapter, later)
+    context = InventoryEndpointService().asset_context(session, asset.id, later)
+    assert context["effective"]["ram_gb"]["value"] == 16
+    assert context["effective"]["ram_gb"]["observed_at"] == NOW.isoformat()
+    assert context["effective"]["ram_gb"]["freshness"] == "unavailable"
+    fresh = context["freshness"]["endpoint"]
+    assert fresh["status"] == "unavailable"
+    assert fresh["last_success_at"] == NOW.isoformat()
+    assert fresh["profiles"]["baseline_v1"] == {
+        "status": "unavailable",
+        "collected_at": NOW.isoformat(),
+        "last_checked_at": later.isoformat(),
+        "last_success_at": NOW.isoformat(),
+    }
+
+
+def test_presence_does_not_advance_technical_success_and_old_collections_stay_stale(
+    session,
+):
+    from app.inventory.endpoint_sync import sync_confirmed_bindings
+
+    asset = pc(session)
+    sync_confirmed_bindings(session, Adapter(), NOW)
+    sync_confirmed_bindings(session, Adapter(), NOW + timedelta(minutes=1))
+    context = InventoryEndpointService().asset_context(
+        session, asset.id, NOW + timedelta(minutes=1)
+    )
+    assert context["freshness"]["endpoint"]["last_success_at"] == NOW.isoformat()
+    later = NOW + timedelta(hours=1)
+    sync_confirmed_bindings(session, Adapter(), later)
+    context = InventoryEndpointService().asset_context(session, asset.id, later)
+    assert context["freshness"]["endpoint"]["status"] == "stale"
+    assert (
+        context["freshness"]["endpoint"]["profiles"]["baseline_v1"]["status"] == "stale"
+    )
+    assert context["effective"]["ram_gb"]["freshness"] == "stale"
+
+
+@pytest.mark.parametrize("missing", ["identity", "profile", "old_collection"])
+def test_worker_keeps_stale_binding_cache_but_withholds_netctl_classification(
+    session, monkeypatch, missing
+):
+    import json
+    from app.inventory import endpoint_sync as worker
+
+    pc(session)
+    worker.sync_confirmed_bindings(session, Adapter(), NOW)
+    session.commit()
+
+    class DegradedAdapter(Adapter):
+        def list_agent_network_identities(self):
+            return (
+                [] if missing == "identity" else super().list_agent_network_identities()
+            )
+
+        def read_profiles(self, device_id):
+            self.absent = missing == "profile"
+            return super().read_profiles(device_id)
+
+    adapter = DegradedAdapter()
+    calls = []
+    monkeypatch.setattr(worker, "get_endpoint_context_adapter", lambda: adapter)
+    monkeypatch.setattr(
+        worker, "run_netctl", lambda args, timeout: calls.append(args) or {}
+    )
+    later = NOW + (
+        timedelta(hours=1) if missing == "old_collection" else timedelta(minutes=5)
+    )
+    assert worker.run_inventory_endpoint_sync(later) == 0
+    session.expire_all()
+    cache = session.get(EndpointAgentNetworkLink, "mac:" + MAC)
+    assert cache.device_id == DEVICE
+    assert cache.state == "stale"
+    assert json.loads(calls[0][3]) == [{"asset_key": "mac:" + MAC, "state": "no_agent"}]
+    assert session.scalar(select(InventoryExternalBinding)).ended_at is None
+
+
+def test_valid_snapshot_completed_during_remote_reads_uses_completion_clock(
+    session, monkeypatch
+):
+    from app.inventory import endpoint_sync as worker
+
+    asset = pc(session)
+    asset_id = asset.id
+    session.commit()
+    clock_time = [NOW]
+
+    class CompletingAdapter(Adapter):
+        def read_profiles(self, device_id):
+            profiles = super().read_profiles(device_id)
+            profiles["baseline_v1"]["collected_at"] = (
+                NOW + timedelta(seconds=2)
+            ).isoformat()
+            clock_time[0] = NOW + timedelta(seconds=3)
+            return profiles
+
+    monkeypatch.setattr(worker, "get_endpoint_context_adapter", CompletingAdapter)
+    monkeypatch.setattr(worker, "run_netctl", lambda *args, **kwargs: {})
+    assert worker.run_inventory_endpoint_sync(NOW, clock=lambda: clock_time[0]) == 0
+    session.expire_all()
+    context = InventoryEndpointService().asset_context(session, asset_id, clock_time[0])
+    assert (
+        context["effective"]["ram_gb"]["observed_at"]
+        == (NOW + timedelta(seconds=2)).isoformat()
+    )
+    assert (
+        context["freshness"]["endpoint"]["last_success_at"] == clock_time[0].isoformat()
+    )

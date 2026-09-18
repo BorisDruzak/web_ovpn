@@ -52,6 +52,11 @@ TECHNICAL_FIELDS = frozenset(PC_DETAIL_FIELDS) | {
     "os_build",
 }
 ENDPOINT_FIELDS = TECHNICAL_FIELDS | {"serial_number", "ip", "mac"}
+PROFILE_FIELDS = {
+    "baseline_v1": TECHNICAL_FIELDS
+    - {"online", "last_seen_at", "current_user", "agent_version"},
+    "network_v1": {"ip", "mac"},
+}
 
 
 def _utc(value: datetime) -> datetime:
@@ -106,6 +111,49 @@ def _safe_fields(raw: Mapping[str, Any]) -> dict[str, Any]:
             and len(value) <= 255
         )
     }
+
+
+def endpoint_profile_freshness(
+    cached: InventoryEndpointState, now: datetime
+) -> dict[str, dict[str, Any]]:
+    """Project bounded profile freshness separately from retained display fields."""
+    context = cached.safe_context_json
+    statuses = context.get("profile_status")
+    if not isinstance(statuses, dict):
+        return {}  # Legacy local state has only the aggregate timestamps.
+    result = {}
+    for profile in ("baseline_v1", "health_v1", "network_v1"):
+        dates = {}
+        for source, target in (
+            ("profile_collected_at", "collected_at"),
+            ("profile_checked_at", "last_checked_at"),
+            ("profile_last_success_at", "last_success_at"),
+        ):
+            values = context.get(source)
+            dates[target] = (
+                _parsed(values.get(profile)) if isinstance(values, dict) else None
+            )
+        if (
+            cached.unavailable_since
+            or context.get("identity_status") == "unavailable"
+            or statuses.get(profile) != "available"
+        ):
+            status = "unavailable"
+        else:
+            status = (
+                "fresh"
+                if all(
+                    value is not None
+                    and timedelta(0) <= _utc(now) - value <= STATE_MAX_AGE
+                    for value in (dates["collected_at"], dates["last_checked_at"])
+                )
+                else "stale"
+            )
+        result[profile] = {
+            "status": status,
+            **{key: _timestamp(value) for key, value in dates.items()},
+        }
+    return result
 
 
 def _asset_dict(asset: InventoryAsset) -> dict[str, Any]:
@@ -562,6 +610,7 @@ class InventoryEndpointService:
                 }
             )
         observed_at = _timestamp(cached.refreshed_at) if cached else None
+        profile_freshness = endpoint_profile_freshness(cached, now) if cached else {}
         for field, value in endpoint.items():
             if field in TECHNICAL_FIELDS or field not in effective:
                 effective[field] = {
@@ -569,6 +618,19 @@ class InventoryEndpointService:
                     "source": "endpoint",
                     "observed_at": observed_at,
                 }
+                profile = next(
+                    (
+                        name
+                        for name, fields in PROFILE_FIELDS.items()
+                        if field in fields
+                    ),
+                    None,
+                )
+                if profile in profile_freshness:
+                    effective[field]["observed_at"] = profile_freshness[profile][
+                        "collected_at"
+                    ]
+                    effective[field]["freshness"] = profile_freshness[profile]["status"]
         discrepancies = []
         decisions = list(
             db.scalars(
@@ -636,6 +698,8 @@ class InventoryEndpointService:
                     else "stale"
                 )
             )
+            if profile_freshness:
+                freshness = profile_freshness["baseline_v1"]["status"]
         location = (
             db.get(InventoryLocation, asset.location_id) if asset.location_id else None
         )
@@ -686,6 +750,7 @@ class InventoryEndpointService:
                     "unavailable_since": _timestamp(cached.unavailable_since)
                     if cached
                     else None,
+                    "profiles": profile_freshness,
                 }
             },
         }
