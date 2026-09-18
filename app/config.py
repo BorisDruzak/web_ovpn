@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from uuid import UUID
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -31,6 +32,16 @@ def _positive_int_env(name: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return value if value > 0 else default
+
+
+def _optional_uuid_env(name: str) -> UUID | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return UUID(raw)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,7 @@ class Settings:
     endpoint_platform_token_file: Path
     endpoint_platform_ca_file: Path
     endpoint_platform_timeout_seconds: float
+    endpoint_platform_smoke_device_id: UUID | None
     inventory_photo_root: Path
     inventory_photo_max_bytes: int
     download_ttl_minutes: int
@@ -130,6 +142,7 @@ def get_settings() -> Settings:
             "ENDPOINT_PLATFORM_CA_FILE", "/etc/openvpn-web/endpoint-platform-ca.pem"
         ),
         endpoint_platform_timeout_seconds=_positive_float_env("ENDPOINT_PLATFORM_TIMEOUT_SECONDS", 5.0),
+        endpoint_platform_smoke_device_id=_optional_uuid_env("ENDPOINT_PLATFORM_SMOKE_DEVICE_ID"),
         inventory_photo_root=_path_env("INVENTORY_PHOTO_ROOT", "/var/lib/openvpn-web/inventory-photos"),
         inventory_photo_max_bytes=_positive_int_env("INVENTORY_PHOTO_MAX_BYTES", 10 * 1024 * 1024),
         download_ttl_minutes=int(os.environ.get("DOWNLOAD_TOKEN_TTL_MINUTES", "15")),

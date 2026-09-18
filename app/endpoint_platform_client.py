@@ -26,6 +26,11 @@ class EndpointPlatformServiceDisabled(EndpointPlatformServiceError):
         super().__init__("endpoint_platform_disabled")
 
 
+class EndpointPlatformServiceScopeDenied(EndpointPlatformServiceError):
+    def __init__(self) -> None:
+        super().__init__("endpoint_platform_scope_denied")
+
+
 class EndpointPlatformServiceClient:
     """Expose only the safe SDK methods consumed by the adapter layer."""
 
@@ -86,10 +91,24 @@ class EndpointPlatformServiceClient:
             return method(*args)
         except EndpointPlatformServiceError:
             raise
-        except Exception:
+        except Exception as exc:
             # SDK errors intentionally redact upstream bodies.  Do not retain
             # or serialize exception text at this boundary.
+            if EndpointPlatformServiceClient._is_scope_denied(exc):
+                raise EndpointPlatformServiceScopeDenied() from None
             raise EndpointPlatformServiceUnavailable() from None
+
+    @staticmethod
+    def _is_scope_denied(exc: Exception) -> bool:
+        if isinstance(exc, PermissionError):
+            return True
+        for field in ("status_code", "status"):
+            if getattr(exc, field, None) in {401, 403}:
+                return True
+        return any(
+            marker in type(exc).__name__.lower()
+            for marker in ("forbidden", "unauthorized", "permission", "authorization")
+        )
 
 
 def get_endpoint_platform_client(settings: Settings) -> EndpointPlatformServiceClient:

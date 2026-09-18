@@ -18,6 +18,7 @@ def test_endpoint_platform_settings_use_root_managed_secret_paths(monkeypatch, t
     assert settings.endpoint_platform_enabled is True
     assert settings.endpoint_platform_token_file == tmp_path / "service.token"
     assert settings.endpoint_platform_ca_file == tmp_path / "endpoint-ca.pem"
+    assert settings.endpoint_platform_smoke_device_id is None
     reset_settings_cache()
 
 

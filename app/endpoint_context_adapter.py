@@ -96,6 +96,14 @@ class EndpointContextAdapter:
         platform = system.get("platform")
         return platform if platform in {"linux", "windows"} else ""
 
+    def read_profiles(self, device_id: UUID) -> dict[str, dict[str, Any] | None]:
+        """Return only known safe profiles; absent profiles remain explicitly absent."""
+        profiles: dict[str, dict[str, Any] | None] = {}
+        for profile in SAFE_PROFILES:
+            snapshot = self._client.get_latest_context(device_id, profile)
+            profiles[profile] = _project_snapshot(snapshot) if snapshot is not None else None
+        return profiles
+
     def get_device(self, device_id: UUID) -> dict[str, Any]:
         device = _project_device(self._client.get_device(device_id))
         profiles: list[dict[str, Any]] = []
