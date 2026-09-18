@@ -5,6 +5,77 @@
 <section class="inventory-mobile inventory-form">
   {% if asset %}<details class="inventory-asset-card" open><summary>{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary>{% endif %}
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
+  {% if asset and asset_type.value == 'PC' and endpoint_context %}
+  {% set context = endpoint_context %}
+  {% set endpoint = context.sources.endpoint %}
+  {% set freshness = context.freshness.endpoint %}
+  {% set api_root = '/api/v1/inventory/assets/' ~ asset.id %}
+  {% set freshness_labels = {'fresh': 'Актуально', 'stale': 'Данные устарели', 'unavailable': 'Endpoint временно недоступен', 'missing': 'Данные ещё не получены'} %}
+  {% set source_labels = {'endpoint': 'Endpoint', 'manual': 'Ручные данные', 'netctl': 'Netctl'} %}
+  {% set fields = [('os_name', 'ОС'), ('os_version', 'Версия ОС'), ('os_build', 'Сборка ОС'), ('cpu_model', 'CPU'), ('cpu_generation', 'Модель CPU'), ('ram_gb', 'RAM, ГБ'), ('storage_type', 'Накопитель'), ('storage_gb', 'Объём, ГБ'), ('hostname', 'Hostname'), ('ip', 'IP-адрес'), ('mac', 'MAC-адрес'), ('serial_number', 'Serial')] %}
+  {% macro endpoint_action(path, label, action='', confirm='') %}
+  <button type="button" class="button secondary" data-endpoint-action="{{ api_root }}/{{ path }}"{% if action %} data-resolution="{{ action }}"{% endif %}{% if confirm %} data-confirm="{{ confirm }}"{% endif %}>{{ label }}</button>
+  {% endmacro %}
+  <section class="inventory-endpoint" data-endpoint-card data-csrf="{{ csrf_token(request) }}" aria-labelledby="endpoint-heading">
+    <h2 id="endpoint-heading">АГЕНТ</h2>
+    {% if context.binding %}
+    <strong>Привязка подтверждена</strong>
+    <small>Endpoint Device: {{ context.binding.external_id }}</small>
+    <span class="inventory-source" data-freshness="{{ freshness.status }}">{{ freshness_labels.get(freshness.status, 'Статус неизвестен') }}</span>
+    <p>Последнее состояние агента: <strong>{{ 'В сети' if endpoint.get('online') == true else ('Не в сети' if endpoint.get('online') == false else 'Неизвестно') }}</strong></p>
+    <small>Последний контакт: {{ endpoint.get('last_seen_at') or 'Нет данных' }}</small>
+    <small>Версия агента: {{ endpoint.get('agent_version') or 'Нет данных' }}</small>
+    <small>Последнее успешное обновление: {{ freshness.last_success_at or 'Ещё не было' }}</small>
+    {% if freshness.status in ('stale', 'unavailable') %}<p>Показаны последние сохранённые данные. Ручная инвентаризация доступна.</p>{% endif %}
+    <div class="inventory-endpoint-actions">
+      {{ endpoint_action('endpoint-refresh', 'Обновить данные агента') }}
+      {{ endpoint_action('endpoint-bindings/' ~ context.binding.id ~ '/detach', 'Отвязать агент', confirm='Завершить привязку агента к этому ПК? История и ручные данные сохранятся.') }}
+    </div>
+    {% else %}
+    <strong>Агент не привязан</strong>
+    <p>Кандидаты обновляются при плановой синхронизации. Поиск показывает сохранённые совпадения.</p>
+    <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-candidates">Найти агент</button>
+    {% endif %}
+    <dl class="inventory-endpoint-values">
+      <div><dt>Закреплённый человек</dt><dd>{{ context.asset.assigned_person_name or 'Не указан' }} <small>Ручные данные</small></dd></div>
+      <div><dt>Текущий пользователь ОС</dt><dd>{{ endpoint.get('current_user') or 'Нет данных' }} <small>Endpoint · {{ freshness_labels.get(freshness.status, 'Статус неизвестен') }}</small></dd></div>
+      {% for field, label in fields %}{% if field in context.effective %}{% set item = context.effective[field] %}
+      <div><dt>{{ label }}</dt><dd>{{ item.value }} <small>{{ source_labels.get(item.source, item.source) }} · {{ item.observed_at or 'Время неизвестно' }}{% if item.source == 'endpoint' %} · {{ freshness_labels.get(item.get('freshness', freshness.status), 'Статус неизвестен') }}{% endif %}</small></dd></div>
+      {% endif %}{% endfor %}
+    </dl>
+    {% for candidate in endpoint_candidates %}
+    <section class="inventory-endpoint-candidate">
+      <h3>Кандидат</h3><small>Endpoint Device: {{ candidate.external_id }}</small>
+      <small>Основание: {{ candidate.binding_method }} · Проверено: {{ candidate.last_verified_at or 'Нет данных' }}</small>
+      {% for method, matches in candidate.evidence.matches.items() %}<small>{{ method }}: {{ matches|join(', ') }}</small>{% endfor %}
+      {% if not candidate.evidence.current %}<small>Совпадение требует повторной проверки синхронизацией.</small>{% endif %}
+      <div class="inventory-endpoint-actions">
+        {{ endpoint_action('endpoint-bindings/' ~ candidate.id ~ '/confirm', 'Подтвердить привязку', confirm='Подтвердить, что этот агент относится к данному физическому ПК?') }}
+        {{ endpoint_action('endpoint-bindings/' ~ candidate.id ~ '/reject', 'Отклонить') }}
+      </div>
+    </section>
+    {% endfor %}
+    {% if context.discrepancies %}
+    <section class="inventory-endpoint-discrepancies"><h3>РАСХОЖДЕНИЯ</h3>
+      {% for item in context.discrepancies %}
+      <div class="inventory-endpoint-discrepancy">
+        <strong>{{ 'RAM, ГБ' if item.field == 'ram_gb' else 'Serial' }}</strong>
+        <p>Ручные данные: {{ item.manual }} · Endpoint: {{ item.endpoint }}</p>
+        {% if item.disposition %}<small>Решение: {{ {'keep_manual': 'Оставить ручное', 'mark_verified': 'Проверено физически', 'accept_endpoint': 'Принять Endpoint'}.get(item.disposition.action, 'Зафиксировано') }}</small>{% endif %}
+        <div class="inventory-endpoint-actions">
+          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Принять Endpoint', action='accept_endpoint', confirm='Заменить ручное значение этого поля данными Endpoint?') }}
+          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Оставить ручное', action='keep_manual') }}
+          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Проверено физически', action='mark_verified') }}
+        </div>
+      </div>
+      {% endfor %}
+    </section>
+    {% endif %}
+    {% if context.related_devices %}<section><h3>СВЯЗАННЫЕ УСТРОЙСТВА</h3><ul class="inventory-children">{% for child in context.related_devices %}<li><a href="/inventory/assets/{{ child.id }}">{{ child.custom_name or child.model or child.asset_type }}</a></li>{% endfor %}</ul></section>{% endif %}
+    <p role="status" aria-live="polite" data-endpoint-feedback></p>
+    <noscript>Для действий с агентом включите JavaScript. Сохранённые данные доступны выше.</noscript>
+  </section>
+  {% endif %}
   {% if not asset and prelookup %}
   <section class="inventory-lookup">
     {% if prelookup.source == 'manual' %}
@@ -98,4 +169,7 @@
   {% endif %}
   <a class="button secondary" href="{% if return_location_id %}/inventory/locations/{{ return_location_id }}{% else %}/inventory{% endif %}">К ЛОКАЦИИ</a>
 </section>
+{% endblock %}
+{% block page_scripts %}
+{% if asset and asset_type.value == 'PC' %}<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-1" defer></script>{% endif %}
 {% endblock %}

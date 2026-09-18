@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..api import require_api_actor
 from ..audit import write_audit
-from ..auth import verify_api_csrf
+from ..auth import current_user, verify_api_csrf
 from ..config import get_settings
 from ..db import get_db
 from ..endpoint_context_adapter import get_endpoint_context_adapter
@@ -29,6 +29,16 @@ from .storage import InventoryPhotoError, InventoryPhotoStorage, StoredPhoto
 router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 service = InventoryService()
 endpoint_service = InventoryEndpointService()
+
+
+def require_endpoint_actor(request: Request, db: Session = Depends(get_db), authorization: str | None = Header(default=None)) -> str:
+    """Allow authenticated PC-card sessions only on the Endpoint UI API surface."""
+    if authorization:
+        return require_api_actor(authorization)
+    user = current_user(request, db)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authenticated session or Bearer token required")
+    return user.username
 
 
 def _asset_dict(asset: InventoryAsset, db: Session | None = None) -> dict[str, Any]:
@@ -133,7 +143,7 @@ def _endpoint_binding_dict(binding: InventoryExternalBinding) -> dict[str, Any]:
 
 
 @router.get("/assets/{asset_id}/context")
-def get_asset_context(asset_id: str, actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_asset_context(asset_id: str, actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     del actor
     _endpoint_asset(db, asset_id, pc_only=False)
     return {"status": "ok", "data": endpoint_service.asset_context(db, asset_id, datetime.now(timezone.utc))}
@@ -149,7 +159,7 @@ def get_asset_by_endpoint(endpoint_device_uuid: UUID, actor: str = Depends(requi
 
 
 @router.get("/assets/{asset_id}/endpoint-candidates")
-def get_endpoint_candidates(asset_id: str, actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def get_endpoint_candidates(asset_id: str, actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     del actor
     _endpoint_asset(db, asset_id)
     candidates = db.scalars(select(InventoryExternalBinding).where(
@@ -180,25 +190,25 @@ def _endpoint_binding_action(db: Session, request: Request, actor: str, asset_id
 
 
 @router.post("/assets/{asset_id}/endpoint-bindings/{binding_id}/confirm")
-def confirm_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def confirm_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     return _endpoint_binding_action(db, request, actor, asset_id, binding_id, "confirm")
 
 
 @router.post("/assets/{asset_id}/endpoint-bindings/{binding_id}/reject")
-def reject_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def reject_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     return _endpoint_binding_action(db, request, actor, asset_id, binding_id, "reject")
 
 
 @router.post("/assets/{asset_id}/endpoint-bindings/{binding_id}/detach")
-def detach_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def detach_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     return _endpoint_binding_action(db, request, actor, asset_id, binding_id, "detach")
 
 
 @router.post("/assets/{asset_id}/discrepancies/{field}/resolve")
-def resolve_endpoint_discrepancy(asset_id: str, field: str, payload: EndpointDiscrepancyResolution, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def resolve_endpoint_discrepancy(asset_id: str, field: str, payload: EndpointDiscrepancyResolution, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     _endpoint_asset(db, asset_id)
     try:
@@ -210,7 +220,7 @@ def resolve_endpoint_discrepancy(asset_id: str, field: str, payload: EndpointDis
 
 
 @router.post("/assets/{asset_id}/endpoint-refresh", status_code=status.HTTP_202_ACCEPTED, response_model=None)
-def refresh_endpoint(asset_id: str, payload: EndpointRefreshRequest, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any] | JSONResponse:
+def refresh_endpoint(asset_id: str, payload: EndpointRefreshRequest, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any] | JSONResponse:
     _mutation(request, csrf)
     _endpoint_asset(db, asset_id)
     binding = db.scalar(select(InventoryExternalBinding).where(

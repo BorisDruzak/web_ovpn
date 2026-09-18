@@ -17,6 +17,8 @@ from ..config import get_settings
 from ..db import get_db
 from ..netctl_client import run_netctl
 from .lookup import InventoryLookup, InventoryLookupError, classify_identifier
+from .api import get_endpoint_candidates
+from .endpoint import InventoryEndpointService
 from .models import (
     InventoryAsset,
     InventoryAssetPhoto,
@@ -537,7 +539,7 @@ async def inventory_continue_new_asset_manually(request: Request, asset_type: In
 
 @router.get("/inventory/assets/{asset_id}", response_class=HTMLResponse)
 def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "", db: Session = Depends(get_db)) -> HTMLResponse:
-    require_user(request, db)
+    user = require_user(request, db)
     asset = db.get(InventoryAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
@@ -558,7 +560,12 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
         form_values.update({field: draft[field] for field in form_values if field in draft})
         identifiers.update({identifier: draft[field] for field, identifier in (("ip_address", "ip"), ("mac_address", "mac"), ("hostname", "hostname")) if field in draft})
         details = {**details, **{field: draft[field] for field in DETAIL_FIELD_NAMES.get(asset.asset_type, ()) if field in draft}}
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "form_values": form_values, "details": details, "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None}, db)
+    endpoint_context = None
+    endpoint_candidates = []
+    if asset.asset_type is InventoryAssetType.PC:
+        endpoint_context = InventoryEndpointService().asset_context(db, asset.id, datetime.now(timezone.utc))
+        endpoint_candidates = get_endpoint_candidates(asset.id, user.username, db)["data"]
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "form_values": form_values, "details": details, "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None, "endpoint_context": endpoint_context, "endpoint_candidates": endpoint_candidates}, db)
 
 
 @router.post("/inventory/assets")

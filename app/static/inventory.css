@@ -32,4 +32,18 @@
 .inventory-field-group { display: grid; gap: 10px; margin: 0; padding: 14px; border: 1px solid #d7dde7; border-radius: 10px; }
 .inventory-field-group legend { padding: 0 6px; font-weight: 700; }
 .inventory-form > .button.secondary { width: 100%; }
+.inventory-endpoint { display: grid; gap: 12px; padding: 16px; margin: 12px 0; border: 1px solid #bacce3; border-radius: 12px; background: #f4f8ff; overflow-wrap: anywhere; min-width: 0; }
+.inventory-endpoint h2, .inventory-endpoint h3, .inventory-endpoint p { margin: 0; }
+.inventory-endpoint h2 { font-size: 1rem; }
+.inventory-endpoint h3 { font-size: .9rem; }
+.inventory-endpoint small { display: block; }
+.inventory-endpoint-values { display: grid; gap: 10px; margin: 0; }
+.inventory-endpoint-values dt { font-weight: 650; }
+.inventory-endpoint-values dd { margin: 2px 0 0; }
+.inventory-source { justify-self: start; padding: 4px 8px; border-radius: 6px; background: #e5edf7; }
+.inventory-source[data-freshness="stale"], .inventory-source[data-freshness="unavailable"] { background: #fff0c2; color: #694500; }
+.inventory-endpoint-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.inventory-endpoint-actions .button { min-height: 44px; white-space: normal; }
+.inventory-endpoint-candidate, .inventory-endpoint-discrepancies, .inventory-endpoint-discrepancy { display: grid; gap: 10px; border-top: 1px solid #bacce3; padding-top: 12px; }
+.inventory-endpoint [data-endpoint-feedback]:empty { display: none; }
 @media (max-width: 900px) { .topbar { padding: 8px 0 18px; } .request-id { display: none; } .inventory-mobile { max-width: none; } .button { min-height: 44px; width: 100%; text-align: center; } }

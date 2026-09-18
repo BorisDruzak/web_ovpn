@@ -78,7 +78,7 @@ def test_inventory_page_requires_login_and_has_mobile_capture_controls(tmp_path,
     assert page.status_code == 200
     assert "ИНВЕНТАРИЗАЦИЯ" in page.text
     assert "inventory-mobile" in page.text
-    assert "/static/inventory.css?v=430b4c6" in page.text
+    assert "/static/inventory.css?v=endpoint-1" in page.text
     assert "/static/app.css?v=d7c1a62" in page.text
     assert "/static/app.js?v=d7c1a62" in page.text
     assert 'class="mobile-nav-toggle"' in page.text

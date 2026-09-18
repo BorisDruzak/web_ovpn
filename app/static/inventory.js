@@ -4,3 +4,52 @@ document.addEventListener("change", (event) => {
     target.setAttribute("data-selected", "true");
   }
 });
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-endpoint-action], [data-endpoint-read]");
+  if (!button || button.disabled) return;
+  const card = button.closest("[data-endpoint-card]");
+  if (!card || card.dataset.busy === "true") return;
+  if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
+  const feedback = card.querySelector("[data-endpoint-feedback]");
+  const read = Boolean(button.dataset.endpointRead);
+  const path = button.dataset.endpointRead || button.dataset.endpointAction;
+  // Only the local Inventory API can be called by this UI.
+  const url = new URL(path, window.location.origin);
+  if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/v1/inventory/assets/")) return;
+  const controls = Array.from(card.querySelectorAll("button"));
+  card.dataset.busy = "true";
+  controls.forEach((control) => { control.disabled = true; });
+  feedback.textContent = "Выполняется…";
+  try {
+    const response = await fetch(url.pathname, {
+      method: read ? "GET" : "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": card.dataset.csrf },
+      body: read ? undefined : JSON.stringify(button.dataset.resolution
+        ? { action: button.dataset.resolution } : { profile: "baseline_v1" }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      const messages = {
+        endpoint_platform_disabled: "Интеграция Endpoint отключена. Сохранённые данные доступны.",
+        endpoint_platform_scope_denied: "Недостаточно прав сервиса Endpoint. Обратитесь к администратору.",
+        endpoint_platform_unavailable: "Endpoint временно недоступен. Сохранённые данные доступны.",
+      };
+      feedback.textContent = messages[result.code] || (response.status === 401
+        ? "Сессия завершена. Войдите снова."
+        : "Действие не выполнено. Обновите карточку и проверьте актуальность привязки.");
+    } else if (response.status === 202) {
+      feedback.textContent = "Обновление запрошено. Результат появится после плановой синхронизации; обновите карточку позже.";
+    } else if (read && !result.data.length) {
+      feedback.textContent = "Сохранённых кандидатов нет. Дождитесь плановой синхронизации и повторите поиск.";
+    } else {
+      window.location.reload();
+    }
+  } catch {
+    feedback.textContent = "Не удалось выполнить запрос. Сохранённые данные остаются доступны.";
+  } finally {
+    card.dataset.busy = "false";
+    controls.forEach((control) => { control.disabled = false; });
+  }
+});
