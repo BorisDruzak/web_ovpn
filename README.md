@@ -4,6 +4,14 @@ FastAPI/Jinja2 web UI for managing OpenVPN profiles through `vpnctl`, plus a rea
 
 Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
+Inventory optionally uses Endpoint Platform through its published HTTPS SDK.
+See the [Endpoint service-client runbook](docs/runbooks/inventory-endpoint-platform-service-client.md)
+for the separate administrative client with `devices.read`, `context.read`
+and `context.collect`, protected token/CA files, immutable SDK release lock,
+pre-enable smoke and rollback. `ENDPOINT_PLATFORM_ENABLED=0` is the default;
+the SDK release must be supplied and pinned before enablement. Inventory keeps
+manual/Netctl data and last saved Endpoint context usable during an outage.
+
 ALT Linux workstation deployment context: [docs/ALT_LINUX_AUTOINSTALL.md](docs/ALT_LINUX_AUTOINSTALL.md).
 
 ## Security Model
