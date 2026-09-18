@@ -10,6 +10,25 @@ sudo_cmd() {
   printf '%s\n' "$SUDO_PASSWORD" | sudo -S -p '' "$@"
 }
 
+endpoint_platform_gate() {
+  # Stop a previously enabled timer too: a failed upgrade must fail closed.
+  sudo_cmd systemctl disable --now inventory-endpoint-sync.timer
+  sudo_cmd systemctl stop inventory-endpoint-sync.service
+  if sudo_cmd systemd-analyze verify /etc/systemd/system/inventory-endpoint-sync.service \
+    /etc/systemd/system/inventory-endpoint-sync.timer && \
+    sudo_cmd -u openvpn-web "$APP/.venv/bin/python" /usr/local/sbin/verify-endpoint-platform \
+    --app-dir "$APP" --env-file "$ENV_PATH" --if-enabled --install; then
+    sudo_cmd systemctl enable --now inventory-endpoint-sync.timer
+  else
+    local endpoint_status=$?
+    if [[ "$endpoint_status" -ne 77 ]]; then
+      # Preserve local Inventory operation; retries require an explicit smoke.
+      sudo_cmd sed -i 's/^ENDPOINT_PLATFORM_ENABLED=.*/ENDPOINT_PLATFORM_ENABLED=0/' "$ENV_PATH"
+      printf '%s\n' 'Endpoint verification failed; feature and timer disabled'
+    fi
+  fi
+}
+
 validate_netctl_directory() {
   local path="$1" expected_metadata="$2" legacy_metadata="${3:-}" resolved metadata
   if sudo_cmd test -L "$path" || ! sudo_cmd test -d "$path"; then
@@ -122,6 +141,7 @@ sudo_cmd install -m 0755 "$SRC/deploy/vpnctl" /usr/local/sbin/vpnctl
 sudo_cmd install -m 0755 "$SRC/deploy/vpn-policy.sh" /usr/local/sbin/vpn-policy.sh
 sudo_cmd install -m 0755 "$SRC/deploy/netctl" /usr/local/sbin/netctl
 sudo_cmd install -m 0755 "$SRC/deploy/verify_netctl_systemd.py" /usr/local/sbin/verify-netctl-systemd
+sudo_cmd install -m 0755 "$SRC/deploy/verify_endpoint_platform.py" /usr/local/sbin/verify-endpoint-platform
 sudo_cmd install -m 0755 "$SRC/deploy/generate-client-wrapper.sh" /usr/local/sbin/generate-client-wrapper
 sudo_cmd install -d -m 0755 -o root -g root /usr/local/libexec
 sudo_cmd install -m 0755 -o root -g root "$SRC/deploy/netctl-nmap-fingerprint" \
@@ -189,6 +209,12 @@ SHARE_OUT_DIR=/mnt/antares_soft/vpn_config
 ARCHIVE_DIR=/etc/openvpn/client-generator/archive
 ROUTEROS_BACKUP_DIR=/var/backups/routeros
 DOWNLOAD_TOKEN_TTL_MINUTES=15
+ENDPOINT_PLATFORM_ENABLED=0
+ENDPOINT_PLATFORM_BASE_URL=https://endpoint.sosnadmin.local
+ENDPOINT_PLATFORM_TOKEN_FILE=/etc/openvpn-web/endpoint-platform.token
+ENDPOINT_PLATFORM_CA_FILE=/etc/openvpn-web/endpoint-platform-ca.pem
+ENDPOINT_PLATFORM_TIMEOUT_SECONDS=5
+ENDPOINT_PLATFORM_SMOKE_DEVICE_ID=
 ENV_FILE
   sudo_cmd install -m 0640 -o root -g openvpn-web "$TMP_ENV" "$ENV_PATH"
   sudo_cmd rm -f "$TMP_ENV"
@@ -223,7 +249,13 @@ ENV_FILE
     'NETCTL_USE_SUDO=1' \
     'NETCTL_SUDO_USER=netctl' \
     'NETWORK_OBSERVER_ENABLED=1' \
-    'ROUTEROS_BACKUP_DIR=/var/backups/routeros'; do
+    'ROUTEROS_BACKUP_DIR=/var/backups/routeros' \
+    'ENDPOINT_PLATFORM_ENABLED=0' \
+    'ENDPOINT_PLATFORM_BASE_URL=https://endpoint.sosnadmin.local' \
+    'ENDPOINT_PLATFORM_TOKEN_FILE=/etc/openvpn-web/endpoint-platform.token' \
+    'ENDPOINT_PLATFORM_CA_FILE=/etc/openvpn-web/endpoint-platform-ca.pem' \
+    'ENDPOINT_PLATFORM_TIMEOUT_SECONDS=5' \
+    'ENDPOINT_PLATFORM_SMOKE_DEVICE_ID='; do
     key="${line%%=*}"
     if ! sudo_cmd grep -q "^${key}=" "$TMP_ENV"; then
       printf '%s\n' "$line" | sudo_cmd tee -a "$TMP_ENV" >/dev/null
@@ -276,6 +308,8 @@ sudo_cmd install -m 0644 "$SRC/deploy/netctl-availability.service" /etc/systemd/
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-availability.timer" /etc/systemd/system/netctl-availability.timer
 sudo_cmd install -m 0644 "$SRC/deploy/inventory-netctl-sync.service" /etc/systemd/system/inventory-netctl-sync.service
 sudo_cmd install -m 0644 "$SRC/deploy/inventory-netctl-sync.timer" /etc/systemd/system/inventory-netctl-sync.timer
+sudo_cmd install -m 0644 "$SRC/deploy/inventory-endpoint-sync.service" /etc/systemd/system/inventory-endpoint-sync.service
+sudo_cmd install -m 0644 "$SRC/deploy/inventory-endpoint-sync.timer" /etc/systemd/system/inventory-endpoint-sync.timer
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy.service" /etc/systemd/system/vpn-policy.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.service" /etc/systemd/system/vpn-policy-reconcile.service
 sudo_cmd install -m 0644 "$SRC/deploy/vpn-policy-reconcile.timer" /etc/systemd/system/vpn-policy-reconcile.timer
@@ -293,6 +327,7 @@ else
     exit "$netctl_verification_status"
   fi
 fi
+endpoint_platform_gate
 sudo_cmd systemctl enable openvpn-web.service
 sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now netctl-reconcile.timer

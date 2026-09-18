@@ -13,3 +13,6 @@ jsonschema==4.23.0
 cryptography==46.0.5
 pysnmp==7.1.27
 dnspython==2.8.0
+# endpoint-platform-client is optional and installed only from the immutable
+# deploy/endpoint-platform-client.lock + deploy/wheels release artifact.
+# deploy/verify_endpoint_platform.py verifies version/hash and uses --no-index.

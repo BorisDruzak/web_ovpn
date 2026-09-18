@@ -1,0 +1,16 @@
+[Unit]
+Description=Synchronize Endpoint Platform context into Inventory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openvpn-web
+Group=openvpn-web
+WorkingDirectory=/opt/openvpn-web
+EnvironmentFile=/etc/openvpn-web/openvpn-web.env
+ExecStart=/opt/openvpn-web/.venv/bin/python -m app.inventory.endpoint_sync
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+TimeoutStartSec=4min

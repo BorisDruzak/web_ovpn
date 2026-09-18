@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Inventory Endpoint Platform context periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+Persistent=true
+Unit=inventory-endpoint-sync.service
+
+[Install]
+WantedBy=timers.target
