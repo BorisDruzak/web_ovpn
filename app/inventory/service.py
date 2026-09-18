@@ -98,6 +98,17 @@ def infer_printer_connection_type(
 
 
 class InventoryService:
+    def asset_context(self, db: Session, asset_id: str, now: datetime) -> dict[str, Any]:
+        """Read the local source-aware projection without contacting Endpoint."""
+        from .endpoint import InventoryEndpointService
+
+        return InventoryEndpointService().asset_context(db, asset_id, now)
+
+    def lookup_confirmed_endpoint(self, db: Session, endpoint_device_id: str) -> InventoryAsset | None:
+        from .endpoint import InventoryEndpointService
+
+        return InventoryEndpointService().lookup_confirmed_endpoint(db, endpoint_device_id)
+
     def create_location(self, db: Session, *, name: str | None = None, comment: str | None = None) -> InventoryLocation:
         location = InventoryLocation(name=self._nullable_text(name), comment=self._nullable_text(comment))
         db.add(location)
