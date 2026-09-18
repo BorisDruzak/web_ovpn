@@ -93,6 +93,24 @@ def test_exact_one_to_one_mac_auto_confirms_and_uuid_becomes_stable(session, ser
     assert service.lookup_confirmed_endpoint(session, DEVICE_B) is None
 
 
+def test_detach_requires_explicit_audited_reconnect_and_old_action_cannot_replay(session, service):
+    from app.inventory.models import InventoryObservation
+    asset = pc(session)
+    old = service.reconcile_candidates(session, [identity()], NOW)[0]
+    service.detach_binding(session, asset.id, old.id, "operator", NOW)
+    assert service.reconcile_candidates(session, [identity()], NOW) == []
+    new = service.reconnect_binding(session, asset.id, old.id, "operator", NOW + timedelta(minutes=1))
+    assert new.id != old.id and new.status == Status.CONFIRMED
+    assert old.status == Status.ENDED and old.ended_at == NOW
+    assert service.lookup_confirmed_endpoint(session, DEVICE_A).id == asset.id
+    audit = session.scalars(select(InventoryObservation)).all()
+    assert any(r.data_json.get("action") == "reconnect" and r.data_json["actor"] == "operator" for r in audit)
+    service.detach_binding(session, asset.id, new.id, "operator", NOW + timedelta(minutes=2))
+    with pytest.raises(InventoryValidationError):
+        service.reconnect_binding(session, asset.id, old.id, "operator", NOW + timedelta(minutes=3))
+    assert service.reconcile_candidates(session, [identity()], NOW) == []
+
+
 @pytest.mark.parametrize("duplicate_side", ["inventory", "endpoint"])
 def test_duplicate_mac_stays_candidate(session, service, duplicate_side):
     pc(session)

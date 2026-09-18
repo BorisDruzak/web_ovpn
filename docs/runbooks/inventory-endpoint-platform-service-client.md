@@ -243,6 +243,13 @@ their freshness can become stale/unavailable. Re-enablement repeats the gate.
   evidence remains a candidate. IP/hostname/username never auto-bind. Once
   confirmed, the Endpoint UUID is the stable reference. Explicit detach is
   preserved and the same discovery evidence does not silently reconnect it.
+  The PC card's explicit **Восстановить привязку** action calls the authenticated,
+  CSRF-protected `POST /api/v1/inventory/assets/{id}/endpoint-bindings/{binding_id}/reconnect`.
+  It creates a new audited confirmed binding and retains the detached history.
+  A consumed old reconnect action cannot be replayed; an active conflicting
+  binding must first be resolved. The worker collects state for the new binding.
+  Network cache reads hide links whose canonical binding ended or was replaced,
+  and become stale after ten minutes without a successful worker refresh.
 - RAM/serial discrepancies support `accept_endpoint`, `keep_manual` and
   `mark_verified`. Keep manual selects the manual value for that specific
   binding/value comparison; changed binding or compared values invalidate the

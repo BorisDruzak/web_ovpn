@@ -244,6 +244,39 @@ def test_cache_is_derived_from_confirmed_bindings_and_duplicate_mac_is_excluded(
     )
 
 
+def test_stopped_worker_cache_ages_without_another_write(session):
+    from app.endpoint_agent_network import endpoint_agent_refresh_status, cached_endpoint_agent_statuses
+    from app.inventory.endpoint_sync import sync_confirmed_bindings, rebuild_endpoint_agent_network_cache
+
+    pc(session)
+    sync_confirmed_bindings(session, Adapter(), NOW)
+    rebuild_endpoint_agent_network_cache(session, NOW)
+    assert endpoint_agent_refresh_status(session, NOW)["state"] == "ready"
+    later = NOW + timedelta(minutes=11)
+    assert endpoint_agent_refresh_status(session, later)["state"] == "stale"
+    assert cached_endpoint_agent_statuses(session, later)["mac:" + MAC]["state"] == "stale"
+    assert session.get(EndpointAgentNetworkLink, "mac:" + MAC).state == "confirmed"
+
+
+@pytest.mark.parametrize("action", ["detach", "replace"])
+def test_ended_binding_masks_cached_device_link_without_worker_rebuild(session, action):
+    from app.endpoint_agent_network import cached_endpoint_agent_statuses
+    from app.inventory.endpoint_sync import sync_confirmed_bindings, rebuild_endpoint_agent_network_cache
+
+    asset = pc(session)
+    sync_confirmed_bindings(session, Adapter(), NOW)
+    rebuild_endpoint_agent_network_cache(session, NOW)
+    binding = session.scalar(select(InventoryExternalBinding))
+    service = InventoryEndpointService()
+    if action == "detach":
+        service.detach_binding(session, asset.id, binding.id, "operator", NOW)
+    else:
+        service.replace_binding(session, asset.id, binding.id, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "operator", NOW)
+    assert "mac:" + MAC not in cached_endpoint_agent_statuses(session, NOW)
+    assert session.get(EndpointAgentNetworkLink, "mac:" + MAC).device_id == DEVICE
+    assert session.get(InventoryEndpointState, binding.id) is not None
+
+
 def test_render_context_and_legacy_refresh_do_not_use_remote_adapter(
     session, monkeypatch
 ):

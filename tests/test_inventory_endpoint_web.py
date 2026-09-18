@@ -126,6 +126,23 @@ def test_session_reject_and_detach_require_csrf(web, action, candidate, expected
     assert response.json()["data"]["status"] == expected
 
 
+def test_detached_card_offers_explicit_csrf_protected_reconnect(web):
+    asset, binding = seed()
+    page = web.get(f"/inventory/assets/{asset}")
+    headers = {"X-CSRF-Token": _csrf(page.text)}
+    base = f"/api/v1/inventory/assets/{asset}/endpoint-bindings/{binding}"
+    assert web.post(base + "/detach", headers=headers).status_code == 200
+    page = web.get(f"/inventory/assets/{asset}")
+    assert base + "/reconnect" in page.text
+    assert "Восстановить привязку" in page.text
+    assert web.post(base + "/reconnect").status_code == 400
+    response = web.post(base + "/reconnect", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["data"]["id"] != binding
+    assert response.json()["data"]["status"] == "confirmed"
+    assert web.post(base + "/reconnect", headers=headers).status_code == 400
+
+
 def test_endpoint_session_auth_is_narrow_and_rejects_invalid_bearer(web, monkeypatch):
     import hashlib
     from app.config import reset_settings_cache

@@ -33,6 +33,10 @@
     </div>
     {% else %}
     <strong>Агент не привязан</strong>
+    {% for detached in context.detached_bindings %}
+    <p>Ранее отвязанный Endpoint Device: {{ detached.external_id }}</p>
+    {{ endpoint_action('endpoint-bindings/' ~ detached.id ~ '/reconnect', 'Восстановить привязку', confirm='Восстановить связь этого Endpoint Device с данным ПК? Данные обновятся при плановой синхронизации.') }}
+    {% endfor %}
     <p>Кандидаты обновляются при плановой синхронизации. Поиск показывает сохранённые совпадения.</p>
     <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-candidates">Найти агент</button>
     {% endif %}

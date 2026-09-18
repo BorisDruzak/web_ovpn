@@ -7,7 +7,7 @@ import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .models import EndpointAgentNetworkLink, EndpointAgentNetworkRefresh
@@ -21,6 +21,7 @@ _SAFE_DEVICE_TYPES = frozenset(
 )
 _REFRESH_INTERVAL_SECONDS = 300
 _REFRESH_LEASE_SECONDS = 60
+_CACHE_MAX_AGE = timedelta(minutes=10)
 
 
 def normalize_mac(value: object) -> str | None:
@@ -249,13 +250,38 @@ def store_endpoint_agent_statuses(
 
 
 def cached_endpoint_agent_statuses(
-    db: Session, _: datetime | None = None
+    db: Session, now: datetime | None = None
 ) -> dict[str, dict[str, object]]:
     """Read the MAC-free cache in the exact render shape used by network pages."""
+    from .inventory.models import (
+        InventoryAssetIdentifier, InventoryEndpointState, InventoryExternalBinding,
+        InventoryExternalBindingStatus, InventoryIdentifierType,
+    )
+
     rows = db.query(EndpointAgentNetworkLink).order_by(EndpointAgentNetworkLink.asset_key).all()
+    # A compatibility cache is never authority for an ended/replaced binding.
+    # Include its state owner so reconnecting the same UUID cannot reuse an old
+    # binding's cache before the worker has collected the new binding's state.
+    canonical = set()
+    for binding, identifier in db.execute(
+        select(InventoryExternalBinding, InventoryAssetIdentifier)
+        .join(InventoryEndpointState, InventoryEndpointState.binding_id == InventoryExternalBinding.id)
+        .join(InventoryAssetIdentifier, InventoryAssetIdentifier.asset_id == InventoryExternalBinding.asset_id)
+        .where(
+            InventoryExternalBinding.source == "endpoint_platform",
+            InventoryExternalBinding.status == InventoryExternalBindingStatus.CONFIRMED,
+            InventoryExternalBinding.ended_at.is_(None),
+            InventoryEndpointState.asset_id == InventoryExternalBinding.asset_id,
+            InventoryEndpointState.endpoint_device_id == InventoryExternalBinding.external_id,
+            InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.MAC,
+            InventoryAssetIdentifier.is_current.is_(True),
+        )
+    ):
+        canonical.add((normalize_mac(identifier.normalized_value), binding.external_id))
+    stale = endpoint_agent_refresh_status(db, now)["state"] == "stale"
     return {
         row.asset_key: {
-            "state": row.state,
+            "state": "stale" if stale else row.state,
             "device_id": row.device_id,
             "device_display_name": row.device_display_name,
             "gateway_last_seen_at": _timestamp_text(row.gateway_last_seen_at),
@@ -264,6 +290,8 @@ def cached_endpoint_agent_statuses(
             "evidence_kind": row.evidence_kind,
         }
         for row in rows
+        if row.evidence_kind != "inventory_confirmed_binding"
+        or (normalize_mac(row.asset_key.removeprefix("mac:")), row.device_id) in canonical
     }
 
 
@@ -275,7 +303,7 @@ def endpoint_agent_refresh_status(
     if refresh is None or refresh.last_success_at is None:
         return {"state": "updating", "last_success_at": None}
     current = _as_utc(now or datetime.now(UTC))
-    if refresh.last_error_code:
+    if refresh.last_error_code or not timedelta(0) <= current - _as_utc(refresh.last_success_at) <= _CACHE_MAX_AGE:
         state = "stale"
     elif refresh.lease_expires_at is not None and _as_utc(refresh.lease_expires_at) > current:
         state = "updating"

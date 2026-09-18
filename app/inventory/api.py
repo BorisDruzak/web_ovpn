@@ -177,6 +177,7 @@ def _endpoint_binding_action(db: Session, request: Request, actor: str, asset_id
         "confirm": endpoint_service.confirm_binding,
         "reject": endpoint_service.reject_binding,
         "detach": endpoint_service.detach_binding,
+        "reconnect": endpoint_service.reconnect_binding,
     }[action]
     try:
         binding = operation(db, asset_id, binding_id, actor, datetime.now(timezone.utc))
@@ -205,6 +206,12 @@ def reject_endpoint_binding(asset_id: str, binding_id: str, request: Request, cs
 def detach_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     return _endpoint_binding_action(db, request, actor, asset_id, binding_id, "detach")
+
+
+@router.post("/assets/{asset_id}/endpoint-bindings/{binding_id}/reconnect")
+def reconnect_endpoint_binding(asset_id: str, binding_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+    _mutation(request, csrf)
+    return _endpoint_binding_action(db, request, actor, asset_id, binding_id, "reconnect")
 
 
 @router.post("/assets/{asset_id}/discrepancies/{field}/resolve")

@@ -147,6 +147,7 @@ def test_stale_and_wrong_asset_candidates_cannot_be_confirmed(api):
     ("/assets/pc/endpoint-bindings/binding/confirm", "post"),
     ("/assets/pc/endpoint-bindings/binding/reject", "post"),
     ("/assets/pc/endpoint-bindings/binding/detach", "post"),
+    ("/assets/pc/endpoint-bindings/binding/reconnect", "post"),
     ("/assets/pc/endpoint-refresh", "post"),
     ("/assets/pc/discrepancies/ram_gb/resolve", "post"),
 ])
@@ -159,6 +160,7 @@ def test_all_endpoint_routes_require_authentication(api, path, method):
     ("endpoint-bindings/binding/confirm", None),
     ("endpoint-bindings/binding/reject", None),
     ("endpoint-bindings/binding/detach", None),
+    ("endpoint-bindings/binding/reconnect", None),
     ("endpoint-refresh", {"profile": "baseline_v1"}),
     ("discrepancies/ram_gb/resolve", {"action": "keep_manual", "expected_revision": "0" * 64}),
 ])

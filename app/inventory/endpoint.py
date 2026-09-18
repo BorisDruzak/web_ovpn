@@ -536,6 +536,35 @@ class InventoryEndpointService:
             )
         return new
 
+    def reconnect_binding(
+        self, db: Session, asset_id: str, binding_id: str, actor: str, now: datetime
+    ) -> InventoryExternalBinding:
+        """Explicitly reconnect a detached relationship, retaining its history."""
+        actor = self._actor(actor)
+        self._pc(db, asset_id)
+        old = db.get(InventoryExternalBinding, binding_id)
+        if (
+            old is None or old.asset_id != asset_id or old.source != SOURCE
+            or old.status != Status.ENDED or old.ended_at is None
+            or old.evidence_json.get("reconnected_binding_id")
+        ):
+            raise InventoryValidationError("Endpoint binding is not eligible for reconnect")
+        self._unique(db, asset_id, old.external_id)
+        new = InventoryExternalBinding(
+            asset_id=asset_id, source=SOURCE, external_id=old.external_id,
+            status=Status.CONFIRMED, binding_method="manual", confidence=100,
+            evidence_json={"reconnects_binding_id": old.id}, created_by=actor,
+            first_seen_at=_utc(now), last_verified_at=_utc(now),
+            created_at=_utc(now), updated_at=_utc(now),
+        )
+        db.add(new)
+        db.flush()
+        old.evidence_json = {**old.evidence_json, "reconnected_binding_id": new.id}
+        old.updated_at = _utc(now)
+        self._audit(db, new, "reconnect", actor, now, detached_binding_id=old.id)
+        db.flush()
+        return new
+
     def lookup_confirmed_endpoint(
         self, db: Session, endpoint_device_id: str
     ) -> InventoryAsset | None:
@@ -729,6 +758,16 @@ class InventoryEndpointService:
         ).all()
         return {
             "asset": manual["asset"],
+            "detached_bindings": [
+                {"id": row.id, "external_id": row.external_id}
+                for row in db.scalars(select(InventoryExternalBinding).where(
+                    InventoryExternalBinding.asset_id == asset_id,
+                    InventoryExternalBinding.source == SOURCE,
+                    InventoryExternalBinding.status == Status.ENDED,
+                    InventoryExternalBinding.ended_at.is_not(None),
+                ).order_by(InventoryExternalBinding.ended_at.desc()).limit(100))
+                if not row.evidence_json.get("reconnected_binding_id")
+            ] if binding is None else [],
             "location": {
                 "id": location.id,
                 "name": location.name,
