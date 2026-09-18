@@ -8,13 +8,26 @@ document.addEventListener("change", (event) => {
 const inventoryManualForm = document.querySelector("[data-inventory-asset-form]");
 const inventoryManualDraft = () => inventoryManualForm
   ? new URLSearchParams(new FormData(inventoryManualForm)).toString() : "";
-const inventoryInitialDraft = inventoryManualDraft();
+let inventoryInitialDraft = inventoryManualDraft();
+let inventoryFormSubmitting = false;
+
+if (inventoryManualForm) {
+  inventoryManualForm.addEventListener("submit", (event) => {
+    const card = document.querySelector("[data-endpoint-card]");
+    if (card && card.dataset.busy === "true") {
+      event.preventDefault();
+      card.querySelector("[data-endpoint-feedback]").textContent = "Дождитесь завершения действия агента перед сохранением карточки.";
+    } else {
+      inventoryFormSubmitting = true;
+    }
+  });
+}
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-endpoint-action], [data-endpoint-read]");
   if (!button || button.disabled) return;
   const card = button.closest("[data-endpoint-card]");
-  if (!card || card.dataset.busy === "true") return;
+  if (!card || card.dataset.busy === "true" || inventoryFormSubmitting) return;
   const feedback = card.querySelector("[data-endpoint-feedback]");
   if (inventoryManualDraft() !== inventoryInitialDraft) {
     feedback.textContent = "Сохраните изменения карточки перед действием с агентом. Несохранённые поля оставлены в форме.";
@@ -28,8 +41,13 @@ document.addEventListener("click", async (event) => {
   const url = new URL(path, window.location.origin);
   if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/v1/inventory/assets/")) return;
   const controls = Array.from(card.querySelectorAll("button"));
+  const formSubmits = inventoryManualForm
+    ? Array.from(inventoryManualForm.querySelectorAll("button[type='submit'], input[type='submit']")) : [];
+  const submitDisabled = formSubmits.map((control) => control.disabled);
+  const draftAtRequest = new URLSearchParams(inventoryManualDraft());
   card.dataset.busy = "true";
   controls.forEach((control) => { control.disabled = true; });
+  formSubmits.forEach((control) => { control.disabled = true; });
   feedback.textContent = "Выполняется…";
   try {
     const response = await fetch(url.pathname, {
@@ -40,6 +58,18 @@ document.addEventListener("click", async (event) => {
         ? { action: button.dataset.resolution, expected_revision: button.dataset.revision } : { profile: "baseline_v1" }),
     });
     const result = await response.json();
+    if (response.ok && button.dataset.resolution && inventoryManualForm) {
+      const field = result.data.field;
+      if (!["ram_gb", "serial_number"].includes(field) || result.data.manual_value === undefined) {
+        throw new Error("Missing resolved manual value");
+      }
+      const input = inventoryManualForm.elements.namedItem(field);
+      const manualValue = String(result.data.manual_value ?? "");
+      if (input && input.value === draftAtRequest.get(field)) input.value = manualValue;
+      const baseline = new URLSearchParams(inventoryInitialDraft);
+      baseline.set(field, manualValue);
+      inventoryInitialDraft = baseline.toString();
+    }
     if (!response.ok) {
       const messages = {
         endpoint_platform_disabled: "Интеграция Endpoint отключена. Сохранённые данные доступны.",
@@ -65,5 +95,6 @@ document.addEventListener("click", async (event) => {
   } finally {
     card.dataset.busy = "false";
     controls.forEach((control) => { control.disabled = false; });
+    formSubmits.forEach((control, index) => { control.disabled = submitDisabled[index]; });
   }
 });

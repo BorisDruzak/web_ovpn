@@ -178,6 +178,7 @@ def test_discrepancy_actions_change_local_projection_and_leave_audit(api, action
     revision = client.get(f"{ROOT}/assets/{asset}/context", headers=headers).json()["data"]["discrepancies"][0]["revision"]
     response = client.post(f"{ROOT}/assets/{asset}/discrepancies/ram_gb/resolve", headers=headers, json={"action": action, "expected_revision": revision})
     assert response.status_code == 200
+    assert response.json()["data"]["manual_value"] == (16 if action == "accept_endpoint" else 8)
     context = client.get(f"{ROOT}/assets/{asset}/context", headers=headers).json()["data"]
     assert context["effective"]["ram_gb"]["value"] == expected
     assert context["manual"]["details"]["ram_gb"] == (16 if action == "accept_endpoint" else 8)

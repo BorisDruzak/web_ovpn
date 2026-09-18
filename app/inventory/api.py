@@ -218,7 +218,7 @@ def resolve_endpoint_discrepancy(asset_id: str, field: str, payload: EndpointDis
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     write_audit(db, request, actor, "inventory.endpoint.discrepancy.resolve", "ok", f"{field}:{payload.action}", target_client=asset_id)
-    return {"status": "ok", "data": {"id": observation.id, "field": field, "action": payload.action}}
+    return {"status": "ok", "data": {"id": observation.id, "field": field, "action": payload.action, "manual_value": observation.data_json["new_value"]}}
 
 
 @router.post("/assets/{asset_id}/endpoint-refresh", status_code=status.HTTP_202_ACCEPTED, response_model=None)
