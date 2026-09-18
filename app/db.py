@@ -1,17 +1,40 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Iterator
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import DateTime, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.types import TypeDecorator
 
 from .config import get_settings, reset_settings_cache
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """Persist datetimes in UTC and always return an aware UTC value."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value: datetime | None, dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
 
 
 @lru_cache(maxsize=1)
@@ -263,7 +286,35 @@ def init_inventory_endpoint_schema() -> None:
             InventoryEndpointSyncControl.__table__,
         ],
     )
-    _migrate_inventory_schema(engine)
+    _migrate_inventory_endpoint_schema(engine)
+
+
+def _migrate_inventory_endpoint_schema(engine) -> None:
+    """Apply only additive Inventory Endpoint migration work."""
+    inspector = inspect(engine)
+    if "inventory_observations" in inspector.get_table_names():
+        columns = {
+            column["name"]
+            for column in inspector.get_columns("inventory_observations")
+        }
+        missing_columns = {
+            "binding_id": "VARCHAR(36)",
+            "endpoint_device_id": "VARCHAR(255)",
+            "profile": "VARCHAR(32)",
+            "snapshot_id": "VARCHAR(255)",
+            "semantic_hash": "VARCHAR(64)",
+            "collected_at": "DATETIME",
+        }
+        with engine.begin() as connection:
+            for column_name, column_type in missing_columns.items():
+                if column_name not in columns:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE inventory_observations "
+                            f"ADD COLUMN {column_name} {column_type}"
+                        )
+                    )
+    _prepare_inventory_endpoint_constraints(engine)
 
 
 def _migrate_inventory_schema(engine) -> None:
@@ -287,28 +338,7 @@ def _migrate_inventory_schema(engine) -> None:
             columns = {column["name"] for column in inspector.get_columns("inventory_assets")}
             if "notes" in columns:
                 connection.execute(_TRANSFER_ASSET_NOTES)
-        if "inventory_observations" in table_names:
-            columns = {
-                column["name"]
-                for column in inspector.get_columns("inventory_observations")
-            }
-            missing_columns = {
-                "binding_id": "VARCHAR(36)",
-                "endpoint_device_id": "VARCHAR(255)",
-                "profile": "VARCHAR(32)",
-                "snapshot_id": "VARCHAR(255)",
-                "semantic_hash": "VARCHAR(64)",
-                "collected_at": "DATETIME",
-            }
-            for column_name, column_type in missing_columns.items():
-                if column_name not in columns:
-                    connection.execute(
-                        text(
-                            f"ALTER TABLE inventory_observations "
-                            f"ADD COLUMN {column_name} {column_type}"
-                        )
-                    )
-    _prepare_inventory_endpoint_constraints(engine)
+    _migrate_inventory_endpoint_schema(engine)
 
 
 def init_db() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import inspect, text
@@ -283,3 +283,161 @@ def test_narrow_initializer_migrates_legacy_inventory_without_broad_init(
         "uq_inventory_endpoint_confirmed_device",
         "uq_inventory_endpoint_active_candidate",
     } <= index_names
+
+
+def test_narrow_initializer_does_not_mutate_unrelated_legacy_tables(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "DATABASE_URL", f"sqlite:///{tmp_path / 'legacy-unrelated.sqlite'}"
+    )
+
+    from app.db import get_engine, init_inventory_endpoint_schema, reset_engine_cache
+
+    reset_engine_cache()
+    with get_engine().begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE web_users ("
+                "id INTEGER PRIMARY KEY, is_admin BOOLEAN NOT NULL)"
+            )
+        )
+        connection.execute(text("INSERT INTO web_users (id, is_admin) VALUES (1, 1)"))
+        connection.execute(
+            text(
+                "CREATE TABLE inventory_assets ("
+                "id VARCHAR(36) PRIMARY KEY, asset_type VARCHAR(16) NOT NULL, "
+                "notes TEXT, description TEXT)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO inventory_assets "
+                "(id, asset_type, notes, description) "
+                "VALUES ('pc-1', 'PC', 'leave untouched', NULL)"
+            )
+        )
+        connection.execute(
+            text("CREATE TABLE inventory_printer_details (asset_id VARCHAR(36) PRIMARY KEY)")
+        )
+        connection.execute(
+            text("CREATE TABLE inventory_pc_details (asset_id VARCHAR(36) PRIMARY KEY)")
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE inventory_observations ("
+                "id VARCHAR(36) PRIMARY KEY, source VARCHAR(16) NOT NULL, "
+                "observed_at DATETIME NOT NULL, data_json JSON NOT NULL)"
+            )
+        )
+
+    init_inventory_endpoint_schema()
+
+    inspector = inspect(get_engine())
+    assert "is_network_admin" not in {
+        column["name"] for column in inspector.get_columns("web_users")
+    }
+    assert "connection_type" not in {
+        column["name"]
+        for column in inspector.get_columns("inventory_printer_details")
+    }
+    assert "os_version" not in {
+        column["name"] for column in inspector.get_columns("inventory_pc_details")
+    }
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text("SELECT notes, description FROM inventory_assets WHERE id = 'pc-1'")
+        ).one()
+    assert row == ("leave untouched", None)
+
+
+def test_endpoint_datetimes_round_trip_as_utc_aware(session) -> None:
+    from app.inventory.models import (
+        InventoryAssetType,
+        InventoryEndpointState,
+        InventoryEndpointSyncControl,
+        InventoryExternalBindingStatus,
+        InventoryObservation,
+        InventoryObservationSource,
+    )
+
+    source_time = datetime(
+        2026, 9, 18, 13, 30, 45, tzinfo=timezone(timedelta(hours=5))
+    )
+    expected_utc = datetime(2026, 9, 18, 8, 30, 45, tzinfo=timezone.utc)
+    _asset(session, "pc-1", InventoryAssetType.PC)
+    binding = _binding(
+        asset_id="pc-1",
+        external_id=DEVICE_A,
+        status=InventoryExternalBindingStatus.ENDED,
+        ended_at=source_time,
+    )
+    binding.first_seen_at = source_time
+    binding.last_verified_at = source_time
+    session.add(binding)
+    session.flush()
+    state = InventoryEndpointState(
+        binding_id=binding.id,
+        asset_id="pc-1",
+        endpoint_device_id=DEVICE_A,
+        last_seen_at=source_time,
+        last_checked_at=source_time,
+        refreshed_at=source_time,
+        last_success_at=source_time,
+        unavailable_since=source_time,
+    )
+    control = InventoryEndpointSyncControl(
+        id=1,
+        lease_expires_at=source_time,
+        last_presence_sync_at=source_time,
+        last_full_sync_at=source_time,
+        last_reconciliation_requested_at=source_time,
+    )
+    observation = InventoryObservation(
+        asset_id="pc-1",
+        source=InventoryObservationSource.ENDPOINT,
+        observed_at=source_time,
+        binding_id=binding.id,
+        endpoint_device_id=DEVICE_A,
+        profile="baseline_v1",
+        collected_at=source_time,
+    )
+    session.add_all((state, control, observation))
+    session.commit()
+
+    binding_id = binding.id
+    observation_id = observation.id
+    session.expunge_all()
+    binding = session.get(type(binding), binding_id)
+    state = session.get(InventoryEndpointState, binding_id)
+    control = session.get(InventoryEndpointSyncControl, 1)
+    observation = session.get(InventoryObservation, observation_id)
+
+    persisted_values = (
+        binding.first_seen_at,
+        binding.last_verified_at,
+        binding.ended_at,
+        binding.created_at,
+        binding.updated_at,
+        state.last_seen_at,
+        state.last_checked_at,
+        state.refreshed_at,
+        state.last_success_at,
+        state.unavailable_since,
+        state.created_at,
+        state.updated_at,
+        control.lease_expires_at,
+        control.last_presence_sync_at,
+        control.last_full_sync_at,
+        control.last_reconciliation_requested_at,
+        control.created_at,
+        control.updated_at,
+        observation.collected_at,
+    )
+    assert all(value.tzinfo is not None for value in persisted_values)
+    assert all(value.utcoffset() == timedelta(0) for value in persisted_values)
+    assert binding.first_seen_at == expected_utc
+    assert binding.ended_at == expected_utc
+    assert state.last_checked_at == expected_utc
+    assert control.lease_expires_at == expected_utc
+    assert observation.collected_at == expected_utc

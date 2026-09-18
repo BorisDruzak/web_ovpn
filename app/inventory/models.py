@@ -20,7 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from ..db import Base
+from ..db import Base, UTCDateTime
 from ..models import utcnow
 
 
@@ -200,16 +200,16 @@ class InventoryExternalBinding(Base):
         JSON, default=dict, nullable=False
     )
     first_seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
-    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     created_by: Mapped[str] = mapped_column(String(120), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False
     )
 
 
@@ -226,7 +226,7 @@ class InventoryEndpointState(Base):
         String(255), index=True, nullable=False
     )
     online: Mapped[bool | None] = mapped_column(Boolean)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     agent_version: Mapped[str | None] = mapped_column(String(128))
     baseline_snapshot_id: Mapped[str | None] = mapped_column(String(255))
     health_snapshot_id: Mapped[str | None] = mapped_column(String(255))
@@ -234,18 +234,18 @@ class InventoryEndpointState(Base):
     baseline_semantic_hash: Mapped[str | None] = mapped_column(String(64))
     health_semantic_hash: Mapped[str | None] = mapped_column(String(64))
     network_semantic_hash: Mapped[str | None] = mapped_column(String(64))
-    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    unavailable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    refreshed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_success_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    unavailable_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
     safe_context_json: Mapped[dict[str, object]] = mapped_column(
         JSON, default=dict, nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False
     )
 
 
@@ -257,20 +257,18 @@ class InventoryEndpointSyncControl(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     lease_owner: Mapped[str | None] = mapped_column(String(255))
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_presence_sync_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    last_full_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_presence_sync_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    last_full_sync_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     last_safe_error_code: Mapped[str | None] = mapped_column(String(64))
     last_reconciliation_requested_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
+        UTCDateTime()
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+        UTCDateTime(), default=utcnow, onupdate=utcnow, nullable=False
     )
 
 
@@ -371,7 +369,7 @@ class InventoryObservation(Base):
     profile: Mapped[str | None] = mapped_column(String(32))
     snapshot_id: Mapped[str | None] = mapped_column(String(255))
     semantic_hash: Mapped[str | None] = mapped_column(String(64))
-    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    collected_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
 
 
 class InventorySession(Base):
