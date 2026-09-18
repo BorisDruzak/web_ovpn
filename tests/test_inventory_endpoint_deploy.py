@@ -225,6 +225,15 @@ def test_environment_rejects_ambiguous_multiline_or_quoting(verifier, monkeypatc
         verifier.load_environment(env, 123)
 
 
+@pytest.mark.parametrize("separator", ["\u0085", "\u2028", "\u2029", "\u00a0", "\x0b", "\u200b"])
+def test_environment_rejects_unicode_controls_and_non_lf_separators(verifier, monkeypatch, tmp_path, separator):
+    env = tmp_path / "environment"
+    env.write_text(f"APP_SECRET_KEY=value{separator}ENDPOINT_PLATFORM_ENABLED=1\n", encoding="utf-8")
+    monkeypatch.setattr(verifier, "validate_file_metadata", lambda *args, **kwargs: None)
+    with pytest.raises(verifier.VerificationError, match="config_invalid"):
+        verifier.load_environment(env, 123)
+
+
 @pytest.mark.parametrize("state,status,success", [("not-found", 4, True), ("loaded", 0, True), ("", 1, False)])
 def test_quiesce_handles_missing_units_but_refuses_unknown_manager_state(state, status, success):
     source = (ROOT / "deploy/install-openvpn-web.sh").read_text()
@@ -232,6 +241,7 @@ def test_quiesce_handles_missing_units_but_refuses_unknown_manager_state(state, 
     function = source[start:source.index("\n}\n", start) + 3]
     harness = f'''set -eu
 sudo_cmd() {{
+  if [[ "$*" == *ActiveState* ]]; then printf '%s\\n' inactive; return 0; fi
   if [[ "$*" == *show* ]]; then printf '%s\\n' '{state}'; return {status}; fi
   printf '%s\\n' "$*"
 }}
@@ -244,6 +254,34 @@ endpoint_platform_quiesce
         assert "disable" not in result.stdout
     if state == "loaded":
         assert "disable --now inventory-endpoint-sync.timer" in result.stdout
+        assert "stop inventory-endpoint-sync.service" in result.stdout
+
+
+@pytest.mark.parametrize("initial,after_stop,success", [("active", "inactive", True), ("activating", "inactive", True), ("active", "active", False)])
+def test_quiesce_stops_running_units_even_when_unit_files_missing(initial, after_stop, success):
+    source = (ROOT / "deploy/install-openvpn-web.sh").read_text()
+    start = source.index("endpoint_platform_quiesce() {")
+    function = source[start:source.index("\n}\n", start) + 3]
+    harness = f'''set -eu
+declare -A current_state=([inventory-endpoint-sync.timer]={initial} [inventory-endpoint-sync.service]={initial})
+sudo_cmd() {{
+  local unit="${{@: -1}}"
+  if [[ "$*" == *LoadState* ]]; then printf '%s\\n' not-found; return 0; fi
+  if [[ "$*" == *ActiveState* ]]; then printf '%s\\n' "${{current_state[$unit]}}"; return 0; fi
+  if [[ "$*" == *stop* ]]; then current_state[$unit]={after_stop}; fi
+  printf '%s\\n' "$*"
+}}
+{function}
+endpoint_platform_quiesce
+printf '%s\\n' quiesced
+[[ "${{current_state[inventory-endpoint-sync.timer]}}" == inactive ]]
+[[ "${{current_state[inventory-endpoint-sync.service]}}" == inactive ]]
+'''
+    result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True)
+    assert (result.returncode == 0) == success
+    assert ("quiesced" in result.stdout) == success
+    assert "stop inventory-endpoint-sync.timer" in result.stdout
+    if success:
         assert "stop inventory-endpoint-sync.service" in result.stdout
 
 

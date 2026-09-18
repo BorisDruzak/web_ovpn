@@ -11,21 +11,35 @@ sudo_cmd() {
 }
 
 endpoint_platform_quiesce() {
-  local unit load_state
+  local unit load_state active_state
   for unit in inventory-endpoint-sync.timer inventory-endpoint-sync.service; do
     if ! load_state="$(sudo_cmd systemctl show --property=LoadState --value "$unit")"; then
       [[ "$load_state" == not-found ]] || return 1
     fi
     case "$load_state" in
-      not-found) continue ;;
-      loaded|masked) ;;
+      not-found|loaded|masked) ;;
       *) printf '%s\n' 'cannot establish Endpoint unit state' >&2; return 1 ;;
     esac
-    if [[ "$unit" == *.timer ]]; then
+    if ! active_state="$(sudo_cmd systemctl show --property=ActiveState --value "$unit")"; then
+      [[ "$load_state" == not-found && "$active_state" == inactive ]] || return 1
+    fi
+    case "$active_state" in
+      inactive|failed|active|activating|deactivating|reloading|refreshing) ;;
+      *) printf '%s\n' 'cannot establish Endpoint active state' >&2; return 1 ;;
+    esac
+    if [[ "$unit" == *.timer && "$load_state" != not-found ]]; then
       sudo_cmd systemctl disable --now "$unit" || return
-    else
+    fi
+    if [[ "$load_state" != not-found || ( "$active_state" != inactive && "$active_state" != failed ) ]]; then
       sudo_cmd systemctl stop "$unit" || return
     fi
+    if ! active_state="$(sudo_cmd systemctl show --property=ActiveState --value "$unit")"; then
+      [[ "$load_state" == not-found && "$active_state" == inactive ]] || return 1
+    fi
+    case "$active_state" in
+      inactive|failed) ;;
+      *) printf '%s\n' 'Endpoint unit did not stop' >&2; return 1 ;;
+    esac
   done
 }
 

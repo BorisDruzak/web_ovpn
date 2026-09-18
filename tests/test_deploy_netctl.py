@@ -31,7 +31,15 @@ printf '%s\n' "$*" >> "$SYSTEMCTL_CALLS"
 
 case "${1:-}" in
   show)
-    printf '%s\n' loaded
+    if [[ "$*" == *ActiveState* ]]; then
+      if [[ "$*" == *inventory-endpoint-sync.timer* ]]; then
+        [[ "$(cat "$ENDPOINT_TIMER_STATE")" == disabled ]] && printf '%s\n' inactive || printf '%s\n' active
+      else
+        [[ "$(cat "$ENDPOINT_SERVICE_STATE")" == stopped ]] && printf '%s\n' inactive || printf '%s\n' active
+      fi
+    else
+      printf '%s\n' loaded
+    fi
     ;;
   disable)
     if [[ "$*" == *inventory-endpoint-sync.timer* ]]; then

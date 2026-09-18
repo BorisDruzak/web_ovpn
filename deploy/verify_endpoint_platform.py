@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 from urllib.parse import unquote, urlsplit
+import unicodedata
 from uuid import UUID
 import zipfile
 
@@ -133,12 +134,18 @@ def load_environment(path: Path, service_gid: int) -> None:
     content = check_managed_file(path, service_gid, secret=True).decode("utf-8")
     values = {}
     try:
-        for line in content.splitlines():
-            line = line.strip()
+        if any(
+            character not in "\t\r\n "
+            and (unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})
+            for character in content
+        ):
+            raise ValueError()
+        for line in content.split("\n"):
+            line = line.strip(" \t\r")
             if not line or line.startswith(("#", ";")):
                 continue
             key, separator, raw = line.partition("=")
-            key, raw = key.strip(), raw.strip()
+            key, raw = key.strip(" \t\r"), raw.strip(" \t\r")
             if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or "\\" in raw:
                 raise ValueError()
             if raw.startswith(("'", '"')):
