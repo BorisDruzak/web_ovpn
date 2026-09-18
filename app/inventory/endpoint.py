@@ -268,12 +268,20 @@ class InventoryEndpointService:
             for r in rows
             if r.status == Status.CONFIRMED and r.ended_at is None
         }
+        ended_pairs = {
+            (r.asset_id, r.external_id)
+            for r in rows
+            if r.status in {Status.ENDED, Status.REPLACED} and r.ended_at is not None
+        }
+        previously_bound_assets = {asset_id for asset_id, _ in ended_pairs}
         for row in rows:
             if row.status == Status.CANDIDATE and row.ended_at is None:
                 row.evidence_json = {**row.evidence_json, "current": False}
         result = []
         for (asset_id, device), methods in sorted(matches.items()):
-            if asset_id in bound_assets:
+            # Discovery must not undo a manual detach or resurrect a replaced
+            # UUID, even when the device's network identifiers have changed.
+            if asset_id in bound_assets or (asset_id, device) in ended_pairs:
                 continue
             method = next(
                 m
@@ -313,6 +321,7 @@ class InventoryEndpointService:
                 method == "mac_exact"
                 and len(mac_assets[device]) == len(mac_devices[asset_id]) == 1
                 and device not in bound_devices
+                and asset_id not in previously_bound_assets
             )
             if row is None:
                 row = InventoryExternalBinding(
@@ -599,6 +608,12 @@ class InventoryEndpointService:
                 ),
                 None,
             )
+            if disposition is not None and disposition.get("action") == "keep_manual":
+                effective[field] = {
+                    "value": manual_value,
+                    "source": "manual",
+                    "observed_at": _timestamp(asset.updated_at),
+                }
             discrepancies.append(
                 {
                     "field": field,

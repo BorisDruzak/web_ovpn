@@ -269,6 +269,50 @@ def test_detach_preserves_manual_data_state_and_observations(session, service):
     assert service.asset_context(session, asset.id, NOW)["sources"]["endpoint"] == {}
 
 
+def test_manual_detach_blocks_rediscovery_even_when_mac_evidence_changes(
+    session, service
+):
+    asset = pc(session)
+    binding = service.reconcile_candidates(session, [identity()], NOW)[0]
+    service.detach_binding(session, asset.id, binding.id, "operator", NOW)
+    assert service.reconcile_candidates(session, [identity()], NOW) == []
+    InventoryService().sync_identifiers(
+        session, asset, [{"identifier_type": "mac", "value": "66:77:88:99:aa:bb"}]
+    )
+    assert (
+        service.reconcile_candidates(session, [identity(mac="66:77:88:99:aa:bb")], NOW)
+        == []
+    )
+    assert session.scalars(select(InventoryExternalBinding)).all() == [binding]
+    assert service.lookup_confirmed_endpoint(session, DEVICE_A) is None
+
+
+def test_new_uuid_after_detach_requires_explicit_confirmation(session, service):
+    asset = pc(session)
+    old = service.reconcile_candidates(session, [identity()], NOW)[0]
+    service.detach_binding(session, asset.id, old.id, "operator", NOW)
+    candidate = service.reconcile_candidates(session, [identity(DEVICE_B)], NOW)[0]
+    assert candidate.status == Status.CANDIDATE
+    assert service.lookup_confirmed_endpoint(session, DEVICE_B) is None
+    service.confirm_binding(session, asset.id, candidate.id, "operator", NOW)
+    assert service.lookup_confirmed_endpoint(session, DEVICE_B).id == asset.id
+
+
+def test_replaced_uuid_does_not_return_after_new_binding_is_detached(session, service):
+    asset = pc(session)
+    old = service.reconcile_candidates(session, [identity()], NOW)[0]
+    replacement = service.replace_binding(
+        session, asset.id, old.id, DEVICE_B, "operator", NOW
+    )
+    service.detach_binding(session, asset.id, replacement.id, "operator", NOW)
+    assert (
+        service.reconcile_candidates(session, [identity(), identity(DEVICE_B)], NOW)
+        == []
+    )
+    assert service.lookup_confirmed_endpoint(session, DEVICE_A) is None
+    assert service.lookup_confirmed_endpoint(session, DEVICE_B) is None
+
+
 def test_replacement_keeps_history_and_failed_replacement_is_atomic(session, service):
     asset = pc(session)
     old = service.reconcile_candidates(session, [identity()], NOW)[0]
@@ -441,6 +485,61 @@ def test_changed_endpoint_value_does_not_inherit_previous_manual_decision(
     )
     cached.safe_context_json = {"ram_gb": 32}
     context = service.asset_context(session, asset.id, NOW)
+    assert context["discrepancies"][0]["disposition"] is None
+
+
+@pytest.mark.parametrize(
+    "field,manual_value,endpoint_value",
+    [("ram_gb", 8, 16), ("serial_number", "MANUAL", "ENDPOINT")],
+)
+def test_keep_manual_selects_manual_effective_value_and_retains_both_sources(
+    session, service, field, manual_value, endpoint_value
+):
+    asset = pc(session, serial="MANUAL")
+    InventoryService().update_details(session, asset, {"ram_gb": 8})
+    binding = service.reconcile_candidates(session, [identity()], NOW)[0]
+    state(session, binding, **{field: endpoint_value})
+    service.resolve_discrepancy(
+        session, asset.id, field, "keep_manual", "operator", NOW
+    )
+    context = service.asset_context(session, asset.id, NOW)
+    assert context["effective"][field]["value"] == manual_value
+    assert context["effective"][field]["source"] == "manual"
+    assert context["sources"]["endpoint"][field] == endpoint_value
+    assert context["discrepancies"][0]["manual"] == manual_value
+    assert context["discrepancies"][0]["endpoint"] == endpoint_value
+
+
+@pytest.mark.parametrize("change", ["endpoint_value", "manual_value", "binding"])
+def test_keep_manual_effective_override_expires_when_comparison_changes(
+    session, service, change
+):
+    asset = pc(session)
+    inventory = InventoryService()
+    inventory.update_details(session, asset, {"ram_gb": 8})
+    binding = service.reconcile_candidates(session, [identity()], NOW)[0]
+    cached = state(session, binding, ram_gb=16)
+    service.resolve_discrepancy(
+        session, asset.id, "ram_gb", "keep_manual", "operator", NOW
+    )
+    assert (
+        service.asset_context(session, asset.id, NOW)["effective"]["ram_gb"]["source"]
+        == "manual"
+    )
+    if change == "endpoint_value":
+        cached.safe_context_json = {"ram_gb": 32}
+    elif change == "manual_value":
+        inventory.update_details(session, asset, {"ram_gb": 4})
+    else:
+        replacement = service.replace_binding(
+            session, asset.id, binding.id, DEVICE_B, "operator", NOW
+        )
+        state(session, replacement, ram_gb=16)
+    context = service.asset_context(session, asset.id, NOW)
+    assert context["effective"]["ram_gb"]["source"] == "endpoint"
+    assert context["effective"]["ram_gb"]["value"] == (
+        32 if change == "endpoint_value" else 16
+    )
     assert context["discrepancies"][0]["disposition"] is None
 
 
