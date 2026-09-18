@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from ..endpoint_context_adapter import SafeProfile
 
 from .models import (
     InventoryAssetStatus,
@@ -88,3 +90,15 @@ class SessionCheckCreate(BaseModel):
     location_id: str | None = None
     result: InventoryCheckResult
     notes: str | None = None
+
+
+class EndpointRefreshRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile: SafeProfile = "baseline_v1"
+
+
+class EndpointDiscrepancyResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["accept_endpoint", "keep_manual", "mark_verified"]
