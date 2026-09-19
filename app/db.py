@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Iterator
 
 from sqlalchemy import DateTime, create_engine, inspect, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -303,15 +304,29 @@ def _migrate_inventory_endpoint_schema(engine) -> None:
             "inventory_semantic_hash": "VARCHAR(64)",
             "session_semantic_hash": "VARCHAR(64)",
         }
-        with engine.begin() as connection:
-            for column_name, column_type in missing_columns.items():
-                if column_name not in columns:
-                    connection.execute(
-                        text(
-                            f"ALTER TABLE inventory_endpoint_state "
-                            f"ADD COLUMN {column_name} {column_type}"
+        for column_name, column_type in missing_columns.items():
+            if column_name not in columns:
+                try:
+                    with engine.begin() as connection:
+                        connection.execute(
+                            text(
+                                f"ALTER TABLE inventory_endpoint_state "
+                                f"ADD COLUMN {column_name} {column_type}"
+                            )
                         )
-                    )
+                except OperationalError:
+                    # A service and the worker can initialize simultaneously.
+                    # The losing process accepts only the exact column another
+                    # initializer has already committed; other database errors
+                    # must still fail closed.
+                    current_columns = {
+                        column["name"]
+                        for column in inspect(engine).get_columns(
+                            "inventory_endpoint_state"
+                        )
+                    }
+                    if column_name not in current_columns:
+                        raise
     if "inventory_observations" in inspector.get_table_names():
         columns = {
             column["name"]

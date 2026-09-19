@@ -657,6 +657,9 @@ class InventoryEndpointService:
             )
         observed_at = _timestamp(cached.refreshed_at) if cached else None
         profile_freshness = endpoint_profile_freshness(cached, now) if cached else {}
+        field_profiles = (
+            cached.safe_context_json.get("field_profiles", {}) if cached else {}
+        )
         for field, value in endpoint.items():
             if field in TECHNICAL_FIELDS or field not in effective:
                 effective[field] = {
@@ -664,14 +667,20 @@ class InventoryEndpointService:
                     "source": "endpoint",
                     "observed_at": observed_at,
                 }
-                profile = next(
-                    (
-                        name
-                        for name, fields in PROFILE_FIELDS.items()
-                        if field in fields
-                    ),
-                    None,
+                profile = (
+                    field_profiles.get(field)
+                    if isinstance(field_profiles, dict)
+                    else None
                 )
+                if profile not in profile_freshness:
+                    profile = next(
+                        (
+                            name
+                            for name, fields in PROFILE_FIELDS.items()
+                            if field in fields
+                        ),
+                        None,
+                    )
                 if profile in profile_freshness:
                     effective[field]["observed_at"] = profile_freshness[profile][
                         "collected_at"

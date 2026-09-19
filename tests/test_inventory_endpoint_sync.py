@@ -200,6 +200,44 @@ def test_inventory_and_session_profiles_update_typed_endpoint_state(session):
     }
 
 
+def test_inventory_profile_wins_effective_freshness_over_stale_baseline(session):
+    from app.inventory.endpoint import InventoryEndpointService
+    from app.inventory.endpoint_sync import sync_confirmed_bindings
+
+    class InventoryAdapter(Adapter):
+        def read_profiles(self, device_id):
+            profiles = super().read_profiles(device_id)
+            profiles["baseline_v1"]["collected_at"] = (
+                NOW - timedelta(minutes=11)
+            ).isoformat()
+            profiles["inventory_v1"] = {
+                "id": "inventory-1",
+                "profile": "inventory_v1",
+                "semantic_hash": "i" * 64,
+                "collected_at": NOW.isoformat(),
+                "sections": {
+                    "system": {"platform": "windows"},
+                    "hardware": {"cpu_model": "Fresh CPU"},
+                    "memory": {"total_bytes": 17179869184, "module_count": 0, "modules": []},
+                    "storage": {"physical_devices": []},
+                    "interfaces": [],
+                },
+            }
+            profiles["session_v1"] = None
+            return profiles
+
+    asset = pc(session)
+    sync_confirmed_bindings(session, InventoryAdapter(), NOW)
+
+    context = InventoryEndpointService().asset_context(session, asset.id, NOW)
+    assert context["effective"]["cpu_model"] == {
+        "value": "Fresh CPU",
+        "source": "endpoint",
+        "observed_at": NOW.isoformat(),
+        "freshness": "fresh",
+    }
+
+
 def test_presence_pass_is_minutely_and_profiles_are_five_minutely(session):
     from app.inventory.endpoint_sync import sync_confirmed_bindings
 

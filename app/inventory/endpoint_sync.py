@@ -276,6 +276,7 @@ def sync_confirmed_bindings(
         state.last_checked_at = now
         identity = by_device.get(binding.external_id)
         context = dict(state.safe_context_json)
+        field_profiles = dict(context.get("field_profiles") or {})
         context["identity_status"] = (
             "available" if identity is not None else "unavailable"
         )
@@ -336,9 +337,12 @@ def sync_confirmed_bindings(
                 # omitted fields in a valid new snapshot must not inherit its date.
                 for field in PROFILE_FIELDS.get(profile, set()):
                     context.pop(field, None)
+                    if field_profiles.get(field) == profile:
+                        field_profiles.pop(field, None)
                 if profile == "baseline_v1":
                     context.pop("os_family", None)
                 context.update(fields)
+                field_profiles.update({field: profile for field in fields})
                 if getattr(state, prefix + "_semantic_hash") != digest:
                     db.add(
                         InventoryObservation(
@@ -364,6 +368,7 @@ def sync_confirmed_bindings(
             context["profile_collected_at"] = collected_dates
             context["profile_checked_at"] = checked_dates
             context["profile_last_success_at"] = success_dates
+            context["field_profiles"] = field_profiles
             if identity is not None and statuses.get("baseline_v1") == "available":
                 state.last_success_at = checked_at
                 state.unavailable_since = None

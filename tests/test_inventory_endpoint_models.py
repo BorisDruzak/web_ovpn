@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Barrier, Lock
 
 import pytest
 from sqlalchemy import inspect, text
@@ -441,3 +443,53 @@ def test_endpoint_datetimes_round_trip_as_utc_aware(session) -> None:
     assert state.last_checked_at == expected_utc
     assert control.lease_expires_at == expected_utc
     assert observation.collected_at == expected_utc
+
+
+def test_endpoint_state_additive_migration_tolerates_concurrent_initializers(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "DATABASE_URL", f"sqlite:///{tmp_path / 'endpoint-state-legacy.sqlite'}"
+    )
+    import app.db as db_module
+    from app.db import get_engine, reset_engine_cache
+
+    reset_engine_cache()
+    engine = get_engine()
+    with engine.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE inventory_endpoint_state (binding_id VARCHAR(36) PRIMARY KEY)")
+        )
+
+    original_inspect = db_module.inspect
+    barrier = Barrier(2)
+    calls = Lock()
+    call_count = 0
+
+    def synchronized_inspect(target):
+        nonlocal call_count
+        result = original_inspect(target)
+        with calls:
+            call_count += 1
+            wait = call_count <= 2
+        if wait:
+            barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(db_module, "inspect", synchronized_inspect)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(lambda _: db_module._migrate_inventory_endpoint_schema(engine), range(2))
+        )
+
+    assert results == [None, None]
+    columns = {
+        column["name"]
+        for column in original_inspect(engine).get_columns("inventory_endpoint_state")
+    }
+    assert {
+        "inventory_snapshot_id",
+        "session_snapshot_id",
+        "inventory_semantic_hash",
+        "session_semantic_hash",
+    } <= columns

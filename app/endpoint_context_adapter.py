@@ -106,7 +106,7 @@ def _project_snapshot_sections(profile: str, value: Any) -> dict[str, Any]:
                 "modules": _project_present_section_list(
                     memory.get("modules") if isinstance(memory, dict) else None,
                     (
-                        "slot", "manufacturer", "part_number", "serial_number",
+                        "slot", "manufacturer", "part_number", "serial",
                         "capacity_bytes", "speed_mt_s", "memory_type",
                     ),
                 ),
@@ -115,7 +115,7 @@ def _project_snapshot_sections(profile: str, value: Any) -> dict[str, Any]:
                 "physical_devices": _project_present_section_list(
                     storage.get("physical_devices") if isinstance(storage, dict) else None,
                     (
-                        "stable_key", "model", "serial_number", "size_bytes",
+                        "stable_key", "model", "serial", "size_bytes",
                         "media_type", "bus_type",
                     ),
                 )
