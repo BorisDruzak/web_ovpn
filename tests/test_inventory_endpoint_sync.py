@@ -122,6 +122,84 @@ def test_same_hash_updates_freshness_without_second_observation(session):
     assert len(observations(session)) == 2
 
 
+def test_inventory_and_session_profiles_update_typed_endpoint_state(session):
+    from app.inventory.endpoint_sync import sync_confirmed_bindings
+
+    class InventoryAdapter(Adapter):
+        def read_profiles(self, device_id):
+            profiles = super().read_profiles(device_id)
+            profiles["inventory_v1"] = {
+                "id": "inventory-1",
+                "profile": "inventory_v1",
+                "semantic_hash": "i" * 64,
+                "collected_at": NOW.isoformat(),
+                "sections": {
+                    "system": {
+                        "hostname": "pc-1",
+                        "platform": "windows",
+                        "os_name": "Windows 11 Pro",
+                        "os_version": "24H2",
+                        "os_build": "26100",
+                    },
+                    "hardware": {
+                        "manufacturer": "Contoso",
+                        "model": "Workstation",
+                        "serial_number": "ABC123",
+                        "product_uuid": "11111111-1111-4111-8111-111111111111",
+                        "cpu_model": "CPU",
+                    },
+                    "memory": {
+                        "total_bytes": 17179869184,
+                        "memory_type": "DDR5",
+                        "module_count": 2,
+                        "modules": [],
+                    },
+                    "storage": {
+                        "physical_devices": [
+                            {
+                                "stable_key": "disk-1",
+                                "model": "SSD",
+                                "size_bytes": 536870912000,
+                                "media_type": "SSD",
+                                "bus_type": "NVME",
+                            }
+                        ]
+                    },
+                    "interfaces": [],
+                    "raw": "DO-NOT-PERSIST",
+                },
+            }
+            profiles["session_v1"] = {
+                "id": "session-1",
+                "profile": "session_v1",
+                "semantic_hash": "s" * 64,
+                "collected_at": NOW.isoformat(),
+                "sections": {
+                    "current_user_login": "operator",
+                    "interactive_session_present": True,
+                    "token": "DO-NOT-PERSIST",
+                },
+            }
+            return profiles
+
+    pc(session)
+    sync_confirmed_bindings(session, InventoryAdapter(), NOW)
+
+    state = session.scalar(select(InventoryEndpointState))
+    assert state.inventory_snapshot_id == "inventory-1"
+    assert state.inventory_semantic_hash == "i" * 64
+    assert state.session_snapshot_id == "session-1"
+    assert state.session_semantic_hash == "s" * 64
+    assert state.safe_context_json["hostname"] == "pc-1"
+    assert state.safe_context_json["ram_type"] == "DDR5"
+    assert state.safe_context_json["current_user"] == "operator"
+    assert state.safe_context_json["storage_gb"] == 500
+    assert "DO-NOT-PERSIST" not in str(state.safe_context_json)
+    assert {row.profile for row in observations(session)} == {
+        "baseline_v1", "inventory_v1", "session_v1"
+    }
+
+
 def test_presence_pass_is_minutely_and_profiles_are_five_minutely(session):
     from app.inventory.endpoint_sync import sync_confirmed_bindings
 

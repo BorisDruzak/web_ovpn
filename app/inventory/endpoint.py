@@ -52,12 +52,16 @@ TECHNICAL_FIELDS = frozenset(PC_DETAIL_FIELDS) | {
     "model",
     "product_uuid",
     "os_build",
+    "storage_summary",
 }
 ENDPOINT_FIELDS = TECHNICAL_FIELDS | {"serial_number", "ip", "mac"}
 PROFILE_FIELDS = {
     "baseline_v1": TECHNICAL_FIELDS
     - {"online", "last_seen_at", "current_user", "agent_version"},
     "network_v1": {"ip", "mac"},
+    "inventory_v1": TECHNICAL_FIELDS
+    - {"online", "last_seen_at", "current_user", "agent_version"},
+    "session_v1": {"current_user"},
 }
 
 
@@ -133,7 +137,9 @@ def endpoint_profile_freshness(
     if not isinstance(statuses, dict):
         return {}  # Legacy local state has only the aggregate timestamps.
     result = {}
-    for profile in ("baseline_v1", "health_v1", "network_v1"):
+    for profile in (
+        "baseline_v1", "health_v1", "network_v1", "inventory_v1", "session_v1"
+    ):
         dates = {}
         for source, target in (
             ("profile_collected_at", "collected_at"),

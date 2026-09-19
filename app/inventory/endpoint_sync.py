@@ -51,7 +51,13 @@ from .models import (
 )
 
 log = logging.getLogger(__name__)
-PROFILES = {"baseline_v1": "baseline", "health_v1": "health", "network_v1": "network"}
+PROFILES = {
+    "baseline_v1": "baseline",
+    "health_v1": "health",
+    "network_v1": "network",
+    "inventory_v1": "inventory",
+    "session_v1": "session",
+}
 PRESENCE_INTERVAL = timedelta(minutes=1)
 FULL_INTERVAL = timedelta(minutes=5)
 LEASE_INTERVAL = timedelta(minutes=10)
@@ -165,6 +171,70 @@ def _network_fields(snapshot):
     return {}
 
 
+def _inventory_fields(snapshot):
+    """Flatten only the published inventory fields needed by the local view."""
+    sections = snapshot.get("sections") or {}
+    system = sections.get("system") or {}
+    hardware = sections.get("hardware") or {}
+    memory = sections.get("memory") or {}
+    storage = sections.get("storage") or {}
+    fields = {}
+    for target, value in (
+        ("hostname", system.get("hostname")),
+        ("os_name", system.get("os_name")),
+        ("os_version", system.get("os_version")),
+        ("os_build", system.get("os_build")),
+        ("os_family", system.get("platform")),
+        ("manufacturer", hardware.get("manufacturer")),
+        ("model", hardware.get("model")),
+        ("serial_number", hardware.get("serial_number")),
+        ("product_uuid", hardware.get("product_uuid")),
+        ("cpu_model", hardware.get("cpu_model")),
+        ("ram_type", memory.get("memory_type")),
+    ):
+        if (safe := _text(value)) is not None:
+            fields[target] = safe
+    total = memory.get("total_bytes")
+    if type(total) is int and 0 < total <= 2**60:
+        fields["ram_gb"] = max(1, round(total / 2**30))
+    devices = storage.get("physical_devices") if isinstance(storage, dict) else None
+    if isinstance(devices, list):
+        sizes = [
+            device.get("size_bytes")
+            for device in devices[:64]
+            if isinstance(device, dict)
+        ]
+        if sizes and all(type(size) is int and 0 < size <= 2**60 for size in sizes):
+            fields["storage_gb"] = max(1, round(sum(sizes) / 2**30))
+        summaries = []
+        for device in devices[:64]:
+            if not isinstance(device, dict):
+                continue
+            parts = [
+                _text(device.get(name))
+                for name in ("model", "media_type", "bus_type")
+            ]
+            summary = " ".join(part for part in parts if part)
+            if summary:
+                summaries.append(summary)
+        if summaries:
+            fields["storage_summary"] = "; ".join(summaries)[:255]
+            first = devices[0] if isinstance(devices[0], dict) else {}
+            media_type = _text(first.get("media_type"))
+            bus_type = _text(first.get("bus_type"))
+            if media_type or bus_type:
+                fields["storage_type"] = " ".join(
+                    value for value in (media_type, bus_type) if value
+                )
+    return fields
+
+
+def _session_fields(snapshot):
+    sections = snapshot.get("sections") or {}
+    user = _text(sections.get("current_user_login"))
+    return {"current_user": user} if user is not None else {}
+
+
 def sync_confirmed_bindings(
     db, adapter, now: datetime, *, clock=None, full_pass=None
 ) -> SyncResult:
@@ -214,6 +284,8 @@ def sync_confirmed_bindings(
             last_seen = _parsed(identity.get("last_seen_at"))
             if last_seen is not None and last_seen <= now:
                 state.last_seen_at = last_seen
+            if type(identity.get("online")) is bool:
+                state.online = identity["online"]
         # UUID is already stable: a changed/missing MAC never reassigns a binding.
         if full:
             profiles = adapter.read_profiles(UUID(binding.external_id))
@@ -253,6 +325,10 @@ def sync_confirmed_bindings(
                     if profile == "baseline_v1"
                     else _network_fields(snapshot)
                     if profile == "network_v1"
+                    else _inventory_fields(snapshot)
+                    if profile == "inventory_v1"
+                    else _session_fields(snapshot)
+                    if profile == "session_v1"
                     else {}
                 )
                 # A received profile replaces its current projection. Only an

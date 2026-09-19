@@ -132,7 +132,11 @@ def settings():
 def test_smoke_uses_three_required_operations_before_enable(verifier, sdk):
     _, calls = sdk
     verifier.verify_api(settings(), "abc123")
-    assert calls == ["devices.read", "identities", "context.read", "context.read", "context.read", "context.collect", "closed"]
+    assert calls == [
+        "devices.read", "identities",
+        "context.read", "context.read", "context.read", "context.read", "context.read",
+        "context.collect", "closed",
+    ]
     assert settings().endpoint_platform_enabled is False
 
 
@@ -161,10 +165,10 @@ def test_config_refuses_non_https_and_missing_smoke_device(verifier):
             verifier.validate_settings(current)
 
 
-def test_cli_unconfigured_lock_is_redacted_and_nonzero(verifier):
+def test_cli_verifies_the_committed_locked_wheel(verifier):
     result = subprocess.run([sys.executable, str(ROOT / "deploy/verify_endpoint_platform.py"), "--app-dir", str(ROOT), "--artifact-only"], capture_output=True, text=True)
-    assert result.returncode == 1
-    assert result.stdout.strip() == "endpoint_platform_sdk_release_required"
+    assert result.returncode == 0
+    assert result.stdout.strip() == "endpoint_platform_artifact_verified"
     assert result.stderr == ""
 
 

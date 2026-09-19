@@ -72,6 +72,55 @@ def test_adapter_reads_all_known_profiles_without_fabricating_missing_profile() 
                         "diagnostic": {"log_excerpt": "must not escape"},
                     },
                 }
+            if profile == "inventory_v1":
+                return {
+                    "id": "inventory-1",
+                    "profile": profile,
+                    "collected_at": "2026-09-18T10:05:00Z",
+                    "semantic_hash": "hash-inventory",
+                    "warnings": [],
+                    "sections": {
+                        "system": {
+                            "hostname": "workstation-1",
+                            "platform": "windows",
+                            "os_name": "Windows 11 Pro",
+                            "os_version": "24H2",
+                            "os_build": "26100",
+                            "architecture": "x86_64",
+                            "raw": "must not escape",
+                        },
+                        "hardware": {
+                            "manufacturer": "Contoso",
+                            "model": "Workstation",
+                            "serial_number": "ABC123",
+                            "product_uuid": "product-uuid",
+                            "cpu_model": "CPU",
+                            "raw": "must not escape",
+                        },
+                        "memory": {
+                            "total_bytes": 16,
+                            "memory_type": "DDR5",
+                            "module_count": 1,
+                            "modules": [{"slot": "DIMM0", "capacity_bytes": 16, "raw": "must not escape"}],
+                        },
+                        "storage": {"physical_devices": [{"stable_key": "disk-1", "model": "SSD", "size_bytes": 1, "media_type": "SSD", "bus_type": "NVME", "raw": "must not escape"}]},
+                        "interfaces": [{"stable_key": "mac-001122334455", "name": "eth0", "mac": "001122334455", "link_type": "ethernet", "raw": "must not escape"}],
+                    },
+                }
+            if profile == "session_v1":
+                return {
+                    "id": "session-1",
+                    "profile": profile,
+                    "collected_at": "2026-09-18T10:06:00Z",
+                    "semantic_hash": "hash-session",
+                    "warnings": [],
+                    "sections": {
+                        "current_user_login": "operator",
+                        "interactive_session_present": True,
+                        "collected_at": "2026-09-18T10:06:00Z",
+                        "token": "must not escape",
+                    },
+                }
             return None
 
     profiles = EndpointContextAdapter(Client()).read_profiles(device_id)  # type: ignore[arg-type]
@@ -86,3 +135,15 @@ def test_adapter_reads_all_known_profiles_without_fabricating_missing_profile() 
     }
     assert profiles["health_v1"] is None
     assert profiles["network_v1"] is None
+    assert profiles["inventory_v1"]["sections"] == {
+        "system": {"hostname": "workstation-1", "platform": "windows", "os_name": "Windows 11 Pro", "os_version": "24H2", "os_build": "26100", "architecture": "x86_64"},
+        "hardware": {"manufacturer": "Contoso", "model": "Workstation", "serial_number": "ABC123", "product_uuid": "product-uuid", "cpu_model": "CPU"},
+        "memory": {"total_bytes": 16, "memory_type": "DDR5", "module_count": 1, "modules": [{"slot": "DIMM0", "capacity_bytes": 16}]},
+        "storage": {"physical_devices": [{"stable_key": "disk-1", "model": "SSD", "size_bytes": 1, "media_type": "SSD", "bus_type": "NVME"}]},
+        "interfaces": [{"stable_key": "mac-001122334455", "name": "eth0", "mac": "001122334455", "link_type": "ethernet"}],
+    }
+    assert profiles["session_v1"]["sections"] == {
+        "current_user_login": "operator",
+        "interactive_session_present": True,
+        "collected_at": "2026-09-18T10:06:00Z",
+    }

@@ -31,9 +31,13 @@ second authority.
 
 ## External contract and prerequisite
 
-The published SDK supplies the first-release contract: device listing, safe
-agent network identities, latest safe context for `baseline_v1`,
-`health_v1`, and `network_v1`, plus idempotent context collection requests.
+The published immutable `endpoint-platform-client` 0.2.0 SDK supplies the
+provider contract: device listing, safe agent network identities, latest safe
+context for `baseline_v1`, `health_v1`, `network_v1`, `inventory_v1`, and
+`session_v1`, plus idempotent context collection requests. `inventory_v1`
+contains bounded hardware, memory, physical storage and interface projections;
+`session_v1` contains only the current login, interactive-session state and
+collection time. The release lock fixes the exact wheel and SHA-256.
 Endpoint Platform administration must create a distinct `web_ovpn` service
 client with exactly:
 
@@ -93,7 +97,9 @@ binding history. Its allow-listed state is:
 ```text
 online, last_seen_at, agent_version,
 baseline_snapshot_id, health_snapshot_id, network_snapshot_id,
+inventory_snapshot_id, session_snapshot_id,
 baseline_semantic_hash, health_semantic_hash, network_semantic_hash,
+inventory_semantic_hash, session_semantic_hash,
 last_checked_at, refreshed_at, last_success_at, unavailable_since,
 safe_context_json
 ```
@@ -179,9 +185,10 @@ The worker:
    existing Netctl `fingerprint agent-evidence-sync` boundary;
 6. persists redacted result/freshness and releases the lease.
 
-`baseline_v1`, `health_v1`, and `network_v1` are initial profiles. Future
-`inventory_v1` or `session_v1` profiles are capability-detected: absence
-becomes a per-profile unavailable state, not a binding failure.
+All five published profiles are read on the bounded full pass. Missing optional
+snapshots become a per-profile unavailable state, not a binding failure. The
+rich inventory and session profiles enrich effective technical values and never
+overwrite manual Inventory authority.
 
 **Refresh agent data** calls the existing adapter's `request_collection` with
 a server-generated idempotency key and safe profile. It returns request status;

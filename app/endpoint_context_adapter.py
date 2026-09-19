@@ -9,8 +9,12 @@ from .config import get_settings
 from .endpoint_platform_client import EndpointPlatformServiceClient, get_endpoint_platform_client
 
 
-SafeProfile = Literal["baseline_v1", "health_v1", "network_v1"]
-SAFE_PROFILES = frozenset(("baseline_v1", "health_v1", "network_v1"))
+SafeProfile = Literal[
+    "baseline_v1", "health_v1", "network_v1", "inventory_v1", "session_v1"
+]
+SAFE_PROFILES = frozenset(
+    ("baseline_v1", "health_v1", "network_v1", "inventory_v1", "session_v1")
+)
 
 
 def _dump(value: Any) -> dict[str, Any]:
@@ -34,10 +38,24 @@ def _project_section(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return _pick(value, fields) if isinstance(value, dict) else {}
 
 
+def _project_present_section(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    return {
+        field: projected
+        for field, projected in _project_section(value, fields).items()
+        if projected is not None
+    }
+
+
 def _project_section_list(value: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [_project_section(item, fields) for item in value if isinstance(item, dict)]
+
+
+def _project_present_section_list(value: Any, fields: tuple[str, ...]) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [_project_present_section(item, fields) for item in value if isinstance(item, dict)]
 
 
 def _project_snapshot_sections(profile: str, value: Any) -> dict[str, Any]:
@@ -62,6 +80,56 @@ def _project_snapshot_sections(profile: str, value: Any) -> dict[str, Any]:
             "default_route": _project_section(value.get("default_route"), ("interface", "gateway")),
             "interfaces": _project_section_list(value.get("interfaces"), ("name", "addresses")),
         }
+    if profile == "inventory_v1":
+        memory = value.get("memory")
+        storage = value.get("storage")
+        return {
+            "system": _project_present_section(
+                value.get("system"),
+                (
+                    "hostname", "platform", "os_name", "os_version", "os_build",
+                    "architecture",
+                ),
+            ),
+            "hardware": _project_present_section(
+                value.get("hardware"),
+                (
+                    "manufacturer", "model", "serial_number", "product_uuid",
+                    "cpu_model",
+                ),
+            ),
+            "memory": {
+                **_project_present_section(
+                    memory,
+                    ("total_bytes", "memory_type", "module_count"),
+                ),
+                "modules": _project_present_section_list(
+                    memory.get("modules") if isinstance(memory, dict) else None,
+                    (
+                        "slot", "manufacturer", "part_number", "serial_number",
+                        "capacity_bytes", "speed_mt_s", "memory_type",
+                    ),
+                ),
+            },
+            "storage": {
+                "physical_devices": _project_present_section_list(
+                    storage.get("physical_devices") if isinstance(storage, dict) else None,
+                    (
+                        "stable_key", "model", "serial_number", "size_bytes",
+                        "media_type", "bus_type",
+                    ),
+                )
+            },
+            "interfaces": _project_present_section_list(
+                value.get("interfaces"),
+                ("stable_key", "name", "mac", "link_type"),
+            ),
+        }
+    if profile == "session_v1":
+        return _project_section(
+            value,
+            ("current_user_login", "interactive_session_present", "collected_at"),
+        )
     return {}
 
 
@@ -97,6 +165,8 @@ def _project_network_identity(value: Any) -> dict[str, Any]:
         else [],
         "baseline_mac_keys": list(source.get("baseline_mac_keys") or []),
     }
+    if type(source.get("online")) is bool:
+        projected["online"] = source["online"]
     return projected
 
 

@@ -292,6 +292,26 @@ def init_inventory_endpoint_schema() -> None:
 def _migrate_inventory_endpoint_schema(engine) -> None:
     """Apply only additive Inventory Endpoint migration work."""
     inspector = inspect(engine)
+    if "inventory_endpoint_state" in inspector.get_table_names():
+        columns = {
+            column["name"]
+            for column in inspector.get_columns("inventory_endpoint_state")
+        }
+        missing_columns = {
+            "inventory_snapshot_id": "VARCHAR(255)",
+            "session_snapshot_id": "VARCHAR(255)",
+            "inventory_semantic_hash": "VARCHAR(64)",
+            "session_semantic_hash": "VARCHAR(64)",
+        }
+        with engine.begin() as connection:
+            for column_name, column_type in missing_columns.items():
+                if column_name not in columns:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE inventory_endpoint_state "
+                            f"ADD COLUMN {column_name} {column_type}"
+                        )
+                    )
     if "inventory_observations" in inspector.get_table_names():
         columns = {
             column["name"]
