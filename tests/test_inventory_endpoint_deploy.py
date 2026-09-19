@@ -140,6 +140,22 @@ def test_smoke_uses_three_required_operations_before_enable(verifier, sdk):
     assert settings().endpoint_platform_enabled is False
 
 
+def test_smoke_accepts_newly_requested_collection(verifier, sdk):
+    client, calls = sdk
+
+    def requested_collection(self, device_id, profile, key):
+        assert device_id == DEVICE and profile == "baseline_v1"
+        assert key.startswith("web-ovpn-smoke:")
+        return self.invoke("context.collect", {
+            "id": str(DEVICE), "device_id": str(DEVICE), "profile": profile,
+            "status": "requested",
+        })
+
+    client.request_collection = requested_collection
+    verifier.verify_api(settings(), "abc123")
+    assert calls[-2:] == ["context.collect", "closed"]
+
+
 @pytest.mark.parametrize("scope", ["devices.read", "context.read", "context.collect"])
 def test_smoke_scope_denial_is_redacted_and_closes_client(verifier, sdk, scope):
     client, calls = sdk

@@ -204,7 +204,7 @@ def verify_api(settings, artifact_digest: str) -> None:
         result = adapter.request_collection(device, "baseline_v1", key)  # context.collect
         if (not result.get("id") or str(result.get("device_id")) != str(device)
                 or result.get("profile") != "baseline_v1"
-                or result.get("status") not in {"queued", "dispatched", "running", "completed"}):
+                or result.get("status") not in {"requested", "queued", "dispatched", "running", "completed"}):
             raise VerificationError("endpoint_platform_collection_unavailable")
     except VerificationError:
         raise
