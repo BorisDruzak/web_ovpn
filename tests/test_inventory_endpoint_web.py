@@ -23,35 +23,61 @@ def state_for(binding_id, **values):
         db.commit()
 
 
-def test_pc_card_renders_local_provenance_people_and_discrepancies(web, monkeypatch):
+def test_pc_card_keeps_agent_summary_small_and_shows_endpoint_values_by_field(web, monkeypatch):
     asset, binding = seed()
-    state_for(binding, online=True, agent_version="1.2.3")
+    state_for(binding, online=True, agent_version="1.2.3", safe_context_json={
+        "manufacturer": "Lenovo",
+        "model": "ThinkCentre M75q",
+        "serial_number": "AGENT-SERIAL",
+        "ip": "192.168.100.42",
+        "mac": "C0:9B:F4:62:58:5A",
+        "hostname": "munslu-s2",
+        "os_name": "Windows",
+        "os_version": "11",
+        "cpu_model": "AMD",
+        "cpu_generation": "Ryzen 7 5700G",
+        "ram_type": "DDR4",
+        "ram_gb": 16,
+        "storage_type": "SSD",
+        "storage_gb": 512,
+        "current_user": "os-user",
+    })
     def forbidden(*args, **kwargs):
         raise AssertionError("render must not contact Endpoint")
     monkeypatch.setattr("app.endpoint_context_adapter.get_endpoint_context_adapter", forbidden)
     monkeypatch.setattr("app.inventory.api.get_endpoint_context_adapter", forbidden)
     page = web.get(f"/inventory/assets/{asset}")
     assert page.status_code == 200
-    for label in ("АГЕНТ", "Текущий пользователь ОС", "os-user", "Закреплённый человек",
-                  "Assigned Person", "РАСХОЖДЕНИЯ", "Endpoint", "Ручные данные", "В сети", "1.2.3"):
-        assert label in page.text
+    assert "Привязка подтверждена" in page.text
     assert f'/api/v1/inventory/assets/{asset}/endpoint-refresh' in page.text
     assert f'/endpoint-bindings/{binding}/detach' in page.text
-    assert "Последнее успешное обновление" in page.text
+    assert "inventory.css?v=endpoint-2" in page.text
+    assert "inventory.js?v=endpoint-4" in page.text
+    for field, value in (("manufacturer", "Lenovo"), ("cpu_model", "AMD"),
+                         ("cpu_generation", "Ryzen 7 5700G"), ("ram_gb", "16")):
+        assert f'data-endpoint-value-for="{field}"' in page.text
+        assert f'data-endpoint-insert="{field}"' in page.text
+        assert f"Endpoint: {value}" in page.text
+    assert 'data-endpoint-value-for="description"' not in page.text
+    for removed in ("Endpoint Device:", "Последнее состояние агента", "Последнее успешное обновление",
+                    "Текущий пользователь ОС", "os-user", "В сети", "1.2.3"):
+        assert removed not in page.text
 
 
-@pytest.mark.parametrize("online,stale,outage,label", [
-    (False, False, False, "Не в сети"),
-    (True, True, False, "Данные устарели"),
-    (True, False, True, "Endpoint временно недоступен"),
+@pytest.mark.parametrize("online,stale,outage", [
+    (False, False, False),
+    (True, True, False),
+    (True, False, True),
 ])
-def test_card_distinguishes_offline_stale_and_outage(web, online, stale, outage, label):
+def test_card_hides_connection_diagnostics(web, online, stale, outage):
     asset, binding = seed(stale=stale)
     state_for(binding, online=online,
               unavailable_since=datetime.now(timezone.utc) if outage else None)
     page = web.get(f"/inventory/assets/{asset}")
-    assert label in page.text
-    assert "os-user" in page.text
+    assert "Привязка подтверждена" in page.text
+    assert "Последнее состояние агента" not in page.text
+    assert "Данные устарели" not in page.text
+    assert "Endpoint временно недоступен" not in page.text
     assert 'name="ram_gb" value="8"' in page.text
 
 
@@ -92,12 +118,12 @@ def test_refresh_uses_session_and_preserves_cached_card(web, monkeypatch):
     response = web.post(f"/api/v1/inventory/assets/{asset}/endpoint-refresh",
                         headers={"X-CSRF-Token": _csrf(page.text)}, json={"profile": "baseline_v1"})
     assert response.status_code == 202
-    assert "os-user" in web.get(f"/inventory/assets/{asset}").text
+    assert "Привязка подтверждена" in web.get(f"/inventory/assets/{asset}").text
 
 
 def test_endpoint_display_values_are_escaped(web):
     asset, binding = seed()
-    state_for(binding, safe_context_json={"ram_gb": 16, "current_user": "<script>alert(1)</script>"})
+    state_for(binding, safe_context_json={"ram_gb": 16, "hostname": "<script>alert(1)</script>"})
     page = web.get(f"/inventory/assets/{asset}")
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page.text
     assert "<script>alert(1)</script>" not in page.text
@@ -106,7 +132,7 @@ def test_endpoint_display_values_are_escaped(web):
 def test_session_context_and_disposition_apply_without_bearer(web):
     asset, _ = seed()
     page = web.get(f"/inventory/assets/{asset}")
-    revision = page.text.split('data-revision="')[1].split('"')[0]
+    revision = web.get(f"/api/v1/inventory/assets/{asset}/context").json()["data"]["discrepancies"][0]["revision"]
     response = web.post(f"/api/v1/inventory/assets/{asset}/discrepancies/ram_gb/resolve",
                         headers={"X-CSRF-Token": _csrf(page.text)}, json={"action": "keep_manual", "expected_revision": revision})
     assert response.status_code == 200

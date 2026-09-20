@@ -125,7 +125,8 @@ def test_endpoint_failure_keeps_manual_netctl_and_last_context_usable(
     assert client.get("/inventory").status_code == 200
     card = client.get(f"/inventory/assets/{asset_id}")
     assert card.status_code == 200
-    assert "Endpoint временно недоступен" in card.text
+    assert "Endpoint: 16" in card.text
+    assert "Endpoint временно недоступен" not in card.text
     assert "Manual Person" in card.text
     with get_sessionmaker()() as db:
         binding = db.scalar(select(InventoryExternalBinding))

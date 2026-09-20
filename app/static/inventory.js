@@ -11,6 +11,25 @@ const inventoryManualDraft = () => inventoryManualForm
 let inventoryInitialDraft = inventoryManualDraft();
 let inventoryFormSubmitting = false;
 
+const endpointInsertValue = (control, value) => {
+  if (!(control instanceof HTMLSelectElement)) return value;
+  if (Array.from(control.options).some((option) => option.value === value)) return value;
+  const normalized = String(value).toLowerCase();
+  if (control.name === "cpu_model") {
+    if (normalized.includes("intel")) return "Intel";
+    if (normalized.includes("amd")) return "AMD";
+  }
+  if (control.name === "os_name") {
+    if (normalized.includes("windows")) return "Windows";
+    if (normalized.includes("linux")) return "Linux";
+  }
+  if (control.name === "storage_type") {
+    if (normalized.includes("m.2") || normalized.includes("nvme")) return "M.2";
+    if (normalized.includes("ssd")) return "SSD";
+  }
+  return null;
+};
+
 if (inventoryManualForm) {
   inventoryManualForm.addEventListener("submit", (event) => {
     const card = document.querySelector("[data-endpoint-card]");
@@ -24,6 +43,19 @@ if (inventoryManualForm) {
 }
 
 document.addEventListener("click", async (event) => {
+  const insert = event.target.closest("[data-endpoint-insert]");
+  if (insert && !insert.disabled) {
+    const field = insert.dataset.endpointInsert;
+    const control = inventoryManualForm?.elements.namedItem(field);
+    const value = endpointInsertValue(control, insert.dataset.endpointValue || "");
+    if (!control || !value) return;
+    control.value = value;
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+    insert.textContent = "Вставлено";
+    control.focus();
+    return;
+  }
   const button = event.target.closest("[data-endpoint-action], [data-endpoint-read]");
   if (!button || button.disabled) return;
   const card = button.closest("[data-endpoint-card]");

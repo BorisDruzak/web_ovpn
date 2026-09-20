@@ -3,16 +3,21 @@
 {% block page_title %}{{ asset_labels[asset_type] }}{% endblock %}
 {% block content %}
 <section class="inventory-mobile inventory-form">
+  {% macro endpoint_value(field) %}
+  {% if endpoint_context %}{% set value = endpoint_context.sources.endpoint.get(field) %}
+  {% if value is not none and value != '' %}
+  <div class="inventory-endpoint-field" data-endpoint-value-for="{{ field }}">
+    <small>Endpoint: {{ value }}</small>
+    <button type="button" class="button secondary" data-endpoint-insert="{{ field }}" data-endpoint-value="{{ value }}">Вставить</button>
+  </div>
+  {% endif %}{% endif %}
+  {% endmacro %}
   {% if asset %}<details class="inventory-asset-card" open><summary>{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary>{% endif %}
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
   {% if asset and asset_type.value == 'PC' and endpoint_context %}
   {% set context = endpoint_context %}
   {% set endpoint = context.sources.endpoint %}
-  {% set freshness = context.freshness.endpoint %}
   {% set api_root = '/api/v1/inventory/assets/' ~ asset.id %}
-  {% set freshness_labels = {'fresh': 'Актуально', 'stale': 'Данные устарели', 'unavailable': 'Endpoint временно недоступен', 'missing': 'Данные ещё не получены'} %}
-  {% set source_labels = {'endpoint': 'Endpoint', 'manual': 'Ручные данные', 'netctl': 'Netctl'} %}
-  {% set fields = [('os_name', 'ОС'), ('os_version', 'Версия ОС'), ('os_build', 'Сборка ОС'), ('cpu_model', 'CPU'), ('cpu_generation', 'Модель CPU'), ('ram_gb', 'RAM, ГБ'), ('storage_type', 'Накопитель'), ('storage_gb', 'Объём, ГБ'), ('hostname', 'Hostname'), ('ip', 'IP-адрес'), ('mac', 'MAC-адрес'), ('serial_number', 'Serial')] %}
   {% macro endpoint_action(path, label, action='', confirm='', revision='') %}
   <button type="button" class="button secondary" data-endpoint-action="{{ api_root }}/{{ path }}"{% if action %} data-resolution="{{ action }}" data-revision="{{ revision }}"{% endif %}{% if confirm %} data-confirm="{{ confirm }}"{% endif %}>{{ label }}</button>
   {% endmacro %}
@@ -20,13 +25,6 @@
     <h2 id="endpoint-heading">АГЕНТ</h2>
     {% if context.binding %}
     <strong>Привязка подтверждена</strong>
-    <small>Endpoint Device: {{ context.binding.external_id }}</small>
-    <span class="inventory-source" data-freshness="{{ freshness.status }}">{{ freshness_labels.get(freshness.status, 'Статус неизвестен') }}</span>
-    <p>Последнее состояние агента: <strong>{{ 'В сети' if endpoint.get('online') == true else ('Не в сети' if endpoint.get('online') == false else 'Неизвестно') }}</strong></p>
-    <small>Последний контакт: {{ endpoint.get('last_seen_at') or 'Нет данных' }}</small>
-    <small>Версия агента: {{ endpoint.get('agent_version') or 'Нет данных' }}</small>
-    <small>Последнее успешное обновление: {{ freshness.last_success_at or 'Ещё не было' }}</small>
-    {% if freshness.status in ('stale', 'unavailable') %}<p>Показаны последние сохранённые данные. Ручная инвентаризация доступна.</p>{% endif %}
     <div class="inventory-endpoint-actions">
       {{ endpoint_action('endpoint-refresh', 'Обновить данные агента') }}
       {{ endpoint_action('endpoint-bindings/' ~ context.binding.id ~ '/detach', 'Отвязать агент', confirm='Завершить привязку агента к этому ПК? История и ручные данные сохранятся.') }}
@@ -40,13 +38,6 @@
     <p>Кандидаты обновляются при плановой синхронизации. Поиск показывает сохранённые совпадения.</p>
     <button type="button" class="button secondary" data-endpoint-read="{{ api_root }}/endpoint-candidates">Найти агент</button>
     {% endif %}
-    <dl class="inventory-endpoint-values">
-      <div><dt>Закреплённый человек</dt><dd>{{ context.asset.assigned_person_name or 'Не указан' }} <small>Ручные данные</small></dd></div>
-      <div><dt>Текущий пользователь ОС</dt><dd>{{ endpoint.get('current_user') or 'Нет данных' }} <small>Endpoint · {{ freshness_labels.get(freshness.status, 'Статус неизвестен') }}</small></dd></div>
-      {% for field, label in fields %}{% if field in context.effective %}{% set item = context.effective[field] %}
-      <div><dt>{{ label }}</dt><dd>{{ item.value }} <small>{{ source_labels.get(item.source, item.source) }} · {{ item.observed_at or 'Время неизвестно' }}{% if item.source == 'endpoint' %} · {{ freshness_labels.get(item.get('freshness', freshness.status), 'Статус неизвестен') }}{% endif %}</small></dd></div>
-      {% endif %}{% endfor %}
-    </dl>
     {% for candidate in endpoint_candidates %}
     <section class="inventory-endpoint-candidate">
       <h3>Кандидат</h3><small>Endpoint Device: {{ candidate.external_id }}</small>
@@ -59,25 +50,8 @@
       </div>
     </section>
     {% endfor %}
-    {% if context.discrepancies %}
-    <section class="inventory-endpoint-discrepancies"><h3>РАСХОЖДЕНИЯ</h3>
-      {% for item in context.discrepancies %}
-      <div class="inventory-endpoint-discrepancy">
-        <strong>{{ 'RAM, ГБ' if item.field == 'ram_gb' else 'Serial' }}</strong>
-        <p>Ручные данные: {{ item.manual }} · Endpoint: {{ item.endpoint }}</p>
-        {% if item.disposition %}<small>Решение: {{ {'keep_manual': 'Оставить ручное', 'mark_verified': 'Проверено физически', 'accept_endpoint': 'Принять Endpoint'}.get(item.disposition.action, 'Зафиксировано') }}</small>{% endif %}
-        <div class="inventory-endpoint-actions">
-          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Принять Endpoint', action='accept_endpoint', confirm='Заменить ручное значение этого поля данными Endpoint?', revision=item.revision) }}
-          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Оставить ручное', action='keep_manual', revision=item.revision) }}
-          {{ endpoint_action('discrepancies/' ~ item.field ~ '/resolve', 'Проверено физически', action='mark_verified', revision=item.revision) }}
-        </div>
-      </div>
-      {% endfor %}
-    </section>
-    {% endif %}
-    {% if context.related_devices %}<section><h3>СВЯЗАННЫЕ УСТРОЙСТВА</h3><ul class="inventory-children">{% for child in context.related_devices %}<li><a href="/inventory/assets/{{ child.id }}">{{ child.custom_name or child.model or child.asset_type }}</a></li>{% endfor %}</ul></section>{% endif %}
     <p role="status" aria-live="polite" data-endpoint-feedback></p>
-    <noscript>Для действий с агентом включите JavaScript. Сохранённые данные доступны выше.</noscript>
+    <noscript>Для действий с агентом включите JavaScript.</noscript>
   </section>
   {% endif %}
   {% if not asset and prelookup %}
@@ -103,37 +77,51 @@
     <fieldset class="inventory-field-group">
       <legend>Идентификация устройства</legend>
       <label>Производитель<input name="manufacturer" value="{{ form_values.get('manufacturer', '') }}" autocomplete="off"></label>
+      {{ endpoint_value('manufacturer') }}
       <label>Модель<input name="model" value="{{ form_values.get('model', '') }}" autocomplete="off"></label>
+      {{ endpoint_value('model') }}
       <label>Serial<input name="serial_number" value="{{ form_values.get('serial_number', '') }}" autocomplete="off"></label>
+      {{ endpoint_value('serial_number') }}
     </fieldset>
     {% if asset_type.value in ('PC', 'PRINTER', 'PHONE', 'OTHER') %}
     <fieldset class="inventory-field-group">
       <legend>Сеть</legend>
       <label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
+      {{ endpoint_value('ip') }}
       <label>MAC-адрес<input name="mac_address" value="{{ identifiers.get('mac') or '' }}" autocomplete="off"></label>
+      {{ endpoint_value('mac') }}
       <label>Hostname<input name="hostname" value="{{ identifiers.get('hostname') or '' }}" autocomplete="off"></label>
+      {{ endpoint_value('hostname') }}
     </fieldset>
     {% endif %}
     {% if asset_type.value == 'PC' %}
     <fieldset class="inventory-field-group">
       <legend>Операционная система</legend>
       <label>ОС<select name="os_name"><option value="">Не указана</option><option value="Windows"{% if details.get('os_name') == 'Windows' %} selected{% endif %}>Windows</option><option value="Linux"{% if details.get('os_name') == 'Linux' %} selected{% endif %}>Linux</option></select></label>
+      {{ endpoint_value('os_name') }}
       <label>Версия ОС<input name="os_version" value="{{ details.get('os_version') or '' }}"></label>
+      {{ endpoint_value('os_version') }}
     </fieldset>
     <fieldset class="inventory-field-group">
       <legend>Процессор</legend>
       <label>Производитель<select name="cpu_model"><option value="">Не указан</option><option value="Intel"{% if details.get('cpu_model') == 'Intel' %} selected{% endif %}>Intel</option><option value="AMD"{% if details.get('cpu_model') == 'AMD' %} selected{% endif %}>AMD</option></select></label>
+      {{ endpoint_value('cpu_model') }}
       <label>Поколение / модель<input name="cpu_generation" value="{{ details.get('cpu_generation') or '' }}"></label>
+      {{ endpoint_value('cpu_generation') }}
     </fieldset>
     <fieldset class="inventory-field-group">
       <legend>Оперативная память</legend>
       <label>Тип RAM<select name="ram_type"><option value="">Не указан</option><option value="DDR3"{% if details.get('ram_type') == 'DDR3' %} selected{% endif %}>DDR3</option><option value="DDR4"{% if details.get('ram_type') == 'DDR4' %} selected{% endif %}>DDR4</option></select></label>
+      {{ endpoint_value('ram_type') }}
       <label>Объём RAM, ГБ<input type="number" min="0" name="ram_gb" value="{{ details.get('ram_gb') or '' }}"></label>
+      {{ endpoint_value('ram_gb') }}
     </fieldset>
     <fieldset class="inventory-field-group">
       <legend>Накопитель</legend>
       <label>Тип накопителя<select name="storage_type"><option value="">Не указан</option><option value="SSD"{% if details.get('storage_type') == 'SSD' %} selected{% endif %}>SSD</option><option value="M.2"{% if details.get('storage_type') == 'M.2' %} selected{% endif %}>M.2</option></select></label>
+      {{ endpoint_value('storage_type') }}
       <label>Объём накопителя, ГБ<input type="number" min="0" name="storage_gb" value="{{ details.get('storage_gb') or '' }}"></label>
+      {{ endpoint_value('storage_gb') }}
     </fieldset>
     {% endif %}
     {% if asset_type.value in ('PRINTER', 'PHONE', 'MONITOR', 'UPS') %}
@@ -175,5 +163,5 @@
 </section>
 {% endblock %}
 {% block page_scripts %}
-{% if asset and asset_type.value == 'PC' %}<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-3" defer></script>{% endif %}
+{% if asset and asset_type.value == 'PC' %}<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-4" defer></script>{% endif %}
 {% endblock %}
