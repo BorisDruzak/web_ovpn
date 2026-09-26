@@ -28,8 +28,10 @@ Inventory sheets: Устройства, Связи рабочего места, 
 Идентификаторы, Проверки, Фото, Наблюдения, Параметры. Device rows include all six
 asset types and their specialized fields. Relationships/identifiers include history;
 related cards outside the chosen scope are labelled without silently expanding the
-device sheet. Default selection excludes deleted cards. Photo metadata excludes
-storage paths and image bytes. Source observations and operator decisions use
+device sheet. Default selection excludes deleted cards.
+The workplace relation sheet explicitly labels active and ended relationships,
+in addition to the retained end timestamp.
+Photo metadata excludes storage paths and image bytes. Source observations and operator decisions use
 explicit safe fields, not arbitrary raw context or diagnostic dumps. Endpoint
 network facts and per-profile freshness are separate from aggregate success dates.
 Netctl bindings carry saved source state, snapshot presence, observation freshness,

@@ -133,7 +133,8 @@ def inventory_workbook(factory,*,location_id=None,deleted=False):
             visible[row.parent_asset_id].custom_name if row.parent_asset_id in visible else None,
             row.child_asset_id,scope_label(row.child_asset_id),
             visible[row.child_asset_id].custom_name if row.child_asset_id in visible else None,
-            row.relation_type,row.created_at,row.created_by,row.ended_at,row.note] for row in relations]
+            row.relation_type,row.created_at,row.created_by,row.ended_at,row.note,
+            'Завершена' if row.ended_at is not None else 'Действует'] for row in relations]
         latest_run = select(m.InventoryIdentifierSyncRun.id).order_by(
             m.InventoryIdentifierSyncRun.started_at.desc(),m.InventoryIdentifierSyncRun.id.desc()).limit(1).scalar_subquery()
         sync_runs = read(select(m.InventoryIdentifierSyncRun).where(m.InventoryIdentifierSyncRun.id == latest_run),1)
@@ -201,7 +202,7 @@ def inventory_workbook(factory,*,location_id=None,deleted=False):
     parameters += [[key,value] for key,value in counts.items()]
     payload = workbook_bytes([
         ('Устройства',ASSET_HEADERS,device_rows),
-        ('Связи рабочего места',('ID связи','Родитель ID','Охват родителя','Название родителя','Устройство ID','Охват устройства','Название устройства','Тип связи','Создано UTC','Кем создано','Завершено UTC','Примечание'),relation_rows),
+        ('Связи рабочего места',('ID связи','Родитель ID','Охват родителя','Название родителя','Устройство ID','Охват устройства','Название устройства','Тип связи','Создано UTC','Кем создано','Завершено UTC','Примечание','Состояние'),relation_rows),
         ('Сетевые привязки',('ID связи','Карточка ID','Источник','Ключ источника','Состояние','Создано UTC','Кем создано','Подтверждено UTC','Кем подтверждено','Причина или метод','Завершено UTC','Кем завершено','Причина завершения','Снимок источника','Наблюдалось UTC','IP','Hostname','Online','Последний успех UTC','Недоступен с UTC','Версия агента','Доказательства','MAC','Свежесть профилей','Baseline снимок','Health снимок','Inventory снимок','Session снимок','Обновлено UTC','Состояние источника','Присутствие в снимке','Свежесть наблюдения','Доступность наблюдения','Источники наблюдения','Последнее наблюдение UTC'),network_rows),
         ('Идентификаторы',('ID','Карточка ID','Тип','Значение','Источник','Текущий','Первое наблюдение UTC','Последнее наблюдение UTC'),identifier_rows),
         ('Проверки',('ID','Карточка ID','Сессия ID','Помещение ID','Проверено UTC','Кем проверено','Результат','Примечание'),check_rows),

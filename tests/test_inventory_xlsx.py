@@ -34,6 +34,8 @@ def test_inventory_export_keeps_full_selection_details_and_outside_relations(tmp
     assert pcrow[headers.index('Описание')] == '=1+1'
     relationrows = list(book['Связи рабочего места'].values)
     assert len(relationrows) == 5
+    assert 'Состояние' in relationrows[0]
+    assert all(row[relationrows[0].index('Состояние')] == 'Действует' for row in relationrows[1:])
     assert any('вне выборки' in str(value) for row in relationrows for value in row)
     assert {'Сетевые привязки','Параметры','Идентификаторы','Проверки','Фото'} <= set(book.sheetnames)
 
@@ -54,6 +56,8 @@ def test_inventory_export_deleted_is_explicit_and_does_not_expand_scope(tmp_path
     assert active['assets'] == 3 and deleted['assets'] == 1
     book = load_workbook(BytesIO(payload))
     assert book['Связи рабочего места'].max_row == 4
+    relationships = list(book['Связи рабочего места'].values)
+    assert all(row[relationships[0].index('Состояние')] == 'Завершена' for row in relationships[1:])
     assert all(row[0] == data['pc']['id'] for row in list(book['Устройства'].values)[1:])
 
 
