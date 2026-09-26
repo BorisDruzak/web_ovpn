@@ -22,8 +22,12 @@
   };
   let currentSnapshotId = Number(root.dataset.snapshotId || 0);
   let controller;
-  let requestSequence = 0;
-  let metaSequence = 0;
+  let generation = 0;
+  let timer;
+  let inFlight = false;
+  let failures = 0;
+  let retryRows = false;
+  let currentProjectionVersion = root.dataset.projectionVersion || "";
 
   const text = (value, fallback = "-") => String(value || fallback);
   const statusClass = (value) => {
@@ -220,37 +224,84 @@
   };
   const clearWarning = () => { warning.hidden = true; warning.textContent = ""; };
   const currentListUrl = () => `/api/v1/network/hosts${window.location.search}`;
+  const schedule = () => {
+    window.clearTimeout(timer);
+    if (!document.hidden) timer = window.setTimeout(poll, Math.min(60000, 15000 * (2 ** Math.min(failures, 2))));
+  };
+  const requestJson = async (url, signal) => {
+    const response = await fetch(url, { signal, credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (response.status === 401 || response.status === 403 || response.redirected) {
+      throw new Error("session_expired");
+    }
+    if (!response.ok) throw new Error("request_failed");
+    return response.json();
+  };
   const poll = async () => {
-    const metaRequest = ++metaSequence;
+    if (document.hidden || inFlight) return;
+    inFlight = true;
+    const sequence = generation;
+    const listUrl = currentListUrl();
+    const localController = new AbortController();
+    controller = localController;
+    let timeout;
+    // One deadline covers metadata, body decoding and the rows request.
+    const deadline = new Promise((_, reject) => {
+      timeout = window.setTimeout(() => {
+        localController.abort();
+        reject(new Error("request_timeout"));
+      }, 20000);
+    });
     try {
-      const metaResponse = await fetch("/api/v1/network/hosts/meta", { credentials: "same-origin" });
-      if (metaRequest !== metaSequence) return;
-      if (!metaResponse.ok) throw new Error("metadata request failed");
-      const metaPayload = await metaResponse.json();
-      if (metaRequest !== metaSequence) return;
+      const metaPayload = await Promise.race([requestJson("/api/v1/network/hosts/meta", localController.signal), deadline]);
+      if (sequence !== generation || listUrl !== currentListUrl() || document.hidden) return;
       const nextMeta = metaPayload.data?.snapshot;
       if (!isSnapshot(nextMeta)) throw new Error("invalid metadata response");
-      if (nextMeta.snapshot_id === currentSnapshotId) {
+      const nextProjection = String(metaPayload.data?.projection_version || "");
+      if (nextMeta.snapshot_id === currentSnapshotId && nextProjection === currentProjectionVersion && !retryRows) {
         const freshness = snapshotTextFor(nextMeta);
         snapshotState.dataset.state = freshness.state;
         snapshotState.textContent = freshness.text;
+        failures = 0;
         clearWarning();
         return;
       }
-      controller?.abort();
-      controller = new AbortController();
-      const sequence = ++requestSequence;
-      const response = await fetch(currentListUrl(), { signal: controller.signal, credentials: "same-origin" });
-      if (!response.ok) throw new Error("snapshot page request failed");
-      const payload = await response.json();
-      if (metaRequest !== metaSequence || requestSequence !== sequence) return;
+      retryRows = true;
+      const payload = await Promise.race([requestJson(listUrl, localController.signal), deadline]);
+      if (sequence !== generation || listUrl !== currentListUrl() || document.hidden) return;
       replaceRows(payload);
+      currentProjectionVersion = String(payload.data?.projection_version || "");
+      retryRows = false;
+      failures = 0;
       clearWarning();
     } catch (error) {
-      if (metaRequest !== metaSequence || error.name === "AbortError") return;
-      showWarning("Не удалось обновить снимок. Показаны ранее загруженные данные.");
+      if (sequence !== generation || document.hidden) return;
+      failures += 1;
+      showWarning(error.message === "session_expired"
+        ? "Сессия завершена или доступ ограничен. Войдите снова. Показаны ранее загруженные данные."
+        : "Не удалось обновить снимок. Показаны ранее загруженные данные.");
+    } finally {
+      window.clearTimeout(timeout);
+      if (sequence === generation) {
+        inFlight = false;
+        schedule();
+      }
     }
   };
+  const invalidate = () => {
+    generation += 1;
+    window.clearTimeout(timer);
+    controller?.abort();
+    inFlight = false;
+    retryRows = true;
+    if (!document.hidden) poll();
+  };
+  document.addEventListener("visibilitychange", invalidate);
+  window.addEventListener("popstate", invalidate);
+  window.addEventListener("pageshow", (event) => { if (event.persisted) invalidate(); });
+  window.addEventListener("pagehide", () => {
+    generation += 1;
+    window.clearTimeout(timer);
+    controller?.abort();
+  });
   poll();
-  window.setInterval(poll, 15000);
 })();
