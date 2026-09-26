@@ -26,16 +26,16 @@
 ## Implementation sequence
 
 - [x] M0: Read affected paths and relevant tests; run baseline, record environment/failures.
-- [ ] M1a/T03: Reproduce PC + peripherals + invalid identifier using a fresh DB session. Make audit commit optional while preserving legacy default; operation owns commit and rollback. Verify SQLite savepoint behavior and API workplace path. Validate detail parsing errors before writes. Run inventory/audit regressions.
-- [ ] M1b/T02: Enumerate browser/service capability gates and establish explicit inventory/VPN/network/export rights without granting legacy bearer blanket administration. Test every mutation and protected download.
-- [ ] M1c/T09: Add non-destructive manual revision migration; implement atomic compare-and-write shared by HTML/API and relevant relationship actions, with conflict input retention.
-- [ ] M2a/T05: Add explicit source-to-form map, visible normalization failures, reversible replacement. Exercise actual controls in isolated browser.
-- [ ] M2b/T04,T08: Add server pagination controls and URL state; replace interval polling with completion scheduling, timeout and generation cancellation. Prove races with controlled timers.
-- [ ] M2c/T01: Map complete blocking paths; offload bounded synchronous work; add small durable executor for long mutations with owned sessions, scoped idempotency and restart reconciliation. No blind retry of unknown external effects.
-- [ ] M3/T07,T11: Server-owned independent draft lifecycle and historical soft deletion across readers, workers, API and files. Upgrade synthetic old schema twice; verify preserved IDs/history and no automatic relationship restoration.
-- [ ] M4/T13,T06: Verify runtime device_key semantics and source-specific cardinality. Add explicit confirmed/rejected/history bindings and shared batched read projection with enrichment revision. Keep Endpoint constraints intact.
-- [ ] M5/T12: Select declared XLSX library after documentation check. Implement bounded authorized inventory and single-version network export; attach synthetic file and parser results.
-- [ ] M6/T10: Complete UI states, run end-to-end with Endpoint absent/network unavailable, full applicable regressions and application smoke. Inspect complete diff, diff --check, GitNexus impact; publish verified atomic changes to main. Never deploy.
+- [x] M1a/T03: Fresh-session PC/peripheral rollback, owned atomic commit/audit, targeted SQLite transaction behavior verified.
+- [x] M1b/T02: Browser/service capability, CSRF, ownership, revocation, production cookie/proxy and repeatable rights migration verified.
+- [x] M1c/T09: Additive manual revision and atomic HTML/API/relationship compare/write with retained conflict input verified.
+- [x] M2a/T05: Explicit mapped insert/undo, validation, zero/select and actual browser controls verified.
+- [x] M2b/T04,T08: Pagination/URL and serialized polling/cancellation/hidden/timeout/recovery verified.
+- [x] M2c/T01: Owned bounded durable executor, scoped idempotency, restart/unknown/partial phases and barrier tests verified.
+- [x] M3/T07,T11: Independent drafts, soft deletion/history, repeatable upgrade, same-ID restore/peripheral retention/no automatic relink verified.
+- [x] M4/T13,T06: Stable identity/explicit bindings/shared batched projection/source freshness/full SQL filters verified; Endpoint constraints preserved.
+- [x] M5/T12: Pinned XLSX writer/full coherent authorized exports/private artifacts and synthetic parser/browser files verified.
+- [x] M6/T10: UI/navigation/saved views/mobile, complete E3 v7 with Endpoint disabled/unavailable source, full regressions, smoke, diff and GitNexus impact verified. Publication follows final docs commit; final remote SHA/status is reported in the answer. Never deploy.
 
 ## Review focus
 
@@ -247,3 +247,15 @@ Overall goal remains ACTIVE. T03, T04 and T05 have local regression/browser evid
 - Aggregate upgrade acceptance added after fullsuite collection: tests/test_panel_schema_upgrade.py1PASS (2.76s). Reconstructs synthetic pre-spec additive boundaries with populatedPC/peripherals/canonicalEndpointbinding/existingaccount; init_db twice restores tables/indexes/triggers without changingIDs/facts/passwordhash/roles. Fresh sessions then delete/restore samePC, retainperipherals, keepEndpoint/workplacehistoryended. This targeted1PASS is separate from ongoing fullsuite, not silently included in its count.
 
 - Final T02 deployment-contract audit found service trustedproxy policy inherited FORWARDED_ALLOW_IPS, potentiallywildcard, while shippednginxuses127.0.0.1upstream. Context7 Uvicorndocs read; pinned0.34.0 actualConfigmiddleware tested. Localunit nowexplicit --proxy-headers --forwarded-allow-ips127.0.0.1; existing0.0.0.0listener/APIcompatpreserved. RED2FAILbeforeflags, GREEN28PASS (22.72s) proxy/permissions/deploycontracts; independent2PASS/noP1/P2. Actualtrustedloopbackheadersaccepted; untrustedpeerforgedscheme/clientignored evenenv'*'. ShippedHTTPnginx remainsbootstrap/development; productionHTTPS/privatesecret/securecookies requiredbeforeenablingproduction. No deployedservice/proxy/config ornetwork changed. Newtests afterfullsuitecollection reportedseparately. Syntheticv17rootfixturestopped(session76764), savedartifactspreserved.
+
+- E3 initialchild6b9a3b7 is NOT integrated/accepted yet despite initialbrowserPASS claim. Rootreview found fixtureavailablecontrol reinserting unique successfulsnapshot1; ignoredHTTPresponse hid500. Implementer confirmedandfixedidempotentcontrol+allresponsechecks. Strongerchecks exposed secondharnessissue: unavailableCLI stubraisedRuntimeError instead ofcontractNetctlError, so previous no-confirmassertion hid500ratherthanproving503. Freshfixture rerunwithrealNetctlError/explicit503 required; earlierartifactclaimwithdrawn pendingverifiedcleanrun. Productioncodeunchanged; fullsuite7804stilllive95%/noFs.
+
+- Full pinned session7804 finished2486PASS/14SKIP/0FAIL in664.44s. XMLfinal-suite.xml explicitlyerrors0/failures0/tests2500; skippedlist inspected: Linux-only/sysfs/FIFO/process/TLS/systemd/optionalenvironment cases, including3newexecutionauthWindowsguards. Aggregateupgrade1 andproxy2 were NOT in thatcollection and retainseparatetargetedevidence1/28PASS. No baselinefailuresremaininthisrun.
+- Final T12 sheet audit added explicit workplace relation state (Действует/Завершена), alongside endedUTC, asrequiredbookstructure. RED2FAILmissingstate; GREEN inventorysource/writer/webroutes18PASS (14.89s), committed8430eddd845e119a7ea5ce65d638c1ea8d0341f1,3files. This narrowformatfollowup came afterfullcollection and is covered separately. Final E3 fixture willincludeitbeforeartifactdownload.
+- Correct unavailableHTML outcome is200 with an explicit unavailablealert and no confirmation action; route catchesNetctlError intentionally. The prior503claim was incorrect. Updatedharness nowassertsexactalert+noaction, allcontrol200, no5xx, recoveryavailable. Freshv7 run pending; no producthandlerchangeorforcedofflineconfirmation.
+
+## Final local acceptance checkpoint
+
+- Strict freshE3v7 nowPASS bothjourneys with4controlPOST200/pageErrors[]/serverFailures[]/zero5xx/Traceback/IntegrityError. Independent review and rootreadonlyverifierPASS exactPC/peripheralIDs/source/workplacehistory/oneexplicitNetctlrelink; latestattemptsuccess/onepublishedsuccess1/olderfailedattempt retained. Oldv3proofwithdrawn; currentunavailableHTML200+exactalert/noaction verified. Integratedtest/runbook6b9a3b7→2d45752 and5752673→c670db529d04c20be3e14bbd5ff42ec09941f820. Root/child relevantproduction/testsource diff empty; compileall app/netctl/tests/browser and diffcheckPASS. Syntheticfixtureownserverstopped; no productionactions.
+- Finalbooks copied to stable ignoredrootoutput/playwright/spec-final, parser everycell noformulas/external/vba: Inventory15624bytes SHA256c7ad42ef18f39a70c4d861a781fdcf52d6b7f581bdfb1e2b804f1575136b3e84; unavailable17282bytes SHA25650bd857d4912bf632ddc4f0cf2bf158c251f4cbf6841f53cf44bd4d477794513; Network40765bytes230+230rows SHA2567d4b9bf2f1d3a9d49e35588703265de1c4ae95ec1c921dcac70eb7a51c2041ba. Inventory8sheets/13relation/35bindingcolumns.
+- Final T01–T13/rights/compatibility/lifecycle/XLSX/commands/release/backup/rollback/NOTRUN matrix prepared in web-panel-verification-2026-09-26.md. Full2486PASS14SKIP and postcollectionupgrade1/proxy28/finalformat18PASS disclosed separately. All mandatorylocalbehavior gates verified; only Gitpublication/finalremote/status/branchcleanup remain before goal completion. Final docs commit does not deploy.
