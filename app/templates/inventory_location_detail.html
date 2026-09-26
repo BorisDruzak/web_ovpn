@@ -3,6 +3,7 @@
 {% block page_title %}{{ location.name or 'ЛОКАЦИЯ' }}{% endblock %}
 {% block content %}
 <section class="inventory-mobile">
+  {% if can_export_inventory %}<form method="post" action="/inventory/export"><input type="hidden" name="operation_key" value="{{ export_operation_key }}"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="scope" value="location"><input type="hidden" name="location_id" value="{{ location.id }}"><button class="button secondary" type="submit">Excel: всё помещение и история связей</button></form>{% endif %}
   <a class="button secondary" href="/inventory">К СПИСКУ ЛОКАЦИЙ</a>
   {% if location.comment %}
   <p class="inventory-location-summary">{{ location.comment }}</p>

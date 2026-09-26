@@ -198,7 +198,7 @@ def _execute(operation_id: str, execute: Callable, factory) -> None:
                 with factory() as artifact_db:
                     owner = artifact_db.get(PanelOperation, operation_id).owner
                 create_download_token(client_name="operation-file", file_path=response.path,
-                    file_type="ovpn", created_by=owner.removeprefix("user:"),
+                    file_type=getattr(response,'_panel_file_type','ovpn'), created_by=owner.removeprefix("user:"),
                     expires_at=utcnow() + timedelta(minutes=get_settings().download_ttl_minutes))
             errors = any(item["status"] != "succeeded" for item in phases)
             successes = any(item["status"] == "succeeded" for item in phases)
@@ -245,6 +245,8 @@ def observed_cli(provider: str):
             if command in {"networks", "network-templates", "sources", "interfaces", "routes", "observations", "site-routes", "management", "server-config", "hosts", "users", "network-sessions"}:
                 mutating = len(args) > 1 and args[1] not in {"list", "inspect", "status", "test", "snapshot-status"}
             if command == "generate-batch" and "--dry-run" in args:
+                mutating = False
+            if command == 'hosts' and len(args)>1 and args[1] == 'export':
                 mutating = False
             name = provider + ":" + (command if command in {
                 "generate", "generate-batch", "sync", "disable", "delete", "repair-artifacts",

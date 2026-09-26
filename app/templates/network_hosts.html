@@ -54,6 +54,7 @@
     {% for value in [25, 50, 100, 250] %}<option value="{{ value }}" {% if pagination.limit == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
   </select></label>
 </form>
+{% if can_export_network %}<form method="post" action="/network/export"><input type="hidden" name="operation_key" value="{{ export_operation_key }}"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">{% for key,value in filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}<button class="button secondary" type="submit">Excel: весь снимок по текущим фильтрам</button></form>{% endif %}
 <section class="host-view-controls" aria-label="Представление устройств" data-host-views data-preference-user="{{ user.id }}">
   <fieldset><legend>Режим таблицы</legend><button type="button" class="button secondary" data-host-mode="operational" aria-pressed="true">Краткий</button> <button type="button" class="button secondary" data-host-mode="diagnostic" aria-pressed="false">Диагностический</button></fieldset>
   <label>Сохранённое представление<select data-saved-views><option value="">Выберите представление</option></select></label>

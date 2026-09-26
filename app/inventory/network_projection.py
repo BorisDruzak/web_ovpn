@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text,case,func,cast,String,LargeBinary
 
 from ..config import get_settings
 from .models import (InventoryAsset, InventoryLocation, InventoryNetctlBinding,
@@ -32,11 +32,23 @@ def filter_projection(db):
     epoch = projection_epoch(db)
     groups = defaultdict(list)
     count = 0
-    for key,status,ambiguous in db.execute(select(InventoryNetctlBinding.network_key,
-        InventoryNetctlBinding.status,InventoryNetctlBinding.evidence_json['ambiguous'])
+    ambiguous_value = InventoryNetctlBinding.evidence_json['ambiguous'].as_boolean()
+    # Keep malformed nested evidence off the wire too. Unknown non-boolean
+    # evidence is conservatively a conflict; ordinary missing/false is not.
+    ambiguous_flag = case((ambiguous_value.is_(None),False),(ambiguous_value.is_(False),False),else_=True)
+    statement = select(InventoryNetctlBinding.network_key,
+        InventoryNetctlBinding.status,ambiguous_flag.label('ambiguous'))
+    statement = statement\
         .join(InventoryAsset,InventoryAsset.id == InventoryNetctlBinding.asset_id)
-        .where(InventoryNetctlBinding.ended_at.is_(None),
-            InventoryNetctlBinding.status.in_([Status.CONFIRMED,Status.CANDIDATE])).limit(100_001)):
+    statement = statement.where(InventoryNetctlBinding.ended_at.is_(None),
+        InventoryNetctlBinding.status.in_([Status.CONFIRMED,Status.CANDIDATE])).limit(100_001)
+    bounded = statement.subquery()
+    key_bytes = (func.length(cast(bounded.c.network_key,LargeBinary)) if db.bind.dialect.name == 'sqlite'
+        else func.octet_length(cast(bounded.c.network_key,String)))
+    total,max_key = db.execute(select(func.count(),func.max(key_bytes)).select_from(bounded)).one()
+    if total>100000 or (max_key or 0)>255:
+        raise HTTPException(422,'Проекция связей превышает бюджет выборки')
+    for key,status,ambiguous in db.execute(statement.execution_options(yield_per=1000)):
         count += 1
         if count>100_000:
             raise HTTPException(422,'Состояния связей превышают бюджет выборки; сузить результат по странице нельзя')

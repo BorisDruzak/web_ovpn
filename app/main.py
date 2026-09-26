@@ -234,6 +234,8 @@ def render(
             "request": request,
             "user": user,
             "can_delete_inventory": user_has_permission(user, "inventory:delete"),
+            "can_export_network": user_has_permission(user,"network:export"),
+            "export_operation_key": uuid.uuid4().hex,
             "flashes": pop_flashes(request),
             "settings": get_settings(),
         }
@@ -1380,6 +1382,9 @@ def download(token: str, request: Request, db: Session = Depends(get_db)):
     if record is None:
         write_audit(db, request, user, "download", "error", "invalid or expired token")
         raise HTTPException(status_code=404, detail="Ссылка недействительна или истекла")
+    from .export_artifacts import EXPORT_TYPES
+    if record.file_type in EXPORT_TYPES:
+        raise HTTPException(404,detail='Экспорт доступен только владельцу через историю операции')
     try:
         path = assert_allowed_file(record.file_path)
     except ValueError as exc:
@@ -2022,6 +2027,30 @@ def network_hosts(
     )
 
 
+@app.post('/network/export')
+async def network_export_action(request: Request,db: Session = Depends(get_db)):
+    from .export_artifacts import check_export_permission,store_export
+    from .network_export import network_export_workbook
+    from .network_xlsx import FILTER_KEYS
+    from .xlsx_export import ExportLimit
+    user = require_user(request,db)
+    await verify_csrf(request)
+    check_export_permission(user,'network-xlsx')
+    form = await request.form()
+    filters = {key:str(form.get(key) or '') for key in FILTER_KEYS}
+    if any(len(value)>255 for value in filters.values()):
+        raise HTTPException(422,detail='Фильтр экспорта превышает допустимую длину')
+    try:
+        payload,counts = network_export_workbook(filters)
+        path = store_export(payload)
+    except ExportLimit as exc:
+        raise HTTPException(422,detail=str(exc)) from None
+    write_audit(db,request,user,'network-export','ok',json.dumps({'scope':'filtered_snapshot','counts':counts},sort_keys=True))
+    response = FileResponse(path,filename=path.name,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response._panel_file_type = 'network-xlsx'
+    return response
+
+
 @app.get("/network/endpoint-agent-status")
 def network_endpoint_agent_status(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     require_user(request, db)
@@ -2609,10 +2638,14 @@ def operation_file(operation_id: str, file_id: int, request: Request, db: Sessio
     if row is None or row.owner != "user:" + user.username or file_id not in json.loads(row.artifact_ids_json):
         raise HTTPException(404)
     check_user_permission(user, row.permission)
-    check_user_permission(user, "vpn:download")
     record = db.get(DownloadToken, file_id)
     if record is None or record.created_by != user.username or record.revoked_at is not None:
         raise HTTPException(404)
+    from .export_artifacts import EXPORT_TYPES,check_export_permission,assert_export_file
+    if record.file_type in EXPORT_TYPES:
+        check_export_permission(user,record.file_type)
+    else:
+        check_user_permission(user,'vpn:download')
     expires = record.expires_at
     if expires.tzinfo is None:
         from datetime import timezone
@@ -2620,7 +2653,7 @@ def operation_file(operation_id: str, file_id: int, request: Request, db: Sessio
     if expires <= utcnow():
         raise HTTPException(404)
     try:
-        path = assert_allowed_file(record.file_path)
+        path = assert_export_file(record.file_path) if record.file_type in EXPORT_TYPES else assert_allowed_file(record.file_path)
     except ValueError:
         raise HTTPException(404)
     write_audit(db, request, user, "operation-download", "ok", "file", target_client=record.client_name)
@@ -2629,6 +2662,18 @@ def operation_file(operation_id: str, file_id: int, request: Request, db: Sessio
 
 from .panel_operation_routes import install_browser_operations
 install_browser_operations(app)
+
+
+@app.on_event('startup')
+def export_cleanup_start():
+    from .export_artifacts import start_cleanup
+    start_cleanup(app)
+
+
+@app.on_event('shutdown')
+def export_cleanup_stop():
+    from .export_artifacts import stop_cleanup
+    stop_cleanup(app)
 
 
 @app.get("/api/v1/operations/{operation_id}")

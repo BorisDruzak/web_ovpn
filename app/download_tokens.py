@@ -44,7 +44,8 @@ def create_download_token(
     created_by: str,
     expires_at: datetime,
 ) -> tuple[str, DownloadToken]:
-    resolved = assert_allowed_file(file_path)
+    from .export_artifacts import EXPORT_TYPES,assert_export_file
+    resolved = assert_export_file(file_path) if file_type in EXPORT_TYPES else assert_allowed_file(file_path)
     token = secrets.token_urlsafe(32)
     record = DownloadToken(
         token_hash=hash_token(token),

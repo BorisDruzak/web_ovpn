@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 from datetime import date, datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -131,6 +132,8 @@ def _render(request: Request, template: str, context: dict[str, Any], db: Sessio
             "flashes": list(request.session.get("flashes", [])),
             "form_draft": getattr(request.state, "form_draft", None),
             "can_delete_inventory": user_has_permission(user, "inventory:delete"),
+            "can_export_inventory": user_has_permission(user,"inventory:export"),
+            "export_operation_key": uuid4().hex,
         }
     )
     request.session["flashes"] = []
@@ -468,6 +471,34 @@ def inventory_deleted(request: Request, page: int = 1, db: Session = Depends(get
         .execution_options(inventory_history=True)))
     return _render(request, "inventory_deleted.html", {"deleted_assets":rows[:100], "page":page,
         "has_next":len(rows)>100, "asset_labels":ASSET_LABELS}, db)
+
+
+@router.post('/inventory/export')
+async def inventory_export_action(request: Request,db: Session = Depends(get_db)):
+    from ..export_artifacts import check_export_permission,store_export
+    from ..db import get_sessionmaker
+    from ..xlsx_export import ExportLimit
+    from .xlsx_export import inventory_workbook
+    user = require_user(request,db)
+    await verify_csrf(request)
+    form = await request.form()
+    scope = str(form.get('scope') or '')
+    if scope not in {'all','location','deleted'}:
+        raise HTTPException(422,detail='Выберите охват экспорта')
+    file_type = 'inventory-deleted' if scope == 'deleted' else 'inventory-xlsx'
+    check_export_permission(user,file_type)
+    location_id = str(form.get('location_id') or '') if scope == 'location' else None
+    if scope == 'location':
+        _location_or_error(db,location_id)
+    try:
+        payload,counts = inventory_workbook(get_sessionmaker(),location_id=location_id,deleted=scope=='deleted')
+        path = store_export(payload)
+    except ExportLimit as exc:
+        raise HTTPException(422,detail=str(exc)) from None
+    write_audit(db,request,user,'inventory-export','ok',json.dumps({'scope':scope,'counts':counts},sort_keys=True))
+    response = FileResponse(path,filename=path.name,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response._panel_file_type = file_type
+    return response
 
 
 @router.get("/inventory/deleted/{asset_id}", response_class=HTMLResponse)

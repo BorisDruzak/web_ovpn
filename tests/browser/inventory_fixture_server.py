@@ -20,7 +20,8 @@ def main():
     database = args.output.resolve() / "synthetic.sqlite"
     os.environ.update(DATABASE_URL=f"sqlite:///{database.as_posix()}",
         APP_SECRET_KEY="synthetic-browser-only", ADMIN_USERNAME="synthetic",
-        ADMIN_PASSWORD="synthetic-browser-only", ENDPOINT_PLATFORM_ENABLED="false")
+        ADMIN_PASSWORD="synthetic-browser-only", ENDPOINT_PLATFORM_ENABLED="false",
+        PANEL_EXPORT_ROOT=str(args.output.resolve()/'private-exports'))
     from app.db import init_db, get_sessionmaker, reset_engine_cache
     reset_engine_cache()
     init_db()
@@ -68,7 +69,7 @@ def main():
                 'interfaces':[{'mac':'02:00:00:00:00:24'}],
                 'current_ip_observations':[{'ip':'192.0.2.24','last_seen_at':now}],
                 'current_hostname_observations':[{'hostname':'synthetic-pc'}],'findings':[]}}
-        if args[:2] not in (["hosts", "list"], ["hosts", "snapshot-status"]):
+        if args[:2] not in (["hosts", "list"], ["hosts", "export"], ["hosts", "snapshot-status"]):
             return forbidden()
         connection = sqlite3.connect(network_database)
         connection.row_factory = sqlite3.Row
@@ -88,6 +89,9 @@ def main():
             if kwargs.get('input_payload') is not None:
                 projection = json.loads(kwargs['input_payload'])
                 filters['inventory_projection'] = projection
+            if args[1] == 'export':
+                from netctl.host_snapshot import export_host_snapshot
+                return export_host_snapshot(connection,filters)
             data = list_host_snapshot(connection,filters,page,limit)
             if projection is not None:
                 data['inventory_projection_revision'] = projection['revision']
@@ -104,6 +108,8 @@ def main():
     app.main.run_netctl = saved_network
     import app.api
     app.api.run_netctl = saved_network
+    import app.network_export
+    app.network_export.run_netctl = saved_network
     import app.inventory.network_links
     app.inventory.network_links.run_netctl = saved_network
     import uvicorn

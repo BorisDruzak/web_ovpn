@@ -20,6 +20,7 @@ from .permissions import required_permission
 # Existing handlers perform operation-specific validation/confirmation before
 # calling their first CLI, and preserve the existing audits inside the executor.
 LONG_BROWSER_HANDLERS = frozenset({
+    "inventory_export_action", "network_export_action",
     "clients_sync", "new_client_action", "client_edit_template", "client_edit_networks",
     "client_edit_ovpn", "reconnect_client_route", "kill_client_session_route",
     "download_link", "disable_client", "connection_kill",

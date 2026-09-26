@@ -3,6 +3,7 @@
 {% block page_title %}Удалённые{% endblock %}
 {% block content %}
 <section class="inventory-mobile">
+  {% if can_export_inventory and can_delete_inventory %}<form method="post" action="/inventory/export"><input type="hidden" name="operation_key" value="{{ export_operation_key }}"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="scope" value="deleted"><button class="button secondary" type="submit">Excel: все удалённые карточки и история</button></form>{% endif %}
   <a class="button secondary" href="/inventory">К инвентаризации</a>
   <p>Карточки и история сохранены. Восстановление не возвращает старые связи автоматически.</p>
   {% for asset in deleted_assets %}

@@ -3,6 +3,7 @@
 {% block page_title %}ИНВЕНТАРИЗАЦИЯ{% endblock %}
 {% block content %}
 <section class="inventory-mobile">
+  {% if can_export_inventory %}<form method="post" action="/inventory/export"><input type="hidden" name="operation_key" value="{{ export_operation_key }}"><input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}"><input type="hidden" name="scope" value="all"><button class="button secondary" type="submit">Excel: все активные карточки и история связей</button></form>{% endif %}
   <div class="inventory-device-picker">
     {% if can_delete_inventory %}<a class="button secondary" href="/inventory/deleted">Удалённые</a>{% endif %}
     <a class="button inventory-primary" href="/inventory/locations/new">+ ДОБАВИТЬ ЛОКАЦИЮ</a>
