@@ -45,6 +45,9 @@
     <option value="no" {% if filters.has_mac == "no" %}selected{% endif %}>Без MAC</option>
   </select>
   <button class="button secondary" type="submit">Фильтр</button>
+  <label>На странице<select name="limit" aria-label="На странице">
+    {% for value in [25, 50, 100, 250] %}<option value="{{ value }}" {% if pagination.limit == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
+  </select></label>
 </form>
 <section class="table-wrap" data-network-hosts data-snapshot-id="{{ snapshot.snapshot_id }}">
   <p class="muted" data-host-snapshot-state data-state="{{ snapshot_state }}">
@@ -56,7 +59,17 @@
     Снимок №{{ snapshot.snapshot_id }} от {{ snapshot.generated_at or "-" }} · {{ snapshot.total_hosts }} устройств.
     {% endif %}
   </p>
-  <p class="muted" data-host-pagination>Страница {{ pagination.page }} из {{ pagination.pages }} · {{ pagination.total }} устройств по текущему фильтру.</p>
+  <p class="muted" data-host-pagination>{% if pagination.total %}{{ (pagination.page - 1) * pagination.limit + 1 }}–{{ [pagination.page * pagination.limit, pagination.total]|min }} из {{ pagination.total }} · Страница {{ pagination.page }} из {{ pagination.pages }}{% else %}0 устройств по текущему фильтру.{% endif %}</p>
+  <nav aria-label="Страницы устройств" data-host-pagination-controls {% if not pagination.total %}hidden{% endif %}>
+    <a class="button secondary" data-page-prev href="?{{ filters|urlencode }}&amp;limit={{ pagination.limit }}&amp;page={{ [1, pagination.page - 1]|max }}" {% if pagination.page <= 1 %}hidden{% endif %}>Предыдущая</a>
+    <a class="button secondary" data-page-next href="?{{ filters|urlencode }}&amp;limit={{ pagination.limit }}&amp;page={{ pagination.page + 1 }}" {% if pagination.page >= pagination.pages %}hidden{% endif %}>Следующая</a>
+    <form method="get" action="/network/hosts">
+      {% for key, value in filters.items() %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endfor %}
+      <input type="hidden" name="limit" value="{{ pagination.limit }}">
+      <label>Страница<input data-page-number type="number" name="page" min="1" max="{{ pagination.pages or 1 }}" value="{{ pagination.page }}" aria-label="Страница"></label>
+      <button class="button secondary" type="submit">Перейти</button>
+    </form>
+  </nav>
   <p class="alert bad" data-host-refresh-warning role="status" hidden></p>
   <table>
     <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Endpoint Agent</th><th>Last active check</th><th>Evidence</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
@@ -116,7 +129,7 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="14" class="empty">Нет данных. Запустите сбор.</td></tr>
+      <tr><td colspan="14" class="empty">{% if error %}Источник недоступен. Повторите позже.{% elif not snapshot.snapshot_id %}Снимок ещё не опубликован. Ожидание данных.{% else %}Нет устройств по выбранным фильтрам.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>

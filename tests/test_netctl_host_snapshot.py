@@ -58,6 +58,24 @@ def test_snapshot_pagination_clamps_page_and_limit(conn):
     assert list_host_snapshot(conn, {}, 0, 0)["limit"] == 1
 
 
+def test_snapshot_last_page_shrink_and_230_rows(conn):
+    from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
+    for number in range(1, 231):
+        add_host(conn, f"192.0.2.{number}", hostname="synthetic")
+    refresh_host_snapshot(conn, now=NOW)
+    keys = []
+    for page in (1, 2, 3):
+        data = list_host_snapshot(conn, {"status": "all", "seen_within": "all"}, page, 100, now=NOW)
+        keys.extend(row["ip"] for row in data["hosts"])
+    assert len(keys) == len(set(keys)) == 230
+    data = list_host_snapshot(conn, {"status": "all"}, 999, 100, now=NOW)
+    assert data["page"] == 3
+    assert len(data["hosts"]) == 30
+    empty = list_host_snapshot(conn, {"q": "no-match"}, 999, 100, now=NOW)
+    assert empty["pages"] == empty["total"] == 0
+    assert empty["page"] == 1
+
+
 def test_hosts_cli_pagination_without_writable_prepare(tmp_path, monkeypatch):
     import netctl.cli as cli
     from netctl.host_snapshot import refresh_host_snapshot
@@ -102,7 +120,9 @@ def test_snapshot_current_status_and_mac_filters_apply_before_decode(conn):
     conn.commit()
     assert [host["status"] for host in list_host_snapshot(conn, {"status": "current"}, 1, 100)["hosts"]] == ["online", "seen", "connected"]
     assert [host["ip"] for host in list_host_snapshot(conn, {"has_mac": "yes"}, 1, 100)["hosts"]] == ["203.0.113.1"]
-    assert list_host_snapshot(conn, {}, 10**100, 100)["hosts"] == []
+    clamped = list_host_snapshot(conn, {}, 10**100, 100)
+    assert clamped["page"] == 1
+    assert len(clamped["hosts"]) == 3
 
 
 def test_snapshot_seen_within_and_arbitrary_ipv6_network_filter(conn):
@@ -216,7 +236,7 @@ def test_refresh_log_does_not_include_failed_payload(conn, monkeypatch, caplog):
     assert "PRIVATE-CREDENTIAL" not in caplog.text
 
 
-@pytest.mark.parametrize("page, expected_count", [(1, 1), (2, 0)])
+@pytest.mark.parametrize("page, expected_count", [(1, 1), (2, 1)])
 def test_snapshot_logs_include_non_sensitive_measurements(conn, caplog, page, expected_count):
     from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
 
@@ -229,7 +249,7 @@ def test_snapshot_logs_include_non_sensitive_measurements(conn, caplog, page, ex
     assert len(result["hosts"]) == expected_count
     assert any(re.fullmatch(r"host_snapshot.refresh.finish id=1 count=1 duration_ms=\d+", message) for message in messages)
     assert any(re.fullmatch(
-        rf"host_snapshot.list.finish id=1 count={expected_count} total=1 page={page} limit=1 duration_ms=\d+",
+        rf"host_snapshot.list.finish id=1 count={expected_count} total=1 page=1 limit=1 duration_ms=\d+",
         message,
     ) for message in messages)
     # Only numeric measurements may accompany event names, including raw log arguments.

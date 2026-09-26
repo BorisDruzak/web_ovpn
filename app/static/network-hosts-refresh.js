@@ -160,14 +160,18 @@
     const fragment = document.createDocumentFragment();
     if (!hosts.length) {
       const row = document.createElement("tr");
-      const empty = cell(row, "Нет данных. Запустите сбор.", "empty");
+      const empty = cell(row, !snapshot.snapshot_id ? "Снимок ещё не опубликован. Ожидание данных."
+        : "Нет устройств по выбранным фильтрам.", "empty");
       empty.colSpan = 14;
       fragment.append(row);
     } else hosts.forEach((host) => fragment.append(createHostRow(host)));
     return {
       fragment,
-      paginationText: `Страница ${nextPagination.page} из ${nextPagination.pages} · ${nextPagination.total} устройств по текущему фильтру.`,
+      paginationText: nextPagination.total
+        ? `${(nextPagination.page - 1) * nextPagination.limit + 1}–${Math.min(nextPagination.page * nextPagination.limit, nextPagination.total)} из ${nextPagination.total} · Страница ${nextPagination.page} из ${nextPagination.pages}`
+        : "0 устройств по текущему фильтру.",
       snapshot,
+      pagination: nextPagination,
       snapshotText: snapshotTextFor(snapshot),
     };
   };
@@ -190,6 +194,25 @@
     snapshotState.dataset.state = replacement.snapshotText.state;
     snapshotState.textContent = replacement.snapshotText.text;
     pagination.textContent = replacement.paginationText;
+    const controls = root.querySelector("[data-host-pagination-controls]");
+    if (controls) {
+      const page = replacement.pagination;
+      controls.hidden = !page.total;
+      for (const [selector, number, hidden] of [
+        ["[data-page-prev]", page.page - 1, page.page <= 1],
+        ["[data-page-next]", page.page + 1, page.page >= page.pages],
+      ]) {
+        const link = controls.querySelector(selector);
+        const params = new URLSearchParams(window.location.search);
+        params.set("page", String(Math.max(1, number)));
+        params.set("limit", String(page.limit));
+        link.href = `/network/hosts?${params}`;
+        link.hidden = hidden;
+      }
+      const number = controls.querySelector("[data-page-number]");
+      number.value = page.page;
+      number.max = Math.max(1, page.pages);
+    }
   };
   const showWarning = (message) => {
     warning.textContent = message;

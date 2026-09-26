@@ -239,6 +239,9 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
             params.append(filters["source"])
         where = " AND ".join(clauses)
         total = conn.execute(f"SELECT count(*) FROM network_host_current_state h WHERE {where}", params).fetchone()[0] if metadata.snapshot_id else 0
+        pages = (total + limit - 1) // limit
+        if metadata.snapshot_id:
+            page = min(page, max(1, pages))
         rows = conn.execute(
             f"SELECT h.payload_json FROM network_host_current_state h WHERE {where} ORDER BY h.ip_sort, h.ip LIMIT ? OFFSET ?",
             (*params, limit, (page - 1) * limit),
@@ -248,7 +251,7 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
             (metadata.snapshot_id,),
         ).fetchall() if metadata.snapshot_id else []
         result = {"hosts": [json.loads(row[0]) for row in rows], "total": total, "page": page,
-                "limit": limit, "pages": (total + limit - 1) // limit, "snapshot": asdict(metadata),
+                "limit": limit, "pages": pages, "snapshot": asdict(metadata),
                 "sources": [{"name": row[0]} for row in sources]}
     finally:
         conn.execute("RELEASE SAVEPOINT read_host_snapshot")
