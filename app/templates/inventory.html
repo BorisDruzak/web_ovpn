@@ -4,6 +4,7 @@
 {% block content %}
 <section class="inventory-mobile">
   <div class="inventory-device-picker">
+    {% if can_delete_inventory %}<a class="button secondary" href="/inventory/deleted">Удалённые</a>{% endif %}
     <a class="button inventory-primary" href="/inventory/locations/new">+ ДОБАВИТЬ ЛОКАЦИЮ</a>
   </div>
   {% if locations %}

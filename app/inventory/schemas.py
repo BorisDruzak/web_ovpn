@@ -61,6 +61,12 @@ class AssetUpdate(AssetPayload):
         return self.model_dump(exclude={"asset_type", "location_id", "details", "identifiers", "expected_revision"}, exclude_unset=True)
 
 
+class AssetLifecycleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int | None = Field(default=None, ge=1)
+    reason: str | None = Field(default=None, max_length=2000)
+
+
 class WorkplacePCPayload(AssetPayload):
     asset_type: InventoryAssetType = InventoryAssetType.PC
 

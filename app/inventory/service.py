@@ -274,7 +274,7 @@ class InventoryService:
         """Refresh only unambiguous IP and hostname values from a Netctl snapshot."""
         inventory_by_mac: dict[str, list[str]] = {}
         for identifier in db.scalars(
-            select(InventoryAssetIdentifier).where(
+            select(InventoryAssetIdentifier).join(InventoryAsset, InventoryAsset.id == InventoryAssetIdentifier.asset_id).where(
                 InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.MAC,
                 InventoryAssetIdentifier.is_current.is_(True),
             )
@@ -337,8 +337,8 @@ class InventoryService:
         db.flush()
         return InventoryIdentifierSyncResult(matched_assets, updated_assets, skipped_assets)
 
-    def identifiers_for(self, db: Session, asset: InventoryAsset) -> list[InventoryAssetIdentifier]:
-        return list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True)).order_by(InventoryAssetIdentifier.identifier_type, InventoryAssetIdentifier.normalized_value)))
+    def identifiers_for(self, db: Session, asset: InventoryAsset, *, include_history: bool = False) -> list[InventoryAssetIdentifier]:
+        return list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True)).order_by(InventoryAssetIdentifier.identifier_type, InventoryAssetIdentifier.normalized_value).execution_options(inventory_history=include_history)))
 
     def _netctl_observed_identifiers(
         self, host: Mapping[str, object]
@@ -570,7 +570,7 @@ class InventoryService:
     @staticmethod
     def _asset_or_error(db: Session, asset_id: str) -> InventoryAsset:
         asset = db.get(InventoryAsset, asset_id)
-        if asset is None:
+        if asset is None or asset.deleted_at is not None:
             raise InventoryValidationError("inventory asset not found")
         return asset
     InventoryObservation,

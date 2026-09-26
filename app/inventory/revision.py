@@ -18,6 +18,7 @@ def claim_revision(db: Session, asset: InventoryAsset, expected: int | None) -> 
         raise InventoryRevisionRequired("Откройте актуальную карточку: требуется её ревизия")
     result = db.execute(update(InventoryAsset).where(
         InventoryAsset.id == asset.id, InventoryAsset.manual_revision == expected,
+        InventoryAsset.deleted_at.is_(None),
     ).values(manual_revision=InventoryAsset.manual_revision + 1)
       .execution_options(synchronize_session=False))
     if result.rowcount != 1:

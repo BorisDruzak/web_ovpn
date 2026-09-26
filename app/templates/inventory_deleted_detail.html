@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Удалённое устройство{% endblock %}
+{% block page_title %}Удалённое устройство{% endblock %}
+{% block content %}
+<section class="inventory-mobile">
+  <a href="/inventory/deleted">К удалённым</a>
+  <h2>{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }}</h2>
+  <p>ID {{ asset.id }} · Локация {{ asset.location_id or 'не указана' }}</p>
+  <p>Удалено {{ asset.deleted_at }} пользователем {{ asset.deleted_by }}. Причина: {{ asset.deletion_reason }}</p>
+  <p>Связи не восстанавливаются автоматически. Периферия, сетевые устройства и агент сохранены.</p>
+  <form method="post" action="/inventory/assets/{{ asset.id }}/restore">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="expected_revision" value="{{ asset.manual_revision }}">
+    <button class="button" type="submit">Восстановить карточку</button>
+  </form>
+  <h3>Характеристики</h3><dl>
+    {% set labels = {'manufacturer':'Производитель','model':'Модель','serial_number':'Серийный номер','inventory_number':'Инвентарный номер','assigned_person_name':'Пользователь','login_name':'Логин','description':'Описание','os_name':'ОС','os_version':'Версия ОС','cpu_model':'Процессор','cpu_generation':'Поколение процессора','ram_type':'Тип памяти','ram_gb':'Память, ГБ','storage_type':'Тип накопителя','storage_gb':'Накопитель, ГБ','diagonal_inches':'Диагональ','page_counter':'Счётчик страниц','connection_type':'Тип подключения','extension':'Внутренний номер','power_va':'Мощность, VA','battery_replaced_at':'Замена батареи'} %}
+    {% for field in ['manufacturer','model','serial_number','inventory_number','assigned_person_name','login_name','description'] %}<dt>{{ labels[field] }}</dt><dd>{{ asset[field] or '—' }}</dd>{% endfor %}
+    {% for field, value in details.items() %}<dt>{{ labels.get(field, field) }}</dt><dd>{{ value if value is not none else '—' }}</dd>{% endfor %}
+  </dl>
+  <h3>Идентификаторы</h3>{% for row in identifiers %}<p>{{ row.identifier_type.value }}: {{ row.value }} · {{ 'действующий' if row.is_current else 'исторический' }}</p>{% endfor %}
+  <h3>Фото</h3>{% for row in photos %}<p><a href="/inventory/deleted/{{ asset.id }}/photos/{{ row.id }}">{{ row.original_filename }}</a> · сохранено {{ row.created_at }}</p>{% else %}<p>Фото нет.</p>{% endfor %}
+  <h3>Отношения рабочего места</h3>{% for row in relations %}<p>{{ row.parent_asset_id }} → {{ row.child_asset_id }} · завершено {{ row.ended_at or '—' }}</p>{% endfor %}
+  <h3>Внешние связи</h3>{% for row in bindings %}<p>{{ row.source }} · {{ row.external_id }} · {{ row.status.value }} · {{ row.ended_at or '—' }}</p>{% endfor %}
+  <h3>Наблюдения</h3>{% for row in observations %}<details><summary>{{ row.source.value }} · {{ row.observed_at }}</summary><pre>{{ row.data_json | tojson(indent=2) }}</pre></details>{% endfor %}
+  <h3>Проверки</h3>{% for row in checks %}<p>{{ row.checked_at }} · {{ row.checked_by }} · {{ row.result.value }} · {{ row.notes or '' }}</p>{% endfor %}
+</section>
+{% endblock %}

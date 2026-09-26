@@ -111,6 +111,11 @@ class InventoryAsset(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
     manual_revision: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    deleted_by: Mapped[str | None] = mapped_column(String(120))
+    deletion_reason: Mapped[str | None] = mapped_column(Text)
+    restored_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    restored_by: Mapped[str | None] = mapped_column(String(120))
     asset_type: Mapped[InventoryAssetType] = mapped_column(Enum(InventoryAssetType), nullable=False)
     location_id: Mapped[str | None] = mapped_column(ForeignKey("inventory_locations.id"), index=True)
     custom_name: Mapped[str | None] = mapped_column(String(255))

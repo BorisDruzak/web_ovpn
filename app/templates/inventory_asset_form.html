@@ -175,6 +175,18 @@
     <button type="submit" class="button secondary">Отбросить черновик</button>
   </form>
   {% if asset %}
+  {% if can_delete_inventory %}
+  <details class="inventory-card"><summary>Удалить устройство</summary>
+    <p>Карточка «{{ asset.custom_name or asset.model or asset.id }}» перейдёт в удалённые с возможностью восстановления. Периферия останется в локации. Связи с рабочим местом, сетью и Endpoint завершатся; внешние устройства, агент и VPN останутся нетронутыми.</p>
+    <form method="post" action="/inventory/assets/{{ asset.id }}/delete">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="expected_revision" value="{{ form_values.expected_revision }}">
+      <label>Причина удаления<textarea name="reason" required maxlength="2000"></textarea></label>
+      <label><input type="checkbox" name="confirmation" value="{{ asset.id }}" required> Подтверждаю удаление «{{ asset.custom_name or asset.model or asset.id }}» (ID {{ asset.id }})</label>
+      <button type="submit" class="button">Удалить устройство</button>
+    </form>
+  </details>
+  {% endif %}
   <section class="inventory-device-photos"><strong>ФОТО ЭТОГО УСТРОЙСТВА</strong><form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="return_location_id" value="{{ return_location_id }}">

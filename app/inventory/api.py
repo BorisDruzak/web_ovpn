@@ -22,7 +22,8 @@ from ..netctl_client import run_netctl
 from .lookup import InventoryLookup, InventoryLookupError
 from .endpoint import InventoryEndpointConflict, InventoryEndpointService
 from .models import InventoryAsset, InventoryAssetPhoto, InventoryAssetRelation, InventoryAssetType, InventoryExternalBinding, InventoryExternalBindingStatus, InventoryLocation, InventoryObservationSource, InventoryPhotoType, InventorySession
-from .schemas import AssetPayload, AssetUpdate, EndpointDiscrepancyResolution, EndpointRefreshRequest, LocationCreate, LocationUpdate, LookupRequest, RelationCreate, SessionCheckCreate, WorkplaceCreate
+from .schemas import AssetLifecycleRequest, AssetPayload, AssetUpdate, EndpointDiscrepancyResolution, EndpointRefreshRequest, LocationCreate, LocationUpdate, LookupRequest, RelationCreate, SessionCheckCreate, WorkplaceCreate
+from . import lifecycle
 from .service import InventoryService, InventoryValidationError
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
 from .storage import InventoryPhotoError, InventoryPhotoStorage, StoredPhoto
@@ -50,6 +51,11 @@ def _asset_dict(asset: InventoryAsset, db: Session | None = None) -> dict[str, A
     data = {
         "id": asset.id,
         "manual_revision": asset.manual_revision,
+        "deleted_at": asset.deleted_at.isoformat() if asset.deleted_at else None,
+        "deleted_by": asset.deleted_by,
+        "deletion_reason": asset.deletion_reason,
+        "restored_at": asset.restored_at.isoformat() if asset.restored_at else None,
+        "restored_by": asset.restored_by,
         "asset_type": asset.asset_type.value,
         "location_id": asset.location_id,
         "custom_name": asset.custom_name,
@@ -67,7 +73,7 @@ def _asset_dict(asset: InventoryAsset, db: Session | None = None) -> dict[str, A
         data["details"] = service.details_for(db, asset)
         data["identifiers"] = [
             {"identifier_type": item.identifier_type.value, "value": item.value, "normalized_value": item.normalized_value, "source": item.source.value, "is_current": item.is_current}
-            for item in service.identifiers_for(db, asset)
+            for item in service.identifiers_for(db, asset, include_history=asset.deleted_at is not None)
         ]
     return data
 
@@ -369,17 +375,55 @@ def update_asset(asset_id: str, payload: AssetUpdate, request: Request, csrf: st
 
 
 @router.delete("/assets/{asset_id}")
-def delete_asset(asset_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def delete_asset(asset_id: str, request: Request, payload: AssetLifecycleRequest, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
-    asset = db.get(InventoryAsset, asset_id)
-    if asset is None:
+    if lifecycle.historical_asset(db, asset_id) is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
-    active_relation = db.scalar(select(InventoryAssetRelation).where((InventoryAssetRelation.parent_asset_id == asset_id) | (InventoryAssetRelation.child_asset_id == asset_id), InventoryAssetRelation.ended_at.is_(None)))
-    if active_relation is not None:
-        raise HTTPException(status_code=409, detail="end active inventory relations before deleting asset")
-    db.delete(asset)
-    write_audit(db, request, actor, "inventory.asset.delete", "ok", "", target_client=asset_id)
-    return {"status": "ok", "data": {"id": asset_id}}
+    try:
+        asset, changed = lifecycle.soft_delete(db, asset_id, expected_revision=payload.expected_revision, actor=actor, reason=payload.reason)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(428 if isinstance(exc, InventoryRevisionRequired) else 409, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+    if changed:
+        write_audit(db, request, actor, "inventory.asset.delete", "ok", asset.deletion_reason or "", target_client=asset_id)
+    return {"status":"ok", "data":_asset_dict(asset, db)}
+
+
+@router.get("/deleted")
+def list_deleted(page: int = 1, actor: str = Depends(require_api_actor), db: Session = Depends(get_db)):
+    page = max(page, 1)
+    return {"status":"ok", "data":[_asset_dict(asset, db) for asset in db.scalars(
+        select(InventoryAsset).where(InventoryAsset.deleted_at.is_not(None)).order_by(InventoryAsset.deleted_at.desc(), InventoryAsset.id)
+            .offset((page-1)*100).limit(100).execution_options(inventory_history=True))], "page":page, "limit":100}
+
+
+@router.get("/deleted/{asset_id}")
+def deleted_asset(asset_id: str, actor: str = Depends(require_api_actor), db: Session = Depends(get_db)):
+    asset = lifecycle.historical_asset(db, asset_id)
+    if asset is None or asset.deleted_at is None:
+        raise HTTPException(404, "Удалённая карточка не найдена")
+    return {"status":"ok", "data":_asset_dict(asset, db)}
+
+
+@router.post("/assets/{asset_id}/restore")
+def restore_asset(asset_id: str, payload: AssetLifecycleRequest, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)):
+    _mutation(request, csrf)
+    if lifecycle.historical_asset(db, asset_id) is None:
+        raise HTTPException(404, "Карточка не найдена")
+    try:
+        asset, changed = lifecycle.restore(db, asset_id, expected_revision=payload.expected_revision, actor=actor)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(428 if isinstance(exc, InventoryRevisionRequired) else 409, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    if changed:
+        write_audit(db, request, actor, "inventory.asset.restore", "ok", "Связи остаются завершёнными", target_client=asset_id)
+    return {"status":"ok", "data":_asset_dict(asset, db)}
 
 
 @router.post("/workplaces", status_code=status.HTTP_201_CREATED)
@@ -507,7 +551,7 @@ async def upload_asset_photo(asset_id: str, request: Request, photo: UploadFile 
 def read_asset_photo(photo_id: str, actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> FileResponse:
     del actor
     photo = db.get(InventoryAssetPhoto, photo_id)
-    if photo is None:
+    if photo is None or db.get(InventoryAsset, photo.asset_id) is None:
         raise HTTPException(status_code=404, detail="inventory photo not found")
     try:
         path = _photo_storage().path_for(photo.storage_path)
@@ -522,15 +566,24 @@ def read_asset_photo(photo_id: str, actor: str = Depends(require_api_actor), db:
 def delete_asset_photo(photo_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     photo = db.get(InventoryAssetPhoto, photo_id)
-    if photo is None:
+    if photo is None or db.get(InventoryAsset, photo.asset_id) is None:
         raise HTTPException(status_code=404, detail="inventory photo not found")
+    stored = StoredPhoto(photo.storage_path, photo.original_filename or "image", photo.mime_type, photo.size_bytes)
     try:
-        _photo_storage().delete(StoredPhoto(photo.storage_path, photo.original_filename or "image", photo.mime_type, photo.size_bytes))
-    except InventoryPhotoError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        lifecycle.lock_active_asset(db, photo.asset_id)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
     db.delete(photo)
     write_audit(db, request, actor, "inventory.photo.delete", "ok", "", target_client=photo_id)
-    return {"status": "ok", "data": {"id": photo_id}}
+    # Only unlink after the row and success audit committed. A failed DB write
+    # must leave the referenced file intact; late card deletion sees no photo.
+    removed = True
+    try:
+        _photo_storage().delete(stored)
+    except InventoryPhotoError:
+        removed = False  # Unreferenced file is inaccessible; report cleanup honestly.
+    return {"status": "ok", "data": {"id": photo_id, "file_removed":removed}}
 
 
 @router.post("/sessions/{session_id}/finish")

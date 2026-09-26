@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Удалённые · Инвентаризация{% endblock %}
+{% block page_title %}Удалённые{% endblock %}
+{% block content %}
+<section class="inventory-mobile">
+  <a class="button secondary" href="/inventory">К инвентаризации</a>
+  <p>Карточки и история сохранены. Восстановление не возвращает старые связи автоматически.</p>
+  {% for asset in deleted_assets %}
+  <article class="inventory-card"><a href="/inventory/deleted/{{ asset.id }}">{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }}</a>
+    <p>{{ asset.deleted_at }} · {{ asset.deleted_by }} · {{ asset.deletion_reason }}</p>
+  </article>
+  {% else %}<p>Удалённых карточек нет.</p>{% endfor %}
+  <nav aria-label="Страницы удалённых карточек">
+    {% if page > 1 %}<a href="?page={{ page-1 }}">Назад</a>{% endif %}
+    <span>Страница {{ page }}</span>
+    {% if has_next %}<a href="?page={{ page+1 }}">Далее</a>{% endif %}
+  </nav>
+</section>
+{% endblock %}

@@ -12,6 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..audit import write_audit
+from ..permissions import user_has_permission
 from ..auth import csrf_token, current_user, require_user, verify_csrf, verify_api_csrf
 from ..config import get_settings
 from ..db import get_db
@@ -22,6 +23,7 @@ from .endpoint import InventoryEndpointService
 from .models import (
     InventoryAsset,
     InventoryAssetRelation,
+    InventoryAssetIdentifier,
     InventoryFormDraft,
     InventoryAssetPhoto,
     InventoryAssetStatus,
@@ -30,12 +32,15 @@ from .models import (
     InventoryIdentifierType,
     InventoryLocation,
     InventoryObservationSource,
+    InventoryObservation,
+    InventoryCheck,
+    InventoryExternalBinding,
     InventoryPhotoType,
     InventorySession,
 )
 from .service import InventoryService, InventoryValidationError
-from .revision import InventoryRevisionConflict
-from . import form_drafts
+from .revision import InventoryRevisionConflict, InventoryRevisionRequired
+from . import form_drafts, lifecycle
 from .storage import InventoryPhotoError, InventoryPhotoStorage
 
 
@@ -116,6 +121,7 @@ def _render(request: Request, template: str, context: dict[str, Any], db: Sessio
             "settings": get_settings(),
             "flashes": list(request.session.get("flashes", [])),
             "form_draft": getattr(request.state, "form_draft", None),
+            "can_delete_inventory": user_has_permission(user, "inventory:delete"),
         }
     )
     request.session["flashes"] = []
@@ -441,6 +447,91 @@ def inventory_home(request: Request, db: Session = Depends(get_db)) -> HTMLRespo
     require_user(request, db)
     locations = list(db.scalars(select(InventoryLocation).order_by(InventoryLocation.name, InventoryLocation.id)))
     return _render(request, "inventory.html", {"locations": locations}, db)
+
+
+@router.get("/inventory/deleted", response_class=HTMLResponse)
+def inventory_deleted(request: Request, page: int = 1, db: Session = Depends(get_db)):
+    require_user(request, db)
+    page = max(page, 1)
+    rows = list(db.scalars(select(InventoryAsset).where(InventoryAsset.deleted_at.is_not(None))
+        .order_by(InventoryAsset.deleted_at.desc(), InventoryAsset.id).offset((page-1)*100).limit(101)
+        .execution_options(inventory_history=True)))
+    return _render(request, "inventory_deleted.html", {"deleted_assets":rows[:100], "page":page,
+        "has_next":len(rows)>100, "asset_labels":ASSET_LABELS}, db)
+
+
+@router.get("/inventory/deleted/{asset_id}", response_class=HTMLResponse)
+def inventory_deleted_detail(asset_id: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    asset = lifecycle.historical_asset(db, asset_id)
+    if asset is None or asset.deleted_at is None:
+        raise HTTPException(404, "Удалённая карточка не найдена")
+    records = lambda model: list(db.scalars(select(model).where(model.asset_id == asset_id).execution_options(inventory_history=True)))
+    return _render(request, "inventory_deleted_detail.html", {"asset":asset, "asset_labels":ASSET_LABELS,
+        "details":service.details_for(db, asset), "identifiers":records(InventoryAssetIdentifier),
+        "photos":records(InventoryAssetPhoto), "observations":records(InventoryObservation),
+        "checks":records(InventoryCheck), "bindings":records(InventoryExternalBinding),
+        "relations":list(db.scalars(select(InventoryAssetRelation).where(
+            (InventoryAssetRelation.parent_asset_id == asset_id) | (InventoryAssetRelation.child_asset_id == asset_id))))}, db)
+
+
+@router.get("/inventory/deleted/{asset_id}/photos/{photo_id}")
+def inventory_deleted_photo(asset_id: str, photo_id: str, request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    asset = lifecycle.historical_asset(db, asset_id)
+    photo = db.get(InventoryAssetPhoto, photo_id)
+    if asset is None or asset.deleted_at is None or photo is None or photo.asset_id != asset_id:
+        raise HTTPException(404, "Фото удалённой карточки не найдено")
+    try:
+        path = _photo_storage().path_for(photo.storage_path)
+    except InventoryPhotoError as exc:
+        raise HTTPException(404, "Фото недоступно") from exc
+    if not path.is_file():
+        raise HTTPException(404, "Фото недоступно")
+    return FileResponse(path, media_type=photo.mime_type, filename=photo.original_filename or "image")
+
+
+@router.post("/inventory/assets/{asset_id}/delete")
+async def inventory_delete_asset(asset_id: str, request: Request, expected_revision: int | None = Form(default=None),
+    reason: str = Form(default=""), confirmation: str = Form(default=""), db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    if confirmation != asset_id:
+        raise HTTPException(400, "Подтвердите удаление именно этого устройства")
+    if lifecycle.historical_asset(db, asset_id) is None:
+        raise HTTPException(404, "Карточка не найдена")
+    try:
+        asset, changed = lifecycle.soft_delete(db, asset_id, expected_revision=expected_revision, actor=user.username, reason=reason)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(428 if isinstance(exc, InventoryRevisionRequired) else 409, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+    if changed:
+        write_audit(db, request, user, "inventory.asset.delete", "ok", asset.deletion_reason or "", target_client=asset_id)
+    _flash(request, "ok", "Карточка перемещена в удалённые. Периферия и внешние устройства сохранены.")
+    return _redirect(f"/inventory/deleted/{asset_id}")
+
+
+@router.post("/inventory/assets/{asset_id}/restore")
+async def inventory_restore_asset(asset_id: str, request: Request, expected_revision: int | None = Form(default=None), db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    if lifecycle.historical_asset(db, asset_id) is None:
+        raise HTTPException(404, "Карточка не найдена")
+    try:
+        asset, changed = lifecycle.restore(db, asset_id, expected_revision=expected_revision, actor=user.username)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(428 if isinstance(exc, InventoryRevisionRequired) else 409, str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    if changed:
+        write_audit(db, request, user, "inventory.asset.restore", "ok", "Связи остаются завершёнными", target_client=asset_id)
+    _flash(request, "ok", "Карточка восстановлена с прежним ID. Связи подтвердите отдельно.")
+    return _redirect(_asset_url(asset_id))
 
 
 @router.get("/inventory/locations/new", response_class=HTMLResponse)
@@ -890,7 +981,7 @@ async def inventory_upload_asset_photo(asset_id: str, request: Request, photo: U
 def inventory_photo_read(photo_id: str, request: Request, db: Session = Depends(get_db)) -> FileResponse:
     require_user(request, db)
     photo = db.get(InventoryAssetPhoto, photo_id)
-    if photo is None:
+    if photo is None or db.get(InventoryAsset, photo.asset_id) is None:
         raise HTTPException(status_code=404, detail="inventory photo not found")
     try:
         path = _photo_storage().path_for(photo.storage_path)

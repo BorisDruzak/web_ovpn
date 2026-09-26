@@ -387,6 +387,8 @@ def init_db() -> None:
     _prepare_inventory_sync_claim_index(engine)
     Base.metadata.create_all(bind=engine)
     _migrate_inventory_schema(engine)
+    from .inventory.lifecycle import migrate_lifecycle
+    migrate_lifecycle(engine)
     from .inventory.revision import migrate_revisions
     migrate_revisions(engine)
     with session_scope() as db:
