@@ -34,4 +34,14 @@ Serve production through HTTPS; restrict the backend to the trusted reverse prox
 and configure uvicorn's allowed forwarded-proxy addresses narrowly. Do not trust
 forwarded headers from arbitrary clients. Secure cookies will intentionally not
 authenticate plain HTTP requests. Existing HTTP-only deployments need HTTPS before
-enabling production mode. No proxy, VPN or network configuration was changed here.
+enabling production mode. No deployed proxy, VPN or network configuration was changed.
+
+The shipped systemd unit now explicitly pins `--proxy-headers
+--forwarded-allow-ips 127.0.0.1`, matching nginx's loopback upstream. It does not
+inherit a wildcard `FORWARDED_ALLOW_IPS`. Direct service/API listener addresses
+remain compatible; non-loopback peers cannot replace their identity or scheme by
+supplying forwarded headers. Protect direct backend access in the target environment.
+The example nginx listener is HTTP development/bootstrap configuration, not a TLS
+production configuration. Do not switch an existing HTTP-only installation to
+APP_ENV=production until HTTPS is configured and verified. Local template edits
+have not changed the deployed service or proxy.
