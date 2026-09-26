@@ -54,7 +54,7 @@ from .nmap.store import ensure_fingerprint, fingerprint_status
 from .printer_snmp import inspect_printer_snmp
 from .fingerprint.providers import replace_endpoint_agent_evidence
 from .store import add_device_tag, dashboard_summary, inspect_host, list_device_tags, related_for_host, remove_device_tag, save_collection, set_device_tags
-from .host_snapshot import HostSnapshotStatus, list_host_snapshot, refresh_host_snapshot, snapshot_status
+from .host_snapshot import HostSnapshotStatus, export_host_snapshot, list_host_snapshot, refresh_host_snapshot, snapshot_status
 from .switch_queries import (
     DEFAULT_PAGE_SIZE,
     OPTIONAL_STATE_DEFAULT_PAGE_SIZE,
@@ -90,8 +90,8 @@ ROUTER_EVIDENCE_STALE_AFTER = timedelta(minutes=15)
 ROUTER_EVIDENCE_FUTURE_TOLERANCE = timedelta(minutes=2)
 
 
-def emit(data: dict[str, Any]) -> None:
-    print(json.dumps(data, ensure_ascii=False, default=str))
+def emit(data: dict[str, Any], *, ascii_json: bool = False) -> None:
+    print(json.dumps(data, ensure_ascii=ascii_json, default=str))
 
 
 def ok(**data: Any) -> dict[str, Any]:
@@ -717,20 +717,24 @@ def cmd_retention(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    if args.hosts_command in {"list", "snapshot-refresh", "snapshot-status"}:
+    if args.hosts_command in {"list", "export", "snapshot-refresh", "snapshot-status"}:
         conn = None
         try:
-            if args.hosts_command == 'list':
+            if args.hosts_command in {'list', 'export'}:
                 from .inventory_projection import read_projection
                 if getattr(args,'inventory_projection_stdin',False):
                     args.inventory_projection = read_projection(sys.stdin.buffer)
                 elif getattr(args,'inventory_link','all') != 'all':
                     raise ValueError('inventory relation filter requires projection')
-            if args.hosts_command in {"list", "snapshot-status"}:
+            if args.hosts_command in {"list", "export", "snapshot-status"}:
                 if db_path_from_url(args.db).exists():
                     conn = connect_read_only(args.db)
                 if args.hosts_command == "snapshot-status":
                     return 0, ok(snapshot=asdict(snapshot_status(conn) if conn else HostSnapshotStatus()))
+                if args.hosts_command == 'export':
+                    if conn is None:
+                        return 1, err('host_snapshot_absent')
+                    return 0, ok(**export_host_snapshot(conn,vars(args)))
                 page, limit = max(1, args.page), min(250, max(1, args.limit))
                 if conn is None:
                     result = {"hosts": [], "sources": [], "total": 0, "page": page, "limit": limit,
@@ -747,6 +751,8 @@ def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         except (RuntimeError, sqlite3.Error, OSError, ValueError) as exc:
             if str(exc) == "collection already running":
                 return 1, err("collection already running")
+            if args.hosts_command == 'export' and str(exc) in {'host_snapshot_absent','host_export_row_budget','host_export_byte_budget'}:
+                return 1, err(str(exc))
             return 1, err("host_snapshot_failed")
         finally:
             if conn is not None:
@@ -1712,18 +1718,20 @@ def build_parser() -> argparse.ArgumentParser:
     hosts_sub.add_parser("snapshot-refresh")
     hosts_sub.add_parser("snapshot-status")
     hosts_list = hosts_sub.add_parser("list")
-    hosts_list.add_argument("--q", default="")
-    hosts_list.add_argument("--category", default="")
-    hosts_list.add_argument("--status", default="")
-    hosts_list.add_argument("--source", default="all")
-    hosts_list.add_argument("--network", default="all")
-    hosts_list.add_argument("--has-hostname", default="")
-    hosts_list.add_argument("--has-mac", default="")
-    hosts_list.add_argument("--seen-within", default="all")
+    hosts_export = hosts_sub.add_parser("export")
+    for host_parser in (hosts_list, hosts_export):
+        host_parser.add_argument("--q", default="")
+        host_parser.add_argument("--category", default="")
+        host_parser.add_argument("--status", default="")
+        host_parser.add_argument("--source", default="all")
+        host_parser.add_argument("--network", default="all")
+        host_parser.add_argument("--has-hostname", default="")
+        host_parser.add_argument("--has-mac", default="")
+        host_parser.add_argument("--seen-within", default="all")
+        host_parser.add_argument('--inventory-link',choices=['all','linked','unlinked','candidates','conflicts'],default='all')
+        host_parser.add_argument('--inventory-projection-stdin',action='store_true')
     hosts_list.add_argument("--page", type=int, default=1)
     hosts_list.add_argument("--limit", type=int, default=100)
-    hosts_list.add_argument('--inventory-link',choices=['all','linked','unlinked','candidates','conflicts'],default='all')
-    hosts_list.add_argument('--inventory-projection-stdin',action='store_true')
     hosts_inspect = hosts_sub.add_parser("inspect")
     hosts_inspect.add_argument("host")
 
@@ -2045,7 +2053,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     rc, data = dispatch(args)
-    emit(data)
+    emit(data, ascii_json=args.command == "hosts" and args.hosts_command == "export")
     return rc
 
 

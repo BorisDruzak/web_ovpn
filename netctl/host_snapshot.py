@@ -182,6 +182,67 @@ def refresh_host_snapshot(conn: sqlite3.Connection, *, now: str | datetime) -> H
     return status
 
 
+def _snapshot_query(metadata, filters, reference_time, states):
+    inventory_link = filters.get("inventory_link") or "all"
+    clauses = ["h.snapshot_id = ?"]
+    params: list[Any] = [metadata.snapshot_id]
+    category = filters.get("category") or "all"
+    if category == "all":
+        clauses.append("h.category != 'noise'")
+    else:
+        clauses.append("h.category = ?")
+        params.append(category)
+    network = filters.get("network") or "all"
+    if network != "all":
+        subnet = ipaddress.ip_network(network, strict=False)
+        clauses.append("h.ip_sort BETWEEN ? AND ?")
+        params.extend(bytes([subnet.version]) + int(address).to_bytes(16, "big")
+                      for address in (subnet.network_address, subnet.broadcast_address))
+    status = filters.get("status") or "current"
+    if status == "current":
+        clauses.append("h.status IN ('online', 'seen', 'connected')")
+    elif status != "all":
+        clauses.append("h.status = ?")
+        params.append(status)
+    query = str(filters.get("q") or "").strip().lower()
+    if query:
+        clauses.append("instr(h.search_text, ?) > 0")
+        params.append(query)
+    seen_within = filters.get("seen_within") or "all"
+    windows = {"1h": 1 / 24, "24h": 1, "7d": 7, "30d": 30}
+    if seen_within != "all":
+        if seen_within not in windows:
+            raise ValueError("invalid seen_within filter")
+        cutoff_reference = reference_time.isoformat()
+        clauses.append(
+            "((julianday(h.last_seen_at) BETWEEN julianday(?) - ? AND julianday(?)) "
+            "OR (coalesce(h.last_seen_at, '') = '' AND h.status IN ('online', 'seen', 'connected')))"
+        )
+        params.extend((cutoff_reference, windows[seen_within], cutoff_reference))
+    for key in ("has_hostname", "has_mac"):
+        value = filters.get(key)
+        if value is not None and value != "":
+            if value not in (True, False, "yes", "no", "true", "false", "1", "0"):
+                raise ValueError(f"invalid {key} filter")
+            clauses.append(f"h.{key} = ?")
+            params.append(int(value in (True, "yes", "true", "1")))
+    if filters.get("source") and filters["source"] != "all":
+        clauses.append("EXISTS (SELECT 1 FROM network_host_current_sources s WHERE s.snapshot_id = h.snapshot_id AND s.ip = h.ip AND s.source = ?)")
+        params.append(filters["source"])
+    prefix, source = '', 'network_host_current_state h'
+    if states is not None:
+        # Materialize once and let SQLite index the join; never filter a page
+        # of decoded hosts or pass thousands of keys as SQL placeholders.
+        prefix = 'WITH inventory_projection AS MATERIALIZED (SELECT key,value FROM json_each(?)) '
+        source += " LEFT JOIN inventory_projection p ON p.key=json_extract(h.payload_json,'$.device_key')"
+        params.insert(0,json.dumps(states,separators=(',',':')))
+        selected = {'linked':'linked','unlinked':'unlinked','candidates':'candidate','conflicts':'ambiguous'}[inventory_link]
+        clauses.append("coalesce(p.value,'unlinked') = ?")
+        params.append(selected)
+    where = " AND ".join(clauses)
+    return prefix, source, where, params
+
+
 def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], page: int, limit: int, *, now: str | datetime | None = None) -> dict[str, Any]:
     started = time.monotonic()
     reference_time = _reference_time(now)
@@ -198,62 +259,7 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
     conn.execute("SAVEPOINT read_host_snapshot")
     try:
         metadata = snapshot_status(conn, now=reference_time)
-        clauses = ["h.snapshot_id = ?"]
-        params: list[Any] = [metadata.snapshot_id]
-        category = filters.get("category") or "all"
-        if category == "all":
-            clauses.append("h.category != 'noise'")
-        else:
-            clauses.append("h.category = ?")
-            params.append(category)
-        network = filters.get("network") or "all"
-        if network != "all":
-            subnet = ipaddress.ip_network(network, strict=False)
-            clauses.append("h.ip_sort BETWEEN ? AND ?")
-            params.extend(bytes([subnet.version]) + int(address).to_bytes(16, "big")
-                          for address in (subnet.network_address, subnet.broadcast_address))
-        status = filters.get("status") or "current"
-        if status == "current":
-            clauses.append("h.status IN ('online', 'seen', 'connected')")
-        elif status != "all":
-            clauses.append("h.status = ?")
-            params.append(status)
-        query = str(filters.get("q") or "").strip().lower()
-        if query:
-            clauses.append("instr(h.search_text, ?) > 0")
-            params.append(query)
-        seen_within = filters.get("seen_within") or "all"
-        windows = {"1h": 1 / 24, "24h": 1, "7d": 7, "30d": 30}
-        if seen_within != "all":
-            if seen_within not in windows:
-                raise ValueError("invalid seen_within filter")
-            cutoff_reference = reference_time.isoformat()
-            clauses.append(
-                "((julianday(h.last_seen_at) BETWEEN julianday(?) - ? AND julianday(?)) "
-                "OR (coalesce(h.last_seen_at, '') = '' AND h.status IN ('online', 'seen', 'connected')))"
-            )
-            params.extend((cutoff_reference, windows[seen_within], cutoff_reference))
-        for key in ("has_hostname", "has_mac"):
-            value = filters.get(key)
-            if value is not None and value != "":
-                if value not in (True, False, "yes", "no", "true", "false", "1", "0"):
-                    raise ValueError(f"invalid {key} filter")
-                clauses.append(f"h.{key} = ?")
-                params.append(int(value in (True, "yes", "true", "1")))
-        if filters.get("source") and filters["source"] != "all":
-            clauses.append("EXISTS (SELECT 1 FROM network_host_current_sources s WHERE s.snapshot_id = h.snapshot_id AND s.ip = h.ip AND s.source = ?)")
-            params.append(filters["source"])
-        prefix, source = '', 'network_host_current_state h'
-        if states is not None:
-            # Materialize once and let SQLite index the join; never filter a page
-            # of decoded hosts or pass thousands of keys as SQL placeholders.
-            prefix = 'WITH inventory_projection AS MATERIALIZED (SELECT key,value FROM json_each(?)) '
-            source += " LEFT JOIN inventory_projection p ON p.key=json_extract(h.payload_json,'$.device_key')"
-            params.insert(0,json.dumps(states,separators=(',',':')))
-            selected = {'linked':'linked','unlinked':'unlinked','candidates':'candidate','conflicts':'ambiguous'}[inventory_link]
-            clauses.append("coalesce(p.value,'unlinked') = ?")
-            params.append(selected)
-        where = " AND ".join(clauses)
+        prefix, source, where, params = _snapshot_query(metadata, filters, reference_time, states)
         total = conn.execute(f"{prefix}SELECT count(*) FROM {source} WHERE {where}", params).fetchone()[0] if metadata.snapshot_id else 0
         pages = (total + limit - 1) // limit
         if metadata.snapshot_id:
@@ -277,3 +283,45 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
         int((time.monotonic() - started) * 1000),
     )
     return result
+
+
+HOST_EXPORT_MAX_ROWS = 10_000
+HOST_EXPORT_MAX_BYTES = 16 * 1024 * 1024
+
+
+def export_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], *, now=None) -> dict[str, Any]:
+    """Read a full bounded selection from one published snapshot, never a page loop."""
+    from .inventory_projection import FILTERS, validate_projection
+    inventory_link = filters.get('inventory_link') or 'all'
+    if inventory_link not in FILTERS:
+        raise ValueError('invalid inventory relation filter')
+    projection = filters.get('inventory_projection')
+    states = validate_projection(projection) if projection is not None else None
+    if inventory_link != 'all' and states is None:
+        raise ValueError('inventory relation filter requires projection')
+    if inventory_link == 'all':
+        states = None
+    reference_time = _reference_time(now)
+    conn.execute('SAVEPOINT export_host_snapshot')
+    try:
+        metadata = snapshot_status(conn, now=reference_time)
+        if not metadata.snapshot_id:
+            raise ValueError('host_snapshot_absent')
+        prefix, source, where, params = _snapshot_query(metadata, filters, reference_time, states)
+        total = conn.execute(f'{prefix}SELECT count(*) FROM {source} WHERE {where}',params).fetchone()[0]
+        if total > HOST_EXPORT_MAX_ROWS:
+            raise ValueError('host_export_row_budget')
+        # Check aggregate UTF-8 bytes inside SQLite before loading/decoding rows.
+        payload_bytes = conn.execute(f'{prefix}SELECT coalesce(sum(length(cast(h.payload_json AS BLOB))),0) FROM {source} WHERE {where}',params).fetchone()[0]
+        if payload_bytes > HOST_EXPORT_MAX_BYTES:
+            raise ValueError('host_export_byte_budget')
+        rows = conn.execute(f'{prefix}SELECT h.payload_json FROM {source} WHERE {where} ORDER BY h.ip_sort,h.ip',params)
+        result = {'hosts':[json.loads(row[0]) for row in rows], 'total':total,
+                  'snapshot':asdict(metadata),
+                  'inventory_projection_revision':projection['revision'] if projection is not None else None}
+        # This is the exact CLI envelope/encoding, including status and worst-case CRLF newline.
+        if len(json.dumps({'status':'ok',**result},ensure_ascii=True,default=str).encode('ascii'))+2 > HOST_EXPORT_MAX_BYTES:
+            raise ValueError('host_export_byte_budget')
+        return result
+    finally:
+        conn.execute('RELEASE SAVEPOINT export_host_snapshot')
