@@ -58,16 +58,21 @@ def main():
     app.main.run_netctl = forbidden
     import app.inventory.web
     app.inventory.web.run_netctl = forbidden
+    args_output = args.output.resolve()
     def saved_network(args, **kwargs):
         if args[:2] == ['context-view','asset'] and args[-1] in {'mac:02:00:00:00:00:24','mac:02:00:00:00:01:24'}:
             number = '124' if args[-1].endswith('01:24') else '24'
             return {'context': {'asset': {'asset_key':args[-1], 'manual_name':'Synthetic browser device '+number},
                 'network': {'ip_observations':[{'ip':'192.0.2.'+number}]}, 'freshness':{}}}
 
-        if args == ['runtime-assets','inspect','mac:02:00:00:00:00:24']:
+        if args[:2] == ['runtime-assets','inspect'] and args[-1] in {'mac:02:00:00:00:00:24','mac:02:00:00:00:01:24'}:
+            if (args_output / 'live-unavailable').exists():
+                raise RuntimeError('Synthetic live source unavailable')
+            number = '124' if args[-1].endswith('01:24') else '24'
+            mac = '02:00:00:00:01:24' if number == '124' else '02:00:00:00:00:24'
             return {'runtime_asset':{'asset':{'asset_key':args[2],'provisional':0},
-                'interfaces':[{'mac':'02:00:00:00:00:24'}],
-                'current_ip_observations':[{'ip':'192.0.2.24','last_seen_at':now}],
+                'interfaces':[{'mac':mac}],
+                'current_ip_observations':[{'ip':'192.0.2.'+number,'last_seen_at':now}],
                 'current_hostname_observations':[{'hostname':'synthetic-pc'}],'findings':[]}}
         if args[:2] not in (["hosts", "list"], ["hosts", "export"], ["hosts", "snapshot-status"]):
             return forbidden()
@@ -112,6 +117,26 @@ def main():
     app.network_export.run_netctl = saved_network
     import app.inventory.network_links
     app.inventory.network_links.run_netctl = saved_network
+    # Test-only fixture control; never installed by application startup.
+    @app.main.app.post('/_fixture/live-source/{state}')
+    def fixture_source_state(state: str):
+        from app.inventory.models import InventoryIdentifierSyncRun
+        marker = args_output / 'live-unavailable'
+        if state == 'unavailable':
+            marker.write_text('synthetic', encoding='utf-8')
+        elif state == 'available':
+            marker.unlink(missing_ok=True)
+        else:
+            raise ValueError('Unsupported synthetic state')
+        checked = datetime.now(timezone.utc)
+        with get_sessionmaker()() as session:
+            session.add(InventoryIdentifierSyncRun(status='failed' if state == 'unavailable' else 'success',
+                snapshot_id=None if state == 'unavailable' else 1,
+                snapshot_generated_at=None if state == 'unavailable' else checked,
+                started_at=checked, finished_at=checked,
+                failure_reason='netctl snapshot unavailable' if state == 'unavailable' else None))
+            session.commit()
+        return {'live_source':state, 'saved_snapshot_retained':True}
     import uvicorn
     uvicorn.run(app.main.app, host="127.0.0.1", port=args.port)
 
