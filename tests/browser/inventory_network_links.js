@@ -5,7 +5,7 @@ async (page) => {
   await page.goto('http://127.0.0.1:8874/network/hosts?status=all&seen_within=all');
   const networkRow = page.locator('[data-hosts-rows] tr').filter({has:page.locator('td:first-child',{hasText:'192.0.2.24'})});
   await networkRow.getByRole('link',{name:'Сравнить / связать',exact:true}).click();
-  await page.getByRole('textbox',{name:'Поиск существующей карточки'}).fill('Synthetic browser PC');
+  await page.getByRole('textbox',{name:'Поиск существующей карточки'}).fill('001122334455');
   await page.getByRole('button',{name:'Найти',exact:true}).click();
   const confirm = page.locator('form[action="/inventory/network-links/confirm"]');
   const assetId = await confirm.locator('[name="asset_id"]').inputValue();
@@ -25,5 +25,5 @@ async (page) => {
   await page.goto(`http://127.0.0.1:8874/inventory/assets/${assetId}`);
   if (!(await page.locator('[aria-label="Сеть"]').innerText()).includes('Завершено')) throw new Error('Ended history lost');
   if (errors.length) throw new Error(errors.join(';'));
-  return {result:'PASS both registry transitions/confirm/end/history',assetId,errors};
+  return {result:'PASS normalized MAC search/both registry transitions/confirm/end/history',assetId,errors};
 }

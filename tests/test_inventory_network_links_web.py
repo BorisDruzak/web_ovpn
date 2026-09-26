@@ -26,6 +26,42 @@ def values(headers,card):
         'csrf_token':headers['X-CSRF-Token'],'reason':'Compared label and physical interface','confirmation':card['id']}
 
 
+def test_identifier_search_filters_before_count_and_page_without_duplicate_cards(tmp_path,monkeypatch):
+    client,headers,card,_ = setup(tmp_path,monkeypatch)
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset, InventoryAssetIdentifier, InventoryIdentifierType, InventoryObservationSource as Source
+    with get_sessionmaker()() as db:
+        for number in range(27):
+            row = InventoryAsset(asset_type='PC', custom_name=f'Search distractor {number:02d}')
+            db.add(row)
+        db.add_all([
+            InventoryAssetIdentifier(asset_id=card['id'],identifier_type=InventoryIdentifierType.IP,
+                value='192.0.2.11',normalized_value='192.0.2.11',source=Source.MANUAL),
+            InventoryAssetIdentifier(asset_id=card['id'],identifier_type=InventoryIdentifierType.IP,
+                value='192.0.2.11',normalized_value='192.0.2.11',source=Source.NETCTL),
+            InventoryAssetIdentifier(asset_id=card['id'],identifier_type=InventoryIdentifierType.HOSTNAME,
+                value='search-old-name',normalized_value='search-old-name',source=Source.NETCTL,is_current=False),
+            InventoryAssetIdentifier(asset_id=card['id'],identifier_type=InventoryIdentifierType.HOSTNAME,
+                value='search-current-name',normalized_value='search-current-name',source=Source.NETCTL),
+        ])
+        db.commit()
+    for query in ('192.0.2.11',KEY[4:],'020000000011','02-00-00-00-00-11',KEY,'search-current-name'):
+        response = client.get('/inventory/network-links',params={'network_key':KEY,'q':query,'page':9})
+        assert response.status_code == 200
+        assert '1 карточек · Страница 1 из 1' in response.text
+        assert 'Synthetic physical PC' in response.text and 'Search distractor' not in response.text
+    for query in ('search-old-name','%','_'):
+        response = client.get('/inventory/network-links',params={'network_key':KEY,'q':query})
+        assert '0 карточек' in response.text
+    from app.inventory.lifecycle import soft_delete
+    with get_sessionmaker()() as db:
+        asset = db.get(InventoryAsset,card['id'])
+        soft_delete(db,asset.id,expected_revision=asset.manual_revision,actor='synthetic',reason='Search lifecycle fixture')
+        db.commit()
+    hidden = client.get('/inventory/network-links',params={'network_key':KEY,'q':'192.0.2.11'})
+    assert '0 карточек' in hidden.text and 'Synthetic physical PC' not in hidden.text
+
+
 def test_compare_confirm_and_end_are_owned_local_decisions(tmp_path,monkeypatch):
     client,headers,card,calls = setup(tmp_path,monkeypatch)
     page = client.get('/inventory/network-links',params={'network_key':KEY,'asset_id':card['id']})

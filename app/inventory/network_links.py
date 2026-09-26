@@ -13,7 +13,8 @@ from ..db import get_db
 from ..config import get_settings
 from ..netctl_client import run_netctl, NetctlError
 from ..permissions import user_has_permission
-from .models import InventoryAsset, InventoryNetctlBinding
+from .models import InventoryAsset, InventoryAssetIdentifier, InventoryNetctlBinding
+from .lookup import normalize_mac, InventoryLookupError
 from .netctl_bindings import stable_key, confirm, end, NetctlBindingConflict
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
 
@@ -67,8 +68,19 @@ def _page(request,db,user,key,asset_id='',q='',page=1,error=None,reason='',submi
     selection = select(InventoryAsset)
     if q:
         escaped = q[:255].replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
+        identifier_terms = [column.ilike('%'+escaped+'%',escape='\\') for column in
+            (InventoryAssetIdentifier.value,InventoryAssetIdentifier.normalized_value)]
+        try:
+            mac = normalize_mac(q[:255].removeprefix('mac:'))
+        except InventoryLookupError:
+            pass
+        else:
+            identifier_terms.append(InventoryAssetIdentifier.normalized_value == mac)
+        identifiers = select(InventoryAssetIdentifier.id).where(
+            InventoryAssetIdentifier.asset_id == InventoryAsset.id,
+            InventoryAssetIdentifier.is_current.is_(True),or_(*identifier_terms)).exists()
         selection = selection.where(or_(*(column.ilike('%'+escaped+'%',escape='\\') for column in
-            (InventoryAsset.custom_name,InventoryAsset.inventory_number,InventoryAsset.serial_number,InventoryAsset.model))))
+            (InventoryAsset.custom_name,InventoryAsset.inventory_number,InventoryAsset.serial_number,InventoryAsset.model)),identifiers))
     if asset_id:
         selection = selection.where(InventoryAsset.id == asset_id)
     total = db.scalar(select(func.count()).select_from(selection.subquery())) or 0
