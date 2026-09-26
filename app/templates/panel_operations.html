@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Операции{% endblock %}
+{% block page_title %}Операции{% endblock %}
+{% block content %}
+<p>Принятие запроса не означает выполнение внешнего действия. После сбоя требуется проверка результата оператором; повторный запрос не выполняет действие снова.</p>
+<a class="button secondary" href="{{ request.url.path }}">Обновить состояние</a>
+<a class="button secondary" href="/operations">Все мои операции</a>
+{% set labels = {'registered': 'Принято', 'running': 'Выполняется', 'succeeded': 'Выполнено', 'failed': 'Ошибка', 'unknown': 'Результат неизвестен', 'partial': 'Частично выполнено'} %}
+{% set actions = {
+'clients_sync':'Синхронизация клиентов', 'new_client_action':'Создание VPN-профиля',
+'client_edit_template':'Шаблон VPN-клиента', 'client_edit_networks':'Сети VPN-клиента',
+'client_edit_ovpn':'Изменение VPN-профиля', 'reconnect_client_route':'Переподключение клиента',
+'kill_client_session_route':'Отключение сессии', 'download_link':'Подготовка VPN-файла',
+'disable_client':'Отключение клиента', 'connection_kill':'Отключение сессии',
+'openvpn_settings_status_interval':'Настройки OpenVPN', 'openvpn_settings_management_enable':'Настройки OpenVPN',
+'openvpn_settings_restart':'Перезапуск OpenVPN', 'network_add':'Добавление сети', 'network_remove':'Удаление сети',
+'network_template_add':'Создание шаблона сети', 'network_template_remove':'Удаление шаблона сети',
+'network_monitoring_update':'Настройки мониторинга', 'network_asset_fingerprint_ensure':'Определение устройства',
+'network_asset_name_update':'Имя устройства', 'network_host_availability_check':'Проверка доступности',
+'network_host_observation_refresh':'Обновление наблюдений', 'network_host_force_monitor':'Мониторинг устройства',
+'network_host_force_monitor_disable':'Отключение мониторинга', 'network_source_new':'Добавление источника',
+'network_source_collect':'Сбор данных источника', 'network_collect_action':'Сбор сетевых данных'} %}
+{% set phases = {'vpnctl:generate':'Создание профиля','vpnctl:generate-batch':'Создание профилей',
+'vpnctl:sync':'Синхронизация реестра','file':'Подготовка файла','handler-result':'Результат обработки запроса'} %}
+{% for operation in operations %}
+<section class="card" data-operation-id="{{ operation.id }}" data-operation-status="{{ operation.status }}">
+<h2><a href="{{ operation.status_url }}">{{ actions.get(operation.action, "Изменение") }}</a></h2>
+<p role="status">{{ labels.get(operation.status, operation.status) }}</p>
+{% if operation.verification_required %}
+<form method="post" action="/operations/{{ operation.id }}/verify">
+<input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+<label><input type="checkbox" name="checked_external_result" value="1" required> Я проверил внешний результат и аудит этой операции</label>
+<button class="button secondary" type="submit">Подтвердить проверку</button>
+</form>
+<p class="warn">Проверьте внешний результат и аудит перед следующим действием. Автоматический повтор отключён.</p>{% endif %}
+<ul>{% for phase in operation.phases %}<li data-phase="{{ phase.phase }}">{{ phases.get(phase.phase, "Внешнее действие") }}: {{ labels.get(phase.status, phase.status) }}</li>{% endfor %}</ul>
+{% for artifact in operation.artifacts %}<a class="button" href="{{ artifact }}">Скачать файл</a>{% endfor %}
+<a href="/clients">Реестр клиентов</a>
+<a href="/network/hosts">Устройства сети</a>
+</section>
+{% else %}<p>Нет доступных операций.</p>{% endfor %}
+{% endblock %}

@@ -1,0 +1,64 @@
+# Durable panel operations (T01)
+
+The browser keeps FastAPI/Jinja and the existing CLI handlers. A small in-process executor owns two threads and admits at most 32 pending/running operations. No broker, SPA, automatic retry, cancellation or PKI/network rollback is provided.
+
+## Scope and execution boundary
+
+`app/panel_operation_routes.py` explicitly lists 29 long browser handlers, 11 bounded browser handlers and 23 long service API handlers. The lists match actual route names (checked locally). Long browser coverage includes client sync, single/batch generation, template/network/profile edits, reconnect/session kill/disable, missing profile artifact repair and downloads, server settings/restart, network/template writes, monitoring, fingerprint/name/availability/observation actions, source registration and collection. The complete existing handler, including nested sync, archive creation, repair and auditing, executes in a fresh worker-owned SQLAlchemy Session. The HTTP request Session is never passed to the executor.
+
+Bounded diagnostics and existing server-draft outbox registration/read/cleanup helpers run as a whole off the event loop with their own Session. The existing server-draft worker remains authoritative for its long external work. Inventory identifier lookup and nested printer probing are awaited through the existing Starlette threadpool without passing any SQLAlchemy Session into their CLI helpers. Saved network read routes keep their existing synchronous FastAPI threadpool and snapshot behavior. Scoped network-change plans and Endpoint collection requests retain their existing provider/outbox idempotency boundaries.
+
+Existing route validation, capability checks, confirmation values and audits remain in the handlers. Browser authentication/capability and CSRF are additionally checked before acceptance; operation-specific validation happens before the first external effect inside the executor. A rejected operation can therefore be accepted for validation and then become `failed`; acceptance never means its external effect occurred.
+
+## State and recovery
+
+The additive `panel_operations` table is created by the existing `init_db` / `Base.metadata.create_all` mechanism. It stores owner, action, original capability, keyed fingerprints, state, fixed phase codes, opaque references to existing DownloadToken rows and timestamps. It does not store request bodies, uploaded data, credentials, raw CLI output, private profile content, diagnostic messages or plaintext download tokens.
+
+States: `registered`, `running`, `succeeded`, `failed`, `partial`, `unknown`. Generation, sync and file preparation have distinct phase codes. A timeout/nonzero CLI result is conservatively unknown; prior completed effects make the result partial. A SQL rollback never reverses external effects. Raw server/CLI errors are not exposed by the new status resources; first-call API server failures also use a safe generic error.
+
+The execution payload exists only in its admitting process. A lost payload is never replayed. The 30-minute admission lease bounds pending/running state. Registration and authenticated status reads reconcile expired leases to `unknown`; queued work whose lease expired cannot start. A different process starting does not falsely declare another process's unexpired work lost. Recovery is intentionally conservative: after an abrupt restart a running record may remain running until its lease expires, then the next status read marks it unknown. A worker exceeding its lease can still have external effects; do not mistake lease expiry for cancellation.
+
+An `unknown` or `partial` intent blocks equivalent new execution, including a new browser key or new API Idempotency-Key. The owner must first verify external state and audit, then explicitly acknowledge that verification. The acknowledgement is itself capability checked and audited. It records the operator's check, does not perform reconciliation automatically, does not change unknown history into success, and does not launch any action. Submit a new explicit intent only after that check.
+
+The fingerprint is HMAC keyed by the existing app secret. Preserve this secret with the database backup. Rotating it changes the fingerprint namespace; do not rotate it while unresolved operations are being retried without reviewing their durable history.
+
+## Idempotency and API transition
+
+Identity includes owner, action, target path/query and submitted essential values. CSRF is excluded. Upload contents participate through a digest and remain memory only; each upload is limited to 2 MiB. A unique request fingerprint ensures identical transport retries share one operation. A partial unique active-intent index prevents concurrent equal effects with different intent keys. Different targets/parameters remain distinct.
+
+The browser adds one random `operation_key` per form submission intent. Double submit and transport retry keep that key; a newly loaded form can intentionally repeat a completed action. When JavaScript is unavailable, parameter-based deduplication is conservative and identical requests remain the same operation.
+
+Long browser POSTs now respond `303 Location: /operations/{id}` with `X-Operation-ID`. File preparation is also an accepted operation; download the resulting owned file link from its status page. `/operations` lists the latest 100 owned operations, `/operations/{id}` survives reload, and `/operations/{id}/files/{file_id}` checks both the original capability and `vpn:download`, owner, expiration/revocation and allowed file root. Files remain in the existing DownloadToken store and expire under the existing download TTL.
+
+For service APIs the first submission preserves the existing result envelope by default while awaiting the owned executor without blocking the event loop. It adds `X-Operation-ID` and `Location: /api/v1/operations/{id}`. `Prefer: respond-async` immediately returns HTTP 202 and `{status: accepted, operation: ...}`. A retry returns HTTP 202 and the same durable operation; it never repeats the command or fabricates a legacy result body. Poll `GET /api/v1/operations/{id}` using the same service actor and the original operation capability.
+
+**Service/MCP transition:** supply a fresh `Idempotency-Key` for each deliberate new action, preserve it during transport retries, and handle 202 by polling Location. Without a key the fallback is conservative parameter-based deduplication, including after completion; legacy clients that deliberately repeat identical mutations must adopt the key. Existing scoped plan/provider idempotency APIs are unchanged. No blanket legacy bearer permissions were added.
+
+Browser verification: `POST /operations/{id}/verify`, valid CSRF plus `checked_external_result=1`. Service verification: `POST /api/v1/operations/{id}/verify`, the same bearer actor/capability plus JSON `{"checked_external_result": true}`. Another owner, missing capability or missing acknowledgement is rejected. These endpoints attest an operator check only.
+
+## Release and rollback
+
+No production action was performed. Before any future release, back up the application SQLite database, existing download/archive stores and app secret through the established deployment procedure. Start the new application normally; schema creation is additive. The old code can leave this new table in place but cannot show/reconcile new operations. Do not remove the ledger during rollback or infer external rollback from restoring SQL. Preserve operation history and manually verify unknown/partial effects before resubmitting after any code rollback. No new configuration variable or external service is required.
+
+## Local synthetic verification
+
+Environment: Windows/PowerShell; Python 3.14.3; requirements pin FastAPI 0.115.6 and SQLAlchemy 2.0.36 (installed SQLAlchemy 2.0.51). Context7 FastAPI async/threadpool and SQLAlchemy 2.0 Session concurrency documentation were checked. GitNexus `web_ovpn` indexed committed architecture was queried before broad source exploration; its baseline is `fab1cac`, whereas the implementation starts at local committed `9321c5e`. No manual group sync/index workaround was used. GitNexus `run_vpnctl` impact reports 25 direct callers, 83 symbols through depth 2 and 29 processes (CRITICAL hub); the API route impact for generation lists no indexed consumer, which is not proof of no dynamic service caller. Existing API/browser regression tests verify the preserved first-call paths.
+
+T01-A: managed synthetic CLI barrier, independent HTTP request before release, fresh worker-owned domain session and audit.
+T01-B: simultaneous identical registrations yield one operation/one execution; distinct parameters yield separate operations; browser transport retry retains one ID/one execution.
+T01-C: actual child executor process is killed, its SQLite ledger survives, expired record becomes unknown, same intent is not rerun. Reload retains the status page. Unknown effects remain blocked even with a different intent key until audited explicit operator acknowledgement.
+T01-D: real existing batch generation route succeeds while its synthetic sync fails; operation is partial with generation/sync phases, original success/error audit records preserved, synthetic secret stderr absent from status output. Existing file repair/download and confirmation routes remain covered.
+
+Playwright MCP loopback browser at 127.0.0.1:8879: normal login/click, accepted/running state, independent request 200 during barrier, identical transport retry, reload, explicit release, succeeded state, one CLI execution, generated browser intent key. Console: zero errors/warnings. `tests/browser/panel_operations_fixture_server.py` forbids all real CLI boundaries; `tests/browser/panel_operations.js` contains the repeatable flow. Fixture stopped after QA. No scans, certificates, production reads or exports were performed.
+
+Known unrelated baseline failures: two `tests/test_api_routes.py` saved-host fixture tests use 2026-09-07 timestamps against the current 24-hour window on 2026-09-26. Parent independently reproduced these before integration. Their exclusions are explicit; this task does not change snapshot freshness.
+
+Final checks in the isolated worktree:
+
+- `python -m pytest -q tests/test_panel_operations.py tests/test_routes_smoke.py tests/test_panel_permissions.py tests/test_api_routes.py tests/test_inventory_web.py tests/test_inventory_lookup.py tests/test_web_server_drafts.py tests/test_download_tokens.py -k 'not hosts_list_paginates_snapshot_without_live_commands and not hosts_api_accepts_dash_prefixed_query_with_real_snapshot'`: 119 passed, 2 deselected. After this run the API accepted DTO status_url was corrected to the API URL and verified by the next focused run.
+- `python -m pytest -q tests/test_panel_operations.py tests/test_vpnctl_client.py tests/test_netctl_client.py tests/test_client_batch.py`: 18 passed.
+- `node --check app/static/panel-operations.js` and `node --check tests/browser/panel_operations.js`: passed.
+- `python -m compileall -q app/panel_operations.py app/panel_operation_routes.py app/main.py app/models.py app/inventory/web.py tests/test_panel_operations.py tests/browser/panel_operations_fixture_server.py`: passed.
+- `git diff --check`: passed. Existing FastAPI/Starlette Python 3.14 deprecation warnings remain.
+
+The final Playwright loopback repetition used a fresh synthetic database: operation `d2a99698-8c15-4188-94ca-96d163efd385`, held running barrier, independent HTTP 200, same-ID retry/reload, succeeded after release, one execution and a browser intent key. Console had zero errors/warnings; fixture stopped. Verification is local synthetic evidence, not production acceptance.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -190,3 +190,24 @@ class ServerDraftConfirmOutbox(Base):
     last_error: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PanelOperation(Base):
+    """Owned durable status; request bodies and CLI output are never stored here."""
+    __tablename__ = "panel_operations"
+    __table_args__ = (Index("uq_panel_operations_active_intent", "intent_hash", unique=True,
+        sqlite_where=text("status IN ('registered', 'running')"),
+        postgresql_where=text("status IN ('registered', 'running')")),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    intent_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    action: Mapped[str] = mapped_column(String(120), nullable=False)
+    permission: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="registered")
+    phases_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    artifact_ids_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    lease_until: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

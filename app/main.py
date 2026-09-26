@@ -198,6 +198,9 @@ async def request_id_middleware(request: Request, call_next):
 
 
 def add_flash(request: Request, category: str, message: str) -> None:
+    from .panel_operations import phase
+    if category == "bad":
+        phase("handler-result", "failed")
     flashes = list(request.session.get("flashes", []))
     flashes.append({"category": category, "message": message})
     request.session["flashes"] = flashes[-5:]
@@ -216,6 +219,9 @@ def render(
     db: Session,
     status_code: int = 200,
 ) -> HTMLResponse:
+    from .panel_operations import phase
+    if context.get("error"):
+        phase("handler-result", "failed")
     user = current_user(request, db)
     context.update(
         {
@@ -1029,6 +1035,8 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
                 )
                 result["download_url"] = f"/download/{token}"
             except (ClientBatchInputError, OSError, ValueError, KeyError) as exc:
+                from .panel_operations import phase
+                phase("file", "failed")
                 sync_error = str(exc)
         if sync_error:
             add_flash(request, "bad", f"Профиль создан, но автосинхронизация не прошла: {sync_error}")
@@ -2539,3 +2547,120 @@ def logs(request: Request, db: Session = Depends(get_db)):
         lines = 80
     data, error = cli_call(request, ["logs", "-n", str(lines)])
     return render(request, "logs.html", {"logs": data, "lines": lines, "error": error}, db)
+
+
+@app.get("/operations", response_class=HTMLResponse)
+def operations_page(request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .panel_operations import recover, public_operation
+    from .permissions import user_has_permission
+    user = require_user(request, db)
+    recover()
+    rows = db.scalars(select(PanelOperation).where(PanelOperation.owner == "user:" + user.username)
+        .order_by(PanelOperation.created_at.desc()).limit(100)).all()
+    return render(request, "panel_operations.html", {"operations": [public_operation(row)
+        for row in rows if user_has_permission(user, row.permission)]}, db)
+
+
+@app.get("/operations/{operation_id}", response_class=HTMLResponse)
+def operation_page(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .panel_operations import recover, public_operation
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    recover()
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username:
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    return render(request, "panel_operations.html", {"operations": [public_operation(row)]}, db)
+
+
+@app.get("/operations/{operation_id}/files/{file_id}")
+def operation_file(operation_id: str, file_id: int, request: Request, db: Session = Depends(get_db)):
+    import json
+    from .models import PanelOperation, DownloadToken
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username or file_id not in json.loads(row.artifact_ids_json):
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    check_user_permission(user, "vpn:download")
+    record = db.get(DownloadToken, file_id)
+    if record is None or record.created_by != user.username or record.revoked_at is not None:
+        raise HTTPException(404)
+    expires = record.expires_at
+    if expires.tzinfo is None:
+        from datetime import timezone
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= utcnow():
+        raise HTTPException(404)
+    try:
+        path = assert_allowed_file(record.file_path)
+    except ValueError:
+        raise HTTPException(404)
+    write_audit(db, request, user, "operation-download", "ok", "file", target_client=record.client_name)
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+from .panel_operation_routes import install_browser_operations
+install_browser_operations(app)
+
+
+@app.get("/api/v1/operations/{operation_id}")
+def api_operation_status(operation_id: str, request: Request,
+                         db: Session = Depends(get_db)):
+    from .api import require_api_actor
+    from .models import PanelOperation
+    from .panel_operations import recover, public_operation
+    from .permissions import check_service_permission
+    actor = require_api_actor(request, request.headers.get("Authorization"))
+    recover()
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "service:" + actor:
+        raise HTTPException(404)
+    check_service_permission(get_settings().api_permissions, row.permission)
+    result = public_operation(row)
+    result["status_url"] = f"/api/v1/operations/{row.id}"
+    return {"status": "ok", "operation": result}
+
+
+from .panel_operation_routes import install_api_operations
+install_api_operations(app)
+
+
+@app.post("/operations/{operation_id}/verify")
+async def operation_verification(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username:
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    if str(form.get("checked_external_result") or "") != "1" or row.status not in {"unknown", "partial"}:
+        raise HTTPException(400, detail="Подтвердите проверку внешнего результата")
+    row.verified_at = utcnow()
+    write_audit(db, request, user, "operation-verified", "ok", "operator checked external result", target_client=row.id)
+    return redirect(f"/operations/{row.id}")
+
+
+@app.post("/api/v1/operations/{operation_id}/verify")
+def api_operation_verification(operation_id: str, payload: dict[str, Any], request: Request,
+                               db: Session = Depends(get_db)):
+    from .api import require_api_actor
+    from .models import PanelOperation
+    from .permissions import check_service_permission
+    actor = require_api_actor(request, request.headers.get("Authorization"))
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "service:" + actor:
+        raise HTTPException(404)
+    check_service_permission(get_settings().api_permissions, row.permission)
+    if payload.get("checked_external_result") is not True or row.status not in {"unknown", "partial"}:
+        raise HTTPException(400, detail="External result verification acknowledgement required")
+    row.verified_at = utcnow()
+    write_audit(db, request, actor, "operation-verified", "ok", "operator checked external result", target_client=row.id)
+    return {"status": "ok", "operation_id": row.id}

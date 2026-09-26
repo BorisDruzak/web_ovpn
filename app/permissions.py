@@ -26,6 +26,8 @@ def required_permission(path: str, method: str) -> str | None:
     write = method not in {"GET", "HEAD", "OPTIONS"}
     if path in {"/login", "/logout"} or path.startswith("/static/"):
         return None
+    if path.startswith("/operations"):
+        return None  # Owner and original capability are checked by each operation route.
     if path.startswith("/admin/users"):
         return "admin:users"
     if path.startswith("/inventory"):
