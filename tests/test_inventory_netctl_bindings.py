@@ -15,6 +15,45 @@ def host(mac='02:00:00:00:00:11', ip='192.0.2.11'):
     return {'device_key':'mac:'+mac,'mac':mac,'ip':ip,'hostname':'synthetic','status':'online'}
 
 
+def test_multiple_ip_observations_share_one_mac_identity(tmp_path, monkeypatch):
+    card = fixture(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    from app.inventory.netctl_bindings import refresh_candidates, confirm
+    observations = [dict(host(ip='192.0.2.9'),last_seen_at='2026-07-04T10:00:00Z'),
+        dict(host(ip='192.0.2.11'),last_seen_at='2026-09-26T10:00:00Z'),
+        dict(host(ip='169.254.1.2'),last_seen_at='2026-09-26T10:00:00Z')]
+    with get_sessionmaker()() as db:
+        row = refresh_candidates(db, observations, snapshot_id=1,
+            observed_at=datetime.now(timezone.utc))[0]
+        assert row.evidence_json['ambiguous'] is False
+        assert row.observation_json['ip'] == '192.0.2.11'
+        asset = db.get(InventoryAsset,card['id'])
+        confirmed = confirm(db,host()['device_key'],asset.id,expected_revision=asset.manual_revision,
+            actor='synthetic',reason='Unique physical MAC',hosts=observations)
+        assert confirmed.status.value == 'confirmed'
+        db.commit()
+    from app.inventory.netctl_bindings import active_for_key
+    with get_sessionmaker()() as db:
+        persisted = active_for_key(db,host()['device_key'])
+        assert persisted.asset_id == card['id']
+        assert persisted.observation_json['ip'] == '192.0.2.11'
+
+
+def test_source_collision_still_blocks_multiple_ip_confirmation(tmp_path, monkeypatch):
+    card = fixture(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.inventory.netctl_bindings import refresh_candidates,confirm,NetctlBindingConflict
+    with get_sessionmaker()() as db:
+        row = refresh_candidates(db,[host(),host(ip='192.0.2.22')],snapshot_id=1,
+            observed_at=datetime.now(timezone.utc),conflict_keys=[host()['device_key']])[0]
+        assert row.evidence_json['ambiguous'] is True
+        with pytest.raises(NetctlBindingConflict):
+            confirm(db,host()['device_key'],card['id'],expected_revision=card['manual_revision'],
+                actor='synthetic',reason='Cannot override collision',hosts=[host(),host(ip='192.0.2.22')],
+                conflict_keys=[host()['device_key']])
+
+
 def test_confirmed_network_identity_survives_ip_change_and_reuse(tmp_path, monkeypatch):
     card = fixture(tmp_path, monkeypatch)
     from app.db import get_sessionmaker

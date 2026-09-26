@@ -130,10 +130,27 @@ def test_audit_failure_rolls_back_confirmed_relation(tmp_path,monkeypatch):
         assert db.scalar(select(InventoryNetctlBinding)) is None
 
 
-def test_runtime_collision_and_provisional_keys_cannot_confirm(tmp_path,monkeypatch):
+@pytest.mark.parametrize('status',['open','acknowledged'])
+def test_runtime_collision_and_provisional_keys_cannot_confirm(tmp_path,monkeypatch,status):
     client,headers,card,_ = setup(tmp_path,monkeypatch)
     monkeypatch.setattr('app.inventory.network_links.run_netctl',lambda *a,**kw:{'runtime_asset':{
         'asset':{'asset_key':KEY,'provisional':0},'interfaces':[{'mac':KEY[4:]}],
-        'findings':[{'finding_type':'mac_identity_collision','status':'open'}]}})
+        'findings':[{'finding_type':'mac_identity_collision','status':status}]}})
     assert client.post('/inventory/network-links/confirm',data=values(headers,card)).status_code == 409
     assert client.post('/inventory/network-links/confirm',data={**values(headers,card),'network_key':'legacy-host:11'}).status_code == 409
+
+
+@pytest.mark.parametrize('status',['open','acknowledged'])
+def test_historical_ip_findings_do_not_block_stable_mac_confirmation(tmp_path,monkeypatch,status):
+    client,headers,card,_ = setup(tmp_path,monkeypatch)
+    monkeypatch.setattr('app.inventory.network_links.run_netctl',lambda *a,**kw:{'runtime_asset':{
+        'asset':{'asset_key':KEY,'provisional':0},'interfaces':[{'mac':KEY[4:]}],
+        'current_ip_observations':[{'ip':'192.0.2.11'}],
+        'findings':[{'finding_type':'historical_identity_conflict','status':status,
+            'details':{'ip':'192.0.2.9','old_asset_id':1,'new_asset_id':2}}]}})
+    assert client.post('/inventory/network-links/confirm',data=values(headers,card),follow_redirects=False).status_code == 303
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryNetctlBinding
+    with get_sessionmaker()() as db:
+        binding = db.scalar(select(InventoryNetctlBinding).where(InventoryNetctlBinding.asset_id==card['id']))
+        assert binding.status.value == 'confirmed'

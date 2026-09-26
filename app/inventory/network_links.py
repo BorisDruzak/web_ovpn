@@ -46,7 +46,7 @@ def read_runtime_identity(key):
     if not isinstance(findings,list):
         raise NetctlBindingConflict('Проверка коллизий Netctl недоступна')
     if any(not isinstance(item,dict) or (item.get('status') != 'resolved' and item.get('finding_type') in
-        {'mac_identity_collision','historical_identity_conflict'}) for item in findings):
+        {'mac_identity_collision'}) for item in findings):
         raise NetctlBindingConflict('Netctl сообщает конфликт идентичности. Устраните коллизию перед подтверждением')
     ips = runtime.get('current_ip_observations',[])
     names = runtime.get('current_hostname_observations',[])

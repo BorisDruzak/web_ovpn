@@ -1,5 +1,7 @@
 """Netctl identity relations; no remote commands and no automatic confirmation."""
 from collections import defaultdict
+from datetime import datetime, timezone
+from ipaddress import ip_address
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -56,11 +58,28 @@ def identity_index(hosts):
         except NetctlBindingConflict:
             continue
         public = saved_observation(host)
-        # Keep identity/collision semantics independent of diagnostic enrichment.
+        # IP/name/status are observations of the MAC identity, not separate devices.
         core = ('device_key','mac','ip','hostname','display_name','status','last_seen_at')
         if not any(all(public.get(name)==known.get(name) for name in core) for known in result[key]):
             result[key].append(public)
+    for observations in result.values():
+        observations.sort(key=_observation_rank, reverse=True)
     return result
+
+
+def _observation_rank(observation):
+    try:
+        seen = datetime.fromisoformat(str(observation.get('last_seen_at') or '').replace('Z','+00:00'))
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        timestamp = seen.timestamp()
+    except (ValueError, OverflowError, OSError):
+        timestamp = float('-inf')
+    try:
+        ordinary_ip = not ip_address(str(observation.get('ip') or '')).is_link_local
+    except ValueError:
+        ordinary_ip = False
+    return timestamp, ordinary_ip, str(observation.get('ip') or '')
 
 
 def _anchors(db):
@@ -97,7 +116,7 @@ def refresh_candidates(db, hosts, *, snapshot_id, observed_at, conflict_keys=())
     created = []
     for key, observations in identities.items():
         material = {"mac":key[4:], "card_ids":sorted(anchors.get(key,()))}
-        ambiguous = len(observations)>1 or len(material["card_ids"])>1 or key in conflicts
+        ambiguous = len(material["card_ids"])>1 or key in conflicts
         for row in by_key[key]:
             if row.network_key == key and row.ended_at is None:
                 row.observation_json = observations[0]
@@ -131,7 +150,7 @@ def confirm(db, network_key, asset_id, *, expected_revision, actor, reason, host
     _require_revision(expected_revision)
     identities = identity_index(hosts)
     observations = identities.get(network_key,())
-    if len(observations) != 1 or network_key in set(conflict_keys):
+    if not observations or network_key in set(conflict_keys):
         raise NetctlBindingConflict("Устройство отсутствует в проверенном снимке или его идентичность неоднозначна")
     anchors = _anchors(db).get(network_key,set())
     if len(anchors)>1:
