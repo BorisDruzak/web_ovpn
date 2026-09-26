@@ -247,15 +247,21 @@ def reconnect_endpoint_binding(asset_id: str, binding_id: str, request: Request,
 @router.post("/assets/{asset_id}/discrepancies/{field}/resolve")
 def resolve_endpoint_discrepancy(asset_id: str, field: str, payload: EndpointDiscrepancyResolution, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_endpoint_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
-    _endpoint_asset(db, asset_id)
+    asset = _endpoint_asset(db, asset_id)
     try:
+        _claim_endpoint_revision(db, request, asset)
         observation = endpoint_service.resolve_discrepancy(db, asset_id, field, payload.action, actor, datetime.now(timezone.utc), expected_revision=payload.expected_revision)
     except InventoryEndpointConflict as exc:
+        db.rollback()
         raise HTTPException(status_code=409, detail="inventory_endpoint_discrepancy_changed") from exc
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
-    write_audit(db, request, actor, "inventory.endpoint.discrepancy.resolve", "ok", f"{field}:{payload.action}", target_client=asset_id)
-    return {"status": "ok", "data": {"id": observation.id, "field": field, "action": payload.action, "manual_value": observation.data_json["new_value"]}}
+    write_audit(db, request, actor, "inventory.endpoint.discrepancy.resolve", "ok", f"{field}:{payload.action}", target_client=asset_id, commit=False)
+    db.flush()
+    db.refresh(asset, attribute_names=['manual_revision'])
+    result = {"status": "ok", "manual_revision":asset.manual_revision, "data": {"id": observation.id, "field": field, "action": payload.action, "manual_value": observation.data_json["new_value"]}}
+    db.commit()
+    return result
 
 
 @router.post("/assets/{asset_id}/endpoint-refresh", status_code=status.HTTP_202_ACCEPTED, response_model=None)

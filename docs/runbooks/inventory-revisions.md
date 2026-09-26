@@ -38,5 +38,12 @@ the resulting `manual_revision` alongside the existing binding `data`.
 The browser sends its captured revision, preserves any input entered during the
 request, and starts a fresh draft after a successful decision only when no manual
 input needs preserving. It does not replace an old draft's original revision.
-Discrepancy decisions still use their comparison hash; integration with the
-physical-card manual revision remains an OPEN T09 gate.
+Discrepancy decisions require both the same `X-Inventory-Revision` header and
+their existing `expected_revision` comparison hash in JSON. A change to an
+unrelated manual field invalidates the card revision even when the compared
+RAM/serial values stay unchanged; new Endpoint values invalidate the comparison
+hash without changing the manual revision. Either conflict rolls back the claim.
+The context response exposes top-level `data.manual_revision` beside comparison
+hashes so callers can capture both versions from the displayed context. Decisions,
+manual value changes, disposition observations and audit share one transaction.
+Successful responses include the resulting top-level `manual_revision`.

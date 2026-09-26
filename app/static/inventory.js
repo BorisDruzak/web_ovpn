@@ -165,7 +165,7 @@ document.addEventListener("click", async (event) => {
       feedback.textContent = "Сохранённых кандидатов нет. Дождитесь плановой синхронизации и повторите поиск.";
     } else if (inventoryManualDraft() !== inventoryInitialDraft) {
       feedback.textContent = result.manual_revision
-        ? "Связь изменена. Ввод сохранён в черновике; обновите карточку и сравните изменения перед сохранением."
+        ? "Карточка изменена. Ввод сохранён в черновике; обновите карточку и сравните изменения перед сохранением."
         : "Действие выполнено. Сохраните введённые изменения карточки перед обновлением страницы.";
     } else if (result.manual_revision) {
       const refreshed = new URL(window.location.href);

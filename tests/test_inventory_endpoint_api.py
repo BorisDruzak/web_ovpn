@@ -80,6 +80,7 @@ def test_context_keeps_stale_endpoint_values_without_upstream(api, monkeypatch):
     response = client.get(f"{ROOT}/assets/{asset}/context", headers=headers)
     assert response.status_code == 200
     data = response.json()["data"]
+    assert str(data['manual_revision']) == revision_header(asset)['X-Inventory-Revision']
     assert data["effective"]["ram_gb"]["value"] == 16
     assert data["effective"]["ram_gb"]["source"] == "endpoint"
     assert data["manual"]["details"]["ram_gb"] == 8
@@ -242,7 +243,7 @@ def test_discrepancy_actions_change_local_projection_and_leave_audit(api, action
     client, headers = api
     asset, _ = seed()
     revision = client.get(f"{ROOT}/assets/{asset}/context", headers=headers).json()["data"]["discrepancies"][0]["revision"]
-    response = client.post(f"{ROOT}/assets/{asset}/discrepancies/ram_gb/resolve", headers=headers, json={"action": action, "expected_revision": revision})
+    response = client.post(f"{ROOT}/assets/{asset}/discrepancies/ram_gb/resolve", headers=headers | revision_header(asset), json={"action": action, "expected_revision": revision})
     assert response.status_code == 200
     assert response.json()["data"]["manual_value"] == (16 if action == "accept_endpoint" else 8)
     context = client.get(f"{ROOT}/assets/{asset}/context", headers=headers).json()["data"]
@@ -255,6 +256,60 @@ def test_discrepancy_actions_change_local_projection_and_leave_audit(api, action
     with get_sessionmaker()() as db:
         audit = db.scalar(select(WebAuditLog).where(WebAuditLog.action == "inventory.endpoint.discrepancy.resolve"))
         assert audit is not None and audit.target_client == asset
+
+
+@pytest.mark.parametrize('action', ['keep_manual', 'accept_endpoint', 'mark_verified'])
+def test_discrepancy_decision_checks_card_revision_even_when_comparison_is_unchanged(api, action):
+    client, headers = api
+    asset, _ = seed()
+    route = f'{ROOT}/assets/{asset}/discrepancies/ram_gb/resolve'
+    payload = {'action':action, 'expected_revision':client.get(f'{ROOT}/assets/{asset}/context',
+        headers=headers).json()['data']['discrepancies'][0]['revision']}
+    original = revision_header(asset)
+    assert client.post(route, headers=headers, json=payload).status_code == 428
+    assert revision_header(asset) == original
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    with get_sessionmaker()() as db:
+        db.get(InventoryAsset, asset).assigned_person_name = 'Another editor'
+        db.commit()
+    current = revision_header(asset)
+    assert client.get(f'{ROOT}/assets/{asset}/context',headers=headers).json()['data']['discrepancies'][0]['revision'] == payload['expected_revision']
+    assert client.post(route, headers=headers | original, json=payload).status_code == 409
+    assert revision_header(asset) == current
+    response = client.post(route, headers=headers | current, json=payload)
+    assert response.status_code == 200, response.text
+    assert str(response.json()['manual_revision']) == revision_header(asset)['X-Inventory-Revision']
+    assert revision_header(asset) != current
+
+
+def test_discrepancy_hash_conflict_and_audit_failure_rollback_card_claim(api, monkeypatch):
+    client, headers = api
+    asset, binding = seed()
+    route = f'{ROOT}/assets/{asset}/discrepancies/ram_gb/resolve'
+    context_url = f'{ROOT}/assets/{asset}/context'
+    payload = {'action':'accept_endpoint', 'expected_revision':client.get(context_url,
+        headers=headers).json()['data']['discrepancies'][0]['revision']}
+    original = revision_header(asset)
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryPCDetails
+    with get_sessionmaker()() as db:
+        db.get(InventoryEndpointState, binding).safe_context_json = {'ram_gb':32}
+        db.commit()
+    assert revision_header(asset) == original
+    assert client.post(route, headers=headers | original, json=payload).status_code == 409
+    assert revision_header(asset) == original
+    payload['expected_revision'] = client.get(context_url,headers=headers).json()['data']['discrepancies'][0]['revision']
+    def failing_audit(*args, **kwargs):
+        raise RuntimeError('synthetic discrepancy audit failure')
+    monkeypatch.setattr('app.inventory.api.write_audit', failing_audit)
+    with pytest.raises(RuntimeError, match='synthetic discrepancy audit failure'):
+        client.post(route, headers=headers | original, json=payload)
+    assert revision_header(asset) == original
+    with get_sessionmaker()() as db:
+        assert db.get(InventoryPCDetails, asset).ram_gb == 8
+        assert not any(row.data_json.get('kind') == 'endpoint_disposition'
+            for row in db.scalars(select(InventoryObservation)))
 
 
 class CollectionAdapter:
@@ -332,7 +387,7 @@ def test_refresh_rejects_non_pc_unbound_and_unsafe_profile_before_remote_call(ap
         assert client.post(f"{ROOT}/assets/{asset}/endpoint-refresh", headers=headers, json={"profile": "baseline_v1"}).status_code == 400
     assert client.get(f"{ROOT}/assets/{monitor}/endpoint-candidates", headers=headers).status_code == 400
     assert client.post(f"{ROOT}/assets/{candidate}/endpoint-refresh", headers=headers, json={"profile": "diagnostic_v1"}).status_code == 422
-    assert client.post(f"{ROOT}/assets/{candidate}/discrepancies/location_id/resolve", headers=headers, json={"action": "accept_endpoint", "expected_revision": "0" * 64}).status_code == 400
+    assert client.post(f"{ROOT}/assets/{candidate}/discrepancies/location_id/resolve", headers=headers | revision_header(candidate), json={"action": "accept_endpoint", "expected_revision": "0" * 64}).status_code == 400
 
 
 def test_missing_asset_context_returns_not_found(api):

@@ -773,6 +773,7 @@ class InventoryEndpointService:
         ).all()
         return {
             "asset": manual["asset"],
+            "manual_revision": asset.manual_revision,
             "detached_bindings": [
                 {"id": row.id, "external_id": row.external_id}
                 for row in db.scalars(select(InventoryExternalBinding).where(

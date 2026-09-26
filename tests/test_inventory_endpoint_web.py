@@ -135,7 +135,7 @@ def test_session_context_and_disposition_apply_without_bearer(web):
     page = web.get(f"/inventory/assets/{asset}")
     revision = web.get(f"/api/v1/inventory/assets/{asset}/context").json()["data"]["discrepancies"][0]["revision"]
     response = web.post(f"/api/v1/inventory/assets/{asset}/discrepancies/ram_gb/resolve",
-                        headers={"X-CSRF-Token": _csrf(page.text)}, json={"action": "keep_manual", "expected_revision": revision})
+                        headers={"X-CSRF-Token": _csrf(page.text)} | revision_header(asset), json={"action": "keep_manual", "expected_revision": revision})
     assert response.status_code == 200
     context = web.get(f"/api/v1/inventory/assets/{asset}/context")
     assert context.status_code == 200
@@ -194,6 +194,7 @@ def test_rendered_discrepancy_rejects_changed_values_or_binding(web, change):
     page = web.get(f"/inventory/assets/{asset}")
     context = web.get(f"/api/v1/inventory/assets/{asset}/context").json()["data"]
     rendered_revision = context["discrepancies"][0]["revision"]
+    original_card_revision = revision_header(asset)
     with get_sessionmaker()() as db:
         if change == "endpoint":
             db.get(InventoryEndpointState, binding).safe_context_json = {"ram_gb": 32}
@@ -206,7 +207,7 @@ def test_rendered_discrepancy_rejects_changed_values_or_binding(web, change):
                 endpoint_device_id=new.external_id, safe_context_json={"ram_gb": 16}))
         db.commit()
     response = web.post(f"/api/v1/inventory/assets/{asset}/discrepancies/ram_gb/resolve",
-                        headers={"X-CSRF-Token": _csrf(page.text)},
+                        headers={"X-CSRF-Token": _csrf(page.text)} | original_card_revision,
                         json={"action": "accept_endpoint", "expected_revision": rendered_revision})
     assert response.status_code == 409
     with get_sessionmaker()() as db:
