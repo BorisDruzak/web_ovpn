@@ -44,6 +44,15 @@ def main():
             return {'clients':[]}
         if args == ['web-summary']:
             return {'status':'ok','data':{}}
+        if args == ['networks', 'list']:
+            return {'networks':[]}
+        if args[:2] == ['networks', 'add']:
+            if args[2] != '192.0.2.0/24':
+                return forbidden()
+            phase('vpnctl:networks','succeeded')
+            return {'status':'ok'}
+        if args[0] == 'generate-batch' and '--dry-run' in args:
+            return {'status':'preview','generated_count':1,'ccd_preview':['CCD-PREVIEW-SYNTHETIC']}
         return forbidden()
     app.vpnctl_client.run_vpnctl = forbidden
     app.netctl_client.run_netctl = forbidden

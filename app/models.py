@@ -195,9 +195,9 @@ class ServerDraftConfirmOutbox(Base):
 class PanelOperation(Base):
     """Owned durable status; request bodies and CLI output are never stored here."""
     __tablename__ = "panel_operations"
-    __table_args__ = (Index("uq_panel_operations_active_intent", "intent_hash", unique=True,
-        sqlite_where=text("status IN ('registered', 'running')"),
-        postgresql_where=text("status IN ('registered', 'running')")),)
+    __table_args__ = (Index("uq_panel_operations_unresolved_intent", "intent_hash", unique=True,
+        sqlite_where=text("status IN ('registered', 'running') OR (status IN ('unknown', 'partial') AND verified_at IS NULL)"),
+        postgresql_where=text("status IN ('registered', 'running') OR (status IN ('unknown', 'partial') AND verified_at IS NULL)")),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     owner: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)

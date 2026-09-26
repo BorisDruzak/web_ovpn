@@ -24,6 +24,11 @@
     const setTimer = options.setTimer;
     const clearTimer = options.clearTimer;
     const render = options.render;
+    // One key for this panel intent; retries retain it, a newly loaded panel
+    // can refresh stale fingerprint data after the previous operation finishes.
+    const operationKey = options.operationKey || Array.from(
+      globalThis.crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")
+    ).join("");
     let started = false;
     let stopped = false;
     let inFlight = false;
@@ -102,7 +107,7 @@
           method: "POST",
           credentials: "same-origin",
           headers: {"Content-Type": "application/x-www-form-urlencoded"},
-          body: new URLSearchParams({csrf_token: options.csrfToken}).toString(),
+          body: new URLSearchParams({csrf_token: options.csrfToken, operation_key: operationKey}).toString(),
         });
       } catch (_error) {}
       await poll();

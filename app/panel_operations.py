@@ -66,10 +66,16 @@ def recover(factory=None) -> None:
 
 
 def public_operation(row: PanelOperation) -> dict:
+    prefix = "/api/v1" if row.owner.startswith("service:") else ""
+    future = execution_future(row.id)
+    result_available = future is not None and future.done() and not future.cancelled() and (
+        future.exception() is not None or future.result() is not None)
     return {"id": row.id, "action": row.action, "status": row.status,
             "phases": json.loads(row.phases_json),
             "status_url": f"/operations/{row.id}",
             "artifacts": [f"/operations/{row.id}/files/{file_id}" for file_id in json.loads(row.artifact_ids_json)],
+            "result_url": f"{prefix}/operations/{row.id}/result",
+            "result_available": result_available,
             "verification_required": row.status in {"unknown", "partial"} and row.verified_at is None}
 
 
@@ -109,7 +115,9 @@ def register(owner: str, action: str, permission: str, parameters: bytes, execut
                 db.rollback()
                 row = db.scalar(select(PanelOperation).where(
                     (PanelOperation.fingerprint == key) |
-                    ((PanelOperation.intent_hash == intent_key) & PanelOperation.status.in_(("registered", "running")))))
+                    ((PanelOperation.intent_hash == intent_key) & (
+                        PanelOperation.status.in_(("registered", "running")) |
+                        (PanelOperation.status.in_(("unknown", "partial")) & PanelOperation.verified_at.is_(None))))))
                 if row is None:
                     raise
                 _slots.release()

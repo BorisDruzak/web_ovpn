@@ -178,6 +178,7 @@ def test_operation_owner_and_capability_visibility(tmp_path, monkeypatch):
                 permission='vpn:manage',status='succeeded',lease_until=utcnow()+timedelta(seconds=60)))
             session.commit()
         assert client.get('/operations/private').status_code == 404
+        assert client.get('/operations/private/result').status_code == 404
         assert 'private' not in client.get('/operations').text
         with db.get_sessionmaker()() as session:
             user = session.scalar(select(WebUser).where(WebUser.username == 'admin'))
@@ -186,6 +187,7 @@ def test_operation_owner_and_capability_visibility(tmp_path, monkeypatch):
             user.permissions_json = '[]'
             session.commit()
         assert client.get('/operations/own').status_code == 403
+        assert client.get('/operations/own/result').status_code == 403
         assert 'data-operation-id="own"' not in client.get('/operations').text
 
 def test_generation_success_sync_failure_is_partial_with_audit_no_secret(tmp_path, monkeypatch):
@@ -270,6 +272,9 @@ def test_api_respond_async_is_owned_and_keeps_barrier_request_responsive(tmp_pat
             release.set()
         wait_status(operation_id,'succeeded')
         assert client.get('/api/v1/operations/'+operation_id,headers=headers).json()['operation']['status'] == 'succeeded'
+        result_url = '/api/v1/operations/'+operation_id+'/result'
+        assert client.get(result_url).status_code == 401
+        assert client.get(result_url,headers=headers).json()['data']['imported_or_updated'] == 1
 
 def test_unknown_effect_needs_operator_check_even_with_new_intent_key(tmp_path, monkeypatch):
     main = setup_app(tmp_path, monkeypatch)
@@ -291,3 +296,189 @@ def test_unknown_effect_needs_operator_check_even_with_new_intent_key(tmp_path, 
         assert created and allowed['id'] != first['id']
         wait_status(allowed['id'],'succeeded')
         assert executions == [1]
+
+
+@pytest.mark.parametrize('result_status', ['unknown', 'partial'])
+def test_intent_insert_race_stays_blocked_after_first_finishes_uncertain(tmp_path, monkeypatch, result_status):
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+    setup_app(tmp_path, monkeypatch)
+    db.init_db()
+    preflight_finished, resume_insert = threading.Event(), threading.Event()
+    executions = []
+    result = []
+    def hold_insert(session, *_args):
+        if threading.current_thread().name == 'delayed-intent-insert' and any(
+                isinstance(row, PanelOperation) for row in session.new):
+            preflight_finished.set()
+            assert resume_insert.wait(5)
+    event.listen(Session, 'before_flush', hold_insert)
+    def second():
+        result.append(register('user:admin', 'race', 'vpn:manage', b'second-key',
+            lambda: executions.append('second'), intent=b'same-effect'))
+    thread = threading.Thread(target=second, name='delayed-intent-insert')
+    try:
+        thread.start()
+        assert preflight_finished.wait(2)
+        def first():
+            executions.append('first')
+            if result_status == 'partial':
+                phase('vpnctl:generate', 'succeeded')
+            phase('vpnctl:sync', 'unknown')
+        operation, created = register('user:admin', 'race', 'vpn:manage', b'first-key', first, intent=b'same-effect')
+        assert created
+        wait_status(operation['id'], result_status)
+        resume_insert.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert result[0][0]['id'] == operation['id'] and not result[0][1]
+        assert executions == ['first']
+    finally:
+        resume_insert.set()
+        thread.join(5)
+        event.remove(Session, 'before_flush', hold_insert)
+
+
+def test_fingerprint_background_effect_is_owned_until_cli_finishes(tmp_path, monkeypatch):
+    main = setup_app(tmp_path, monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+    executions = []
+    def synthetic_cli(args, **kwargs):
+        assert args == ['fingerprint', 'ensure', '--asset-key', 'mac:AA:BB:CC:DD:EE:01']
+        executions.append(1)
+        entered.set()
+        assert release.wait(5)
+        phase('netctl:external-action', 'succeeded')
+        return {'status': 'ok'}
+    monkeypatch.setattr(main, 'run_netctl', synthetic_cli)
+    with TestClient(main.app) as client:
+        csrf = login(client)
+        response = client.post('/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/ensure',
+            data={'csrf_token': csrf}, follow_redirects=False)
+        assert response.status_code == 202
+        operation_id = response.headers['x-operation-id']
+        try:
+            assert entered.wait(2)
+            assert 'data-operation-status="running"' in client.get('/operations/'+operation_id).text
+            assert client.get('/login').status_code == 200
+            retry = client.post('/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/ensure', data={'csrf_token':csrf})
+            assert retry.headers['x-operation-id'] == operation_id
+            assert executions == [1]
+        finally:
+            release.set()
+        row = wait_status(operation_id, 'succeeded')
+        assert 'netctl:external-action' in row.phases_json
+        fresh = client.post('/network/assets/mac:AA:BB:CC:DD:EE:01/fingerprint/ensure',
+            data={'csrf_token':csrf,'operation_key':'fresh-panel-intent'})
+        assert fresh.headers['x-operation-id'] != operation_id
+        wait_status(fresh.headers['x-operation-id'], 'succeeded')
+        assert executions == [1,1]
+
+
+def test_init_db_upgrades_existing_ledger_intent_guard(tmp_path, monkeypatch):
+    from sqlalchemy import inspect, text
+    setup_app(tmp_path, monkeypatch)
+    db.init_db()
+    engine = db.get_engine()
+    with engine.begin() as connection:
+        connection.execute(text('DROP INDEX uq_panel_operations_unresolved_intent'))
+        connection.execute(text("CREATE UNIQUE INDEX uq_panel_operations_active_intent ON panel_operations (intent_hash) WHERE status IN ('registered', 'running')"))
+    db.init_db()
+    index_names = {index['name'] for index in inspect(engine).get_indexes('panel_operations')}
+    assert 'uq_panel_operations_unresolved_intent' in index_names
+
+
+def test_custom_preview_preserves_html_and_tracks_catalogue_effect(tmp_path, monkeypatch):
+    main = setup_app(tmp_path, monkeypatch)
+    from app.panel_operations import observed_cli
+    calls = []
+    @observed_cli('vpnctl')
+    def synthetic(args, **kwargs):
+        calls.append(args)
+        if args == ['profiles']:
+            return {'profiles': []}
+        if args == ['networks', 'list']:
+            return {'networks': []}
+        if args[:2] == ['networks', 'add']:
+            return {'status':'ok'}
+        assert args[0] == 'generate-batch' and '--dry-run' in args
+        return {'status':'preview','ccd_preview':['CCD-PREVIEW-SYNTHETIC'],'generated_count':1}
+    monkeypatch.setattr(main, 'run_vpnctl', synthetic)
+    with TestClient(main.app) as client:
+        csrf = login(client)
+        response = client.post('/clients/new', data={'csrf_token':csrf,'action':'preview',
+            'client':'alpha','access_mode':'custom','custom_cidrs':'192.0.2.0/24','dns':'1','comment':'review-marker'})
+        assert response.status_code == 200
+        assert 'CCD-PREVIEW-SYNTHETIC' in response.text
+        assert 'review-marker' in response.text and '192.0.2.0/24' in response.text
+        assert calls[-1] == ['generate-batch','--client','alpha','--cidr','192.0.2.0/24','--dns','--comment','review-marker','--dry-run']
+        row = wait_status(response.headers['x-operation-id'], 'succeeded')
+        assert 'vpnctl:networks' in row.phases_json
+
+
+def test_invalid_generate_has_owned_result_with_validation_and_original_values(tmp_path, monkeypatch):
+    main = setup_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, 'run_vpnctl', lambda args, **kwargs: {'profiles':[]})
+    with TestClient(main.app) as client:
+        csrf = login(client)
+        accepted = client.post('/clients/new', data={'csrf_token':csrf,'action':'generate',
+            'creation_mode':'bulk','client_names':'invalid name','access_mode':'custom',
+            'custom_cidrs':'invalid-cidr','comment':'retained-input'},follow_redirects=False)
+        operation_id = accepted.headers['x-operation-id']
+        row = wait_status(operation_id, 'failed')
+        page = client.get('/operations/'+operation_id)
+        assert 'Открыть результат и сообщения' in page.text
+        result = client.get('/operations/'+operation_id+'/result')
+        assert result.status_code == 400
+        assert 'invalid client name: invalid name' in result.text
+        assert 'invalid-cidr' in result.text and 'retained-input' in result.text
+        assert '<textarea name="client_names">invalid name</textarea>' in result.text
+        assert 'retained-input' not in row.phases_json
+        from app.panel_operations import forget_future
+        forget_future(operation_id)
+        assert client.get('/operations/'+operation_id+'/result').status_code == 410
+        assert 'data-operation-status="failed"' in client.get('/operations/'+operation_id).text
+
+
+def test_csv_clone_generate_result_and_artifact_survive_response_cache_loss(tmp_path, monkeypatch):
+    main = setup_app(tmp_path, monkeypatch)
+    for name in ['OUT_DIR','SHARE_OUT_DIR','ARCHIVE_DIR']:
+        monkeypatch.setenv(name,str(tmp_path))
+    db.reset_engine_cache()
+    from app.panel_operations import observed_cli, forget_future
+    import app.auto_sync
+    calls = []
+    @observed_cli('vpnctl')
+    def synthetic(args, **kwargs):
+        calls.append(args)
+        if args == ['profiles']:
+            return {'profiles': []}
+        if args == ['sync']:
+            return {'status':'ok','imported_or_updated':2}
+        assert args == ['generate-batch','--client','alpha','--client','beta','--template','synthetic','--comment','csv-marker']
+        rows = []
+        for name in ['alpha','beta']:
+            path = tmp_path/(name+'.ovpn')
+            path.write_text('synthetic profile\n')
+            rows.append({'client':name,'ovpn_path':str(path)})
+        return {'status':'ok','generated_count':2,'clients':rows}
+    monkeypatch.setattr(main, 'run_vpnctl', synthetic)
+    monkeypatch.setattr(app.auto_sync, 'run_vpnctl', synthetic)
+    with TestClient(main.app) as client:
+        csrf = login(client)
+        response = client.post('/clients/new', data={'csrf_token':csrf,'action':'generate',
+            'creation_mode':'bulk','access_mode':'template','profile':'synthetic','comment':'csv-marker'},
+            files={'clients_csv':('clients.csv',b'client_name\nalpha\nbeta\n','text/csv')},follow_redirects=False)
+        operation_id = response.headers['x-operation-id']
+        row = wait_status(operation_id,'succeeded')
+        result = client.get('/operations/'+operation_id+'/result')
+        assert result.status_code == 200 and '2 / 2' in result.text
+        assert 'Скачать ZIP' in result.text and 'csv-marker' in result.text
+        assert len([call for call in calls if call[0]=='generate-batch']) == 1
+        import json
+        artifact_id = json.loads(row.artifact_ids_json)[0]
+        forget_future(operation_id)
+        downloaded = client.get(f'/operations/{operation_id}/files/{artifact_id}')
+        assert downloaded.status_code == 200
+        import io, zipfile
+        assert zipfile.ZipFile(io.BytesIO(downloaded.content)).namelist() == ['alpha.ovpn','beta.ovpn']

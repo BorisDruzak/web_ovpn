@@ -955,6 +955,10 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
     user = require_user(request, db)
     await verify_csrf(request)
     form = await request.form()
+    form_values = {name: str(form.get(name) or "") for name in (
+        "client", "client_names", "creation_mode", "access_mode", "custom_cidrs",
+        "profile", "client_type", "vpn_ip", "remote_lan_cidr", "comment")}
+    form_values.update(dns=form.get("dns") == "1", create_server_route=bool(form.get("create_server_route")))
     action = str(form.get("action") or "preview")
     if action not in {"preview", "generate"}:
         raise HTTPException(status_code=400, detail="invalid action")
@@ -975,7 +979,7 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             args.extend(["--comment", comment])
         profiles_data, profiles_error = cli_call(request, ["profiles"])
         result, error = cli_call(request, args, timeout=180 if action == "generate" else 60)
-        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error or profiles_error, "result": result, "form_values": {"client": client, "profile": template, "comment": comment}}, db)
+        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error or profiles_error, "result": result, "form_values": form_values}, db)
     upload = form.get("clients_csv")
     csv_bytes = await upload.read() if creation_mode == "bulk" and getattr(upload, "filename", "") else None
     try:
@@ -988,12 +992,12 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             raise ClientBatchInputError("select an access mode")
     except ClientBatchInputError as exc:
         profiles_data, _ = cli_call(request, ["profiles"])
-        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": str(exc)}, db, status_code=400)
+        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": str(exc), "form_values": form_values}, db, status_code=400)
     profiles_data, profiles_error = cli_call(request, ["profiles"])
     if access_mode == "custom":
         network_data, network_error = cli_call(request, ["networks", "list"])
         if network_error:
-            return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": network_error}, db, status_code=400)
+            return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": network_error, "form_values": form_values}, db, status_code=400)
         existing_cidrs = {
             str(row.get("cidr"))
             for row in network_data.get("networks", [])
@@ -1004,7 +1008,7 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
                 continue
             _, error = cli_call(request, ["networks", "add", cidr, "--tag", "custom-route", "--no-nat", "--comment", "added from client creation"], timeout=60)
             if error:
-                return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error}, db, status_code=400)
+                return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error, "form_values": form_values}, db, status_code=400)
     args = ["generate-batch"]
     for name in names:
         args.extend(["--client", name])
@@ -1059,7 +1063,7 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             "error": error or profiles_error or sync_error,
             "result": result,
             "requested_count": len(names),
-            "form_values": {
+            "form_values": {**form_values,
                 "client": names[0] if len(names) == 1 else "",
                 "profile": template,
                 "comment": comment,
@@ -2664,3 +2668,55 @@ def api_operation_verification(operation_id: str, payload: dict[str, Any], reque
     row.verified_at = utcnow()
     write_audit(db, request, actor, "operation-verified", "ok", "operator checked external result", target_client=row.id)
     return {"status": "ok", "operation_id": row.id}
+
+
+def completed_operation_response(operation_id: str):
+    from .panel_operations import execution_future
+    future = execution_future(operation_id)
+    if future is None:
+        raise HTTPException(410, detail="Ответ обработчика больше не хранится; проверьте историю и сохранённые файлы")
+    if not future.done():
+        raise HTTPException(409, detail="Операция ещё выполняется")
+    try:
+        response = future.result()
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+        raise HTTPException(502, detail="Внешний результат требует проверки") from None
+    except Exception:
+        raise HTTPException(502, detail="Внешний результат требует проверки") from None
+    if response is None:
+        raise HTTPException(410, detail="Ответ обработчика недоступен")
+    return response
+
+
+@app.get("/operations/{operation_id}/result")
+def operation_result(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username:
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    response = completed_operation_response(operation_id)
+    if isinstance(response, FileResponse):
+        # File responses must use the durable token references and their TTL,
+        # revocation and download capability checks, never this memory cache.
+        return redirect(f"/operations/{row.id}")
+    request.session["flashes"] = list(getattr(response, "_panel_flashes", []))
+    return response
+
+
+@app.get("/api/v1/operations/{operation_id}/result")
+def api_operation_result(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .api import require_api_actor
+    from .models import PanelOperation
+    from .permissions import check_service_permission
+    actor = require_api_actor(request, request.headers.get("Authorization"))
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "service:" + actor:
+        raise HTTPException(404)
+    check_service_permission(get_settings().api_permissions, row.permission)
+    response = completed_operation_response(operation_id)
+    return JSONResponse(response) if isinstance(response, dict) else response

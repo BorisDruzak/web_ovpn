@@ -7,8 +7,8 @@ import io
 import json
 from functools import wraps
 
-from fastapi import HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi import BackgroundTasks, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import FormData, UploadFile
 
@@ -91,7 +91,21 @@ def install_browser_operations(app) -> None:
             def execute():
                 with factory() as owned_db:
                     try:
-                        return asyncio.run(_handler(request=clone, db=owned_db, **arguments))
+                        async def invoke():
+                            owned_arguments = dict(arguments)
+                            tasks = None
+                            if "background_tasks" in owned_arguments:
+                                tasks = BackgroundTasks()
+                                owned_arguments["background_tasks"] = tasks
+                            response = await _handler(request=clone, db=owned_db, **owned_arguments)
+                            # FastAPI's request-attached queue cannot outlive the
+                            # owned execution. Complete these effects before its
+                            # durable result, with the operation ContextVars.
+                            if tasks is not None:
+                                await tasks()
+                            response._panel_flashes = list(clone.session.get("flashes", []))
+                            return response
+                        return asyncio.run(invoke())
                     finally:
                         for _, item in clone._form.multi_items():
                             if isinstance(item, UploadFile):
@@ -111,6 +125,19 @@ def install_browser_operations(app) -> None:
                 for _, item in clone._form.multi_items():
                     if isinstance(item, UploadFile):
                         item.file.close()
+            if _handler.__name__ == "new_client_action" and clone._form.get("action", "preview") == "preview":
+                from .panel_operations import execution_future
+                future = execution_future(operation["id"])
+                if future is None:
+                    return RedirectResponse(operation["status_url"], status_code=303)
+                response = await asyncio.shield(asyncio.wrap_future(future))
+                request.session.update(clone.session)
+                response.headers["X-Operation-ID"] = operation["id"]
+                response.headers["Location"] = operation["status_url"]
+                return response
+            if _handler.__name__ == "network_asset_fingerprint_ensure":
+                return JSONResponse({"status": "scheduled", "operation": operation}, status_code=202,
+                    headers={"X-Operation-ID": operation["id"], "Location": operation["status_url"]})
             return RedirectResponse(operation["status_url"], status_code=303,
                 headers={"X-Operation-ID": operation["id"]})
 

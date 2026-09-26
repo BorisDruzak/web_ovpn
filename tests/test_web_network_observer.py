@@ -12,6 +12,26 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+class CompletedOperationsClient(TestClient):
+    """Legacy domain assertions follow the owned asynchronous result resource.
+
+    Acceptance/barrier/duplicate/reload behavior is tested separately in
+    test_panel_operations; these assertions still check the original handler's
+    result, target, command budget and audits after durable completion.
+    """
+    def post(self, url, **kwargs):
+        response = super().post(url, **kwargs)
+        operation_id = response.headers.get('x-operation-id')
+        if not operation_id and '/operations/' in str(response.url):
+            operation_id = str(response.url).rsplit('/', 1)[-1]
+        if operation_id and not str(url).startswith('/api/'):
+            from test_routes_smoke import wait_operation
+            wait_operation(self, response)
+            return self.get('/operations/'+operation_id+'/result',
+                follow_redirects=kwargs.get('follow_redirects', True))
+        return response
+
+
 def make_executable(path: Path, content: str) -> Path:
     script_path = path.with_suffix(".py") if os.name == "nt" else path
     script_path.write_text(content, encoding="utf-8")
@@ -227,7 +247,7 @@ def make_client(tmp_path, monkeypatch, *, include_telemetry: bool = False):
     app.db.reset_engine_cache()
     importlib.reload(app.main)
     app.db.init_db()
-    return TestClient(app.main.app), {"Authorization": f"Bearer {token}"}
+    return CompletedOperationsClient(app.main.app), {"Authorization": f"Bearer {token}"}
 
 
 def login(client: TestClient) -> str:

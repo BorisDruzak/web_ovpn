@@ -35,6 +35,8 @@
 <p class="warn">Проверьте внешний результат и аудит перед следующим действием. Автоматический повтор отключён.</p>{% endif %}
 <ul>{% for phase in operation.phases %}<li data-phase="{{ phase.phase }}">{{ phases.get(phase.phase, "Внешнее действие") }}: {{ labels.get(phase.status, phase.status) }}</li>{% endfor %}</ul>
 {% for artifact in operation.artifacts %}<a class="button" href="{{ artifact }}">Скачать файл</a>{% endfor %}
+{% if operation.result_available %}<a class="button secondary" href="{{ operation.result_url }}">Открыть результат и сообщения</a>
+{% elif operation.status not in ['registered', 'running'] %}<p>Ответ обработчика недоступен после перезапуска или очистки памяти. История и ссылки на сохранённые файлы остаются доступными.</p>{% endif %}
 <a href="/clients">Реестр клиентов</a>
 <a href="/network/hosts">Устройства сети</a>
 </section>
