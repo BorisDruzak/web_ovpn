@@ -144,6 +144,44 @@ def test_html_delete_confirmation_owner_permissions_and_restore(tmp_path, monkey
     assert client.get(f'/inventory/deleted/{pc}').status_code == 403
 
 
+def test_deleted_card_renders_preserved_netctl_history_without_source_reads(tmp_path, monkeypatch):
+    client, _, data = workplace(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    from app.inventory.netctl_bindings import confirm
+    from app.inventory.lifecycle import soft_delete, historical_asset, restore
+    import app.inventory.network_links as network_links
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Historical card must not read Netctl')
+
+    monkeypatch.setattr(network_links, 'run_netctl', forbidden)
+    pc = data['pc']['id']
+    host = {'device_key':'mac:02:00:00:00:00:11', 'mac':'02:00:00:00:00:11',
+        'ip':'192.0.2.111', 'hostname':'historical-synthetic-interface'}
+    with get_sessionmaker()() as db:
+        asset = db.get(InventoryAsset, pc)
+        confirm(db, host['device_key'], pc, expected_revision=asset.manual_revision,
+            actor='synthetic-confirm-author', reason='Physical comparison', hosts=[host])
+        db.refresh(asset)
+        soft_delete(db, pc, expected_revision=asset.manual_revision,
+            actor='synthetic-delete-author', reason='Historical duplicate')
+        db.commit()
+    page = client.get(f'/inventory/deleted/{pc}')
+    assert page.status_code == 200
+    for value in ('Сетевые связи Netctl', host['device_key'], host['ip'], host['hostname'],
+            'synthetic-confirm-author', 'synthetic-delete-author', 'Завершено'):
+        assert value in page.text
+    assert '/inventory/network-links?' not in page.text
+    with get_sessionmaker()() as db:
+        deleted = historical_asset(db, pc)
+        restore(db, pc, expected_revision=deleted.manual_revision, actor='synthetic')
+        db.commit()
+    restored_page = client.get(f'/inventory/assets/{pc}')
+    assert restored_page.status_code == 200
+    assert host['device_key'] in restored_page.text and 'Завершено' in restored_page.text
+
+
 def test_repeatable_lifecycle_upgrade_retains_old_card(tmp_path, monkeypatch):
     _, _, data = workplace(tmp_path, monkeypatch)
     from app.db import get_engine, init_db, get_sessionmaker

@@ -22,6 +22,17 @@
   <h3>Фото</h3>{% for row in photos %}<p><a href="/inventory/deleted/{{ asset.id }}/photos/{{ row.id }}">{{ row.original_filename }}</a> · сохранено {{ row.created_at }}</p>{% else %}<p>Фото нет.</p>{% endfor %}
   <h3>Отношения рабочего места</h3>{% for row in relations %}<p>{{ row.parent_asset_id }} → {{ row.child_asset_id }} · завершено {{ row.ended_at or '—' }}</p>{% endfor %}
   <h3>Внешние связи</h3>{% for row in bindings %}<p>{{ row.source }} · {{ row.external_id }} · {{ row.status.value }} · {{ row.ended_at or '—' }}</p>{% endfor %}
+  <h3>Сетевые связи Netctl</h3>
+  <p>Показаны последние 100 записей. Более ранняя история сохранена в базе.</p>
+  {% for row in network_links or [] %}
+  <article>
+    <p>{{ row.network_key }} · {{ {'confirmed':'Связано','candidate':'Кандидат','rejected':'Отклонено','ended':'Завершено'}.get(row.status.value, row.status.value) }}</p>
+    <p>Последнее сохранённое наблюдение: IP {{ row.observation_json.get('ip') or 'Неизвестен' }} · {{ row.observation_json.get('hostname') or 'Имя неизвестно' }} · {{ row.observed_at or 'Время неизвестно' }}</p>
+    <p>Создано {{ row.created_at }} пользователем {{ row.created_by }}.</p>
+    {% if row.confirmed_at %}<p>Подтверждено {{ row.confirmed_at }} пользователем {{ row.confirmed_by }}. Причина: {{ row.confirmation_reason or '—' }}</p>{% endif %}
+    {% if row.ended_at %}<p>Завершено {{ row.ended_at }} пользователем {{ row.ended_by }}. Причина: {{ row.end_reason or '—' }}</p>{% endif %}
+  </article>
+  {% else %}<p>Сохранённых сетевых связей нет.</p>{% endfor %}
   <h3>Наблюдения</h3>{% for row in observations %}<details><summary>{{ row.source.value }} · {{ row.observed_at }}</summary><pre>{{ row.data_json | tojson(indent=2) }}</pre></details>{% endfor %}
   <h3>Проверки</h3>{% for row in checks %}<p>{{ row.checked_at }} · {{ row.checked_by }} · {{ row.result.value }} · {{ row.notes or '' }}</p>{% endfor %}
 </section>
