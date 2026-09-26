@@ -46,6 +46,7 @@ def main():
             (f"192.0.2.{number}", f"synthetic-{number}", now))
     network.commit()
     network.execute("UPDATE network_hosts SET mac='02:00:00:00:00:24',device_key='mac:02:00:00:00:00:24' WHERE ip='192.0.2.24'")
+    network.execute("UPDATE network_hosts SET mac='02:00:00:00:01:24',device_key='mac:02:00:00:00:01:24' WHERE ip='192.0.2.124'")
     network.commit()
     refresh_host_snapshot(network, now=now)
     network.close()
@@ -57,6 +58,11 @@ def main():
     import app.inventory.web
     app.inventory.web.run_netctl = forbidden
     def saved_network(args, **kwargs):
+        if args[:2] == ['context-view','asset'] and args[-1] in {'mac:02:00:00:00:00:24','mac:02:00:00:00:01:24'}:
+            number = '124' if args[-1].endswith('01:24') else '24'
+            return {'context': {'asset': {'asset_key':args[-1], 'manual_name':'Synthetic browser device '+number},
+                'network': {'ip_observations':[{'ip':'192.0.2.'+number}]}, 'freshness':{}}}
+
         if args == ['runtime-assets','inspect','mac:02:00:00:00:00:24']:
             return {'runtime_asset':{'asset':{'asset_key':args[2],'provisional':0},
                 'interfaces':[{'mac':'02:00:00:00:00:24'}],
@@ -85,6 +91,12 @@ def main():
             data = list_host_snapshot(connection,filters,page,limit)
             if projection is not None:
                 data['inventory_projection_revision'] = projection['revision']
+            for host in data['hosts']:
+                state = {'192.0.2.1':'online','192.0.2.2':'seen','192.0.2.3':'offline','192.0.2.4':'stale','192.0.2.5':'unknown'}.get(host['ip'])
+                if state:
+                    host['status'] = state
+                    host['availability'] = {'state':state, 'active_method':'icmp' if state=='online' else None,
+                        'passive_evidence':['mikrotik_arp'] if state=='seen' else [], 'checked_at':now}
             data["pagination"] = {key: data[key] for key in ("page", "limit", "total", "pages")}
             return data
         finally:

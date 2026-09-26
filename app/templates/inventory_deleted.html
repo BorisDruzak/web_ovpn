@@ -6,7 +6,7 @@
   <a class="button secondary" href="/inventory">К инвентаризации</a>
   <p>Карточки и история сохранены. Восстановление не возвращает старые связи автоматически.</p>
   {% for asset in deleted_assets %}
-  <article class="inventory-card"><a href="/inventory/deleted/{{ asset.id }}">{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }}</a>
+  <article class="inventory-card"><a href="/inventory/deleted/{{ asset.id }}?return_url={{ list_context(request)|urlencode }}">{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }}</a>
     <p>{{ asset.deleted_at }} · {{ asset.deleted_by }} · {{ asset.deletion_reason }}</p>
   </article>
   {% else %}<p>Удалённых карточек нет.</p>{% endfor %}

@@ -705,11 +705,11 @@ def test_network_hosts_links_known_assets_without_changing_ip_fallback(tmp_path,
     page = client.get("/network/hosts?q=desktop")
 
     assert page.status_code == 200
-    assert 'href="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01"' in page.text
-    assert 'href="/network/hosts/192.168.100.55"' in page.text
+    assert 'href="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01?return_url=' in page.text
+    assert 'href="/network/hosts/192.168.100.55?return_url=' in page.text
     all_hosts = client.get("/network/hosts")
-    assert 'href="/network/assets/legacy-host%3Adesk%3Fold"' in all_hosts.text
-    assert 'href="/network/hosts/192.168.0.12"' in all_hosts.text
+    assert 'href="/network/assets/legacy-host%3Adesk%3Fold?return_url=' in all_hosts.text
+    assert 'href="/network/hosts/192.168.0.12?return_url=' in all_hosts.text
 
 
 def test_network_hosts_url_encodes_reserved_asset_key_and_routes_exact_key(tmp_path, monkeypatch):
@@ -718,7 +718,7 @@ def test_network_hosts_url_encodes_reserved_asset_key_and_routes_exact_key(tmp_p
 
     hosts_page = client.get("/network/hosts")
 
-    assert 'href="/network/assets/legacy-host%3Adesk%3Fold"' in hosts_page.text
+    assert 'href="/network/assets/legacy-host%3Adesk%3Fold?return_url=' in hosts_page.text
     asset_page = client.get("/network/assets/legacy-host:desk%3Fold")
     assert asset_page.status_code == 200
     assert "legacy-host:desk?old" in asset_page.text
@@ -1145,7 +1145,7 @@ def test_network_hosts_searches_manual_name_and_stable_host_identifiers(tmp_path
     page = client.get("/network/hosts", params={"q": query})
 
     assert page.status_code == 200
-    assert 'href="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01"' in page.text
+    assert 'href="/network/assets/mac%3AAA%3ABB%3ACC%3ADD%3AEE%3A01?return_url=' in page.text
 
 
 def test_network_asset_card_keeps_manual_name_ip_and_hostname_in_separate_rows(tmp_path, monkeypatch):
@@ -1652,7 +1652,7 @@ def test_host_list_uses_snapshot_while_details_keep_openvpn_view(tmp_path, monke
     assert listed.json()["data"]["hosts"][0]["status"] == "online"
     assert listed.json()["data"]["hosts"][0]["availability"]["reason"] == "active_probe"
     assert api_detail.json()["data"]["host"]["status"] == "connected"
-    assert "<dt>Статус</dt><dd>online · ICMP</dd>" in page_detail.text
+    assert "<dt>Статус</dt><dd>Доступен · ICMP</dd>" in page_detail.text
     assert api_detail.json()["data"]["host"]["availability"]["reason"] == "openvpn_management"
     assert "socket timeout" not in api_detail.text
     assert "socket timeout" not in page_detail.text
@@ -2092,8 +2092,8 @@ def test_host_pages_render_russian_availability_evidence_and_csrf_only_actions(t
     detail = client.get("/network/hosts/192.168.99.44")
 
     assert listed.status_code == detail.status_code == 200
-    assert 'href="/network/hosts/192.168.99.44"' in listed.text
-    assert "online · TCP:443" in listed.text
+    assert 'href="/network/hosts/192.168.99.44?return_url=' in listed.text
+    assert "Доступен · TCP:443" in listed.text
     assert "Доступность" in detail.text
     assert "Свежесть наблюдений" in detail.text
     assert "192.168.99.0/24" in detail.text

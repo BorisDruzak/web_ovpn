@@ -564,3 +564,23 @@ th.actions {
     padding: 68px 12px 12px;
   }
 }
+
+/* Task navigation and keyboard access. */
+.sidebar { overflow-y: auto; }
+.nav-group summary { padding: 10px 8px; color: #fff; font-weight: 700; cursor: pointer; }
+.nav-group a { display: block; padding: 8px 12px; }
+:focus-visible { outline: 3px solid #b36b00; outline-offset: 3px; }
+.sidebar :focus-visible { outline-color: #fbbf24; }
+.skip-link { position: fixed; z-index: 1100; left: 12px; top: -70px; padding: 12px; background: white; }
+.skip-link:focus { top: 12px; }
+.host-view-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 12px 0; }
+.host-view-controls label { display: grid; gap: 4px; }
+[data-network-hosts][data-table-mode="operational"] tr > :is(th,td):nth-child(2),
+[data-network-hosts][data-table-mode="operational"] tr > :is(th,td):nth-child(5),
+[data-network-hosts][data-table-mode="operational"] tr > :is(th,td):nth-child(n+9):nth-child(-n+14) { display: none; }
+[data-network-hosts] .empty { display: table-cell !important; }
+@media (max-width: 600px) { .host-view-controls > * { max-width: 100%; } .host-view-controls input, .host-view-controls select { max-width: 100%; min-height: 44px; } }
+
+[data-host-mode][aria-pressed="true"] { background: var(--primary); color: white; border-color: var(--primary); }
+[data-host-pagination-controls] form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+[data-host-pagination-controls] input[type="number"] { width: 100px; }

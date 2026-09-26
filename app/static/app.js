@@ -200,6 +200,7 @@ document.addEventListener("DOMContentLoaded", () => {
       mobileNavToggle.setAttribute("aria-label", open ? "Свернуть меню" : "Открыть меню");
       mobileNavBackdrop.hidden = !open;
       document.body.classList.toggle("mobile-nav-open", open);
+      document.querySelector("main.shell").inert = open;
       mobileNav.inert = mobileBreakpoint.matches && !open;
       if (mobileBreakpoint.matches) {
         mobileNav.setAttribute("aria-hidden", String(!open));
@@ -221,6 +222,12 @@ document.addEventListener("DOMContentLoaded", () => {
     mobileNav.querySelectorAll("a").forEach((link) => link.addEventListener("click", () => setMobileNavOpen(false)));
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") setMobileNavOpen(false);
+      if (event.key === "Tab" && mobileNav.classList.contains("mobile-open")) {
+        const controls = [mobileNavToggle, ...mobileNav.querySelectorAll("a, summary")].filter(node => node.getClientRects().length && (node.tagName === "SUMMARY" || !node.closest("details:not([open])")));
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
     });
     mobileBreakpoint.addEventListener("change", () => setMobileNavOpen(false));
     setMobileNavOpen(false);

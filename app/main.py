@@ -143,7 +143,7 @@ def availability_reason_label(value: object) -> str:
         "openvpn_management": "сессия OpenVPN",
         "not_monitored": "не мониторится",
     }
-    reason = str(value or "").split(maxsplit=1)[0]
+    reason = next(iter(str(value or "").split(maxsplit=1)), "")
     return labels.get(reason, "")
 
 
@@ -162,20 +162,23 @@ def availability_status_label(host: object) -> str:
     method = availability_method_label(availability.get("active_method"))
     evidence = availability_evidence_label(availability.get("passive_evidence"), "/")
     if state == "online":
-        return f"online · {method}" if method else "не мониторится"
+        return f"Доступен · {method}" if method else "Неизвестно"
     if state == "seen":
-        return f"seen · {evidence}" if evidence else "seen"
+        return f"Наблюдался · {evidence}" if evidence else "Наблюдался"
     if state == "offline":
-        return "offline"
+        return "Нет ответа"
     if state == "not_monitored":
         return "не мониторится"
     if state == "stale":
         return "данные устарели"
     if state == "connected" or host_status == "connected":
         return "VPN подключён"
-    return "не мониторится"
+    return "Неизвестно"
 
 
+from .navigation import safe_return_url, return_link, list_context
+from .permissions import user_has_permission
+templates.env.globals.update(safe_return_url=safe_return_url, return_link=return_link, list_context=list_context)
 templates.env.globals["csrf_token"] = csrf_token
 templates.env.globals["category_labels"] = CATEGORY_LABELS
 templates.env.globals["device_type_labels"] = DEVICE_TYPE_LABELS
@@ -230,6 +233,7 @@ def render(
         {
             "request": request,
             "user": user,
+            "can_delete_inventory": user_has_permission(user, "inventory:delete"),
             "flashes": pop_flashes(request),
             "settings": get_settings(),
         }

@@ -95,8 +95,8 @@ def test_inventory_page_requires_login_and_has_mobile_capture_controls(tmp_path,
     assert "ИНВЕНТАРИЗАЦИЯ" in page.text
     assert "inventory-mobile" in page.text
     assert "/static/inventory.css?v=endpoint-2" in page.text
-    assert "/static/app.css?v=d7c1a62" in page.text
-    assert "/static/app.js?v=d7c1a62" in page.text
+    assert "/static/app.css?v=panel-nav-1" in page.text
+    assert "/static/app.js?v=panel-nav-1" in page.text
     assert 'class="mobile-nav-toggle"' in page.text
     assert 'aria-controls="primary-navigation"' in page.text
     assert 'id="primary-navigation"' in page.text

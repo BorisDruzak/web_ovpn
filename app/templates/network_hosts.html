@@ -3,58 +3,68 @@
 {% block page_title %}Все IP и устройства{% endblock %}
 {% block content %}
 {% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
-<form class="toolbar" method="get" action="/network/hosts">
-  <input name="q" value="{{ filters.q }}" placeholder="Поиск по IP, MAC, имени">
+<form data-host-filters class="toolbar" method="get" action="/network/hosts">
+  <label>Поиск по IP, MAC, имени<input name="q" value="{{ filters.q }}" placeholder="Поиск по IP, MAC, имени"></label>
   <label>Учёт в инвентаризации<select name="inventory_link">
     {% for value,label in {'all':'Все состояния связи','linked':'Связанные','unlinked':'Несвязанные','candidates':'Есть кандидаты','conflicts':'Конфликт / неоднозначность'}.items() %}
     <option value="{{ value }}"{% if filters.inventory_link == value %} selected{% endif %}>{{ label }}</option>
     {% endfor %}
   </select></label>
-  <select name="category">
+  <label>Категория устройства<select name="category">
     {% for value, label in {"all":"Все типы без шума","local_device":"Обычная сеть","vpn_client":"VPN","router":"Роутер","site_device":"Site-to-site","network_infra":"Сетевая инфраструктура","telephony":"Телефония","mgmt":"Управление","wan":"WAN/провайдер","vipnet_transit":"ViPNet transit","unknown":"Неизвестно","noise":"Шум"}.items() %}
     <option value="{{ value }}" {% if filters.category == value %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
-  </select>
-  <select name="status">
-    <option value="current" {% if filters.status == "current" %}selected{% endif %}>current</option>
-    {% for value, label in {"all":"Все статусы","online":"online","seen":"seen","offline":"offline","connected":"connected"}.items() %}
+  </select></label>
+  <label>Состояние доступности<select name="status">
+    <option value="current" {% if filters.status == "current" %}selected{% endif %}>Актуальные состояния</option>
+    {% for value, label in {"all":"Все статусы","online":"Доступен (активная проверка)","seen":"Наблюдался (пассивные данные)","offline":"Нет ответа","connected":"VPN подключён"}.items() %}
     <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
     <option value="stale" {% if filters.status == "stale" %}selected{% endif %}>данные устарели</option>
-  </select>
-  <select name="seen_within">
+  </select></label>
+  <label>Период наблюдений<select name="seen_within">
     {% for value, label in {"1h":"За 1 час","24h":"За 24 часа","7d":"За 7 дней","30d":"За 30 дней","all":"За всё время"}.items() %}
     <option value="{{ value }}" {% if filters.seen_within == value %}selected{% endif %}>{{ label }}</option>
     {% endfor %}
-  </select>
-  <select name="source">
+  </select></label>
+  <label>Источник данных<select name="source">
     <option value="all">Все источники</option>
     {% for source in sources %}
     <option value="{{ source.name }}" {% if filters.source == source.name %}selected{% endif %}>{{ source.name }}</option>
     {% endfor %}
-  </select>
-  <select name="network">
+  </select></label>
+  <label>Сеть<select name="network">
     <option value="all">Все сети</option>
     {% for cidr in network_filters %}
     <option value="{{ cidr }}" {% if filters.network == cidr %}selected{% endif %}>{{ cidr }}</option>
     {% endfor %}
-  </select>
-  <select name="has_hostname">
+  </select></label>
+  <label>Наличие имени<select name="has_hostname">
     <option value="">Имя: любое</option>
     <option value="yes" {% if filters.has_hostname == "yes" %}selected{% endif %}>Есть имя</option>
     <option value="no" {% if filters.has_hostname == "no" %}selected{% endif %}>Без имени</option>
-  </select>
-  <select name="has_mac">
+  </select></label>
+  <label>Наличие MAC<select name="has_mac">
     <option value="">MAC: любой</option>
     <option value="yes" {% if filters.has_mac == "yes" %}selected{% endif %}>Есть MAC</option>
     <option value="no" {% if filters.has_mac == "no" %}selected{% endif %}>Без MAC</option>
-  </select>
+  </select></label>
   <button class="button secondary" type="submit">Фильтр</button>
   <label>На странице<select name="limit" aria-label="На странице">
     {% for value in [25, 50, 100, 250] %}<option value="{{ value }}" {% if pagination.limit == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
   </select></label>
 </form>
-<section class="table-wrap" data-network-hosts data-snapshot-id="{{ snapshot.snapshot_id }}" data-projection-version="{{ projection_version }}">
+<section class="host-view-controls" aria-label="Представление устройств" data-host-views data-preference-user="{{ user.id }}">
+  <fieldset><legend>Режим таблицы</legend><button type="button" class="button secondary" data-host-mode="operational" aria-pressed="true">Краткий</button> <button type="button" class="button secondary" data-host-mode="diagnostic" aria-pressed="false">Диагностический</button></fieldset>
+  <label>Сохранённое представление<select data-saved-views><option value="">Выберите представление</option></select></label>
+  <button type="button" class="button secondary" data-view-apply>Применить</button>
+  <button type="button" class="button secondary" data-view-delete>Удалить представление</button>
+  <label>Название представления<input data-view-name maxlength="60" autocomplete="off"></label>
+  <button type="button" class="button secondary" data-view-save>Сохранить фильтры</button>
+  <p class="muted">Настройки сохраняются для вашего пользователя в этом браузере. Поисковый текст и ввод карточек не сохраняются.</p>
+  <p data-view-feedback role="status" aria-live="polite"></p>
+</section>
+<section class="table-wrap" data-table-mode="operational" data-list-context="{{ list_context(request) }}" data-network-hosts data-snapshot-id="{{ snapshot.snapshot_id }}" data-projection-version="{{ projection_version }}">
   <p class="muted" data-host-snapshot-state data-state="{{ snapshot_state }}">
     {% if snapshot_state == "pending" %}
     Снимок ещё не опубликован. Ожидание данных.
@@ -76,8 +86,10 @@
     </form>
   </nav>
   <p class="alert bad" data-host-refresh-warning role="status" hidden></p>
+  <p class="muted">Доступен — есть результат активной проверки. Наблюдался — только пассивные данные, доступность не доказана. Неизвестно, не мониторится и устаревшие данные не означают отсутствие ответа.</p>
   <table>
-    <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Endpoint Agent</th><th>Инвентаризация</th><th>Last active check</th><th>Evidence</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
+    <caption>Устройства сети. Полные данные доступны в диагностическом режиме и карточке.</caption>
+    <thead><tr><th>IP</th><th>MAC</th><th>Имя / Hostname / VPN CN</th><th>Тип</th><th>Категория</th><th>Доступность</th><th>Агент Endpoint</th><th>Инвентаризация</th><th>Последняя активная проверка</th><th>Основание</th><th>Источники</th><th>Теги</th><th>Площадка</th><th>Последнее наблюдение</th><th class="actions">Действия</th></tr></thead>
     <tbody data-hosts-rows>
       {% for host in hosts %}
       <tr>
@@ -90,7 +102,7 @@
         </td>
         <td><span class="badge {{ host.category|status_class }}">{{ category_labels.get(host.category, host.category) }}</span></td>
         <td>
-          <a href="/network/hosts/{{ host.ip }}" title="Открыть доступность устройства">
+          <a href="/network/hosts/{{ host.ip }}?return_url={{ list_context(request)|urlencode }}" title="Открыть доступность устройства">
             <span class="badge {{ host.status|status_class }}">{{ availability_status_label(host) }}</span>
           </a>
         </td>
@@ -98,7 +110,7 @@
           <span class="badge {% if host.endpoint_agent.state == 'confirmed' %}ok{% else %}muted{% endif %}">{{ {'confirmed':'Подтверждённая связь','disabled':'Интеграция отключена','unbound':'Нет подтверждённой привязки','candidate':'Есть кандидат','ambiguous':'Неоднозначность','unknown':'Состояние неизвестно'}.get(host.endpoint_agent.state, 'Состояние неизвестно') }}</span>
           {% if host.endpoint_agent.state == 'confirmed' %}<span class="muted">{{ {'fresh':'Данные актуальны','stale':'Данные устарели','unavailable':'Источник недоступен','unknown':'Актуальность неизвестна'}.get(host.endpoint_agent.freshness, 'Актуальность неизвестна') }}</span>{% endif %}
         </td>
-        <td>{% set inventory = host.inventory %}<span class="badge muted">{{ {'linked':'Связано','unlinked':'Не связано','candidate':'Есть кандидаты','ambiguous':'Конфликт / неоднозначность'}.get(inventory.state,'Не связано') }}</span>{% if inventory.asset %}<a href="/inventory/assets/{{ inventory.asset.id }}">{{ inventory.asset.name }}</a><small>{{ inventory.asset.inventory_number or '' }} · {{ inventory.asset.location or 'Локация не указана' }} · {{ inventory.asset.assigned_person_name or 'Ответственный не указан' }}</small>{% endif %}{% if host.device_key.startswith('mac:') %}<a href="/inventory/network-links?network_key={{ host.device_key|urlencode }}">Сравнить / связать</a>{% endif %}</td>
+        <td>{% set inventory = host.inventory %}<span class="badge muted">{{ {'linked':'Связано','unlinked':'Не связано','candidate':'Есть кандидаты','ambiguous':'Конфликт / неоднозначность'}.get(inventory.state,'Не связано') }}</span>{% if inventory.asset %}<a href="/inventory/assets/{{ inventory.asset.id }}?return_url={{ list_context(request)|urlencode }}">{{ inventory.asset.name }}</a><small>{{ inventory.asset.inventory_number or '' }} · {{ inventory.asset.location or 'Локация не указана' }} · {{ inventory.asset.assigned_person_name or 'Ответственный не указан' }}</small>{% endif %}{% if host.device_key.startswith('mac:') %}<a href="/inventory/network-links?network_key={{ host.device_key|urlencode }}">Сравнить / связать</a>{% endif %}</td>
         {% if host.availability %}
         <td>{{ availability_method_label(host.availability.active_method) or "-" }}{% if host.availability.checked_at %} · {{ host.availability.checked_at }}{% endif %}</td>
         <td>{{ availability_evidence_label(host.availability.passive_evidence) or availability_reason_label(host.availability.reason) or "-" }}</td>
@@ -118,9 +130,9 @@
         <td>{{ host.site or "-" }}</td>
         <td>{{ host.last_seen_at or "-" }}</td>
         {% if is_runtime_asset_key(host.device_key) and (host.device_key.startswith("mac:") or host.device_key.startswith("legacy-host:")) %}
-        <td class="actions"><a class="button small secondary" href="/network/assets/{{ host.device_key|urlencode }}">Открыть</a></td>
+        <td class="actions"><a class="button small secondary" href="/network/assets/{{ host.device_key|urlencode }}?return_url={{ list_context(request)|urlencode }}">Открыть</a></td>
         {% else %}
-        <td class="actions"><a class="button small secondary" href="/network/hosts/{{ host.ip }}">Открыть</a></td>
+        <td class="actions"><a class="button small secondary" href="/network/hosts/{{ host.ip }}?return_url={{ list_context(request)|urlencode }}">Открыть</a></td>
         {% endif %}
       </tr>
       {% else %}
@@ -131,5 +143,6 @@
 </section>
 {% endblock %}
 {% block page_scripts %}
-<script src="{{ url_for('static', path='network-hosts-refresh.js') }}"></script>
+<script src="{{ url_for('static', path='network-hosts-views.js') }}?v=1"></script>
+<script src="{{ url_for('static', path='network-hosts-refresh.js') }}?v=t10"></script>
 {% endblock %}

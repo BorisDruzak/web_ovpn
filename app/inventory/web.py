@@ -49,6 +49,8 @@ from .storage import InventoryPhotoError, InventoryPhotoStorage
 router = APIRouter(tags=["inventory-web"])
 service = InventoryService()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+from ..navigation import safe_return_url, return_link, list_context
+templates.env.globals.update(safe_return_url=safe_return_url, return_link=return_link, list_context=list_context)
 templates.env.globals["csrf_token"] = csrf_token
 ASSET_LABELS = {
     InventoryAssetType.PC: "ПК",
@@ -738,8 +740,11 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
     process, created = form_drafts.get_process(request, db, user, _asset_edit_draft_key(asset_id), base_revision=asset.manual_revision)
+    if request.query_params.get("return_url"):
+        process.flow_json = {**(process.flow_json or {}), "return_url": safe_return_url(request.query_params["return_url"], "/inventory")}
+        db.commit()
     if created:
-        return _redirect(form_drafts.with_draft(_asset_url(asset_id, location_id), process.id))
+        return _redirect(form_drafts.with_draft(request.url.path + ("?" + request.url.query if request.url.query else ""), process.id))
     location = _flow_location(request, db, location_id)
     if location_id and location is not None and asset.location_id != location.id:
         raise HTTPException(status_code=404, detail="inventory asset not found")
@@ -868,6 +873,7 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
             raise HTTPException(status_code=404, detail="inventory asset not found")
     submitted_draft = await _new_asset_form_draft(request)
     process = await form_drafts.posted_process(request, db, user, _asset_edit_draft_key(asset_id))
+    saved_return_url = return_link(request, "", process)
     form_drafts.claim_for_save(db, process)
     try:
         raw_revision = submitted_draft.get("expected_revision", "")
@@ -894,7 +900,7 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
         _flash(request, "bad", "Не удалось сохранить устройство. Ввод сохранён; повторите позже.")
         return _redirect(form_drafts.with_draft(_asset_url(asset.id, return_location_id), process.id))
     _flash(request, "ok", "Устройство обновлено")
-    return _redirect(_location_url(return_location_id) if return_location_id else _asset_url(asset.id))
+    return _redirect(saved_return_url or (_location_url(return_location_id) if return_location_id else _asset_url(asset.id)))
 
 
 @router.post("/inventory/sessions")

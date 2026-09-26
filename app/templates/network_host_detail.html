@@ -4,7 +4,7 @@
 {% block content %}
 {% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
 <section class="toolbar">
-  <a class="button secondary" href="/network/hosts">Назад к списку</a>
+  <a class="button secondary" href="{{ return_link(request) }}">Назад к списку</a>
 </section>
 <section class="panel">
   <h2>{{ host.display_name or host.hostname or host.ip or ip }}</h2>

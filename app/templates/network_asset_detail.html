@@ -10,7 +10,7 @@
 {% set freshness = context.get("freshness") or {} %}
 {% set confirmed = attachment.get("status") == "confirmed" %}
 <section class="toolbar">
-  <a class="button secondary" href="/network/hosts">Назад к списку</a>
+  <a class="button secondary" href="{{ return_link(request) }}">Назад к списку</a>
   <a class="button secondary" href="/inventory/network-links?network_key={{ asset_key|urlencode }}">Сравнить с инвентаризацией</a>
 </section>
 {% if error %}

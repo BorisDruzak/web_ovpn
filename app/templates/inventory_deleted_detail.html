@@ -3,7 +3,7 @@
 {% block page_title %}Удалённое устройство{% endblock %}
 {% block content %}
 <section class="inventory-mobile">
-  <a href="/inventory/deleted">К удалённым</a>
+  <a href="{{ return_link(request, '/inventory/deleted') }}">К удалённым</a>
   <h2>{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }}</h2>
   <p>ID {{ asset.id }} · Локация {{ asset.location_id or 'не указана' }}</p>
   <p>Удалено {{ asset.deleted_at }} пользователем {{ asset.deleted_by }}. Причина: {{ asset.deletion_reason }}</p>

@@ -3,6 +3,7 @@
 {% block page_title %}{{ asset_labels[asset_type] }}{% endblock %}
 {% block content %}
 <section class="inventory-mobile inventory-form">
+  {% if asset %}<a class="button secondary" href="{{ return_link(request, ('/inventory/locations/' ~ return_location_id) if return_location_id else '/inventory', form_draft) }}">Назад к списку</a>{% endif %}
   {% macro endpoint_value(field) %}
   {% if endpoint_context %}{% set value = endpoint_context.sources.endpoint.get(field) %}
   {% if value is not none and value != '' %}

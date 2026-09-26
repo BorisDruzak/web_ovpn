@@ -2,6 +2,7 @@
   const root = document.querySelector("[data-network-hosts]");
   if (!root) return;
 
+  const withReturn = (url) => `${url}${url.includes("?") ? "&" : "?"}return_url=${encodeURIComponent(root.dataset.listContext || "/network/hosts")}`;
   const rows = root.querySelector("[data-hosts-rows]");
   const snapshotState = root.querySelector("[data-host-snapshot-state]");
   const pagination = root.querySelector("[data-host-pagination]");
@@ -60,12 +61,12 @@
     const availability = host.availability;
     if (!availability || typeof availability !== "object") return "не мониторится";
     const state = String(availability.state || "").toLowerCase();
-    if (state === "online") return availabilityMethod(availability.active_method) ? `online · ${availabilityMethod(availability.active_method)}` : "не мониторится";
-    if (state === "seen") return evidence(availability.passive_evidence, "/") ? `seen · ${evidence(availability.passive_evidence, "/")}` : "seen";
-    if (state === "offline") return "offline";
+    if (state === "online") return availabilityMethod(availability.active_method) ? `Доступен · ${availabilityMethod(availability.active_method)}` : "Неизвестно";
+    if (state === "seen") return evidence(availability.passive_evidence, "/") ? `Наблюдался · ${evidence(availability.passive_evidence, "/")}` : "Наблюдался";
+    if (state === "offline") return "Нет ответа";
     if (state === "stale") return "данные устарели";
     if (state === "connected" || host.status === "connected") return "VPN подключён";
-    return "не мониторится";
+    return state === "not_monitored" ? "не мониторится" : "Неизвестно";
   };
   const availabilityReason = (value) => ({
     active_probe: "активная проверка (active probe)", passive_evidence: "пассивные наблюдения",
@@ -92,7 +93,7 @@
     addBadge(categoryCell, categoryLabels[host.category] || host.category, statusClass(host.category));
     const statusCell = cell(row);
     const statusLink = document.createElement("a");
-    statusLink.href = `/network/hosts/${encodeURIComponent(host.ip || "")}`;
+    statusLink.href = withReturn(`/network/hosts/${encodeURIComponent(host.ip || "")}`);
     statusLink.title = "Открыть доступность устройства";
     addBadge(statusLink, availabilityStatus(host), statusClass(host.status));
     statusCell.append(statusLink);
@@ -109,7 +110,7 @@
       ambiguous: "Конфликт / неоднозначность"})[inventory.state] || "Не связано", "muted");
     if (inventory.asset) {
       const link = document.createElement("a");
-      link.href = `/inventory/assets/${encodeURIComponent(inventory.asset.id)}`;
+      link.href = withReturn(`/inventory/assets/${encodeURIComponent(inventory.asset.id)}`);
       link.textContent = inventory.asset.name;
       inventoryCell.append(link);
       addText(inventoryCell, ` ${inventory.asset.inventory_number || ""} · ${inventory.asset.location || "Локация не указана"} · ${inventory.asset.assigned_person_name || "Ответственный не указан"}`, "muted");
@@ -138,9 +139,9 @@
     const action = document.createElement("a");
     action.className = "button small secondary";
     const key = String(host.device_key || "");
-    action.href = (key.startsWith("mac:") || key.startsWith("legacy-host:"))
+    action.href = withReturn((key.startsWith("mac:") || key.startsWith("legacy-host:"))
       ? `/network/assets/${encodeURIComponent(key)}`
-      : `/network/hosts/${encodeURIComponent(host.ip || "")}`;
+      : `/network/hosts/${encodeURIComponent(host.ip || "")}`);
     action.textContent = "Открыть";
     actionsCell.append(action);
     return row;
