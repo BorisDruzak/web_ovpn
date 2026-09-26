@@ -9,6 +9,36 @@ NODE = shutil.which("node")
 SCRIPT = Path(__file__).parents[1] / "app" / "static" / "network-asset-fingerprint.js"
 
 
+@pytest.mark.skipif(NODE is None, reason="node is required for browser lifecycle tests")
+def test_new_stale_panel_uses_new_intent_while_same_panel_submits_once():
+    run_node(r'''
+const assert = require("node:assert/strict");
+const { createFingerprintPoller } = require(process.argv[1]);
+(async () => {
+  const keys = [];
+  const options = {
+    ensureUrl: "/ensure", statusUrl: "/status", csrfToken: "synthetic",
+    initialStatus: "stale", initialGeneration: "old-run",
+    fetchImpl: async (_url, options) => {
+      if (options.method === "POST") {
+        keys.push(new URLSearchParams(options.body).get("operation_key"));
+        return {ok:true,status:202};
+      }
+      return {ok:true,status:200,json:async()=>({status:"success",fresh:true,generation:"new-run"})};
+    },
+    now:()=>0, isVisible:()=>true, setTimer:()=>0, clearTimer:()=>{}, render:()=>{}
+  };
+  const first = createFingerprintPoller(options);
+  await first.start(); await first.start();
+  const reloaded = createFingerprintPoller(options);
+  await reloaded.start();
+  assert.equal(keys.length, 2);
+  keys.forEach(key=>assert.match(key,/^[0-9a-f]{32}$/));
+  assert.notEqual(keys[0],keys[1]);
+})();
+''')
+
+
 def run_node(source: str) -> None:
     completed = subprocess.run(
         [NODE, "-e", source, str(SCRIPT)],
@@ -65,7 +95,9 @@ const { createFingerprintPoller } = require(process.argv[1]);
   await poller.start();
   await poller.start();
   assert.equal(requests.filter((item) => item.method === "POST").length, 1);
-  assert.equal(requests[0].body, "csrf_token=csrf-value");
+  const submitted = new URLSearchParams(requests[0].body);
+  assert.equal(submitted.get("csrf_token"), "csrf-value");
+  assert.match(submitted.get("operation_key"), /^[0-9a-f]{32}$/);
   assert.equal(statusCalls, 1);
   assert.equal(scheduled.length, 1);
   assert.equal(scheduled[0].delay, 2000);

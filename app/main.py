@@ -200,6 +200,9 @@ async def request_id_middleware(request: Request, call_next):
 
 
 def add_flash(request: Request, category: str, message: str) -> None:
+    from .panel_operations import phase
+    if category == "bad":
+        phase("handler-result", "failed")
     flashes = list(request.session.get("flashes", []))
     flashes.append({"category": category, "message": message})
     request.session["flashes"] = flashes[-5:]
@@ -218,6 +221,9 @@ def render(
     db: Session,
     status_code: int = 200,
 ) -> HTMLResponse:
+    from .panel_operations import phase
+    if context.get("error"):
+        phase("handler-result", "failed")
     user = current_user(request, db)
     context.update(
         {
@@ -793,22 +799,24 @@ def cli_call(request: Request, args: list[str], timeout: int | None = None) -> t
     try:
         return run_vpnctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", ""))), None
     except VpnctlError as exc:
+        from .panel_operations import safe_external_error
         message = exc.message
         if exc.stderr:
             message = f"{message}: {exc.stderr.strip()[:500]}"
-        return {}, message
+        return {}, safe_external_error(message)
 
 
 def net_cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
     try:
         return run_netctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", ""))), None
     except NetctlError as exc:
+        from .panel_operations import safe_external_error
         message = exc.message
         if exc.stderr:
             message = f"{message}: {exc.stderr.strip()[:500]}"
         elif exc.stdout:
             message = f"{message}: {exc.stdout.strip()[:500]}"
-        return {}, message
+        return {}, safe_external_error(message)
 
 
 def list_from(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
@@ -951,6 +959,10 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
     user = require_user(request, db)
     await verify_csrf(request)
     form = await request.form()
+    form_values = {name: str(form.get(name) or "") for name in (
+        "client", "client_names", "creation_mode", "access_mode", "custom_cidrs",
+        "profile", "client_type", "vpn_ip", "remote_lan_cidr", "comment")}
+    form_values.update(dns=form.get("dns") == "1", create_server_route=bool(form.get("create_server_route")))
     action = str(form.get("action") or "preview")
     if action not in {"preview", "generate"}:
         raise HTTPException(status_code=400, detail="invalid action")
@@ -971,7 +983,7 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             args.extend(["--comment", comment])
         profiles_data, profiles_error = cli_call(request, ["profiles"])
         result, error = cli_call(request, args, timeout=180 if action == "generate" else 60)
-        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error or profiles_error, "result": result, "form_values": {"client": client, "profile": template, "comment": comment}}, db)
+        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error or profiles_error, "result": result, "form_values": form_values}, db)
     upload = form.get("clients_csv")
     csv_bytes = await upload.read() if creation_mode == "bulk" and getattr(upload, "filename", "") else None
     try:
@@ -984,12 +996,12 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             raise ClientBatchInputError("select an access mode")
     except ClientBatchInputError as exc:
         profiles_data, _ = cli_call(request, ["profiles"])
-        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": str(exc)}, db, status_code=400)
+        return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": str(exc), "form_values": form_values}, db, status_code=400)
     profiles_data, profiles_error = cli_call(request, ["profiles"])
     if access_mode == "custom":
         network_data, network_error = cli_call(request, ["networks", "list"])
         if network_error:
-            return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": network_error}, db, status_code=400)
+            return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": network_error, "form_values": form_values}, db, status_code=400)
         existing_cidrs = {
             str(row.get("cidr"))
             for row in network_data.get("networks", [])
@@ -1000,7 +1012,7 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
                 continue
             _, error = cli_call(request, ["networks", "add", cidr, "--tag", "custom-route", "--no-nat", "--comment", "added from client creation"], timeout=60)
             if error:
-                return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error}, db, status_code=400)
+                return render(request, "client_new.html", {"profiles": profiles_list(profiles_data), "error": error, "form_values": form_values}, db, status_code=400)
     args = ["generate-batch"]
     for name in names:
         args.extend(["--client", name])
@@ -1031,6 +1043,8 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
                 )
                 result["download_url"] = f"/download/{token}"
             except (ClientBatchInputError, OSError, ValueError, KeyError) as exc:
+                from .panel_operations import phase
+                phase("file", "failed")
                 sync_error = str(exc)
         if sync_error:
             add_flash(request, "bad", f"Профиль создан, но автосинхронизация не прошла: {sync_error}")
@@ -1053,7 +1067,7 @@ async def new_client_action(request: Request, db: Session = Depends(get_db)):
             "error": error or profiles_error or sync_error,
             "result": result,
             "requested_count": len(names),
-            "form_values": {
+            "form_values": {**form_values,
                 "client": names[0] if len(names) == 1 else "",
                 "profile": template,
                 "comment": comment,
@@ -2542,3 +2556,172 @@ def logs(request: Request, db: Session = Depends(get_db)):
         lines = 80
     data, error = cli_call(request, ["logs", "-n", str(lines)])
     return render(request, "logs.html", {"logs": data, "lines": lines, "error": error}, db)
+
+
+@app.get("/operations", response_class=HTMLResponse)
+def operations_page(request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .panel_operations import recover, public_operation
+    from .permissions import user_has_permission
+    user = require_user(request, db)
+    recover()
+    rows = db.scalars(select(PanelOperation).where(PanelOperation.owner == "user:" + user.username)
+        .order_by(PanelOperation.created_at.desc()).limit(100)).all()
+    return render(request, "panel_operations.html", {"operations": [public_operation(row)
+        for row in rows if user_has_permission(user, row.permission)]}, db)
+
+
+@app.get("/operations/{operation_id}", response_class=HTMLResponse)
+def operation_page(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .panel_operations import recover, public_operation
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    recover()
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username:
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    return render(request, "panel_operations.html", {"operations": [public_operation(row)]}, db)
+
+
+@app.get("/operations/{operation_id}/files/{file_id}")
+def operation_file(operation_id: str, file_id: int, request: Request, db: Session = Depends(get_db)):
+    import json
+    from .models import PanelOperation, DownloadToken
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username or file_id not in json.loads(row.artifact_ids_json):
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    check_user_permission(user, "vpn:download")
+    record = db.get(DownloadToken, file_id)
+    if record is None or record.created_by != user.username or record.revoked_at is not None:
+        raise HTTPException(404)
+    expires = record.expires_at
+    if expires.tzinfo is None:
+        from datetime import timezone
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= utcnow():
+        raise HTTPException(404)
+    try:
+        path = assert_allowed_file(record.file_path)
+    except ValueError:
+        raise HTTPException(404)
+    write_audit(db, request, user, "operation-download", "ok", "file", target_client=record.client_name)
+    return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+from .panel_operation_routes import install_browser_operations
+install_browser_operations(app)
+
+
+@app.get("/api/v1/operations/{operation_id}")
+def api_operation_status(operation_id: str, request: Request,
+                         db: Session = Depends(get_db)):
+    from .api import require_api_actor
+    from .models import PanelOperation
+    from .panel_operations import recover, public_operation
+    from .permissions import check_service_permission
+    actor = require_api_actor(request, request.headers.get("Authorization"))
+    recover()
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "service:" + actor:
+        raise HTTPException(404)
+    check_service_permission(get_settings().api_permissions, row.permission)
+    result = public_operation(row)
+    result["status_url"] = f"/api/v1/operations/{row.id}"
+    return {"status": "ok", "operation": result}
+
+
+from .panel_operation_routes import install_api_operations
+install_api_operations(app)
+
+
+@app.post("/operations/{operation_id}/verify")
+async def operation_verification(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    await verify_csrf(request)
+    form = await request.form()
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username:
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    if str(form.get("checked_external_result") or "") != "1" or row.status not in {"unknown", "partial"}:
+        raise HTTPException(400, detail="Подтвердите проверку внешнего результата")
+    row.verified_at = utcnow()
+    write_audit(db, request, user, "operation-verified", "ok", "operator checked external result", target_client=row.id)
+    return redirect(f"/operations/{row.id}")
+
+
+@app.post("/api/v1/operations/{operation_id}/verify")
+def api_operation_verification(operation_id: str, payload: dict[str, Any], request: Request,
+                               db: Session = Depends(get_db)):
+    from .api import require_api_actor
+    from .models import PanelOperation
+    from .permissions import check_service_permission
+    actor = require_api_actor(request, request.headers.get("Authorization"))
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "service:" + actor:
+        raise HTTPException(404)
+    check_service_permission(get_settings().api_permissions, row.permission)
+    if payload.get("checked_external_result") is not True or row.status not in {"unknown", "partial"}:
+        raise HTTPException(400, detail="External result verification acknowledgement required")
+    row.verified_at = utcnow()
+    write_audit(db, request, actor, "operation-verified", "ok", "operator checked external result", target_client=row.id)
+    return {"status": "ok", "operation_id": row.id}
+
+
+def completed_operation_response(operation_id: str):
+    from .panel_operations import execution_future
+    future = execution_future(operation_id)
+    if future is None:
+        raise HTTPException(410, detail="Ответ обработчика больше не хранится; проверьте историю и сохранённые файлы")
+    if not future.done():
+        raise HTTPException(409, detail="Операция ещё выполняется")
+    try:
+        response = future.result()
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+        raise HTTPException(502, detail="Внешний результат требует проверки") from None
+    except Exception:
+        raise HTTPException(502, detail="Внешний результат требует проверки") from None
+    if response is None:
+        raise HTTPException(410, detail="Ответ обработчика недоступен")
+    return response
+
+
+@app.get("/operations/{operation_id}/result")
+def operation_result(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .models import PanelOperation
+    from .permissions import check_user_permission
+    user = require_user(request, db)
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "user:" + user.username:
+        raise HTTPException(404)
+    check_user_permission(user, row.permission)
+    response = completed_operation_response(operation_id)
+    if isinstance(response, FileResponse):
+        # File responses must use the durable token references and their TTL,
+        # revocation and download capability checks, never this memory cache.
+        return redirect(f"/operations/{row.id}")
+    request.session["flashes"] = list(getattr(response, "_panel_flashes", []))
+    return response
+
+
+@app.get("/api/v1/operations/{operation_id}/result")
+def api_operation_result(operation_id: str, request: Request, db: Session = Depends(get_db)):
+    from .api import require_api_actor
+    from .models import PanelOperation
+    from .permissions import check_service_permission
+    actor = require_api_actor(request, request.headers.get("Authorization"))
+    row = db.get(PanelOperation, operation_id)
+    if row is None or row.owner != "service:" + actor:
+        raise HTTPException(404)
+    check_service_permission(get_settings().api_permissions, row.permission)
+    response = completed_operation_response(operation_id)
+    return JSONResponse(response) if isinstance(response, dict) else response

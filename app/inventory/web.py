@@ -17,6 +17,7 @@ from ..auth import csrf_token, current_user, require_user, verify_csrf, verify_a
 from ..config import get_settings
 from ..db import get_db
 from ..netctl_client import run_netctl
+from starlette.concurrency import run_in_threadpool
 from .lookup import InventoryLookup, InventoryLookupError, classify_identifier
 from .api import get_endpoint_candidates
 from .endpoint import InventoryEndpointService
@@ -648,7 +649,7 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
     process = await form_drafts.posted_process(request, db, user, _new_asset_flow_key(asset_type, parent_asset_id, location.id))
     target_url = form_drafts.with_draft(target_url, process.id)
     try:
-        result = InventoryLookup(run_netctl).lookup(identifier, actor=user.username)
+        result = await run_in_threadpool(InventoryLookup(run_netctl).lookup, identifier, actor=user.username)
     except InventoryLookupError as exc:
         form_drafts.retain(db, process, {**process.fields_json, "identifier": identifier})
         _flash(request, "bad", str(exc))
@@ -656,7 +657,7 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
     suggestions = dict(result.suggestions)
     details = {field: value for field, value in result.suggestions.items() if field in {"os_name", "os_version"}}
     printer_snmp = (
-        _augment_printer_suggestions(suggestions, details)
+        await run_in_threadpool(_augment_printer_suggestions, suggestions, details)
         if asset_type is InventoryAssetType.PRINTER and result.status == "found"
         else None
     )
@@ -919,7 +920,7 @@ async def inventory_lookup_asset(asset_id: str, request: Request, identifier: st
             raise HTTPException(status_code=404, detail="inventory asset not found")
     process = await form_drafts.posted_process(request, db, user, _asset_edit_draft_key(asset_id))
     try:
-        result = InventoryLookup(run_netctl).lookup(identifier, actor=user.username)
+        result = await run_in_threadpool(InventoryLookup(run_netctl).lookup, identifier, actor=user.username)
     except InventoryLookupError as exc:
         _flash(request, "bad", str(exc))
         return _redirect(form_drafts.with_draft(_asset_url(asset_id, return_location_id), process.id))

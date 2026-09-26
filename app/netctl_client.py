@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import get_settings
+from .panel_operations import observed_cli
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ def _timeout_for(args: list[str], timeout: int | None) -> int:
     return 60
 
 
+@observed_cli("netctl")
 def run_netctl(args: list[str], timeout: int | None = None, request_id: str = "") -> dict[str, Any]:
     settings = get_settings()
     clean_args = [str(arg) for arg in args if str(arg) != ""]

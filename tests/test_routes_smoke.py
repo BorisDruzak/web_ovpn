@@ -8,6 +8,24 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 
+def wait_operation(client, response):
+    """An accepted browser mutation is checked only after its durable result."""
+    from app.db import get_sessionmaker
+    from app.models import PanelOperation
+    operation_id = response.headers.get("x-operation-id")
+    if not operation_id and "/operations/" in str(response.url):
+        operation_id = str(response.url).rsplit("/", 1)[-1]
+    assert operation_id
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with get_sessionmaker()() as db:
+            row = db.get(PanelOperation, operation_id)
+            if row.status not in {"registered", "running"}:
+                return client.get("/operations/" + operation_id)
+        time.sleep(.01)
+    raise AssertionError("accepted operation did not finish")
+
+
 def make_fake_vpnctl(path: Path) -> Path:
     script_path = path.with_suffix(".py") if os.name == "nt" else path
     script_path.write_text(
@@ -148,6 +166,7 @@ def test_login_dashboard_and_clients_smoke(tmp_path, monkeypatch):
             follow_redirects=False,
         )
         assert sync_response.status_code == 303
+        wait_operation(client, sync_response)
 
         networks_page = client.get("/networks")
         assert networks_page.status_code == 200
@@ -306,11 +325,14 @@ def test_network_add_without_comment_omits_comment_flag(tmp_path, monkeypatch):
             data={"cidr": "192.168.100.12", "tag": "default", "comment": "", "csrf_token": csrf},
             follow_redirects=False,
         )
+        wait_operation(client, empty_comment_response)
         nonempty_comment_response = client.post(
             "/networks/add",
             data={"cidr": "192.168.100.13", "tag": "default", "comment": "branch office", "csrf_token": csrf},
             follow_redirects=False,
         )
+
+        wait_operation(client, nonempty_comment_response)
 
     assert empty_comment_response.status_code == 303
     assert nonempty_comment_response.status_code == 303
@@ -377,6 +399,7 @@ def test_generate_batch_from_csv_runs_sync_after_success(tmp_path, monkeypatch):
         )
 
         assert created.status_code == 200
+        wait_operation(client, created)
         calls = [
             json.loads(line)
             for line in (tmp_path / "vpnctl-calls.jsonl").read_text(encoding="utf-8").splitlines()
@@ -488,6 +511,12 @@ def test_download_button_repairs_missing_ovpn_and_returns_file(tmp_path, monkeyp
             follow_redirects=False,
         )
 
+        assert downloaded.status_code == 303
+        status_page = wait_operation(client, downloaded)
+        import re
+        artifact = re.search(r'href="(/operations/[^"]+/files/\d+)"', status_page.text)
+        assert artifact is not None
+        downloaded = client.get(artifact.group(1))
         assert downloaded.status_code == 200
         assert downloaded.content.replace(b"\r\n", b"\n") == b"client\n"
         assert "attachment" in downloaded.headers["content-disposition"]
@@ -545,6 +574,7 @@ def test_openvpn_settings_page_applies_status_interval(tmp_path, monkeypatch):
             follow_redirects=False,
         )
         assert saved.status_code == 303
+        wait_operation(client, saved)
 
         calls = [
             json.loads(line)
@@ -595,6 +625,7 @@ def test_connections_page_uses_auto_source_and_has_kill_button(tmp_path, monkeyp
             follow_redirects=False,
         )
         assert killed.status_code == 303
+        wait_operation(client, killed)
 
         calls = [
             json.loads(line)
@@ -648,6 +679,7 @@ def test_template_apply_reconnects_client_for_route_refresh(tmp_path, monkeypatc
         )
 
         assert applied.status_code == 303
+        wait_operation(client, applied)
         calls = [
             json.loads(line)
             for line in (tmp_path / "vpnctl-calls.jsonl").read_text(encoding="utf-8").splitlines()
@@ -694,6 +726,7 @@ def test_client_disable_uses_kill_active(tmp_path, monkeypatch):
             follow_redirects=False,
         )
         assert disabled.status_code == 303
+        wait_operation(client, disabled)
 
         calls = [
             json.loads(line)

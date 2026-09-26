@@ -59,6 +59,8 @@ def create_download_token(
         db.flush()
         db.refresh(record)
         db.expunge(record)
+    from .panel_operations import record_artifact
+    record_artifact(record.id)
     return token, record
 
 

@@ -402,6 +402,13 @@ def init_db() -> None:
     engine = get_engine()
     _prepare_inventory_sync_claim_index(engine)
     Base.metadata.create_all(bind=engine)
+    # create_all skips indexes on an already existing ledger. Install the
+    # stronger unresolved-intent guard when upgrading the initial T01 table.
+    # Existing conflicting unresolved history fails closed for operator review.
+    from sqlalchemy.schema import CreateIndex
+    with engine.begin() as connection:
+        connection.execute(CreateIndex(next(index for index in models.PanelOperation.__table__.indexes
+            if index.name == "uq_panel_operations_unresolved_intent"), if_not_exists=True))
     _migrate_inventory_schema(engine)
     from .inventory.lifecycle import migrate_lifecycle
     migrate_lifecycle(engine)
