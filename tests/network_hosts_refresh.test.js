@@ -195,6 +195,30 @@ async function unchangedSnapshotShowsFreshnessTransitionsWithoutFetchingRows() {
   assert.deepEqual(env.rows.children, [env.oldRow]);
 }
 
+async function projectionChangesRefreshRowsWithoutNewSnapshot() {
+  let projection = "first";
+  const host = {ip: "192.0.2.11", mac: null, hostname: null, manual_name: null,
+    display_name: "Synthetic", category: "unknown", device_key: "ip:192.0.2.11", device_type: "pc",
+    status: "online", site: "", last_seen_at: "", last_source: "", device_confidence: 0,
+    device_evidence: [], tags: [], manual_tags: [], sources: [], availability: null, vpn_client: null,
+    endpoint_agent: {state: "confirmed", freshness: "stale"}};
+  let rowsRequests = 0;
+  const env = await start((url) => Promise.resolve(response({status: "ok", data: url.endsWith('/meta')
+    ? {snapshot: snapshot(1), projection_version: projection}
+    : (rowsRequests++, {snapshot: snapshot(1), projection_version: projection, hosts: [host],
+      pagination: {page: 1, limit: 100, total: 1, pages: 1}})})));
+  assert.equal(rowsRequests, 1);
+  const flatten = (node) => node.textContent + node.children.map(flatten).join('');
+  assert.match(flatten(env.rows), /Подтверждённая связь/);
+  assert.match(flatten(env.rows), /Данные устарели/);
+  projection = "second";
+  host.endpoint_agent = {state: "disabled", freshness: "unknown"};
+  await env.interval();
+  assert.equal(rowsRequests, 2);
+  assert.match(flatten(env.rows), /Интеграция отключена/);
+  assert.equal(env.root.dataset.snapshotId, "1");
+}
+
 (async () => {
   await malformedRowsPreserveCurrentDom();
   await pendingMetadataDoesNotOverlap();
@@ -203,5 +227,6 @@ async function unchangedSnapshotShowsFreshnessTransitionsWithoutFetchingRows() {
   await failedRowsRetryEvenWhenMetadataReturnsCurrentSnapshot();
   await timeoutAndSessionExpiryKeepLastRows();
   await bfcacheRestorationResumesPolling();
+  await projectionChangesRefreshRowsWithoutNewSnapshot();
   console.log("PASS: no overlap, late response, hidden/navigation, row retry, timeout, session recovery, malformed rows, freshness");
 })();

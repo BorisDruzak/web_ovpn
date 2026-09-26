@@ -49,7 +49,7 @@
     {% for value in [25, 50, 100, 250] %}<option value="{{ value }}" {% if pagination.limit == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
   </select></label>
 </form>
-<section class="table-wrap" data-network-hosts data-snapshot-id="{{ snapshot.snapshot_id }}">
+<section class="table-wrap" data-network-hosts data-snapshot-id="{{ snapshot.snapshot_id }}" data-projection-version="{{ projection_version }}">
   <p class="muted" data-host-snapshot-state data-state="{{ snapshot_state }}">
     {% if snapshot_state == "pending" %}
     Снимок ещё не опубликован. Ожидание данных.
@@ -90,19 +90,8 @@
           </a>
         </td>
         <td>
-          {% if host.endpoint_agent.state == "confirmed" %}
-          <span class="badge ok">Confirmed automatically</span> {{ host.endpoint_agent.device_display_name or "Endpoint Agent" }}
-          {% elif host.endpoint_agent.state == "ambiguous" %}
-          <span class="badge warn">Ambiguous match</span>
-          {% elif host.endpoint_agent.state == "stale" %}
-          <span class="badge warn">Stale cached result</span> {{ host.endpoint_agent.device_display_name or "" }}
-          {% elif host.endpoint_agent.state == "updating" %}
-          <span class="badge muted">Updating</span>
-          {% elif host.endpoint_agent.state == "unknown" %}
-          <span class="muted">—</span>
-          {% else %}
-          <span class="badge muted">No agent</span>
-          {% endif %}
+          <span class="badge {% if host.endpoint_agent.state == 'confirmed' %}ok{% else %}muted{% endif %}">{{ {'confirmed':'Подтверждённая связь','disabled':'Интеграция отключена','unbound':'Нет подтверждённой привязки','candidate':'Есть кандидат','ambiguous':'Неоднозначность','unknown':'Состояние неизвестно'}.get(host.endpoint_agent.state, 'Состояние неизвестно') }}</span>
+          {% if host.endpoint_agent.state == 'confirmed' %}<span class="muted">{{ {'fresh':'Данные актуальны','stale':'Данные устарели','unavailable':'Источник недоступен','unknown':'Актуальность неизвестна'}.get(host.endpoint_agent.freshness, 'Актуальность неизвестна') }}</span>{% endif %}
         </td>
         {% if host.availability %}
         <td>{{ availability_method_label(host.availability.active_method) or "-" }}{% if host.availability.checked_at %} · {{ host.availability.checked_at }}{% endif %}</td>

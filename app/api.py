@@ -1237,6 +1237,7 @@ def api_network_path_detail(role: str, actor: str = Depends(require_api_actor)):
 
 @router.get("/network/hosts")
 def api_network_hosts(
+    request: Request,
     actor: str = Depends(require_host_snapshot_actor),
     q: str = Query(default=""),
     category: str = Query(default="all"),
@@ -1248,13 +1249,21 @@ def api_network_hosts(
     seen_within: str = Query(default="24h"),
     page: int = Query(default=1),
     limit: int = Query(default=100),
+    db: Session = Depends(get_db),
 ):
     data = call_netctl(host_snapshot_args({
         "q": q, "category": category, "status": status, "source": source,
         "network": network, "has_hostname": has_hostname, "has_mac": has_mac, "seen_within": seen_within,
     }, page, limit))
+    from .inventory.network_projection import attach_network_projection
+    hosts = [normalize_netctl_host(host) for host in network_list_from(data, "hosts")]
+    version = attach_network_projection(db,hosts)
+    if request.headers.get('authorization') and 'inventory:read' not in {part.strip() for part in get_settings().api_permissions.split(',')}:
+        for host in hosts:
+            host['inventory'] = {'state':host['inventory']['state']}
+            host['endpoint_agent'] = {key:host['endpoint_agent'][key] for key in ('state','freshness')}
     return api_response({
-        "hosts": [normalize_netctl_host(host) for host in network_list_from(data, "hosts")],
+        "hosts": hosts, "projection_version": version,
         "pagination": data["pagination"], "snapshot": data["snapshot"],
     })
 
@@ -1279,13 +1288,14 @@ def host_snapshot_args(filters: dict[str, str], page: int, limit: int) -> list[s
 
 
 @router.get("/network/hosts/meta")
-def api_network_hosts_meta(actor: str = Depends(require_host_snapshot_actor)):
+def api_network_hosts_meta(actor: str = Depends(require_host_snapshot_actor), db: Session = Depends(get_db)):
     # Keep the service-account boundary, but use only the existing SQLite metadata command.
     try:
         data = run_netctl(["hosts", "snapshot-status"])
     except NetctlError as exc:
         raise HTTPException(status_code=502, detail="host snapshot metadata unavailable") from exc
-    return api_response({"snapshot": data["snapshot"]})
+    from .inventory.network_projection import projection_version
+    return api_response({"snapshot": data["snapshot"], "projection_version": projection_version(db)})
 
 
 @router.get("/network/hosts/{ip}")

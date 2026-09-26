@@ -1968,8 +1968,8 @@ def network_hosts(
         raise HTTPException(status_code=422, detail="invalid host pagination") from exc
     data, error = net_cli_call(request, host_snapshot_args(filters, page, limit))
     rows = [normalize_netctl_host(row) for row in list_from(data, "hosts")]
-    for row in rows:
-        row["endpoint_agent"] = {"state": "unknown"}
+    from .inventory.network_projection import attach_network_projection
+    projection_version = attach_network_projection(db, rows)
     snapshot = data.get("snapshot", {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0})
     snapshot_state = "pending" if not snapshot.get("snapshot_id") else "stale" if snapshot.get("stale") else "ready"
     return render(
@@ -1982,6 +1982,7 @@ def network_hosts(
             "pagination": data.get("pagination", {"page": max(1, page), "limit": min(250, max(1, limit)), "total": 0, "pages": 0}),
             "snapshot": snapshot,
             "snapshot_state": snapshot_state,
+            "projection_version": projection_version,
             "network_filters": NETWORK_FILTERS,
             "is_runtime_asset_key": is_runtime_asset_key,
             "endpoint_agent_refresh_state": "idle",

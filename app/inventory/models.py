@@ -163,6 +163,13 @@ class InventoryFormDraft(Base):
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
 
 
+class InventoryNetworkProjectionVersion(Base):
+    __tablename__ = "inventory_network_projection_version"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_inventory_network_projection_singleton"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
 class InventoryNetctlBinding(Base):
     """Netctl interfaces are many-to-one; Endpoint cardinality is unchanged."""
     __tablename__ = "inventory_netctl_bindings"

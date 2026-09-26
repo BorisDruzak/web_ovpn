@@ -96,7 +96,13 @@
     statusLink.title = "Открыть доступность устройства";
     addBadge(statusLink, availabilityStatus(host), statusClass(host.status));
     statusCell.append(statusLink);
-    cell(row, "—").classList.add("muted");
+    const agentCell = cell(row);
+    const agent = host.endpoint_agent || {state: "unknown"};
+    addBadge(agentCell, ({confirmed: "Подтверждённая связь", disabled: "Интеграция отключена",
+      unbound: "Нет подтверждённой привязки", candidate: "Есть кандидат", ambiguous: "Неоднозначность",
+      unknown: "Состояние неизвестно"})[agent.state] || "Состояние неизвестно", agent.state === "confirmed" ? "ok" : "muted");
+    if (agent.state === "confirmed") addText(agentCell, ({fresh: " Данные актуальны", stale: " Данные устарели",
+      unavailable: " Источник недоступен", unknown: " Актуальность неизвестна"})[agent.freshness] || " Актуальность неизвестна", "muted");
     const availability = host.availability;
     if (availability && typeof availability === "object") {
       cell(row, `${availabilityMethod(availability.active_method) || "-"}${availability.checked_at ? ` · ${availability.checked_at}` : ""}`);

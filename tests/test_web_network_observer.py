@@ -545,7 +545,7 @@ def test_network_hosts_get_uses_only_read_only_snapshot_commands(tmp_path, monke
 
 
 def test_hosts_page_progressively_fetches_only_when_snapshot_changes():
-    script = (Path(__file__).resolve().parents[1] / "app/static/network-hosts-refresh.js").read_text()
+    script = (Path(__file__).resolve().parents[1] / "app/static/network-hosts-refresh.js").read_text(encoding="utf-8")
     assert "AbortController" in script
     assert "/api/v1/network/hosts/meta" in script
     assert "window.location.reload" not in script
@@ -637,7 +637,7 @@ def test_host_page_pagination_uses_real_snapshot_and_pending_state(tmp_path, mon
     assert len(page.context["hosts"]) == (100 if count else 0)
     assert page.context["snapshot"]["snapshot_id"] == (1 if count else 0)
     if count:
-        assert page.context["hosts"][0]["endpoint_agent"]["state"] == "unknown"
+        assert page.context["hosts"][0]["endpoint_agent"]["state"] == "disabled"
         assert "No agent" not in page.text
 
 

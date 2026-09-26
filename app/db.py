@@ -391,6 +391,8 @@ def init_db() -> None:
     migrate_lifecycle(engine)
     from .inventory.revision import migrate_revisions
     migrate_revisions(engine)
+    from .inventory.network_projection import migrate_network_projection
+    migrate_network_projection(engine)
     with session_scope() as db:
         ensure_admin_user(db)
         from .inventory.service import InventoryService
