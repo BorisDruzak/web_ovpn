@@ -24,6 +24,7 @@ from .endpoint import InventoryEndpointConflict, InventoryEndpointService
 from .models import InventoryAsset, InventoryAssetPhoto, InventoryAssetRelation, InventoryAssetType, InventoryExternalBinding, InventoryExternalBindingStatus, InventoryLocation, InventoryObservationSource, InventoryPhotoType, InventorySession
 from .schemas import AssetPayload, AssetUpdate, EndpointDiscrepancyResolution, EndpointRefreshRequest, LocationCreate, LocationUpdate, LookupRequest, RelationCreate, SessionCheckCreate, WorkplaceCreate
 from .service import InventoryService, InventoryValidationError
+from .revision import InventoryRevisionConflict, InventoryRevisionRequired
 from .storage import InventoryPhotoError, InventoryPhotoStorage, StoredPhoto
 
 
@@ -44,8 +45,11 @@ def require_endpoint_actor(request: Request, db: Session = Depends(get_db), auth
 
 
 def _asset_dict(asset: InventoryAsset, db: Session | None = None) -> dict[str, Any]:
+    if db is not None:
+        db.refresh(asset, attribute_names=["manual_revision"])
     data = {
         "id": asset.id,
+        "manual_revision": asset.manual_revision,
         "asset_type": asset.asset_type.value,
         "location_id": asset.location_id,
         "custom_name": asset.custom_name,
@@ -349,13 +353,18 @@ def update_asset(asset_id: str, payload: AssetUpdate, request: Request, csrf: st
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
     try:
+        service.claim_revision(db, asset, payload.expected_revision)
         service.update_asset(asset, **payload.asset_fields())
         service.update_details(db, asset, payload.details)
         if payload.identifiers is not None:
             service.sync_identifiers(db, asset, payload.identifiers)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(428 if isinstance(exc, InventoryRevisionRequired) else 409, str(exc)) from exc
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     write_audit(db, request, actor, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id)
+    db.refresh(asset)
     return {"status": "ok", "data": _asset_dict(asset, db)}
 
 
@@ -407,7 +416,11 @@ def create_workplace(payload: WorkplaceCreate, request: Request, csrf: str | Non
 def attach_relation(payload: RelationCreate, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     try:
+        service.claim_revisions(db, {payload.parent_asset_id:payload.parent_revision, payload.child_asset_id:payload.child_revision})
         relation = service.attach_existing_asset(db, payload.parent_asset_id, payload.child_asset_id, actor=actor, note=payload.note)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(428 if isinstance(exc, InventoryRevisionRequired) else 409, str(exc)) from exc
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     write_audit(db, request, actor, "inventory.relation.create", "ok", relation.relation_type, target_client=relation.id)
@@ -415,10 +428,17 @@ def attach_relation(payload: RelationCreate, request: Request, csrf: str | None 
 
 
 @router.delete("/relations/{relation_id}")
-def detach_relation(relation_id: str, request: Request, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
+def detach_relation(relation_id: str, request: Request, parent_revision: int | None = None, child_revision: int | None = None, csrf: str | None = Header(default=None, alias="X-CSRF-Token"), actor: str = Depends(require_api_actor), db: Session = Depends(get_db)) -> dict[str, Any]:
     _mutation(request, csrf)
     try:
+        existing = db.get(InventoryAssetRelation, relation_id)
+        if existing is None:
+            raise HTTPException(404, "inventory relation not found")
+        service.claim_revisions(db, {existing.parent_asset_id:parent_revision, existing.child_asset_id:child_revision})
         relation = service.detach_relation(db, relation_id)
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(428 if isinstance(exc, InventoryRevisionRequired) else 409, str(exc)) from exc
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     write_audit(db, request, actor, "inventory.relation.end", "ok", "", target_client=relation.id)

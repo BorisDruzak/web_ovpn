@@ -107,7 +107,8 @@ def test_endpoint_failure_keeps_manual_netctl_and_last_context_usable(
     monkeypatch.setattr("app.inventory.api.get_endpoint_context_adapter", forbidden)
     monkeypatch.setattr("app.endpoint_context_adapter.get_endpoint_context_adapter", forbidden)
     root = f"/api/v1/inventory/assets/{asset_id}"
-    edited = client.patch(root, headers=headers, json={"assigned_person_name": "Manual Person"})
+    revision = client.get(root, headers=headers).json()["data"]["manual_revision"]
+    edited = client.patch(root, headers=headers, json={"assigned_person_name": "Manual Person", "expected_revision": revision})
     assert edited.status_code == 200
     response = client.get(root + "/context", headers=headers)
     assert response.status_code == 200

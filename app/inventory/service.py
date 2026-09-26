@@ -98,6 +98,14 @@ def infer_printer_connection_type(
 
 
 class InventoryService:
+    def claim_revision(self, db: Session, asset: InventoryAsset, expected: int | None) -> None:
+        from .revision import claim_revision
+        claim_revision(db, asset, expected)
+
+    def claim_revisions(self, db: Session, expected: Mapping[str, int | None]) -> None:
+        for asset_id in sorted(expected):
+            self.claim_revision(db, self._asset_or_error(db, asset_id), expected[asset_id])
+
     def asset_context(self, db: Session, asset_id: str, now: datetime) -> dict[str, Any]:
         """Read the local source-aware projection without contacting Endpoint."""
         from .endpoint import InventoryEndpointService
@@ -524,6 +532,7 @@ class InventoryService:
             "location": db.get(InventoryLocation, location_id) if location_id else None,
             "top_level_assets": [asset for asset in assets if asset.id not in child_ids],
             "related_by_parent": related_by_parent,
+            "relations_by_child": {relation.child_asset_id: relation for relation in relations},
         }
 
     @staticmethod

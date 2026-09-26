@@ -110,6 +110,7 @@ class InventoryAsset(Base):
     __tablename__ = "inventory_assets"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
+    manual_revision: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
     asset_type: Mapped[InventoryAssetType] = mapped_column(Enum(InventoryAssetType), nullable=False)
     location_id: Mapped[str | None] = mapped_column(ForeignKey("inventory_locations.id"), index=True)
     custom_name: Mapped[str | None] = mapped_column(String(255))

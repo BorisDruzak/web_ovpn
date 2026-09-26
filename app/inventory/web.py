@@ -21,6 +21,7 @@ from .api import get_endpoint_candidates
 from .endpoint import InventoryEndpointService
 from .models import (
     InventoryAsset,
+    InventoryAssetRelation,
     InventoryAssetPhoto,
     InventoryAssetStatus,
     InventoryAssetType,
@@ -32,6 +33,7 @@ from .models import (
     InventorySession,
 )
 from .service import InventoryService, InventoryValidationError
+from .revision import InventoryRevisionConflict
 from .storage import InventoryPhotoError, InventoryPhotoStorage
 
 
@@ -79,7 +81,7 @@ NEW_ASSET_FORM_FIELDS = (
     "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status",
     "assigned_person_name", "login_name", "description", "ip_address", "mac_address", "hostname",
     "os_name", "os_version", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb",
-    "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json",
+    "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json", "expected_revision",
 )
 IDENTIFIER_FIELD_LABELS = {
     "ip_address": "IP-адрес",
@@ -567,9 +569,23 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
     form_values = {field: str(getattr(asset, field) or "") for field in ("custom_name", "manufacturer", "model", "serial_number", "inventory_number", "assigned_person_name", "login_name", "description")}
     form_values["status"] = asset.status.value if asset.status is not None else ""
+    form_values["expected_revision"] = str(asset.manual_revision)
     details = service.details_for(db, asset)
     draft = request.session.get(_asset_edit_draft_key(asset.id))
     if isinstance(draft, dict):
+        if draft.get("expected_revision") != str(asset.manual_revision):
+            labels = {"custom_name":"Название", "manufacturer":"Производитель", "model":"Модель",
+                "serial_number":"Серийный номер", "inventory_number":"Инвентарный номер", "status":"Состояние",
+                "assigned_person_name":"Пользователь", "login_name":"Логин", "description":"Описание",
+                "os_name":"ОС", "os_version":"Версия ОС", "cpu_model":"Процессор", "cpu_generation":"Поколение процессора",
+                "ram_type":"Тип памяти", "ram_gb":"Память, ГБ", "storage_type":"Тип накопителя", "storage_gb":"Накопитель, ГБ",
+                "page_counter":"Счётчик страниц", "connection_type":"Подключение", "extension":"Внутренний номер",
+                "diagonal_inches":"Диагональ", "power_va":"Мощность", "battery_replaced_at":"Замена батареи",
+                "ip_address":"IP-адрес", "mac_address":"MAC-адрес", "hostname":"Имя компьютера"}
+            current_facts = {**form_values, **details, "ip_address": identifiers.get("ip"),
+                "mac_address": identifiers.get("mac"), "hostname": identifiers.get("hostname")}
+            form_values["_comparison"] = [{"label":labels[field], "current":current_facts.get(field), "submitted":draft[field]}
+                for field in labels if field in draft and str(current_facts.get(field) or "") != draft[field]]
         form_values.update({field: draft[field] for field in form_values if field in draft})
         identifiers.update({identifier: draft[field] for field, identifier in (("ip_address", "ip"), ("mac_address", "mac"), ("hostname", "hostname")) if field in draft})
         details = {**details, **{field: draft[field] for field in DETAIL_FIELD_NAMES.get(asset.asset_type, ()) if field in draft}}
@@ -649,6 +665,9 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
             raise HTTPException(status_code=404, detail="inventory asset not found")
     submitted_draft = await _new_asset_form_draft(request)
     try:
+        raw_revision = submitted_draft.get("expected_revision", "")
+        expected = int(raw_revision) if raw_revision.isascii() and raw_revision.isdigit() else None
+        service.claim_revision(db, asset, expected)
         details = await _detail_form(request, asset.asset_type)
         identifiers = await _identifier_form(request)
         service.update_asset(asset, custom_name=custom_name or None, manufacturer=manufacturer or None, model=model or None, serial_number=serial_number or None, inventory_number=inventory_number or None, status=_status_form(status), assigned_person_name=assigned_person_name or None, login_name=login_name or None, description=description or None)
@@ -656,7 +675,7 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
         service.sync_identifiers(db, asset, identifiers)
         write_audit(db, request, user, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id, commit=False)
         db.commit()
-    except InventoryValidationError as exc:
+    except (InventoryValidationError, InventoryRevisionConflict) as exc:
         db.rollback()
         request.session[_asset_edit_draft_key(asset.id)] = submitted_draft
         _flash(request, "bad", str(exc))
@@ -738,12 +757,17 @@ async def inventory_lookup_asset(asset_id: str, request: Request, identifier: st
 
 
 @router.post("/inventory/relations/{relation_id}/detach")
-async def inventory_detach_relation(relation_id: str, request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+async def inventory_detach_relation(relation_id: str, request: Request, parent_revision: int | None = Form(default=None), child_revision: int | None = Form(default=None), db: Session = Depends(get_db)) -> RedirectResponse:
     user = require_user(request, db)
     await verify_csrf(request)
     try:
+        existing = db.get(InventoryAssetRelation, relation_id)
+        if existing is None:
+            raise InventoryValidationError("Связь не найдена")
+        service.claim_revisions(db, {existing.parent_asset_id:parent_revision, existing.child_asset_id:child_revision})
         relation = service.detach_relation(db, relation_id)
-    except InventoryValidationError as exc:
+    except (InventoryValidationError, InventoryRevisionConflict) as exc:
+        db.rollback()
         _flash(request, "bad", str(exc))
         return _redirect("/inventory")
     write_audit(db, request, user, "inventory.relation.end", "ok", "", target_client=relation.id)

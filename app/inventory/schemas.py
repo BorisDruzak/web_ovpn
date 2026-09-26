@@ -55,9 +55,10 @@ class AssetPayload(BaseModel):
 
 class AssetUpdate(AssetPayload):
     asset_type: InventoryAssetType | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
 
     def asset_fields(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"asset_type", "location_id", "details", "identifiers"}, exclude_unset=True)
+        return self.model_dump(exclude={"asset_type", "location_id", "details", "identifiers", "expected_revision"}, exclude_unset=True)
 
 
 class WorkplacePCPayload(AssetPayload):
@@ -73,6 +74,8 @@ class WorkplaceCreate(BaseModel):
 class RelationCreate(BaseModel):
     parent_asset_id: str
     child_asset_id: str
+    parent_revision: int | None = Field(default=None, ge=1)
+    child_revision: int | None = Field(default=None, ge=1)
     note: str | None = None
 
 

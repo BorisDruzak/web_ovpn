@@ -65,6 +65,21 @@
   </section>
   {% endif %}
   <form method="post" data-inventory-asset-form action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
+    {% if asset %}
+    <input type="hidden" name="expected_revision" value="{{ form_values.expected_revision }}">
+    {% if form_values.expected_revision|string != asset.manual_revision|string %}
+    <section role="alert" class="alert warn">
+      <strong>Карточка изменилась. Ваш ввод сохранён.</strong>
+      {% if form_values._comparison %}
+      <table><thead><tr><th>Поле</th><th>Сохранено сейчас</th><th>Ваш ввод</th></tr></thead><tbody>
+        {% for item in form_values._comparison %}<tr><td>{{ item.label }}</td><td>{{ item.current if item.current is not none else 'Не указано' }}</td><td>{{ item.submitted or 'Не указано' }}</td></tr>{% endfor %}
+      </tbody></table>
+      {% endif %}
+      <p>Сейчас сохранено: {{ asset.custom_name or 'Без названия' }}; {{ asset.manufacturer or 'Производитель не указан' }}; {{ asset.model or 'Модель не указана' }}.</p>
+      <p>Описание: {{ asset.description or 'Не указано' }}. Перезагрузите актуальную карточку после сравнения; старая ревизия не сможет перезаписать изменения.</p>
+    </section>
+    {% endif %}
+    {% endif %}
     <p role="status" aria-live="polite" data-inventory-insert-feedback></p>
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="return_location_id" value="{{ return_location_id }}">

@@ -4,7 +4,7 @@ import json
 import pytest
 from sqlalchemy import func, select
 
-from tests.test_inventory_web import _client, _csrf, _prepare_manual_asset_form
+from tests.test_inventory_web import _client, _csrf, _revision, _prepare_manual_asset_form
 from tests.test_inventory_api import _client as api_client
 
 
@@ -69,6 +69,7 @@ def test_html_update_late_exception_rolls_back_fields_and_identifiers(tmp_path, 
     monkeypatch.setattr(InventoryService, "sync_identifiers", fail_at_end)
     response = client.post(f"/inventory/assets/{asset_id}", data={
         "csrf_token": csrf, "custom_name": "Unsaved", "ip_address": "192.0.2.3",
+        "expected_revision": _revision(client.get(f"/inventory/assets/{asset_id}").text),
     }, follow_redirects=False)
     assert response.status_code == 303
     with get_sessionmaker()() as db:

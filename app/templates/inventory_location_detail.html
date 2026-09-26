@@ -29,7 +29,15 @@
       <section class="inventory-related-devices" aria-label="Связанные устройства">
         <h2>СВЯЗАННЫЕ УСТРОЙСТВА</h2>
         <ul class="inventory-children">
-          {% for child in tree.related_by_parent[asset.id] %}<li><a class="inventory-related-asset-link" href="/inventory/assets/{{ child.id }}?location_id={{ location.id }}"><strong>{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</strong><span>{{ asset_labels[child.asset_type] }}</span></a></li>{% endfor %}
+          {% for child in tree.related_by_parent[asset.id] %}<li>
+            <a class="inventory-related-asset-link" href="/inventory/assets/{{ child.id }}?location_id={{ location.id }}"><strong>{{ child.custom_name or child.model or asset_labels[child.asset_type] }}</strong><span>{{ asset_labels[child.asset_type] }}</span></a>
+            <form method="post" action="/inventory/relations/{{ tree.relations_by_child[child.id].id }}/detach">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <input type="hidden" name="parent_revision" value="{{ asset.manual_revision }}">
+              <input type="hidden" name="child_revision" value="{{ child.manual_revision }}">
+              <button type="submit" class="button secondary">Отвязать от рабочего места</button>
+            </form>
+          </li>{% endfor %}
         </ul>
       </section>
       {% endif %}

@@ -80,7 +80,10 @@ def test_inventory_api_creates_empty_asset_projects_workplace_and_audits(tmp_pat
     assert tree.json()["data"]["related_by_parent"][pc_id][0]["id"] == child_id
 
     relation_id = workplace.json()["data"]["relations"][0]["id"]
-    detached = client.delete(f"/api/v1/inventory/relations/{relation_id}", headers=headers)
+    parent_revision = client.get(f"/api/v1/inventory/assets/{pc_id}", headers=headers).json()["data"]["manual_revision"]
+    child_revision = client.get(f"/api/v1/inventory/assets/{child_id}", headers=headers).json()["data"]["manual_revision"]
+    detached = client.delete(f"/api/v1/inventory/relations/{relation_id}", headers=headers,
+        params={"parent_revision":parent_revision, "child_revision":child_revision})
     assert detached.status_code == 200
     assert detached.json()["data"]["ended_at"] is not None
 

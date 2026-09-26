@@ -37,6 +37,10 @@ def _csrf(page: str) -> str:
     return page.split('name="csrf_token" value="')[1].split('"')[0]
 
 
+def _revision(page: str) -> str:
+    return page.split('name="expected_revision" value="')[1].split('"')[0]
+
+
 def _prepare_manual_asset_form(client: TestClient, monkeypatch, asset_type: str, parent_asset_id: str = ""):
     """Complete the required unsuccessful lookup before a test submits an asset card."""
     suffix = f"&parent_asset_id={parent_asset_id}" if parent_asset_id else ""
@@ -225,13 +229,19 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
     assert "Kyocera M2040" in tree.text
 
     from app.db import get_sessionmaker
-    from app.inventory.models import InventoryAssetRelation
+    from app.inventory.models import InventoryAsset, InventoryAssetRelation
 
     with get_sessionmaker()() as db:
-        relation_id = db.query(InventoryAssetRelation).filter_by(parent_asset_id=pc_id).order_by(InventoryAssetRelation.id).first().id
+        relation = db.query(InventoryAssetRelation).filter_by(parent_asset_id=pc_id).order_by(InventoryAssetRelation.id).first()
+        relation_id = relation.id
+        parent_revision = db.get(InventoryAsset, relation.parent_asset_id).manual_revision
+        child_revision = db.get(InventoryAsset, relation.child_asset_id).manual_revision
     csrf = _csrf(tree.text)
-    detached = client.post(f"/inventory/relations/{relation_id}/detach", data={"csrf_token": csrf}, follow_redirects=False)
+    detached = client.post(f"/inventory/relations/{relation_id}/detach", data={"csrf_token": csrf,
+        "parent_revision":parent_revision, "child_revision":child_revision}, follow_redirects=False)
     assert detached.status_code == 303
+    with get_sessionmaker()() as db:
+        assert db.get(InventoryAssetRelation, relation_id).ended_at is not None
 
     after = client.get(f"/inventory/locations/{location_id}")
     assert after.text.count("AOC 24B2X") == 1
@@ -511,7 +521,7 @@ def test_location_scoped_asset_create_and_update_return_to_location_tree(tmp_pat
     detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
     updated = client.post(
         f"/inventory/assets/{asset_id}",
-        data={"csrf_token": _csrf(detail.text), "custom_name": "PC-04", "return_location_id": location_id},
+        data={"csrf_token": _csrf(detail.text), "expected_revision": _revision(detail.text), "custom_name": "PC-04", "return_location_id": location_id},
         follow_redirects=False,
     )
     assert updated.headers["location"] == f"/inventory/locations/{location_id}"
@@ -934,6 +944,7 @@ def test_asset_update_keeps_fields_after_identifier_validation_error(tmp_path, m
         f"/inventory/assets/{asset_id}",
         data={
             "csrf_token": _csrf(detail.text),
+            "expected_revision": _revision(detail.text),
             "return_location_id": location_id,
             "custom_name": "PC-04 исправленный",
             "manufacturer": "Iru",
