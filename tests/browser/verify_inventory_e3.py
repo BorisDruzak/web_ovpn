@@ -53,4 +53,3 @@ def verify(fixture: Path, artifacts: Path):
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--fixture',type=Path,required=True);parser.add_argument('--artifacts',type=Path,required=True)
     args=parser.parse_args();print(json.dumps(verify(args.fixture,args.artifacts),ensure_ascii=False,indent=2))
-
