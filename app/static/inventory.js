@@ -82,8 +82,12 @@ document.addEventListener("click", async (event) => {
       return;
     }
     const previous = control.value;
+    if (control.type === "number" && !Number.isFinite(Number(value))) {
+      insertionFeedback("Значение источника не подходит формату или диапазону поля. Поле не изменено.");
+      return;
+    }
     control.value = value;
-    if ((control.type === "number" || control.type === "date") && !control.checkValidity()) {
+    if ((control.type === "number" || control.type === "date") && (control.value === "" || !control.checkValidity())) {
       control.value = previous;
       insertionFeedback("Значение источника не подходит формату или диапазону поля. Поле не изменено.");
       return;

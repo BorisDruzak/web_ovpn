@@ -13,7 +13,14 @@ async (page) => {
   await insert.click();
   await page.locator('[data-endpoint-insert="mac"]').click();
   if (await mac.inputValue() !== '02:00:00:00:00:24') throw new Error('MAC mapping failed');
-  await page.locator('[data-endpoint-insert="ram_gb"]').click();
+  const ramInsert = page.locator('[data-endpoint-insert="ram_gb"]');
+  await page.locator('[name="ram_gb"]').fill('8');
+  await ramInsert.evaluate(button => button.dataset.endpointValue = 'invalid-number');
+  await ramInsert.click();
+  if (await page.locator('[name="ram_gb"]').inputValue() !== '8') throw new Error('Invalid numeric source erased manual value');
+  if (!(await page.locator('[data-inventory-insert-feedback]').innerText()).includes('не подходит')) throw new Error('Missing numeric normalization explanation');
+  await ramInsert.evaluate(button => button.dataset.endpointValue = '0');
+  await ramInsert.click();
   if (await page.locator('[name="ram_gb"]').inputValue() !== '0') throw new Error('Zero lost');
   const os = page.locator('[name="os_name"]');
   await os.selectOption('Windows');
@@ -39,5 +46,5 @@ async (page) => {
   await page.reload();
   if (await description.inputValue() !== 'Несохранённое описание') throw new Error('Saved data lost on reload');
   return {ip: await ip.inputValue(), mac: await mac.inputValue(), zero: true, undo: true,
-    unsupportedSelectPreserved: true, dirtyLock: true, savedAndReloaded: true};
+    unsupportedSelectPreserved: true, invalidNumberPreserved:true, dirtyLock: true, savedAndReloaded: true};
 };
