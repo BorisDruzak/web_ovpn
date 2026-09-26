@@ -41,7 +41,8 @@ from .models import (
 )
 from .service import InventoryService, InventoryValidationError
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
-from . import form_drafts, lifecycle
+from . import form_drafts, lifecycle, network_creation
+from .netctl_bindings import NetctlBindingConflict
 from .storage import InventoryPhotoError, InventoryPhotoStorage
 
 
@@ -89,7 +90,7 @@ NEW_ASSET_FORM_FIELDS = (
     "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status",
     "assigned_person_name", "login_name", "description", "ip_address", "mac_address", "hostname",
     "os_name", "os_version", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb",
-    "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json", "expected_revision", "identifier",
+    "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json", "expected_revision", "identifier", "network_confirmation", "network_reason",
 )
 IDENTIFIER_FIELD_LABELS = {
     "ip_address": "IP-адрес",
@@ -300,6 +301,7 @@ def _new_asset_form_context(
         "prelookup": {"source": "manual", "message": "Заполните полную карточку устройства вручную."} if manual_mode else flow,
         "related_devices_json": draft.get("related_devices_json", "") if draft else "",
         "related_device_drafts": related_drafts,
+        "network_creation": flow.get("network_creation") if isinstance(flow, dict) else None,
     }
 
 
@@ -601,7 +603,7 @@ async def inventory_select_location(request: Request, location_id: str = Form(),
 
 
 @router.get("/inventory/assets/new", response_class=HTMLResponse)
-def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, location_id: str = "", parent_asset_id: str = "", manual: bool = False, request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, location_id: str = "", parent_asset_id: str = "", manual: bool = False, network_key: str = "", request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
     user = require_user(request, db)
     location = _flow_location(request, db, location_id)
     parent_asset = _related_parent_or_error(db, parent_asset_id, location if location_id else None)
@@ -612,8 +614,16 @@ def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, 
         _new_asset_flow_key(asset_type, parent_asset_id, return_location_id),
         base_revision=parent_asset.manual_revision if parent_asset else None)
     if created:
+        if network_key:
+            try:
+                process.flow_json = network_creation.initial_flow(network_key)
+            except NetctlBindingConflict as exc:
+                db.delete(process)
+                db.commit()
+                raise HTTPException(409, str(exc)) from exc
+            db.commit()
         return _redirect(form_drafts.with_draft(request.url.path + ("?" + request.url.query if request.url.query else ""), process.id))
-    manual_mode = location is not None and _is_direct_manual_asset(asset_type, parent_asset, manual)
+    manual_mode = location is not None and _is_direct_manual_asset(asset_type, parent_asset, manual) and not process.flow_json.get("network_creation")
     draft = process.fields_json
     draft = draft if isinstance(draft, dict) else None
     if manual_mode:
@@ -621,7 +631,9 @@ def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, 
     flow = process.flow_json
     if not isinstance(flow, dict) or not flow.get("ready"):
         return _render(request, "inventory_asset_discovery.html", {"asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "lookup_status_labels": LOOKUP_STATUS_LABELS, "lookup_result": flow}, db)
-    return _render(request, "inventory_asset_form.html", _new_asset_form_context(asset_type=asset_type, parent_asset_id=parent_asset_id, manual_mode=False, location=location, flow=flow, draft=draft), db)
+    context = _new_asset_form_context(asset_type=asset_type, parent_asset_id=parent_asset_id, manual_mode=False, location=location, flow=flow, draft=draft)
+    context["network_duplicates"] = network_creation.possible_duplicates(db, flow)
+    return _render(request, "inventory_asset_form.html", context, db)
 
 
 @router.get("/inventory/assets/{asset_id}/related/new", response_class=HTMLResponse)
@@ -647,6 +659,8 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
         _flash(request, "bad", "Сначала создайте локацию")
         return _redirect("/inventory")
     process = await form_drafts.posted_process(request, db, user, _new_asset_flow_key(asset_type, parent_asset_id, location.id))
+    if process.flow_json.get("network_creation"):
+        raise HTTPException(409, "Сетевой интерфейс этого черновика уже выбран. Начните отдельный процесс для другого устройства.")
     target_url = form_drafts.with_draft(target_url, process.id)
     try:
         result = await run_in_threadpool(InventoryLookup(run_netctl).lookup, identifier, actor=user.username)
@@ -698,6 +712,8 @@ async def inventory_continue_new_asset_manually(request: Request, asset_type: In
     process = await form_drafts.posted_process(request, db, user, _new_asset_flow_key(asset_type, parent_asset_id, location.id))
     target_url = form_drafts.with_draft(target_url, process.id)
     flow = dict(process.flow_json)
+    if flow.get("network_creation"):
+        raise HTTPException(409, "Сетевой интерфейс этого черновика уже выбран. Начните отдельный процесс для другого устройства.")
     if parent_asset is None and (not isinstance(flow, dict) or flow.get("status") not in {"not_found", "unavailable"}):
         _flash(request, "bad", "Сначала выполните поиск устройства")
         return _redirect(target_url)
@@ -786,8 +802,15 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
         form_drafts.retain(db, process, submitted_draft)
         _flash(request, "bad", "Сначала выполните поиск или выберите ручное заполнение")
         return _redirect(form_drafts.with_draft(_new_asset_url(asset_type, parent_asset_id, location_id=location.id if has_explicit_return else ""), process.id))
-    form_drafts.claim_for_save(db, process)
     try:
+        network_submit = network_creation.validate_submit(flow, submitted_draft)
+        network_host = None
+        if network_submit:
+            from .network_links import read_runtime_identity
+            checked_key, network_host = await run_in_threadpool(read_runtime_identity, network_submit[0])
+            if checked_key != network_submit[0]:
+                raise NetctlBindingConflict("Идентичность Netctl изменилась. Обновите сравнение")
+        form_drafts.claim_for_save(db, process)
         if parent_asset is not None:
             service.claim_revision(db, parent_asset, process.base_revision)
         common_fields = {"custom_name": custom_name or None, "manufacturer": manufacturer or None, "model": model or None, "serial_number": serial_number or None, "inventory_number": inventory_number or None, "status": _status_form(status), "assigned_person_name": assigned_person_name or None, "login_name": login_name or None, "description": description or None}
@@ -806,9 +829,17 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
             service.attach_existing_asset(db, parent_asset.id, asset.id, actor=user.username)
             write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=asset.id, commit=False)
         write_audit(db, request, user, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id, commit=False)
+        if network_submit:
+            binding = network_creation.confirm_created(db, asset, key=network_submit[0],
+                reason=network_submit[1], host=network_host, actor=user.username)
+            write_audit(db, request, user, "inventory-netctl-confirm", "success",
+                message=f"asset_id={asset.id} network_key={network_submit[0]}", target_client=binding.id, commit=False)
         db.delete(process)
         db.commit()
-    except (InventoryValidationError, InventoryRevisionConflict) as exc:
+    except HTTPException:
+        db.rollback()
+        raise
+    except (InventoryValidationError, InventoryRevisionConflict, NetctlBindingConflict) as exc:
         db.rollback()
         form_drafts.retain(db, process, submitted_draft)
         _flash(request, "bad", str(exc))

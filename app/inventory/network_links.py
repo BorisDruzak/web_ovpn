@@ -13,7 +13,7 @@ from ..db import get_db
 from ..config import get_settings
 from ..netctl_client import run_netctl, NetctlError
 from ..permissions import user_has_permission
-from .models import InventoryAsset, InventoryAssetIdentifier, InventoryNetctlBinding
+from .models import InventoryAsset, InventoryAssetIdentifier, InventoryNetctlBinding, InventoryLocation
 from .lookup import normalize_mac, InventoryLookupError
 from .netctl_bindings import stable_key, confirm, end, NetctlBindingConflict
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
@@ -59,7 +59,7 @@ def read_runtime_identity(key):
 
 
 def _page(request,db,user,key,asset_id='',q='',page=1,error=None,reason='',submitted_revision=None):
-    from .web import _render
+    from .web import _render, ASSET_LABELS
     host = None
     try:
         key,host = read_runtime_identity(key)
@@ -95,6 +95,8 @@ def _page(request,db,user,key,asset_id='',q='',page=1,error=None,reason='',submi
     return _render(request,'inventory_network_links.html',{'network_key':key,'host':host,'cards':cards,
         'links':links,'link_revisions':revisions,'q':q,'selected_asset_id':asset_id,'page':page,'pages':pages,'total':total,
         'error':error,'reason':reason,'submitted_revision':submitted_revision,
+        'locations':list(db.scalars(select(InventoryLocation).order_by(InventoryLocation.name,InventoryLocation.id))),
+        'asset_labels':ASSET_LABELS,
         'can_write':user_has_permission(user,'inventory:write'),'comparison_url':comparison_url},db)
 
 

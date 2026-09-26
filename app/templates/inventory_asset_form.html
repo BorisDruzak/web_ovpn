@@ -70,6 +70,16 @@
   {% endif %}
   <form method="post" data-inventory-asset-form data-draft-revision="{{ form_draft.revision }}" data-restored-draft="{{ 'true' if form_draft.fields_json else 'false' }}" action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
     <input type="hidden" name="draft_id" value="{{ form_draft.id }}">
+    {% if network_creation %}<section class="inventory-card" aria-label="Первичная связь с сетью">
+      <h2>Создание карточки и связи с сетью</h2>
+      <p>Интерфейс {{ network_creation.network_key }}. IP и hostname — предложенные наблюдения. Карточка и связь сохраняются вместе.</p>
+      <p>Возможные дубли по MAC:</p>
+      {% for duplicate in network_duplicates or [] %}<p><a href="/inventory/network-links?network_key={{ network_creation.network_key|urlencode }}&amp;asset_id={{ duplicate.id }}">{{ duplicate.custom_name or duplicate.model or duplicate.id }} · {{ duplicate.inventory_number or 'Без инвентарного номера' }}</a></p>{% else %}<p>Совпадений по MAC нет. Перед созданием проверьте также инвентарный и серийный номера.</p>{% endfor %}
+      {% if network_duplicates|default([])|length > 25 %}<p>Показаны первые 26 совпадений. Для полного поиска откройте сравнение.</p>{% endif %}
+      <a href="/inventory/network-links?network_key={{ network_creation.network_key|urlencode }}">Найти существующую карточку</a>
+      <label>Основание сравнения<textarea name="network_reason" required maxlength="2000">{{ form_draft.fields_json.get('network_reason','') }}</textarea></label>
+      <label><input type="checkbox" name="network_confirmation" value="1" required{% if form_draft.fields_json.get('network_confirmation') == '1' %} checked{% endif %}> Сравнил возможные дубли и подтверждаю создание физической карточки со связью</label>
+    </section>{% endif %}
     <p>Черновик хранится 48 часов. Фото нужно выбрать повторно после перезагрузки.</p>
     <p role="status" aria-live="polite" data-draft-feedback>Черновик открыт.</p>
     {% if asset %}
