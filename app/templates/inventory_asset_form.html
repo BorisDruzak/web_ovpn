@@ -25,7 +25,7 @@
   {% macro endpoint_action(path, label, action='', confirm='', revision='') %}
   <button type="button" class="button secondary" data-endpoint-action="{{ api_root }}/{{ path }}"{% if action %} data-resolution="{{ action }}" data-revision="{{ revision }}"{% endif %}{% if confirm %} data-confirm="{{ confirm }}"{% endif %}>{{ label }}</button>
   {% endmacro %}
-  <section class="inventory-endpoint" data-endpoint-card data-csrf="{{ csrf_token(request) }}" aria-labelledby="endpoint-heading">
+  <section class="inventory-endpoint" data-endpoint-card data-manual-revision="{{ asset.manual_revision }}" data-csrf="{{ csrf_token(request) }}" aria-labelledby="endpoint-heading">
     <h2 id="endpoint-heading">АГЕНТ</h2>
     {% if context.binding %}
     <strong>Привязка подтверждена</strong>
@@ -206,6 +206,6 @@
 </section>
 {% endblock %}
 {% block page_scripts %}
-<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-7" defer></script>
+<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-8" defer></script>
 <script src="{{ url_for('static', path='inventory-drafts.js') }}?v=draft-2" defer></script>
 {% endblock %}

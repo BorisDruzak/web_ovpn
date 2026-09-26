@@ -66,6 +66,13 @@ def no_upstream(monkeypatch):
     monkeypatch.setattr("app.inventory.api.get_endpoint_context_adapter", forbidden, raising=False)
 
 
+def revision_header(asset):
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    with get_sessionmaker()() as db:
+        return {'X-Inventory-Revision':str(db.get(InventoryAsset, asset).manual_revision)}
+
+
 def test_context_keeps_stale_endpoint_values_without_upstream(api, monkeypatch):
     client, headers = api
     asset, _ = seed(stale=True)
@@ -106,10 +113,10 @@ def test_candidates_are_local_and_confirmation_then_detach_are_audited(api, monk
     assert candidates.status_code == 200
     assert [r["id"] for r in candidates.json()["data"]] == [binding]
     assert client.get(f"{ROOT}/by-endpoint/{DEVICE}", headers=headers).status_code == 404
-    confirmed = client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/confirm", headers=headers)
+    confirmed = client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/confirm", headers=headers | revision_header(asset))
     assert confirmed.status_code == 200
     assert confirmed.json()["data"]["status"] == "confirmed"
-    detached = client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/detach", headers=headers)
+    detached = client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/detach", headers=headers | revision_header(asset))
     assert detached.status_code == 200
     assert detached.json()["data"]["status"] == "ended"
     from app.db import get_sessionmaker
@@ -122,7 +129,7 @@ def test_candidates_are_local_and_confirmation_then_detach_are_audited(api, monk
 def test_rejected_candidate_is_retained_but_not_listed(api):
     client, headers = api
     asset, binding = seed(candidate=True)
-    response = client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/reject", headers=headers)
+    response = client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/reject", headers=headers | revision_header(asset))
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "rejected"
     assert client.get(f"{ROOT}/assets/{asset}/endpoint-candidates", headers=headers).json()["data"] == []
@@ -133,12 +140,69 @@ def test_rejected_candidate_is_retained_but_not_listed(api):
         assert db.scalar(select(WebAuditLog).where(WebAuditLog.action == "inventory.endpoint.reject"))
 
 
+def test_binding_decision_requires_original_manual_revision_and_audit_is_atomic(api, monkeypatch):
+    client, headers = api
+    asset, binding = seed(candidate=True)
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    def revision():
+        with get_sessionmaker()() as db:
+            return db.get(InventoryAsset, asset).manual_revision
+    original = revision()
+    route = f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/confirm"
+    assert client.post(route, headers=headers).status_code == 428
+    assert revision() == original
+    with get_sessionmaker()() as db:
+        db.get(InventoryAsset, asset).custom_name = 'Concurrent manual edit'
+        db.commit()
+    current = revision()
+    assert client.post(route, headers=headers | {'X-Inventory-Revision':str(original)}).status_code == 409
+    assert revision() == current
+    def failing_audit(*args, **kwargs):
+        raise RuntimeError('synthetic audit failure')
+    with monkeypatch.context() as patch:
+        patch.setattr('app.inventory.api.write_audit', failing_audit)
+        with pytest.raises(RuntimeError, match='synthetic audit failure'):
+            client.post(route, headers=headers | {'X-Inventory-Revision':str(current)})
+    with get_sessionmaker()() as db:
+        assert db.get(InventoryExternalBinding, binding).status == Status.CANDIDATE
+    assert revision() == current
+    response = client.post(route, headers=headers | {'X-Inventory-Revision':str(current)})
+    assert response.status_code == 200
+    assert response.json()['manual_revision'] == revision() > current
+
+
 def test_stale_and_wrong_asset_candidates_cannot_be_confirmed(api):
     client, headers = api
     asset, binding = seed(candidate=True, stale=True)
     other, _ = seed(asset_type=InventoryAssetType.MONITOR)
-    assert client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/confirm", headers=headers).status_code == 400
+    assert client.post(f"{ROOT}/assets/{asset}/endpoint-bindings/{binding}/confirm", headers=headers | revision_header(asset)).status_code == 400
     assert client.post(f"{ROOT}/assets/{other}/endpoint-bindings/{binding}/confirm", headers=headers).status_code == 400
+
+
+@pytest.mark.parametrize('action', ['confirm', 'reject', 'detach', 'reconnect'])
+def test_every_binding_decision_rejects_missing_or_stale_revision(api, action):
+    client, headers = api
+    asset, binding = seed(candidate=action in {'confirm', 'reject'})
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    if action == 'reconnect':
+        with get_sessionmaker()() as db:
+            row = db.get(InventoryExternalBinding, binding)
+            row.status, row.ended_at = Status.ENDED, datetime.now(timezone.utc)
+            db.commit()
+    original = revision_header(asset)
+    route = f'{ROOT}/assets/{asset}/endpoint-bindings/{binding}/{action}'
+    assert client.post(route, headers=headers).status_code == 428
+    with get_sessionmaker()() as db:
+        db.get(InventoryAsset, asset).custom_name = 'Another operator changed the card'
+        db.commit()
+    current = revision_header(asset)
+    assert client.post(route, headers=headers | original).status_code == 409
+    assert revision_header(asset) == current
+    response = client.post(route, headers=headers | current)
+    assert response.status_code == 200, response.text
+    assert revision_header(asset) != current
 
 
 @pytest.mark.parametrize("path,method", [

@@ -130,7 +130,8 @@ document.addEventListener("click", async (event) => {
     const response = await fetch(url.pathname, {
       method: read ? "GET" : "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", "X-CSRF-Token": card.dataset.csrf },
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": card.dataset.csrf,
+        "X-Inventory-Revision": card.dataset.manualRevision },
       body: read ? undefined : JSON.stringify(button.dataset.resolution
         ? { action: button.dataset.resolution, expected_revision: button.dataset.revision } : { profile: "baseline_v1" }),
     });
@@ -163,7 +164,13 @@ document.addEventListener("click", async (event) => {
     } else if (read && !result.data.length) {
       feedback.textContent = "Сохранённых кандидатов нет. Дождитесь плановой синхронизации и повторите поиск.";
     } else if (inventoryManualDraft() !== inventoryInitialDraft) {
-      feedback.textContent = "Действие выполнено. Сохраните введённые изменения карточки перед обновлением страницы.";
+      feedback.textContent = result.manual_revision
+        ? "Связь изменена. Ввод сохранён в черновике; обновите карточку и сравните изменения перед сохранением."
+        : "Действие выполнено. Сохраните введённые изменения карточки перед обновлением страницы.";
+    } else if (result.manual_revision) {
+      const refreshed = new URL(window.location.href);
+      refreshed.searchParams.delete("draft_id");
+      window.location.assign(refreshed.href);
     } else {
       window.location.reload();
     }

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.inventory.models import InventoryAssetType, InventoryEndpointState
-from tests.test_inventory_endpoint_api import CollectionAdapter, seed
+from tests.test_inventory_endpoint_api import CollectionAdapter, seed, revision_header
 from tests.test_inventory_web import _client, _csrf
 
 
@@ -52,7 +52,7 @@ def test_pc_card_keeps_agent_summary_small_and_shows_endpoint_values_by_field(we
     assert f'/api/v1/inventory/assets/{asset}/endpoint-refresh' in page.text
     assert f'/endpoint-bindings/{binding}/detach' in page.text
     assert "inventory.css?v=endpoint-2" in page.text
-    assert "inventory.js?v=endpoint-7" in page.text
+    assert "inventory.js?v=endpoint-8" in page.text
     for field, value in (("manufacturer", "Lenovo"), ("cpu_model", "AMD"),
                          ("cpu_generation", "Ryzen 7 5700G"), ("ram_gb", "16")):
         assert f'data-endpoint-value-for="{field}"' in page.text
@@ -105,7 +105,8 @@ def test_candidate_controls_use_local_api_and_session_csrf(web):
     route = f"/api/v1/inventory/assets/{asset}/endpoint-bindings/{binding}/confirm"
     assert route in page.text
     assert web.post(route).status_code == 400
-    response = web.post(route, headers={"X-CSRF-Token": _csrf(page.text)})
+    assert 'data-manual-revision="' in page.text
+    response = web.post(route, headers={"X-CSRF-Token": _csrf(page.text)} | revision_header(asset))
     assert response.status_code == 200
     assert "Привязка подтверждена" in web.get(f"/inventory/assets/{asset}").text
 
@@ -147,7 +148,7 @@ def test_session_reject_and_detach_require_csrf(web, action, candidate, expected
     page = web.get(f"/inventory/assets/{asset}")
     route = f"/api/v1/inventory/assets/{asset}/endpoint-bindings/{binding}/{action}"
     assert web.post(route).status_code == 400
-    response = web.post(route, headers={"X-CSRF-Token": _csrf(page.text)})
+    response = web.post(route, headers={"X-CSRF-Token": _csrf(page.text)} | revision_header(asset))
     assert response.status_code == 200
     assert response.json()["data"]["status"] == expected
 
@@ -157,16 +158,16 @@ def test_detached_card_offers_explicit_csrf_protected_reconnect(web):
     page = web.get(f"/inventory/assets/{asset}")
     headers = {"X-CSRF-Token": _csrf(page.text)}
     base = f"/api/v1/inventory/assets/{asset}/endpoint-bindings/{binding}"
-    assert web.post(base + "/detach", headers=headers).status_code == 200
+    assert web.post(base + "/detach", headers=headers | revision_header(asset)).status_code == 200
     page = web.get(f"/inventory/assets/{asset}")
     assert base + "/reconnect" in page.text
     assert "Восстановить привязку" in page.text
     assert web.post(base + "/reconnect").status_code == 400
-    response = web.post(base + "/reconnect", headers=headers)
+    response = web.post(base + "/reconnect", headers=headers | revision_header(asset))
     assert response.status_code == 200
     assert response.json()["data"]["id"] != binding
     assert response.json()["data"]["status"] == "confirmed"
-    assert web.post(base + "/reconnect", headers=headers).status_code == 400
+    assert web.post(base + "/reconnect", headers=headers | revision_header(asset)).status_code == 400
 
 
 def test_endpoint_session_auth_is_narrow_and_rejects_invalid_bearer(web, monkeypatch):

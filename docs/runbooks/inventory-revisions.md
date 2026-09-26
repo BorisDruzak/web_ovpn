@@ -28,3 +28,15 @@ Attaching a newly created peripheral checks its parent's captured revision befor
 writing the card or relation. Remaining lifecycle integration is tracked in the
 execution plan: soft delete/restore and external binding actions must use the same
 boundary. The complete T09 acceptance remains open until those paths are verified.
+
+Endpoint binding confirm/reject/detach/reconnect POSTs require the integer
+`X-Inventory-Revision` header from the displayed physical card. Missing headers
+return 428, malformed values 422, stale values 409. CSRF and permission gates
+still apply. The atomic revision claim, binding decision and audit share one
+transaction; an audit failure rolls everything back. A successful response adds
+the resulting `manual_revision` alongside the existing binding `data`.
+The browser sends its captured revision, preserves any input entered during the
+request, and starts a fresh draft after a successful decision only when no manual
+input needs preserving. It does not replace an old draft's original revision.
+Discrepancy decisions still use their comparison hash; integration with the
+physical-card manual revision remains an OPEN T09 gate.

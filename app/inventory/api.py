@@ -184,7 +184,7 @@ def get_endpoint_candidates(asset_id: str, actor: str = Depends(require_endpoint
 
 
 def _endpoint_binding_action(db: Session, request: Request, actor: str, asset_id: str, binding_id: str, action: str) -> dict[str, Any]:
-    _endpoint_asset(db, asset_id)
+    asset = _endpoint_asset(db, asset_id)
     operation = {
         "confirm": endpoint_service.confirm_binding,
         "reject": endpoint_service.reject_binding,
@@ -192,14 +192,32 @@ def _endpoint_binding_action(db: Session, request: Request, actor: str, asset_id
         "reconnect": endpoint_service.reconnect_binding,
     }[action]
     try:
+        _claim_endpoint_revision(db, request, asset)
         binding = operation(db, asset_id, binding_id, actor, datetime.now(timezone.utc))
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="Endpoint binding conflicts with an active binding") from exc
-    write_audit(db, request, actor, f"inventory.endpoint.{action}", "ok", "", target_client=asset_id)
-    return {"status": "ok", "data": _endpoint_binding_dict(binding)}
+    write_audit(db, request, actor, f"inventory.endpoint.{action}", "ok", "", target_client=asset_id, commit=False)
+    db.flush()
+    db.refresh(asset, attribute_names=['manual_revision'])
+    result = {"status": "ok", "data": _endpoint_binding_dict(binding), "manual_revision":asset.manual_revision}
+    db.commit()
+    return result
+
+
+def _claim_endpoint_revision(db: Session, request: Request, asset: InventoryAsset) -> None:
+    raw = request.headers.get('X-Inventory-Revision')
+    if raw is None:
+        raise HTTPException(428, 'Откройте актуальную карточку: требуется её ревизия')
+    if not raw.isascii() or not raw.isdecimal() or len(raw) > 18 or int(raw) < 1:
+        raise HTTPException(422, 'Некорректная ревизия карточки')
+    try:
+        service.claim_revision(db, asset, int(raw))
+    except InventoryRevisionConflict as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/assets/{asset_id}/endpoint-bindings/{binding_id}/confirm")
