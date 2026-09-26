@@ -7,12 +7,14 @@
   <section class="inventory-card inventory-discovery">
     <h2>Сначала найдите устройство</h2>
     <p class="muted">Введите IP-адрес, MAC-адрес или hostname. Сначала используются данные сбора; для IP при отсутствии данных запускается Nmap.</p>
-    <form method="post" action="/inventory/assets/new/lookup">
+    <form method="post" action="/inventory/assets/new/lookup" data-inventory-discovery-form data-draft-revision="{{ form_draft.revision }}" data-restored-draft="{{ 'true' if form_draft.fields_json else 'false' }}">
+      <p role="status" aria-live="polite" data-draft-feedback>Черновик поиска открыт. Срок доступа — 48 часов.</p>
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="draft_id" value="{{ form_draft.id }}">
       <input type="hidden" name="asset_type" value="{{ asset_type.value }}">
       <input type="hidden" name="location_id" value="{{ return_location_id }}">
       <input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">
-      <label>IP-адрес, MAC-адрес или hostname<input name="identifier" required autocomplete="off" value="{{ lookup_result.identifier if lookup_result else '' }}" placeholder="Например, AA:BB:CC:DD:EE:FF"></label>
+      <label>IP-адрес, MAC-адрес или hostname<input name="identifier" required maxlength="255" autocomplete="off" value="{{ form_draft.fields_json.get('identifier', lookup_result.identifier if lookup_result else '') }}" placeholder="Например, AA:BB:CC:DD:EE:FF"></label>
       <button class="button inventory-primary" type="submit">НАЙТИ УСТРОЙСТВО</button>
     </form>
   </section>
@@ -22,6 +24,7 @@
   {% if parent_asset or (lookup_result and lookup_result.status in ['not_found', 'unavailable']) %}
   <form method="post" action="/inventory/assets/new/manual">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="draft_id" value="{{ form_draft.id }}">
     <input type="hidden" name="asset_type" value="{{ asset_type.value }}">
     <input type="hidden" name="location_id" value="{{ return_location_id }}">
     <input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">
@@ -29,6 +32,11 @@
     <button class="button secondary" type="submit">{% if parent_asset and not lookup_result %}ЗАПОЛНИТЬ ВРУЧНУЮ{% else %}ПРОДОЛЖИТЬ ВРУЧНУЮ{% endif %}</button>
   </form>
   {% endif %}
+  <form method="post" action="/inventory/drafts/{{ form_draft.id }}/discard" data-discard-draft>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button type="submit" class="button secondary">Отбросить черновик</button>
+  </form>
   <a class="button secondary" href="{% if return_location_id %}/inventory/locations/{{ return_location_id }}{% else %}/inventory{% endif %}">К ЛОКАЦИИ</a>
 </section>
 {% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', path='inventory-drafts.js') }}?v=draft-2" defer></script>{% endblock %}

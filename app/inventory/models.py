@@ -143,6 +143,21 @@ class InventoryAssetIdentifier(Base):
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
+class InventoryFormDraft(Base):
+    __tablename__ = "inventory_form_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("web_users.id"), index=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(255), nullable=False)
+    base_revision: Mapped[int | None] = mapped_column(Integer)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    fields_json: Mapped[dict[str, str]] = mapped_column(JSON, default=dict, nullable=False)
+    flow_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
+
+
 class InventoryExternalBinding(Base):
     __tablename__ = "inventory_external_bindings"
     __table_args__ = (

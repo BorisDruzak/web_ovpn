@@ -1,0 +1,36 @@
+// Start on a fresh synthetic PC card, using inventory_fixture_server.py.
+async (page) => {
+  const accept = dialog => dialog.accept();
+  page.on('dialog', accept);
+  const base = await page.evaluate(() => { const url = new URL(location.href); url.searchParams.delete('draft_id'); return url.href; });
+  const firstId = await page.locator('[name="draft_id"]').inputValue();
+  const second = await page.context().newPage();
+  second.on('dialog', accept);
+  await second.goto(base);
+  const secondId = await second.locator('[name="draft_id"]').inputValue();
+  if (firstId === secondId) throw new Error('Two tabs share the same form process');
+  const text = 'Длинный черновик первой вкладки '.repeat(2000);
+  await page.locator('[name="description"]').fill(text);
+  await second.locator('[name="description"]').fill('Независимый черновик второй вкладки');
+  await page.locator('[data-draft-feedback]').filter({hasText:'Черновик сохранён на сервере'}).waitFor({timeout:15000});
+  await second.locator('[data-draft-feedback]').filter({hasText:'Черновик сохранён на сервере'}).waitFor({timeout:15000});
+  const cookies = await page.context().cookies();
+  if (cookies.some(cookie => cookie.name === 'openvpn_web_session' && cookie.value.length > 2000)) throw new Error('Card fields grew the cookie');
+  await page.reload();
+  if (await page.locator('[name="description"]').inputValue() !== text) throw new Error('Reload lost first draft');
+  await second.reload();
+  if (await second.locator('[name="description"]').inputValue() !== 'Независимый черновик второй вкладки') throw new Error('Second tab lost its own draft');
+  await page.getByRole('button', {name:'Обновить данные агента', exact:true}).click();
+  if (!(await page.locator('[data-endpoint-feedback]').innerText()).includes('Сохраните изменения')) throw new Error('Restored unsaved draft did not lock Endpoint writes');
+  await page.getByRole('button', {name:'Отбросить черновик', exact:true}).click();
+  await page.waitForLoadState('networkidle');
+  if (await page.locator('[name="description"]').inputValue() === text) throw new Error('Discard retained draft values');
+  if (await page.locator('[name="draft_id"]').inputValue() === firstId) throw new Error('Discard did not end the process');
+  await second.getByRole('button', {name:'Отбросить черновик', exact:true}).click();
+  await second.waitForLoadState('networkidle');
+  await second.close();
+  page.off('dialog', accept);
+  const result = {independentTabs:true, longTextReload:true, boundedCookie:true, restoredEndpointLock:true, explicitDiscard:true};
+  await page.evaluate(value => { window.__draftBrowserResult = value; }, result);
+  return result;
+};

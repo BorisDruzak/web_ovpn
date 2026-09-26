@@ -4,7 +4,7 @@ import json
 import pytest
 from sqlalchemy import func, select
 
-from tests.test_inventory_web import _client, _csrf, _revision, _prepare_manual_asset_form
+from tests.test_inventory_web import _client, _csrf, _revision, _draft_id, _prepare_manual_asset_form
 from tests.test_inventory_api import _client as api_client
 
 
@@ -28,7 +28,7 @@ def test_html_workplace_late_validation_rolls_back(tmp_path, monkeypatch, invali
     client.post("/inventory/locations", data={"csrf_token": csrf, "name": "Synthetic"})
     form = _prepare_manual_asset_form(client, monkeypatch, "PC")
     response = client.post("/inventory/assets", data={
-        "csrf_token": _csrf(form.text), "asset_type": "PC", "custom_name": "Draft PC",
+        "csrf_token": _csrf(form.text), "draft_id": _draft_id(form.text), "asset_type": "PC", "custom_name": "Draft PC",
         "related_devices_json": json.dumps([
             {"asset_type": "MONITOR", "custom_name": "Screen one"},
             {"asset_type": "MONITOR", "custom_name": "Screen two"},
@@ -69,7 +69,7 @@ def test_html_update_late_exception_rolls_back_fields_and_identifiers(tmp_path, 
     monkeypatch.setattr(InventoryService, "sync_identifiers", fail_at_end)
     response = client.post(f"/inventory/assets/{asset_id}", data={
         "csrf_token": csrf, "custom_name": "Unsaved", "ip_address": "192.0.2.3",
-        "expected_revision": _revision(client.get(f"/inventory/assets/{asset_id}").text),
+        "expected_revision": _revision((page := client.get(f"/inventory/assets/{asset_id}")).text), "draft_id": _draft_id(page.text),
     }, follow_redirects=False)
     assert response.status_code == 303
     with get_sessionmaker()() as db:
@@ -102,7 +102,7 @@ def test_successful_html_workplace_commits_once(tmp_path, monkeypatch):
         return original(db)
     monkeypatch.setattr(Session, "commit", counted)
     response = client.post("/inventory/assets", data={
-        "csrf_token": _csrf(form.text), "asset_type": "PC", "custom_name": "Saved",
+        "csrf_token": _csrf(form.text), "draft_id": _draft_id(form.text), "asset_type": "PC", "custom_name": "Saved",
         "related_devices_json": '[{"asset_type":"MONITOR"},{"asset_type":"MONITOR"}]',
     }, follow_redirects=False)
     assert response.status_code == 303
@@ -119,7 +119,7 @@ def test_html_workplace_unexpected_late_failure_rolls_back(tmp_path, monkeypatch
     monkeypatch.setattr("app.inventory.web.service.update_details" if fail_point == "details"
         else "app.inventory.web.write_audit", fail)
     response = client.post("/inventory/assets", data={
-        "csrf_token": _csrf(form.text), "asset_type": "PC", "custom_name": "Retained after error",
+        "csrf_token": _csrf(form.text), "draft_id": _draft_id(form.text), "asset_type": "PC", "custom_name": "Retained after error",
         "related_devices_json": '[{"asset_type":"MONITOR"},{"asset_type":"MONITOR"}]',
     }, follow_redirects=False)
     assert response.status_code == 303

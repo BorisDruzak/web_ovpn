@@ -41,6 +41,18 @@ def _revision(page: str) -> str:
     return page.split('name="expected_revision" value="')[1].split('"')[0]
 
 
+def _draft_id(page: str) -> str:
+    marker = 'name="draft_id" value="'
+    return page.split(marker)[1].split('"')[0] if marker in page else ""
+
+
+def _without_draft(url: str) -> str:
+    from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
+    parts = urlsplit(url)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path,
+        urlencode([(key,value) for key,value in parse_qsl(parts.query, keep_blank_values=True) if key != "draft_id"]), parts.fragment))
+
+
 def _prepare_manual_asset_form(client: TestClient, monkeypatch, asset_type: str, parent_asset_id: str = ""):
     """Complete the required unsuccessful lookup before a test submits an asset card."""
     suffix = f"&parent_asset_id={parent_asset_id}" if parent_asset_id else ""
@@ -49,7 +61,7 @@ def _prepare_manual_asset_form(client: TestClient, monkeypatch, asset_type: str,
     lookup = client.post(
         "/inventory/assets/new/lookup",
         data={
-            "csrf_token": _csrf(discovery.text),
+            "csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text),
             "asset_type": asset_type,
             "parent_asset_id": parent_asset_id,
             "identifier": f"manual-{asset_type.lower()}",
@@ -60,7 +72,7 @@ def _prepare_manual_asset_form(client: TestClient, monkeypatch, asset_type: str,
     manual = client.post(
         "/inventory/assets/new/manual",
         data={
-            "csrf_token": _csrf(result.text),
+            "csrf_token": _csrf(result.text), "draft_id": _draft_id(result.text),
             "asset_type": asset_type,
             "parent_asset_id": parent_asset_id,
             "identifier": f"manual-{asset_type.lower()}",
@@ -124,7 +136,7 @@ def test_printer_form_renders_and_persists_connection_type(tmp_path, monkeypatch
     created = client.post(
         "/inventory/assets",
         data={
-            "csrf_token": _csrf(page.text),
+            "csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text),
             "asset_type": "PRINTER",
             "custom_name": "Kyocera",
             "connection_type": "network",
@@ -151,8 +163,8 @@ def test_location_detail_edits_location_on_tree_screen(tmp_path, monkeypatch):
     assert '<p class="inventory-location-summary">Подвал</p>' in page.text
     assert '<details class="inventory-location-edit">' in page.text
     assert "РЕДАКТИРОВАТЬ ЛОКАЦИЮ" in page.text
-    response = client.post(f"/inventory/locations/{location_id}", data={"csrf_token": _csrf(page.text), "name": "ИТ-отдел", "comment": "Подвал"}, follow_redirects=False)
-    assert response.headers["location"] == f"/inventory/locations/{location_id}"
+    response = client.post(f"/inventory/locations/{location_id}", data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "name": "ИТ-отдел", "comment": "Подвал"}, follow_redirects=False)
+    assert _without_draft(response.headers["location"]) == f"/inventory/locations/{location_id}"
     assert "ИТ-отдел" in client.get(response.headers["location"]).text
 
 
@@ -177,7 +189,7 @@ def test_inventory_location_select_compatibility_redirects_to_location(tmp_path,
     )
 
     assert response.status_code == 303
-    assert response.headers["location"] == location_url
+    assert _without_draft(response.headers["location"]) == location_url
 
 
 def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_path, monkeypatch):
@@ -195,7 +207,7 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
     csrf = _csrf(page.text)
     pc = client.post(
         "/inventory/assets",
-        data={"csrf_token": csrf, "asset_type": "PC", "custom_name": "BUH-PC-01"},
+        data={"csrf_token": csrf, "draft_id": _draft_id(page.text), "asset_type": "PC", "custom_name": "BUH-PC-01"},
         follow_redirects=False,
     )
     assert pc.status_code == 303
@@ -206,7 +218,7 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
         csrf = _csrf(page.text)
         response = client.post(
             "/inventory/assets",
-            data={"csrf_token": csrf, "asset_type": asset_type, "custom_name": custom_name, "parent_asset_id": pc_id},
+            data={"csrf_token": csrf, "draft_id": _draft_id(page.text), "asset_type": asset_type, "custom_name": custom_name, "parent_asset_id": pc_id},
             follow_redirects=False,
         )
         assert response.status_code == 303
@@ -215,7 +227,7 @@ def test_mobile_inventory_creates_tree_and_detaches_child_without_duplicate(tmp_
     csrf = _csrf(page.text)
     assert client.post(
         "/inventory/assets",
-        data={"csrf_token": csrf, "asset_type": "PRINTER", "custom_name": "Kyocera M2040"},
+        data={"csrf_token": csrf, "draft_id": _draft_id(page.text), "asset_type": "PRINTER", "custom_name": "Kyocera M2040"},
         follow_redirects=False,
     ).status_code == 303
 
@@ -254,7 +266,7 @@ def test_location_tree_visually_groups_related_devices_under_their_pc(tmp_path, 
     page = _prepare_manual_asset_form(client, monkeypatch, "MONITOR", pc_id)
     created = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(page.text), "asset_type": "MONITOR", "custom_name": "AOC 24B2X", "parent_asset_id": pc_id},
+        data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "asset_type": "MONITOR", "custom_name": "AOC 24B2X", "parent_asset_id": pc_id},
         follow_redirects=False,
     )
     assert created.status_code == 303
@@ -320,7 +332,7 @@ def test_saved_mobile_asset_card_can_collapse_without_a_second_network_lookup(tm
     page = _prepare_manual_asset_form(client, monkeypatch, "MONITOR")
     created = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(page.text), "asset_type": "MONITOR", "custom_name": "AOC"},
+        data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "asset_type": "MONITOR", "custom_name": "AOC"},
         follow_redirects=False,
     )
 
@@ -340,7 +352,7 @@ def test_pc_card_groups_fields_and_keeps_location_navigation_outside_details(tmp
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
     created = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-groups"},
+        data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "asset_type": "PC", "custom_name": "PC-groups"},
         follow_redirects=False,
     )
 
@@ -378,7 +390,7 @@ def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
     assert client.post("/inventory/locations", data={"csrf_token": csrf, "name": "214"}, follow_redirects=False).status_code == 303
     page = _prepare_manual_asset_form(client, monkeypatch, "MONITOR")
     created = client.post(
-        "/inventory/assets", data={"csrf_token": _csrf(page.text), "asset_type": "MONITOR", "custom_name": "AOC"}, follow_redirects=False
+        "/inventory/assets", data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "asset_type": "MONITOR", "custom_name": "AOC"}, follow_redirects=False
     )
     asset_id = created.headers["location"].rsplit("/", 1)[-1]
     detail = client.get(f"/inventory/assets/{asset_id}")
@@ -386,7 +398,7 @@ def test_saved_mobile_asset_accepts_camera_photo(tmp_path, monkeypatch):
     assert 'capture="environment"' in detail.text
     uploaded = client.post(
         f"/inventory/assets/{asset_id}/photos",
-        data={"csrf_token": _csrf(detail.text), "photo_type": "general"},
+        data={"csrf_token": _csrf(detail.text), "draft_id": _draft_id(detail.text), "photo_type": "general"},
         files={"photo": ("label.png", PNG_BYTES, "application/octet-stream")},
         follow_redirects=False,
     )
@@ -402,7 +414,7 @@ def test_mobile_pc_form_persists_hardware_details(tmp_path, monkeypatch):
     created = client.post(
         "/inventory/assets",
         data={
-            "csrf_token": _csrf(page.text),
+            "csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text),
             "asset_type": "PC",
             "custom_name": "PC-01",
             "os_name": "Windows",
@@ -435,7 +447,7 @@ def test_mobile_pc_draft_saves_related_devices_in_one_submit(tmp_path, monkeypat
     created = client.post(
         "/inventory/assets",
         data={
-            "csrf_token": _csrf(page.text),
+            "csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text),
             "asset_type": "PC",
             "custom_name": "PC-03",
             "related_devices_json": '[{"asset_type":"MONITOR","custom_name":"AOC 24"},{"asset_type":"PHONE","custom_name":"Yealink"}]',
@@ -454,7 +466,7 @@ def _create_location_and_pc(tmp_path, monkeypatch) -> tuple[TestClient, str, str
     client, csrf = _client(tmp_path, monkeypatch)
     location = client.post("/inventory/locations", data={"csrf_token": csrf, "name": "ИТ отдел"}, follow_redirects=False)
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
-    created = client.post("/inventory/assets", data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-04"}, follow_redirects=False)
+    created = client.post("/inventory/assets", data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "asset_type": "PC", "custom_name": "PC-04"}, follow_redirects=False)
     assert created.status_code == 303
 
     from app.db import get_sessionmaker
@@ -507,7 +519,7 @@ def test_location_scoped_asset_create_and_update_return_to_location_tree(tmp_pat
     created = client.post(
         "/inventory/assets",
         data={
-            "csrf_token": _csrf(form.text),
+            "csrf_token": _csrf(form.text), "draft_id": _draft_id(form.text),
             "asset_type": "MONITOR",
             "custom_name": "AOC",
             "parent_asset_id": asset_id,
@@ -516,15 +528,15 @@ def test_location_scoped_asset_create_and_update_return_to_location_tree(tmp_pat
         },
         follow_redirects=False,
     )
-    assert created.headers["location"] == f"/inventory/locations/{location_id}"
+    assert _without_draft(created.headers["location"]) == f"/inventory/locations/{location_id}"
 
     detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
     updated = client.post(
         f"/inventory/assets/{asset_id}",
-        data={"csrf_token": _csrf(detail.text), "expected_revision": _revision(detail.text), "custom_name": "PC-04", "return_location_id": location_id},
+        data={"csrf_token": _csrf(detail.text), "draft_id": _draft_id(detail.text), "expected_revision": _revision(detail.text), "custom_name": "PC-04", "return_location_id": location_id},
         follow_redirects=False,
     )
-    assert updated.headers["location"] == f"/inventory/locations/{location_id}"
+    assert _without_draft(updated.headers["location"]) == f"/inventory/locations/{location_id}"
 
 
 def test_location_scoped_parent_must_belong_to_requested_location(tmp_path, monkeypatch):
@@ -546,21 +558,21 @@ def test_location_scoped_photo_upload_returns_to_owning_card(tmp_path, monkeypat
 
     uploaded = client.post(
         f"/inventory/assets/{asset_id}/photos",
-        data={"csrf_token": _csrf(detail.text), "photo_type": "general", "return_location_id": location_id},
+        data={"csrf_token": _csrf(detail.text), "draft_id": _draft_id(detail.text), "photo_type": "general", "return_location_id": location_id},
         files={"photo": ("label.png", PNG_BYTES, "image/png")},
         follow_redirects=False,
     )
-    assert uploaded.headers["location"] == f"/inventory/assets/{asset_id}?location_id={location_id}"
+    assert _without_draft(uploaded.headers["location"]) == f"/inventory/assets/{asset_id}?location_id={location_id}"
     assert "label.png" in client.get(uploaded.headers["location"]).text
 
     detail = client.get(uploaded.headers["location"])
     rejected = client.post(
         f"/inventory/assets/{asset_id}/photos",
-        data={"csrf_token": _csrf(detail.text), "photo_type": "general", "return_location_id": location_id},
+        data={"csrf_token": _csrf(detail.text), "draft_id": _draft_id(detail.text), "photo_type": "general", "return_location_id": location_id},
         files={"photo": ("label.bin", b"not an image", "application/octet-stream")},
         follow_redirects=False,
     )
-    assert rejected.headers["location"] == f"/inventory/assets/{asset_id}?location_id={location_id}"
+    assert _without_draft(rejected.headers["location"]) == f"/inventory/assets/{asset_id}?location_id={location_id}"
     assert "image content is invalid" in client.get(rejected.headers["location"]).text
 
 
@@ -570,7 +582,7 @@ def test_legacy_related_lookup_keeps_parent_location_when_session_changes(tmp_pa
     location_page = client.get(f"/inventory/locations/{location_id}")
     other = client.post(
         "/inventory/locations",
-        data={"csrf_token": _csrf(location_page.text), "name": "Другая"},
+        data={"csrf_token": _csrf(location_page.text), "draft_id": _draft_id(location_page.text), "name": "Другая"},
         follow_redirects=False,
     )
     other_location_id = other.headers["location"].rsplit("/", 1)[-1]
@@ -581,7 +593,7 @@ def test_legacy_related_lookup_keeps_parent_location_when_session_changes(tmp_pa
     lookup = client.post(
         "/inventory/assets/new/lookup",
         data={
-            "csrf_token": _csrf(discovery.text),
+            "csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text),
             "asset_type": "PHONE",
             "parent_asset_id": asset_id,
             "identifier": "legacy-phone",
@@ -589,7 +601,7 @@ def test_legacy_related_lookup_keeps_parent_location_when_session_changes(tmp_pa
         follow_redirects=False,
     )
 
-    assert lookup.headers["location"] == f"/inventory/assets/new?asset_type=PHONE&location_id={location_id}&parent_asset_id={asset_id}"
+    assert _without_draft(lookup.headers["location"]) == f"/inventory/assets/new?asset_type=PHONE&location_id={location_id}&parent_asset_id={asset_id}"
     assert client.get(lookup.headers["location"]).status_code == 200
 
 
@@ -613,12 +625,12 @@ def test_unlocated_legacy_asset_detail_and_photo_keep_owner_card_available(tmp_p
 
     uploaded = client.post(
         f"/inventory/assets/{asset_id}/photos",
-        data={"csrf_token": _csrf(detail.text), "photo_type": "general"},
+        data={"csrf_token": _csrf(detail.text), "draft_id": _draft_id(detail.text), "photo_type": "general"},
         files={"photo": ("legacy.png", PNG_BYTES, "image/png")},
         follow_redirects=False,
     )
 
-    assert uploaded.headers["location"] == f"/inventory/assets/{asset_id}"
+    assert _without_draft(uploaded.headers["location"]) == f"/inventory/assets/{asset_id}"
     assert "legacy.png" in client.get(uploaded.headers["location"]).text
 
 
@@ -626,7 +638,7 @@ def test_saved_asset_hides_legacy_walk_confirmation_controls(tmp_path, monkeypat
     """An active legacy walk session must not restore confirmation controls to the device card."""
     client, location_id, asset_id = _create_location_and_pc(tmp_path, monkeypatch)
     detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
-    started = client.post("/inventory/sessions", data={"csrf_token": _csrf(detail.text)}, follow_redirects=False)
+    started = client.post("/inventory/sessions", data={"csrf_token": _csrf(detail.text), "draft_id": _draft_id(detail.text)}, follow_redirects=False)
     assert started.status_code == 303
 
     active_detail = client.get(f"/inventory/assets/{asset_id}?location_id={location_id}")
@@ -643,7 +655,7 @@ def test_related_phone_offers_manual_entry_before_network_search(tmp_path, monke
     pc_form = _prepare_manual_asset_form(client, monkeypatch, "PC")
     created = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(pc_form.text), "asset_type": "PC", "custom_name": "PC-phone"},
+        data={"csrf_token": _csrf(pc_form.text), "draft_id": _draft_id(pc_form.text), "asset_type": "PC", "custom_name": "PC-phone"},
         follow_redirects=False,
     )
     asset_id = created.headers["location"].rsplit("/", 1)[-1]
@@ -653,7 +665,7 @@ def test_related_phone_offers_manual_entry_before_network_search(tmp_path, monke
 
     manual = client.post(
         "/inventory/assets/new/manual",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PHONE", "parent_asset_id": asset_id},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PHONE", "parent_asset_id": asset_id},
         follow_redirects=False,
     )
     assert manual.status_code == 303
@@ -670,7 +682,7 @@ def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
     created = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-04-a"},
+        data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "asset_type": "PC", "custom_name": "PC-04-a"},
         follow_redirects=False,
     )
     asset_id = created.headers["location"].rsplit("/", 1)[-1]
@@ -679,7 +691,7 @@ def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_
     rejected = client.post(
         "/inventory/assets",
         data={
-            "csrf_token": _csrf(form.text),
+            "csrf_token": _csrf(form.text), "draft_id": _draft_id(form.text),
             "asset_type": "MONITOR",
             "parent_asset_id": asset_id,
             "manual_mode": "1",
@@ -688,7 +700,7 @@ def test_manual_related_asset_returns_to_manual_card_after_validation_error(tmp_
         },
         follow_redirects=False,
     )
-    assert rejected.headers["location"] == f"/inventory/assets/new?asset_type=MONITOR&parent_asset_id={asset_id}&manual=1"
+    assert _without_draft(rejected.headers["location"]) == f"/inventory/assets/new?asset_type=MONITOR&parent_asset_id={asset_id}&manual=1"
     returned_form = client.get(rejected.headers["location"])
     assert 'name="manufacturer"' in returned_form.text
     assert "НАЙТИ УСТРОЙСТВО" not in returned_form.text
@@ -737,14 +749,14 @@ def test_nmap_prefilled_asset_keeps_entered_fields_after_validation_error(tmp_pa
     monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
     lookup = client.post(
         "/inventory/assets/new/lookup",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.150"},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.150"},
         follow_redirects=False,
     )
     form = client.get(lookup.headers["location"])
     rejected = client.post(
         "/inventory/assets",
         data={
-            "csrf_token": _csrf(form.text),
+            "csrf_token": _csrf(form.text), "draft_id": _draft_id(form.text),
             "asset_type": "PRINTER",
             "return_location_id": location_id,
             "custom_name": "Принтер 150",
@@ -755,7 +767,7 @@ def test_nmap_prefilled_asset_keeps_entered_fields_after_validation_error(tmp_pa
         follow_redirects=False,
     )
 
-    assert rejected.headers["location"] == f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}"
+    assert _without_draft(rejected.headers["location"]) == f"/inventory/assets/new?asset_type=PRINTER&location_id={location_id}"
     returned_form = client.get(rejected.headers["location"])
     assert "Проверьте поле «MAC-адрес»" in returned_form.text
     assert 'value="Принтер 150"' in returned_form.text
@@ -784,7 +796,7 @@ def test_printer_lookup_prefills_verified_snmp_values_without_replacing_fresh_co
     monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
     lookup = client.post(
         "/inventory/assets/new/lookup",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.150"},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.150"},
         follow_redirects=False,
     )
     form = client.get(lookup.headers["location"])
@@ -821,7 +833,7 @@ def test_printer_snmp_runs_only_after_a_single_nmap_fallback(tmp_path, monkeypat
     monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
     lookup = client.post(
         "/inventory/assets/new/lookup",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.168"},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PRINTER", "location_id": location_id, "identifier": "192.168.100.168"},
         follow_redirects=False,
     )
 
@@ -845,10 +857,10 @@ def test_new_mobile_asset_requires_discovery_and_prefills_collection_data(tmp_pa
 
     blocked = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PC", "custom_name": "Недопустимо"},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PC", "custom_name": "Недопустимо"},
         follow_redirects=False,
     )
-    assert blocked.headers["location"] == "/inventory/assets/new?asset_type=PC"
+    assert _without_draft(blocked.headers["location"]) == "/inventory/assets/new?asset_type=PC"
 
     monkeypatch.setattr(
         "app.inventory.web.run_netctl",
@@ -856,7 +868,7 @@ def test_new_mobile_asset_requires_discovery_and_prefills_collection_data(tmp_pa
     )
     lookup = client.post(
         "/inventory/assets/new/lookup",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PC", "identifier": "192.168.100.88"},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PC", "identifier": "192.168.100.88"},
         follow_redirects=False,
     )
     assert lookup.status_code == 303
@@ -880,7 +892,7 @@ def test_new_mobile_asset_allows_manual_entry_only_after_unsuccessful_search(tmp
 
     lookup = client.post(
         "/inventory/assets/new/lookup",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PHONE", "identifier": "missing-phone"},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PHONE", "identifier": "missing-phone"},
         follow_redirects=False,
     )
     result = client.get(lookup.headers["location"])
@@ -888,7 +900,7 @@ def test_new_mobile_asset_allows_manual_entry_only_after_unsuccessful_search(tmp
 
     manual = client.post(
         "/inventory/assets/new/manual",
-        data={"csrf_token": _csrf(result.text), "asset_type": "PHONE", "identifier": "missing-phone"},
+        data={"csrf_token": _csrf(result.text), "draft_id": _draft_id(result.text), "asset_type": "PHONE", "identifier": "missing-phone"},
         follow_redirects=False,
     )
     form = client.get(manual.headers["location"])
@@ -911,7 +923,7 @@ def test_new_mobile_asset_prefills_nmap_operating_system(tmp_path, monkeypatch):
     monkeypatch.setattr("app.inventory.web.run_netctl", netctl)
     lookup = client.post(
         "/inventory/assets/new/lookup",
-        data={"csrf_token": _csrf(discovery.text), "asset_type": "PC", "identifier": "192.168.100.89"},
+        data={"csrf_token": _csrf(discovery.text), "draft_id": _draft_id(discovery.text), "asset_type": "PC", "identifier": "192.168.100.89"},
         follow_redirects=False,
     )
 
@@ -928,7 +940,7 @@ def test_mobile_form_rejects_bad_identifier_without_server_error(tmp_path, monke
     page = _prepare_manual_asset_form(client, monkeypatch, "PC")
     response = client.post(
         "/inventory/assets",
-        data={"csrf_token": _csrf(page.text), "asset_type": "PC", "custom_name": "PC-05", "mac_address": "not-a-mac"},
+        data={"csrf_token": _csrf(page.text), "draft_id": _draft_id(page.text), "asset_type": "PC", "custom_name": "PC-05", "mac_address": "not-a-mac"},
         follow_redirects=False,
     )
     assert response.status_code == 303
@@ -943,7 +955,7 @@ def test_asset_update_keeps_fields_after_identifier_validation_error(tmp_path, m
     rejected = client.post(
         f"/inventory/assets/{asset_id}",
         data={
-            "csrf_token": _csrf(detail.text),
+            "csrf_token": _csrf(detail.text), "draft_id": _draft_id(detail.text),
             "expected_revision": _revision(detail.text),
             "return_location_id": location_id,
             "custom_name": "PC-04 исправленный",
@@ -958,7 +970,7 @@ def test_asset_update_keeps_fields_after_identifier_validation_error(tmp_path, m
     )
 
     assert rejected.status_code == 303
-    assert rejected.headers["location"] == f"/inventory/assets/{asset_id}?location_id={location_id}"
+    assert _without_draft(rejected.headers["location"]) == f"/inventory/assets/{asset_id}?location_id={location_id}"
     returned_form = client.get(rejected.headers["location"])
     assert "Проверьте поле «MAC-адрес»" in returned_form.text
     assert 'value="PC-04 исправленный"' in returned_form.text

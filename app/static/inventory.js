@@ -106,7 +106,7 @@ document.addEventListener("click", async (event) => {
   const card = button.closest("[data-endpoint-card]");
   if (!card || card.dataset.busy === "true" || inventoryFormSubmitting) return;
   const feedback = card.querySelector("[data-endpoint-feedback]");
-  if (inventoryManualDraft() !== inventoryInitialDraft) {
+  if (inventoryManualForm?.dataset.restoredDraft === "true" || inventoryManualDraft() !== inventoryInitialDraft) {
     feedback.textContent = "Сохраните изменения карточки перед действием с агентом. Несохранённые поля оставлены в форме.";
     feedback.scrollIntoView({ block: "nearest" });
     return;

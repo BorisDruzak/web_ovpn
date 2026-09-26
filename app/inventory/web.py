@@ -8,11 +8,11 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..audit import write_audit
-from ..auth import csrf_token, current_user, require_user, verify_csrf
+from ..auth import csrf_token, current_user, require_user, verify_csrf, verify_api_csrf
 from ..config import get_settings
 from ..db import get_db
 from ..netctl_client import run_netctl
@@ -22,6 +22,7 @@ from .endpoint import InventoryEndpointService
 from .models import (
     InventoryAsset,
     InventoryAssetRelation,
+    InventoryFormDraft,
     InventoryAssetPhoto,
     InventoryAssetStatus,
     InventoryAssetType,
@@ -34,6 +35,7 @@ from .models import (
 )
 from .service import InventoryService, InventoryValidationError
 from .revision import InventoryRevisionConflict
+from . import form_drafts
 from .storage import InventoryPhotoError, InventoryPhotoStorage
 
 
@@ -81,7 +83,7 @@ NEW_ASSET_FORM_FIELDS = (
     "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status",
     "assigned_person_name", "login_name", "description", "ip_address", "mac_address", "hostname",
     "os_name", "os_version", "cpu_model", "cpu_generation", "ram_type", "ram_gb", "storage_type", "storage_gb",
-    "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json", "expected_revision",
+    "page_counter", "connection_type", "extension", "diagonal_inches", "power_va", "battery_replaced_at", "related_devices_json", "expected_revision", "identifier",
 )
 IDENTIFIER_FIELD_LABELS = {
     "ip_address": "IP-адрес",
@@ -113,6 +115,7 @@ def _render(request: Request, template: str, context: dict[str, Any], db: Sessio
             "user": user,
             "settings": get_settings(),
             "flashes": list(request.session.get("flashes", [])),
+            "form_draft": getattr(request.state, "form_draft", None),
         }
     )
     request.session["flashes"] = []
@@ -167,10 +170,6 @@ def _new_asset_flow_key(asset_type: InventoryAssetType, parent_asset_id: str, lo
     return f"inventory_new_asset_flow:{asset_type.value}:{location_id}:{parent_asset_id}"
 
 
-def _new_asset_draft_key(asset_type: InventoryAssetType, parent_asset_id: str, location_id: str = "") -> str:
-    return f"{_new_asset_flow_key(asset_type, parent_asset_id, location_id)}:draft"
-
-
 def _asset_edit_draft_key(asset_id: str) -> str:
     return f"inventory_asset_edit_draft:{asset_id}"
 
@@ -184,7 +183,58 @@ def _is_direct_manual_asset(asset_type: InventoryAssetType, parent_asset: Invent
 
 async def _new_asset_form_draft(request: Request) -> dict[str, str]:
     form = await request.form()
-    return {field: str(form.get(field) or "") for field in NEW_ASSET_FORM_FIELDS if field in form}
+    fields = {field: str(form.get(field) or "") for field in NEW_ASSET_FORM_FIELDS if field in form}
+    if len(json.dumps(fields, ensure_ascii=False).encode("utf-8")) > form_drafts.MAX_DRAFT_BYTES:
+        raise HTTPException(413, "Поля карточки превышают 2 МБ. Сократите описание перед сохранением.")
+    return fields
+
+
+@router.post("/inventory/drafts/{draft_id}")
+async def autosave_draft(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    verify_api_csrf(request, request.headers.get("X-CSRF-Token"))
+    process = form_drafts.owned(db, user, draft_id)
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > form_drafts.MAX_DRAFT_BYTES:
+            raise HTTPException(413, "Черновик превышает 2 МБ")
+        chunks.append(chunk)
+    try:
+        payload = json.loads(b"".join(chunks))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(400, "Некорректный черновик") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Некорректный черновик")
+    fields, revision = payload.get("fields"), payload.get("draft_revision")
+    if not isinstance(fields, dict) or type(revision) is not int or revision < 1 or not set(fields) <= set(NEW_ASSET_FORM_FIELDS) or any(not isinstance(value, str) for value in fields.values()):
+        raise HTTPException(400, "Некорректные поля черновика")
+    if "expected_revision" in fields and process.purpose.startswith("inventory_asset_edit_draft:") and fields["expected_revision"] != str(process.base_revision):
+        raise HTTPException(409, "Исходную ревизию черновика менять нельзя")
+    now = datetime.now(timezone.utc)
+    result = db.execute(update(InventoryFormDraft).where(InventoryFormDraft.id == process.id,
+        InventoryFormDraft.owner_id == user.id, InventoryFormDraft.revision == revision,
+        InventoryFormDraft.expires_at > now).values(fields_json=fields,
+            updated_at=now, revision=InventoryFormDraft.revision + 1).execution_options(synchronize_session=False))
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "Черновик изменился. Ввод в этой вкладке сохранён; сравните версии.")
+    db.commit()
+    return {"status":"ok", "draft_revision":revision + 1}
+
+
+@router.post("/inventory/drafts/{draft_id}/discard")
+async def discard_draft(draft_id: str, request: Request, db: Session = Depends(get_db)):
+    user = require_user(request, db)
+    await verify_csrf(request)
+    process = form_drafts.owned(db, user, draft_id)
+    purpose = process.purpose
+    db.delete(process)
+    write_audit(db, request, user, "inventory.draft.discard", "ok", "", target_client=draft_id)
+    _flash(request, "ok", "Черновик отброшен")
+    if purpose.startswith("inventory_asset_edit_draft:"):
+        return _redirect(_asset_url(purpose.split(":", 1)[1]))
+    return _redirect("/inventory")
 
 
 def _new_asset_form_context(
@@ -455,18 +505,23 @@ async def inventory_select_location(request: Request, location_id: str = Form(),
 
 @router.get("/inventory/assets/new", response_class=HTMLResponse)
 def inventory_new_asset(asset_type: InventoryAssetType = InventoryAssetType.PC, location_id: str = "", parent_asset_id: str = "", manual: bool = False, request: Request = None, db: Session = Depends(get_db)) -> HTMLResponse:
-    require_user(request, db)
+    user = require_user(request, db)
     location = _flow_location(request, db, location_id)
     parent_asset = _related_parent_or_error(db, parent_asset_id, location if location_id else None)
     if parent_asset is not None and (location is None or parent_asset.location_id != location.id):
         location = _location_or_error(db, parent_asset.location_id)
     return_location_id = location.id if location is not None else ""
+    process, created = form_drafts.get_process(request, db, user,
+        _new_asset_flow_key(asset_type, parent_asset_id, return_location_id),
+        base_revision=parent_asset.manual_revision if parent_asset else None)
+    if created:
+        return _redirect(form_drafts.with_draft(request.url.path + ("?" + request.url.query if request.url.query else ""), process.id))
     manual_mode = location is not None and _is_direct_manual_asset(asset_type, parent_asset, manual)
-    draft = request.session.get(_new_asset_draft_key(asset_type, parent_asset_id, return_location_id))
+    draft = process.fields_json
     draft = draft if isinstance(draft, dict) else None
     if manual_mode:
         return _render(request, "inventory_asset_form.html", _new_asset_form_context(asset_type=asset_type, parent_asset_id=parent_asset_id, manual_mode=True, location=location, flow=None, draft=draft), db)
-    flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id, return_location_id))
+    flow = process.flow_json
     if not isinstance(flow, dict) or not flow.get("ready"):
         return _render(request, "inventory_asset_discovery.html", {"asset_type": asset_type, "parent_asset_id": parent_asset_id, "parent_asset": parent_asset, "location": location, "return_location_id": return_location_id, "asset_labels": ASSET_LABELS, "lookup_status_labels": LOOKUP_STATUS_LABELS, "lookup_result": flow}, db)
     return _render(request, "inventory_asset_form.html", _new_asset_form_context(asset_type=asset_type, parent_asset_id=parent_asset_id, manual_mode=False, location=location, flow=flow, draft=draft), db)
@@ -494,9 +549,12 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
     if location is None:
         _flash(request, "bad", "Сначала создайте локацию")
         return _redirect("/inventory")
+    process = await form_drafts.posted_process(request, db, user, _new_asset_flow_key(asset_type, parent_asset_id, location.id))
+    target_url = form_drafts.with_draft(target_url, process.id)
     try:
         result = InventoryLookup(run_netctl).lookup(identifier, actor=user.username)
     except InventoryLookupError as exc:
+        form_drafts.retain(db, process, {**process.fields_json, "identifier": identifier})
         _flash(request, "bad", str(exc))
         return _redirect(target_url)
     suggestions = dict(result.suggestions)
@@ -511,8 +569,8 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
     if printer_snmp is not None:
         observation_data["printer_snmp"] = printer_snmp
     observation = service.record_observation(db, asset_id=None, source=source, data=observation_data)
-    write_audit(db, request, user, "inventory.lookup", result.status, result.source, target_client=observation.id)
-    request.session[_new_asset_flow_key(asset_type, parent_asset_id, location.id)] = {
+    write_audit(db, request, user, "inventory.lookup", result.status, result.source, target_client=observation.id, commit=False)
+    process.flow_json = {
         "status": result.status,
         "source": result.source,
         "message": result.message,
@@ -521,13 +579,16 @@ async def inventory_lookup_new_asset(request: Request, asset_type: InventoryAsse
         "identifier": identifier.strip(),
         "ready": result.status == "found",
     }
-    request.session.pop(_new_asset_draft_key(asset_type, parent_asset_id, location.id), None)
+    process.fields_json = {}
+    process.updated_at = datetime.now(timezone.utc)
+    process.revision += 1
+    db.commit()
     return _redirect(target_url)
 
 
 @router.post("/inventory/assets/new/manual")
 async def inventory_continue_new_asset_manually(request: Request, asset_type: InventoryAssetType = Form(), location_id: str = Form(default=""), parent_asset_id: str = Form(default=""), identifier: str = Form(default=""), db: Session = Depends(get_db)) -> RedirectResponse:
-    require_user(request, db)
+    user = require_user(request, db)
     await verify_csrf(request)
     location = _flow_location(request, db, location_id)
     if location is None:
@@ -537,7 +598,9 @@ async def inventory_continue_new_asset_manually(request: Request, asset_type: In
     if parent_asset is not None and parent_asset.location_id != location.id:
         location = _location_or_error(db, parent_asset.location_id)
     target_url = _new_asset_url(asset_type, parent_asset_id, location_id=location.id)
-    flow = request.session.get(_new_asset_flow_key(asset_type, parent_asset_id, location.id))
+    process = await form_drafts.posted_process(request, db, user, _new_asset_flow_key(asset_type, parent_asset_id, location.id))
+    target_url = form_drafts.with_draft(target_url, process.id)
+    flow = dict(process.flow_json)
     if parent_asset is None and (not isinstance(flow, dict) or flow.get("status") not in {"not_found", "unavailable"}):
         _flash(request, "bad", "Сначала выполните поиск устройства")
         return _redirect(target_url)
@@ -548,7 +611,10 @@ async def inventory_continue_new_asset_manually(request: Request, asset_type: In
     except InventoryLookupError:
         identifier_type, normalized = "hostname", ""
     flow.update({"ready": True, "source": "manual", "message": "Данные не найдены: заполните карточку вручную.", "suggestions": {identifier_type: normalized} if normalized else {}})
-    request.session[_new_asset_flow_key(asset_type, parent_asset_id, location.id)] = flow
+    process.flow_json = flow
+    process.updated_at = datetime.now(timezone.utc)
+    process.revision += 1
+    db.commit()
     return _redirect(target_url)
 
 
@@ -558,6 +624,9 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     asset = db.get(InventoryAsset, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="inventory asset not found")
+    process, created = form_drafts.get_process(request, db, user, _asset_edit_draft_key(asset_id), base_revision=asset.manual_revision)
+    if created:
+        return _redirect(form_drafts.with_draft(_asset_url(asset_id, location_id), process.id))
     location = _flow_location(request, db, location_id)
     if location_id and location is not None and asset.location_id != location.id:
         raise HTTPException(status_code=404, detail="inventory asset not found")
@@ -569,9 +638,9 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
     form_values = {field: str(getattr(asset, field) or "") for field in ("custom_name", "manufacturer", "model", "serial_number", "inventory_number", "assigned_person_name", "login_name", "description")}
     form_values["status"] = asset.status.value if asset.status is not None else ""
-    form_values["expected_revision"] = str(asset.manual_revision)
+    form_values["expected_revision"] = str(process.base_revision)
     details = service.details_for(db, asset)
-    draft = request.session.get(_asset_edit_draft_key(asset.id))
+    draft = process.fields_json
     if isinstance(draft, dict):
         if draft.get("expected_revision") != str(asset.manual_revision):
             labels = {"custom_name":"Название", "manufacturer":"Производитель", "model":"Модель",
@@ -610,13 +679,18 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
     if parent_asset is not None and parent_asset.location_id != location.id:
         location = _location_or_error(db, parent_asset.location_id)
     flow_key = _new_asset_flow_key(asset_type, parent_asset_id, location.id)
-    flow = request.session.get(flow_key)
+    process = await form_drafts.posted_process(request, db, user, flow_key)
+    flow = process.flow_json
     direct_manual = _is_direct_manual_asset(asset_type, parent_asset, manual_mode == "1")
     submitted_draft = await _new_asset_form_draft(request)
     if not direct_manual and (not isinstance(flow, dict) or not flow.get("ready")):
+        form_drafts.retain(db, process, submitted_draft)
         _flash(request, "bad", "Сначала выполните поиск или выберите ручное заполнение")
-        return _redirect(_new_asset_url(asset_type, parent_asset_id, location_id=location.id if has_explicit_return else ""))
+        return _redirect(form_drafts.with_draft(_new_asset_url(asset_type, parent_asset_id, location_id=location.id if has_explicit_return else ""), process.id))
+    form_drafts.claim_for_save(db, process)
     try:
+        if parent_asset is not None:
+            service.claim_revision(db, parent_asset, process.base_revision)
         common_fields = {"custom_name": custom_name or None, "manufacturer": manufacturer or None, "model": model or None, "serial_number": serial_number or None, "inventory_number": inventory_number or None, "status": _status_form(status), "assigned_person_name": assigned_person_name or None, "login_name": login_name or None, "description": description or None}
         drafts = _workplace_drafts(related_devices_json) if asset_type is InventoryAssetType.PC else []
         details = await _detail_form(request, asset_type)
@@ -633,19 +707,18 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
             service.attach_existing_asset(db, parent_asset.id, asset.id, actor=user.username)
             write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=asset.id, commit=False)
         write_audit(db, request, user, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id, commit=False)
+        db.delete(process)
         db.commit()
-    except InventoryValidationError as exc:
+    except (InventoryValidationError, InventoryRevisionConflict) as exc:
         db.rollback()
-        request.session[_new_asset_draft_key(asset_type, parent_asset_id, location.id)] = submitted_draft
+        form_drafts.retain(db, process, submitted_draft)
         _flash(request, "bad", str(exc))
-        return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""))
+        return _redirect(form_drafts.with_draft(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""), process.id))
     except Exception:
         db.rollback()
-        request.session[_new_asset_draft_key(asset_type, parent_asset_id, location.id)] = submitted_draft
+        form_drafts.retain(db, process, submitted_draft)
         _flash(request, "bad", "Не удалось сохранить устройство. Ввод сохранён; повторите позже.")
-        return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""))
-    request.session.pop(flow_key, None)
-    request.session.pop(_new_asset_draft_key(asset_type, parent_asset_id, location.id), None)
+        return _redirect(form_drafts.with_draft(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""), process.id))
     _flash(request, "ok", "Устройство сохранено")
     if save_next:
         return _redirect(_new_asset_url(asset_type, location_id=location.id if has_explicit_return else ""))
@@ -664,9 +737,13 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
         if asset.location_id != location.id:
             raise HTTPException(status_code=404, detail="inventory asset not found")
     submitted_draft = await _new_asset_form_draft(request)
+    process = await form_drafts.posted_process(request, db, user, _asset_edit_draft_key(asset_id))
+    form_drafts.claim_for_save(db, process)
     try:
         raw_revision = submitted_draft.get("expected_revision", "")
         expected = int(raw_revision) if raw_revision.isascii() and raw_revision.isdigit() else None
+        if expected != process.base_revision:
+            raise InventoryRevisionConflict("Ревизия не совпадает с исходным черновиком. Откройте актуальную карточку отдельно.")
         service.claim_revision(db, asset, expected)
         details = await _detail_form(request, asset.asset_type)
         identifiers = await _identifier_form(request)
@@ -674,18 +751,18 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
         service.update_details(db, asset, details)
         service.sync_identifiers(db, asset, identifiers)
         write_audit(db, request, user, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id, commit=False)
+        db.delete(process)
         db.commit()
     except (InventoryValidationError, InventoryRevisionConflict) as exc:
         db.rollback()
-        request.session[_asset_edit_draft_key(asset.id)] = submitted_draft
+        form_drafts.retain(db, process, submitted_draft)
         _flash(request, "bad", str(exc))
-        return _redirect(_asset_url(asset.id, return_location_id))
+        return _redirect(form_drafts.with_draft(_asset_url(asset.id, return_location_id), process.id))
     except Exception:
         db.rollback()
-        request.session[_asset_edit_draft_key(asset.id)] = submitted_draft
+        form_drafts.retain(db, process, submitted_draft)
         _flash(request, "bad", "Не удалось сохранить устройство. Ввод сохранён; повторите позже.")
-        return _redirect(_asset_url(asset.id, return_location_id))
-    request.session.pop(_asset_edit_draft_key(asset.id), None)
+        return _redirect(form_drafts.with_draft(_asset_url(asset.id, return_location_id), process.id))
     _flash(request, "ok", "Устройство обновлено")
     return _redirect(_location_url(return_location_id) if return_location_id else _asset_url(asset.id))
 
@@ -744,16 +821,20 @@ async def inventory_lookup_asset(asset_id: str, request: Request, identifier: st
         location = _location_or_error(db, return_location_id)
         if asset.location_id != location.id:
             raise HTTPException(status_code=404, detail="inventory asset not found")
+    process = await form_drafts.posted_process(request, db, user, _asset_edit_draft_key(asset_id))
     try:
         result = InventoryLookup(run_netctl).lookup(identifier, actor=user.username)
     except InventoryLookupError as exc:
         _flash(request, "bad", str(exc))
-        return _redirect(_asset_url(asset_id, return_location_id))
+        return _redirect(form_drafts.with_draft(_asset_url(asset_id, return_location_id), process.id))
     source = InventoryObservationSource.NMAP if result.source == "nmap" else InventoryObservationSource.NETCTL
     observation = service.record_observation(db, asset_id=asset.id, source=source, data=result.observation)
     write_audit(db, request, user, "inventory.lookup", result.status, result.source, target_client=observation.id)
-    request.session[f"inventory_lookup_{asset.id}"] = {"status": result.status, "message": result.message, "suggestions": result.suggestions}
-    return _redirect(_asset_url(asset_id, return_location_id))
+    process.flow_json = {"status": result.status, "message": result.message, "suggestions": result.suggestions}
+    process.updated_at = datetime.now(timezone.utc)
+    process.revision += 1
+    db.commit()
+    return _redirect(form_drafts.with_draft(_asset_url(asset_id, return_location_id), process.id))
 
 
 @router.post("/inventory/relations/{relation_id}/detach")

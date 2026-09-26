@@ -64,7 +64,10 @@
     <small>Проверьте и при необходимости измените поля перед сохранением.</small>
   </section>
   {% endif %}
-  <form method="post" data-inventory-asset-form action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
+  <form method="post" data-inventory-asset-form data-draft-revision="{{ form_draft.revision }}" data-restored-draft="{{ 'true' if form_draft.fields_json else 'false' }}" action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
+    <input type="hidden" name="draft_id" value="{{ form_draft.id }}">
+    <p>Черновик хранится 48 часов. Фото нужно выбрать повторно после перезагрузки.</p>
+    <p role="status" aria-live="polite" data-draft-feedback>Черновик открыт.</p>
     {% if asset %}
     <input type="hidden" name="expected_revision" value="{{ form_values.expected_revision }}">
     {% if form_values.expected_revision|string != asset.manual_revision|string %}
@@ -167,6 +170,10 @@
     <button class="button inventory-primary" type="submit">СОХРАНИТЬ</button>
     {% if not asset %}<button class="button secondary" type="submit" name="save_next" value="1">СОХРАНИТЬ И СЛЕДУЮЩЕЕ</button>{% endif %}
   </form>
+  <form method="post" action="/inventory/drafts/{{ form_draft.id }}/discard" data-discard-draft>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <button type="submit" class="button secondary">Отбросить черновик</button>
+  </form>
   {% if asset %}
   <section class="inventory-device-photos"><strong>ФОТО ЭТОГО УСТРОЙСТВА</strong><form method="post" action="/inventory/assets/{{ asset.id }}/photos" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
@@ -183,5 +190,6 @@
 </section>
 {% endblock %}
 {% block page_scripts %}
-<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-6" defer></script>
+<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-7" defer></script>
+<script src="{{ url_for('static', path='inventory-drafts.js') }}?v=draft-2" defer></script>
 {% endblock %}

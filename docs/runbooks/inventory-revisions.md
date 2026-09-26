@@ -23,7 +23,8 @@ asset fields, detail tables, manual identifiers and workplace relationships.
 Observation inserts and telemetry timestamps do not advance manual revisions.
 These SQLite triggers have not been verified on other database engines.
 
-Remaining lifecycle integration is tracked in the execution plan: attaching a newly
-created peripheral to an existing parent, soft delete/restore, and external binding
-actions must use the same boundary. The complete T09 acceptance is still open until
-those paths and the server-owned drafts are integrated.
+Server-owned drafts retain their original revision throughout reload and conflict.
+Attaching a newly created peripheral checks its parent's captured revision before
+writing the card or relation. Remaining lifecycle integration is tracked in the
+execution plan: soft delete/restore and external binding actions must use the same
+boundary. The complete T09 acceptance remains open until those paths are verified.

@@ -1,5 +1,6 @@
 """Full-card compare-and-write must guard child facts and retain stale input."""
 from tests.test_inventory_api import _client
+from tests.test_inventory_web import _draft_id
 
 
 def test_api_requires_revision_and_rejects_repeated_stale_edit(tmp_path, monkeypatch):
@@ -56,6 +57,7 @@ def test_html_stale_input_retains_original_revision(tmp_path, monkeypatch):
     client.patch(f"/api/v1/inventory/assets/{asset['id']}", headers=headers,
         json={"expected_revision":asset["manual_revision"],"custom_name":"Newer"})
     response = client.post(path, data={"csrf_token":headers["X-CSRF-Token"],
+        "draft_id":_draft_id(page.text),
         "expected_revision":asset["manual_revision"],"custom_name":"Unsaved"}, follow_redirects=False)
     assert response.status_code == 303
     restored = client.get(response.headers["location"])

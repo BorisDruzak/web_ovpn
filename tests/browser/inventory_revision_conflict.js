@@ -1,6 +1,6 @@
 // Run on the synthetic asset in inventory_fixture_server.py.
 async (page) => {
-  const url = page.url();
+  const url = await page.evaluate(() => { const fresh = new URL(location.href); fresh.searchParams.delete('draft_id'); return fresh.href; });
   const second = await page.context().newPage();
   await second.goto(url);
   const revision = await page.locator('[name="expected_revision"]').inputValue();
