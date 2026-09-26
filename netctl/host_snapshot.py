@@ -188,6 +188,12 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
     if not isinstance(page, int) or not isinstance(limit, int):
         raise ValueError("invalid host pagination")
     page, limit = max(1, page), min(250, max(1, limit))
+    from .inventory_projection import FILTERS, validate_projection
+    inventory_link = filters.get('inventory_link') or 'all'
+    if inventory_link not in FILTERS:
+        raise ValueError('invalid inventory relation filter')
+    projection = filters.get('inventory_projection')
+    states = validate_projection(projection) if inventory_link != 'all' else None
     # The metadata, count and page must come from one SQLite read snapshot.
     conn.execute("SAVEPOINT read_host_snapshot")
     try:
@@ -237,13 +243,23 @@ def list_host_snapshot(conn: sqlite3.Connection, filters: Mapping[str, Any], pag
         if filters.get("source") and filters["source"] != "all":
             clauses.append("EXISTS (SELECT 1 FROM network_host_current_sources s WHERE s.snapshot_id = h.snapshot_id AND s.ip = h.ip AND s.source = ?)")
             params.append(filters["source"])
+        prefix, source = '', 'network_host_current_state h'
+        if states is not None:
+            # Materialize once and let SQLite index the join; never filter a page
+            # of decoded hosts or pass thousands of keys as SQL placeholders.
+            prefix = 'WITH inventory_projection AS MATERIALIZED (SELECT key,value FROM json_each(?)) '
+            source += " LEFT JOIN inventory_projection p ON p.key=json_extract(h.payload_json,'$.device_key')"
+            params.insert(0,json.dumps(states,separators=(',',':')))
+            selected = {'linked':'linked','unlinked':'unlinked','candidates':'candidate','conflicts':'ambiguous'}[inventory_link]
+            clauses.append("coalesce(p.value,'unlinked') = ?")
+            params.append(selected)
         where = " AND ".join(clauses)
-        total = conn.execute(f"SELECT count(*) FROM network_host_current_state h WHERE {where}", params).fetchone()[0] if metadata.snapshot_id else 0
+        total = conn.execute(f"{prefix}SELECT count(*) FROM {source} WHERE {where}", params).fetchone()[0] if metadata.snapshot_id else 0
         pages = (total + limit - 1) // limit
         if metadata.snapshot_id:
             page = min(page, max(1, pages))
         rows = conn.execute(
-            f"SELECT h.payload_json FROM network_host_current_state h WHERE {where} ORDER BY h.ip_sort, h.ip LIMIT ? OFFSET ?",
+            f"{prefix}SELECT h.payload_json FROM {source} WHERE {where} ORDER BY h.ip_sort, h.ip LIMIT ? OFFSET ?",
             (*params, limit, (page - 1) * limit),
         ).fetchall() if metadata.snapshot_id and (page - 1) * limit < total else []
         sources = conn.execute(

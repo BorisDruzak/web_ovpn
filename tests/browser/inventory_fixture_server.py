@@ -78,7 +78,13 @@ def main():
                 elif value.startswith("--") and "=" in value:
                     key, item = value[2:].split("=", 1)
                     filters[key.replace("-", "_")] = item
-            data = list_host_snapshot(connection, filters, page, limit)
+            projection = None
+            if kwargs.get('input_payload') is not None:
+                projection = json.loads(kwargs['input_payload'])
+                filters['inventory_projection'] = projection
+            data = list_host_snapshot(connection,filters,page,limit)
+            if projection is not None:
+                data['inventory_projection_revision'] = projection['revision']
             data["pagination"] = {key: data[key] for key in ("page", "limit", "total", "pages")}
             return data
         finally:

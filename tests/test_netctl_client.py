@@ -27,6 +27,18 @@ def make_executable(path: Path, content: str) -> Path:
     return wrapper
 
 
+def test_run_netctl_transmits_projection_only_through_stdin(tmp_path,monkeypatch):
+    fake = make_executable(tmp_path/'stdin-netctl',
+        "import sys,json\nprint(json.dumps({'argv':sys.argv[1:],'stdin':sys.stdin.read()}))\n")
+    monkeypatch.setenv('NETCTL_PATH',str(fake))
+    monkeypatch.setenv('NETCTL_USE_SUDO','0')
+    from app.netctl_client import run_netctl
+    payload = '{"schema_version":1,"revision":7,"states":{"mac:02:00:00:00:00:71":"linked"}}'
+    result = run_netctl(['hosts','list','--inventory-projection-stdin'],timeout=5,input_payload=payload)
+    assert result['stdin'] == payload
+    assert 'mac:02:00:00:00:00:71' not in ' '.join(result['argv'])
+
+
 def test_run_netctl_uses_shell_false_and_parses_json(tmp_path, monkeypatch):
     fake = make_executable(
         tmp_path / "netctl",

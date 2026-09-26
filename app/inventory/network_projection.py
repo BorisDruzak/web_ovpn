@@ -13,14 +13,70 @@ from .models import (InventoryAsset, InventoryLocation, InventoryNetctlBinding,
 from .endpoint import STATE_MAX_AGE, endpoint_profile_freshness
 
 
+def relation_state(rows):
+    confirmed = sum(status == Status.CONFIRMED for status,evidence in rows)
+    candidates = [(status,evidence) for status,evidence in rows if status == Status.CANDIDATE]
+    ambiguous = confirmed>1 or any(evidence.get('ambiguous') for _,evidence in candidates)
+    return 'ambiguous' if ambiguous else 'linked' if confirmed else 'candidate' if candidates else 'unlinked'
+
+
+def projection_epoch(db):
+    return db.scalar(select(InventoryNetworkProjectionVersion.version).where(
+        InventoryNetworkProjectionVersion.id == 1)) or 0
+
+
+def filter_projection(db):
+    """Complete bounded local relation selection, without card or agent details."""
+    from netctl.inventory_projection import validate_projection
+    from fastapi import HTTPException
+    epoch = projection_epoch(db)
+    groups = defaultdict(list)
+    count = 0
+    for key,status,ambiguous in db.execute(select(InventoryNetctlBinding.network_key,
+        InventoryNetctlBinding.status,InventoryNetctlBinding.evidence_json['ambiguous'])
+        .join(InventoryAsset,InventoryAsset.id == InventoryNetctlBinding.asset_id)
+        .where(InventoryNetctlBinding.ended_at.is_(None),
+            InventoryNetctlBinding.status.in_([Status.CONFIRMED,Status.CANDIDATE])).limit(100_001)):
+        count += 1
+        if count>100_000:
+            raise HTTPException(422,'Состояния связей превышают бюджет выборки; сузить результат по странице нельзя')
+        groups[key].append((status,{'ambiguous':ambiguous}))
+    value = {'schema_version':1,'revision':epoch,'states':{key:relation_state(rows) for key,rows in groups.items()}}
+    try:
+        validate_projection(value)
+    except ValueError as exc:
+        raise HTTPException(422,'Проекция связей некорректна или превышает бюджет выборки') from exc
+    if projection_epoch(db) != epoch:
+        raise HTTPException(409,'Связи изменились во время подготовки выборки. Повторите запрос')
+    return value
+
+
+def filter_input(db, filters):
+    from fastapi import HTTPException
+    from netctl.inventory_projection import FILTERS
+    selected = filters.get('inventory_link') or 'all'
+    if selected not in FILTERS:
+        raise HTTPException(422,'Некорректный фильтр связи с инвентаризацией')
+    return None if selected == 'all' else filter_projection(db)
+
+
+def verify_filter_result(db, projection, data):
+    from fastapi import HTTPException
+    if projection is None:
+        return
+    if data.get('inventory_projection_revision') != projection['revision']:
+        raise HTTPException(502,'Источник не подтвердил применение проекции связей')
+    if projection_epoch(db) != projection['revision']:
+        raise HTTPException(409,'Связи изменились во время чтения снимка. Повторите запрос')
+
+
 def _time(value):
     return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
 
 
 def projection_version(db, *, now=None):
     """Include local decisions and source freshness independently of Netctl."""
-    values = [db.scalar(select(InventoryNetworkProjectionVersion.version).where(
-        InventoryNetworkProjectionVersion.id == 1)) or 0]
+    values = [projection_epoch(db)]
     values.extend([get_settings().endpoint_platform_enabled,
         int((now or datetime.now(timezone.utc)).timestamp()) // 30])
     return hashlib.sha256(json.dumps(values,default=str).encode()).hexdigest()[:24]
@@ -76,8 +132,9 @@ def attach_network_projection(db, hosts, *, now=None):
         rows = relations.get(str(host.get('device_key') or ''),[])
         confirmed = [row for row in rows if row[0].status == Status.CONFIRMED]
         candidates = [row for row in rows if row[0].status == Status.CANDIDATE]
-        ambiguous = len(confirmed)>1 or any(row[0].evidence_json.get('ambiguous') for row in candidates)
-        inventory = {'state':'ambiguous' if ambiguous else 'linked' if confirmed else 'candidate' if candidates else 'unlinked',
+        state = relation_state([(row[0].status,row[0].evidence_json) for row in rows])
+        ambiguous = state == 'ambiguous'
+        inventory = {'state':state,
             'candidate_count':len(candidates),'asset':None}
         endpoint = {'state':'disabled' if not enabled else 'unknown', 'freshness':'unknown',
             'device_id':None,'device_display_name':None,'evidence_kind':None}

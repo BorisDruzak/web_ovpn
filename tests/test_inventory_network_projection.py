@@ -3,6 +3,29 @@ from datetime import datetime, timezone, timedelta
 from tests.test_inventory_netctl_bindings import fixture, host
 
 
+def test_complete_filter_projection_matches_local_rows_without_card_details(tmp_path,monkeypatch):
+    card = fixture(tmp_path,monkeypatch)
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryAsset
+    from app.inventory.netctl_bindings import confirm,end
+    from app.inventory.network_projection import filter_projection,attach_network_projection
+    with get_sessionmaker()() as db:
+        asset = db.get(InventoryAsset,card['id'])
+        binding = confirm(db,host()['device_key'],asset.id,expected_revision=asset.manual_revision,
+            actor='synthetic',reason='Physical comparison',hosts=[host()])
+        db.commit()
+        value = filter_projection(db)
+        rows = [host()]
+        attach_network_projection(db,rows)
+        assert value['states'] == {host()['device_key']:rows[0]['inventory']['state']}
+        assert asset.id not in str(value) and 'Physical comparison' not in str(value)
+        db.refresh(asset)
+        end(db,binding.id,expected_revision=asset.manual_revision,actor='synthetic',reason='Ended fixture')
+        db.commit()
+        updated = filter_projection(db)
+        assert updated['states'] == {} and updated['revision'] != value['revision']
+
+
 def test_projection_uses_confirmed_relations_and_keeps_freshness_separate(tmp_path,monkeypatch):
     card = fixture(tmp_path,monkeypatch)
     from app.db import get_sessionmaker

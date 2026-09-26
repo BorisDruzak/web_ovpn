@@ -244,9 +244,9 @@ def netctl_error_detail(exc: NetctlError) -> str:
     return exc.message
 
 
-def call_netctl(args: list[str], timeout: int | None = None) -> dict[str, Any]:
+def call_netctl(args: list[str], timeout: int | None = None, *, input_payload: str | None = None) -> dict[str, Any]:
     try:
-        return run_netctl(args, timeout=timeout)
+        return run_netctl(args, timeout=timeout, **({'input_payload':input_payload} if input_payload is not None else {}))
     except NetctlError as exc:
         raise HTTPException(status_code=502, detail=netctl_error_detail(exc)) from exc
 
@@ -1247,17 +1247,24 @@ def api_network_hosts(
     has_hostname: str = Query(default=""),
     has_mac: str = Query(default=""),
     seen_within: str = Query(default="24h"),
+    inventory_link: Literal['all','linked','unlinked','candidates','conflicts'] = Query(default='all'),
     page: int = Query(default=1),
     limit: int = Query(default=100),
     db: Session = Depends(get_db),
 ):
-    data = call_netctl(host_snapshot_args({
+    filters = {
         "q": q, "category": category, "status": status, "source": source,
         "network": network, "has_hostname": has_hostname, "has_mac": has_mac, "seen_within": seen_within,
-    }, page, limit))
-    from .inventory.network_projection import attach_network_projection
+        'inventory_link':inventory_link,
+    }
+    from .inventory.network_projection import attach_network_projection, filter_input, verify_filter_result
+    projection = filter_input(db,filters)
+    data = call_netctl(host_snapshot_args(filters,page,limit),
+        **({'input_payload':json.dumps(projection,separators=(',',':'))} if projection is not None else {}))
+    verify_filter_result(db,projection,data)
     hosts = [normalize_netctl_host(host) for host in network_list_from(data, "hosts")]
     version = attach_network_projection(db,hosts)
+    verify_filter_result(db,projection,data)
     if request.headers.get('authorization') and 'inventory:read' not in {part.strip() for part in get_settings().api_permissions.split(',')}:
         for host in hosts:
             host['inventory'] = {'state':host['inventory']['state']}
@@ -1280,6 +1287,12 @@ def host_snapshot_args(filters: dict[str, str], page: int, limit: int) -> list[s
         if filters.get(key, "") not in ("", "yes", "no", "true", "false", "1", "0"):
             raise HTTPException(status_code=422, detail=f"invalid {key} filter")
     args = ["hosts", "list"]
+    inventory_link = filters.get('inventory_link') or 'all'
+    from netctl.inventory_projection import FILTERS
+    if inventory_link not in FILTERS:
+        raise HTTPException(422,detail='invalid inventory relation filter')
+    if inventory_link != 'all':
+        args.extend(['--inventory-link='+inventory_link,'--inventory-projection-stdin'])
     for key in ("q", "category", "status", "source", "network", "has_hostname", "has_mac", "seen_within"):
         if filters.get(key):
             args.append("--" + key.replace("_", "-") + "=" + filters[key])

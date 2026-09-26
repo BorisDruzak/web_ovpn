@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 
 import ipaddress
 import logging
@@ -806,9 +807,10 @@ def cli_call(request: Request, args: list[str], timeout: int | None = None) -> t
         return {}, safe_external_error(message)
 
 
-def net_cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
+def net_cli_call(request: Request, args: list[str], timeout: int | None = None, *, input_payload: str | None = None) -> tuple[dict[str, Any], str | None]:
     try:
-        return run_netctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", ""))), None
+        return run_netctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", "")),
+            **({'input_payload':input_payload} if input_payload is not None else {})), None
     except NetctlError as exc:
         from .panel_operations import safe_external_error
         message = exc.message
@@ -1976,16 +1978,24 @@ def network_hosts(
         "has_hostname": request.query_params.get("has_hostname") or "",
         "has_mac": request.query_params.get("has_mac") or "",
         "seen_within": requested_seen_within if requested_seen_within in {"1h", "24h", "7d", "30d", "all"} else "24h",
+        'inventory_link':request.query_params.get('inventory_link') or 'all',
     }
     try:
         page = int(request.query_params.get("page", "1"))
         limit = int(request.query_params.get("limit", "100"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="invalid host pagination") from exc
-    data, error = net_cli_call(request, host_snapshot_args(filters, page, limit))
+    from .inventory.network_projection import filter_input, verify_filter_result
+    projection = filter_input(db,filters)
+    data, error = net_cli_call(request, host_snapshot_args(filters, page, limit),
+        **({'input_payload':json.dumps(projection,separators=(',',':'))} if projection is not None else {}))
+    if not error:
+        verify_filter_result(db,projection,data)
     rows = [normalize_netctl_host(row) for row in list_from(data, "hosts")]
     from .inventory.network_projection import attach_network_projection
     projection_version = attach_network_projection(db, rows)
+    if not error:
+        verify_filter_result(db,projection,data)
     snapshot = data.get("snapshot", {"snapshot_id": 0, "generated_at": None, "total_hosts": 0, "duration_ms": 0})
     snapshot_state = "pending" if not snapshot.get("snapshot_id") else "stale" if snapshot.get("stale") else "ready"
     return render(

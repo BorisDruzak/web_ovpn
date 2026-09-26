@@ -11,6 +11,67 @@ NOW = "2026-09-07T10:00:00Z"
 LATER = "2026-09-07T10:01:00Z"
 
 
+def test_inventory_relation_filter_counts_whole_snapshot_before_page(conn):
+    from netctl.host_snapshot import list_host_snapshot, refresh_host_snapshot
+    states = {}
+    for number in range(1,231):
+        add_host(conn,f'192.0.2.{number}')
+        key = f'mac:02:00:00:00:00:{number:02X}'
+        conn.execute('UPDATE network_hosts SET device_key=? WHERE ip=?',(key,f'192.0.2.{number}'))
+        if number > 100:
+            states[key] = 'linked' if number <= 210 else 'candidate' if number <= 220 else 'ambiguous'
+    conn.commit()
+    refresh_host_snapshot(conn,now=NOW)
+    projection = {'schema_version':1,'revision':7,'states':states}
+    base = {'status':'all','inventory_projection':projection}
+    linked = list_host_snapshot(conn,{**base,'inventory_link':'linked'},2,100)
+    assert linked['total'] == 110 and linked['pages'] == 2
+    assert [row['ip'] for row in linked['hosts']] == [f'192.0.2.{n}' for n in range(201,211)]
+    for selected, count in [('unlinked',100),('candidates',10),('conflicts',10)]:
+        result = list_host_snapshot(conn,{**base,'inventory_link':selected},99,25)
+        assert result['total'] == count
+        assert result['page'] == max(1,(count+24)//25)
+        assert len(result['hosts']) == min(count,25)
+    narrowed = list_host_snapshot(conn,{**base,'inventory_link':'linked','q':'192.0.2.209'},1,25)
+    assert narrowed['total'] == 1 and narrowed['hosts'][0]['ip'] == '192.0.2.209'
+
+
+def test_inventory_filter_fails_closed_without_valid_projection(conn):
+    from netctl.host_snapshot import list_host_snapshot
+    for payload in (None,{}, {'schema_version':1,'revision':1,'states':{'ip:192.0.2.1':'linked'}},
+        {'schema_version':1,'revision':1,'states':{'mac:02:00:00:00:00:11':'invalid'}}):
+        with pytest.raises(ValueError):
+            list_host_snapshot(conn,{'inventory_link':'linked','inventory_projection':payload},1,25)
+
+
+def test_inventory_projection_cli_reads_bounded_stdin_without_database_writes(conn,tmp_path):
+    import subprocess
+    import sys
+    from netctl.host_snapshot import refresh_host_snapshot
+    add_host(conn,'192.0.2.71')
+    conn.execute("UPDATE network_hosts SET device_key='mac:02:00:00:00:00:71'")
+    conn.commit()
+    refresh_host_snapshot(conn,now=NOW)
+    path = conn.execute('PRAGMA database_list').fetchone()[2]
+    before = __import__('pathlib').Path(path).read_bytes()
+    args = [sys.executable,'-m','netctl.cli','--json','--db',f'sqlite:///{path}',
+        'hosts','list','--status=all','--inventory-link=linked','--inventory-projection-stdin']
+    states = {'mac:02:00:'+':'.join(f'{part:02X}' for part in number.to_bytes(4,'big')):'linked'
+        for number in range(50_000)}
+    payload = {'schema_version':1,'revision':7,'states':states}
+    import time
+    started = time.monotonic()
+    result = subprocess.run(args,input=json.dumps(payload),text=True,capture_output=True,timeout=10)
+    print(f'projection_budget keys={len(states)} bytes={len(json.dumps(payload).encode())} elapsed={time.monotonic()-started:.3f}s')
+    assert result.returncode == 0,result.stderr
+    data = json.loads(result.stdout)
+    assert data['pagination']['total'] == 1 and data['hosts'][0]['ip'] == '192.0.2.71'
+    assert __import__('pathlib').Path(path).read_bytes() == before
+    bad = subprocess.run(args,input='{}',text=True,capture_output=True,timeout=10)
+    assert bad.returncode != 0
+    assert __import__('pathlib').Path(path).read_bytes() == before
+
+
 @pytest.fixture
 def conn(tmp_path):
     connection = connect(f"sqlite:///{(tmp_path / 'snapshot.sqlite').as_posix()}")

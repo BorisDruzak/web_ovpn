@@ -30,7 +30,7 @@ def _timeout_for(args: list[str], timeout: int | None) -> int:
 
 
 @observed_cli("netctl")
-def run_netctl(args: list[str], timeout: int | None = None, request_id: str = "") -> dict[str, Any]:
+def run_netctl(args: list[str], timeout: int | None = None, request_id: str = "", *, input_payload: str | None = None) -> dict[str, Any]:
     settings = get_settings()
     clean_args = [str(arg) for arg in args if str(arg) != ""]
     command = [settings.netctl_path, "--json", *clean_args]
@@ -42,6 +42,12 @@ def run_netctl(args: list[str], timeout: int | None = None, request_id: str = ""
 
     command_name = clean_args[0] if clean_args else "unknown"
     started = time.monotonic()
+    stdin_options = {}
+    if input_payload is not None:
+        from netctl.inventory_projection import MAX_BYTES
+        if not isinstance(input_payload,str) or len(input_payload.encode('utf-8')) > MAX_BYTES:
+            raise NetctlError('netctl input exceeds byte budget')
+        stdin_options['input'] = input_payload
     try:
         completed = subprocess.run(
             command,
@@ -51,6 +57,7 @@ def run_netctl(args: list[str], timeout: int | None = None, request_id: str = ""
             stderr=subprocess.PIPE,
             timeout=_timeout_for(clean_args, timeout),
             check=False,
+            **stdin_options,
         )
     except subprocess.TimeoutExpired as exc:
         log.warning("netctl command=%s outcome=timeout duration_ms=%d request_id=%s", command_name, (time.monotonic() - started) * 1000, request_id or "-")

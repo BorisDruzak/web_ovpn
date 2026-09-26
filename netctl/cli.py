@@ -720,6 +720,12 @@ def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if args.hosts_command in {"list", "snapshot-refresh", "snapshot-status"}:
         conn = None
         try:
+            if args.hosts_command == 'list':
+                from .inventory_projection import read_projection
+                if getattr(args,'inventory_projection_stdin',False):
+                    args.inventory_projection = read_projection(sys.stdin.buffer)
+                elif getattr(args,'inventory_link','all') != 'all':
+                    raise ValueError('inventory relation filter requires projection')
             if args.hosts_command in {"list", "snapshot-status"}:
                 if db_path_from_url(args.db).exists():
                     conn = connect_read_only(args.db)
@@ -732,7 +738,9 @@ def cmd_hosts(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 else:
                     result = list_host_snapshot(conn, vars(args), page, limit)
                 return 0, ok(hosts=result["hosts"], sources=result["sources"], snapshot=result["snapshot"],
-                             pagination={key: result[key] for key in ("page", "limit", "total", "pages")})
+                             pagination={key: result[key] for key in ("page", "limit", "total", "pages")},
+                             **({'inventory_projection_revision':args.inventory_projection['revision']}
+                                if getattr(args,'inventory_projection_stdin',False) else {}))
             with CollectLock(args.db):
                 conn = prepare_conn(args)
                 return 0, ok(snapshot=asdict(refresh_host_snapshot(conn, now=utc_now())))
@@ -1714,6 +1722,8 @@ def build_parser() -> argparse.ArgumentParser:
     hosts_list.add_argument("--seen-within", default="all")
     hosts_list.add_argument("--page", type=int, default=1)
     hosts_list.add_argument("--limit", type=int, default=100)
+    hosts_list.add_argument('--inventory-link',choices=['all','linked','unlinked','candidates','conflicts'],default='all')
+    hosts_list.add_argument('--inventory-projection-stdin',action='store_true')
     hosts_inspect = hosts_sub.add_parser("inspect")
     hosts_inspect.add_argument("host")
 
