@@ -65,6 +65,7 @@
   </section>
   {% endif %}
   <form method="post" data-inventory-asset-form action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
+    <p role="status" aria-live="polite" data-inventory-insert-feedback></p>
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="return_location_id" value="{{ return_location_id }}">
     {% if not asset and related_devices_json %}
@@ -167,5 +168,5 @@
 </section>
 {% endblock %}
 {% block page_scripts %}
-{% if asset and asset_type.value == 'PC' %}<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-4" defer></script>{% endif %}
+<script src="{{ url_for('static', path='inventory.js') }}?v=endpoint-5" defer></script>
 {% endblock %}

@@ -52,7 +52,7 @@ def test_pc_card_keeps_agent_summary_small_and_shows_endpoint_values_by_field(we
     assert f'/api/v1/inventory/assets/{asset}/endpoint-refresh' in page.text
     assert f'/endpoint-bindings/{binding}/detach' in page.text
     assert "inventory.css?v=endpoint-2" in page.text
-    assert "inventory.js?v=endpoint-4" in page.text
+    assert "inventory.js?v=endpoint-5" in page.text
     for field, value in (("manufacturer", "Lenovo"), ("cpu_model", "AMD"),
                          ("cpu_generation", "Ryzen 7 5700G"), ("ram_gb", "16")):
         assert f'data-endpoint-value-for="{field}"' in page.text

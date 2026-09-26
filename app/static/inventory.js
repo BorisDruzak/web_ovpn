@@ -10,6 +10,12 @@ const inventoryManualDraft = () => inventoryManualForm
   ? new URLSearchParams(new FormData(inventoryManualForm)).toString() : "";
 let inventoryInitialDraft = inventoryManualDraft();
 let inventoryFormSubmitting = false;
+const endpointFormFields = { ip: "ip_address", mac: "mac_address" };
+const endpointInsertUndo = new WeakMap();
+const insertionFeedback = (message) => {
+  const feedback = inventoryManualForm?.querySelector("[data-inventory-insert-feedback]");
+  if (feedback) feedback.textContent = message;
+};
 
 const endpointInsertValue = (control, value) => {
   if (!(control instanceof HTMLSelectElement)) return value;
@@ -45,14 +51,49 @@ if (inventoryManualForm) {
 document.addEventListener("click", async (event) => {
   const insert = event.target.closest("[data-endpoint-insert]");
   if (insert && !insert.disabled) {
-    const field = insert.dataset.endpointInsert;
+    const field = endpointFormFields[insert.dataset.endpointInsert] || insert.dataset.endpointInsert;
     const control = inventoryManualForm?.elements.namedItem(field);
-    const value = endpointInsertValue(control, insert.dataset.endpointValue || "");
-    if (!control || !value) return;
+    if (!control || !(control instanceof HTMLElement) || !("value" in control)) {
+      insertionFeedback("Для этого значения нет подходящего поля формы.");
+      return;
+    }
+    const undo = endpointInsertUndo.get(insert);
+    if (undo) {
+      if (control.value !== undo.inserted) {
+        insertionFeedback("Поле изменено вручную после вставки. Отмена не заменяет новый ввод.");
+      } else {
+        control.value = undo.previous;
+        control.dispatchEvent(new Event("input", { bubbles: true }));
+        control.dispatchEvent(new Event("change", { bubbles: true }));
+        insertionFeedback("Вставка отменена. Предыдущее значение восстановлено.");
+      }
+      endpointInsertUndo.delete(insert);
+      insert.textContent = "Вставить";
+      return;
+    }
+    const raw = insert.dataset.endpointValue;
+    if (raw === undefined || raw === "") {
+      insertionFeedback("Источник не содержит значения. Поле не изменено.");
+      return;
+    }
+    const value = endpointInsertValue(control, raw);
+    if (value === null) {
+      insertionFeedback("Значение источника не поддерживается этим справочником. Поле не изменено.");
+      return;
+    }
+    const previous = control.value;
     control.value = value;
+    if ((control.type === "number" || control.type === "date") && !control.checkValidity()) {
+      control.value = previous;
+      insertionFeedback("Значение источника не подходит формату или диапазону поля. Поле не изменено.");
+      return;
+    }
+    endpointInsertUndo.set(insert, { previous, inserted: control.value });
     control.dispatchEvent(new Event("input", { bubbles: true }));
     control.dispatchEvent(new Event("change", { bubbles: true }));
-    insert.textContent = "Вставлено";
+    insert.textContent = "Отменить вставку";
+    insertionFeedback(previous ? "Значение заменено в форме. Можно отменить вставку до сохранения."
+      : "Значение вставлено в форму. Для записи нажмите «Сохранить».");
     control.focus();
     return;
   }
