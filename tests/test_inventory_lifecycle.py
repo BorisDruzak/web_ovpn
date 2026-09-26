@@ -202,6 +202,7 @@ def test_restore_does_not_take_reassigned_endpoint_binding(tmp_path, monkeypatch
             status=Status.CONFIRMED,binding_method='manual',confidence=100,created_by='synthetic',first_seen_at=now)
         db.add(old)
         db.commit()
+        db.refresh(asset)
         soft_delete(db, asset.id, expected_revision=asset.manual_revision, actor='synthetic', reason='Duplicate')
         db.commit()
         assert old.ended_at is not None
@@ -221,6 +222,7 @@ def test_concurrent_binding_cannot_survive_deletion(tmp_path, monkeypatch):
     from app.db import get_sessionmaker
     from app.inventory.models import InventoryAsset, InventoryExternalBinding, InventoryExternalBindingStatus as Status
     from app.inventory.lifecycle import soft_delete, historical_asset
+    from app.inventory.revision import InventoryRevisionConflict
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
     barrier = Barrier(2)
@@ -229,8 +231,12 @@ def test_concurrent_binding_cannot_survive_deletion(tmp_path, monkeypatch):
         with get_sessionmaker()() as db:
             asset = db.get(InventoryAsset, pc)
             barrier.wait(timeout=5)
-            soft_delete(db, pc, expected_revision=asset.manual_revision, actor='synthetic', reason='Duplicate')
-            db.commit()
+            try:
+                soft_delete(db, pc, expected_revision=asset.manual_revision, actor='synthetic', reason='Duplicate')
+                db.commit()
+            except InventoryRevisionConflict:
+                # A winning manual binding invalidates the old delete form.
+                db.rollback()
     def bind():
         with get_sessionmaker()() as db:
             db.get(InventoryAsset, pc)
@@ -246,6 +252,12 @@ def test_concurrent_binding_cannot_survive_deletion(tmp_path, monkeypatch):
         for future in futures:
             future.result(timeout=10)
     with get_sessionmaker()() as db:
+        current = historical_asset(db, pc)
+        if current.deleted_at is None:
+            # Explicitly compare the latest card after the race; never replay
+            # the stale revision automatically in the application.
+            soft_delete(db, pc, expected_revision=current.manual_revision, actor='synthetic', reason='Rechecked after binding')
+            db.commit()
         assert historical_asset(db, pc).deleted_at is not None
         assert db.scalar(select(func.count()).select_from(InventoryExternalBinding).where(
             InventoryExternalBinding.asset_id == pc, InventoryExternalBinding.ended_at.is_(None))) == 0

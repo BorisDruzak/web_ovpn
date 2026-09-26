@@ -33,6 +33,21 @@ def migrate_revisions(engine) -> None:
     with engine.begin() as connection:
         if "manual_revision" not in columns:
             connection.execute(text("ALTER TABLE inventory_assets ADD COLUMN manual_revision INTEGER NOT NULL DEFAULT 1"))
+        # Only deliberate relation decisions change manual facts. Background
+        # observations and candidate discovery must not invalidate an editor.
+        for table, fields in (("inventory_netctl_bindings", ("asset_id", "network_key", "status", "confirmed_at", "ended_at")),
+            ("inventory_external_bindings", ("asset_id", "source", "external_id", "status", "ended_at"))):
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                row = "OLD" if operation == "DELETE" else "NEW"
+                deliberate = f"({row}.status = 'confirmed' OR {row}.ended_at IS NOT NULL)"
+                ids = f"{row}.asset_id"
+                if operation == "UPDATE":
+                    deliberate = f"({deliberate} OR OLD.status = 'confirmed') AND (" + " OR ".join(
+                        f"OLD.{field} IS NOT NEW.{field}" for field in fields) + ")"
+                    ids += ",OLD.asset_id"
+                connection.execute(text(f"""CREATE TRIGGER IF NOT EXISTS {table}_decision_revision_{operation.lower()}
+                    AFTER {operation} ON {table} WHEN {deliberate}
+                    BEGIN UPDATE inventory_assets SET manual_revision=manual_revision+1 WHERE id IN ({ids}); END"""))
         # DB-level guards cover child facts even when written outside the web
         # service. Observations and telemetry are deliberately absent.
         fields = ("asset_type", "location_id", "custom_name", "manufacturer", "model", "serial_number", "inventory_number", "status", "assigned_person_name", "login_name", "description", "last_verified_at")

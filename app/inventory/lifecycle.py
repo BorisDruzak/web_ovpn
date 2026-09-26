@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, with_loader_criteria
 
 from ..models import utcnow
 from .models import (InventoryAsset, InventoryAssetIdentifier, InventoryAssetRelation, InventoryExternalBinding,
-    InventoryExternalBindingStatus, InventoryLocation)
+    InventoryExternalBindingStatus, InventoryLocation, InventoryNetctlBinding)
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
 
 
@@ -73,6 +73,10 @@ def soft_delete(db, asset_id, *, expected_revision, actor, reason):
         binding.updated_at = now
         binding.evidence_json = {**binding.evidence_json, "ended_by":str(actor), "end_reason":"inventory_deleted"}
     # End relationships while the parent still exists in the active domain.
+    for binding in db.scalars(select(InventoryNetctlBinding).where(
+        InventoryNetctlBinding.asset_id == asset_id, InventoryNetctlBinding.ended_at.is_(None))):
+        binding.status = InventoryExternalBindingStatus.ENDED
+        binding.ended_at, binding.ended_by, binding.end_reason = now, str(actor), "inventory_deleted"
     db.flush()
     asset.deleted_at, asset.deleted_by, asset.deletion_reason = now, str(actor), reason
     db.flush()
@@ -106,6 +110,15 @@ def migrate_lifecycle(engine):
             if name not in columns:
                 connection.execute(text(f"ALTER TABLE inventory_assets ADD COLUMN {name} {sql_type}"))
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_inventory_assets_deleted_at ON inventory_assets(deleted_at)"))
+        connection.execute(text("""CREATE TRIGGER IF NOT EXISTS inventory_netctl_identity_immutable
+            BEFORE UPDATE ON inventory_netctl_bindings WHEN OLD.asset_id IS NOT NEW.asset_id OR
+                OLD.source IS NOT NEW.source OR OLD.network_key IS NOT NEW.network_key
+            BEGIN SELECT RAISE(ABORT, 'netctl relation identity is immutable; end and compare again'); END"""))
+        connection.execute(text("""CREATE TRIGGER IF NOT EXISTS inventory_netctl_ended_observation_immutable
+            BEFORE UPDATE ON inventory_netctl_bindings WHEN OLD.ended_at IS NOT NULL AND (
+                OLD.observation_json IS NOT NEW.observation_json OR
+                OLD.observed_snapshot_id IS NOT NEW.observed_snapshot_id OR OLD.observed_at IS NOT NEW.observed_at)
+            BEGIN SELECT RAISE(ABORT, 'ended netctl observation is historical'); END"""))
         # These guards also protect stale identity-map objects and direct SQL
         # writers. No global BEGIN hook or reader transaction is introduced.
         for table in ("inventory_pc_details", "inventory_monitor_details", "inventory_printer_details",
@@ -117,6 +130,10 @@ def migrate_lifecycle(engine):
                         SELECT 1 FROM inventory_assets WHERE id=NEW.asset_id AND deleted_at IS NULL)
                     BEGIN SELECT RAISE(ABORT, 'inventory asset is deleted'); END"""))
         for operation in ("INSERT", "UPDATE"):
+            connection.execute(text(f"""CREATE TRIGGER IF NOT EXISTS inventory_netctl_active_asset_{operation.lower()}
+                BEFORE {operation} ON inventory_netctl_bindings WHEN NEW.ended_at IS NULL AND NOT EXISTS (
+                    SELECT 1 FROM inventory_assets WHERE id=NEW.asset_id AND deleted_at IS NULL)
+                BEGIN SELECT RAISE(ABORT, 'inventory netctl binding contains deleted asset'); END"""))
             connection.execute(text(f"""CREATE TRIGGER IF NOT EXISTS inventory_relation_active_assets_{operation.lower()}
                 BEFORE {operation} ON inventory_asset_relations WHEN NEW.ended_at IS NULL AND (
                     NOT EXISTS (SELECT 1 FROM inventory_assets WHERE id=NEW.parent_asset_id AND deleted_at IS NULL) OR

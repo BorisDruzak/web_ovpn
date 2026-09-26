@@ -163,6 +163,38 @@ class InventoryFormDraft(Base):
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True, nullable=False)
 
 
+class InventoryNetctlBinding(Base):
+    """Netctl interfaces are many-to-one; Endpoint cardinality is unchanged."""
+    __tablename__ = "inventory_netctl_bindings"
+    __table_args__ = (
+        CheckConstraint("source = 'netctl'", name="ck_inventory_netctl_source"),
+        Index("uq_inventory_netctl_confirmed_key", "source", "network_key", unique=True,
+            sqlite_where=text("status = 'confirmed' AND ended_at IS NULL"),
+            postgresql_where=text("status = 'confirmed' AND ended_at IS NULL")),
+        Index("uq_inventory_netctl_candidate", "asset_id", "source", "network_key", unique=True,
+            sqlite_where=text("status = 'candidate' AND ended_at IS NULL"),
+            postgresql_where=text("status = 'candidate' AND ended_at IS NULL")),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_inventory_id)
+    asset_id: Mapped[str] = mapped_column(ForeignKey("inventory_assets.id"), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), default="netctl", nullable=False)
+    network_key: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    status: Mapped[InventoryExternalBindingStatus] = mapped_column(Enum(InventoryExternalBindingStatus,
+        values_callable=lambda enum_type: [member.value for member in enum_type], native_enum=False), nullable=False)
+    evidence_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    observation_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict, nullable=False)
+    observed_snapshot_id: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    observed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(120), nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    confirmed_by: Mapped[str | None] = mapped_column(String(120))
+    confirmation_reason: Mapped[str | None] = mapped_column(Text)
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    ended_by: Mapped[str | None] = mapped_column(String(120))
+    end_reason: Mapped[str | None] = mapped_column(Text)
+
+
 class InventoryExternalBinding(Base):
     __tablename__ = "inventory_external_bindings"
     __table_args__ = (
