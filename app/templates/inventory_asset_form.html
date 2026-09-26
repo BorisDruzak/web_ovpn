@@ -113,6 +113,7 @@
     {% if asset_type.value in ('PC', 'PRINTER', 'PHONE', 'OTHER') %}
     <fieldset class="inventory-field-group">
       <legend>Сеть</legend>
+      {% for item in observed_identifiers|default([]) %}<p>Netctl: {{ item.identifier_type.value }} — {{ item.value }} (наблюдаемое значение)</p>{% endfor %}
       <label>IP-адрес<input name="ip_address" inputmode="decimal" value="{{ identifiers.get('ip') or '' }}" autocomplete="off"></label>
       {{ endpoint_value('ip') }}
       <label>MAC-адрес<input name="mac_address" value="{{ identifiers.get('mac') or '' }}" autocomplete="off"></label>

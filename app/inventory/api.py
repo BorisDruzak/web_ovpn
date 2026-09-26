@@ -360,7 +360,7 @@ def create_asset(payload: AssetPayload, request: Request, csrf: str | None = Hea
         asset = service.create_asset(db, payload.asset_type, location_id=payload.location_id, **payload.asset_fields())
         service.update_details(db, asset, payload.details)
         if payload.identifiers is not None:
-            service.sync_identifiers(db, asset, payload.identifiers)
+            service.sync_identifiers(db, asset, payload.identifiers, owned_sources=set(InventoryObservationSource))
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     write_audit(db, request, actor, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id)
@@ -465,11 +465,11 @@ def create_workplace(payload: WorkplaceCreate, request: Request, csrf: str | Non
         )
         service.update_details(db, pc, payload.pc.details)
         if payload.pc.identifiers is not None:
-            service.sync_identifiers(db, pc, payload.pc.identifiers)
+            service.sync_identifiers(db, pc, payload.pc.identifiers, owned_sources=set(InventoryObservationSource))
         for child, child_payload in zip(children, payload.children, strict=True):
             service.update_details(db, child, child_payload.details)
             if child_payload.identifiers is not None:
-                service.sync_identifiers(db, child, child_payload.identifiers)
+                service.sync_identifiers(db, child, child_payload.identifiers, owned_sources=set(InventoryObservationSource))
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     relations = list(db.scalars(select(InventoryAssetRelation).where(InventoryAssetRelation.parent_asset_id == pc.id, InventoryAssetRelation.ended_at.is_(None))))

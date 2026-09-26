@@ -605,6 +605,7 @@ def test_netctl_source_is_visible_and_endpoint_hostname_is_effective(session, se
             },
             {"identifier_type": "ip", "value": "192.0.2.6", "source": "netctl"},
         ],
+        owned_sources=set(InventoryObservationSource),
     )
     binding = service.reconcile_candidates(session, [identity()], NOW)[0]
     state(session, binding, hostname="endpoint-name")

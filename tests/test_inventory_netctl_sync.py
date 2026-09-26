@@ -37,12 +37,17 @@ def test_worker_refreshes_relations_without_replaying_manual_identifier_changes(
     db.commit()
     result = synchronize_current_snapshot(netctl_call=lambda args,timeout=None:payload,session_factory=lambda:db)
     assert result.status == 'skipped'
-    assert _current_values(db,asset.id)['ip'] == '192.0.2.99'
+    assert db.scalar(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.source == InventoryObservationSource.MANUAL, InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.IP, InventoryAssetIdentifier.is_current.is_(True))).value == '192.0.2.99'
+    db.refresh(asset)
+    revision = asset.manual_revision
     assert active_for_key(db,host['device_key']).id == binding.id
     payload = _snapshot_page(snapshot_id=8,generated_at='2026-09-18T10:03:00Z',hosts=[{**host,'ip':'192.0.2.22'}])
     result = synchronize_current_snapshot(netctl_call=lambda args,timeout=None:payload,session_factory=lambda:db)
     assert result.status == 'success'
     assert active_for_key(db,host['device_key']).observation_json['ip'] == '192.0.2.22'
+    db.refresh(asset)
+    assert asset.manual_revision == revision
+    assert any(i.source == InventoryObservationSource.MANUAL and i.value == '192.0.2.99' for i in service.identifiers_for(db, asset))
 
 
 def test_worker_rejects_partial_relation_migration_without_guards(db):
@@ -110,7 +115,7 @@ def _current_values(db, asset_id: str) -> dict[str, str]:
         select(InventoryAssetIdentifier).where(
             InventoryAssetIdentifier.asset_id == asset_id,
             InventoryAssetIdentifier.is_current.is_(True),
-        )
+        ).order_by(InventoryAssetIdentifier.source, InventoryAssetIdentifier.id)
     )
     return {row.identifier_type.value: row.value for row in rows}
 
@@ -188,8 +193,8 @@ def test_reconcile_skips_invalid_or_ambiguous_macs(db, service):
     assert _current_values(db, unique.id) == {"mac": "11:22:33:44:55:66"}
 
 
-def test_reconcile_skips_duplicate_current_mac_rows_on_one_asset(db, service):
-    """Collapsing duplicate anchor rows to one asset can overwrite its identifiers."""
+def test_reconcile_deduplicates_current_mac_rows_on_one_asset(db, service):
+    """Two sourced anchors on one card describe one matching asset."""
     asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
     service.sync_identifiers(
         db,
@@ -217,9 +222,9 @@ def test_reconcile_skips_duplicate_current_mac_rows_on_one_asset(db, service):
         observed_at=datetime(2026, 9, 18, tzinfo=UTC),
     )
 
-    assert result.matched_assets == 0
-    assert result.updated_assets == 0
-    assert result.skipped_assets == 1
+    assert result.matched_assets == 1
+    assert result.updated_assets == 1
+    assert result.skipped_assets == 0
     current = _current_values(db, asset.id)
     current_mac_rows = list(
         db.scalars(
@@ -230,13 +235,13 @@ def test_reconcile_skips_duplicate_current_mac_rows_on_one_asset(db, service):
             )
         )
     )
-    assert current["ip"] == "192.168.100.10"
-    assert current["hostname"] == "pc-old"
+    assert current["ip"] == "192.168.100.20"
+    assert current["hostname"] == "pc-new"
     assert len(current_mac_rows) == 2
 
 
-def test_reconcile_marks_manual_ip_historical_before_netctl_replacement(db, service):
-    """Overwriting manual values in place would destroy the required identifier history."""
+def test_reconcile_retains_manual_ip_alongside_netctl_observation(db, service):
+    """Observations keep separate provenance and leave explicit manual facts current."""
     asset = _asset_with_identifiers(db, service, mac="AA:BB:CC:DD:EE:FF", ip="192.168.100.10")
 
     service.reconcile_netctl_identifiers(
@@ -254,7 +259,7 @@ def test_reconcile_marks_manual_ip_historical_before_netctl_replacement(db, serv
         )
     )
     assert {(row.value, row.is_current, row.source) for row in ip_history} == {
-        ("192.168.100.10", False, InventoryObservationSource.MANUAL),
+        ("192.168.100.10", True, InventoryObservationSource.MANUAL),
         ("192.168.100.20", True, InventoryObservationSource.NETCTL),
     }
 
@@ -372,7 +377,7 @@ def test_worker_skips_previously_successful_snapshot_id_without_second_reconcili
 
     assert first.status == "success"
     assert second.status == "skipped"
-    assert _current_values(db, asset.id)["ip"] == "192.168.100.99"
+    assert any(i.source == InventoryObservationSource.MANUAL and i.value == "192.168.100.99" for i in service.identifiers_for(db, asset))
     assert [row.status for row in db.scalars(select(InventoryIdentifierSyncRun).order_by(InventoryIdentifierSyncRun.started_at))] == [
         "success",
         "skipped",
@@ -721,3 +726,25 @@ def test_worker_rejects_pages_with_wrong_cardinality(db, pages):
     )
 
     assert summary.status == "failed"
+
+
+def test_observation_preserves_manual_revision_and_same_value_ownership(db, service):
+    asset = _asset_with_identifiers(db, service, mac='02:00:00:00:00:44', ip='192.0.2.44')
+    db.commit()
+    db.refresh(asset)
+    revision = asset.manual_revision
+    manual = db.scalar(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.IP))
+    timestamps = (manual.first_seen_at, manual.last_seen_at)
+    for day, ip in ((20, '192.0.2.44'), (21, '192.0.2.44'), (22, '192.0.2.55')):
+        service.reconcile_netctl_identifiers(db, [{'mac':'02:00:00:00:00:44','ip':ip}], observed_at=datetime(2026,9,day,tzinfo=UTC))
+        db.commit()
+        db.refresh(asset)
+        assert asset.manual_revision == revision
+        assert manual.is_current and manual.source == InventoryObservationSource.MANUAL
+        assert (manual.first_seen_at, manual.last_seen_at) == timestamps
+        observed = db.scalar(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.source == InventoryObservationSource.NETCTL, InventoryAssetIdentifier.is_current.is_(True)))
+        assert observed.value == ip
+        assert observed.last_seen_at.replace(tzinfo=UTC) == datetime(2026,9,day,tzinfo=UTC)
+    service.sync_identifiers(db, asset, [{'identifier_type':'mac','value':'02:00:00:00:00:44'}, {'identifier_type':'ip','value':'192.0.2.99'}])
+    db.commit()
+    assert observed.is_current and observed.value == '192.0.2.55'

@@ -732,7 +732,9 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     elif location is None or location.id != asset.location_id:
         location = _location_or_error(db, asset.location_id)
     photos = list(db.scalars(select(InventoryAssetPhoto).where(InventoryAssetPhoto.asset_id == asset.id).order_by(InventoryAssetPhoto.created_at, InventoryAssetPhoto.id)))
-    identifiers = {item.identifier_type.value: item.value for item in service.identifiers_for(db, asset)}
+    current_identifiers = service.identifiers_for(db, asset)
+    identifiers = {item.identifier_type.value: item.value for item in current_identifiers if item.source == InventoryObservationSource.MANUAL}
+    observed_identifiers = [item for item in current_identifiers if item.source == InventoryObservationSource.NETCTL]
     form_values = {field: str(getattr(asset, field) or "") for field in ("custom_name", "manufacturer", "model", "serial_number", "inventory_number", "assigned_person_name", "login_name", "description")}
     form_values["status"] = asset.status.value if asset.status is not None else ""
     form_values["expected_revision"] = str(process.base_revision)
@@ -760,7 +762,7 @@ def inventory_asset_detail(asset_id: str, request: Request, location_id: str = "
     if asset.asset_type is InventoryAssetType.PC:
         endpoint_context = InventoryEndpointService().asset_context(db, asset.id, datetime.now(timezone.utc))
         endpoint_candidates = get_endpoint_candidates(asset.id, user.username, db)["data"]
-    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "form_values": form_values, "details": details, "identifiers": identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None, "endpoint_context": endpoint_context, "endpoint_candidates": endpoint_candidates}, db)
+    return _render(request, "inventory_asset_form.html", {"asset": asset, "asset_type": asset.asset_type, "parent_asset_id": "", "manual_mode": False, "location": location, "return_location_id": location.id if location is not None else "", "asset_labels": ASSET_LABELS, "asset_status_labels": ASSET_STATUS_LABELS, "photos": photos, "form_values": form_values, "details": details, "identifiers": identifiers, "observed_identifiers": observed_identifiers, "prefill": {}, "asset_statuses": InventoryAssetStatus, "prelookup": None, "endpoint_context": endpoint_context, "endpoint_candidates": endpoint_candidates}, db)
 
 
 @router.post("/inventory/assets")

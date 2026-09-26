@@ -223,9 +223,10 @@ class InventoryService:
         db.flush()
         return repaired_assets
 
-    def sync_identifiers(self, db: Session, asset: InventoryAsset, identifiers: Sequence[Any]) -> list[InventoryAssetIdentifier]:
-        """Replace active identifier values while retaining prior values as history."""
-        desired: dict[tuple[InventoryIdentifierType, str], tuple[str, InventoryObservationSource]] = {}
+    def sync_identifiers(self, db: Session, asset: InventoryAsset, identifiers: Sequence[Any], *, owned_sources: set[InventoryObservationSource] | None = None) -> list[InventoryAssetIdentifier]:
+        """Replace facts owned by the caller; providers never become manual facts."""
+        owned_sources = {InventoryObservationSource.MANUAL} if owned_sources is None else owned_sources
+        desired: dict[tuple[InventoryIdentifierType, str, InventoryObservationSource], tuple[str, InventoryObservationSource]] = {}
         for raw in identifiers:
             identifier_type = raw.identifier_type if hasattr(raw, "identifier_type") else raw["identifier_type"]
             value = raw.value if hasattr(raw, "value") else raw["value"]
@@ -236,16 +237,18 @@ class InventoryService:
                 normalized = self._normalize_identifier(kind, str(value))
             except (ValueError, InventoryLookupError) as exc:
                 raise InventoryValidationError("invalid inventory identifier") from exc
-            desired[(kind, normalized)] = (str(value).strip(), observed_from)
+            if observed_from not in owned_sources:
+                raise InventoryValidationError("identifier source is not owned by this operation")
+            desired[(kind, normalized, observed_from)] = (str(value).strip(), observed_from)
 
         current = list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True))))
-        by_key = {(item.identifier_type, item.normalized_value): item for item in current}
+        by_key = {(item.identifier_type, item.normalized_value, item.source): item for item in current}
         now = datetime.now(timezone.utc)
         for item in current:
-            if (item.identifier_type, item.normalized_value) not in desired:
+            if item.source in owned_sources and (item.identifier_type, item.normalized_value, item.source) not in desired:
                 item.is_current = False
-        for (kind, normalized), (value, source) in desired.items():
-            item = by_key.get((kind, normalized))
+        for (kind, normalized, source), (value, _source) in desired.items():
+            item = by_key.get((kind, normalized, source))
             if item is None:
                 item = InventoryAssetIdentifier(
                     asset_id=asset.id,
@@ -259,7 +262,6 @@ class InventoryService:
                 db.add(item)
             else:
                 item.value = value
-                item.source = source
                 item.last_seen_at = now
         db.flush()
         return self.identifiers_for(db, asset)
@@ -272,7 +274,7 @@ class InventoryService:
         observed_at: datetime,
     ) -> InventoryIdentifierSyncResult:
         """Refresh only unambiguous IP and hostname values from a Netctl snapshot."""
-        inventory_by_mac: dict[str, list[str]] = {}
+        inventory_by_mac: dict[str, set[str]] = {}
         for identifier in db.scalars(
             select(InventoryAssetIdentifier).join(InventoryAsset, InventoryAsset.id == InventoryAssetIdentifier.asset_id).where(
                 InventoryAssetIdentifier.identifier_type == InventoryIdentifierType.MAC,
@@ -283,7 +285,7 @@ class InventoryService:
                 normalized_mac = self._normalize_netctl_mac(identifier.value)
             except InventoryLookupError:
                 continue
-            inventory_by_mac.setdefault(normalized_mac, []).append(identifier.asset_id)
+            inventory_by_mac.setdefault(normalized_mac, set()).add(identifier.asset_id)
 
         observed_by_mac: dict[
             str,
@@ -338,7 +340,7 @@ class InventoryService:
         return InventoryIdentifierSyncResult(matched_assets, updated_assets, skipped_assets)
 
     def identifiers_for(self, db: Session, asset: InventoryAsset, *, include_history: bool = False) -> list[InventoryAssetIdentifier]:
-        return list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True)).order_by(InventoryAssetIdentifier.identifier_type, InventoryAssetIdentifier.normalized_value).execution_options(inventory_history=include_history)))
+        return list(db.scalars(select(InventoryAssetIdentifier).where(InventoryAssetIdentifier.asset_id == asset.id, InventoryAssetIdentifier.is_current.is_(True)).order_by(InventoryAssetIdentifier.identifier_type, InventoryAssetIdentifier.source, InventoryAssetIdentifier.normalized_value, InventoryAssetIdentifier.id).execution_options(inventory_history=include_history)))
 
     def _netctl_observed_identifiers(
         self, host: Mapping[str, object]
@@ -376,6 +378,7 @@ class InventoryService:
                 select(InventoryAssetIdentifier).where(
                     InventoryAssetIdentifier.asset_id == asset_id,
                     InventoryAssetIdentifier.identifier_type == identifier_type,
+                    InventoryAssetIdentifier.source == InventoryObservationSource.NETCTL,
                     InventoryAssetIdentifier.is_current.is_(True),
                 )
             )
@@ -399,6 +402,9 @@ class InventoryService:
                 )
             )
             changed = True
+        else:
+            for item in matching:
+                item.last_seen_at = observed_at
         return changed
 
     def record_observation(self, db: Session, *, asset_id: str | None, source: InventoryObservationSource, data: Mapping[str, Any]) -> InventoryObservation:
