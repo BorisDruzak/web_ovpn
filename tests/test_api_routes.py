@@ -60,7 +60,7 @@ def test_hosts_list_paginates_snapshot_without_live_commands(tmp_path, monkeypat
     conn.execute("UPDATE network_host_current_state SET payload_json='invalid-json' WHERE CAST(substr(ip, 11) AS INTEGER) <= 100 OR CAST(substr(ip, 11) AS INTEGER) > 200")
     conn.commit()
     conn.close()
-    response = client.get("/api/v1/network/hosts?status=current&page=2&limit=100", headers=headers)
+    response = client.get("/api/v1/network/hosts?status=current&page=2&limit=100&seen_within=all", headers=headers)
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["pagination"] == {"page": 2, "limit": 100, "total": 210, "pages": 3}
@@ -136,7 +136,7 @@ def test_hosts_api_accepts_dash_prefixed_query_with_real_snapshot(tmp_path, monk
     conn.execute("UPDATE network_host_current_state SET search_text='office-printer' WHERE ip='203.0.113.2'")
     conn.commit()
     conn.close()
-    response = client.get("/api/v1/network/hosts", params={"q": "-printer"}, headers=headers)
+    response = client.get("/api/v1/network/hosts", params={"q": "-printer", "seen_within": "all"}, headers=headers)
     assert response.status_code == 200
     assert [row["ip"] for row in response.json()["data"]["hosts"]] == ["203.0.113.2"]
     assert response.json()["data"]["pagination"]["total"] == 1

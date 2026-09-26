@@ -59,7 +59,7 @@ else:
     return wrapper
 
 
-def make_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, dict[str, str], Path]:
+def make_client(tmp_path: Path, monkeypatch, *, permissions: str = "network:read,network:manage") -> tuple[TestClient, dict[str, str], Path]:
     token = "api-token"
     log_path = tmp_path / "netctl.jsonl"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'web.sqlite').as_posix()}")
@@ -67,6 +67,7 @@ def make_client(tmp_path: Path, monkeypatch) -> tuple[TestClient, dict[str, str]
     monkeypatch.setenv("ADMIN_USERNAME", "admin")
     monkeypatch.setenv("ADMIN_PASSWORD", "admin-pass")
     monkeypatch.setenv("OPENVPN_WEB_API_TOKEN_HASH", hashlib.sha256(token.encode("utf-8")).hexdigest())
+    monkeypatch.setenv("OPENVPN_WEB_API_PERMISSIONS", permissions)
     monkeypatch.setenv("NETCTL_PATH", str(make_fake_netctl(tmp_path / "netctl")))
     monkeypatch.setenv("NETCTL_USE_SUDO", "0")
     monkeypatch.setenv("FAKE_NETCTL_LOG", str(log_path))
@@ -283,6 +284,22 @@ def test_context_user_creation_api_is_authenticated_and_delegates_to_netctl(tmp_
     assert json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1]) == [
         "--json", "users", "add", "--user-key", "employee:api", "--display-name", "API User", "--department", "IT"
     ]
+
+
+def test_context_read_only_token_cannot_mutate_or_invoke_netctl(tmp_path, monkeypatch):
+    client, headers, log_path = make_client(tmp_path, monkeypatch, permissions="network:read")
+    mutations = [
+        ("POST", "/api/v1/context/users", {"user_key": "employee:api", "display_name": "API User"}),
+        ("POST", "/api/v1/context/users/employee:api/asset-bindings", {"asset_key": "mac:aa:bb:cc:dd:ee:ff", "relation": "primary_user", "confidence": 100, "reason": "approved"}),
+        ("DELETE", "/api/v1/context/user-asset-bindings/42", {"reason": "reassigned"}),
+        ("POST", "/api/v1/context/network-sessions", {"user_key": "employee:api", "session_key": "radius:one", "source_type": "radius", "started_at": "2026-07-22T12:00:00Z", "evidence": {}}),
+        ("POST", "/api/v1/context/network-sessions/radius:one/close", {"ended_at": "2026-07-22T12:10:00Z"}),
+    ]
+    for method, path, payload in mutations:
+        assert client.request(method, path, json=payload, headers=headers).status_code == 403
+    assert not log_path.exists()
+    assert client.get("/api/v1/context/users/employee:api", headers=headers).status_code == 200
+    assert len(log_path.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_context_user_binding_inspection_and_retirement_api_delegate_to_netctl(tmp_path, monkeypatch):

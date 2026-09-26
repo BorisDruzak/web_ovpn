@@ -12,6 +12,11 @@ import tarfile
 
 import pytest
 
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="ALT Linux execution authorization requires POSIX file permissions",
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTROL_ROOT = REPO_ROOT / "deploy" / "alt-linux" / "control"
