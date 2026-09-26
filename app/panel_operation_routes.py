@@ -160,7 +160,7 @@ LONG_API_HANDLERS = frozenset({
 
 def install_api_operations(app) -> None:
     from fastapi.responses import JSONResponse
-    from .panel_operations import execution_future, forget_future
+    from .panel_operations import execution_future
     for route in app.routes:
         original = getattr(getattr(route, "dependant", None), "call", None)
         if original is None or original.__name__ not in LONG_API_HANDLERS:
@@ -209,8 +209,6 @@ def install_api_operations(app) -> None:
                         raise HTTPException(exc.status_code,
                             "Внешняя операция не завершена; проверьте её состояние", headers=headers) from None
                     raise
-                finally:
-                    forget_future(operation["id"])
             return JSONResponse({"status":"accepted", "operation":operation}, status_code=202, headers=headers)
 
         route.dependant.call = execute_api

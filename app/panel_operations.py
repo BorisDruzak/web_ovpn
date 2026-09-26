@@ -41,6 +41,34 @@ _artifacts: ContextVar[list | None] = ContextVar("panel_operation_artifacts", de
 _active: ContextVar[list | None] = ContextVar("panel_operation_phases", default=None)
 
 
+def safe_external_error(message: str) -> str:
+    """External diagnostics are never user-visible operation result content.
+
+    Validation messages are produced separately by the handler and remain
+    available. Outside this execution adapter existing read routes are unchanged.
+    """
+    return "Внешняя операция не завершена; проверьте её состояние" if _active.get() is not None else message
+
+
+def safe_external_payload(value):
+    """Remove diagnostic fields before an operation handler renders/caches them."""
+    if _active.get() is None:
+        return value
+    def redact(item):
+        if isinstance(item, dict):
+            return {key: redact(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [redact(child) for child in item]
+        return safe_external_error("") if isinstance(item, str) and item else item
+    if isinstance(value, dict):
+        diagnostics = {"message", "error", "errors", "stderr", "stdout", "diagnostics", "raw_xml", "raw_output"}
+        return {key: redact(item) if key in diagnostics else safe_external_payload(item)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [safe_external_payload(item) for item in value]
+    return value
+
+
 def phase(name: str, status: str) -> None:
     """Names/statuses are fixed public codes; callers must never pass CLI output."""
     phases = _active.get()
@@ -181,10 +209,11 @@ def _execute(operation_id: str, execute: Callable, factory) -> None:
             else:
                 status = "succeeded"
         except HTTPException as exc:
-            failure = exc
+            failure = exc if exc.status_code < 500 else HTTPException(exc.status_code,
+                detail="Внешняя операция не завершена; проверьте её состояние")
             status = "partial" if any(p["status"] == "succeeded" for p in phases) else ("unknown" if phases else "failed")
-        except Exception as exc:
-            failure = exc
+        except Exception:
+            failure = HTTPException(502, detail="Внешняя операция не завершена; проверьте её состояние")
             # External effects cannot be inferred from a Python exception.
             status = "partial" if any(p["status"] == "succeeded" for p in phases) else "unknown"
         with factory() as db:
@@ -231,6 +260,6 @@ def observed_cli(provider: str):
                 raise
             if mutating:
                 phase(name, "succeeded" if result.get("status") not in {"error", "failed", "partial", "not_configured"} else "unknown")
-            return result
+            return safe_external_payload(result)
         return observed
     return decorate

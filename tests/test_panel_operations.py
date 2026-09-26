@@ -214,6 +214,10 @@ def test_generation_success_sync_failure_is_partial_with_audit_no_secret(tmp_pat
         assert 'vpnctl:sync' in page.text
         assert 'SECRET-SYNTHETIC' not in page.text
         assert 'SECRET-SYNTHETIC' not in row.phases_json
+        result = client.get('/operations/' + operation_id + '/result')
+        assert result.status_code == 200
+        assert 'SECRET-SYNTHETIC' not in result.text
+        assert 'Внешняя операция не завершена' in result.text
         with db.get_sessionmaker()() as session:
             assert session.scalar(select(WebAuditLog).where(WebAuditLog.action=='client-batch-generate')).result == 'ok'
             assert session.scalar(select(WebAuditLog).where(WebAuditLog.action=='auto-sync')).result == 'error'
@@ -482,3 +486,73 @@ def test_csv_clone_generate_result_and_artifact_survive_response_cache_loss(tmp_
         assert downloaded.status_code == 200
         import io, zipfile
         assert zipfile.ZipFile(io.BytesIO(downloaded.content)).namelist() == ['alpha.ovpn','beta.ovpn']
+
+
+def test_cli_flash_result_is_sanitized_before_cache_and_redirect_session(tmp_path, monkeypatch):
+    main = setup_app(tmp_path, monkeypatch)
+    import app.auto_sync
+    from app.vpnctl_client import VpnctlError
+    from app.panel_operations import execution_future
+    def failed_sync(*args, **kwargs):
+        phase('vpnctl:sync','unknown')
+        raise VpnctlError('SECRET-SYNTHETIC-MESSAGE',stdout='SECRET-SYNTHETIC-STDOUT',stderr='SECRET-SYNTHETIC-STDERR')
+    monkeypatch.setattr(app.auto_sync,'run_vpnctl',failed_sync)
+    monkeypatch.setattr(main,'run_vpnctl',lambda args,**kwargs: {'profiles':[],'clients':[]})
+    with TestClient(main.app) as client:
+        csrf = login(client)
+        accepted = client.post('/clients/sync',data={'csrf_token':csrf},follow_redirects=False)
+        operation_id = accepted.headers['x-operation-id']
+        wait_status(operation_id,'unknown')
+        cached = execution_future(operation_id).result()
+        assert 'SECRET-SYNTHETIC' not in str(cached._panel_flashes)
+        result = client.get('/operations/'+operation_id+'/result')
+        assert result.status_code == 200
+        assert 'SECRET-SYNTHETIC' not in result.text
+        assert 'Внешняя операция не завершена' in result.text
+
+
+def test_cli_diagnostic_payload_is_sanitized_before_operation_handler(tmp_path, monkeypatch):
+    setup_app(tmp_path,monkeypatch)
+    db.init_db()
+    from app.panel_operations import observed_cli, execution_future
+    @observed_cli('vpnctl')
+    def external(args):
+        return {'status':'error','message':'SECRET-SYNTHETIC','nested':{'stderr':'SECRET-SYNTHETIC'},
+            'errors':[{'message':'SECRET-SYNTHETIC','count':1}],'client':'alpha'}
+    operation,_ = register('user:admin','synthetic-json','vpn:manage',b'synthetic',lambda:external(['reconnect-client']))
+    wait_status(operation['id'],'unknown')
+    result = execution_future(operation['id']).result()
+    assert 'SECRET-SYNTHETIC' not in str(result)
+    assert result['client'] == 'alpha'
+    assert isinstance(result['errors'],list) and result['errors'][0]['count'] == 1
+
+
+def test_default_api_reply_remains_recoverable_after_identical_transport_retry(tmp_path,monkeypatch):
+    import hashlib
+    main = setup_app(tmp_path,monkeypatch)
+    monkeypatch.setenv('OPENVPN_WEB_API_TOKEN_HASH',hashlib.sha256(b'synthetic-api-token').hexdigest())
+    monkeypatch.setenv('OPENVPN_WEB_API_PERMISSIONS','vpn:read,vpn:manage')
+    monkeypatch.setenv('OPENVPN_WEB_API_ACTOR','synthetic-service')
+    db.reset_engine_cache()
+    import app.api
+    calls = []
+    def synthetic_cli(args,**kwargs):
+        assert args == ['sync']
+        calls.append(1)
+        phase('vpnctl:sync','succeeded')
+        return {'status':'ok','imported_or_updated':123}
+    monkeypatch.setattr(app.api,'run_vpnctl',synthetic_cli)
+    headers={'Authorization':'Bearer synthetic-api-token','Idempotency-Key':'one-intent'}
+    with TestClient(main.app) as client:
+        first = client.post('/api/v1/clients/sync',headers=headers)
+        assert first.status_code == 200 and first.json()['data']['imported_or_updated'] == 123
+        operation_id = first.headers['x-operation-id']
+        # Treat the first reply as lost in transport: retry must recover its
+        # original result without asking the CLI to execute again.
+        retry = client.post('/api/v1/clients/sync',headers=headers)
+        assert retry.status_code == 202
+        operation = retry.json()['operation']
+        assert operation['id'] == operation_id and operation['result_available']
+        recovered = client.get(operation['result_url'],headers=headers)
+        assert recovered.status_code == 200 and recovered.json() == first.json()
+        assert calls == [1]

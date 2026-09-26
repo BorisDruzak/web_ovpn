@@ -797,22 +797,24 @@ def cli_call(request: Request, args: list[str], timeout: int | None = None) -> t
     try:
         return run_vpnctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", ""))), None
     except VpnctlError as exc:
+        from .panel_operations import safe_external_error
         message = exc.message
         if exc.stderr:
             message = f"{message}: {exc.stderr.strip()[:500]}"
-        return {}, message
+        return {}, safe_external_error(message)
 
 
 def net_cli_call(request: Request, args: list[str], timeout: int | None = None) -> tuple[dict[str, Any], str | None]:
     try:
         return run_netctl(args, timeout=timeout, request_id=str(getattr(request.state, "request_id", ""))), None
     except NetctlError as exc:
+        from .panel_operations import safe_external_error
         message = exc.message
         if exc.stderr:
             message = f"{message}: {exc.stderr.strip()[:500]}"
         elif exc.stdout:
             message = f"{message}: {exc.stdout.strip()[:500]}"
-        return {}, message
+        return {}, safe_external_error(message)
 
 
 def list_from(data: dict[str, Any], key: str) -> list[dict[str, Any]]:

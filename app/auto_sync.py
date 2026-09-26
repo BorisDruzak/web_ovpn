@@ -14,10 +14,11 @@ AUTO_SYNC_SETTING = "clients.last_auto_sync_at"
 
 
 def _error_message(exc: VpnctlError) -> str:
+    from .panel_operations import safe_external_error
     suffix = exc.stderr.strip() or exc.stdout.strip()
     if suffix:
-        return f"{exc.message}: {suffix[:500]}"
-    return exc.message
+        return safe_external_error(f"{exc.message}: {suffix[:500]}")
+    return safe_external_error(exc.message)
 
 
 def _last_sync_at(db: Session) -> datetime | None:
