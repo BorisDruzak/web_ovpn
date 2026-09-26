@@ -146,3 +146,41 @@ def test_inventory_export_preserves_endpoint_network_facts_and_profile_freshness
         assert row[rows[0].index(field)] == value
     assert json.loads(row[rows[0].index('Свежесть профилей')])['network_v1']['status'] == 'stale'
     assert 'NEVER_EXPORT' not in str(rows)
+
+
+def test_inventory_export_keeps_netctl_presence_freshness_and_full_binding_history(tmp_path,monkeypatch):
+    from datetime import datetime,timezone,timedelta
+    import json
+    _,_,data = workplace(tmp_path,monkeypatch)
+    from app.db import get_sessionmaker
+    from app.inventory.models import InventoryNetctlBinding,InventoryIdentifierSyncRun,InventoryExternalBindingStatus
+    from app.inventory.xlsx_export import inventory_workbook
+    now = datetime.now(timezone.utc)
+    with get_sessionmaker()() as db:
+        db.add(InventoryIdentifierSyncRun(snapshot_id=2,snapshot_generated_at=now,status='success',started_at=now,finished_at=now))
+        for number in range(103):
+            db.add(InventoryNetctlBinding(asset_id=data['pc']['id'],network_key=f'mac:02:00:00:00:01:{number:02X}',
+                status=InventoryExternalBindingStatus.CONFIRMED,created_by='synthetic',observed_snapshot_id=1,observed_at=now,
+                observation_json={'ip':'192.0.2.24','last_seen_at':now.isoformat(),'sources':['synthetic-switch'],
+                    'availability':{'state':'seen'},'secret':'NEVER_EXPORT_NETCTL'}))
+        db.commit()
+    def facts():
+        payload,counts = inventory_workbook(get_sessionmaker())
+        rows = list(load_workbook(BytesIO(payload))['Сетевые привязки'].values)
+        assert counts['bindings'] == 103 and len(rows) == 104
+        assert 'NEVER_EXPORT_NETCTL' not in str(rows)
+        return dict(zip(rows[0],rows[1]))
+    saved = facts()
+    assert saved['Состояние источника'] == 'available'
+    assert saved['Присутствие в снимке'] == 'missing'
+    assert saved['Свежесть наблюдения'] == 'fresh'
+    assert saved['Доступность наблюдения'] == 'seen'
+    assert json.loads(saved['Источники наблюдения']) == ['synthetic-switch']
+    with get_sessionmaker()() as db:
+        db.add(InventoryIdentifierSyncRun(status='failed',started_at=now+timedelta(seconds=1),
+            finished_at=now+timedelta(seconds=1),failure_reason='synthetic unavailable'))
+        db.commit()
+    failed = facts()
+    assert failed['Состояние источника'] == 'unavailable'
+    assert failed['Присутствие в снимке'] == 'unknown'
+    assert failed['IP'] == '192.0.2.24' and failed['Доступность наблюдения'] == 'seen'

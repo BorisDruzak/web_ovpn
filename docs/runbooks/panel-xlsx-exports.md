@@ -32,6 +32,11 @@ device sheet. Default selection excludes deleted cards. Photo metadata excludes
 storage paths and image bytes. Source observations and operator decisions use
 explicit safe fields, not arbitrary raw context or diagnostic dumps. Endpoint
 network facts and per-profile freshness are separate from aggregate success dates.
+Netctl bindings carry saved source state, snapshot presence, observation freshness,
+availability and allowlisted sources separately. Missing from a newer successful
+snapshot does not mean offline; a failed sync retains saved facts and marks
+presence unknown. These pure projections share the export transaction. All selected
+bindings are exported within the overall budgets, without the card's100-row limit.
 
 Network sheets: Снимок, Связи с инвентаризацией, Параметры. Each selected interface
 appears once, including explicit unlinked states. The source command is readonly

@@ -9,6 +9,8 @@ from sqlalchemy import select,or_,func,cast,String,JSON,LargeBinary
 from ..xlsx_export import workbook_bytes,ExportLimit
 from . import models as m
 from .endpoint import _safe_fields,endpoint_profile_freshness
+from .network_freshness import source_projection,observation_projection
+from ..config import get_settings
 
 MAX_SOURCE_ROWS = 50_000
 MAX_ASSETS = 10_000
@@ -132,15 +134,27 @@ def inventory_workbook(factory,*,location_id=None,deleted=False):
             row.child_asset_id,scope_label(row.child_asset_id),
             visible[row.child_asset_id].custom_name if row.child_asset_id in visible else None,
             row.relation_type,row.created_at,row.created_by,row.ended_at,row.note] for row in relations]
+        latest_run = select(m.InventoryIdentifierSyncRun.id).order_by(
+            m.InventoryIdentifierSyncRun.started_at.desc(),m.InventoryIdentifierSyncRun.id.desc()).limit(1).scalar_subquery()
+        sync_runs = read(select(m.InventoryIdentifierSyncRun).where(m.InventoryIdentifierSyncRun.id == latest_run),1)
+        success_id = select(m.InventoryIdentifierSyncRun.id).where(m.InventoryIdentifierSyncRun.status=='success').order_by(
+            m.InventoryIdentifierSyncRun.snapshot_generated_at.desc(),m.InventoryIdentifierSyncRun.snapshot_id.desc(),
+            m.InventoryIdentifierSyncRun.id.desc()).limit(1).scalar_subquery()
+        successes = read(select(m.InventoryIdentifierSyncRun).where(m.InventoryIdentifierSyncRun.id == success_id),1)
+        source = source_projection(sync_runs[0] if sync_runs else None,successes[0] if successes else None,
+            enabled=get_settings().network_observer_enabled,now=exported_at)
         network_rows = []
         for row in attached(m.InventoryNetctlBinding):
             observation = row.observation_json or {}
+            view = observation_projection(row,source,now=exported_at)
             network_rows.append([row.id,row.asset_id,'netctl',row.network_key,_value(row.status),
                 row.created_at,row.created_by,row.confirmed_at,row.confirmed_by,row.confirmation_reason,
                 row.ended_at,row.ended_by,row.end_reason,row.observed_snapshot_id,row.observed_at,
                 observation.get('ip'),observation.get('hostname'),observation.get('online'),None,None,None,
                 _safe_json(row.evidence_json,('material','ambiguous','manual_comparison')),
-                observation.get('mac') or row.network_key.removeprefix('mac:'),None,None,None,None,None,None])
+                observation.get('mac') or row.network_key.removeprefix('mac:'),None,None,None,None,None,None,
+                source['state'],view['presence'],view['freshness'],view['availability'],
+                json.dumps(view['sources'],ensure_ascii=False),view['observed_at']])
         endpoint_states = {row.binding_id:row for row in attached(m.InventoryEndpointState)}
         for row in attached(m.InventoryExternalBinding):
             state = endpoint_states.get(row.id)
@@ -155,7 +169,7 @@ def inventory_workbook(factory,*,location_id=None,deleted=False):
                 observed.get('mac'),json.dumps(endpoint_profile_freshness(state,exported_at),ensure_ascii=False) if state else None,
                 state.baseline_snapshot_id if state else None,state.health_snapshot_id if state else None,
                 state.inventory_snapshot_id if state else None,state.session_snapshot_id if state else None,
-                state.refreshed_at if state else None])
+                state.refreshed_at if state else None,None,None,None,None,None,None])
         checks = attached(m.InventoryCheck)
         photos = attached(m.InventoryAssetPhoto)
         observations = attached(m.InventoryObservation)
@@ -165,9 +179,6 @@ def inventory_workbook(factory,*,location_id=None,deleted=False):
             for row in observations]
         versions = read(select(m.InventoryNetworkProjectionVersion),1)
         inventory_epoch = versions[0].version if versions else None
-        latest_run = select(m.InventoryIdentifierSyncRun.id).order_by(
-            m.InventoryIdentifierSyncRun.started_at.desc(),m.InventoryIdentifierSyncRun.id).limit(1).scalar_subquery()
-        sync_runs = read(select(m.InventoryIdentifierSyncRun).where(m.InventoryIdentifierSyncRun.id == latest_run),1)
         source_snapshot = sync_runs[0].snapshot_id if sync_runs else None
         source_generated = sync_runs[0].snapshot_generated_at if sync_runs else None
         source_sync_status = sync_runs[0].status if sync_runs else None
@@ -184,12 +195,14 @@ def inventory_workbook(factory,*,location_id=None,deleted=False):
         ['Фото','метаданные; содержимое и пути файлов не включены'],
         ['Ревизия локальной проекции',inventory_epoch],['Снимок последней попытки Netctl синхронизации',source_snapshot],
         ['Время снимка последней попытки UTC',source_generated],['Результат последней попытки синхронизации',source_sync_status],
+        ['Состояние сохранённого источника Netctl',source['state']],
+        ['Последний успешный снимок Netctl',source['snapshot_id']],['Время успешного снимка UTC',source['generated_at']],
         ['Наблюдения','последние сохранённые состояния привязок; свежесть не обновляется экспортом']]
     parameters += [[key,value] for key,value in counts.items()]
     payload = workbook_bytes([
         ('Устройства',ASSET_HEADERS,device_rows),
         ('Связи рабочего места',('ID связи','Родитель ID','Охват родителя','Название родителя','Устройство ID','Охват устройства','Название устройства','Тип связи','Создано UTC','Кем создано','Завершено UTC','Примечание'),relation_rows),
-        ('Сетевые привязки',('ID связи','Карточка ID','Источник','Ключ источника','Состояние','Создано UTC','Кем создано','Подтверждено UTC','Кем подтверждено','Причина или метод','Завершено UTC','Кем завершено','Причина завершения','Снимок источника','Наблюдалось UTC','IP','Hostname','Online','Последний успех UTC','Недоступен с UTC','Версия агента','Доказательства','MAC','Свежесть профилей','Baseline снимок','Health снимок','Inventory снимок','Session снимок','Обновлено UTC'),network_rows),
+        ('Сетевые привязки',('ID связи','Карточка ID','Источник','Ключ источника','Состояние','Создано UTC','Кем создано','Подтверждено UTC','Кем подтверждено','Причина или метод','Завершено UTC','Кем завершено','Причина завершения','Снимок источника','Наблюдалось UTC','IP','Hostname','Online','Последний успех UTC','Недоступен с UTC','Версия агента','Доказательства','MAC','Свежесть профилей','Baseline снимок','Health снимок','Inventory снимок','Session снимок','Обновлено UTC','Состояние источника','Присутствие в снимке','Свежесть наблюдения','Доступность наблюдения','Источники наблюдения','Последнее наблюдение UTC'),network_rows),
         ('Идентификаторы',('ID','Карточка ID','Тип','Значение','Источник','Текущий','Первое наблюдение UTC','Последнее наблюдение UTC'),identifier_rows),
         ('Проверки',('ID','Карточка ID','Сессия ID','Помещение ID','Проверено UTC','Кем проверено','Результат','Примечание'),check_rows),
         ('Фото',('ID','Карточка ID','Тип','Исходное имя','MIME','Байт','Создано UTC','Кем создано'),photo_rows),
