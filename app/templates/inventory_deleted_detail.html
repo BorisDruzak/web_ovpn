@@ -23,6 +23,8 @@
   <h3>Отношения рабочего места</h3>{% for row in relations %}<p>{{ row.parent_asset_id }} → {{ row.child_asset_id }} · завершено {{ row.ended_at or '—' }}</p>{% endfor %}
   <h3>Внешние связи</h3>{% for row in bindings %}<p>{{ row.source }} · {{ row.external_id }} · {{ row.status.value }} · {{ row.ended_at or '—' }}</p>{% endfor %}
   <h3>Сетевые связи Netctl</h3>
+  {% if network_details_limited %}<p>Подробные наблюдения превышают бюджет отображения; исходные данные сохранены.</p>{% endif %}
+  {% if network_links_truncated %}<p>Показано до 100 связей; остальная история сохранена.</p>{% endif %}
   <p>Показаны последние 100 записей. Более ранняя история сохранена в базе.</p>
   {% for row in network_links or [] %}
   <article>

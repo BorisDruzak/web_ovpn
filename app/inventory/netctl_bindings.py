@@ -30,6 +30,24 @@ def stable_key(host):
     return "mac:"+mac
 
 
+def saved_observation(host):
+    """Retain bounded public facts, never arbitrary source diagnostics."""
+    public = {name:(host.get(name)[:512] if isinstance(host.get(name),str) else None)
+        for name in ("device_key","mac","ip","hostname","display_name","status","last_seen_at")}
+    public['sources'] = [value[:64] for value in host.get('sources',[])[:16] if isinstance(value,str)] if isinstance(host.get('sources'),list) else []
+    if isinstance(host.get('last_source'),str):
+        public['last_source'] = host['last_source'][:64]
+    availability = host.get('availability')
+    if isinstance(availability,dict):
+        public['availability'] = {name:availability[name][:255] for name in
+            ('state','active_method','checked_at','run_status','cidr','check_origin')
+            if isinstance(availability.get(name),str)}
+        evidence = availability.get('passive_evidence')
+        if isinstance(evidence,list):
+            public['availability']['passive_evidence'] = [value[:64] for value in evidence[:16] if isinstance(value,str)]
+    return public
+
+
 def identity_index(hosts):
     result = defaultdict(list)
     for host in hosts:
@@ -37,8 +55,10 @@ def identity_index(hosts):
             key = stable_key(host)
         except NetctlBindingConflict:
             continue
-        public = {name:host.get(name) for name in ("device_key","mac","ip","hostname","display_name","status","last_seen_at")}
-        if public not in result[key]:
+        public = saved_observation(host)
+        # Keep identity/collision semantics independent of diagnostic enrichment.
+        core = ('device_key','mac','ip','hostname','display_name','status','last_seen_at')
+        if not any(all(public.get(name)==known.get(name) for name in core) for known in result[key]):
             result[key].append(public)
     return result
 

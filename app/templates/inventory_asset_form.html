@@ -15,8 +15,16 @@
   {% endmacro %}
   {% if asset %}<details class="inventory-asset-card" open><summary>{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary>{% endif %}
   {% if asset %}<section class="inventory-card" aria-label="Сеть"><h2>Сеть</h2>
-  {% if not settings.network_observer_enabled %}<p>Источник Netctl отключён. Показаны сохранённые наблюдения.</p>{% endif %}
-  {% for link in network_links or [] %}<p><a href="/network/assets/{{ link.network_key|urlencode }}">{{ link.network_key }}</a> · {{ {'confirmed':'Связано','candidate':'Кандидат','rejected':'Отклонено','ended':'Завершено'}.get(link.status.value,link.status.value) }} · IP {{ link.observation_json.get('ip') or 'Неизвестен' }} · {{ link.observation_json.get('hostname') or 'Имя неизвестно' }} · Наблюдение {{ link.observation_json.get('last_seen_at') or 'Время неизвестно' }} · <a href="/inventory/network-links?network_key={{ link.network_key|urlencode }}&amp;asset_id={{ asset.id }}">Сравнение и управление связью</a></p>{% else %}<p>Сохранённых сетевых связей нет.</p>{% endfor %}
+  <p>{{ network_source.label }}{% if network_source.snapshot_id %} · Снимок {{ network_source.snapshot_id }} · Опубликован UTC {{ network_source.generated_at }}{% endif %}</p>
+  {% for view in network_link_views or [] %}{% set link = view.binding %}
+  <article class="inventory-network-observation">
+    <p><a href="/network/assets/{{ link.network_key|urlencode }}">{{ link.network_key }}</a> · {{ {'confirmed':'Связано','candidate':'Кандидат','rejected':'Отклонено','ended':'Завершено'}.get(link.status.value,link.status.value) }} · {{ view.presence_label }}</p>
+    <p>Последнее сохранённое наблюдение: IP {{ view.observation.get('ip') or 'Неизвестен' }} · {{ view.observation.get('hostname') or 'Имя неизвестно' }} · {{ view.observed_at or 'Время неизвестно' }} · {{ {'fresh':'Наблюдение актуально','stale':'Наблюдение устарело','unknown':'Актуальность наблюдения неизвестна'}[view.freshness] }}</p>
+    <p>Доступность при сохранённом наблюдении: {{ view.availability_label }} · Источники: {{ view.sources|join(', ') or view.observation.get('last_source') or 'Netctl; подробный источник неизвестен' }}{% if link.observed_snapshot_id %} · Снимок наблюдения {{ link.observed_snapshot_id }}{% endif %}</p>
+    <a href="/inventory/network-links?network_key={{ link.network_key|urlencode }}&amp;asset_id={{ asset.id }}">Сравнение и управление связью</a>
+  </article>{% else %}<p>Сохранённых сетевых связей нет.</p>{% endfor %}
+  {% if network_details_limited %}<p>Подробные наблюдения превышают бюджет отображения. Связи и исходные данные сохранены; подробности не загружены.</p>{% endif %}
+  {% if network_links_truncated %}<p>Показано до 100 связей; действующие идут первыми. Остальная история сохранена.</p>{% endif %}
   <form method="get" action="/inventory/network-links"><input type="hidden" name="asset_id" value="{{ asset.id }}"><label>Устойчивый ключ устройства Netctl<input name="network_key" placeholder="mac:02:00:00:00:00:11" required maxlength="255"></label><button type="submit">Найти и сравнить сетевое устройство</button></form></section>{% endif %}
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
   {% if asset and asset_type.value == 'PC' and endpoint_context %}

@@ -121,9 +121,12 @@ def _render(request: Request, template: str, context: dict[str, Any], db: Sessio
     user = current_user(request, db)
     asset = context.get('asset')
     if isinstance(asset,InventoryAsset):
-        from .models import InventoryNetctlBinding
-        context['network_links'] = list(db.scalars(select(InventoryNetctlBinding).where(
-            InventoryNetctlBinding.asset_id == asset.id).order_by(InventoryNetctlBinding.created_at.desc()).limit(100)))
+        from .network_freshness import card_network_projection
+        network = card_network_projection(db,asset.id,enabled=get_settings().network_observer_enabled)
+        context['network_links'] = [view['binding'] for view in network['links']]
+        context['network_link_views'], context['network_source'] = network['links'], network['source']
+        context['network_links_truncated'] = network['truncated']
+        context['network_details_limited'] = network['details_limited']
     context.update(
         {
             "request": request,
