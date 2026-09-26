@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ..api import require_api_actor
 from ..audit import write_audit
 from ..auth import current_user, verify_api_csrf
+from ..permissions import check_user_permission, required_permission
 from ..config import get_settings
 from ..db import get_db
 from ..endpoint_context_adapter import get_endpoint_context_adapter
@@ -34,10 +35,11 @@ endpoint_service = InventoryEndpointService()
 def require_endpoint_actor(request: Request, db: Session = Depends(get_db), authorization: str | None = Header(default=None)) -> str:
     """Allow authenticated PC-card sessions only on the Endpoint UI API surface."""
     if authorization:
-        return require_api_actor(authorization)
+        return require_api_actor(request, authorization)
     user = current_user(request, db)
     if user is None:
         raise HTTPException(status_code=401, detail="Authenticated session or Bearer token required")
+    check_user_permission(user, required_permission(request.url.path, request.method))
     return user.username
 
 

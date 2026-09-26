@@ -29,9 +29,23 @@ def test_download_token_is_hashed_and_one_time(tmp_path, monkeypatch):
     )
 
     assert token not in record.token_hash
-    consumed = consume_download_token(token)
+    assert consume_download_token(token, owner="another-user") is None
+    consumed = consume_download_token(token, owner="admin")
     assert consumed.client_name == "client"
     assert consume_download_token(token) is None
+
+    token, _ = create_download_token(client_name="client", file_path=ovpn,
+        file_type="ovpn", created_by="admin",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15))
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    barrier = Barrier(2)
+    def consume_concurrently(_):
+        barrier.wait(timeout=5)
+        return consume_download_token(token, owner="admin")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(consume_concurrently, range(2)))
+    assert sum(result is not None for result in results) == 1
 
 
 def test_allowed_file_rejects_paths_outside_configured_roots(tmp_path, monkeypatch):

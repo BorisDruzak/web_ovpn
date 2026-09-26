@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from .audit import write_audit
 from .config import get_settings
 from .models import WebUser
+from .permissions import check_user_permission, required_permission
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 NETWORK_CHANGE_SCOPES = frozenset({"network:read", "network:plan", "network:apply", "network:rollback"})
@@ -43,11 +44,8 @@ def ensure_admin_user(db: Session) -> None:
             )
         )
         return
-    if not verify_password(settings.admin_password, user.password_hash):
-        user.password_hash = hash_password(settings.admin_password)
-    user.is_active = True
-    user.is_admin = True
-    user.is_network_admin = True
+    # Bootstrap is create-only. Restart must not reset passwords, reactivate a
+    # disabled account, or promote an existing account with the configured name.
 
 
 def authenticate_user(db: Session, username: str, password: str) -> WebUser | None:
@@ -76,6 +74,7 @@ def require_user(request: Request, db: Session) -> WebUser:
     user = current_user(request, db)
     if user is None:
         raise HTTPException(status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"})
+    check_user_permission(user, required_permission(request.url.path, request.method))
     return user
 
 

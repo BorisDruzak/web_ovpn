@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Права доступа{% endblock %}
+{% block page_title %}Права доступа{% endblock %}
+{% block content %}
+<p>Наблюдатели могут читать данные. Назначайте только необходимые действия. Роли администратора и пароли здесь не меняются.</p>
+{% for account in accounts %}
+<section class="card">
+  <h2>{{ account.username }}{% if account.is_admin %} — администратор{% endif %}{% if not account.is_active %} — отключён{% endif %}</h2>
+  <form method="post" action="/admin/users/{{ account.id }}/permissions">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    {% for permission in permissions %}
+    <label><input type="checkbox" name="permission" value="{{ permission }}" {% if permission in grants[account.id] %}checked{% endif %}> {{ permission_labels[permission] }}</label>
+    {% endfor %}
+    <button type="submit" class="button">Сохранить права</button>
+  </form>
+</section>
+{% endfor %}
+{% endblock %}

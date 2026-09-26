@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from .audit import write_audit
 from .auth import authorize_network_change, current_user, verify_api_csrf
+from .permissions import check_service_permission, check_user_permission, required_permission
 from .auto_sync import force_client_sync
 from .config import get_settings
 from .context_contract import ContextCursorError, decode_search_cursor, encode_search_cursor
@@ -200,7 +201,7 @@ def require_client_name(client: str) -> str:
     return client
 
 
-def require_api_actor(authorization: str | None = Header(default=None)) -> str:
+def require_api_actor(request: Request, authorization: str | None = Header(default=None)) -> str:
     settings = get_settings()
     if not settings.api_token_hash:
         raise HTTPException(status_code=503, detail="API token is not configured")
@@ -210,6 +211,7 @@ def require_api_actor(authorization: str | None = Header(default=None)) -> str:
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     if not hmac.compare_digest(digest, settings.api_token_hash):
         raise HTTPException(status_code=401, detail="Invalid bearer token")
+    check_service_permission(settings.api_permissions, required_permission(request.url.path, request.method))
     return settings.api_actor
 
 
@@ -220,10 +222,11 @@ def require_host_snapshot_actor(
 ) -> str:
     """Authorize only browser-safe snapshot reads with the existing web session."""
     if authorization:
-        return require_api_actor(authorization)
+        return require_api_actor(request, authorization)
     user = current_user(request, db)
     if user is None:
         raise HTTPException(status_code=401, detail="Bearer token or authenticated session required")
+    check_user_permission(user, required_permission(request.url.path, request.method))
     return user.username
 
 

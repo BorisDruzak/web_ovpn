@@ -358,6 +358,8 @@ def _migrate_inventory_schema(engine) -> None:
     with engine.begin() as connection:
         if "web_users" in table_names:
             columns = {column["name"] for column in inspector.get_columns("web_users")}
+            if "permissions_json" not in columns:
+                connection.execute(text("ALTER TABLE web_users ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'"))
             if "is_network_admin" not in columns:
                 connection.execute(text("ALTER TABLE web_users ADD COLUMN is_network_admin BOOLEAN NOT NULL DEFAULT 0"))
                 connection.execute(text("UPDATE web_users SET is_network_admin = 1 WHERE is_admin = 1"))

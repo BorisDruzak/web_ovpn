@@ -23,6 +23,7 @@ from .audit import write_audit
 from .api import host_snapshot_args, router as api_router
 from .inventory.api import router as inventory_api_router
 from .inventory.web import router as inventory_web_router
+from .user_admin import router as user_admin_router
 from .auth import authenticate_user, csrf_token, current_user, require_user, verify_csrf
 from .auto_sync import force_client_sync
 from .config import get_settings
@@ -61,12 +62,13 @@ app.add_middleware(
     secret_key=get_settings().app_secret_key,
     session_cookie=get_settings().session_cookie_name,
     same_site="lax",
-    https_only=False,
+    https_only=get_settings().session_cookie_secure,
 )
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(api_router)
 app.include_router(inventory_api_router)
 app.include_router(inventory_web_router)
+app.include_router(user_admin_router)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 dashboard_snapshot_cache = SnapshotCache()
@@ -1352,7 +1354,7 @@ async def download_link(client: str, request: Request, db: Session = Depends(get
 @app.get("/download/{token}")
 def download(token: str, request: Request, db: Session = Depends(get_db)):
     user = require_user(request, db)
-    record = consume_download_token(token)
+    record = consume_download_token(token, owner=user.username, allow_other=user.is_admin)
     if record is None:
         write_audit(db, request, user, "download", "error", "invalid or expired token")
         raise HTTPException(status_code=404, detail="Ссылка недействительна или истекла")

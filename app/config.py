@@ -83,6 +83,8 @@ class Settings:
     inventory_photo_max_bytes: int
     download_ttl_minutes: int
     session_cookie_name: str
+    session_cookie_secure: bool
+    api_permissions: str
 
     @property
     def allowed_download_roots(self) -> tuple[Path, ...]:
@@ -91,6 +93,13 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    from .permissions import LEGACY_SERVICE_PERMISSIONS
+    environment = os.environ.get("APP_ENV", "development").strip().lower()
+    if environment not in {"development", "production"}:
+        raise ValueError("APP_ENV must be development or production")
+    secret = os.environ.get("APP_SECRET_KEY", "dev-only-change-me")
+    if environment == "production" and (secret == "dev-only-change-me" or len(secret) < 32):
+        raise ValueError("production session key must be a strong configured secret")
     return Settings(
         database_url=os.environ.get("DATABASE_URL", "sqlite:///./openvpn-web.sqlite"),
         app_secret_key=os.environ.get("APP_SECRET_KEY", "dev-only-change-me"),
@@ -147,6 +156,8 @@ def get_settings() -> Settings:
         inventory_photo_max_bytes=_positive_int_env("INVENTORY_PHOTO_MAX_BYTES", 10 * 1024 * 1024),
         download_ttl_minutes=int(os.environ.get("DOWNLOAD_TOKEN_TTL_MINUTES", "15")),
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
+        session_cookie_secure=environment == "production",
+        api_permissions=os.environ.get("OPENVPN_WEB_API_PERMISSIONS", LEGACY_SERVICE_PERMISSIONS),
     )
 
 

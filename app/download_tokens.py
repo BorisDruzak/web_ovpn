@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from .config import get_settings
 from .db import session_scope
@@ -62,20 +62,28 @@ def create_download_token(
     return token, record
 
 
-def consume_download_token(token: str) -> DownloadToken | None:
+def consume_download_token(token: str, *, owner: str | None = None, allow_other: bool = False) -> DownloadToken | None:
     token_hash = hash_token(token)
     now = datetime.now(timezone.utc)
     with session_scope() as db:
         record = db.scalar(select(DownloadToken).where(DownloadToken.token_hash == token_hash))
         if record is None or record.used_at is not None or record.revoked_at is not None:
             return None
+        if owner is not None and not allow_other and record.created_by != owner:
+            return None
         expires_at = record.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at <= now:
             return None
-        record.used_at = now
-        db.flush()
+        claimed = db.execute(update(DownloadToken).where(
+            DownloadToken.id == record.id,
+            DownloadToken.used_at.is_(None),
+            DownloadToken.revoked_at.is_(None),
+            DownloadToken.expires_at > now,
+        ).values(used_at=now).execution_options(synchronize_session=False))
+        if claimed.rowcount != 1:
+            return None
         db.refresh(record)
         db.expunge(record)
         return record
