@@ -45,6 +45,8 @@ def main():
         network.execute("INSERT OR REPLACE INTO network_hosts (ip,hostname,category,status,last_seen_at,tags_json) VALUES (?,?,'unknown','seen',?,'{}')",
             (f"192.0.2.{number}", f"synthetic-{number}", now))
     network.commit()
+    network.execute("UPDATE network_hosts SET mac='02:00:00:00:00:24',device_key='mac:02:00:00:00:00:24' WHERE ip='192.0.2.24'")
+    network.commit()
     refresh_host_snapshot(network, now=now)
     network.close()
     import app.main
@@ -55,6 +57,11 @@ def main():
     import app.inventory.web
     app.inventory.web.run_netctl = forbidden
     def saved_network(args, **kwargs):
+        if args == ['runtime-assets','inspect','mac:02:00:00:00:00:24']:
+            return {'runtime_asset':{'asset':{'asset_key':args[2],'provisional':0},
+                'interfaces':[{'mac':'02:00:00:00:00:24'}],
+                'current_ip_observations':[{'ip':'192.0.2.24','last_seen_at':now}],
+                'current_hostname_observations':[{'hostname':'synthetic-pc'}],'findings':[]}}
         if args[:2] not in (["hosts", "list"], ["hosts", "snapshot-status"]):
             return forbidden()
         connection = sqlite3.connect(network_database)
@@ -79,6 +86,8 @@ def main():
     app.main.run_netctl = saved_network
     import app.api
     app.api.run_netctl = saved_network
+    import app.inventory.network_links
+    app.inventory.network_links.run_netctl = saved_network
     import uvicorn
     uvicorn.run(app.main.app, host="127.0.0.1", port=args.port)
 

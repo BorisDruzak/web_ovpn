@@ -160,6 +160,9 @@ def confirm(db, network_key, asset_id, *, expected_revision, actor, reason, host
 
 def end(db, binding_id, *, expected_revision, actor, reason, reject=False):
     _require_revision(expected_revision)
+    reason = str(reason or '').strip()
+    if not reason or len(reason)>2000:
+        raise NetctlBindingConflict('Укажите причину завершения или отказа (до 2000 символов)')
     row = db.get(InventoryNetctlBinding,binding_id)
     if row is None:
         raise NetctlBindingConflict("Связь не найдена")
@@ -172,6 +175,6 @@ def end(db, binding_id, *, expected_revision, actor, reason, reject=False):
         raise NetctlBindingConflict("Карточка удалена")
     claim_revision(db,asset,expected_revision)
     row.status = Status.REJECTED if reject else Status.ENDED
-    row.ended_at, row.ended_by, row.end_reason = utcnow(), str(actor), str(reason or "")[:2000]
+    row.ended_at, row.ended_by, row.end_reason = utcnow(), str(actor), reason
     db.flush()
     return row

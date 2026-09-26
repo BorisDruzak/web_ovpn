@@ -72,7 +72,7 @@
   </nav>
   <p class="alert bad" data-host-refresh-warning role="status" hidden></p>
   <table>
-    <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Endpoint Agent</th><th>Last active check</th><th>Evidence</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
+    <thead><tr><th>IP</th><th>MAC</th><th>Name / Hostname / VPN CN</th><th>Тип</th><th>Category</th><th>Status</th><th>Endpoint Agent</th><th>Инвентаризация</th><th>Last active check</th><th>Evidence</th><th>Sources</th><th>Теги</th><th>Site</th><th>Last seen</th><th class="actions">Actions</th></tr></thead>
     <tbody data-hosts-rows>
       {% for host in hosts %}
       <tr>
@@ -93,6 +93,7 @@
           <span class="badge {% if host.endpoint_agent.state == 'confirmed' %}ok{% else %}muted{% endif %}">{{ {'confirmed':'Подтверждённая связь','disabled':'Интеграция отключена','unbound':'Нет подтверждённой привязки','candidate':'Есть кандидат','ambiguous':'Неоднозначность','unknown':'Состояние неизвестно'}.get(host.endpoint_agent.state, 'Состояние неизвестно') }}</span>
           {% if host.endpoint_agent.state == 'confirmed' %}<span class="muted">{{ {'fresh':'Данные актуальны','stale':'Данные устарели','unavailable':'Источник недоступен','unknown':'Актуальность неизвестна'}.get(host.endpoint_agent.freshness, 'Актуальность неизвестна') }}</span>{% endif %}
         </td>
+        <td>{% set inventory = host.inventory %}<span class="badge muted">{{ {'linked':'Связано','unlinked':'Не связано','candidate':'Есть кандидаты','ambiguous':'Конфликт / неоднозначность'}.get(inventory.state,'Не связано') }}</span>{% if inventory.asset %}<a href="/inventory/assets/{{ inventory.asset.id }}">{{ inventory.asset.name }}</a><small>{{ inventory.asset.inventory_number or '' }} · {{ inventory.asset.location or 'Локация не указана' }} · {{ inventory.asset.assigned_person_name or 'Ответственный не указан' }}</small>{% endif %}{% if host.device_key.startswith('mac:') %}<a href="/inventory/network-links?network_key={{ host.device_key|urlencode }}">Сравнить / связать</a>{% endif %}</td>
         {% if host.availability %}
         <td>{{ availability_method_label(host.availability.active_method) or "-" }}{% if host.availability.checked_at %} · {{ host.availability.checked_at }}{% endif %}</td>
         <td>{{ availability_evidence_label(host.availability.passive_evidence) or availability_reason_label(host.availability.reason) or "-" }}</td>
@@ -118,7 +119,7 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="14" class="empty">{% if error %}Источник недоступен. Повторите позже.{% elif not snapshot.snapshot_id %}Снимок ещё не опубликован. Ожидание данных.{% else %}Нет устройств по выбранным фильтрам.{% endif %}</td></tr>
+      <tr><td colspan="15" class="empty">{% if error %}Источник недоступен. Повторите позже.{% elif not snapshot.snapshot_id %}Снимок ещё не опубликован. Ожидание данных.{% else %}Нет устройств по выбранным фильтрам.{% endif %}</td></tr>
       {% endfor %}
     </tbody>
   </table>

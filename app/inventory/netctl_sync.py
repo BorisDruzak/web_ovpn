@@ -15,6 +15,7 @@ from ..db import init_inventory_identifier_sync_schema, session_scope
 from ..netctl_client import NetctlError, run_netctl
 from .models import InventoryIdentifierSyncRun
 from .service import InventoryService
+from .netctl_bindings import refresh_candidates
 
 
 log = logging.getLogger(__name__)
@@ -192,12 +193,19 @@ def synchronize_current_snapshot(
                     snapshot_id=snapshot.snapshot_id,
                     failure_reason=failure_reason,
                 )
+                if existing is not None and (latest_successful_at is None or snapshot.generated_at >= latest_successful_at):
+                    # Re-evaluate local candidates after manual card changes,
+                    # without replaying identifier updates from the same snapshot.
+                    refresh_candidates(db,snapshot.hosts,snapshot_id=snapshot.snapshot_id,
+                        observed_at=snapshot.generated_at)
             else:
                 result = InventoryService().reconcile_netctl_identifiers(
                     db,
                     snapshot.hosts,
                     observed_at=snapshot.generated_at,
                 )
+                refresh_candidates(db,snapshot.hosts,snapshot_id=snapshot.snapshot_id,
+                    observed_at=snapshot.generated_at)
                 _add_run(
                     db,
                     status="success",

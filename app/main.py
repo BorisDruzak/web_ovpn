@@ -68,6 +68,8 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.include_router(api_router)
 app.include_router(inventory_api_router)
 app.include_router(inventory_web_router)
+from .inventory.network_links import router as inventory_network_links_router
+app.include_router(inventory_network_links_router)
 app.include_router(user_admin_router)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))

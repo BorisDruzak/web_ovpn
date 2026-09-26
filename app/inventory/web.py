@@ -114,6 +114,11 @@ def _flash(request: Request, category: str, message: str) -> None:
 
 def _render(request: Request, template: str, context: dict[str, Any], db: Session) -> HTMLResponse:
     user = current_user(request, db)
+    asset = context.get('asset')
+    if isinstance(asset,InventoryAsset):
+        from .models import InventoryNetctlBinding
+        context['network_links'] = list(db.scalars(select(InventoryNetctlBinding).where(
+            InventoryNetctlBinding.asset_id == asset.id).order_by(InventoryNetctlBinding.created_at.desc()).limit(100)))
     context.update(
         {
             "request": request,

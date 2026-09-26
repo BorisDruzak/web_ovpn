@@ -201,7 +201,9 @@ async function projectionChangesRefreshRowsWithoutNewSnapshot() {
     display_name: "Synthetic", category: "unknown", device_key: "ip:192.0.2.11", device_type: "pc",
     status: "online", site: "", last_seen_at: "", last_source: "", device_confidence: 0,
     device_evidence: [], tags: [], manual_tags: [], sources: [], availability: null, vpn_client: null,
-    endpoint_agent: {state: "confirmed", freshness: "stale"}};
+    endpoint_agent: {state: "confirmed", freshness: "stale"},
+    inventory: {state: "linked", asset: {id: "11111111-1111-1111-1111-111111111111", name: "Synthetic physical card",
+      inventory_number: null, location: null, assigned_person_name: null}}};
   let rowsRequests = 0;
   const env = await start((url) => Promise.resolve(response({status: "ok", data: url.endsWith('/meta')
     ? {snapshot: snapshot(1), projection_version: projection}
@@ -211,6 +213,8 @@ async function projectionChangesRefreshRowsWithoutNewSnapshot() {
   const flatten = (node) => node.textContent + node.children.map(flatten).join('');
   assert.match(flatten(env.rows), /Подтверждённая связь/);
   assert.match(flatten(env.rows), /Данные устарели/);
+  assert.match(flatten(env.rows), /Synthetic physical card/);
+  assert.equal(env.rows.children[0].children[0].children.length, 15);
   projection = "second";
   host.endpoint_agent = {state: "disabled", freshness: "unknown"};
   await env.interval();

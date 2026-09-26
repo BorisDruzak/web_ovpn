@@ -13,6 +13,10 @@
   {% endif %}{% endif %}
   {% endmacro %}
   {% if asset %}<details class="inventory-asset-card" open><summary>{{ asset_labels[asset.asset_type] }}: {{ asset.custom_name or asset.model or asset.id }} · СВЕРНУТЬ / РАЗВЕРНУТЬ КАРТОЧКУ</summary>{% endif %}
+  {% if asset %}<section class="inventory-card" aria-label="Сеть"><h2>Сеть</h2>
+  {% if not settings.network_observer_enabled %}<p>Источник Netctl отключён. Показаны сохранённые наблюдения.</p>{% endif %}
+  {% for link in network_links or [] %}<p><a href="/network/assets/{{ link.network_key|urlencode }}">{{ link.network_key }}</a> · {{ {'confirmed':'Связано','candidate':'Кандидат','rejected':'Отклонено','ended':'Завершено'}.get(link.status.value,link.status.value) }} · IP {{ link.observation_json.get('ip') or 'Неизвестен' }} · {{ link.observation_json.get('hostname') or 'Имя неизвестно' }} · Наблюдение {{ link.observation_json.get('last_seen_at') or 'Время неизвестно' }} · <a href="/inventory/network-links?network_key={{ link.network_key|urlencode }}&amp;asset_id={{ asset.id }}">Сравнение и управление связью</a></p>{% else %}<p>Сохранённых сетевых связей нет.</p>{% endfor %}
+  <form method="get" action="/inventory/network-links"><input type="hidden" name="asset_id" value="{{ asset.id }}"><label>Устойчивый ключ устройства Netctl<input name="network_key" placeholder="mac:02:00:00:00:00:11" required maxlength="255"></label><button type="submit">Найти и сравнить сетевое устройство</button></form></section>{% endif %}
   {% if location %}<p class="muted">Локация: {{ location.name or 'Без названия' }}</p>{% endif %}
   {% if asset and asset_type.value == 'PC' and endpoint_context %}
   {% set context = endpoint_context %}

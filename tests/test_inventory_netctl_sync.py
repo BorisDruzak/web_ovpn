@@ -16,6 +16,47 @@ from app.inventory.models import (
 from app.inventory.service import InventoryService
 
 
+def test_worker_refreshes_relations_without_replaying_manual_identifier_changes(db,service):
+    from app.inventory.netctl_sync import synchronize_current_snapshot
+    from app.inventory.netctl_bindings import confirm, active_for_key
+    from app.inventory.models import InventoryNetctlBinding
+    asset = _asset_with_identifiers(db,service,mac='02:00:00:00:00:11',ip='192.0.2.10')
+    db.commit()
+    host = {'device_key':'mac:02:00:00:00:00:11','mac':'02:00:00:00:00:11','ip':'192.0.2.11','hostname':'Synthetic'}
+    payload = _snapshot_page(hosts=[host])
+    result = synchronize_current_snapshot(netctl_call=lambda args,timeout=None:payload,session_factory=lambda:db)
+    assert result.status == 'success'
+    assert db.scalar(select(InventoryNetctlBinding)).status.value == 'candidate'
+    assert active_for_key(db,host['device_key']) is None
+    db.refresh(asset)
+    binding = confirm(db,host['device_key'],asset.id,expected_revision=asset.manual_revision,
+        actor='synthetic',reason='Compared physical device',hosts=[host])
+    db.commit()
+    service.sync_identifiers(db,asset,[{'identifier_type':'mac','value':host['mac']},
+        {'identifier_type':'ip','value':'192.0.2.99'}])
+    db.commit()
+    result = synchronize_current_snapshot(netctl_call=lambda args,timeout=None:payload,session_factory=lambda:db)
+    assert result.status == 'skipped'
+    assert _current_values(db,asset.id)['ip'] == '192.0.2.99'
+    assert active_for_key(db,host['device_key']).id == binding.id
+    payload = _snapshot_page(snapshot_id=8,generated_at='2026-09-18T10:03:00Z',hosts=[{**host,'ip':'192.0.2.22'}])
+    result = synchronize_current_snapshot(netctl_call=lambda args,timeout=None:payload,session_factory=lambda:db)
+    assert result.status == 'success'
+    assert active_for_key(db,host['device_key']).observation_json['ip'] == '192.0.2.22'
+
+
+def test_worker_rejects_partial_relation_migration_without_guards(db):
+    from app.db import init_inventory_identifier_sync_schema,get_engine,init_db
+    engine = get_engine()
+    init_inventory_identifier_sync_schema()
+    with engine.begin() as connection:
+        connection.execute(text('DROP TRIGGER inventory_netctl_ended_observation_immutable'))
+    with pytest.raises(RuntimeError,match='guards incomplete'):
+        init_inventory_identifier_sync_schema()
+    init_db()
+    init_inventory_identifier_sync_schema()
+
+
 def _snapshot_page(
     *,
     snapshot_id: int = 7,

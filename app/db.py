@@ -234,12 +234,28 @@ def _prepare_inventory_sync_claim_index(engine) -> None:
 
 
 def init_inventory_identifier_sync_schema() -> None:
-    """Prepare only the inventory sync ledger required by the worker process."""
+    """Prepare the ledger; relation guards require the normal schema upgrade."""
     from .inventory.models import InventoryIdentifierSyncRun
 
     engine = get_engine()
     _prepare_inventory_sync_claim_index(engine)
     InventoryIdentifierSyncRun.__table__.create(bind=engine, checkfirst=True)
+    inspector = inspect(engine)
+    if not {'inventory_netctl_bindings','inventory_assets'} <= set(inspector.get_table_names()) or not {
+        'manual_revision','deleted_at'} <= {column['name'] for column in inspector.get_columns('inventory_assets')}:
+        raise RuntimeError('inventory schema upgrade required before Netctl worker')
+    if engine.dialect.name == 'sqlite':
+        required = {'inventory_netctl_active_asset_insert','inventory_netctl_active_asset_update',
+            'inventory_netctl_ended_observation_immutable','inventory_netctl_identity_immutable',
+            'inventory_manual_asset_revision'}
+        required.update(f'inventory_netctl_bindings_{purpose}_{operation}' for purpose in
+            ('decision_revision','network_projection') for operation in ('insert','update','delete'))
+        with engine.connect() as connection:
+            present = set(connection.scalars(text("SELECT name FROM sqlite_master WHERE type='trigger'")))
+            if not required <= present or 'inventory_network_projection_version' not in inspector.get_table_names():
+                raise RuntimeError('inventory relation guards incomplete before Netctl worker')
+            if connection.scalar(text('SELECT version FROM inventory_network_projection_version WHERE id=1')) is None:
+                raise RuntimeError('inventory projection migration incomplete before Netctl worker')
 
 
 def _prepare_inventory_endpoint_constraints(engine) -> None:

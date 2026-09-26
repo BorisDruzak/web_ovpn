@@ -103,6 +103,23 @@
       unknown: "Состояние неизвестно"})[agent.state] || "Состояние неизвестно", agent.state === "confirmed" ? "ok" : "muted");
     if (agent.state === "confirmed") addText(agentCell, ({fresh: " Данные актуальны", stale: " Данные устарели",
       unavailable: " Источник недоступен", unknown: " Актуальность неизвестна"})[agent.freshness] || " Актуальность неизвестна", "muted");
+    const inventoryCell = cell(row);
+    const inventory = host.inventory || {state: "unlinked"};
+    addBadge(inventoryCell, ({linked: "Связано", unlinked: "Не связано", candidate: "Есть кандидаты",
+      ambiguous: "Конфликт / неоднозначность"})[inventory.state] || "Не связано", "muted");
+    if (inventory.asset) {
+      const link = document.createElement("a");
+      link.href = `/inventory/assets/${encodeURIComponent(inventory.asset.id)}`;
+      link.textContent = inventory.asset.name;
+      inventoryCell.append(link);
+      addText(inventoryCell, ` ${inventory.asset.inventory_number || ""} · ${inventory.asset.location || "Локация не указана"} · ${inventory.asset.assigned_person_name || "Ответственный не указан"}`, "muted");
+    }
+    if (String(host.device_key || "").startsWith("mac:")) {
+      const compare = document.createElement("a");
+      compare.href = `/inventory/network-links?network_key=${encodeURIComponent(host.device_key)}`;
+      compare.textContent = "Сравнить / связать";
+      inventoryCell.append(compare);
+    }
     const availability = host.availability;
     if (availability && typeof availability === "object") {
       cell(row, `${availabilityMethod(availability.active_method) || "-"}${availability.checked_at ? ` · ${availability.checked_at}` : ""}`);
@@ -172,7 +189,7 @@
       const row = document.createElement("tr");
       const empty = cell(row, !snapshot.snapshot_id ? "Снимок ещё не опубликован. Ожидание данных."
         : "Нет устройств по выбранным фильтрам.", "empty");
-      empty.colSpan = 14;
+      empty.colSpan = 15;
       fragment.append(row);
     } else hosts.forEach((host) => fragment.append(createHostRow(host)));
     return {
