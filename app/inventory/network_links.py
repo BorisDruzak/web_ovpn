@@ -30,7 +30,7 @@ def read_runtime_identity(key):
         raise NetctlBindingConflict('Источник Netctl отключён. Сохранённые связи остаются в силе')
     key = stable_key({'device_key':key,'mac':key.removeprefix('mac:')})
     try:
-        response = run_netctl(['runtime-assets','inspect',key],timeout=20)
+        response = run_netctl(['runtime-assets','inspect','--asset-key',key],timeout=20)
     except NetctlError as exc:
         raise NetctlBindingConflict('Источник Netctl недоступен. Сохранённые связи остаются в силе') from exc
     runtime = response.get('runtime_asset')

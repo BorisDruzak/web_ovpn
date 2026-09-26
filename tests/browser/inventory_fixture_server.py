@@ -71,7 +71,9 @@ def main():
                 raise NetctlError('Synthetic live source unavailable')
             number = '124' if args[-1].endswith('01:24') else '24'
             mac = '02:00:00:00:01:24' if number == '124' else '02:00:00:00:00:24'
-            return {'runtime_asset':{'asset':{'asset_key':args[2],'provisional':0},
+            from netctl.cli import build_parser
+            parsed = build_parser().parse_args(args)
+            return {'runtime_asset':{'asset':{'asset_key':parsed.asset_key,'provisional':0},
                 'interfaces':[{'mac':mac}],
                 'current_ip_observations':[{'ip':'192.0.2.'+number,'last_seen_at':now}],
                 'current_hostname_observations':[{'hostname':'synthetic-pc'}],'findings':[]}}

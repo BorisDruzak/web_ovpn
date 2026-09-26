@@ -13,7 +13,9 @@ def setup(tmp_path,monkeypatch):
     calls = []
     def runtime(args,**kwargs):
         calls.append(args)
-        assert args == ['runtime-assets','inspect',KEY]
+        from netctl.cli import build_parser
+        parsed = build_parser().parse_args(args)
+        assert parsed.asset_key == KEY
         return {'runtime_asset':{'asset':{'asset_key':KEY,'provisional':0},'interfaces':[{'mac':KEY[4:]}],
             'current_ip_observations':[{'ip':'192.0.2.11','last_seen_at':'2026-09-26T12:00:00Z'}],
             'current_hostname_observations':[{'hostname':'Synthetic-PC'}],'findings':[]}}
