@@ -31,6 +31,7 @@ def verify(fixture: Path, artifacts: Path):
             values = [value for sheet in workbook for row in sheet.values for value in row]
             for suffix in ('PC edited','MONITOR','UPS'): assert name+suffix in values
             assert workbook.sheetnames==['Устройства','Связи рабочего места','Сетевые привязки','Идентификаторы','Проверки','Фото','Наблюдения','Параметры']
+            assert workbook.worksheets[1].max_column==13
             assert workbook.worksheets[2].max_column==35
             # Browser export precedes deletion: all three exact IDs must already be in it.
             for row in [pc,*children]: assert row['id'] in values
@@ -38,7 +39,12 @@ def verify(fixture: Path, artifacts: Path):
             assert not any(cell.data_type=='f' for sheet in workbook for row in sheet for cell in row)
             results[label]={'asset_id':pc['id'],'peripheral_ids':[child['id'] for child in children],
                 'source_retained':True,'relations_ended':True,'explicit_relink':True,
-                'workbook_sheets':len(workbook.sheetnames),'binding_columns':35,'exact_ids_exported':True,'no_formulas':True}
+                'workbook_sheets':len(workbook.sheetnames),'relation_columns':13,'binding_columns':35,'exact_ids_exported':True,'no_formulas':True}
+        runs = database.execute('SELECT snapshot_id,status,started_at FROM inventory_identifier_sync_runs ORDER BY started_at DESC,id DESC').fetchall()
+        assert runs[0]['status']=='success'
+        assert sum(row['status']=='success' and row['snapshot_id']==1 for row in runs)==1
+        assert any(row['status']=='failed' and row['started_at']<runs[0]['started_at'] for row in runs)
+        results['source_recovery']={'latest_attempt':'success','one_success_per_snapshot':True,'failed_attempt_retained':True}
         return results
     finally:
         database.close(); network.close()

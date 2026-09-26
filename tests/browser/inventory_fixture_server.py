@@ -67,7 +67,8 @@ def main():
 
         if args[:2] == ['runtime-assets','inspect'] and args[-1] in {'mac:02:00:00:00:00:24','mac:02:00:00:00:01:24'}:
             if (args_output / 'live-unavailable').exists():
-                raise RuntimeError('Synthetic live source unavailable')
+                from app.netctl_client import NetctlError
+                raise NetctlError('Synthetic live source unavailable')
             number = '124' if args[-1].endswith('01:24') else '24'
             mac = '02:00:00:00:01:24' if number == '124' else '02:00:00:00:00:24'
             return {'runtime_asset':{'asset':{'asset_key':args[2],'provisional':0},
@@ -130,11 +131,21 @@ def main():
             raise ValueError('Unsupported synthetic state')
         checked = datetime.now(timezone.utc)
         with get_sessionmaker()() as session:
-            session.add(InventoryIdentifierSyncRun(status='failed' if state == 'unavailable' else 'success',
-                snapshot_id=None if state == 'unavailable' else 1,
-                snapshot_generated_at=None if state == 'unavailable' else checked,
-                started_at=checked, finished_at=checked,
-                failure_reason='netctl snapshot unavailable' if state == 'unavailable' else None))
+            from sqlalchemy import select
+            if state == 'available':
+                with sqlite3.connect(network_database) as source:
+                    published = snapshot_status(source)
+                row = session.scalar(select(InventoryIdentifierSyncRun).where(
+                    InventoryIdentifierSyncRun.status == 'success',
+                    InventoryIdentifierSyncRun.snapshot_id == published.snapshot_id))
+                if row is None:
+                    row = InventoryIdentifierSyncRun(status='success', snapshot_id=published.snapshot_id)
+                    session.add(row)
+                row.snapshot_generated_at = datetime.fromisoformat(published.generated_at.replace('Z','+00:00'))
+                row.started_at = row.finished_at = checked
+            else:
+                session.add(InventoryIdentifierSyncRun(status='failed', started_at=checked,
+                    finished_at=checked, failure_reason='netctl snapshot unavailable'))
             session.commit()
         return {'live_source':state, 'saved_snapshot_retained':True}
     import uvicorn

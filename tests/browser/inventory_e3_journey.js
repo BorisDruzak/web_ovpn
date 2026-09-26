@@ -3,10 +3,15 @@
 async page => {
   const origin=await page.evaluate(()=>location.origin);
   if(!/^http:\/\/127\.0\.0\.1:(8868|8874)$/.test(origin)) throw Error('Synthetic fixture required');
-  const errors=[], journeys=[];
+  const errors=[], journeys=[], serverFailures=[];
+  page.on('response',response=>{if(response.status()>=500) serverFailures.push(response.status()+' '+response.url());});
   page.on('pageerror',error=>errors.push(error.message));
   page.on('dialog',dialog=>dialog.accept());
   const go=path=>page.goto(origin+path);
+  async function source(state) {
+    const response=await page.request.post(origin+'/_fixture/live-source/'+state);
+    if(!response.ok()) throw Error('Fixture control '+state+' HTTP '+response.status());
+  }
   async function exportInventory(label) {
     await go('/inventory');
     await page.getByRole('button',{name:'Excel: все активные карточки и история связей',exact:true}).click();
@@ -20,7 +25,7 @@ async page => {
     const pending=page.waitForEvent('download'); await file.click();
     const download=await pending;
     // Artifact stays in the isolated fixture's ignored output directory.
-    await download.saveAs('C:/Users/admin-2/.codex/worktrees/panel-jobs/ui_vpn/output/playwright/e3/'+label+'.xlsx');
+    await download.saveAs('C:/Users/admin-2/.codex/worktrees/panel-jobs/ui_vpn/output/playwright/e3-v7/'+label+'.xlsx');
     if(await download.failure()) throw Error('Export failed');
     return download.suggestedFilename();
   }
@@ -56,7 +61,7 @@ async page => {
     const number=unavailable?124:24, label=unavailable?'unavailable':'available';
     const key=number===24?'mac:02:00:00:00:00:24':'mac:02:00:00:00:01:24';
     const name='Synthetic E3 '+label+' PC';
-    await page.request.post(origin+'/_fixture/live-source/available');
+    await source('available');
     await go('/inventory/locations/new');
     await page.getByRole('textbox',{name:'Название локации',exact:true}).fill('Synthetic E3 '+label+' location');
     await page.getByRole('button',{name:'СОХРАНИТЬ ЛОКАЦИЮ',exact:true}).click();
@@ -96,8 +101,7 @@ async page => {
       const href=await child.getAttribute('href'); peripherals.push(href.split('?')[0].split('/').pop());
     }
     if(unavailable) {
-      const switchResponse=await page.request.post(origin+'/_fixture/live-source/unavailable');
-      if(!switchResponse.ok()) throw Error('Fixture unavailable control failed');
+      await source('unavailable');
     }
     await go('/inventory/assets/'+id);
     if(unavailable && !(await page.locator('[aria-label="Сеть"]').innerText()).includes('Синхронизация Netctl не удалась')) throw Error('Unavailable source not explicit');
@@ -123,11 +127,14 @@ async page => {
     if(await page.locator('[name="custom_name"]').inputValue()!==name+' edited') throw Error('Restore lost manual edit or ID');
     if(!(await page.locator('[aria-label="Сеть"]').innerText()).includes('Завершено')) throw Error('Restore auto-reclaimed binding');
     if(unavailable) {
-      await go('/inventory/network-links?network_key='+encodeURIComponent(key)+'&asset_id='+id);
+      const unavailableResponse=await go('/inventory/network-links?network_key='+encodeURIComponent(key)+'&asset_id='+id);
+      if(unavailableResponse.status()!==200 || !(await page.locator('[role="alert"]').innerText()).includes('Источник Netctl недоступен')) throw Error('Unavailable comparison must render its explicit safe error');
       // Revalidation has no live identity: there must be no enabled confirm action.
       const action=page.locator('form[action="/inventory/network-links/confirm"] button');
       if(await action.count() && await action.isEnabled()) throw Error('Unavailable live source permits confirmation');
-      await page.request.post(origin+'/_fixture/live-source/available');
+      await source('available');
+      await go('/inventory/assets/'+id);
+      if(!(await page.locator('[aria-label="Сеть"]').innerText()).includes('Сохранённый снимок актуален')) throw Error('Recovery source not available');
     }
     await confirm(key,id); await openBoth(key,id);
     journeys.push({label,assetId:id,peripheralIds:peripherals,sourceKey:key,exportName,
@@ -135,5 +142,6 @@ async page => {
       unavailableRelinkBlocked:unavailable,explicitRecoveryRelink:true});
   }
   if(errors.length) throw Error(errors.join(';'));
-  return {result:'PASS',endpointDisabled:true,journeys,pageErrors:errors};
+  if(serverFailures.length) throw Error(serverFailures.join(';'));
+  return {result:'PASS',endpointDisabled:true,journeys,pageErrors:errors,serverFailures};
 }
