@@ -212,6 +212,12 @@ def _new_asset_form_context(
         values.update({field: draft[field] for field in values if field in draft})
         identifiers.update({identifier: draft[field] for field, identifier in (("ip_address", "ip"), ("mac_address", "mac"), ("hostname", "hostname")) if field in draft})
         details = {**details, **{field: draft[field] for field in DETAIL_FIELD_NAMES.get(asset_type, ()) if field in draft}}
+    related_drafts = []
+    if draft and draft.get("related_devices_json"):
+        try:
+            related_drafts = _workplace_drafts(draft["related_devices_json"])
+        except InventoryValidationError:
+            pass  # Preserve invalid input for validation without rendering raw JSON.
     return {
         "asset": None,
         "asset_type": asset_type,
@@ -228,6 +234,8 @@ def _new_asset_form_context(
         "asset_statuses": InventoryAssetStatus,
         "walk_session": None,
         "prelookup": {"source": "manual", "message": "Заполните полную карточку устройства вручную."} if manual_mode else flow,
+        "related_devices_json": draft.get("related_devices_json", "") if draft else "",
+        "related_device_drafts": related_drafts,
     }
 
 
@@ -293,9 +301,14 @@ async def _detail_form(request: Request, asset_type: InventoryAssetType) -> dict
     for name in names:
         value = str(form.get(name) or "").strip()
         if name in {"ram_gb", "storage_gb", "page_counter", "power_va"}:
-            result[name] = int(value) if value.isdigit() else None
+            if value and (not value.isascii() or not value.isdigit() or len(value) > 12):
+                raise InventoryValidationError(f"Проверьте поле «{name}»: требуется неотрицательное целое число.")
+            result[name] = int(value) if value else None
         elif name == "battery_replaced_at":
-            result[name] = date.fromisoformat(value) if value else None
+            try:
+                result[name] = date.fromisoformat(value) if value else None
+            except ValueError as exc:
+                raise InventoryValidationError("Проверьте дату замены аккумулятора.") from exc
         else:
             result[name] = value or None
     return result
@@ -590,22 +603,31 @@ async def inventory_create_asset(request: Request, asset_type: InventoryAssetTyp
     try:
         common_fields = {"custom_name": custom_name or None, "manufacturer": manufacturer or None, "model": model or None, "serial_number": serial_number or None, "inventory_number": inventory_number or None, "status": _status_form(status), "assigned_person_name": assigned_person_name or None, "login_name": login_name or None, "description": description or None}
         drafts = _workplace_drafts(related_devices_json) if asset_type is InventoryAssetType.PC else []
+        details = await _detail_form(request, asset_type)
+        identifiers = await _identifier_form(request)
         if drafts:
             asset, children = service.create_workplace(db, location_id=location.id, pc_fields=common_fields, child_payloads=drafts, actor=user.username)
             for child in children:
-                write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=child.id)
+                write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=child.id, commit=False)
         else:
             asset = service.create_asset(db, asset_type, location_id=location.id, **common_fields)
-        service.update_details(db, asset, await _detail_form(request, asset_type))
-        service.sync_identifiers(db, asset, await _identifier_form(request))
+        service.update_details(db, asset, details)
+        service.sync_identifiers(db, asset, identifiers)
         if parent_asset:
             service.attach_existing_asset(db, parent_asset.id, asset.id, actor=user.username)
-            write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=asset.id)
+            write_audit(db, request, user, "inventory.relation.create", "ok", "WORKPLACE_DEVICE", target_client=asset.id, commit=False)
+        write_audit(db, request, user, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id, commit=False)
+        db.commit()
     except InventoryValidationError as exc:
+        db.rollback()
         request.session[_new_asset_draft_key(asset_type, parent_asset_id, location.id)] = submitted_draft
         _flash(request, "bad", str(exc))
         return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""))
-    write_audit(db, request, user, "inventory.asset.create", "ok", asset.asset_type.value, target_client=asset.id)
+    except Exception:
+        db.rollback()
+        request.session[_new_asset_draft_key(asset_type, parent_asset_id, location.id)] = submitted_draft
+        _flash(request, "bad", "Не удалось сохранить устройство. Ввод сохранён; повторите позже.")
+        return _redirect(_new_asset_url(asset_type, parent_asset_id, manual=direct_manual, location_id=location.id if has_explicit_return else ""))
     request.session.pop(flow_key, None)
     request.session.pop(_new_asset_draft_key(asset_type, parent_asset_id, location.id), None)
     _flash(request, "ok", "Устройство сохранено")
@@ -627,14 +649,23 @@ async def inventory_update_asset(asset_id: str, request: Request, custom_name: s
             raise HTTPException(status_code=404, detail="inventory asset not found")
     submitted_draft = await _new_asset_form_draft(request)
     try:
+        details = await _detail_form(request, asset.asset_type)
+        identifiers = await _identifier_form(request)
         service.update_asset(asset, custom_name=custom_name or None, manufacturer=manufacturer or None, model=model or None, serial_number=serial_number or None, inventory_number=inventory_number or None, status=_status_form(status), assigned_person_name=assigned_person_name or None, login_name=login_name or None, description=description or None)
-        service.update_details(db, asset, await _detail_form(request, asset.asset_type))
-        service.sync_identifiers(db, asset, await _identifier_form(request))
+        service.update_details(db, asset, details)
+        service.sync_identifiers(db, asset, identifiers)
+        write_audit(db, request, user, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id, commit=False)
+        db.commit()
     except InventoryValidationError as exc:
+        db.rollback()
         request.session[_asset_edit_draft_key(asset.id)] = submitted_draft
         _flash(request, "bad", str(exc))
         return _redirect(_asset_url(asset.id, return_location_id))
-    write_audit(db, request, user, "inventory.asset.update", "ok", asset.asset_type.value, target_client=asset.id)
+    except Exception:
+        db.rollback()
+        request.session[_asset_edit_draft_key(asset.id)] = submitted_draft
+        _flash(request, "bad", "Не удалось сохранить устройство. Ввод сохранён; повторите позже.")
+        return _redirect(_asset_url(asset.id, return_location_id))
     request.session.pop(_asset_edit_draft_key(asset.id), None)
     _flash(request, "ok", "Устройство обновлено")
     return _redirect(_location_url(return_location_id) if return_location_id else _asset_url(asset.id))

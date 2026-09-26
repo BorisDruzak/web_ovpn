@@ -394,9 +394,10 @@ def create_workplace(payload: WorkplaceCreate, request: Request, csrf: str | Non
     except InventoryValidationError as exc:
         raise _validation_error(exc) from exc
     relations = list(db.scalars(select(InventoryAssetRelation).where(InventoryAssetRelation.parent_asset_id == pc.id, InventoryAssetRelation.ended_at.is_(None))))
-    write_audit(db, request, actor, "inventory.asset.create", "ok", "PC workplace", target_client=pc.id)
+    write_audit(db, request, actor, "inventory.asset.create", "ok", "PC workplace", target_client=pc.id, commit=False)
     for relation in relations:
-        write_audit(db, request, actor, "inventory.relation.create", "ok", relation.relation_type, target_client=relation.id)
+        write_audit(db, request, actor, "inventory.relation.create", "ok", relation.relation_type, target_client=relation.id, commit=False)
+    db.commit()
     return {"status": "ok", "data": {"pc": _asset_dict(pc, db), "children": [_asset_dict(child, db) for child in children], "relations": [_relation_dict(item) for item in relations]}}
 
 

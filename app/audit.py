@@ -14,7 +14,10 @@ def write_audit(
     result: str,
     message: str = "",
     target_client: str | None = None,
+    *,
+    commit: bool = True,
 ) -> None:
+    """Append audit; multi-write operations pass commit=False and own the commit."""
     if isinstance(actor, WebUser):
         actor_name = actor.username
     else:
@@ -30,4 +33,5 @@ def write_audit(
             ip_address=request.client.host if request.client else "",
         )
     )
-    db.commit()
+    if commit:
+        db.commit()

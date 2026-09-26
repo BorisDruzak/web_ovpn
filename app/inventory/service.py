@@ -425,6 +425,15 @@ class InventoryService:
         actor: str,
     ) -> tuple[InventoryAsset, tuple[InventoryAsset, ...]]:
         """Persist a PC and its child assets atomically inside a savepoint."""
+        connection = db.connection()
+        if connection.dialect.name == "sqlite":
+            # Legacy sqlite3 does not BEGIN for SELECT/SAVEPOINT. Start the
+            # actual outer transaction before RELEASE can persist the workplace.
+            # Limit this to the write operation: global BEGIN on read requests
+            # would introduce new reader locks in existing sync/lease workflows.
+            driver = connection.connection.driver_connection
+            if not driver.in_transaction:
+                connection.exec_driver_sql("BEGIN")
         with db.begin_nested():
             pc = self.create_asset(
                 db,

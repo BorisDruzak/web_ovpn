@@ -67,6 +67,10 @@
   <form method="post" data-inventory-asset-form action="{% if asset %}/inventory/assets/{{ asset.id }}{% else %}/inventory/assets{% endif %}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
     <input type="hidden" name="return_location_id" value="{{ return_location_id }}">
+    {% if not asset and related_devices_json %}
+    <input type="hidden" name="related_devices_json" value="{{ related_devices_json }}">
+    {% if related_device_drafts %}<p>Связанные устройства в черновике:</p><ul>{% for device in related_device_drafts %}<li>{{ device.get('custom_name') or device.get('model') or device.get('asset_type') }}</li>{% endfor %}</ul>{% endif %}
+    {% endif %}
     {% if not asset %}<input type="hidden" name="asset_type" value="{{ asset_type.value }}"><input type="hidden" name="parent_asset_id" value="{{ parent_asset_id }}">{% if manual_mode %}<input type="hidden" name="manual_mode" value="1">{% endif %}{% endif %}
     <fieldset class="inventory-field-group">
       <legend>Основные данные</legend>
