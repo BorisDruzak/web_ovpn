@@ -1,0 +1,14 @@
+[Unit]
+Description=SNAT Keenetic VPN traffic to 192.168.101.171
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/iptables -w -t nat -D POSTROUTING -s 192.168.50.200/32 -d 192.168.101.171/32 -o ens18 -m comment --comment keenetic-pc-101171 -j SNAT --to-source 192.168.100.30
+ExecStart=/usr/sbin/iptables -w -t nat -I POSTROUTING 1 -s 192.168.50.200/32 -d 192.168.101.171/32 -o ens18 -m comment --comment keenetic-pc-101171 -j SNAT --to-source 192.168.100.30
+ExecStop=/usr/sbin/iptables -w -t nat -D POSTROUTING -s 192.168.50.200/32 -d 192.168.101.171/32 -o ens18 -m comment --comment keenetic-pc-101171 -j SNAT --to-source 192.168.100.30
+
+[Install]
+WantedBy=multi-user.target
