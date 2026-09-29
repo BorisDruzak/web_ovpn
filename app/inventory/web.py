@@ -41,6 +41,7 @@ from .models import (
     InventorySession,
 )
 from .service import InventoryService, InventoryValidationError
+from .search import search_inventory
 from .revision import InventoryRevisionConflict, InventoryRevisionRequired
 from . import form_drafts, lifecycle, network_creation
 from .netctl_bindings import NetctlBindingConflict
@@ -459,10 +460,11 @@ async def _read_photo(upload: UploadFile, limit: int) -> bytes:
 
 
 @router.get("/inventory", response_class=HTMLResponse)
-def inventory_home(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_home(request: Request, q: str = "", page: int = 1, db: Session = Depends(get_db)) -> HTMLResponse:
     require_user(request, db)
-    locations = list(db.scalars(select(InventoryLocation).order_by(InventoryLocation.name, InventoryLocation.id)))
-    return _render(request, "inventory.html", {"locations": locations}, db)
+    context = search_inventory(db, q, page)
+    context["asset_labels"] = ASSET_LABELS
+    return _render(request, "inventory.html", context, db)
 
 
 @router.get("/inventory/deleted", response_class=HTMLResponse)

@@ -15,6 +15,14 @@
 .inventory-related-asset-link span { font-size: .85rem; color: #586174; }
 .inventory-primary { min-height: 52px; display: grid; place-items: center; font-weight: 700; }
 .inventory-empty { padding: 24px 4px; color: #586174; }
+.inventory-search-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.inventory-search-controls input { flex: 1 1 300px; min-width: 0; }
+.inventory-search-controls .button { width: auto; min-height: 44px; }
+.inventory-search small { color: #586174; line-height: 1.5; }
+.inventory-search-results { display: grid; gap: 12px; min-width: 0; }
+.inventory-search-results h2, .inventory-search-results p, .inventory-search-heading { margin: 0; font-size: 1rem; }
+.inventory-search-card { overflow-wrap: anywhere; min-width: 0; }
+.inventory-search-pagination { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: center; }
 .inventory-draft { display: grid; gap: 10px; border-top: 1px solid #d7dde7; padding-top: 12px; }
 .inventory-draft h2 { font-size: 1rem; margin: 0; }
 .inventory-draft-controls { display: grid; gap: 8px; }
