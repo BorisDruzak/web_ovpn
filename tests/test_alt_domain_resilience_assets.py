@@ -221,7 +221,7 @@ def test_login_baseline_owns_pam_write_and_precedes_software_remote_and_verifica
     names = [task["ansible.builtin.include_role"]["name"] for task in flatten(phase) if "ansible.builtin.include_role" in task]
     assert names == ["manual_preflight", "workstation_identity", "prejoin_upgrade", "workstation_base",
                      "alt_group_policy_prerequisites", "workstation_network", "domain_join",
-                     "alt_group_policy_client", "domain_login_baseline", "standard_software",
+                     "alt_group_policy_client", "domain_login_baseline", "plasma_baseline", "standard_software", "government_ca",
                      "remote_access_krfb", "domain_verify"]
     krfb = next(task for task in flatten(phase)
                 if task.get("ansible.builtin.include_role", {}).get("name") == "remote_access_krfb")

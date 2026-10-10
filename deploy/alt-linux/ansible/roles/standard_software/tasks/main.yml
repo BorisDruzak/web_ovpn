@@ -3,7 +3,7 @@
   ansible.builtin.assert:
     that:
       - configure_component_preflight_passed | default(false) | bool
-      - selected_software_components == ([] if software_profile == 'base' else ['browser', 'onlyoffice', 'nextcloud_desktop', 'directum'])
+      - selected_software_components == ([] if software_profile == 'base' else ['browser', 'onlyoffice', 'nextcloud_desktop', 'directum', 'cryptopro', 'cryptopro_cades', 'gosuslugi_plugin'])
       - software_profile in ['base', 'core-apps']
     fail_msg: Software component selection is invalid
 
@@ -21,6 +21,9 @@
       onlyoffice: software_onlyoffice
       nextcloud_desktop: software_nextcloud_desktop
       directum: software_directum
+      cryptopro: software_cryptopro
+      cryptopro_cades: software_cryptopro_cades
+      gosuslugi_plugin: software_gosuslugi_plugin
   loop: "{{ selected_software_components }}"
   loop_control:
     loop_var: software_component

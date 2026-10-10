@@ -1,9 +1,21 @@
 ---
+- name: Initialize pessimistic cryptopro stage verification
+  ansible.builtin.set_fact:
+    software_cryptopro_verified: false
+    configure_result: >-
+      {{ configure_result | default({'components': {}, 'verification': {}}) | combine({
+        'components': (configure_result | default({})).get('components', {}) | combine({
+          'cryptopro': {'status': 'failed', 'verified': false}
+        }),
+        'verification': (configure_result | default({})).get('verification', {}) | combine({'software_cryptopro': false})
+      }) }}
+
 - name: Inspect approved CryptoPro archive on controller
   ansible.builtin.stat:
     path: "{{ software_cryptopro_catalog.artifact_path }}"
     get_checksum: true
     checksum_algorithm: sha256
+    follow: false
   delegate_to: localhost
   become: false
   register: software_cryptopro_artifact
@@ -199,3 +211,14 @@
         state: absent
       when: software_cryptopro_tempdir is defined
       no_log: true
+
+- name: Record verified CryptoPro stage success
+  ansible.builtin.set_fact:
+    software_cryptopro_verified: true
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'cryptopro': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_cryptopro': true})
+      }) }}

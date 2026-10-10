@@ -1,9 +1,21 @@
 ---
+- name: Initialize pessimistic gosuslugi_plugin stage verification
+  ansible.builtin.set_fact:
+    software_gosuslugi_plugin_verified: false
+    configure_result: >-
+      {{ configure_result | default({'components': {}, 'verification': {}}) | combine({
+        'components': (configure_result | default({})).get('components', {}) | combine({
+          'gosuslugi_plugin': {'status': 'failed', 'verified': false}
+        }),
+        'verification': (configure_result | default({})).get('verification', {}) | combine({'software_gosuslugi_plugin': false})
+      }) }}
+
 - name: Inspect approved ГосПлагин ZIP archive on controller
   ansible.builtin.stat:
     path: "{{ software_gosuslugi_plugin_catalog.artifact_path }}"
     get_checksum: true
     checksum_algorithm: sha256
+    follow: false
   delegate_to: localhost
   become: false
   register: software_gosuslugi_plugin_artifact
@@ -195,3 +207,11 @@
     gosuslugi_plugin_ok: true
     gosuslugi_plugin_native_host_ok: true
     gosuslugi_plugin_version: "{{ software_gosuslugi_plugin_catalog.package_evr }}"
+    software_gosuslugi_plugin_verified: true
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'gosuslugi_plugin': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_gosuslugi_plugin': true})
+      }) }}

@@ -1,9 +1,21 @@
 ---
+- name: Initialize pessimistic cryptopro_cades stage verification
+  ansible.builtin.set_fact:
+    software_cryptopro_cades_verified: false
+    configure_result: >-
+      {{ configure_result | default({'components': {}, 'verification': {}}) | combine({
+        'components': (configure_result | default({})).get('components', {}) | combine({
+          'cryptopro_cades': {'status': 'failed', 'verified': false}
+        }),
+        'verification': (configure_result | default({})).get('verification', {}) | combine({'software_cryptopro_cades': false})
+      }) }}
+
 - name: Inspect approved CryptoPro CAdES archive on controller
   ansible.builtin.stat:
     path: "{{ software_cryptopro_cades_catalog.artifact_path }}"
     get_checksum: true
     checksum_algorithm: sha256
+    follow: false
   delegate_to: localhost
   become: false
   register: software_cryptopro_cades_artifact
@@ -153,3 +165,11 @@
     cryptopro_cades_ok: true
     cryptopro_native_host_ok: true
     cryptopro_cades_version: "{{ software_cryptopro_cades_catalog.package_evr }}"
+    software_cryptopro_cades_verified: true
+    configure_result: >-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'cryptopro_cades': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_cryptopro_cades': true})
+      }) }}

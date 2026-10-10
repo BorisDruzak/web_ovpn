@@ -4,7 +4,7 @@
     selected_software_components: >-
       {{ {
         'base': [],
-        'core-apps': ['browser', 'onlyoffice', 'nextcloud_desktop', 'directum']
+        'core-apps': ['browser', 'onlyoffice', 'nextcloud_desktop', 'directum', 'cryptopro', 'cryptopro_cades', 'gosuslugi_plugin']
       }.get(software_profile, []) }}
 
 - name: Assert supported component preflight profiles
@@ -28,7 +28,7 @@
       - software_catalog[selected_component].enabled is defined
       - software_catalog[selected_component].enabled is boolean
       - software_catalog[selected_component].enabled
-      - software_catalog[selected_component].source | default('') in ['rpm', 'alt-repository']
+      - software_catalog[selected_component].source | default('') in ['rpm', 'alt-repository', 'archive', 'zip']
       - software_catalog[selected_component].executable | default('') is string
       - software_catalog[selected_component].executable | default('') | trim | length > 0
       - >-
@@ -105,7 +105,32 @@
     fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
   when: "'directum' in selected_software_components"
 
-- name: Inspect selected RPM artifacts on the controller
+- name: Load the committed signature artifact contracts
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../group_vars/software_catalog.yml"
+    name: approved_software_catalog
+  when: software_profile == 'core-apps'
+
+- name: Require the fixed signature contracts before any workstation mutation
+  ansible.builtin.assert:
+    that:
+      - software_catalog[signature_component] == approved_software_catalog.software_catalog[signature_component]
+    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
+  loop: "{{ ['cryptopro', 'cryptopro_cades', 'gosuslugi_plugin'] if software_profile == 'core-apps' else [] }}"
+  loop_control:
+    loop_var: signature_component
+
+- name: Require CryptoPro license presence without exposing its value
+  ansible.builtin.assert:
+    that:
+      - vault_cryptopro_license is defined
+      - vault_cryptopro_license is string
+      - vault_cryptopro_license | trim | length > 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_license_unavailable
+  when: software_profile == 'core-apps'
+  no_log: true
+
+- name: Inspect selected package artifacts on the controller
   ansible.builtin.stat:
     path: "{{ software_catalog[selected_component].artifact_path }}"
     checksum_algorithm: sha256
@@ -116,13 +141,14 @@
   loop: "{{ selected_software_components }}"
   loop_control:
     loop_var: selected_component
-  when: software_catalog[selected_component].source == 'rpm'
+  when: software_catalog[selected_component].source != 'alt-repository'
 
-- name: Assert selected RPM artifacts are regular and checksum-valid
+- name: Assert selected package artifacts are regular and checksum-valid
   ansible.builtin.assert:
     that:
       - selected_artifact.stat.exists
       - selected_artifact.stat.isreg
+      - not (selected_artifact.stat.islnk | default(false))
       - selected_artifact.stat.checksum == software_catalog[selected_artifact.selected_component].sha256
     fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
   loop: "{{ selected_software_component_artifacts.results | default([]) }}"

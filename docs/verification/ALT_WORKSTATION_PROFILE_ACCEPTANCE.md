@@ -69,6 +69,15 @@ component role runs.
       `pass` / `fail` / `not selected`.
 - [ ] After an ordinary graphical login, Directum starts and opening a document
       from the organization's Directum system works: `pass` / `fail` / `not tested`.
+- [ ] All three signature archives passed the aggregate preflight before any
+      workstation change; license-presence gate passed without recording values.
+- [ ] `verification.software_cryptopro`, `verification.software_cryptopro_cades`
+      and `verification.software_gosuslugi_plugin` are all `true`.
+- [ ] Installed signature RPM versions, PCSC socket and native host/manifest
+      checks passed; matching versions were not reinstalled on repeat.
+- [ ] Government CA import ran after CryptoPro installation and exact machine
+      and user-store identities were verified (new user-store import follows
+      first graphical login).
 - [ ] Only component booleans and executable-check results were retained;
       no artifact bytes or private installer output were retained.
 
@@ -114,7 +123,7 @@ must not be started by the controller.
       `pass` / `fail` / `not tested`.
 - [ ] Strict GOST TLS and the required browser site checked:
       `pass` / `fail` / `not tested` (record no cookies or personal data).
-- [ ] If the separately installed signature suite is required, actual token
+- [ ] For the signature suite included in `core-apps`, actual token
       signing verified: `pass` / `fail` / `not tested`.
 - [ ] For KRFB, autostart verified after an ordinary logout/login; a process
       started for the current session is not counted as this evidence.

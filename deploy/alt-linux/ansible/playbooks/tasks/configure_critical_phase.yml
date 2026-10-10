@@ -84,13 +84,13 @@
       ansible.builtin.include_role:
         name: plasma_baseline
 
-    - name: Install approved government certificate authorities
-      ansible.builtin.include_role:
-        name: government_ca
-
     - name: Run selected standard software
       ansible.builtin.include_role:
         name: standard_software
+
+    - name: Install approved government certificate authorities
+      ansible.builtin.include_role:
+        name: government_ca
 
     - name: Run requested KRFB profile
       ansible.builtin.include_role:

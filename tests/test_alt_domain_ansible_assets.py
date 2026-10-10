@@ -23,8 +23,8 @@ CRITICAL_ROLES = [
     "alt_group_policy_client",
     "domain_login_baseline",
     "plasma_baseline",
-    "government_ca",
     "standard_software",
+    "government_ca",
     "remote_access_krfb",
     "domain_verify",
 ]
@@ -71,6 +71,9 @@ def test_standard_software_uses_a_fixed_role_map() -> None:
         "onlyoffice": "software_onlyoffice",
         "nextcloud_desktop": "software_nextcloud_desktop",
         "directum": "software_directum",
+        "cryptopro": "software_cryptopro",
+        "cryptopro_cades": "software_cryptopro_cades",
+        "gosuslugi_plugin": "software_gosuslugi_plugin",
     }
     assert include["ansible.builtin.include_role"]["name"] == (
         "{{ software_component_role_map[software_component] }}"

@@ -19,10 +19,10 @@ def environment():
     return env
 
 
-def preflight(catalog, *, metadata=None, software_profile="core-apps"):
+def preflight(catalog, *, metadata=None, artifacts=None, license_value="synthetic-license", software_profile="core-apps"):
     """Run only the actual preflight task expressions; never invoke commands."""
     env = environment()
-    context = {"software_catalog": catalog, "software_profile": software_profile, "remote_access_profile": "none"}
+    context = {"software_catalog": catalog, "software_profile": software_profile, "remote_access_profile": "none", "vault_cryptopro_license": license_value}
     tasks = yaml.safe_load((ROOT / "playbooks/tasks/configure_component_preflight.yml").read_text())
     reads = []
     for task in tasks:
@@ -35,7 +35,9 @@ def preflight(catalog, *, metadata=None, software_profile="core-apps"):
             if "when" in task and not env.compile_expression(task["when"])(**variables):
                 results.append({"skipped": True, loop_var: item})
                 continue
-            if "ansible.builtin.set_fact" in task:
+            if "ansible.builtin.include_vars" in task:
+                context[task["ansible.builtin.include_vars"]["name"]] = yaml.safe_load((ROOT / "group_vars/software_catalog.yml").read_text())
+            elif "ansible.builtin.set_fact" in task:
                 for key, value in task["ansible.builtin.set_fact"].items():
                     context[key] = env.from_string(value).render(**variables) if isinstance(value, str) else value
             elif "ansible.builtin.assert" in task:
@@ -44,7 +46,9 @@ def preflight(catalog, *, metadata=None, software_profile="core-apps"):
             elif "ansible.builtin.stat" in task:
                 assert task["delegate_to"] == "localhost"
                 reads.append(item)
-                results.append({loop_var: item, "stat": {"exists": True, "isreg": True, "islnk": False, "checksum": catalog[item]["sha256"]}})
+                state = {"exists": True, "isreg": True, "islnk": False, "checksum": catalog[item]["sha256"]}
+                state.update((artifacts or {}).get(item, {}))
+                results.append({loop_var: item, "stat": state})
             elif "ansible.builtin.command" in task:
                 assert task["delegate_to"] == "localhost"
                 assert task["changed_when"] is False
@@ -68,13 +72,13 @@ def catalog():
 
 
 def test_valid_aggregate_preflight_and_base_without_artifact_reads(catalog):
-    assert preflight(catalog) == ["browser", "onlyoffice", "directum"]
+    assert preflight(catalog) == ["browser", "onlyoffice", "directum", "cryptopro", "cryptopro_cades", "gosuslugi_plugin"]
     assert preflight({}, software_profile="base") == []
 
 
 def test_actual_pinned_onlyoffice_epoch_passes_both_identity_gates(catalog):
     output = "onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64|100"
-    assert preflight(catalog, metadata={"onlyoffice": output}) == ["browser", "onlyoffice", "directum"]
+    assert preflight(catalog, metadata={"onlyoffice": output}) == ["browser", "onlyoffice", "directum", "cryptopro", "cryptopro_cades", "gosuslugi_plugin"]
     tasks = yaml.safe_load((ROOT / "roles/software_onlyoffice/tasks/main.yml").read_text())
     block = next(task["block"] for task in tasks if "block" in task)
     gate = next(task for task in block if task["name"] == "Require the exact controller onlyoffice RPM identity")

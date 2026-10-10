@@ -32,13 +32,20 @@ def test_core_apps_catalog_enables_only_controller_verified_artifacts() -> None:
 
 def test_catalog_components_are_disabled_or_complete() -> None:
     catalog = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))["software_catalog"]
-    assert set(catalog) == {"browser", "onlyoffice", "nextcloud_desktop", "directum"}
+    assert set(catalog) == {"browser", "onlyoffice", "nextcloud_desktop", "directum", "cryptopro", "cryptopro_cades", "gosuslugi_plugin"}
     for name, item in catalog.items():
         if item["enabled"]:
-            assert item["source"] in {"rpm", "alt-repository"}, name
+            assert item["source"] in {"rpm", "alt-repository", "archive", "zip"}, name
             assert {"enabled", "source", "executable"} <= set(item), name
             assert isinstance(item["executable"], str) and item["executable"], name
             if item["source"] == "rpm":
                 assert {"artifact_path", "sha256", "package_name", "package_evr", "architecture"} <= set(item), name
-            else:
+            elif item["source"] == "alt-repository":
                 assert isinstance(item.get("packages"), list) and item["packages"], name
+
+            else:
+                assert {"artifact_path", "sha256", "package_evr"} <= set(item), name
+                if item["source"] == "archive":
+                    assert all({"filename", "package_name", "package_evr", "architecture"} <= set(pkg) for pkg in item["packages"])
+                else:
+                    assert {"installer_filename", "payload_filename", "package_name", "architecture"} <= set(item)

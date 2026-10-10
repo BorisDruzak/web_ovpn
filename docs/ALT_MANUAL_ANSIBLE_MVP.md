@@ -42,7 +42,7 @@ never supplies a domain password to it.
    `manual_preflight` → `workstation_identity` → `prejoin_upgrade` →
    `workstation_base` → `alt_group_policy_prerequisites` →
    `workstation_network` → `domain_join` → `alt_group_policy_client` →
-   `domain_login_baseline` → `plasma_baseline` → `government_ca` → selected software components → selected remote
+   `domain_login_baseline` → `plasma_baseline` → selected software components → `government_ca` → selected remote
    profile → `domain_verify`.
 7. `manual_preflight` verifies release, DMI UUID, passwordless sudo, default
    route, NTP and AD DNS. `workstation_identity` either verifies the approved
@@ -219,15 +219,48 @@ selectors; they are not a place for paths, package metadata, Vault values or
 arbitrary playbook options. `base`/`none` keeps the base path above.
 
 For `software_profile: core-apps`, the controller and stage-03 playbook select
-the approved browser, OnlyOffice, Nextcloud Desktop and Directum WebAccessAgent
-components. Directum uses the checksum-pinned controller RPM in
+the approved browser, OnlyOffice, Nextcloud Desktop, Directum WebAccessAgent,
+CryptoPro CSP, CryptoPro CAdES/Browser plugin and Gosuslugi plugin components.
+CryptoPro CSP runs before CAdES; government CA import runs after all selected
+software so that a new workstation receives CryptoPro machine trust in the same
+run. The graphical login helper imports user trust at first login when the home
+does not yet exist. Directum uses the checksum-pinned controller RPM in
 `/opt/alt-deploy-control/artifacts/directum/`; the workstation role verifies
 the installed version, launcher and packaged graphical autostart. An already
 matching version is verified without transferring or reinstalling the RPM. Every
-selected component must pass its controller-side artifact preflight (including
-the approved identity and package metadata) before any selected component can
-run. A missing or invalid artifact fails closed; it never falls back to a
+selected component must pass its controller-side artifact preflight before any
+selected component can run. Direct RPM artifacts also pass controller-side RPM
+identity checks; archive payload RPM identities are verified by their roles
+before installation. A missing or invalid artifact fails closed; it never falls back to a
 download or a caller-supplied artifact.
+
+The signature suite uses the pinned controller archives already verified for
+CryptoPro CSP `5.0.13600-7`, CAdES/Browser plugin `2.0.15700-1` and Gosuslugi
+plugin `1.3.42.0-1`. Before workstation changes, the aggregate preflight checks
+all archive checksums and regular-file types, rejects changes to the committed
+signature contracts and requires a non-empty string `vault_cryptopro_license`
+in the existing Vault. The license value is never logged or included in a
+request. The roles verify RPM payload identities before installing them, retain
+matching installed versions and verify packages, native hosts and PCSC. The
+Gosuslugi role extracts the approved RPM without executing the vendor shell
+installer. Each component reports pessimistic failure until verification passes.
+
+Choose `software_profile: core-apps` to install the complete application and
+signature suite. `software_profile: base` remains the minimal profile and does
+not install or license CryptoPro. No separate signature-profile request fields
+are needed. Browser extension activation and actual signing with a user's token
+must still be verified after graphical login; package installation does not
+prove a signing transaction.
+
+Verification on 2026-10-11: the focused ALT test suite passed 404 tests.
+Using Ansible 2.18.6 on the controller, an isolated copy passed stage-03 and
+signature-role syntax checks, plus aggregate `core-apps` and `base` preflights
+with `changed=0`. A blank-license negative preflight failed before installation.
+These checks did not run an installation on a new workstation or update the
+active controller checkout. Deploy the verified Ansible assets to the
+controller before using the expanded profile; retain the private Vault,
+inventory and existing approved artifacts. New-workstation acceptance remains
+the checklist in `verification/ALT_WORKSTATION_PROFILE_ACCEPTANCE.md`.
 
 For `remote_access_profile: krfb`, the controller first requires both
 presence-only checks for the existing Vault fields
@@ -246,9 +279,9 @@ profile-gate failure.
 
 ## After a successful join
 
-The standard stage-03 route currently does not select the electronic-signature
-suite or configure domain-user visibility in the login chooser. Those remain
-separate scoped operations. The KRFB role requires a separately confirmed
+The standard stage-03 route installs the electronic-signature suite with
+`core-apps`. Domain-user visibility in the login chooser remains a separate
+scoped operation. The KRFB role requires a separately confirmed
 existing access restriction; it does not deploy a workstation firewall guard.
 After first login, verify user certificate imports, application workflows and
 graphical autostart. A running process started during configuration is not proof
