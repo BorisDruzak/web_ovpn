@@ -56,7 +56,7 @@
   loop_control:
     loop_var: government_cert
 
-- name: Install only the two government roots as system trust anchors
+- name: Install only the approved government roots as system trust anchors
   ansible.builtin.copy:
     src: "{{ role_path }}/../../files/government_ca/{{ government_cert.filename }}"
     dest: "/etc/pki/ca-trust/source/anchors/{{ government_cert.filename }}"

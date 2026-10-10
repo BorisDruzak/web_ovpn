@@ -97,8 +97,8 @@ def test_altered_bundle_is_rejected_before_store_operations(tmp_path):
 def test_government_bundle_contains_only_pinned_public_ca_certificates():
     settings = yaml.safe_load((ROOT / 'roles/government_ca/defaults/main.yml').read_text())
     entries = settings['government_ca_certificates']
-    assert len(entries) == 5
-    assert sum(e['kind'] == 'root' for e in entries) == 2
+    assert len(entries) == 6
+    assert sum(e['kind'] == 'root' for e in entries) == 3
     assert sum(e['kind'] == 'intermediate' for e in entries) == 3
     for entry in entries:
         payload = (ROOT / 'files/government_ca' / entry['filename']).read_bytes()
@@ -128,3 +128,12 @@ def test_future_and_existing_users_receive_browser_certificates():
     desktop = (ROOT / 'roles/government_ca/files/alt-government-ca.desktop').read_text()
     assert 'Exec=/usr/bin/python3 /usr/local/libexec/alt-government-ca-user-import.py' in desktop
     assert 'Terminal=false' in desktop
+
+
+def test_esia_gost_issuer_is_in_the_standard_bundle():
+    entries = bundle()
+    matches = [entry for entry in entries if entry['filename'] == 'guc2022_pem.crt']
+    assert len(matches) == 1
+    assert matches[0]['kind'] == 'root'
+    assert matches[0]['gost'] is True
+    assert matches[0]['fingerprint_sha256'] == '4bb37cc7c0ff4bf2aa893e95076ebb3565c69237ee1b61635beee4c1966495c7'

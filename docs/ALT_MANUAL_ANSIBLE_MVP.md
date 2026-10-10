@@ -166,18 +166,23 @@ valid trust is unchanged.
 ### Government CA trust
 
 The standard stage-03 playbook always applies `government_ca`, including the
-`base` software profile. The role deploys five pinned public Russian Trusted CA
-certificates, checks their payloads and expiration before changing trust, and
-adds the two roots to system trust. Intermediate certificates stay separate;
+`base` software profile. The role deploys six pinned public government CA
+certificates: five Russian Trusted CA certificates and the GUC 2022 root
+required by ESIA GOST TLS. It checks their payloads and expiration before
+changing trust and adds the three roots to system trust. Intermediate
+certificates stay separate;
 the role preserves the distribution's existing trust policy.
 
 For an existing assigned domain profile, it imports the three RSA certificates
-into the browser NSS database and, when CryptoPro CSP is installed, all five
+into the browser NSS database and, when CryptoPro CSP is installed, all six
 certificates into the machine and user Root/CA stores. NSS cannot import the
 GOST algorithms; GOST support requires CryptoPro. The graphical login helper
 also applies these imports to future profiles without creating an employee home
 in advance. Repeated imports verify certificate identities and leave unrelated
-certificates untouched. The bundle contains no private keys.
+certificates untouched. The bundle contains no private keys. The GUC 2022
+source is published by
+[the Federal Tax Service](https://www.nalog.gov.ru/rn77/related_activities/ucfns/ccenter_res/);
+its exact DER fingerprint is pinned alongside the other certificate identities.
 
 ### Optional managed profiles
 

@@ -30,3 +30,9 @@ government_ca_certificates:
   fingerprint_sha256: bbbde2103e790b999ec62bd03cf625a5a2e7c316e10afe6a490eedead8b3fd9b
   thumbprint_sha1: 335d43f53451b781535ff3882df713d3c14f8a01
   gost: false
+- filename: guc2022_pem.crt
+  kind: root
+  sha256: 77c5cfa85b61af16b3cd240fc84e92995c882fda7b99d3e2fdf7462b1bec6bcc
+  fingerprint_sha256: 4bb37cc7c0ff4bf2aa893e95076ebb3565c69237ee1b61635beee4c1966495c7
+  thumbprint_sha1: 2f0cb09be3550ef17ec4f29c90abd18bfcaad63a
+  gost: true
