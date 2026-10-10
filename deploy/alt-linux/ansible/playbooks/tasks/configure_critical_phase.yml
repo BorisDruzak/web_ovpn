@@ -80,6 +80,10 @@
       ansible.builtin.include_role:
         name: domain_login_baseline
 
+    - name: Run Plasma baseline for future and existing domain profiles
+      ansible.builtin.include_role:
+        name: plasma_baseline
+
     - name: Run selected standard software
       ansible.builtin.include_role:
         name: standard_software
@@ -114,6 +118,7 @@
               'domain_join': true,
               'alt_group_policy_client': true,
               'domain_login_baseline': true,
+              'plasma_baseline': true,
               'domain_verify': true
             }),
             'verification': configure_result.verification | combine(domain_verification | default({})) | combine({

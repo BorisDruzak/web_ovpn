@@ -22,6 +22,7 @@ CRITICAL_ROLES = [
     "domain_join",
     "alt_group_policy_client",
     "domain_login_baseline",
+    "plasma_baseline",
     "standard_software",
     "remote_access_krfb",
     "domain_verify",

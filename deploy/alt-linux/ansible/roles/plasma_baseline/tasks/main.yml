@@ -10,7 +10,7 @@
 - name: Set approved Plasma power defaults for future domain users
   ansible.builtin.template:
     src: powerdevilrc.j2
-    dest: /etc/skel/.config/powerdevilrc
+    dest: "{{ plasma_baseline_skel_config_dir }}/powerdevilrc"
     owner: root
     group: root
     mode: "0644"
@@ -18,7 +18,19 @@
 - name: Set approved Plasma keyboard layout behavior for future domain users
   ansible.builtin.template:
     src: kxkbrc.j2
-    dest: /etc/skel/.config/kxkbrc
+    dest: "{{ plasma_baseline_skel_config_dir }}/kxkbrc"
     owner: root
     group: root
     mode: "0644"
+
+- name: Apply power settings to an existing domain profile without creating a home
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - '-'
+      - "{{ assigned_domain_user | default(domain_test_user, true) }}"
+    stdin: "{{ lookup('ansible.builtin.file', role_path ~ '/files/apply_existing_power.py') }}"
+  register: plasma_baseline_existing_power
+  changed_when: (plasma_baseline_existing_power.stdout | from_json).changed | bool
+  when: not ansible_check_mode
+  no_log: true

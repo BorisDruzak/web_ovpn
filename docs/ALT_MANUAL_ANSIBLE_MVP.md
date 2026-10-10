@@ -37,7 +37,7 @@ never supplies a domain password to it.
    `manual_preflight` → `workstation_identity` → `prejoin_upgrade` →
    `workstation_base` → `alt_group_policy_prerequisites` →
    `workstation_network` → `domain_join` → `alt_group_policy_client` →
-   `domain_login_baseline` → selected software components → selected remote
+   `domain_login_baseline` → `plasma_baseline` → selected software components → selected remote
    profile → `domain_verify`.
 7. `manual_preflight` verifies release, DMI UUID, passwordless sudo, default
    route, NTP and AD DNS. `workstation_identity` either verifies the approved

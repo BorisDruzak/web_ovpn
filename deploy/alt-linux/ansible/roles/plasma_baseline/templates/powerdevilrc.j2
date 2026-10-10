@@ -1,11 +1,14 @@
-[AC][Display]
+{% for profile in ['AC', 'Battery', 'LowBattery'] %}
+[{{ profile }}][Display]
 DimDisplayIdleTimeoutSec=-1
 DimDisplayWhenIdle=false
 TurnOffDisplayIdleTimeoutSec=-1
 TurnOffDisplayWhenIdle=false
+TurnOffDisplayIdleTimeoutWhenLockedSec=-1
 
+[{{ profile }}][SuspendAndShutdown]
+AutoSuspendAction=0
+
+{% endfor %}
 [AC][Performance]
 PowerProfile=performance
-
-[AC][SuspendAndShutdown]
-AutoSuspendAction=0
