@@ -1,0 +1,32 @@
+---
+government_ca_certificates:
+- filename: russian_trusted_root_ca_gost_2025_pem.crt
+  kind: root
+  sha256: 06244f07e563134ff0cf221afce28ade253f24d0526edc1a48c1e5f9ef0bd22f
+  fingerprint_sha256: 5b51db721b7c34958ed7432ae917a91297dd37508b2cae4f858ffbac6bc525ef
+  thumbprint_sha1: 656f78a4649a650e54043043b1c5eeec128704a9
+  gost: true
+- filename: russian_trusted_root_ca_pem.crt
+  kind: root
+  sha256: aa800ef345422d6158c6fafe1c06c429dbda21c3df4bb1ccb45a920ec1111399
+  fingerprint_sha256: d26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31
+  thumbprint_sha1: 8ff915ccab7bc16f8c5c8099d53e0e115b3aec2f
+  gost: false
+- filename: russian_trusted_sub_ca_2024_pem.crt
+  kind: intermediate
+  sha256: 6f9d829c8e6712444fce3624658d8788672849c5d5b7b53fd9cf7e83eac4193e
+  fingerprint_sha256: 2155785036c900dbb5f1bb2a1569c80c55595bd6bf94867a29bbddbc7d88a3f2
+  thumbprint_sha1: 6741ab02cf6598c09652dc34d2dc095904e32b52
+  gost: false
+- filename: russian_trusted_sub_ca_gost_2025_pem.crt
+  kind: intermediate
+  sha256: bae3bb5ffeee0acf16dd9e7dfc90fee1d0cb2496011a7df191bb1e3707fa5fcd
+  fingerprint_sha256: b809281bf07b865bcdd7f5746bf1ebb7ccee093d5c63b016dd91ee3b22cda8d1
+  thumbprint_sha1: 59064decebc5145cc1be8465c292cbe2ef83b31d
+  gost: true
+- filename: russian_trusted_sub_ca_pem.crt
+  kind: intermediate
+  sha256: fd52c38348eed5f01c2ee3fb364a1fde01d7c5c850bb29a645570106cc415b80
+  fingerprint_sha256: bbbde2103e790b999ec62bd03cf625a5a2e7c316e10afe6a490eedead8b3fd9b
+  thumbprint_sha1: 335d43f53451b781535ff3882df713d3c14f8a01
+  gost: false

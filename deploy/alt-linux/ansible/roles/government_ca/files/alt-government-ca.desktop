@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Government certificate trust
+Exec=/usr/bin/python3 /usr/local/libexec/alt-government-ca-user-import.py
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

@@ -1,0 +1,240 @@
+---
+- name: Inspect the fixed public government certificate bundle on the controller
+  ansible.builtin.stat:
+    path: "{{ role_path }}/../../files/government_ca/{{ government_cert.filename }}"
+    checksum_algorithm: sha256
+    follow: false
+  delegate_to: localhost
+  become: false
+  loop: "{{ government_ca_certificates }}"
+  loop_control:
+    loop_var: government_cert
+  register: government_ca_sources
+
+- name: Require every approved government certificate before changing trust
+  ansible.builtin.assert:
+    that:
+      - government_source.stat.exists
+      - government_source.stat.isreg
+      - government_source.stat.checksum == government_source.government_cert.sha256
+    fail_msg: Approved government certificate bundle is unavailable or altered
+  loop: "{{ government_ca_sources.results }}"
+  loop_control:
+    loop_var: government_source
+
+- name: Require currently valid government CA certificates
+  ansible.builtin.command:
+    argv: [openssl, x509, -in, "{{ role_path }}/../../files/government_ca/{{ government_cert.filename }}", -checkend, '0', -noout]
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  loop: "{{ government_ca_certificates }}"
+  loop_control:
+    loop_var: government_cert
+
+- name: Install certificate management prerequisites
+  ansible.builtin.package:
+    name: [ca-certificates, nss-utils]
+    state: present
+
+- name: Create the public government certificate directory
+  ansible.builtin.file:
+    path: /usr/local/share/alt-government-ca
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Deploy approved public government certificates
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../files/government_ca/{{ government_cert.filename }}"
+    dest: "/usr/local/share/alt-government-ca/{{ government_cert.filename }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ government_ca_certificates }}"
+  loop_control:
+    loop_var: government_cert
+
+- name: Install only the two government roots as system trust anchors
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../../files/government_ca/{{ government_cert.filename }}"
+    dest: "/etc/pki/ca-trust/source/anchors/{{ government_cert.filename }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: "{{ government_ca_certificates }}"
+  loop_control:
+    loop_var: government_cert
+  register: government_ca_system_sources
+  when: government_cert.kind == 'root'
+
+- name: Keep managed intermediate certificates outside system trust anchors
+  ansible.builtin.file:
+    path: "/etc/pki/ca-trust/source/{{ government_cert.filename }}"
+    state: absent
+  loop: "{{ government_ca_certificates }}"
+  loop_control:
+    loop_var: government_cert
+  when: government_cert.kind == 'intermediate'
+  register: government_ca_intermediate_cleanup
+
+- name: Refresh system trust after approved certificate changes
+  ansible.builtin.command:
+    argv: [update-ca-trust, extract]
+  when: government_ca_system_sources.changed or government_ca_intermediate_cleanup.changed
+
+- name: Install the public government certificate catalog
+  ansible.builtin.copy:
+    content: "{{ government_ca_certificates | to_nice_json }}"
+    dest: /usr/local/share/alt-government-ca/catalog.json
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Verify exact government roots and preserve distribution trust policy
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, '-']
+    stdin: |
+      import hashlib, json, pathlib, re, ssl, subprocess, tempfile
+      entries = json.loads(pathlib.Path('/usr/local/share/alt-government-ca/catalog.json').read_text())
+      with tempfile.TemporaryDirectory(prefix='alt-ca-verify-') as directory:
+          output = pathlib.Path(directory) / 'anchors.pem'
+          subprocess.run(['trust', 'extract', '--filter=ca-anchors', '--format=pem-bundle', '--purpose=server-auth', str(output)], check=True, capture_output=True)
+          anchors = {hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+                     for pem in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', output.read_text(), re.S)}
+      for entry in entries:
+          if entry['kind'] == 'root':
+              assert entry['fingerprint_sha256'] in anchors, 'Government root certificate is not trusted'
+          else:
+              assert not (pathlib.Path('/etc/pki/ca-trust/source/anchors') / entry['filename']).exists(), 'Managed intermediate must not be installed as a root'
+  changed_when: false
+
+- name: Create local certificate helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install user certificate import helper
+  ansible.builtin.copy:
+    src: import_user_certificates.py
+    dest: /usr/local/libexec/alt-government-ca-user-import.py
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install government certificate import at graphical login
+  ansible.builtin.copy:
+    src: alt-government-ca.desktop
+    dest: /etc/xdg/autostart/alt-government-ca.desktop
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Inspect installed CryptoPro certificate manager
+  ansible.builtin.stat:
+    path: /opt/cprocsp/bin/amd64/certmgr
+  register: government_ca_certmgr
+
+- name: Query approved certificates in CryptoPro machine stores
+  ansible.builtin.command:
+    argv:
+      - /opt/cprocsp/bin/amd64/certmgr
+      - -list
+      - -store
+      - "{{ 'mRoot' if government_cert.kind == 'root' else 'mCA' }}"
+      - -thumbprint
+      - "{{ government_cert.thumbprint_sha1 }}"
+  loop: "{{ government_ca_certificates }}"
+  loop_control:
+    loop_var: government_cert
+  changed_when: false
+  failed_when: government_ca_machine_lookup.rc not in [0, 44]
+  register: government_ca_machine_lookup
+  when: government_ca_certmgr.stat.exists
+
+- name: Import missing government certificates into CryptoPro machine stores
+  ansible.builtin.command:
+    argv:
+      - /opt/cprocsp/bin/amd64/certmgr
+      - -install
+      - -store
+      - "{{ 'mRoot' if government_machine_cert.government_cert.kind == 'root' else 'mCA' }}"
+      - -file
+      - "/usr/local/share/alt-government-ca/{{ government_machine_cert.government_cert.filename }}"
+  loop: "{{ government_ca_machine_lookup.results | default([]) }}"
+  loop_control:
+    loop_var: government_machine_cert
+  when:
+    - government_ca_certmgr.stat.exists
+    - not (government_machine_cert.skipped | default(false))
+    - government_machine_cert.rc == 44
+
+- name: Verify all government certificates in their CryptoPro machine stores
+  ansible.builtin.command:
+    argv:
+      - /opt/cprocsp/bin/amd64/certmgr
+      - -list
+      - -store
+      - "{{ 'mRoot' if government_cert.kind == 'root' else 'mCA' }}"
+      - -thumbprint
+      - "{{ government_cert.thumbprint_sha1 }}"
+  loop: "{{ government_ca_certificates }}"
+  loop_control:
+    loop_var: government_cert
+  register: government_ca_machine_verified
+  changed_when: false
+  failed_when: >-
+    government_ca_machine_verified.rc != 0 or
+    government_cert.thumbprint_sha1 not in
+    (government_ca_machine_verified.stdout | lower | regex_replace('[^0-9a-f]', ''))
+  when: government_ca_certmgr.stat.exists
+
+- name: Resolve the assigned domain profile for current browser certificate import
+  ansible.builtin.command:
+    argv: [getent, -s, sss, passwd, "{{ assigned_domain_user | default(domain_test_user, true) }}"]
+  register: government_ca_assigned_account
+  changed_when: false
+  no_log: true
+
+- name: Require a single domain account and safe home
+  ansible.builtin.assert:
+    that:
+      - government_ca_assigned_account.stdout_lines | length == 1
+      - government_ca_assigned_account.stdout.split(':') | length == 7
+      - government_ca_assigned_account.stdout.split(':')[2] | int > 0
+      - government_ca_assigned_account.stdout.split(':')[5] is match('^/home/.+')
+  no_log: true
+
+- name: Inspect the existing assigned domain home without following a symlink
+  ansible.builtin.stat:
+    path: "{{ government_ca_assigned_account.stdout.split(':')[5] }}"
+    follow: false
+  register: government_ca_assigned_home
+  no_log: true
+
+- name: Require existing domain home ownership and directory type
+  ansible.builtin.assert:
+    that:
+      - government_ca_assigned_home.stat.isdir
+      - not government_ca_assigned_home.stat.islnk
+      - government_ca_assigned_home.stat.uid == government_ca_assigned_account.stdout.split(':')[2] | int
+  when: government_ca_assigned_home.stat.exists
+  no_log: true
+
+- name: Import browser and CryptoPro user certificates into the existing profile
+  ansible.builtin.command:
+    argv:
+      - runuser
+      - -u
+      - "{{ government_ca_assigned_account.stdout.split(':')[0] }}"
+      - --
+      - /usr/bin/python3
+      - /usr/local/libexec/alt-government-ca-user-import.py
+  register: government_ca_user_import
+  changed_when: (government_ca_user_import.stdout | from_json).changed | bool
+  when: government_ca_assigned_home.stat.exists
+  no_log: true

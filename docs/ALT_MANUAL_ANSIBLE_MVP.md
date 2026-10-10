@@ -37,7 +37,7 @@ never supplies a domain password to it.
    `manual_preflight` → `workstation_identity` → `prejoin_upgrade` →
    `workstation_base` → `alt_group_policy_prerequisites` →
    `workstation_network` → `domain_join` → `alt_group_policy_client` →
-   `domain_login_baseline` → `plasma_baseline` → selected software components → selected remote
+   `domain_login_baseline` → `plasma_baseline` → `government_ca` → selected software components → selected remote
    profile → `domain_verify`.
 7. `manual_preflight` verifies release, DMI UUID, passwordless sudo, default
    route, NTP and AD DNS. `workstation_identity` either verifies the approved
@@ -162,6 +162,22 @@ If an existing computer account cannot be proven to belong to this station, the
 run stops with domain_computer_conflict. It never deletes, resets, moves or
 reuses that account. A station already joined to the requested domain with a
 valid trust is unchanged.
+
+### Government CA trust
+
+The standard stage-03 playbook always applies `government_ca`, including the
+`base` software profile. The role deploys five pinned public Russian Trusted CA
+certificates, checks their payloads and expiration before changing trust, and
+adds the two roots to system trust. Intermediate certificates stay separate;
+the role preserves the distribution's existing trust policy.
+
+For an existing assigned domain profile, it imports the three RSA certificates
+into the browser NSS database and, when CryptoPro CSP is installed, all five
+certificates into the machine and user Root/CA stores. NSS cannot import the
+GOST algorithms; GOST support requires CryptoPro. The graphical login helper
+also applies these imports to future profiles without creating an employee home
+in advance. Repeated imports verify certificate identities and leave unrelated
+certificates untouched. The bundle contains no private keys.
 
 ### Optional managed profiles
 

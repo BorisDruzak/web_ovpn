@@ -84,6 +84,10 @@
       ansible.builtin.include_role:
         name: plasma_baseline
 
+    - name: Install approved government certificate authorities
+      ansible.builtin.include_role:
+        name: government_ca
+
     - name: Run selected standard software
       ansible.builtin.include_role:
         name: standard_software
@@ -119,6 +123,7 @@
               'alt_group_policy_client': true,
               'domain_login_baseline': true,
               'plasma_baseline': true,
+              'government_ca': true,
               'domain_verify': true
             }),
             'verification': configure_result.verification | combine(domain_verification | default({})) | combine({
