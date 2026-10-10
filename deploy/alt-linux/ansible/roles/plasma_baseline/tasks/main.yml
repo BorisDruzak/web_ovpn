@@ -34,3 +34,20 @@
   changed_when: (plasma_baseline_existing_power.stdout | from_json).changed | bool
   when: not ansible_check_mode
   no_log: true
+
+- name: Merge approved desktop defaults for future domain users
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, '-', --skel, "{{ plasma_baseline_skel_config_dir }}"]
+    stdin: "{{ lookup('ansible.builtin.file', role_path ~ '/files/apply_desktop_defaults.py') }}"
+  register: plasma_baseline_future_desktop
+  changed_when: (plasma_baseline_future_desktop.stdout | from_json).changed | bool
+  when: not ansible_check_mode
+
+- name: Merge approved desktop defaults into the existing domain profile
+  ansible.builtin.command:
+    argv: [/usr/bin/python3, '-', "{{ assigned_domain_user | default(domain_test_user, true) }}"]
+    stdin: "{{ lookup('ansible.builtin.file', role_path ~ '/files/apply_desktop_defaults.py') }}"
+  register: plasma_baseline_existing_desktop
+  changed_when: (plasma_baseline_existing_desktop.stdout | from_json).changed | bool
+  when: not ansible_check_mode
+  no_log: true

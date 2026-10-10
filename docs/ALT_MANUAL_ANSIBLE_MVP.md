@@ -163,6 +163,24 @@ run stops with domain_computer_conflict. It never deletes, resets, moves or
 reuses that account. A station already joined to the requested domain with a
 valid trust is unchanged.
 
+### Plasma desktop defaults
+
+The standard `plasma_baseline` role merges approved desktop keys into both
+`/etc/skel/.config` and the assigned domain user's existing profile. It enables
+double-click opening and a flat X11 mouse acceleration profile, and disables
+window maximization/tiling when dragged to a screen edge. It does not copy a
+personal Plasma profile, panel layout, history, credentials or hardware IDs.
+
+OnlyOffice becomes the default external application for DOC/DOCX, XLS/XLSX,
+PPT/PPTX, ODT/ODS/ODP and RTF, as well as the approved PDF, plain text, Markdown,
+JSON, YAML, DocBook and CMake associations. The role preserves other available
+applications and unrelated MIME settings; it rebuilds the existing user's KDE
+application cache after changing associations. The `core-apps` profile installs
+OnlyOffice later in the same standard playbook; the `base` profile configures
+these defaults without installing the application. Missing domain homes are
+left for PAM to create at first login. No graphical session restart is required
+by the playbook; future profiles receive the defaults at their first login.
+
 ### Government CA trust
 
 The standard stage-03 playbook always applies `government_ca`, including the
