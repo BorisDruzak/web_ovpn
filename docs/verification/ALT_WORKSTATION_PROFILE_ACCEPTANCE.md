@@ -6,6 +6,9 @@
 > and successful controller readiness.
 
 This template records acceptance evidence for an already installed workstation.
+For findings from one authorized workstation run, see the
+[2026-10-10 installation report](ALT_WORKSTATION_INSTALLATION_REPORT_2026-10-10.md).
+This blank template does not itself record that run or accept another station.
 It is a checklist, not authorization to select a machine, deploy a controller,
 run a playbook, invoke `netctl`, modify bootstrap, change network policy, or
 change Vault. Use placeholders and boolean results only. Never paste passwords,
@@ -61,6 +64,11 @@ component role runs.
 - [ ] `verification.software_nextcloud_desktop` boolean: `true` / `false` /
       `not selected`.
 - [ ] Nextcloud executable check: `pass` / `fail` / `not selected`.
+- [ ] `verification.software_directum` boolean: `true` / `false` / `not selected`.
+- [ ] Directum installed version, launcher and packaged autostart checks:
+      `pass` / `fail` / `not selected`.
+- [ ] After an ordinary graphical login, Directum starts and opening a document
+      from the organization's Directum system works: `pass` / `fail` / `not tested`.
 - [ ] Only component booleans and executable-check results were retained;
       no artifact bytes or private installer output were retained.
 
@@ -90,6 +98,34 @@ must not be started by the controller.
       copied into this record.
 
 ## Acceptance decision
+
+### Desktop, certificates and first-login evidence
+
+- [ ] Plasma power settings verified for both skel and the assigned existing
+      profile; active-session display timeout/DPMS result recorded separately.
+- [ ] Approved double-click, mouse and window-edge settings verified.
+- [ ] OnlyOffice associations verified with effective `xdg-mime` results;
+      application availability checked separately (the `base` profile does not
+      install OnlyOffice).
+- [ ] Government CA payload/expiry and exact certificate identities verified.
+- [ ] System root placement, RSA NSS imports and, when installed, CryptoPro
+      machine/user imports verified without changing unrelated trust.
+- [ ] First-login imports for a newly created domain profile checked:
+      `pass` / `fail` / `not tested`.
+- [ ] Strict GOST TLS and the required browser site checked:
+      `pass` / `fail` / `not tested` (record no cookies or personal data).
+- [ ] If the separately installed signature suite is required, actual token
+      signing verified: `pass` / `fail` / `not tested`.
+- [ ] For KRFB, autostart verified after an ordinary logout/login; a process
+      started for the current session is not counted as this evidence.
+- [ ] KRFB port access from an approved source and denial from other sources
+      verified independently of the controller confirmation flag.
+- [ ] Repeat-run scope and recap recorded; separate role repeats are not
+      described as a complete end-to-end repeat.
+- [ ] Last live workstation verification time recorded; later SSH failure
+      does not count as a successful service-state recheck.
+
+### Recorded decision
 
 - Result: `accepted` / `rejected` / `blocked by gate`
 - Safe evidence references: `____________________________`

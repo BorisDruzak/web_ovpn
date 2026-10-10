@@ -10,6 +10,11 @@ This is a temporary, controller-managed path for a manually installed ALT
 Workstation K 11.x. It does not replace managed ISO or legacy ai curl=
 installation.
 
+The [2026-10-10 installation report](verification/ALT_WORKSTATION_INSTALLATION_REPORT_2026-10-10.md)
+records one authorized workstation run, implementation corrections, acceptance
+limits and remaining automation work. It does not replace acceptance on a new
+workstation.
+
 ## Execution path
 
 The path begins only after ALT Workstation K 11.x is installed manually. The
@@ -154,9 +159,14 @@ sudo -u altserver /usr/local/sbin/workstationctl --json configure start <uuid> \
 The controller resolves the registered target IP, uses strict SSH host-key
 checking and runs only 03-configure-domain-workstation.yml. It configures AD
 DNS, obtains the delegated join credential from the existing Ansible Vault,
-creates a missing computer account in
-OU=Pilot,OU=Linux,OU=Устройства,DC=sosnadmin,DC=local, and verifies Samba,
+creates a missing computer account in the approved `computer_ou` supplied in
+the request, and verifies Samba,
 SSSD and the supplied AD user lookup.
+
+The Pilot OU in the request example is an example, not a mandatory destination.
+An organizational OU may be selected when approved and covered by the join
+account's delegated permissions. The employee's user DN does not establish
+the computer object's destination or prove those permissions.
 
 If an existing computer account cannot be proven to belong to this station, the
 run stops with domain_computer_conflict. It never deletes, resets, moves or
@@ -235,6 +245,14 @@ only through the fixed controller command above. Stop on any preflight or
 profile-gate failure.
 
 ## After a successful join
+
+The standard stage-03 route currently does not select the electronic-signature
+suite or configure domain-user visibility in the login chooser. Those remain
+separate scoped operations. The KRFB role requires a separately confirmed
+existing access restriction; it does not deploy a workstation firewall guard.
+After first login, verify user certificate imports, application workflows and
+graphical autostart. A running process started during configuration is not proof
+of autostart at a subsequent login.
 
 For a new join the public result reports reboot_required: true. The controller
 does not reboot the station automatically. Reboot it, then sign in using the
