@@ -170,7 +170,11 @@ selectors; they are not a place for paths, package metadata, Vault values or
 arbitrary playbook options. `base`/`none` keeps the base path above.
 
 For `software_profile: core-apps`, the controller and stage-03 playbook select
-the approved browser, OnlyOffice and Nextcloud Desktop components. Every
+the approved browser, OnlyOffice, Nextcloud Desktop and Directum WebAccessAgent
+components. Directum uses the checksum-pinned controller RPM in
+`/opt/alt-deploy-control/artifacts/directum/`; the workstation role verifies
+the installed version, launcher and packaged graphical autostart. An already
+matching version is verified without transferring or reinstalling the RPM. Every
 selected component must pass its controller-side artifact preflight (including
 the approved identity and package metadata) before any selected component can
 run. A missing or invalid artifact fails closed; it never falls back to a

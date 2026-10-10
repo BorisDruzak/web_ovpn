@@ -1,0 +1,189 @@
+---
+- name: Initialize directum verification and safe failure record
+  ansible.builtin.set_fact:
+    software_directum_verified: false
+    configure_result: |-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'directum': {'status': 'failed', 'verified': false}
+        }),
+        'verification': configure_result.verification | combine({'software_directum': false})
+      }) }}
+- name: Install and verify the approved directum RPM
+  no_log: true
+  block:
+  - name: Revalidate the fixed directum catalog contract
+    ansible.builtin.assert:
+      that:
+      - configure_component_preflight_passed | default(false) | bool
+      - '''directum'' in selected_software_components'
+      - software_catalog.directum.enabled is boolean
+      - software_catalog.directum.enabled
+      - software_catalog.directum.source == 'rpm'
+      - software_catalog.directum.artifact_path == '/opt/alt-deploy-control/artifacts/directum/WebAccessAgent-6.0.3-1010.x86_64.rpm'
+      - software_catalog.directum.sha256 is match('^[0-9a-f]{64}$')
+      - software_catalog.directum.package_name == 'WebAccessAgent'
+      - software_catalog.directum.package_evr is string
+      - software_catalog.directum.package_evr | trim | length > 0
+      - software_catalog.directum.package_evr == '6.0.3-1010'
+      - software_catalog.directum.package_epoch | default(0) == 0
+      - software_catalog.directum.architecture == 'x86_64'
+      - software_catalog.directum.executable == '/usr/webaccessagent/Launcher'
+      fail_msg: Approved software catalog validation failed
+  - name: Recheck the controller directum artifact checksum
+    ansible.builtin.stat:
+      path: '{{ software_catalog.directum.artifact_path }}'
+      checksum_algorithm: sha256
+      follow: false
+    delegate_to: localhost
+    become: false
+    register: software_directum_controller_artifact
+  - name: Require the regular checksum-valid controller directum artifact
+    ansible.builtin.assert:
+      that:
+      - software_directum_controller_artifact.stat.exists
+      - software_directum_controller_artifact.stat.isreg
+      - software_directum_controller_artifact.stat.checksum == software_catalog.directum.sha256
+      fail_msg: Approved software artifact verification failed
+  - name: Read the controller directum RPM identity
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -qp
+      - --queryformat
+      - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+      - '{{ software_catalog.directum.artifact_path }}'
+    delegate_to: localhost
+    become: false
+    changed_when: false
+    register: software_directum_controller_metadata
+  - name: Require the exact controller directum RPM identity
+    ansible.builtin.assert:
+      that:
+      - |-
+        software_directum_controller_metadata.stdout in [
+          software_catalog.directum.package_name ~ '|' ~ software_catalog.directum.package_evr ~ '|' ~ software_catalog.directum.architecture ~ '|(none)',
+          software_catalog.directum.package_name ~ '|' ~ software_catalog.directum.package_evr ~ '|' ~ software_catalog.directum.architecture ~ '|0'
+        ]
+      fail_msg: Approved software RPM metadata verification failed
+  - name: Read currently installed Directum package identity
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -q
+      - --queryformat
+      - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+      - WebAccessAgent
+    changed_when: false
+    failed_when: false
+    register: software_directum_current_metadata
+  - name: Decide whether Directum installation is needed
+    ansible.builtin.set_fact:
+      software_directum_install_needed: '{{ software_directum_current_metadata.rc != 0 or software_directum_current_metadata.stdout
+        != software_directum_controller_metadata.stdout }}'
+  - name: Create a private temporary directum RPM path
+    ansible.builtin.tempfile:
+      state: file
+      suffix: .rpm
+      prefix: alt-directum-
+    register: software_directum_temporary
+    when: software_directum_install_needed
+  - name: Copy the approved directum RPM into the private temporary path
+    ansible.builtin.copy:
+      src: '{{ software_catalog.directum.artifact_path }}'
+      dest: '{{ software_directum_temporary.path }}'
+      owner: root
+      group: root
+      mode: '0600'
+    when: software_directum_install_needed
+  - name: Verify the transferred directum RPM checksum
+    ansible.builtin.stat:
+      path: '{{ software_directum_temporary.path }}'
+      checksum_algorithm: sha256
+      follow: false
+    register: software_directum_target_artifact
+    when: software_directum_install_needed
+  - name: Require the exact transferred directum RPM bytes
+    ansible.builtin.assert:
+      that:
+      - software_directum_target_artifact.stat.exists
+      - software_directum_target_artifact.stat.isreg
+      - software_directum_target_artifact.stat.mode == '0600'
+      - software_directum_target_artifact.stat.checksum == software_catalog.directum.sha256
+      fail_msg: Transferred software artifact verification failed
+    when: software_directum_install_needed
+  - name: Read the transferred directum RPM identity
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -qp
+      - --queryformat
+      - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+      - '{{ software_directum_temporary.path }}'
+    changed_when: false
+    register: software_directum_target_metadata
+    when: software_directum_install_needed
+  - name: Require the exact transferred directum RPM identity
+    ansible.builtin.assert:
+      that:
+      - software_directum_target_metadata.stdout == software_directum_controller_metadata.stdout
+      fail_msg: Transferred software RPM metadata verification failed
+    when: software_directum_install_needed
+  - name: Install exactly the verified temporary directum RPM
+    ansible.builtin.command:
+      argv:
+      - apt-get
+      - -y
+      - install
+      - '{{ software_directum_temporary.path }}'
+    when: software_directum_install_needed
+  - name: Query the installed directum package identity
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -q
+      - --queryformat
+      - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+      - WebAccessAgent
+    changed_when: false
+    register: software_directum_installed_metadata
+  - name: Inspect the installed directum executable
+    ansible.builtin.stat:
+      path: /usr/webaccessagent/Launcher
+      follow: true
+    register: software_directum_executable
+  - name: Require exact installed directum EVR architecture and executable
+    ansible.builtin.assert:
+      that:
+      - software_directum_installed_metadata.stdout == software_directum_controller_metadata.stdout
+      - software_directum_executable.stat.exists
+      - software_directum_executable.stat.isreg
+      - software_directum_executable.stat.executable
+      fail_msg: Installed software verification failed
+  - name: Inspect packaged Directum graphical autostart
+    ansible.builtin.stat:
+      path: /etc/xdg/autostart/WebAccessAgent.desktop
+      follow: false
+    register: software_directum_autostart
+  - name: Require packaged Directum autostart
+    ansible.builtin.assert:
+      that:
+      - software_directum_autostart.stat.exists
+      - software_directum_autostart.stat.isreg
+      fail_msg: Installed Directum autostart verification failed
+  always:
+  - name: Remove the private temporary directum RPM
+    ansible.builtin.file:
+      path: '{{ software_directum_temporary.path }}'
+      state: absent
+    when: software_directum_temporary.path is defined
+- name: Record verified directum success
+  ansible.builtin.set_fact:
+    software_directum_verified: true
+    configure_result: |-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'directum': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_directum': true})
+      }) }}

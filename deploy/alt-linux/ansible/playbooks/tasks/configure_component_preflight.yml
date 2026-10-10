@@ -4,7 +4,7 @@
     selected_software_components: >-
       {{ {
         'base': [],
-        'core-apps': ['browser', 'onlyoffice', 'nextcloud_desktop']
+        'core-apps': ['browser', 'onlyoffice', 'nextcloud_desktop', 'directum']
       }.get(software_profile, []) }}
 
 - name: Assert supported component preflight profiles
@@ -91,6 +91,19 @@
       - software_catalog.nextcloud_desktop.executable == '/usr/bin/nextcloud'
     fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
   when: "'nextcloud_desktop' in selected_software_components"
+
+- name: Assert the fixed Directum contract before any component mutation
+  ansible.builtin.assert:
+    that:
+      - software_catalog.directum.source == 'rpm'
+      - software_catalog.directum.artifact_path == '/opt/alt-deploy-control/artifacts/directum/WebAccessAgent-6.0.3-1010.x86_64.rpm'
+      - software_catalog.directum.package_name == 'WebAccessAgent'
+      - software_catalog.directum.package_evr == '6.0.3-1010'
+      - software_catalog.directum.package_epoch | default(0) == 0
+      - software_catalog.directum.architecture == 'x86_64'
+      - software_catalog.directum.executable == '/usr/webaccessagent/Launcher'
+    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
+  when: "'directum' in selected_software_components"
 
 - name: Inspect selected RPM artifacts on the controller
   ansible.builtin.stat:

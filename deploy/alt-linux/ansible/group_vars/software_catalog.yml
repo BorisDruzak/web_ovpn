@@ -25,3 +25,12 @@ software_catalog:
     source: alt-repository
     packages: [nextcloud-client, nextcloud-client-kde]
     executable: /usr/bin/nextcloud
+  directum:
+    enabled: true
+    source: rpm
+    artifact_path: /opt/alt-deploy-control/artifacts/directum/WebAccessAgent-6.0.3-1010.x86_64.rpm
+    sha256: f028c1390e2277def97352a19cd610e13933fe0be569755909c7f512f738bec3
+    package_name: WebAccessAgent
+    package_evr: 6.0.3-1010
+    architecture: x86_64
+    executable: /usr/webaccessagent/Launcher

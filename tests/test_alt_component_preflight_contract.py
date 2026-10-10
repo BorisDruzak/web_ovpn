@@ -68,13 +68,13 @@ def catalog():
 
 
 def test_valid_aggregate_preflight_and_base_without_artifact_reads(catalog):
-    assert preflight(catalog) == ["browser", "onlyoffice"]
+    assert preflight(catalog) == ["browser", "onlyoffice", "directum"]
     assert preflight({}, software_profile="base") == []
 
 
 def test_actual_pinned_onlyoffice_epoch_passes_both_identity_gates(catalog):
     output = "onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64|100"
-    assert preflight(catalog, metadata={"onlyoffice": output}) == ["browser", "onlyoffice"]
+    assert preflight(catalog, metadata={"onlyoffice": output}) == ["browser", "onlyoffice", "directum"]
     tasks = yaml.safe_load((ROOT / "roles/software_onlyoffice/tasks/main.yml").read_text())
     block = next(task["block"] for task in tasks if "block" in task)
     gate = next(task for task in block if task["name"] == "Require the exact controller onlyoffice RPM identity")

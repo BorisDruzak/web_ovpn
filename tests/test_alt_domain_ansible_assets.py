@@ -69,6 +69,7 @@ def test_standard_software_uses_a_fixed_role_map() -> None:
         "browser": "software_browser",
         "onlyoffice": "software_onlyoffice",
         "nextcloud_desktop": "software_nextcloud_desktop",
+        "directum": "software_directum",
     }
     assert include["ansible.builtin.include_role"]["name"] == (
         "{{ software_component_role_map[software_component] }}"
@@ -79,7 +80,7 @@ def test_standard_software_uses_a_fixed_role_map() -> None:
     assert "organization_packages" not in text
 
 
-@pytest.mark.parametrize("component", ["browser", "onlyoffice"])
+@pytest.mark.parametrize("component", ["browser", "onlyoffice", "directum"])
 def test_component_rpm_roles_recheck_private_payload_and_always_remove_it(component: str) -> None:
     path = ANSIBLE_ROOT / f"roles/software_{component}/tasks/main.yml"
     assert path.exists(), "selected RPM component role must exist"
@@ -108,7 +109,7 @@ def test_component_rpm_roles_recheck_private_payload_and_always_remove_it(compon
     assert "/policies/managed/" not in path.read_text()
 
 
-@pytest.mark.parametrize("component", ["browser", "onlyoffice"])
+@pytest.mark.parametrize("component", ["browser", "onlyoffice", "directum"])
 @pytest.mark.parametrize("field,value,allowed", [
     ("epoch", "(none)", True), ("epoch", "0", True), ("epoch", "1", False),
     ("epoch", "100", False),
@@ -129,7 +130,7 @@ def test_rpm_metadata_gate_rejects_an_unapproved_package_identity(component, fie
     }) is allowed
 
 
-@pytest.mark.parametrize("component", ["browser", "onlyoffice"])
+@pytest.mark.parametrize("component", ["browser", "onlyoffice", "directum"])
 @pytest.mark.parametrize("field,value,allowed", [
     ("mode", "0600", True), ("mode", "0644", False),
     ("checksum", "wrong-digest", False), ("isreg", False, False),
@@ -156,7 +157,7 @@ def test_nextcloud_installs_and_queries_only_the_approved_repository_packages() 
     assert tasks[-1]["ansible.builtin.set_fact"]["software_nextcloud_desktop_verified"] is True
 
 
-@pytest.mark.parametrize("component", ["browser", "onlyoffice", "nextcloud_desktop"])
+@pytest.mark.parametrize("component", ["browser", "onlyoffice", "nextcloud_desktop", "directum"])
 def test_component_result_is_pessimistic_until_role_verification(component: str) -> None:
     path = ANSIBLE_ROOT / f"roles/software_{component}/tasks/main.yml"
     assert path.exists(), "component role must record safe failure and verified success"
