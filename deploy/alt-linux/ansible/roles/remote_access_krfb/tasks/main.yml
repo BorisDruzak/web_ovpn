@@ -64,7 +64,10 @@
 - name: Require a safe resolved user identity and home path
   ansible.builtin.assert:
     that:
-      - krfb_account_fields[0] | lower == krfb_assigned_upn
+      # SSSD may return a short name when use_fully_qualified_names=false.
+      # The lookup above is still restricted to the sss provider and fixed UPN.
+      - krfb_account_fields[0] | lower in [krfb_assigned_upn, krfb_assigned_upn.split('@')[0]]
+      - (krfb_account_fields[0] | lower).split('@')[0] not in ['root', 'ansible', 'osn-admin']
       - krfb_account_fields[2] is match('^[0-9]+$')
       - krfb_account_fields[3] is match('^[0-9]+$')
       - krfb_account_fields[5] is match('^/home/.+')

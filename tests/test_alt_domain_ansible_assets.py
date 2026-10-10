@@ -110,10 +110,13 @@ def test_component_rpm_roles_recheck_private_payload_and_always_remove_it(compon
 @pytest.mark.parametrize("component", ["browser", "onlyoffice"])
 @pytest.mark.parametrize("field,value,allowed", [
     ("epoch", "(none)", True), ("epoch", "0", True), ("epoch", "1", False),
+    ("epoch", "100", False),
     ("package_name", "other-package", False), ("package_evr", "0.0-1", False),
     ("architecture", "aarch64", False),
 ])
 def test_rpm_metadata_gate_rejects_an_unapproved_package_identity(component, field, value, allowed):
+    if component == "onlyoffice" and field == "epoch":
+        allowed = value == "100"
     catalog = yaml.safe_load((ANSIBLE_ROOT / "group_vars/software_catalog.yml").read_text())["software_catalog"]
     actual = catalog[component] | {"epoch": "(none)", field: value}
     metadata = "|".join(actual[key] for key in ["package_name", "package_evr", "architecture", "epoch"])

@@ -77,6 +77,7 @@
       - software_catalog.onlyoffice.artifact_path == '/opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm'
       - software_catalog.onlyoffice.package_name == 'onlyoffice-desktopeditors'
       - software_catalog.onlyoffice.package_evr == '9.4.0-epm1.repacked.130'
+      - software_catalog.onlyoffice.package_epoch | default(-1) == 100
       - software_catalog.onlyoffice.architecture == 'x86_64'
       - software_catalog.onlyoffice.executable == '/usr/bin/onlyoffice-desktopeditors'
     fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
@@ -137,10 +138,12 @@
         selected_metadata.stdout in [
           software_catalog[selected_metadata.selected_component].package_name ~ '|' ~
           software_catalog[selected_metadata.selected_component].package_evr ~ '|' ~
-          software_catalog[selected_metadata.selected_component].architecture ~ '|(none)',
+          software_catalog[selected_metadata.selected_component].architecture ~ '|' ~
+          (software_catalog[selected_metadata.selected_component].package_epoch | default('(none)') | string),
           software_catalog[selected_metadata.selected_component].package_name ~ '|' ~
           software_catalog[selected_metadata.selected_component].package_evr ~ '|' ~
-          software_catalog[selected_metadata.selected_component].architecture ~ '|0'
+          software_catalog[selected_metadata.selected_component].architecture ~ '|' ~
+          (software_catalog[selected_metadata.selected_component].package_epoch | default(0) | string)
         ]
     fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
   loop: "{{ selected_software_component_metadata.results | default([]) }}"

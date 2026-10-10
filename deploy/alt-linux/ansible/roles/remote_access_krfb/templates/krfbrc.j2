@@ -2,7 +2,7 @@
 startMinimized=true
 
 [FrameBuffer]
-preferredFrameBufferPlugin=pw
+preferredFrameBufferPlugin={{ 'xcb' if workstation_desktop_session | default('x11') == 'x11' else 'pw' }}
 
 [Security]
 allowDesktopControl=true

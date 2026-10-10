@@ -28,6 +28,7 @@
           - software_catalog.onlyoffice.package_evr is string
           - software_catalog.onlyoffice.package_evr | trim | length > 0
           - software_catalog.onlyoffice.package_evr == '9.4.0-epm1.repacked.130'
+          - software_catalog.onlyoffice.package_epoch | default(-1) == 100
           - software_catalog.onlyoffice.architecture == 'x86_64'
           - software_catalog.onlyoffice.executable == '/usr/bin/onlyoffice-desktopeditors'
         fail_msg: Approved software catalog validation failed
@@ -49,7 +50,7 @@
           - software_onlyoffice_controller_artifact.stat.checksum == software_catalog.onlyoffice.sha256
         fail_msg: Approved software artifact verification failed
 
-    # These approved EVRs have no epoch; reject a hidden nonzero RPM epoch.
+    # The checksum-pinned epm-repacked artifact has Epoch 100.
     - name: Read the controller onlyoffice RPM identity
       ansible.builtin.command:
         argv: [rpm, -qp, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "{{ software_catalog.onlyoffice.artifact_path }}"]
@@ -62,10 +63,8 @@
       ansible.builtin.assert:
         that:
           - >-
-            software_onlyoffice_controller_metadata.stdout in [
-              software_catalog.onlyoffice.package_name ~ '|' ~ software_catalog.onlyoffice.package_evr ~ '|' ~ software_catalog.onlyoffice.architecture ~ '|(none)',
-              software_catalog.onlyoffice.package_name ~ '|' ~ software_catalog.onlyoffice.package_evr ~ '|' ~ software_catalog.onlyoffice.architecture ~ '|0'
-            ]
+            software_onlyoffice_controller_metadata.stdout ==
+              software_catalog.onlyoffice.package_name ~ '|' ~ software_catalog.onlyoffice.package_evr ~ '|' ~ software_catalog.onlyoffice.architecture ~ '|' ~ (software_catalog.onlyoffice.package_epoch | string)
         fail_msg: Approved software RPM metadata verification failed
 
     - name: Create a private temporary onlyoffice RPM path

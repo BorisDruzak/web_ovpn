@@ -20,6 +20,7 @@ def test_core_apps_catalog_enables_only_controller_verified_artifacts() -> None:
         "artifact_path": "/opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm",
         "sha256": "b8dd26405b5cd79da8a80afc7089007de608a53e7e90ea6a247379bebfe54c9f",
         "package_name": "onlyoffice-desktopeditors", "package_evr": "9.4.0-epm1.repacked.130",
+        "package_epoch": 100,
         "architecture": "x86_64", "executable": "/usr/bin/onlyoffice-desktopeditors",
     }
     assert catalog["nextcloud_desktop"] == {

@@ -51,7 +51,7 @@ def preflight(catalog, *, metadata=None, software_profile="core-apps"):
                 argv = task["ansible.builtin.command"]["argv"]
                 assert argv[:3] == ["rpm", "-qp", "--queryformat"]
                 entry = catalog[item]
-                output = f"{entry['package_name']}|{entry['package_evr']}|{entry['architecture']}|(none)"
+                output = f"{entry['package_name']}|{entry['package_evr']}|{entry['architecture']}|{entry.get('package_epoch', '(none)')}"
                 output = (metadata or {}).get(item, output)
                 results.append({loop_var: item, "rc": 0, "stdout": output})
             else:
@@ -72,10 +72,31 @@ def test_valid_aggregate_preflight_and_base_without_artifact_reads(catalog):
     assert preflight({}, software_profile="base") == []
 
 
+def test_actual_pinned_onlyoffice_epoch_passes_both_identity_gates(catalog):
+    output = "onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64|100"
+    assert preflight(catalog, metadata={"onlyoffice": output}) == ["browser", "onlyoffice"]
+    tasks = yaml.safe_load((ROOT / "roles/software_onlyoffice/tasks/main.yml").read_text())
+    block = next(task["block"] for task in tasks if "block" in task)
+    gate = next(task for task in block if task["name"] == "Require the exact controller onlyoffice RPM identity")
+    for expression in gate["ansible.builtin.assert"]["that"]:
+        assert environment().compile_expression(expression)(software_catalog=catalog, software_onlyoffice_controller_metadata={"stdout": output})
+
+
+@pytest.mark.parametrize("session,plugin", [("x11", "xcb"), ("wayland", "pw")])
+def test_krfb_framebuffer_matches_managed_desktop_session(session, plugin):
+    template = (ROOT / "roles/remote_access_krfb/templates/krfbrc.j2").read_text()
+    output = environment().from_string(template).render(
+        workstation_desktop_session=session,
+        vault_krfb_desktop_password_obscured="test", vault_krfb_unattended_password_obscured="test",
+    )
+    assert f"preferredFrameBufferPlugin={plugin}" in output
+
+
 @pytest.mark.parametrize("field,value", [
     ("package_name", "other-package"), ("package_evr", "other-version"),
     ("architecture", "aarch64"), ("artifact_path", "/tmp/unapproved.rpm"),
     ("executable", "/bin/sh"), ("source", "alt-repository"),
+    ("package_epoch", 0),
 ])
 def test_invalid_later_rpm_catalog_fails_before_component_execution(catalog, field, value):
     bad_catalog = deepcopy(catalog)
@@ -92,6 +113,8 @@ def test_invalid_later_rpm_catalog_fails_before_component_execution(catalog, fie
     "onlyoffice-desktopeditors|other-version|x86_64|(none)",
     "onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|aarch64|(none)",
     "onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64|1",
+    "onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64|0",
+    "onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64|(none)",
 ])
 def test_invalid_later_rpm_bytes_identity_fails_before_component_execution(catalog, output):
     executed = []
@@ -118,7 +141,8 @@ def test_invalid_last_repository_component_fails_before_component_execution(cata
     ("pilot.user", "pilot.user@sosnadmin.local", True),
     ("Pilot.User@SOSNADMIN.LOCAL", "pilot.user@sosnadmin.local", True),
     ("osn-admin", "osn-admin", False),
-    ("pilot.user", "pilot.user", False),
+    ("osn-admin", "osn-admin@sosnadmin.local", False),
+    ("pilot.user", "pilot.user", True),
     ("pilot.user", "other@sosnadmin.local", False),
     ("pilot.user", "pilot.user@other.local", False),
 ])
