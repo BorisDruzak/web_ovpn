@@ -677,6 +677,20 @@ was performed. Full root ALT regression passed 1940 tests with one original
 skip in 397.57 seconds; all 86 controller modules compiled and tested-file
 hashes matched. Publication and exact-commit CI are separate from installation.
 
+### Fixed native bootstrap follow-up (2026-10-12)
+
+An internal bounded thirteen-module stdin builder preserves the original
+twelve-module startup request binding and adds a separately hashed native
+worker. Only native testjoin and retained-result verification are dispatchable;
+there is no operator input for commands, no transport or approval default.
+Initial 22-case RED became GREEN; final focused startup/native/bootstrap chain
+passed 74 tests in 42.75 seconds, including genuine modules in a private fixture,
+one synthetic native invocation and no additional service actions. Independent
+review found no actionable findings; 87 modules compiled. Full root ALT
+regression passed 1963 tests with one original skip in 400.78 seconds against
+a frozen candidate tree; tested Git blobs matched staging. Actual controller integration and the remaining
+recovery coordinator/CLI/live gates are still required.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

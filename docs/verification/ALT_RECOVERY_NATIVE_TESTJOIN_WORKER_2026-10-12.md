@@ -67,3 +67,30 @@ Publication does not install this internal worker. Exact-commit CI remains a
 separate check after publication. Controller integration, exact protected
 execution plans, guarded deployment and final live execution approval remain
 outstanding.
+
+## Fixed native bootstrap follow-up
+
+The additional internal stdin builder dispatches only `testjoin` and `verify`.
+It validates a closed bounded envelope, its full SHA and all thirteen module
+hashes before compiling any source. The original retained startup request
+continues to hash the first twelve modules; the thirteenth native module is
+bound separately by its module hash and the full envelope. No startup receipt
+or approval is rewritten. The future controller must read every source through
+its protected source reader and bind the deployed fingerprint and exact
+approval; the builder alone provides no execution authority or transport.
+
+Initial missing-module RED: **22 failures in 0.45 s**. First GREEN: **22 passes
+in 7.93 s**. The expanded suite passed **23 cases in 9.49 s**, including genuine
+thirteen-module bootstrap and retained-result verification in a private fixture.
+The final focused chain (`test_setup_recovery_native_wire.py`,
+`test_setup_recovery_native_testjoin.py`, `test_setup_recovery_start_wire.py`)
+passed **74 tests in 42.75 s**. Its genuine-bootstrap fixture verifies one
+synthetic native invocation, removed scratch, unchanged startup request and zero
+service actions during native execution/verification. No AD authentication
+occurs in that fixture.
+
+Independent source review found no actionable findings. All **87 controller
+Python modules** compiled. Full root ALT regression against frozen candidate
+tree `139baa14c945959b78d537ac9f78a433883fdedb` passed **1963 tests, one original
+skip in 400.78 s**. Tested source/test Git blob hashes matched the staged files.
+Publication is separate from installation; controller integration remains next.
