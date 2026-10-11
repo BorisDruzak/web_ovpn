@@ -103,6 +103,20 @@ This establishes historical eligibility only. It does not establish current AD-o
 
 GitNexus impact for the shared `SetupPlanStore` baseline identified four direct importers (`setup.py`, `setup_assignments.py`, `setup_runtime.py`, `setup_cli.py`) and three transitive files, with LOW reported risk. Source inspection and the complete ALT suite verified the existing Setup contracts; the newly staged recovery modules are outside the committed index baseline and remain unconnected to execution.
 
+Read-only current directory inspection is implemented in `setup_recovery_directory.py`:
+
+- [x] Match the normal domain-wide hostname search to an exact GUID-only base lookup, rejecting changed GUID/SID/DN/account/DNS identity and ambiguous results.
+- [x] Require an enabled workstation-trust account, bounded creation time/password timestamp/KVNO, the four exact expected SPNs and no other domain object sharing those DNS/SPN values.
+- [x] Read the domain GUID/SID and crosscheck the computer SID against it. RootDSE discovery uses authenticated GSSAPI with `minssf=128`; the selected DC URI is pinned in memory and checked again against its RootDSE and NTDS identity.
+- [x] Require a synchronized writable DC via `msDS-isRODC=FALSE`; RODC, incomplete state, external hostname or endpoint drift are refused. The existing controller directory configuration stays unchanged.
+- [x] Keep normal Directory parsing/transport semantics: singleton attributes remain strict, multivalued SPNs are allowed only in the dedicated recovery parser, and the normal GSSAPI minimum remains unchanged.
+- [x] Observe RED then GREEN with 45 new tests; combined directory/history/storage checks passed with 149 tests. Full `tests/alt_linux` passed with 1125 passed and 1 skipped; Python compile and diff checks passed. Independent source review found no actionable issues in the read-only block.
+- [x] Inspect the selected existing real computer through the isolated source copy: GUID/SID matched, four SPNs matched, and the pinned DC was writable. No AD attribute or installed controller code was changed.
+
+The writable-DC proof follows the [AD `msDS-isRODC` contract](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/314967d0-e0c6-4c1f-bca1-b3265f781d78). Context7 was queried for OpenLDAP 2.6 behavior; its retrieved generic draft material was insufficient to override the installed CLI/provider evidence. GitNexus was unavailable during this block, so the previous indexed baseline was supplemented by source inspection and regression checks; no manual index/group synchronization was attempted.
+
+Exact published `72c04d90acda7f3c92917e03c192207dff50295d` CI: ALT contract workflow [38134507739](https://github.com/BorisDruzak/web_ovpn/actions/runs/38134507739) passed; focused runtime identity passed in [38134507660](https://github.com/BorisDruzak/web_ovpn/actions/runs/38134507660), while full regression had 10 failures, 3679 passes and 11 skips. The same ten independent failures remain: six non-root installer fixtures, QEMU public-evidence ownership, stale inventory CSS expectation, a synthetic netctl executable without a POSIX shebang, and vpnctl service-state expectation. This is not an all-green CI claim and does not prove installed or workstation acceptance.
+
 ## Task 2: Fixed one-attempt recovery execution
 
 **Files:** Create a fixed recovery provider/runtime and focused provider/runtime tests under the existing control package; wire the fixed runner in `setup_recovery.py`. Do not create a generic Ansible override or expose LDAP attributes, scripts, command lines, paths or variables as operator inputs.

@@ -125,6 +125,8 @@ def bounded_run(command, *, environment, input_text=None, timeout=20):
 
 
 class LDAPTransport:
+    minimum_ssf = 56
+
     def __init__(self, config: DirectoryConfig, *, settings: Settings | None = None, runner=None):
         self.config = config
         self.settings = settings
@@ -188,7 +190,7 @@ class LDAPTransport:
             environment['LDAPTLS_CACERT'] = self.config.ca_file
         command = ['/usr/bin/ldapsearch', '-LLL']
         if self.config.auth == 'gssapi':
-            command += ['-Q', '-Y', 'GSSAPI', '-O', 'minssf=56']
+            command += ['-Q', '-Y', 'GSSAPI', '-O', 'minssf=' + str(self.minimum_ssf)]
         elif self.config.auth == 'starttls':
             command += ['-ZZ']
         command += ['-o', 'nettimeout=10', '-o', 'ldif-wrap=no', '-l', '10', '-z', str(MAX_RESULTS),

@@ -43,6 +43,10 @@ def escape_filter(value: str) -> str:
 
 def parse_ldif(raw: str) -> list[dict[str, list[bytes]]]:
     """Reject URL values, duplicate singleton attributes and incomplete data."""
+    return _parse_ldif(raw, multivalued=frozenset({'objectclass'}))
+
+
+def _parse_ldif(raw: str, *, multivalued: frozenset[str]) -> list[dict[str, list[bytes]]]:
     try:
         if len(raw.encode('utf-8')) > MAX_BYTES:
             raise ValueError
@@ -76,7 +80,7 @@ def parse_ldif(raw: str) -> list[dict[str, list[bytes]]]:
                 decoded = base64.b64decode(value[1:].lstrip(' '), validate=True)
             else:
                 decoded = value.lstrip(' ').encode('utf-8')
-            if len(decoded) > 8192 or (name in current and name != 'objectclass'):
+            if len(decoded) > 8192 or (name in current and name not in multivalued):
                 raise ValueError
             current.setdefault(name, []).append(decoded)
         return entries
