@@ -10,6 +10,8 @@ CLI настраивает уже установленную ALT Workstation д�
 
 Exact проверенный SHA устанавливать штатным guarded deployment path, без обхода `alt-deploy-guard`. До deployment необходимы Controller Readiness, отсутствие несовместимых jobs, актуальные OR-3P3 backup/rehearsal evidence и независимый recovery access. Сохранять Vault, ключи, регистрации, jobs и оба вида assignments. Git, deployment и acceptance ПК — отдельные gates.
 
+Действующий OR-3P3 component `controller_state` архивирует весь `/var/lib/alt-deploy` без исключений, включая `domain-assignments`, `setup-plans`, `setup-runs` и `setup-plan-runs`. Отдельный root-owned `/etc/alt-deploy/ad-directory.json` в этот component не входит: перед deployment сохранить его отдельно с ownership/mode и проверить восстановление утверждённых OU. Отсутствующая конфигурация оставляет OU allowlist пустым и блокирует новые планы.
+
 Нужны существующие Python 3.12/Ansible/SSH prerequisites, OpenLDAP `ldapsearch`, Kerberos `kinit`/`kdestroy`. На ПК probe использует Python 3, passwordless sudo, `system-auth`, Samba `net`, SSSD и `getent`.
 
 ```sh
