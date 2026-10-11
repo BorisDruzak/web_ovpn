@@ -326,6 +326,18 @@ Exact published `02fa07c8e31271aa414fcfa05a86178d4af8cc99` ALT CI [38147872194](
 
 This internal worker is not exposed as an execution command. The protected transport, safe service-start policy, real trust/SSSD proof, additive continuation, guarded deployment and final execution approval remain required. No actual recovery claim, service stop, password reset, authentication replacement or recovery deployment occurred in this block.
 
+The fixed service transport is implemented in `setup_recovery_services_runtime.py`:
+
+- [x] Provide internal capture/quiesce/verify methods for the selected reserved identity only. Derive the exact backup request from protected source files, verify the complete bound backup receipt and recheck reservation, source bundles and request before and after SSH. No operator command, service name, alternate filesystem root or source selection is accepted.
+- [x] Embed only five protected fixed workers and dispatch the operation in the generated program rather than JSON. Use strict host-key checking, an isolated SSH configuration, no proxies, the controller's fixed identity and isolated root Python. Bound input/output/time and reject duplicate JSON keys, nonzero exits, mismatched receipts and drift without exposing diagnostics. No credential plaintext is needed for these service operations.
+- [x] Observe the initial missing-module RED, then pass all 17 new tests and 87 combined service/backup/rehearsal transport tests as the ALT service owner. Execute generated capture, quiesce and verify scripts with the real backup/service producers in an isolated synthetic filesystem; fixture injection supplies that filesystem and simulated systemd only inside the test. No actual workstation service is stopped. Both new Python files compiled.
+- [x] Independent source review found no actionable findings. The reviewer did not rerun tests or contact hosts. Caller-side exact execution approval and operational prewrite integration remain required.
+- [x] Full ALT passed under root with 1541 passed and 1 skipped in 231.83 seconds. No Python source changed after collection; full source/test/doc inspection and diff checks passed.
+
+Exact published `f53f4abc79b488e08968b8be5c9eba8ed0f8a69d` ALT CI [38149061362](https://github.com/BorisDruzak/web_ovpn/actions/runs/38149061362) passed. Its runtime CI [38149061168](https://github.com/BorisDruzak/web_ovpn/actions/runs/38149061168) was still running when this evidence was recorded; its focused identity job passed.
+
+The transport is not a CLI execution route and was not deployed. No selected recovery claim, native recovery backup, real service quiescence, AD password reset or local authentication replacement was performed. Protected importer transport, safe service restoration/start, live trust proof and continuation remain incomplete.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
