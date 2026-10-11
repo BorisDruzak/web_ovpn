@@ -6,6 +6,7 @@ import json
 from .ad_directory import ADDirectory
 from .ad_transport import DirectoryConfig, LDAPTransport
 from .setup import SetupService
+from .setup_recovery_planning import RecoveryPlanningService
 
 
 def add_parsers(commands):
@@ -37,6 +38,11 @@ def add_parsers(commands):
     status.add_argument('run_id')
     verify = actions.add_parser('verify', allow_abbrev=False, help='Read current AD/SSH state for the recorded domain assignment')
     verify.add_argument('--machine', required=True)
+    recovery = actions.add_parser('recovery', allow_abbrev=False, help='Explicit recovery preparation; no reset or retry')
+    recovery_actions = recovery.add_subparsers(dest='recovery_action', required=True)
+    recovery_plan = recovery_actions.add_parser('plan', allow_abbrev=False, help='Read current identities and preserve a non-executable recovery plan')
+    recovery_plan.add_argument('--failed-run', required=True, help='Original initial failed Setup run; machine/user/OU come from its protected history')
+    recovery_plan.add_argument('--computer-guid', required=True, help='Exact existing computer GUID to inspect; listing or planning does not approve a reset')
 
 
 def directory_for_settings(settings):
@@ -53,6 +59,8 @@ def handle(parsed, settings):
             ous = directory.ous()
             return {'status': 'ok', 'ous': ous, 'count': len(ous)}
         return dict(directory.computer(parsed.hostname), status='ok')
+    if parsed.setup_action == 'recovery':
+        return RecoveryPlanningService(settings).plan(parsed.failed_run, parsed.computer_guid)
     if parsed.setup_action == 'status':
         from .setup import RUN_RE
         from .ad_directory import fail
@@ -71,6 +79,15 @@ def handle(parsed, settings):
 def write_text(stream, payload):
     if 'plan_id' in payload and 'payload' in payload:
         content = payload['payload']
+        if payload['plan_id'].startswith('recovery-'):
+            stream.write(f"Recovery plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
+            machine = content['machine']
+            stream.write(f"Original failed run: {content['failed_run_id']}\nMachine: {machine['uuid']} / {machine['hostname']}\n")
+            stream.write(f"Computer GUID: {content['computer_guid']}\nComputer SID: {content['computer_sid']}\nComputer OU: {content['computer_ou']}\n")
+            stream.write(f"Proposed operation: {content['operation']}\nExecution available: false\n")
+            stream.write('Required gates: ' + ', '.join(content['required_gates']) + '\n')
+            stream.write('Warnings: ' + ', '.join(content['warnings']) + '\n')
+            return
         machine, user = content['machine'], content['user']
         stream.write(f"Plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
         stream.write(f"Machine: {machine['uuid']} / {machine['hostname']} / {machine['ip']}\n")

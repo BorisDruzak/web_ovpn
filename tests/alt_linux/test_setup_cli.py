@@ -62,3 +62,37 @@ def test_readonly_ad_cli_dispatch(monkeypatch):
     assert cli.main(['--json', 'ad', 'users', 'search', '--login', 'user'], settings=Settings.from_env(), stdout=output) == 0
     assert json.loads(output.getvalue())['users'][0]['state'] == 'disabled'
     assert calls == [('user', {'require_usable': False})]
+
+
+def test_recovery_plan_parser_has_no_execution_or_arbitrary_override():
+    args = cli.build_parser().parse_args(['setup', 'recovery', 'plan', '--failed-run', 'run', '--computer-guid', 'guid'])
+    assert args.setup_action == 'recovery' and args.recovery_action == 'plan'
+    assert args.failed_run == 'run' and args.computer_guid == 'guid'
+    for tail in (['apply'], ['plan', '--failed-run', 'run'],
+                 ['plan', '--failed-run', 'run', '--computer-guid', 'guid', '--vars-file', 'anything']):
+        with pytest.raises(SystemExit): cli.build_parser().parse_args(['setup', 'recovery', *tail])
+
+
+def test_recovery_plan_dispatch_and_non_executable_text(monkeypatch):
+    from alt_deploy import setup_cli
+    calls = []
+    class FakeRecovery:
+        def __init__(self, settings): pass
+        def plan(self, *args):
+            calls.append(args)
+            return {'plan_id': 'recovery-' + 'a' * 64, 'sha256': 'a' * 64, 'expires_at': 'synthetic',
+                'payload': {'failed_run_id': 'run', 'machine': {'uuid': 'uuid', 'hostname': 'alt-a1-pc3', 'ip': '192.0.2.10'},
+                'computer_guid': 'guid', 'computer_sid': 'sid', 'computer_ou': 'ou',
+                'operation': 'replace_selected_machine_password_once', 'execution_available': False,
+                'required_gates': ['reviewed_provider'], 'warnings': ['preparation_only']}}
+    monkeypatch.setattr(setup_cli, 'RecoveryPlanningService', FakeRecovery)
+    args = ['setup', 'recovery', 'plan', '--failed-run', 'run', '--computer-guid', 'guid']
+    output = io.StringIO()
+    assert cli.main(args, settings=Settings.from_env(), stdout=output) == 0
+    assert 'Execution available: false' in output.getvalue()
+    assert 'reviewed_provider' in output.getvalue() and 'guid' in output.getvalue()
+    assert 'setup apply' not in output.getvalue()
+    output = io.StringIO()
+    assert cli.main(['--json', *args], settings=Settings.from_env(), stdout=output) == 0
+    assert json.loads(output.getvalue())['payload']['execution_available'] is False
+    assert calls == [('run', 'guid')] * 2

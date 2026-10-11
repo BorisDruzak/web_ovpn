@@ -95,7 +95,16 @@ Status содержит configuration run ID, компоненты, GPO evidence
 
 Failed/running/interrupted run автоматически не повторяется. V1 требует отдельного reviewed recovery workflow после ambiguous failure; удаление jobs/assignments не поддерживается. Exact завершённый plan возвращает сохранённый результат без execution. Новый безопасный повтор требует нового проверенного плана.
 
-Для частичного join подготовлен [отдельный recovery plan](superpowers/plans/2026-10-11-alt-partial-join-recovery.md). Это описание будущего ограниченного механизма, не новая команда CLI и не разрешение на reset. Пока не проверена атомарная адресация AD-объекта по неизменяемому идентификатору, recovery должен отказывать; предварительная проверка GUID не делает повторный join по hostname безопасным.
+Для частичного первого join реализовано чтение и сохранение [отдельного recovery-плана](superpowers/plans/2026-10-11-alt-partial-join-recovery.md). После установки проверенной версии контроллера оператор может выполнить:
+
+```sh
+workstationctl setup recovery plan --failed-run ORIGINAL_FAILED_RUN \
+  --computer-guid EXISTING_COMPUTER_GUID
+```
+
+UUID/hostname, сотрудник, OU и профили берутся из защищённой истории исходной ошибки. GUID должен совпасть с единственным существующим компьютером; OU/user identities, время создания объекта, writable DC, регистрация, задания, текущее состояние авторизации, хеши фиксированных файлов/утилит, часы и prerequisites проверяются заново. Сохранённые исходные plan/run/index/binding/configuration result перечитываются и остаются побайтно неизменными. Несовпадение возвращает `recovery_current_state_invalid`; неполная история — `recovery_history_invalid`; неверный компьютер — `recovery_computer_identity_invalid`. Уже существующая попытка, включая прерванную или повреждённую, блокирует новый план с `recovery_attempt_reserved`.
+
+План имеет TTL 30 минут, SHA и отдельное пространство `recovery-`; normal `setup apply` его не принимает. Вывод содержит **Execution available: false** и оставшиеся gates. Команды recovery apply пока нет. Планирование не резервирует попытку, не сбрасывает пароль и не разрешает повторный join. Время создания — свидетельство для проверки, не доказательство принадлежности объекта оператору. Исполнение требует проверенного фиксированного GUID-only provider/local importer, сохранённого credential и backup, повторных проверок под lifecycle lock и отдельного разрешения на конкретный объект/план. Предварительная проверка GUID не делает повторный join по hostname безопасным.
 
 Пароли/tickets/private keys/raw diagnostics в output не выводятся. State/logs доступны только сервисной учётке. Public reports обезличивают реальные identifiers.
 

@@ -10,7 +10,7 @@
 
 **Spec:** Original AD Setup task and operator's subsequent narrow authorization to **prepare and independently review** recovery; current failure evidence in `docs/verification/ALT_AD_SETUP_CLI_ACCEPTANCE_2026-10-11.md`.
 
-**Status:** Preparation only. This document does not authorize infrastructure execution, implement new commands, or prove the unknown Samba failure resolved. No computer reset/delete/move has been performed. Concrete implementation, offline tests, independent code review, exact-SHA publication/deployment and a final operator confirmation of the resulting recovery plan remain required before any recovery write.
+**Status:** Preparation only. Read-only recovery planning is implemented; no recovery execution command is available. The unknown Samba failure is not resolved and no computer reset/delete/move has been performed. Reviewed provider/local-import implementation, offline tests, exact-SHA publication/deployment and a final operator confirmation of a fresh executable recovery plan remain required before any recovery write.
 
 **Current execution blocker:** The stock system-auth/Samba join remains unsuitable because it selects an existing computer by name. Primary AD specifications and actual GUID base searches support a GUID-only LDAP password-write provider; independent review accepted that immutable-object boundary in principle. However the existing local Samba database fails its domain-metadata prerequisite, so a reset followed by `changesecretpw` is not executable. A separately isolated, synthetic offline-import rehearsal succeeded as described below. Source-controlled guards, bounded secret handling, real pinned writable-DC/configuration checks and independent code review remain required. This plan remains non-executable; neither a successful read nor the synthetic rehearsal authorizes a real password write.
 
@@ -76,7 +76,7 @@ GUID addressing protects the selected immutable object from hostname replacement
 **Interfaces:** Recovery planning consumes the existing directory/registry/probe stores and a named failed run. Produces a protected TTL/SHA plan plus immutable attempt receipts. Computer identity is separate from the selected employee's GUID/SID. No mutation from planning.
 
 - [ ] RED: different target/user/OU/computer GUID, unsupported failure phase, already-valid trust, missing absence evidence, changed binding, plan hash/TTL, unsafe files/owners/symlinks.
-- [ ] Implement bounded snapshots using existing private state primitives; no raw IP identity selection or new secret storage.
+- [x] Implement bounded snapshots using existing private state primitives; no raw IP identity selection or new secret storage.
 - [ ] GREEN: byte-preserving plan proof; reserve against original failed run + computer GUID before mutation; prove interrupted receipt and fresh-plan/attempt replay cannot write again.
 
 Storage foundation completed separately from historical eligibility and execution:
@@ -129,6 +129,18 @@ Read-only current workstation facts are implemented in `setup_recovery_probe.py`
 These facts are an observation, not an execution lock or proof of recovery. The current registered identity, files, configuration and process state must be revalidated under the lifecycle lock before any future approved attempt. No recovery writer, installed-controller change or operator execution entrypoint is included in this block.
 
 GitNexus context for the committed `SetupRuntime` baseline identified its `SetupService` importer; new recovery modules are outside that indexed baseline. Source and runtime checks verified the shared probe invocation. Exact published `6e01db5d0d55e393fce691bb84a1c8ddccce7f49` CI: ALT contract workflow [38135564205](https://github.com/BorisDruzak/web_ovpn/actions/runs/38135564205) passed; focused runtime identity passed in [38135564206](https://github.com/BorisDruzak/web_ovpn/actions/runs/38135564206). Full regression retained the same ten independent failures listed above, with 3724 passes and 11 skips.
+
+Protected recovery planning is implemented in `setup_recovery_planning.py` with the explicit read-only `setup recovery plan --failed-run ... --computer-guid ...` CLI:
+
+- [x] Derive the selected machine, employee, exact OU and profiles from the protected original failed run. Crosscheck current registration readiness/jobs/assignment, employee GUID/SID/login/UPN/state, approved OU GUID and the exact existing computer GUID/DN/creation window on a writable DC.
+- [x] Require a broken trust, matching workstation identity, no local duplicate, synchronized clock, no incompatible process and valid fixed controller prerequisites. Pin current registration, directory, source and workstation hashes in a protected 30-minute recovery plan.
+- [x] Reread registry and all five historical files after workstation reads; reject concurrent state change or appearance of any attempt. Planning creates no lock, attempt, binding or infrastructure mutation.
+- [x] List the proposed one-object machine-password operation, expected directory effects and required remaining gates. Always set `execution_available=false`; no recovery apply command is exposed. Creation timing is explicitly not an ownership proof.
+- [x] Observe RED then GREEN for 27 initial planning tests and two CLI cases; add three mid-read drift guards. Combined planning/CLI/storage checks passed with 70 tests as the non-root service owner. Full `tests/alt_linux` passed with 1181 passed and 1 skipped in 220.96 seconds. Compile and staged diff checks passed; independent source review found no actionable issues.
+- [x] Generate and reload a protected plan against the selected real failed run using the isolated development copy. Original history remained byte-identical, creation-window checks passed, five execution gates remained required and no attempt was reserved. Installed controller code and machine credentials remain unchanged.
+- [x] Invoke the actual new CLI handler against the selected real target: return code 0, a protected `recovery-` plan and `execution_available=false`; original evidence remained byte-identical. Two changed controller sources compiled successfully. This used the isolated development copy, not the installed controller command.
+
+This completes the read-only planning interface, not the provider or execution gate. The real preparation plan is non-executable and cannot be used as execution approval; a fresh plan must include the completed reviewed provider and current post-deployment evidence before approval is requested.
 
 ## Task 2: Fixed one-attempt recovery execution
 
