@@ -37,6 +37,14 @@ def _emulate_root_release_ownership(monkeypatch, root: Path, settings: Settings)
     """
     from test_install_execution import _emulate_root_owned_fixture
 
+    if sys.platform != 'win32':
+        import os
+        import pwd
+        # Root is emulated at the CLI boundary, while synthetic storage must
+        # remain writable by the real runner. GitHub has no altserver account.
+        account = pwd.getpwuid(os.getuid())
+        object.__setattr__(settings, 'service_user', account.pw_name)
+
     private_key = settings.install_signing_private_key
     public_key = settings.install_signing_public_key
     paths = (root, *root.iterdir(), private_key, public_key,
