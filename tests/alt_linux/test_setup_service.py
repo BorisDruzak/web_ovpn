@@ -196,3 +196,35 @@ def test_legacy_configure_cannot_bypass_domain_binding(tmp_path, monkeypatch):
     with pytest.raises(ControlError) as caught:
         planner.start(UUID, request)
     assert caught.value.code == 'setup_assignment_managed'
+
+
+def test_concurrent_apply_executes_confirmed_plan_once(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    service, machine, user, observed, computer, calls = scenario(tmp_path)
+    plan = service.plan(UUID, user['login'], OU, 'base', 'none')
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(lambda _: service.apply(plan['plan_id'], plan['sha256']), range(2)))
+    assert results[0] == results[1]
+    assert len(calls) == 1
+
+
+def test_source_prerequisite_drift_blocks_before_execution(tmp_path):
+    service, machine, user, observed, computer, calls = scenario(tmp_path)
+    plan = service.plan(UUID, user['login'], OU, 'base', 'none')
+    service.prerequisites = lambda request: {'ready': True, 'source_sha256': 'changed'}
+    with pytest.raises(ControlError) as caught:
+        service.apply(plan['plan_id'], plan['sha256'])
+    assert caught.value.code == 'setup_plan_drift'
+    assert calls == []
+
+
+@pytest.mark.parametrize('identity', ['object_guid', 'object_sid'])
+def test_verify_rejects_replaced_ad_computer_identity(tmp_path, identity):
+    service, machine, user, observed, computer, calls = scenario(tmp_path)
+    plan = service.plan(UUID, user['login'], OU, 'base', 'none')
+    service.apply(plan['plan_id'], plan['sha256'])
+    assert service.verify(UUID)['status'] == 'successful'
+    computer['objects'][0][identity] = ('ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb'
+                                      if identity == 'object_guid' else 'S-1-5-21-100-200-300-999')
+    assert service.verify(UUID)['status'] == 'failed'
+    assert len(calls) == 1
