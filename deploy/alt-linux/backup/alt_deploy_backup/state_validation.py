@@ -295,10 +295,33 @@ class StateValidator:
                 generation = str(
                     payload.get("registration_id") or ""
                 ).strip().lower()
+                # Manual domain configuration may defer user-home work until
+                # first login. Preserve that state without relabelling it ready;
+                # require the successful result for this exact machine.
+                configuration = payload.get("configure_result")
+                deferred_login = False
+                if isinstance(configuration, dict):
+                    verification = configuration.get("verification")
+                    deferred_login = (
+                        state == "ready"
+                        and status == "awaiting_first_domain_login"
+                        and type(configuration.get("schema_version")) is int
+                        and configuration["schema_version"] == 1
+                        and configuration.get("status") == "successful"
+                        and "error" in configuration and configuration["error"] is None
+                        and configuration.get("machine_uuid") == machine_uuid
+                        and isinstance(payload.get("hostname"), str)
+                        and bool(payload["hostname"])
+                        and configuration.get("hostname") == payload["hostname"]
+                        and isinstance(verification, dict)
+                        and all(verification.get(key) is True for key in (
+                            "domain_join", "sssd", "domain_user_lookup", "group_policy",
+                        ))
+                    )
                 if (
                     not machine_key
                     or not machine_uuid
-                    or status not in _REGISTRATION_PAYLOAD_STATES[state]
+                    or (status not in _REGISTRATION_PAYLOAD_STATES[state] and not deferred_login)
                     or path.stem not in {machine_key, machine_uuid}
                     or (
                         generation

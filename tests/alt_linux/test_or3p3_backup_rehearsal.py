@@ -79,6 +79,61 @@ def test_failed_rehearsal_preserves_private_tree(tmp_path: Path) -> None:
     assert not (sandbox.bundle(backup_id) / "rehearsal.json").exists()
 
 
+@pytest.mark.parametrize('defect', [None, 'missing_result', 'wrong_machine', 'wrong_hostname', 'failed_result', 'unverified_domain',
+    'bool_schema', 'float_schema', 'missing_error', 'nonnull_error',
+    *[kind + ':' + key for kind in ['missing', 'nonbool'] for key in ['domain_join', 'sssd', 'domain_user_lookup', 'group_policy']],
+])
+def test_first_domain_login_state_requires_matching_successful_configuration(tmp_path: Path, defect) -> None:
+    sandbox = BackupSandbox.create(tmp_path)
+    sandbox.seed_complete_controller()
+    machine_id = 'a' * 32
+    registration_root = tmp_path / 'registrations'
+    ready = registration_root / 'ready'
+    ready.mkdir(parents=True)
+    result = {
+        'schema_version': 1, 'status': 'successful', 'error': None, 'machine_uuid': machine_id,
+        'hostname': 'alt-test', 'verification': {
+            'domain_join': True, 'sssd': True, 'domain_user_lookup': True, 'group_policy': True,
+        },
+    }
+    if defect == 'wrong_machine':
+        result['machine_uuid'] = 'b' * 32
+    elif defect == 'wrong_hostname':
+        result['hostname'] = 'other-host'
+    elif defect == 'failed_result':
+        result['status'] = 'failed'
+    elif defect == 'unverified_domain':
+        result['verification']['domain_join'] = False
+    elif defect == 'bool_schema':
+        result['schema_version'] = True
+    elif defect == 'float_schema':
+        result['schema_version'] = 1.0
+    elif defect == 'missing_error':
+        result.pop('error')
+    elif defect == 'nonnull_error':
+        result['error'] = {'code': 'failed'}
+    elif defect and defect.startswith('missing:'):
+        result['verification'].pop(defect.split(':')[1])
+    elif defect and defect.startswith('nonbool:'):
+        result['verification'][defect.split(':')[1]] = 1
+    record = {
+        'machine_key': machine_id, 'uuid': machine_id, 'hostname': 'alt-test',
+        'status': 'awaiting_first_domain_login', 'registration_id': 'reg-' + 'b' * 32,
+    }
+    if defect != 'missing_result':
+        record['configure_result'] = result
+    path = ready / (machine_id + '.json')
+    path.write_text(json.dumps(record), encoding='utf-8')
+    before = path.read_bytes()
+    validator = sandbox.rehearsal_service().state_validator
+    if defect:
+        with pytest.raises(BackupError):
+            validator._validate_registrations(registration_root)
+    else:
+        assert validator._validate_registrations(registration_root) == 'registrations'
+    assert path.read_bytes() == before
+
+
 def test_rehearsal_accepts_documented_completed_job_artifacts(
     tmp_path: Path,
 ) -> None:
