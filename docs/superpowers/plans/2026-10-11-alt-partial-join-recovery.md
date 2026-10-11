@@ -520,6 +520,38 @@ incomplete scratch copy failed 28 documentation checks because docs were absent;
 the full copy corrected that test-environment error. The new worker/startup
 transport/coordinator remain pending. No recovery execution occurred.
 
+### Fixed startup worker checkpoint (2026-10-12)
+
+The internal worker issues exactly one fixed SSSD start after genuine retained
+import, Kerberos, policy and quiescence verification. It durably records an
+intent before the command and retains terminal failure evidence without replay,
+restart, reload or automatic cleanup. Current state checks bind the stock unit,
+manager lookup paths, empty jobs, fresh invocation/PID, zero restart count and
+all four authentication services. The fixed optional SSSD environment file
+must remain absent, including after the final native observation.
+
+The request follows RecoveryPlanStore's actual `recovery-` plus SHA-256 identity
+and exact 30-minute aware lifetime. Mutation checks combine remaining plan
+lifetime with a 120-second monotonic budget, rechecking wall time around each
+native command. Historical read-only verification does not extend execution
+authorization. Canonical JSON comparison rejects boolean/integer substitutions
+in startup and historical stop records.
+
+Independent review found environment-file and restart-counter gaps (four RED
+cases), then immediate retained-intent type drift (two RED cases). Four more
+historical service-record type substitutions were reproduced. All were fixed;
+final focused non-root ALT verification passed 86 cases in 25.87 seconds,
+source hashes matched, compilation passed and final source review found no
+remaining issues. Full final-source actual-root ALT regression passed 1819
+cases with one skip in 319.94 seconds. An earlier frozen candidate passed
+1813 with one skip before the final six type-drift cases were added. Exact
+preceding commit `1fad845aa16f2916b8ebdd68c0c8a845b90f2d6c`
+has successful managed ALT and full runtime CI.
+
+No operator route or controller transport invokes this worker yet. It does not
+prove online identity, Samba trust, restoration of originally active services
+or recovery completion. No actual target start or AD recovery was executed.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

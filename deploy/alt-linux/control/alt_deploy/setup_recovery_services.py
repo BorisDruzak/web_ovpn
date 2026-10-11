@@ -151,24 +151,37 @@ def _receipt(request,*,backup):
 
 
 def verify(request,*,backup,probe,collect,runner,root=Path('/'),owner=0):
+    receipt=verify_artifacts(request,backup=backup,root=root,owner=owner)
+    expected=copy.deepcopy(request['services'])
+    for unit in _active(request):expected=_stopped(expected,unit)
+    _guard(request,expected,backup=backup,probe=probe,collect=collect,runner=runner,root=root,owner=owner)
+    return receipt
+
+
+def verify_artifacts(request,*,backup,root=Path('/'),owner=0):
+    """Protected historical stop records only; current stopped state is separate."""
     if os.geteuid()!=owner or not root.is_absolute():raise ValueError('Fixed root service verification required')
     leaf=path_for(request,backup=backup,root=root);backup._ancestry(leaf,root,owner)
     backup._directory(leaf.parent,owner);backup._directory(leaf,owner)
     expected=copy.deepcopy(request['services']);names={'request.json','verified.json'}
     names.update(prefix+unit+'.json' for unit in _active(request) for prefix in ('stopping-','stopped-'))
     if {p.name for p in leaf.iterdir()}!=names:raise ValueError('Incomplete or failed service quiescence')
-    if backup._json(leaf/'request.json',root=root,owner=owner)!=request:raise ValueError('Changed service request')
+    if backup.encoded(backup._json(leaf/'request.json',root=root,owner=owner))!=backup.encoded(request):
+        raise ValueError('Changed service request')
     for unit in _active(request):
         before=expected;expected=_stopped(expected,unit)
         intent={'schema_version':1,'request_sha256':backup.digest(request),'unit':unit,'before_sha256':backup.digest(before)}
         result={'schema_version':1,'unit':unit,'after_sha256':backup.digest(expected)}
         for name,document in (('stopping-'+unit+'.json',intent),('stopped-'+unit+'.json',result)):
             names.add(name)
-            if backup._json(leaf/name,root=root,owner=owner)!=document:raise ValueError('Changed service progress')
+            if backup.encoded(backup._json(leaf/name,root=root,owner=owner))!=backup.encoded(document):
+                raise ValueError('Changed service progress')
     receipt=_receipt(request,backup=backup)
-    if {p.name for p in leaf.iterdir()}!=names or backup._json(leaf/'verified.json',root=root,owner=owner)!=receipt:
+    if ({p.name for p in leaf.iterdir()}!=names
+            or backup.encoded(backup._json(leaf/'verified.json',root=root,owner=owner))!=backup.encoded(receipt)):
         raise ValueError('Incomplete or failed service quiescence')
-    _guard(request,expected,backup=backup,probe=probe,collect=collect,runner=runner,root=root,owner=owner)
+    if backup.verify(request['backup_request'],root=root,owner=owner)!=request['backup_receipt']:
+        raise ValueError('Changed retained service backup')
     backup._sync(leaf);return receipt
 
 

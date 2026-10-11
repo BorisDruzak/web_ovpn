@@ -162,3 +162,32 @@ entrypoint and performs no AD reset, credential installation, machine
 authentication, service start or real workstation change. The fixed startup
 worker, bounded stdin transport, recovery coordinator and final exact-plan
 execution approval remain required.
+
+### Fixed SSSD startup preparation (2026-10-12)
+
+The internal fixed worker preserves an intent before a single SSSD start,
+requires genuine protected lower-chain records and checks a fresh stable
+invocation/PID without claiming trust. It rejects jobs, authentication-service
+drift, changed stock unit/tool/configuration bytes and any fixed SSSD
+environment file. Original restart count must be zero. The request binds the
+existing recovery plan ID/SHA and exact 30-minute lifetime; both wall-clock
+expiry and the monotonic command budget are enforced before mutation.
+Read-only verification of a historical receipt remains possible after expiry.
+
+Four environment-file/restart RED cases, two pre-start boolean-schema RED cases
+and four retained service-record boolean-schema RED cases were reproduced and
+fixed. Final focused non-root ALT checks passed **86 tests** in 25.87 seconds.
+Compilation on Windows/ALT and source hash comparison passed; independent final
+source review reported no remaining findings. Full final-source actual-root
+ALT regression passed **1819 tests, 1 skipped** in 319.94 seconds. An earlier
+frozen candidate passed 1813 with one skip before six final type-drift cases
+were added; no source changed during either execution. CI for preceding exact SHA
+`1fad845aa16f2916b8ebdd68c0c8a845b90f2d6c` completed successfully in both managed
+ALT [38165119175](https://github.com/BorisDruzak/web_ovpn/actions/runs/38165119175)
+and full runtime [38165119192](https://github.com/BorisDruzak/web_ovpn/actions/runs/38165119192).
+
+This remains internal preparation, with no installed controller transport or
+operator recovery execution route. No real SSSD start, computer-account reset
+or recovery mutation occurred. Online identity/trust, service restoration,
+temporary-policy restoration, additive Setup continuation, guarded deployment
+and final exact-plan execution approval remain required.
