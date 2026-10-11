@@ -65,6 +65,15 @@ def scenario(root):
     return probe, calls, values, runner
 
 
+def test_initial_facts_freeze_getent_executable_before_any_recovery(tmp_path):
+    probe,calls,values,runner=scenario(tmp_path)
+    facts=probe.collect(root=tmp_path,runner=runner,owner=os.geteuid())
+    assert facts['tools']['getent']['present'] is True
+    assert '/usr/bin/getent'==probe.TOOLS['getent'] and facts['tools']['getent']['sha256']
+    assert probe.TOOLS['nss_sss']=='/usr/lib64/libnss_sss.so.2'
+    assert facts['tools']['nss_sss']['present'] is True and facts['tools']['nss_sss']['sha256']
+
+
 def test_collect_keeps_only_fixed_file_hashes_and_never_returns_secret_bytes(tmp_path):
     probe, calls, _, runner = scenario(tmp_path)
     before = {path: (tmp_path / path.lstrip('/')).read_bytes() for path in probe.AUTH_FILES}

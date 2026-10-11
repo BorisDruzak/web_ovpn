@@ -24,7 +24,8 @@ AUTH_FILES = {'/etc/samba/smb.conf': False, '/etc/sssd/sssd.conf': True,
               '/var/lib/samba/private/secrets.tdb': True}
 TOOLS = {'net': '/usr/bin/net', 'testparm': '/usr/bin/testparm', 'bwrap': '/usr/bin/bwrap',
          'klist': '/usr/bin/klist', 'ktutil': '/usr/bin/ktutil',
-         'system-auth': '/usr/sbin/system-auth', 'sssd': '/usr/sbin/sssd'}
+         'system-auth': '/usr/sbin/system-auth', 'sssd': '/usr/sbin/sssd', 'getent': '/usr/bin/getent',
+         'nss_sss': '/usr/lib64/libnss_sss.so.2'}
 PARAMETERS = {'netbios_name': 'netbios name', 'workgroup': 'workgroup', 'realm': 'realm',
               'security': 'security', 'server_role': 'server role', 'private_dir': 'private dir',
               'kerberos_method': 'kerberos method'}

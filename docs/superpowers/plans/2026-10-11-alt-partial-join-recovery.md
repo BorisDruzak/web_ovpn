@@ -742,6 +742,14 @@ effects production, selected-user resolution, terminal handoff, execution
 coordinator/CLI and additive continuation remain required before recovery can
 be performed operationally.
 
+The selected-user NSS worker is implemented internally: one fixed SSSD lookup,
+protected original getent/NSS-module dependency hashes/packages, retained
+native/startup proof, local-duplicate rejection, and permanent entered-failure
+exclusion. It does not prove user authentication. Independent review found
+and closed missing NSS-module pinning; see the user-observation verification
+report. Explicit user approval scope, fresh AD employee guard and fixed
+wire/controller binding are still required before this worker can be used.
+
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
 
 **Interfaces:** A verified recovery-resolution receipt references exact original failed run and binding bytes plus pinned computer identity. Fresh Setup planning may recognize that receipt only after fresh trust/identity validation. New Setup apply still requires its own new plan SHA.

@@ -123,6 +123,13 @@ SHA-256, числом units и возможных jobs. Большой граф 
 hooks, environment, manager actions и unresolved destinations. Этот план
 также выводит **Execution available: false** и не принимается `setup apply`.
 
+Внутренняя проверка выбранного пользователя через NSS подготовлена и описана
+в [отчёте](verification/ALT_RECOVERY_USER_OBSERVATION_2026-10-12.md). Отдельной
+операторской команды для её выполнения пока нет: сначала требуется привязать
+её к явно подтверждённому recovery-плану и свежему состоянию сотрудника AD.
+Разрешение пользователя через NSS не подтверждает парольный или графический
+вход. Возврат штатной политики и служб остаётся отдельной частью recovery.
+
 Пароли/tickets/private keys/raw diagnostics в output не выводятся. State/logs доступны только сервисной учётке. Public reports обезличивают реальные identifiers.
 
 ## Live acceptance
