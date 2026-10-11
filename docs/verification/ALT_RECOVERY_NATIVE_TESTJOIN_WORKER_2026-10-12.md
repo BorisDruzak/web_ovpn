@@ -125,3 +125,43 @@ regression against frozen tree `558050b4211b4ae1b08b8d318479d815e143c08e`
 passed **1986 tests, one original skip in 405.68 s**. Runtime publication remains
 separate from installation and exact-commit CI. Complete state-storage unavailability remains a boundary of
 best-effort terminal error recording and requires manual state recovery.
+
+## Explicit native approval candidate
+
+Native execution now requires an explicit boolean selection in the immutable
+startup attachment. Its closed scope binds the thirteen-source hash, computer
+GUID, selected DC name, fixed tool paths and argv, private copied credentials,
+readonly private configuration and scratch cleanup. Existing start-only plans
+retain their original shape and cannot authorize native execution. This is the
+same confirmed recovery/startup SHA pair, with native scope included in the
+startup SHA; creating an attachment still grants no execution permission.
+
+The read-only native authorization handler requires the same genuine startup
+gate as the startup runtime. It verifies retained startup intent/result hashes,
+the genuine startup receipt, protected postwrite history and directory result,
+the current source bundle and the permanent approval binding. Repeated checks
+exclude changed sources, context, claim, request/result or revoked approval.
+No Vault opening, SSH, service action, directory write or binding mutation is
+performed by this handler. Native success still makes no complete trust or
+enforced single-peer claim.
+
+The six explicit-scope cases went from RED to GREEN; nine handler cases also
+went from RED to GREEN. The combined authorization suites passed 63 tests in
+29.15 seconds before adding six genuine-postwrite cases for the new scope.
+Those cases reuse actual postwrite continuity against a synthetic directory,
+reject changed KVNO/GUID/SID/OU and terminal failure, prohibit Vault access and
+preserve all five original failed-history files. Native-handler fixtures mock
+postwrite/startup context; they do not prove complete pipeline composition or
+real AD authentication. Independent review found no actionable source issue.
+
+Final focused authorization/native/runtime chain passed **142 tests in 80.55
+seconds**. All **89 controller Python modules** compiled. Full root ALT
+regression against frozen source/test tree
+`ab3f32c11921c99b2886dcd780a7b2ad5b3178fd` passed **2007 tests, one original
+skip in 412.13 seconds**. Tested source/test SHA-256 values matched staging;
+`git diff --check` passed. The final independent review found no actionable
+findings and retained the integration-fixture limitation above. Documentation
+was appended after the frozen test tree; no tested source was changed.
+
+This internal preparation remains separate from operator coordinator/CLI integration,
+reviewed effects production, guarded deployment and actual recovery approval.

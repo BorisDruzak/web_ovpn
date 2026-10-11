@@ -707,6 +707,21 @@ production, reviewed inventory/effects, coordinator/CLI, user resolution,
 terminal policy/service handoff, additive Setup continuation and live gates
 remain required. No real native recovery operation was executed.
 
+### Explicit native approval candidate (2026-10-12)
+
+Native scope is explicitly selected in the immutable startup attachment and
+included in its confirmed SHA. Default start-only attachments stay compatible
+and cannot grant native permission. The read-only native authorization handler
+requires the same genuine startup gate, protected postwrite history and exact
+startup intent/result hashes, source bundle and retained approval binding.
+Initial explicit-scope and handler RED cases reached GREEN; independent review
+found no actionable source issue. Genuine-postwrite continuity coverage now
+includes both attachment scopes. Native-context fixture composition remains
+mocked; no real recovery or service action has occurred. Final verification is
+recorded in the native worker report. Coordinator/CLI, reviewed inventory/effects,
+user resolution, terminal policy/service handoff, additive continuation and
+live gates still remain required.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

@@ -243,7 +243,8 @@ def test_unconfirmed_exclusion_durability_requires_manual_recovery(tmp_path,monk
 
 
 @pytest.mark.parametrize('changed',['none','kvno','guid','sid','ou','terminal'])
-def test_genuine_postwrite_continuity_accepts_only_the_recorded_password_version(tmp_path,changed):
+@pytest.mark.parametrize('native_check',[False,True])
+def test_genuine_postwrite_continuity_accepts_only_the_recorded_password_version(tmp_path,changed,native_check):
     from test_setup_recovery_postwrite import written
     from alt_deploy.setup_recovery_startup_authorization import RecoveryStartupPlans,RecoveryStartupAuthorization
     from alt_deploy.setup_recovery_controller_backup import RecoveryControllerBackup
@@ -257,10 +258,14 @@ def test_genuine_postwrite_continuity_accepts_only_the_recorded_password_version
     # This fixture represents a retained pre-write approval. It installs only
     # private fixture records, since the genuine postwrite fixture is reserved.
     # bind_once's pre-reservation path is covered independently above.
-    attachment=plans.store.create(dict(schema_version=1,scope='one_fixed_sssd_start_with_retained_temporary_policy',
+    attachment_payload=dict(schema_version=1,scope='one_fixed_sssd_start_with_retained_temporary_policy',
         recovery_plan_id=recovery['plan_id'],recovery_plan_sha256=recovery['sha256'],
         recovery_payload_sha256=digest(recovery['payload']),identity=base['identity'],source_sha256=base['source_sha256'],
-        sssd_unit=unit,effects_ledger=ledger))
+        sssd_unit=unit,effects_ledger=ledger)
+    if native_check:
+        attachment_payload['scope']='one_fixed_sssd_start_and_native_check_with_retained_temporary_policy'
+        attachment_payload['native_check']=plans._native_scope(base)
+    attachment=plans.store.create(attachment_payload)
     gate=RecoveryStartupAuthorization(preparation=preparation,postwrite=state,startup_plan_id=attachment['plan_id'],
         confirmed_startup_sha=attachment['sha256'],plans=plans)
     expected=gate._expected(gate._load(recovery['plan_id'],recovery['sha256']))

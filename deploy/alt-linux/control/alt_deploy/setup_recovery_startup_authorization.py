@@ -65,6 +65,24 @@ class RecoveryStartupPlans:
         directory=Path(__file__).parent;owner=Path(__file__).lstat().st_uid
         return [_read_source(directory/('setup_recovery_'+name+'.py'),owner=owner) for name in NAMES]
 
+    def _native_sources(self):
+        path=Path(__file__).with_name('setup_recovery_native_testjoin.py')
+        return self._sources()+[_read_source(path,owner=Path(__file__).lstat().st_uid)]
+
+    def _native_scope(self,base):
+        from .setup_recovery_native_testjoin import TOOLS
+        sources=self._native_sources();dc=base['identity']['dc']['dns_hostname']
+        if (len(sources)!=13 or digest(sources[:-1])!=base['source_sha256']
+                or any(not isinstance(value,str) or len(value.encode())>131072 for value in sources)
+                or not isinstance(dc,str) or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.sosnadmin\.local',dc)):raise ValueError
+        return dict(schema_version=1,operation='fixed_native_testjoin_once',source_sha256=digest(sources),
+            computer_guid=base['identity']['computer_guid'],server_dns=dc,tools=copy.deepcopy(TOOLS),
+            dc_address_source='protected_rehearsal_metadata',credentials='private_copy_of_imported_samba_secret',
+            configuration='fixed_readonly_private_samba_nss_dns_kerberos',scratch='removed_before_verified_receipt',
+            native_discovery='same_domain_peer_not_enforced',trust_verified=False,peer_pinning_verified=False,
+            argv_template=['/usr/bin/net','-s','/work/smb.conf','-d','0','--use-kerberos=required',
+                '-S',dc,'-I','<protected_dc_address>','ads','testjoin'])
+
     def _base(self,plan_id,confirmed_sha):
         plan=copy.deepcopy(self.planning.plans.load(plan_id,confirmed_sha));payload=plan['payload']
         fields={'failed_run_id','computer_guid','machine_uuid','computer_sid','evidence_sha256','execution_available','provider','snapshot'}
@@ -90,8 +108,9 @@ class RecoveryStartupPlans:
             computer_ou=snapshot['computer_ou'],ou_identity=snapshot['ou_identity'],dc=snapshot['computer']['dc'])
         return dict(plan=plan,identity=identity,source_sha256=digest(sources))
 
-    def create(self,plan_id,confirmed_sha,*,sssd_unit,effects_ledger):
+    def create(self,plan_id,confirmed_sha,*,sssd_unit,effects_ledger,native_check=False):
         try:
+            if type(native_check) is not bool:raise ValueError
             with exclusive_lock(self.settings.lock_file):
                 base=self._base(plan_id,confirmed_sha);payload=base['plan']['payload'];pair=_pair(payload['failed_run_id'],payload['computer_guid'])
                 claim=self.planning.attempts.claim_path(**pair)
@@ -102,10 +121,15 @@ class RecoveryStartupPlans:
                 validate_unit(unit)
                 if len(canonical(unit))>65536:raise ValueError
                 _ledger(unit,ledger)
-                if not _same(self.planning.snapshot(**pair),payload['snapshot']) or not _same(self._base(plan_id,confirmed_sha),base):raise ValueError
-                return self.store.create(dict(schema_version=1,scope='one_fixed_sssd_start_with_retained_temporary_policy',
+                scope=self._native_scope(base) if native_check else None
+                if (not _same(self.planning.snapshot(**pair),payload['snapshot']) or not _same(self._base(plan_id,confirmed_sha),base)
+                        or (native_check and not _same(self._native_scope(base),scope))):raise ValueError
+                attachment=dict(schema_version=1,scope='one_fixed_sssd_start_with_retained_temporary_policy',
                     recovery_plan_id=plan_id,recovery_plan_sha256=confirmed_sha,recovery_payload_sha256=digest(payload),
-                    identity=base['identity'],source_sha256=base['source_sha256'],sssd_unit=unit,effects_ledger=ledger))
+                    identity=base['identity'],source_sha256=base['source_sha256'],sssd_unit=unit,effects_ledger=ledger)
+                if native_check:
+                    attachment.update(scope='one_fixed_sssd_start_and_native_check_with_retained_temporary_policy',native_check=scope)
+                return self.store.create(attachment)
         except Exception:raise fail('recovery_startup_plan_invalid','Exact startup scope and protected recovery provenance did not verify') from None
 
     def load(self,startup_id,startup_sha,plan_id,confirmed_sha):
@@ -114,6 +138,8 @@ class RecoveryStartupPlans:
         expected=dict(schema_version=1,scope='one_fixed_sssd_start_with_retained_temporary_policy',
             recovery_plan_id=plan_id,recovery_plan_sha256=confirmed_sha,recovery_payload_sha256=digest(base['plan']['payload']),
             identity=base['identity'],source_sha256=base['source_sha256'],sssd_unit=unit,effects_ledger=ledger)
+        if 'native_check' in approved:
+            expected.update(scope='one_fixed_sssd_start_and_native_check_with_retained_temporary_policy',native_check=self._native_scope(base))
         if (not _same(approved,expected) or attachment['created_at']<base['plan']['created_at']
                 or len(canonical(unit))>65536):raise ValueError
         validate_unit(unit);_ledger(unit,ledger)
