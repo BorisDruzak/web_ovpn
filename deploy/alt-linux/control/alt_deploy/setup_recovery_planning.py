@@ -31,9 +31,19 @@ class RecoveryPlanningService:
 
     def snapshot(self, failed_run_id, computer_guid):
         pair = _pair(failed_run_id, computer_guid)
+        return self._snapshot(failed_run_id, computer_guid, guard=lambda: self._unreserved(pair))
+
+    def _unreserved(self, pair):
         claim = self.attempts.claim_path(**pair)
         if claim.exists() or claim.is_symlink():
             raise fail('recovery_attempt_reserved', 'This failed run and computer already have a recovery attempt; retry is prohibited')
+
+    def _snapshot(self, failed_run_id, computer_guid, *, guard):
+        # The public path always supplies the exclusion guard.  The separate
+        # internal reserved-state adapter supplies exact protected-plan checks,
+        # never a CLI bypass flag or an unvalidated replacement claim.
+        pair = _pair(failed_run_id, computer_guid)
+        guard()
         historical = self.history.load(failed_run_id)
         pinned = historical['identity']
         original = decode_state_bytes(historical['raw_files']['plan'])['payload']
@@ -87,8 +97,7 @@ class RecoveryPlanningService:
                     or current.hostname != machine.hostname or current.ip != machine.ip
                     or self.history.load(failed_run_id)['raw_files'] != historical['raw_files']):
                 raise ValueError
-            if claim.exists() or claim.is_symlink():
-                raise fail('recovery_attempt_reserved', 'Recovery attempt appeared during inspection; retry is prohibited')
+            guard()
             return dict(pair, machine_uuid=machine.uuid, computer_sid=computer['object_sid'],
                 evidence_sha256=pinned['evidence_sha256'], historical_identity=pinned,
                 machine=registered, user=user, computer_ou=ou, ou_identity=ous[0], computer=computer,

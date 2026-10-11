@@ -228,6 +228,17 @@ The generated remote worker was also executed inside an isolated unit filesystem
 
 Exact published `8d1248df78aa4c40b67e72fd2e6e9d586642647a` ALT CI [38142056394](https://github.com/BorisDruzak/web_ovpn/actions/runs/38142056394) passed; runtime workflow [38142056381](https://github.com/BorisDruzak/web_ovpn/actions/runs/38142056381) retained the same ten enumerated independent failures, with 3910 passes and 11 skips. Its focused runtime identity job passed.
 
+The reserved fresh-state adapter is implemented in `setup_recovery_reserved_state.py`:
+
+- [x] Keep public planning's unconditional attempt exclusion. The internal adapter accepts only the exact protected execution envelope and its reserved, currently unexpired plan; it neither reserves an attempt nor decrypts credentials.
+- [x] Revalidate the protected claim, original five-file history, plan SHA, machine/computer identities and absence of write intent/result before and after fresh directory, registry, source and workstation inspection. Reject any snapshot drift, terminal/interrupted state or expiry.
+- [x] Reproduce and fix a final-validation race where original history changed during reservation validation. Tests also integrate the real internal provider with synthetic credentials, LDAP transport and prewrite receipts: unchanged state permits one GUID-only write; changed KVNO before writing permits zero writes. Synthetic receipts are not operational approval evidence.
+- [x] All 24 new tests and 175 combined state/history/planning/credential/provider tests passed as the service user. Full ALT passed with 1372 passed and 1 skipped in 224.98 seconds, including all final additions. Independent follow-up review closed with no actionable findings.
+
+The real controller-backup producer, locked prewrite coordinator, authentication installation, trust proof and additive continuation remain required. No selected-target recovery claim, password reset, live authentication installation or deployment occurred in this block.
+
+Exact published `120e0218b7d749662231d9117e58b6cbfa0b80d2` ALT CI [38143108642](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143108642) passed; the focused runtime identity job in [38143108554](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143108554) passed while its full regression was still running when this evidence was recorded.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
