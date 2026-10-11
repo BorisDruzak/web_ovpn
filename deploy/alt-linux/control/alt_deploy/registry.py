@@ -171,6 +171,17 @@ class MachineRepository:
             },
         )
 
+    def resolve(self, identifier: str) -> MachineRecord:
+        """Resolve a registered UUID/key or one unique hostname, never an IP."""
+        normalized = identifier.strip().lower()
+        matches = [record for record in self.list()
+                   if normalized in (record.uuid, record.machine_key, record.hostname.lower())]
+        if len(matches) > 1:
+            raise ControlError('machine_ambiguous', 'Machine identifier is ambiguous; select UUID', 3)
+        if not matches:
+            raise ControlError('machine_not_found', 'Registered machine was not found; select UUID or unique hostname', 3)
+        return matches[0]
+
     def persist_preflight(
         self,
         machine: MachineRecord,

@@ -1,5 +1,17 @@
 # ALT Workstation: manual bootstrap and domain join MVP
 
+For existing AD employee lookup and an operator workflow without hand-written
+request JSON, use [ALT_OPERATOR_SETUP_CLI.md](ALT_OPERATOR_SETUP_CLI.md).
+The new `ad` commands are read-only. `setup plan` saves a private 30-minute
+plan; `setup apply` requires its exact SHA and revalidates identities before
+the existing fixed stage-03 pipeline. Domain bindings are separate from local
+provision assignments. Existing `configure preview/start --vars-file` commands
+remain supported for machines without a managed domain binding.
+
+Code verification, guarded controller deployment and explicitly authorized
+workstation acceptance are separate gates; see
+[the dated AD Setup acceptance report](verification/ALT_AD_SETUP_CLI_ACCEPTANCE_2026-10-11.md).
+
 > **Scope/status:** This document is a local/static operator procedure. It does
 > not prove that a deployed controller canary has run; runtime acceptance is a
 > Task 6 activity after separately authorized deployment and successful

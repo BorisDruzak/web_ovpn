@@ -362,6 +362,10 @@ class ProvisionPlanner:
 
         machine = self.machines.get(normalized_uuid)
 
+        from .setup_assignments import DomainAssignmentStore
+        if DomainAssignmentStore(self.settings.state_root).get(normalized_uuid) is not None:
+            raise ControlError('assignment_conflict', 'Machine has a domain assignment; local provisioning is blocked', 4)
+
         assignment = self.assignments.get(
             normalized_uuid
         )

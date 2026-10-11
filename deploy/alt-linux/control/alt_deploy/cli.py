@@ -214,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_cancel_execution.add_argument("session_id")
     install_cancel_execution.add_argument("--reason", required=True)
 
+    from .setup_cli import add_parsers
+    add_parsers(commands)
     return parser
 
 
@@ -351,7 +353,10 @@ def main(
     )
 
     try:
-        if (
+        if parsed.command in {'ad', 'setup'}:
+            from .setup_cli import handle
+            payload = handle(parsed, active_settings)
+        elif (
             parsed.command == "machines"
             and parsed.machine_command == "list"
         ):
@@ -766,11 +771,19 @@ def main(
                 f"ERROR [{exc.code}]: "
                 f"{exc.message}\n"
             )
+            if parsed.command == 'setup':
+                run_id = str(exc.details.get('run_id', ''))
+                if run_id.startswith('setup-run-') and len(run_id) == 42:
+                    stderr.write(f"Run: {run_id}\nInspect: workstationctl setup status {run_id}\n")
 
         return exc.exit_code
 
-    _write_json(stdout, payload)
-    return 0
+    if parsed.command in {'ad', 'setup'} and not parsed.as_json:
+        from .setup_cli import write_text
+        write_text(stdout, payload)
+    else:
+        _write_json(stdout, payload)
+    return 7 if parsed.command == 'setup' and payload.get('status') == 'failed' else 0
 
 
 if __name__ == "__main__":

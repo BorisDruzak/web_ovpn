@@ -388,7 +388,27 @@ class ConfigurePlanner:
     def configure_playbook(self) -> Path:
         return self.settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
 
-    def start(self, machine_uuid: str, request: ConfigureRequest) -> dict[str, object]:
+    def start(self, machine_uuid: str, request: ConfigureRequest, *,
+              _lock_held: bool = False, setup_run_id: str | None = None) -> dict[str, object]:
+        from contextlib import nullcontext
+        from .locking import exclusive_lock
+        from .setup_assignments import DomainAssignmentStore
+        context = nullcontext() if _lock_held else exclusive_lock(self.settings.lock_file)
+        with context:
+            binding = DomainAssignmentStore(self.settings.state_root).get(machine_uuid)
+            if binding is not None:
+                if (not _lock_held or setup_run_id != binding.get('run_id')
+                        or binding.get('result') != 'running'):
+                    raise ControlError('setup_assignment_managed', 'Machine has a managed domain assignment; use setup plan/apply', 4)
+                expected_user = binding['login'] + '@sosnadmin.local'
+                if (request.domain_test_user != expected_user or request.assigned_domain_user != expected_user
+                        or request.computer_ou != binding['computer_ou']
+                        or request.software_profile != binding['software_profile']
+                        or request.remote_access_profile != binding['remote_access_profile']):
+                    raise ControlError('assignment_conflict', 'Configure request differs from reserved domain binding', 4)
+            return self._start_unlocked(machine_uuid, request)
+
+    def _start_unlocked(self, machine_uuid: str, request: ConfigureRequest) -> dict[str, object]:
         machine = self.machines.get(machine_uuid)
         if not machine.ip:
             raise ControlError(code="machine_missing_ip", message="Registered machine has no IP address", exit_code=5)

@@ -1,0 +1,13 @@
+---
+- name: Validate setup components on controller without workstation contact
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/vault.yml
+    - ../group_vars/software_catalog.yml
+  tasks:
+    - name: Reuse fixed stage-03 component preflight
+      ansible.builtin.import_tasks: tasks/configure_component_preflight.yml
