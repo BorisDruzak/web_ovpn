@@ -29,7 +29,7 @@ def make_executable(path: Path, content: str) -> Path:
 
 def test_run_netctl_transmits_projection_only_through_stdin(tmp_path,monkeypatch):
     fake = make_executable(tmp_path/'stdin-netctl',
-        "import sys,json\nprint(json.dumps({'argv':sys.argv[1:],'stdin':sys.stdin.read()}))\n")
+        "#!/usr/bin/env python3\nimport sys,json\nprint(json.dumps({'argv':sys.argv[1:],'stdin':sys.stdin.read()}))\n")
     monkeypatch.setenv('NETCTL_PATH',str(fake))
     monkeypatch.setenv('NETCTL_USE_SUDO','0')
     from app.netctl_client import run_netctl

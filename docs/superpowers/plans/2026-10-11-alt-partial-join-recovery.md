@@ -470,6 +470,12 @@ Exact published `2e482310505c1053315485bce28c4e5b92e59283` ALT CI [38158362798](
 
 Full root ALT regression passed against the frozen reviewed collector candidate: 1738 passed and 1 skipped in 280.71 seconds. Both new Python files matched the local candidate by SHA-256 before and after the run. Focused root tests, compilation, complete source/test/document review and diff checks also passed. This evidence covers the diagnostic collector; recovery execution and live Setup acceptance remain pending.
 
+### Runtime regression baseline fixture repairs
+
+Three of the ten previously enumerated runtime failures were reproduced on non-root ALT: 3 failed and 28 passed across `tests/test_netctl_client.py`, `tests/test_inventory_endpoint_web.py` and `tests/test_vpnctl_management.py`. The fake netctl executable lacked a shebang; the PC-card test asserted an obsolete CSS revision; the dashboard fixture created only a Windows command wrapper on Linux and consequently observed the host's real systemctl state. The first wrapper correction also reproduced a Windows failure because shell-false short-name resolution did not find the command wrapper.
+
+The final test-only correction supplies the netctl shebang, matches the existing CSS revision, and uses a child-process harness invoking the real vpnctl CLI main with only systemctl launches redirected to a Python fixture. Production parsing and metrics remain in use. Exact captured systemctl arguments prove both calls use the fixture; active/inactive expectations match its output. Final non-root ALT verification passed all 31 tests in 19.00 seconds; Windows verification passed 30 with one platform skip in 30.06 seconds. All three test files compiled, final source hashes matched the ALT copy, diff checks passed and independent final source review reported no findings. No production code or configuration changed. Seven ownership-related baseline failures, full runtime regression and exact published CI remain pending.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

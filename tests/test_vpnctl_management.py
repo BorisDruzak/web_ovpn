@@ -259,9 +259,13 @@ def test_connected_fallback_when_management_unavailable(tmp_path):
 
 
 def test_web_summary_returns_only_dashboard_metrics(tmp_path):
+    command_log = tmp_path / "systemctl-calls.jsonl"
     systemctl_py = tmp_path / "systemctl.py"
     systemctl_py.write_text(
-        """import sys
+        f"import json\nfrom pathlib import Path\nimport sys\n"
+        f"with Path({str(command_log)!r}).open('a', encoding='utf-8') as log:\n"
+        "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        """
 service = sys.argv[-1]
 if service == 'openvpn-server@server':
     print('active')
@@ -271,13 +275,27 @@ raise SystemExit(3)
 """,
         encoding="utf-8",
     )
-    systemctl_cmd = tmp_path / "systemctl.cmd"
-    systemctl_cmd.write_text(f'@echo off\r\n"{sys.executable}" "{systemctl_py}" %*\r\n', encoding="utf-8")
+    harness = tmp_path / "summary-harness.py"
+    harness.write_text(
+        "import runpy\nimport subprocess\nimport sys\n"
+        f"namespace = runpy.run_path({str(VPNCTL)!r})\n"
+        "context = namespace['main'].__globals__\n"
+        "real_run = context['run']\n"
+        "def fixture_run(command, **kwargs):\n"
+        "    if command[0] == 'systemctl':\n"
+        f"        return subprocess.run([sys.executable, {str(systemctl_py)!r}, *command[1:]],\n"
+        "                              text=True, capture_output=True, **kwargs)\n"
+        "    return real_run(command, **kwargs)\n"
+        "context['run'] = fixture_run\n"
+        "raise SystemExit(namespace['main'](['--json', 'web-summary']))\n",
+        encoding="utf-8",
+    )
     env = vpnctl_env(tmp_path)
-    env["PATH"] = f"{tmp_path}{os.pathsep}{env['PATH']}"
+    env["SERVICE_NAME"] = "openvpn-server@server"
+    env["NAT_SERVICE"] = "vipnet-openvpn-nat.service"
 
     proc = subprocess.run(
-        [sys.executable, str(VPNCTL), "--json", "web-summary"],
+        [sys.executable, str(harness)],
         env=env,
         text=True,
         stdout=subprocess.PIPE,
@@ -289,12 +307,16 @@ raise SystemExit(3)
     assert json_out(proc) == {
         "status": "ok",
         "data": {
-            "openvpn": "unknown",
-            "nat": "unknown",
+            "openvpn": "active",
+            "nat": "inactive",
             "clients_count": 0,
             "connected_count": 0,
         },
     }
+    assert [json.loads(line) for line in command_log.read_text(encoding="utf-8").splitlines()] == [
+        ["is-active", "openvpn-server@server"],
+        ["is-active", "vipnet-openvpn-nat.service"],
+    ]
 
 
 def test_management_kill_command(tmp_path):
