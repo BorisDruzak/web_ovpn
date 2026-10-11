@@ -13,6 +13,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -41,6 +42,27 @@ from alt_deploy import install_renderer as renderer_module
 from alt_deploy import install_execution as execution_module
 from alt_deploy import install_session_repository as repository_module
 from alt_deploy.install_renderer import RendererSecrets
+
+
+def _emulate_root_owned_fixture(monkeypatch, paths, *, uid=0, gid=0):
+    """Model ownership only for explicit synthetic fixture inodes.
+
+    Preserve real types, modes, sizes, no-follow opens, reads and hashes.
+    Ownership rejection can be exercised by supplying a non-root uid/gid.
+    """
+    identities = {(path.stat().st_dev, path.stat().st_ino) for path in paths}
+    original_lstat = Path.lstat
+    original_fstat = os.fstat
+
+    def view(metadata):
+        if (metadata.st_dev, metadata.st_ino) not in identities:
+            return metadata
+        fields = {name: getattr(metadata, name) for name in dir(metadata) if name.startswith('st_')}
+        fields.update(st_uid=uid, st_gid=gid)
+        return SimpleNamespace(**fields)
+
+    monkeypatch.setattr(Path, 'lstat', lambda path: view(original_lstat(path)))
+    monkeypatch.setattr(os, 'fstat', lambda fd: view(original_fstat(fd)))
 
 
 def test_root_execution_fixture_base_is_safe(tmp_path: Path) -> None:
@@ -234,6 +256,7 @@ def _renderer_secrets() -> RendererSecrets:
 
 def test_release_manifest_loads_fixed_digest_and_member_pinned_archives(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loader = getattr(
         execution_module, "load_execution_release_archives", None
@@ -241,6 +264,7 @@ def test_release_manifest_loads_fixed_digest_and_member_pinned_archives(
     assert callable(loader), "secure release-held archive loader is missing"
     root = _root_safe_install_fixture_base(tmp_path) / "held-release"
     expected = _publish_held_release_contract(root)
+    _emulate_root_owned_fixture(monkeypatch, (root, *root.iterdir()))
     settings = replace(
         Settings.from_env(), install_execution_release_root=root
     )
@@ -252,6 +276,7 @@ def test_release_manifest_loads_fixed_digest_and_member_pinned_archives(
 
 def test_release_manifest_accepts_vendor_self_hardlink(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loader = getattr(
         execution_module, "load_execution_release_archives", None
@@ -291,6 +316,7 @@ def test_release_manifest_accepts_vendor_self_hardlink(
     )
     archive_path.chmod(0o444)
     manifest_path.chmod(0o444)
+    _emulate_root_owned_fixture(monkeypatch, (root, *root.iterdir()))
     settings = replace(
         Settings.from_env(), install_execution_release_root=root
     )
@@ -301,6 +327,18 @@ def test_release_manifest_accepts_vendor_self_hardlink(
         "groups.json",
         "groups.json",
     )
+
+
+@pytest.mark.parametrize('uid,gid', [(65534, 0), (0, 65534)])
+def test_release_loader_rejects_nonroot_ownership(tmp_path, monkeypatch, uid, gid):
+    if os.name != 'posix':
+        pytest.skip('POSIX ownership contract')
+    root = _root_safe_install_fixture_base(tmp_path) / 'untrusted-release'
+    _publish_held_release_contract(root)
+    _emulate_root_owned_fixture(monkeypatch, (root, *root.iterdir()), uid=uid, gid=gid)
+    settings = replace(Settings.from_env(), install_execution_release_root=root)
+    with pytest.raises(ControlError, match='release'):
+        execution_module.load_execution_release_archives(settings)
 
 
 def test_execution_release_root_has_no_environment_override(

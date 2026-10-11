@@ -255,6 +255,9 @@ exit 2
             f"REPO_ROOT={json.dumps(str(REPO_ROOT))}; "
             f"ALT_ROOT={json.dumps(str(ALT_ROOT))}; "
             f"source {json.dumps(str(LIBRARY_PATH))}; "
+            # Keep unit prechecks on the fake interpreter even when the real
+            # repository has a .venv; otherwise nested pytest recurses here.
+            f"installer_python() {{ printf '%s' {shlex.quote(str(self.fake_bin / 'python3'))}; }}; "
             f"{function_name} {rendered}"
         )
         return subprocess.run(

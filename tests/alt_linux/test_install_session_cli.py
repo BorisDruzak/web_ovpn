@@ -29,6 +29,21 @@ from alt_deploy.install_session_repository import InstallSessionRepository
 from alt_deploy.install_session_service import InstallSessionService
 
 
+def _emulate_root_release_ownership(monkeypatch, root: Path, settings: Settings) -> None:
+    """Emulate only ownership of this synthetic held release, like CLI euid.
+
+    Preserve real inode, type, mode and size checks and real file reads/hashes.
+    Production loader checks remain enabled. Never apply this to real releases.
+    """
+    from test_install_execution import _emulate_root_owned_fixture
+
+    private_key = settings.install_signing_private_key
+    public_key = settings.install_signing_public_key
+    paths = (root, *root.iterdir(), private_key, public_key,
+             *private_key.parents, *public_key.parents)
+    _emulate_root_owned_fixture(monkeypatch, paths)
+
+
 def test_cli_show_redacts_private_session_fields(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -313,6 +328,7 @@ def test_authorize_execution_reaches_real_service_with_held_release(
     )
     release_root = tmp_path / "held-release-cli"
     _publish_held_release_contract(release_root)
+    _emulate_root_release_ownership(monkeypatch, release_root, settings)
     object.__setattr__(
         settings, "install_execution_release_root", release_root
     )
@@ -385,6 +401,7 @@ def test_qemu_authorization_cli_reaches_real_production_service_by_default(
     )
     release_root = tmp_path / "held-release-qemu"
     _publish_held_release_contract(release_root)
+    _emulate_root_release_ownership(monkeypatch, release_root, settings)
     object.__setattr__(
         settings, "install_execution_release_root", release_root
     )
