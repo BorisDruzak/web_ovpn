@@ -90,6 +90,19 @@ Storage foundation completed separately from historical eligibility and executio
 
 The foundation has no CLI entrypoint, provider, directory writer or automatic continuation. It does not validate full historical run eligibility yet. Focused ALT Python 3.12 checks: 35 new state tests plus existing AD/Setup tests, 98 passed. The full `tests/alt_linux` suite passed with 1047 passed and 1 skipped. Python compile and diff checks passed. The Windows runner cannot collect this POSIX-only suite; validation used an isolated source copy on ALT, not the installed controller code.
 
+Historical provenance inspection is implemented in `setup_recovery_history.py` as a separate read-only block:
+
+- [x] Validate the original plan's hash/schema and the failed run's original start-time TTL without authorizing an expired Setup replay.
+- [x] Require a first join with computer absence, no prior assignment, fixed domain/OU/user/profile identity and one failed Setup/index/binding/configuration result chain.
+- [x] Match the actual producer contract: Configure `configure_critical_phase_failed` with phase `domain_join`, plus Setup `domain_join_failed`. Unsupported phases/conflicts and unavailable/mismatched results remain refused.
+- [x] Preserve all five original raw byte streams; refuse missing/changed evidence and derive protected paths only from validated run/plan/configuration/UUID identifiers.
+- [x] Observe RED then GREEN with 33 historical tests; combined history/storage/Setup/plan checks passed with 89 tests. Full `tests/alt_linux` passed with 1080 passed and 1 skipped; Python compile and diff checks passed. Independent source review found no actionable issues in this block.
+- [x] Read the selected real failed-run evidence using an isolated source copy and verify all five originals remained byte-identical. No attempt, binding revision, password reset or installed controller change was made.
+
+This establishes historical eligibility only. It does not establish current AD-object ownership or safe execution, and has no CLI entrypoint. Fresh registry/user/OU/AD/workstation snapshots, plan generation, lifecycle serialization, provider and continuation remain required before execution approval.
+
+GitNexus impact for the shared `SetupPlanStore` baseline identified four direct importers (`setup.py`, `setup_assignments.py`, `setup_runtime.py`, `setup_cli.py`) and three transitive files, with LOW reported risk. Source inspection and the complete ALT suite verified the existing Setup contracts; the newly staged recovery modules are outside the committed index baseline and remain unconnected to execution.
+
 ## Task 2: Fixed one-attempt recovery execution
 
 **Files:** Create a fixed recovery provider/runtime and focused provider/runtime tests under the existing control package; wire the fixed runner in `setup_recovery.py`. Do not create a generic Ansible override or expose LDAP attributes, scripts, command lines, paths or variables as operator inputs.
