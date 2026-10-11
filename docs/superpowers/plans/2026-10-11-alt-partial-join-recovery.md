@@ -691,6 +691,22 @@ regression passed 1963 tests with one original skip in 400.78 seconds against
 a frozen candidate tree; tested Git blobs matched staging. Actual controller integration and the remaining
 recovery coordinator/CLI/live gates are still required.
 
+### Controller native transport candidate (2026-10-12)
+
+The fixed native runtime now validates genuine retained startup records, the
+protected thirteen-source bundle and an explicit caller authorization gate
+under the lifecycle lock. It sends only fixed strict-SSH testjoin/verify
+bootstrap packets and validates the complete canonical native receipt. Three
+late-callback RED regressions were closed; final local runtime suite passed 23
+cases and the focused startup/native/controller chain passed 119 tests in
+59.11 seconds. Independent review found no remaining concrete findings. All
+88 modules compiled and tested Git blobs matched staging. Full root ALT
+regression passed 1986 tests with one original skip in 405.68 seconds against
+a frozen candidate tree. Runtime publication is separate from deployment. Protected native-authorization
+production, reviewed inventory/effects, coordinator/CLI, user resolution,
+terminal policy/service handoff, additive Setup continuation and live gates
+remain required. No real native recovery operation was executed.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

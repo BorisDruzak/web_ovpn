@@ -94,3 +94,34 @@ Python modules** compiled. Full root ALT regression against frozen candidate
 tree `139baa14c945959b78d537ac9f78a433883fdedb` passed **1963 tests, one original
 skip in 400.78 s**. Tested source/test Git blob hashes matched the staged files.
 Publication is separate from installation; controller integration remains next.
+
+## Controller transport candidate
+
+The internal controller runtime uses the lifecycle lock, genuine retained
+startup context/receipt checks, protected thirteen-source loading and mandatory
+caller-supplied exact native authorization. The authorization binds the recovery
+plan, full source bundle, startup request/receipt, startup approval and effects
+ledger; there is no default authority. Its fixed SSH transport retains strict
+host-key verification and carries the bounded bootstrap sources on stdin.
+Native receipt validation binds exact tool metadata/package digest and refuses
+complete-trust or enforced-peer claims. No Vault, AD write or service action is
+introduced by this transport.
+
+Initial missing-runtime RED: **14 failures in 0.46 s**; first GREEN: **14 passes
+in 6.51 s**. Three late-startup callback regressions reproduced native approval,
+thirteenth-source and failed-marker drift before SSH: **3 failures in 1.65 s**.
+Corrected final checks reread native authorization, protected sources and full
+local postwrite history, deployment fingerprint, exact plan dates/SHA/payload,
+startup records and the permanent native failure marker before SSH. The final
+expanded suite passed **23 tests in 10.11 s**, including late native-authorization
+callbacks and postpersist failure exclusion. Independent source review closed
+the findings and found no new actionable issue.
+
+Final focused runtime/native/startup chain passed **119 tests in 59.11 s**.
+These runtime fixtures mock authorization/postwrite state and SSH; they are not
+real AD or infrastructure acceptance. All **88 controller Python modules**
+compiled; tested candidate source/test Git blobs matched staging. Full root ALT
+regression against frozen tree `558050b4211b4ae1b08b8d318479d815e143c08e`
+passed **1986 tests, one original skip in 405.68 s**. Runtime publication remains
+separate from installation and exact-commit CI. Complete state-storage unavailability remains a boundary of
+best-effort terminal error recording and requires manual state recovery.
