@@ -1,0 +1,69 @@
+# Recovery native Samba check: internal worker
+
+This block adds a one-shot internal worker and protected verifier. It is not
+controller transport, an operator command, a complete recovery coordinator or
+live acceptance. No selected workstation recovery or actual AD authentication
+was performed for this block.
+
+## Behavior
+
+The worker requires the genuine retained SSSD startup request and receipt,
+unexpired approval, exact reviewed executable bytes and package versions. It
+reserves a protected pair-specific evidence directory under the existing
+recovery lock. An entered failure permanently excludes replay; retained failed
+evidence is not automatically removed.
+
+The fixed `net ads testjoin` command runs in bubblewrap using a private copy of
+the imported Samba secret. Private NSS, DNS, Kerberos and Samba configuration
+replace host inputs; configuration mounts are read-only. Host keytab, Samba
+state, SSSD configuration and runtime sockets are absent. Scratch authentication
+state may be written inside the isolated directory and must be removed before
+the retained verification receipt is committed. Host credentials, services and
+directory objects are not written by this worker.
+
+Protected request/intent records and pinned scratch inputs are checked after
+the last command-producing preflight, immediately before native invocation.
+Postchecks require the same live credentials, retained startup/service state,
+tools and original evidence. Final verification performs tool queries before
+the genuine startup verifier and rereads canonical evidence afterward.
+
+Native Samba discovery does not enforce a single peer. Its receipt explicitly
+retains `native_testjoin_peer_pinning_verified=false`, `trust_verified=false`
+and `temporary_policy_retained=true`. Mandatory pinned Kerberos and fresh AD
+GUID/SID/OU/KVNO continuity, employee resolution and terminal policy/service
+handoff remain separate coordinator obligations. The exact-package source audit
+is recorded in [the preceding audit](ALT_RECOVERY_NATIVE_TESTJOIN_AUDIT_2026-10-12.md);
+it is not binary attestation or proof of every transitive native call path.
+
+## Verification and independent review
+
+- Initial missing-worker RED: 15 failures; initial GREEN: 15 passes in 14.36 s.
+- Root sandbox expansion: 18 passes in 16.71 s, with the real bubblewrap probe
+  executed rather than skipped. This probe uses a fixed Python child, synthetic
+  private configuration and no real AD credentials or authentication.
+- Six RED regressions reproduced scratch replacement during guards and live
+  artifact drift after final tool queries. Corrected root suite: 24 passes in
+  24.21 s.
+- Standalone source namespace RED reproduced relative-import incompatibility;
+  explicit trusted native dependency injection passed with 25 root cases.
+- Two RED regressions reproduced final startup-callback request/intent drift:
+  2 failures in 2.53 s. Both now require zero native invocations.
+- Final root worker suite: `python -m pytest -q --tb=short
+  tests/alt_linux/test_setup_recovery_native_testjoin.py`: **27 passed in
+  24.95 s**. Authentication success/error cases use a fixed synthetic runner;
+  the real sandbox test separately verifies mount isolation.
+- Independent reviewer closed all three concrete ordering findings and found
+  no new actionable source findings. Review does not establish live recovery.
+
+- Full root ALT regression: `python -m pytest -q --tb=short tests/alt_linux`:
+  **1940 passed, 1 skipped in 397.57 s**, with explicit staging umask 022.
+  The new real bubblewrap probe executed. The original unrelated skip remains.
+- Compiled all **86 Python modules** under `deploy/alt-linux/control/alt_deploy`.
+  Local and tested worker/test file SHA-256 values matched exactly;
+  `git diff --cached --check` passed. The tested copy is the tracked baseline
+  archive plus these two candidate source/test files.
+
+Publication does not install this internal worker. Exact-commit CI remains a
+separate check after publication. Controller integration, exact protected
+execution plans, guarded deployment and final live execution approval remain
+outstanding.

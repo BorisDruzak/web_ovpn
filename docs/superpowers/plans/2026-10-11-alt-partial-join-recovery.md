@@ -661,6 +661,22 @@ or peer-enforcement work is introduced. Complete transitive credential-path and
 filesystem-sandbox verification before the bounded online worker. No live
 testjoin or recovery mutation was performed for this audit.
 
+### Isolated native online worker (2026-10-12)
+
+[Worker verification](../../verification/ALT_RECOVERY_NATIVE_TESTJOIN_WORKER_2026-10-12.md)
+records the fixed internal one-shot Samba check with copied scratch credentials,
+read-only private configuration mounts and retained startup continuity. Its
+receipt explicitly separates native success from enforced-peer and complete
+trust proof. Root verification passed all 27 new cases, including real
+bubblewrap mount isolation with a synthetic child. Three independent-review
+ordering findings were reproduced as RED regressions and closed; final source
+review found no new actionable findings. Controller transport, coordinator,
+pinned directory/Kerberos proof, employee resolution and terminal service/policy
+handoff remain outstanding. No real native authentication or recovery mutation
+was performed. Full root ALT regression passed 1940 tests with one original
+skip in 397.57 seconds; all 86 controller modules compiled and tested-file
+hashes matched. Publication and exact-commit CI are separate from installation.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
