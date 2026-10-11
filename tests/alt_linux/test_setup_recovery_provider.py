@@ -55,7 +55,8 @@ def scenario(root):
             'snapshot_sha256': digest(payload['snapshot']), 'controller_backup_verified': True,
             'workstation_backup_verified': True, 'local_rehearsal_verified': True,
             'controller_backup_sha256': '1' * 64, 'workstation_backup_sha256': '2' * 64,
-            'local_rehearsal_sha256': '3' * 64}
+            'local_rehearsal_sha256': '3' * 64,'services_quiesced_verified':True,'services_quiesced_sha256':'4'*64}
+    prepare.last_service_check=lambda payload,claim,sealed,password,prepared:copy.deepcopy(prepared)
     def build(**changes):
         options = dict(directory=directory, credentials=credentials, fresh_check=lambda payload: copy.deepcopy(snapshot),
             prewrite=prepare, runner=runner, fingerprint=lambda: 'e' * 64, clock=lambda: NOW)
@@ -89,6 +90,18 @@ def test_one_guid_only_write_has_durable_intent_and_safe_result(tmp_path):
     assert len(calls) == 1
 
 
+def test_preparation_without_verified_service_quiescence_never_writes(tmp_path):
+    build,plan,attempts,credentials,computer,snapshot,calls,cleaned,prepare=scenario(tmp_path)
+    def missing(*args):
+        result=prepare(*args)
+        result.pop('services_quiesced_verified',None)
+        result.pop('services_quiesced_sha256',None)
+        return result
+    missing.last_service_check=prepare.last_service_check
+    with pytest.raises(ControlError):build(prewrite=missing).write_once(plan['plan_id'],plan['sha256'])
+    assert calls==[]
+
+
 @pytest.mark.parametrize('guard', ['unimplemented', 'snapshot', 'source', 'uri', 'auth', 'credential_source',
     'ssf', 'computer', 'backup', 'local_backup', 'rehearsal', 'preparation_identity', 'expired', 'sha'])
 def test_guards_never_call_ldap_writer(tmp_path, guard):
@@ -106,6 +119,7 @@ def test_guards_never_call_ldap_writer(tmp_path, guard):
                 'rehearsal':'local_rehearsal_verified', 'preparation_identity':'claim_sha256'}[guard]
             value[key] = False if key.endswith('verified') else 'f'*64
             return value
+        bad.last_service_check=prepare.last_service_check
         changes['prewrite'] = bad
     provider = build(**changes)
     if guard == 'uri': provider.directory.transport.config.uri = 'ldap://other-dc.sosnadmin.local'
@@ -215,6 +229,7 @@ def test_credential_change_refuses_modify(tmp_path, monkeypatch, stage):
             result = prepare(payload, claim, sealed, password)
             replace_credential()
             return result
+        changed.last_service_check=prepare.last_service_check
         provider.prewrite = changed
     elif stage == 'open':
         original = credentials.open
@@ -262,3 +277,25 @@ def test_expiry_during_final_credential_open_refuses_modify(tmp_path, monkeypatc
     with pytest.raises(ControlError): provider.write_once(plan['plan_id'], plan['sha256'])
     assert calls == [] and provider.intent_path(RUN, GUID).exists()
     assert private_read(attempts._path(RUN, GUID, '.receipt.json'))['status'] == 'failed'
+
+
+def test_missing_fixed_last_service_check_refuses_before_intent(tmp_path):
+    build,plan,attempts,credentials,computer,snapshot,calls,cleaned,prepare=scenario(tmp_path)
+    del prepare.last_service_check
+    provider=build()
+    with pytest.raises(ControlError):provider.write_once(plan['plan_id'],plan['sha256'])
+    assert calls==[] and not provider.intent_path(RUN,GUID).exists()
+
+
+@pytest.mark.parametrize('change',['expiry','source'])
+def test_final_service_delay_rechecks_ttl_and_source_before_modify(tmp_path,change):
+    build,plan,attempts,credentials,computer,snapshot,calls,cleaned,prepare=scenario(tmp_path)
+    now=[NOW];source=['e'*64]
+    def delayed(payload,claim,sealed,password,prepared):
+        if change=='expiry':now[0]=NOW+timedelta(minutes=30)
+        else:source[0]='f'*64
+        return copy.deepcopy(prepared)
+    prepare.last_service_check=delayed
+    provider=build(clock=lambda:now[0],fingerprint=lambda:source[0])
+    with pytest.raises(ControlError):provider.write_once(plan['plan_id'],plan['sha256'])
+    assert calls==[]

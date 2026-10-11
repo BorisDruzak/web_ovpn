@@ -50,7 +50,8 @@ def test_prewrite_requires_all_three_actual_verifiers_and_preserves_history(tmp_
     originals={key:path.read_bytes() for key,path in paths.items()}
     result=gate(payload,claim,sealed,password)
     from alt_deploy.setup_recovery_provider import RecoveryPasswordProvider
-    RecoveryPasswordProvider._preparation(payload,claim,sealed,result)
+    # Preparation alone no longer authorizes the password writer.
+    with pytest.raises(ValueError):RecoveryPasswordProvider._preparation(payload,claim,sealed,result)
     assert calls==['backup','rehearsal']
     assert result['controller_backup_sha256']==digest(record['controller_backup'])
     assert result['workstation_backup_sha256']==digest(record['workstation_backup'])
@@ -129,9 +130,6 @@ def test_real_provider_requires_verified_gate_before_single_guid_write(tmp_path,
     provider=RecoveryPasswordProvider(SimpleNamespace(state_root=tmp_path,lock_file=tmp_path/'workstationctl.lock'),
         directory=service.directory,credentials=credentials,fresh_check=gate.fresh_check,prewrite=gate,
         runner=runner,fingerprint=lambda:payload['snapshot']['prerequisites']['source_sha256'],clock=service.clock)
-    if changed:
-        with pytest.raises(ControlError):provider.write_once(claim['plan_id'],claim['plan_sha256'])
-        assert writes==[]
-    else:
-        assert provider.write_once(claim['plan_id'],claim['plan_sha256'])['status']=='directory_password_written'
-        assert len(writes)==1
+    # Both valid preparation and changed preparation lack service proof.
+    with pytest.raises(ControlError):provider.write_once(claim['plan_id'],claim['plan_sha256'])
+    assert writes==[]

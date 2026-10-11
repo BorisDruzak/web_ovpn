@@ -128,7 +128,9 @@ def test_reserved_adapter_integrates_with_one_write_provider_and_refuses_prewrit
         return dict(schema_version=1,claim_sha256=digest(reserved),sealed_sha256=sealed['sealed_sha256'],
             snapshot_sha256=digest(payload['snapshot']),controller_backup_verified=True,
             workstation_backup_verified=True,local_rehearsal_verified=True,
-            controller_backup_sha256='1'*64,workstation_backup_sha256='2'*64,local_rehearsal_sha256='3'*64)
+            controller_backup_sha256='1'*64,workstation_backup_sha256='2'*64,local_rehearsal_sha256='3'*64,
+            services_quiesced_verified=True,services_quiesced_sha256='4'*64)
+    prepare.last_service_check=lambda payload,claim,sealed,password,prepared:dict(prepared)
     provider=RecoveryPasswordProvider(SimpleNamespace(state_root=tmp_path,lock_file=tmp_path/'workstationctl.lock'),
         directory=service.directory,credentials=credentials,fresh_check=checker,prewrite=prepare,
         runner=runner,fingerprint=lambda:ready['source_sha256'],clock=service.clock)

@@ -64,18 +64,20 @@ class RecoveryPasswordProvider:
     def _preparation(payload, claim, sealed, prepared):
         fields = {'schema_version', 'claim_sha256', 'sealed_sha256', 'snapshot_sha256',
             'controller_backup_verified', 'workstation_backup_verified', 'local_rehearsal_verified',
-            'controller_backup_sha256', 'workstation_backup_sha256', 'local_rehearsal_sha256'}
+            'controller_backup_sha256', 'workstation_backup_sha256', 'local_rehearsal_sha256',
+            'services_quiesced_verified', 'services_quiesced_sha256'}
         if (not isinstance(prepared, dict) or set(prepared) != fields
                 or type(prepared['schema_version']) is not int or prepared['schema_version'] != 1
                 or prepared['claim_sha256'] != digest(claim) or prepared['sealed_sha256'] != sealed['sealed_sha256']
                 or prepared['snapshot_sha256'] != digest(payload['snapshot'])
-                or any(prepared[name] is not True for name in ('controller_backup_verified', 'workstation_backup_verified', 'local_rehearsal_verified'))
+                or any(prepared[name] is not True for name in ('controller_backup_verified', 'workstation_backup_verified', 'local_rehearsal_verified', 'services_quiesced_verified'))
                 or any(not isinstance(prepared[name], str) or not re.fullmatch('[0-9a-f]{64}', prepared[name])
-                    for name in ('controller_backup_sha256', 'workstation_backup_sha256', 'local_rehearsal_sha256'))):
+                    for name in ('controller_backup_sha256', 'workstation_backup_sha256', 'local_rehearsal_sha256', 'services_quiesced_sha256'))):
             raise ValueError
 
     def write_once(self, plan_id, confirmed_sha):
-        if self.directory is None or self.fresh_check is None or self.prewrite is None:
+        if (self.directory is None or self.fresh_check is None or self.prewrite is None
+                or not callable(getattr(self.prewrite,'last_service_check',None))):
             raise fail('recovery_prewrite_unavailable', 'Reviewed fixed recovery preparation and fresh-state producers are required')
         with exclusive_lock(self.settings.lock_file):
             plan = self.plans.load(plan_id, confirmed_sha)
@@ -104,6 +106,7 @@ class RecoveryPasswordProvider:
                 self._fresh(payload)
                 claim = private_read(self.attempts.claim_path(**pair))
                 document = private_read(self.credentials.path(**pair))
+                ready = private_read(self.credentials._ready_path(**pair))
                 password = self.credentials.open(**pair)
                 self._credential_unchanged(pair, document, password)
                 sealed = {'claim_sha256': identity['claim_sha256'], 'sealed_sha256': document['sealed_sha256']}
@@ -138,6 +141,17 @@ class RecoveryPasswordProvider:
                     # loop, name fallback, reauthentication replay or retry.
                     self._credential_unchanged(pair, document, password)
                     self.plans.load(plan_id, confirmed_sha)
+                    if self.fingerprint()!=payload['snapshot']['prerequisites']['source_sha256']:raise ValueError
+                    if self.prewrite.last_service_check(payload,claim,sealed,password,prepared)!=prepared:raise ValueError
+                    # Remote verification can take time. Pin the original
+                    # cipher/ready/reservation without another Vault opening,
+                    # then revalidate current TTL/source immediately before
+                    # dispatch. A new sealed document is never acceptable.
+                    if (private_read(self.credentials.path(**pair))!=document
+                            or private_read(self.credentials._ready_path(**pair))!=ready
+                            or self.credentials._reservation(**pair)!=identity):raise ValueError
+                    self.plans.load(plan_id,confirmed_sha)
+                    if self.fingerprint()!=payload['snapshot']['prerequisites']['source_sha256']:raise ValueError
                     entered = True
                     rc, _, _ = self.runner(command, environment=environment, input_text=ldif, timeout=30)
                     if type(rc) is not int or rc != 0: raise ValueError
