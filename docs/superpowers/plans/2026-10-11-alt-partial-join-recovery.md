@@ -311,6 +311,21 @@ Exact published `f680e17ab697d8d76638b658fc9cda51bb871a42` ALT CI [38146863043](
 
 The actual protected controller-to-PC importer transport, service quiescence/start policy, Kerberos keytab authentication, pinned machine trust/identity, SSSD/user proof, additive continuation and operator execution command remain required. No actual recovery claim, AD reset, live credential replacement or recovery deployment occurred.
 
+The fixed service snapshot and stop-only worker are implemented in `setup_recovery_services.py`:
+
+- [x] Bind the exact installed systemd 258.9-alt1 executable, four canonical authentication service units, current PIDs/states and protected unit hashes to the original backup and workstation facts. Refuse queued jobs, pending reloads, overrides, activation/stop propagation edges, automatic uphold and success/failure actions. Pin all five queried outgoing dependency types and require direct dependencies to have `StopWhenUnneeded=no`; hash their canonical fragments and bounded unit-specific drop-ins.
+- [x] Share the root-private local install lock, reserve one permanent services leaf per failed-run/computer pair and fsync a bound intent before each fixed `systemctl stop UNIT --job-mode=fail`. Stop only originally active services in the fixed order. Recheck all service/dependency/configuration/backup facts before and after each stop and retain separate progress receipts. Never start, restart, reset failed state, write authentication files or contact AD.
+- [x] Retain failed or partially stopped state with a terminal failure marker. Refuse replay and verification with missing/extra/corrupt artifacts. Final status is only `services_quiesced`; restoration, execution approval and protected transport remain future requirements.
+- [x] Observe the initial missing-module RED and reproduce all four review regressions against the preceding implementation. Fix missing success/failure actions, `UpheldBy` and dependency cleanup policy checks. All 40 new tests and 100 combined service/import/backup tests passed as the service owner; both new Python files compiled. Independent follow-up review closed all findings with no additional actionable issues.
+- [x] Run the final read-only snapshot collector on the disposable PC: the four fixed units and four related dependencies validated, including the built-in system slice's protected drop-in. Authentication facts remained unchanged; SMB/NMB stayed active. No actual stop worker ran.
+- [x] Full ALT passed under root with 1524 passed and 1 skipped in 229.91 seconds, including all final additions. No Python source changed after collection; full source/test/doc inspection and diff checks passed.
+
+The exact installed systemd version was checked with RPM. Context7 resolved `/systemd/systemd` but its available documentation was newer, so stop semantics were verified against the versioned primary [unit documentation](https://raw.githubusercontent.com/systemd/systemd/v258.9/man/systemd.unit.xml), [unit implementation](https://raw.githubusercontent.com/systemd/systemd/v258.9/src/core/unit.c) and [dependency atoms](https://raw.githubusercontent.com/systemd/systemd/v258.9/src/core/unit-dependency-atom.c). GitNexus located the committed recovery interfaces before narrow source inspection.
+
+Exact published `02fa07c8e31271aa414fcfa05a86178d4af8cc99` ALT CI [38147872194](https://github.com/BorisDruzak/web_ovpn/actions/runs/38147872194) passed. Its full runtime CI [38147872147](https://github.com/BorisDruzak/web_ovpn/actions/runs/38147872147) retained the same ten enumerated failures, with 4083 passes and 11 skips. No broader runtime-green claim is made.
+
+This internal worker is not exposed as an execution command. The protected transport, safe service-start policy, real trust/SSSD proof, additive continuation, guarded deployment and final execution approval remain required. No actual recovery claim, service stop, password reset, authentication replacement or recovery deployment occurred in this block.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
