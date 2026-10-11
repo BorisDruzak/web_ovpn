@@ -191,3 +191,35 @@ operator recovery execution route. No real SSSD start, computer-account reset
 or recovery mutation occurred. Online identity/trust, service restoration,
 temporary-policy restoration, additive Setup continuation, guarded deployment
 and final exact-plan execution approval remain required.
+
+### Startup stdin transport preparation (2026-10-12)
+
+Twelve fixed worker sources are carried in a bounded stdin envelope rather
+than the remote argv string. The bootstrap checks wire/module hashes, names,
+duplicate keys, non-finite values and closed field sets before source execution.
+Request bounds remain 128 KiB; the overall source/request wire is at most
+1 MiB and the result at most 16 KiB. Only the effects-ledger digest crosses
+this boundary. Controller context derives genuine policy/service history,
+post-write identity, actual plan dates/SHA and source provenance. A mandatory
+read-only authorization callback supplies the future exact approved binding;
+there is no default approval or operator execution route.
+
+Twenty-three wire and sixteen controller RED tests first reproduced missing
+implementation. Independent review then found final-callback history drift;
+a RED regression observed SSH before late failure. A separate RED reproduced
+cached approval aliasing. Final protected post-write rereads and snapshot copies
+now block both before SSH. Forty-six new checks passed on non-root ALT in
+16.51 seconds, including corrupt/oversized wire and reply, durable-record
+failure, typed-intent drift and post-persistence approval drift. A child-process
+integration loads all genuine modules and runs start/verify only against
+private fixtures, with exactly one simulated start and no verification action.
+Compilation and source hash comparison passed. Final combined non-root checks
+passed 184 tests with three root-only skips in 75.55 seconds. Frozen final-source
+actual-root ALT regression passed 1865 tests with one skip in 337.39 seconds.
+Independent final source review closed all findings with no further actionable
+issues. Exact published CI remains a separate gate.
+
+Both CI workflows for preceding exact SHA
+`86580626eac022bc8d6ff7e74f0dd95ed85b9621` completed successfully. No controller
+deployment, AD reset, target service start or real recovery execution occurred.
+The protected authorization gate and full recovery coordinator remain pending.

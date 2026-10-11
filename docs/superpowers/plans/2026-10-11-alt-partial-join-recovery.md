@@ -552,6 +552,46 @@ No operator route or controller transport invokes this worker yet. It does not
 prove online identity, Samba trust, restoration of originally active services
 or recovery completion. No actual target start or AD recovery was executed.
 
+### Startup transport checkpoint (2026-10-12)
+
+The fixed startup transport carries twelve named worker modules on stdin.
+A small argv bootstrap verifies the complete wire SHA, individual module
+hashes, closed envelope/request fields, duplicates, non-finite values and
+bounded sizes before executing any source. Request size remains 128 KiB;
+module text has its existing 128 KiB bound, total wire is limited to 1 MiB,
+and replies to 16 KiB. Only fixed start/verify dispatch exists. The reviewed
+effects inventory stays controller-side; only its digest is transmitted.
+
+Controller context reuses the genuine post-write/policy chain, derives actual
+plan identity/lifetime and sources, validates retained policy/service receipts
+and requires an explicit read-only authorization gate with no default. That
+future coordinator-owned gate must derive the exact approved unit, source,
+effects and approval binding from protected operator authorization. Contexts
+are copied before callbacks and revalidated with a fresh full post-write load,
+deployment fingerprint and current plan. A permanent controller intent precedes
+SSH; failures do not permit replay, including uncertain receipt persistence.
+
+Initial missing-module RED runs covered 23 bootstrap and 16 controller cases.
+Review found last-authorization history drift; one RED showed SSH occurred
+before late refusal. A second RED exposed mutable cached approval aliasing.
+Fresh protected context rereads and copied snapshots now require zero SSH in
+both cases. All 46 new transport/bootstrap cases passed on non-root ALT in
+16.51 seconds. A child process executes the genuine twelve modules against
+private fixture roots/collectors/runners, observes one start, then verifies
+without another service action. This is synthetic integration, not live trust.
+
+Final combined non-root transport/worker/policy/post-write/service checks passed
+184 tests with three root-only skips in 75.55 seconds. The frozen final-source
+actual-root ALT regression passed 1865 tests with one skip in 337.39 seconds.
+Windows/ALT compilation and source SHA comparison passed; independent final
+source review closed the findings with no further actionable issues. No source
+changed during the final runs. Exact published CI remains a separate gate.
+
+The transport is internal and uninstalled. The actual authorization gate,
+online user/trust checks, original-service restoration, temporary-policy
+restoration and execution coordinator remain required before the final live
+plan approval. No actual recovery operation was performed.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
