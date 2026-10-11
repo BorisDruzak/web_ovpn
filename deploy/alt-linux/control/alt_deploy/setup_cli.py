@@ -7,6 +7,7 @@ from .ad_directory import ADDirectory
 from .ad_transport import DirectoryConfig, LDAPTransport
 from .setup import SetupService
 from .setup_recovery_planning import RecoveryPlanningService
+from .setup_recovery_startup_inventory import RecoveryStartupInventoryService
 
 
 def add_parsers(commands):
@@ -43,6 +44,10 @@ def add_parsers(commands):
     recovery_plan = recovery_actions.add_parser('plan', allow_abbrev=False, help='Read current identities and preserve a non-executable recovery plan')
     recovery_plan.add_argument('--failed-run', required=True, help='Original initial failed Setup run; machine/user/OU come from its protected history')
     recovery_plan.add_argument('--computer-guid', required=True, help='Exact existing computer GUID to inspect; listing or planning does not approve a reset')
+    inventory = recovery_actions.add_parser('startup-inventory', allow_abbrev=False,
+        help='Read-only service graph evidence for later review; no reservation or execution permission')
+    inventory.add_argument('--failed-run', required=True)
+    inventory.add_argument('--computer-guid', required=True)
 
 
 def directory_for_settings(settings):
@@ -60,6 +65,8 @@ def handle(parsed, settings):
             return {'status': 'ok', 'ous': ous, 'count': len(ous)}
         return dict(directory.computer(parsed.hostname), status='ok')
     if parsed.setup_action == 'recovery':
+        if parsed.recovery_action == 'startup-inventory':
+            return RecoveryStartupInventoryService(RecoveryPlanningService(settings)).plan(parsed.failed_run, parsed.computer_guid)
         return RecoveryPlanningService(settings).plan(parsed.failed_run, parsed.computer_guid)
     if parsed.setup_action == 'status':
         from .setup import RUN_RE
@@ -79,6 +86,12 @@ def handle(parsed, settings):
 def write_text(stream, payload):
     if 'plan_id' in payload and 'payload' in payload:
         content = payload['payload']
+        if payload['plan_id'].startswith('recovery-inventory-'):
+            stream.write(f"Startup inventory plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
+            stream.write(f"Machine: {content['machine']['uuid']} / {content['machine']['hostname']}\n")
+            stream.write(f"Inventory SHA-256: {content['inventory']['sha256']}\nUnits: {content['unit_count']} / Possible jobs: {content['possible_job_count']}\n")
+            stream.write('Execution available: false\nInventory requires effects review before a separate execution plan.\n')
+            return
         if payload['plan_id'].startswith('recovery-'):
             stream.write(f"Recovery plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
             machine = content['machine']

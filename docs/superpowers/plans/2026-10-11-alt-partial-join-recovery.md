@@ -724,6 +724,24 @@ live gates still remain required.
 
 ## Task 3: Explicit additive continuation
 
+### Pre-reservation operator inventory checkpoint (2026-10-12)
+
+Ruling: original SSSD policy restoration is a distinct terminal handoff because
+it enables normal renewal/DNS effects. The suppressed-state proof stays
+historical after that handoff; a fresh terminal verifier and explicit approved
+effects are required. This does not authorize network-policy modification.
+
+The operator startup-inventory command collects the existing conservative
+systemd graph through a fixed three-module SHA-bound stdin bootstrap. Its
+large immutable private evidence is stored separately from Setup plan state;
+execution receipt limits stay unchanged. Pre/post genuine recovery snapshots
+bind the selected target, AD identities and original history. No recovery
+reservation or service action exists in this command. Independent review and
+final test evidence are recorded in the startup inventory report. Reviewed
+effects production, selected-user resolution, terminal handoff, execution
+coordinator/CLI and additive continuation remain required before recovery can
+be performed operationally.
+
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
 
 **Interfaces:** A verified recovery-resolution receipt references exact original failed run and binding bytes plus pinned computer identity. Fresh Setup planning may recognize that receipt only after fresh trust/identity validation. New Setup apply still requires its own new plan SHA.

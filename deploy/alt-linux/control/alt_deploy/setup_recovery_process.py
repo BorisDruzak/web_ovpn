@@ -22,12 +22,29 @@ MAX_OUTPUT = 16384
 
 
 def bounded_recovery_run(command, *, environment, input_text=None, timeout=20):
+    return _bounded_run(command,environment=environment,input_text=input_text,timeout=timeout,
+        maximum_input=MAX_INPUT,maximum_output=MAX_OUTPUT)
+
+
+def bounded_inventory_run(command, *, environment, input_text=None, timeout=60):
+    """Fixed read-only inventory envelope, separate from execution receipts."""
+    return _bounded_run(command,environment=environment,input_text=input_text,timeout=timeout,
+        maximum_input=1048576,maximum_output=4194304)
+
+
+def bounded_inventory_command_run(command, *, environment, input_text=None, timeout=10):
+    """Native systemctl property reads use the collector's 64-KiB bound."""
+    return _bounded_run(command,environment=environment,input_text=input_text,timeout=timeout,
+        maximum_input=MAX_INPUT,maximum_output=65536)
+
+
+def _bounded_run(command, *, environment, input_text, timeout, maximum_input, maximum_output):
     try:
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 360
                 or (input_text is not None and not isinstance(input_text, str))):
             raise ValueError
         raw = None if input_text is None else input_text.encode('utf-8')
-        if raw is not None and len(raw) > MAX_INPUT: raise ValueError
+        if raw is not None and len(raw) > maximum_input: raise ValueError
     except Exception:
         raise fail('recovery_process_invalid', 'Fixed recovery input or deadline is invalid') from None
     process = None
@@ -43,8 +60,8 @@ def bounded_recovery_run(command, *, environment, input_text=None, timeout=20):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def read(index, stream):
             try:
-                captured[index] = stream.read(MAX_OUTPUT + 1)
-                if len(captured[index]) > MAX_OUTPUT: bad.append(True); kill()
+                captured[index] = stream.read(maximum_output + 1)
+                if len(captured[index]) > maximum_output: bad.append(True); kill()
             except OSError:
                 bad.append(True); kill()
             finally: stream.close()

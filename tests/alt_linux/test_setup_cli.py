@@ -26,6 +26,27 @@ def test_setup_parser_contract_and_old_configure_command():
             cli.build_parser().parse_args(['setup', 'plan', abbreviated, 'value'])
 
 
+def test_recovery_startup_inventory_parser_dispatch_and_safe_text(monkeypatch):
+    from alt_deploy import setup_cli
+    calls=[]
+    class Service:
+        def __init__(self,planning):calls.append(('construct',planning))
+        def plan(self,run,guid):
+            calls.append((run,guid))
+            return {'plan_id':'recovery-inventory-'+'b'*64,'sha256':'b'*64,'expires_at':'synthetic',
+                'payload':{'execution_available':False,'unit_count':172,'possible_job_count':177,
+                    'inventory':{'sha256':'c'*64},'machine':{'uuid':'uuid','hostname':'alt-a1-pc3'}}}
+    monkeypatch.setattr(setup_cli,'RecoveryStartupInventoryService',Service)
+    monkeypatch.setattr(setup_cli,'RecoveryPlanningService',lambda settings:'planning')
+    args=cli.build_parser().parse_args(['setup','recovery','startup-inventory','--failed-run','run','--computer-guid','guid'])
+    result=setup_cli.handle(args,object());output=io.StringIO();setup_cli.write_text(output,result)
+    assert calls==[('construct','planning'),('run','guid')]
+    assert 'Execution available: false' in output.getvalue() and '172' in output.getvalue()
+    for tail in (['--command','arbitrary'],['--confirm-sha256','a'*64],['--machine','other']):
+        with pytest.raises(SystemExit):cli.build_parser().parse_args(['setup','recovery','startup-inventory',
+            '--failed-run','run','--computer-guid','guid',*tail])
+
+
 def test_cli_dispatches_actual_plan_arguments_and_text_output(monkeypatch):
     from alt_deploy import setup_cli
     calls = []

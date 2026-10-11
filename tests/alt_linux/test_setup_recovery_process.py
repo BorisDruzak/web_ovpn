@@ -14,6 +14,24 @@ def run(*args, **kwargs):
     return bounded_recovery_run(*args, environment={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}, **kwargs)
 
 
+def test_inventory_transport_accepts_large_bounded_metadata_without_relaxing_recovery():
+    from alt_deploy.setup_recovery_process import bounded_inventory_run,bounded_inventory_command_run
+    command=[sys.executable,'-c','import sys; sys.stdout.write("x"*880000)']
+    assert len(bounded_inventory_run(command,environment={},timeout=3)[1])==880000
+    with pytest.raises(ControlError):run(command,timeout=3)
+    small=[sys.executable,'-c','import sys; sys.stdout.write("x"*65536)']
+    assert len(bounded_inventory_command_run(small,environment={},timeout=3)[1])==65536
+    with pytest.raises(ControlError):bounded_inventory_command_run(command,environment={},timeout=3)
+
+
+@pytest.mark.parametrize('stream',['stdout','stderr'])
+def test_inventory_transport_refuses_overflow_and_discards_diagnostics(stream):
+    from alt_deploy.setup_recovery_process import bounded_inventory_run
+    with pytest.raises(ControlError) as caught:
+        bounded_inventory_run([sys.executable,'-c','import sys; sys.'+stream+'.write("SYNTHETIC_SECRET"*400000)'],environment={},timeout=3)
+    assert 'SYNTHETIC_SECRET' not in str(caught.value)
+
+
 def test_stalled_child_cannot_block_large_stdin_past_deadline():
     started = time.monotonic()
     with pytest.raises(ControlError):

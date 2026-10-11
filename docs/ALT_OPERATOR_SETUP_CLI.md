@@ -106,6 +106,23 @@ UUID/hostname, сотрудник, OU и профили берутся из за
 
 План имеет TTL 30 минут, SHA и отдельное пространство `recovery-`; normal `setup apply` его не принимает. Вывод содержит **Execution available: false** и оставшиеся gates. Команды recovery apply пока нет. Планирование не резервирует попытку, не сбрасывает пароль и не разрешает повторный join. Время создания — свидетельство для проверки, не доказательство принадлежности объекта оператору. Исполнение требует проверенного фиксированного GUID-only provider/local importer, сохранённого credential и backup, повторных проверок под lifecycle lock и отдельного разрешения на конкретный объект/план. Предварительная проверка GUID не делает повторный join по hostname безопасным.
 
+Для подготовки review локальных эффектов служб доступен отдельный read-only сбор:
+
+```sh
+workstationctl setup recovery startup-inventory --failed-run ORIGINAL_FAILED_RUN \
+  --computer-guid EXACT_EXISTING_COMPUTER_GUID
+```
+
+Команда повторно проверяет тот же failed run, регистрацию, AD и текущие файлы ПК,
+затем фиксированным SSH/bootstrap собирает консервативный граф systemd. Она
+сохраняет собственное защищённое evidence и краткий план с TTL 30 минут,
+SHA-256, числом units и возможных jobs. Большой граф хранится отдельными
+неизменяемыми частями; команды и environment представлены только хешами.
+Она не резервирует recovery attempt и не запускает службы. Возможные jobs не
+являются прогнозом фактической транзакции, а digest графа не заменяет review
+hooks, environment, manager actions и unresolved destinations. Этот план
+также выводит **Execution available: false** и не принимается `setup apply`.
+
 Пароли/tickets/private keys/raw diagnostics в output не выводятся. State/logs доступны только сервисной учётке. Public reports обезличивают реальные identifiers.
 
 ## Live acceptance
