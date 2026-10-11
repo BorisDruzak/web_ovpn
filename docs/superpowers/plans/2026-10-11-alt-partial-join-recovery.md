@@ -12,7 +12,7 @@
 
 **Status:** Preparation only. This document does not authorize infrastructure execution, implement new commands, or prove the unknown Samba failure resolved. No computer reset/delete/move has been performed. Concrete implementation, offline tests, independent code review, exact-SHA publication/deployment and a final operator confirmation of the resulting recovery plan remain required before any recovery write.
 
-**Current execution blocker:** The inspected ALT system-auth/Samba join path selects an existing computer by name; it exposes no verified atomic GUID-targeted password-write contract. Pre/post GUID checks cannot close an external AD replacement race. Therefore that existing path must not execute this recovery. A provider guarantee must first be verified against version-matched primary documentation and the directory's read-only capabilities; if none is available, stop with `recovery_identity_binding_unavailable`. Do not introduce an assumed LDAP GUID/assertion-control or Samba flag as a workaround. This plan remains non-executable until that gate is resolved and reviewed.
+**Current execution blocker:** The stock system-auth/Samba join remains unsuitable because it selects an existing computer by name. Primary AD specifications and actual GUID base searches support a GUID-only LDAP password-write provider; independent review accepted that immutable-object boundary in principle. However the existing local Samba database fails its domain-metadata prerequisite, so a reset followed by `changesecretpw` is not executable. A separately isolated, synthetic offline-import rehearsal succeeded as described below. Source-controlled guards, bounded secret handling, real pinned writable-DC/configuration checks and independent code review remain required. This plan remains non-executable; neither a successful read nor the synthetic rehearsal authorizes a real password write.
 
 ## Global constraints
 
@@ -32,6 +32,22 @@
 Initial LDAP found no selected computer object. The approved pipeline subsequently created one enabled object in the approved OU, with a set password timestamp, expected DNS hostname and four SPNs. Local system-auth now reports AD, but Samba has no working machine credentials, keytab is absent and SSSD/user lookup fail. Approved reboot completed and changed none of those outcomes. No other computer shares the selected DNS/SPNs in the read-only search. Stock system-auth restores the old secrets database when net ads join returns failure; the protected Ansible output was censored. The exact cause of that post-creation failure is UNKNOWN.
 
 Samba 4.21 changed keytab synchronization; this is an investigation lead, not a proven root cause or permission to alter authentication settings. Consult [version-matched net documentation](https://www.samba.org/samba/docs/4.21/man-html/net.8.html) and [keytab synchronization documentation](https://www.samba.org/samba/docs/4.21/man-html/smb.conf.5.html#SYNCMACHINEPASSWORDTOKEYTAB). Check effective settings read-only before choosing a corrective action. Do not weaken Kerberos/TLS or assert that a speculative keytab change fixes trust.
+
+## Provider preparation evidence
+
+- Actual read-only searches using both GUID-only request representations returned the same selected computer GUID/SID/DN. GSSAPI requests required `minssf=128`. RootDSE advertised 40 controls, excluding RFC 4528 assertion control; no assertion fallback is available.
+- Installed OpenLDAP 2.6.9 accepted a **synthetic** GUID-only single-attribute `unicodePwd` replace with `ldapmodify -n` against an unreachable loopback URI. This proves local LDIF parsing only, not server modification rights or successful reset.
+- Existing Ansible Vault encrypt/decrypt through stdin and stdout preserved synthetic password bytes exactly; encryption output excluded plaintext. Ansible requires a UTF-8 locale, separately from the LDAP diagnostic locale.
+- A root-private copy of the actual Samba database failed `net primarytrust dumpinfo` (return code 1). Original database SHA stayed unchanged. Therefore the proposed direct `changesecretpw` path fails before any AD write.
+- Installed Samba 4.21.9 successfully composed and imported **synthetic** offline data in an empty-root Bubblewrap sandbox: read-only binaries/libraries, selected nonsecret NSS files, fresh namespaces/dev/proc/tmp, and one root-private writable scratch directory. Production configuration, authentication databases, Unix sockets and network were excluded. Private/state/cache/lock/pid/log/passdb/ncalrpc/winbind paths were relocated; synchronization and hooks disabled.
+- Exact synthetic account and salt fields matched; pending password change was NULL. A subsequent local synthetic password change returned zero and the copy's native legacy password value matched the supplied bytes without a newline. Keytab creation and listing returned zero; scratch keytab was root-owned mode 0600 and contained expected machine/host principals with AES keys. Its synthetic KVNO values do not prove real-domain usability; production needs the actual post-reset KVNO and pinned directory attributes.
+- Independent review found no blocking isolation flaw, but required production parsers rather than substring matching, bounded output, protected retention, immutable reservation and fresh identity checks before execution.
+
+The reviewed candidate is **one GUID-addressed LDAP reset followed by local offline initialization and fixed keytab synchronization**, never `offlinejoin provision`, `reuse`, or an online join. [AD request DN forms](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/92a54869-38d7-4e71-a3be-5f67a0dcdd7e) and [unicodePwd](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/6e803168-f140-4d23-b2d3-c3a8ab5917d2) define the directory boundary. Samba's [versioned offline-command source](https://raw.githubusercontent.com/samba-team/samba/samba-4.21.9/source3/utils/net_offlinejoin.c), [API implementation](https://raw.githubusercontent.com/samba-team/samba/samba-4.21.9/source3/lib/netapi/joindomain.c), and [local secrets implementation](https://raw.githubusercontent.com/samba-team/samba/samba-4.21.9/source3/passdb/machine_account_secrets.c) define the local boundary.
+
+`composeodj` produces a zero computer RID in this version. Such a blob is **not evidence of the actual AD computer SID**. The candidate uses it only for native local account/domain/password/salt initialization; external directory GUID/SID binding remains authoritative. Production code must explicitly enforce that narrowed contract, validate the real domain metadata and verify all postconditions. Do not patch or invent TDB records.
+
+GUID addressing protects the selected immutable object from hostname replacement. It does not atomically assert OU/name/SPN state. Revalidate before and after; any external drift stops recovery without moving or repairing the object. The only directory attribute explicitly replaced is `unicodePwd`; server-managed password timestamps, KVNO and credential material are expected effects. Pin a writable DC, require SASL sealing of at least 128 bits, and prohibit referrals, application retries, reconnect replay and name-based fallback. Failed or ambiguous responses remain non-retryable.
 
 ## Concrete operating sequence
 
@@ -65,12 +81,14 @@ Samba 4.21 changed keytab synchronization; this is an investigation lead, not a 
 
 ## Task 2: Fixed one-attempt recovery execution
 
-**Files:** Create `deploy/alt-linux/ansible/playbooks/03-recover-domain-workstation.yml` and `tests/alt_linux/test_setup_recovery_ansible.py`; wire the fixed runner in `setup_recovery.py` without exposing playbook/variables as operator inputs.
+**Files:** Create a fixed recovery provider/runtime and focused provider/runtime tests under the existing control package; wire the fixed runner in `setup_recovery.py`. Do not create a generic Ansible override or expose LDAP attributes, scripts, command lines, paths or variables as operator inputs.
 
 **Interfaces:** Consumes only the validated plan and exact attempt identifier. Produces bounded, safe structured identity/trust checks and a terminal receipt; no retry loop.
 
 - [ ] RED: concurrent apply/recovery, drift after lock, object replacement, unapproved OU, source change, insufficient rights, partial AD write, trust failure, unsafe diagnostic capture and lost result.
-- [ ] First prove the provider's atomic immutable-target semantics using primary specifications and read-only capability evidence; otherwise keep execution fail-closed. Local locking and name-based joins do not meet that requirement.
+- [x] Review GUID-only immutable-object addressing using primary specifications and actual read-only searches. Name-based joins remain prohibited; unsupported assertion controls are not used.
+- [x] Reject direct local password installation when the preserved database lacks domain metadata; prove a narrowed native offline-initialization mechanism with synthetic data in mount/network/socket isolation.
+- [ ] Implement and review that narrowed contract in source: exact metadata validation, durable Vault sealing before mutation, bounded output, isolated prewrite rehearsal, fixed local import/keytab commands, real KVNO/principal/enctype checks and secret cleanup/retention.
 - [ ] Implement identity checks before/after the one approved provider operation, lifecycle serialization, credential cleanup, and safe error classification. Do not reuse a generic existing-object override flag.
 - [ ] GREEN: syntax/assets checks and synthetic mutation counters prove zero writes on guards, one maximum write on an approved attempt and no write on replay.
 
@@ -91,3 +109,10 @@ Samba 4.21 changed keytab synchronization; this is an investigation lead, not a 
 - [ ] Publish exact SHA, record CI, obtain fresh coordinated backup/rehearsal and native guarded deployment/readiness proof.
 - [ ] Produce the real protected recovery plan, show anonymized exact operation/identity evidence and request final execution approval referencing its SHA. Current authorization covers preparation only.
 - [ ] Execute the confirmed recovery once only after the immutable-target gate passes; retain all evidence regardless of outcome. Review/confirm a fresh Setup continuation plan within existing authorization if recovery succeeds.
+
+## Decision ledger
+
+- Ruling: replace the proposed recovery Ansible playbook with a fixed GUID-only provider and local native importer — stock name-based join cannot meet the immutable-object guarantee. This adds an explicit bounded execution boundary rather than an override to normal join.
+- Ruling: reject `changesecretpw` as the first local step on this target — its protected-copy domain metadata check failed. Offline import is a candidate local initializer, not a second AD password-writing join.
+- Ruling: scope the ODJ blob to local initialization — this version's RID0 is not the selected computer SID and cannot establish identity. External GUID/SID binding and real postchecks remain mandatory.
+- Ruling: preserve UNKNOWN for the original partial-join cause — no_log hid the decisive output; the missing local metadata is a recovery prerequisite failure, not proof of that original cause.
