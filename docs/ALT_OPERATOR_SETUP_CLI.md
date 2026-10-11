@@ -22,7 +22,7 @@ sudo -u altserver /usr/local/sbin/workstationctl --json jobs active
 
 ## Directory configuration и права
 
-`/etc/alt-deploy/ad-directory.json`: root-owned, без group/other write, без секретов. Пример использует synthetic OU; реальная OU утверждается отдельно:
+`/etc/alt-deploy/ad-directory.json`: root-owned, без group/other write, без секретов. Для чтения сервисной учёткой использовать mode `0644`; изменять файл может только root. Пример использует synthetic OU; реальная OU утверждается отдельно:
 
 ```json
 {
@@ -42,6 +42,8 @@ Fallback `auth=starttls` требует `ldap://`; `auth=ldaps` требует `
 Read identity нужны права чтения user/computer/OU и computed account-state attributes. UNKNOWN блокирует setup. Join identity нужны делегированные права штатного создания computer object только в утверждённой OU; Domain Admin не обязателен. Read-only lookup не доказывает это право: предупреждение сохраняется, недостаточные права требуют действия AD administrator.
 
 ## Сценарий оператора
+
+Все команды AD/Setup выполнять от одной сервисной учётки `altserver`: protected plan/run/binding-файлы принадлежат ей и имеют mode `0600` в каталогах `0700`. Примеры ниже предполагают SSH-сеанс `altserver`; из другой административной учётки использовать `sudo -u altserver -H /usr/local/sbin/workstationctl ...`. Не смешивать root и altserver между plan/apply/status/verify. Root используется для deployment, directory configuration и штатного архивирования регистраций.
 
 Поиск V1 точный по sAMAccountName/UPN. Частичного автоматического выбора нет:
 
@@ -92,6 +94,8 @@ Status содержит configuration run ID, компоненты, GPO evidence
 | setup_execution_failed / previous_run_unresolved | RUN_ID из вывода → status → private result/log и фактическое состояние |
 
 Failed/running/interrupted run автоматически не повторяется. V1 требует отдельного reviewed recovery workflow после ambiguous failure; удаление jobs/assignments не поддерживается. Exact завершённый plan возвращает сохранённый результат без execution. Новый безопасный повтор требует нового проверенного плана.
+
+Для частичного join подготовлен [отдельный recovery plan](superpowers/plans/2026-10-11-alt-partial-join-recovery.md). Это описание будущего ограниченного механизма, не новая команда CLI и не разрешение на reset. Пока не проверена атомарная адресация AD-объекта по неизменяемому идентификатору, recovery должен отказывать; предварительная проверка GUID не делает повторный join по hostname безопасным.
 
 Пароли/tickets/private keys/raw diagnostics в output не выводятся. State/logs доступны только сервисной учётке. Public reports обезличивают реальные identifiers.
 

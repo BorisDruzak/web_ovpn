@@ -60,12 +60,13 @@ Create `alt_deploy/setup_plans.py`, `setup_assignments.py`, `setup.py`; extend `
 
 - [x] Focused directory/setup/ConfigurePlanner/domain/security tests; full tests/alt_linux; full pytest regression; compileall; Ansible syntax; git diff --check.
 - [x] Independent review, fix findings and repeat affected tests.
-- [ ] Atomic Conventional Commits, publish main, record exact SHA and its GitHub CI.
+- [x] Atomic Conventional Commits, publish main, record exact SHA and its GitHub CI; independent full-regression failures explicitly retained in the acceptance report.
 
 ## L: Production acceptance
 
-- [ ] L0: operator selects registered target and employee, approves exact actions; reference PC excluded from destructive acceptance.
-- [ ] L1/L2: real read-only AD and plan; compare identities/OU/trust/profile and show no mutations.
-- [ ] L3: operator-approved guarded deployment only with backup/rehearsal and independent recovery access; then exact confirmed plan apply.
+- [x] L0: operator selected disposable target and employee, approved checks, selected-user enable exception and separately approved reboot; reference PC excluded.
+- [x] L1/L2: real read-only AD and three deployed plans; identical semantic digests and before/after PC configuration and AD digest checks passed.
+- [x] L3 controller deployment: exact ea29741 SHA, successful backup/verify/rehearsal and independent recovery access; native guarded installer and readiness passed.
+- [ ] L3 workstation acceptance: exact confirmed plan was applied, but partial join failed with domain_join_failed; preserve failed binding/run and newly created computer object.
 - [ ] L4/L5: actual trust/SSSD/user/GPO/results/idempotence and safe negative cases. New join and already-configured acceptance are reported separately.
-- [ ] If access/authorization missing, retain live BLOCKED evidence and exact continuation commands; do not mark overall goal complete.
+- [x] Preserve partial-failure evidence and safe replay/expiry refusals; authorized reboot completed and deployed verify still failed trust/SSSD/user lookup. No overall completion claim; computer-object recovery remains separately gated.

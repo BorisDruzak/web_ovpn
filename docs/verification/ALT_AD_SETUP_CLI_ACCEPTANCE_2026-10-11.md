@@ -1,6 +1,6 @@
 # ALT AD Setup CLI acceptance — 2026-10-11
 
-**Implementation verified; live workstation acceptance BLOCKED pending L0 approval of exact target/actions.** No workstation contacted, no controller deployment performed. Full regression is not green; independent baseline failures are listed below.
+**Implementation published and guarded controller deployment performed; disposable-PC live acceptance FAILED at domain join.** L0, L1 and L2 passed. The approved apply created the computer object in the approved OU, but Samba trust failed. SSSD/user lookup/GPO acceptance remains incomplete. Preserve the failed run and binding; automatic replay is blocked. Full regression is not green; independent failures are listed below.
 
 ## Baseline
 
@@ -53,17 +53,49 @@ Independent review identified seven defects: lifecycle/binding bypass, descendan
 
 | Gate | Status / reason |
 |---|---|
-| L0 | BLOCKED: exact target, employee and actions not approved |
-| L1 | Pending: directory capability only; selected-user/OU/computer check awaits L0 |
-| L2 | Pending: no workstation plan/probe executed |
-| L3 | BLOCKED: no deployment approval; release-specific OR-3P3/recovery audit pending |
-| L4 | Pending: no real apply/trust/SSSD/getent/GPO/idempotence acceptance |
-| L5 | Pending: synthetic negatives only |
+| L0 | PASS: operator selected one disposable ALT PC and existing test user, approved end-to-end checks and separately approved reboot |
+| L1 | PASS: real selected-user immutable identity/state, 95 OUs and initial computer absence checked through sealed GSSAPI LDAP |
+| L2 | PASS: three deployed-CLI plans had identical semantic content hashes; selected PC configuration hashes and AD user/computer semantic digests unchanged by planning |
+| L3 | Controller deployment PASS; approved workstation apply FAILED with domain_join_failed |
+| L4 | FAIL: computer created in approved OU, but trust invalid, keytab absent, SSSD inactive, selected-user lookup unsuccessful; GPO false in saved result |
+| L5 | Safe live negatives passed as listed below; ambiguous/conflicting directory objects were not manufactured |
 
-PC type: none; neither configured nor new disposable PC participated. No first-join or installed-app acceptance claimed.
+PC type: operator-selected disposable ALT Workstation K 11.x, initially outside the domain. No domain leave was necessary or performed. No first-join success, graphical login/home, installed-app/signature-suite or idempotent acceptance is claimed.
+
+### Approved infrastructure actions and receipts
+
+The operator explicitly allowed enabling the selected disabled test user as a narrow exception to the original no-user-writes rule. Native AD enable preserved the same GUID/SID and verified enabled/not locked/not expired. No user creation, password reset, unlock or group edit was performed. A pre-existing test computer OU was selected; no OU or directory ACL was changed.
+
+Directory configuration uses `join-vault` GSSAPI and a root-owned, nonsecret configuration readable by the service account. AD/Setup state and commands use the same service owner. Existing Vault/keys/inventory were preserved. The active Ansible copy is not a Git checkout: source identity was verified by SHA-256 comparisons instead of inferring Git provenance.
+
+Deployment of `ea29741b0fc5e26a9fc31e20d87ae0263138eb3e` used successful OR-3P3 backup `backup-20261011T093938Z-8b8e214b`, manifest SHA-256 `9a094a7abccf495606d5d4ff44bb54cf5247f9ae7874beaa59f5f861d004e040`. Verify and 11-check rehearsal passed; read-only rehearsal eligibility passed. Independent SSH/sudo recovery access was verified. Native `install-control-plane.sh --rollback-backup-id` passed **1007 tests, 1 skipped**; fresh readiness had no failed checks; all 119 published control Python/Ansible files matched with zero mismatches.
+
+Earlier backup attempts were retained with their failed rehearsal evidence. A historical, nonactive assignment quarantine was moved intact under a private maintenance archive, with byte hashes checked and the active assignment preserved. The backup validator now admits deferred-first-login registrations only with a strictly typed, successful, identity-matched configure result and four true domain checks. An unrelated registration still failed that strict validation; the operator separately authorized archiving only that controller registration. Native archive receipt: `archive-20261011T093937Z-c97207c6`. That PC and AD were not contacted or modified. No failed record was relabeled or deleted to obtain PASS.
+
+The selected PC's stale hostname registration was archived natively (`archive-20261011T094607Z-82f3f09a`) after checking no assignment/active job. The exact published register-only bootstrap was executed on the approved PC; registration/preflight succeeded. No employee local account was created.
+
+Applied plan SHA-256: `9b2d91406acbc66cfafd9c5c0f04e5e25282050a00e62f634d9ae4fd8a500308`. Profile `core-apps`, remote profile `none`, exact approved OU, same selected domain user for test and assignment. Full prejoin package upgrade and domain prerequisites ran. Run `setup-run-653edd38191a4a029247b7e62256f801`, configuration run `c3590a2451f84e7e8debd1a48ea72504`, saved status `failed`, phase `domain_join`, `reboot_required=true`, error `domain_join_failed`. The structured partial result was preserved. Components are empty and saved GPO verification false because later phases did not run.
+
+Read-only diagnosis confirms one newly created, enabled computer in the approved OU with the expected DNS hostname, four SPNs and a set password timestamp. The PC has an AD system-auth profile but no valid Samba trust or keytab; its old secrets database remains. The stock ALT `system-auth` script creates the AD object through `net ads join` and restores the previous secrets database when that command fails. Ansible's protected join output is censored by `no_log`; the specific post-creation Samba failure is **UNKNOWN**, not proven to be insufficient permissions, DNS, reboot or package incompatibility. The second join was skipped. No computer reset/delete/move or unguarded retry was performed.
+
+The operator separately approved reboot after the upgrade; reboot completed and a changed boot ID was verified. Post-boot deployed `setup verify` returned `failed`: trust false, SSSD false, selected-user lookup false, local duplicate false, saved GPO false. Keytab is still absent, time synchronized. A domain-wide read-only DNS/SPN lookup found only the selected new computer object, so no other-object DNS/SPN collision was observed. The reboot did not repair trust. Actual PC versions after upgrade: Samba 4.21.9, alterator-auth 0.55, SSSD 2.9.8. First graphical login/home remains untested.
+
+Safe live refusals: disabled selected user before its separately approved enable, nonexistent user, unapproved OU, unregistered machine, stale registry hostname, wrong confirmation SHA (`setup_plan_mismatch`), unresolved failed-plan replay/new plan (`setup_previous_run_unresolved`) and expired plan (`setup_plan_expired`). Expiry used a separately created protected plan with an intentionally old creation clock; original plans were not edited. Both replay/expiry checks returned exit 4 before Ansible execution. Directory unavailability probe used an isolated unreachable URI without changing production configuration/network/DC: it exposed SASL prefix misclassification. Fix `4f3291910ab327abe60b75dfb724e7ccf02fd35d` preserves connectivity errors while keeping TLS priority and actual Kerberos errors; **63 focused tests passed**, independent review had no findings.
+
+Exact `4f32919...` subsequently deployed through the same native guarded path with fresh backup `backup-20261011T100322Z-dcade381`, manifest SHA-256 `9a89dacf1e1561f81ebf1b68d051de81c930710a18adccb05a429902ad672ae0`. Verify, 11-check rehearsal and read-only eligibility passed. Installer suite **1012 passed, 1 skipped** in 218.49s; native install succeeded. Fresh readiness true with all 14 checks true and no failed checks. Post-deployment comparison of 111 control Python and installed Ansible role/playbook/configuration files found zero mismatches. The actual installed LDAP transport returned `ad_dc_unavailable` for the isolated unreachable URI. Saved failed setup status/binding remained intact; no workstation apply was repeated.
+
+### Subsequent exact-SHA code and CI evidence
+
+`35a8b99f4087ebeeab9c39e3427b7ec2f6efab0e` removes the two existing Endpoint enrollment shell tasks using fixed Python argv. Focused checks passed **90 tests**; root ALT suite passed **989 tests, 1 skipped**. `ea29741b0fc5e26a9fc31e20d87ae0263138eb3e` adds strict deferred-login backup validation; focused backup/rehearsal/restore/installer checks passed **51 tests**, stricter type/error cases **18 tests**, with independent review corrections verified.
+
+At exact `ea29741...`, [ALT managed contract CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38128696543) passed. [Runtime identity CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38128696535) passed its focused job but full regression had **10 failed, 3606 passed, 11 skipped**. Remaining failures: six nonroot production-installer ownership fixtures, one QEMU execution-challenge ownership fixture, the old inventory CSS assertion, synthetic netctl executable without POSIX shebang, and vpnctl service-state expectation. The former unsafe Ansible shell-assets failure is fixed. These counts supersede earlier historical full-run counts above; no full-green claim is made.
+
+At exact `4f3291910ab327abe60b75dfb724e7ccf02fd35d`, [ALT managed contract CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38130524197) passed; [runtime/full regression CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38130524124) passed focused-runtime-identity and finished with **10 failed, 3611 passed, 11 skipped** in 707.57s. The same ten independent failures listed above remain; no new directory/setup failure appears in that summary.
 
 ## Continuation and publication
 
-Operator selects registered UUID/hostname, existing employee, exact approved OU, profiles and read-only/idempotent or disposable end-to-end scope. After code/CI and approved guarded deployment, follow docs/ALT_OPERATOR_SETUP_CLI.md, compare plan bindings, confirm SHA, inspect status and verify. Reboot/login require separate approval. Preserve all state on failures.
+The authorized reboot and deployed read-only status/verify checks are complete; trust remains broken. Continuation requires a separately reviewed recovery procedure for the partial join. V1 has no automatic failed-run recovery; do not delete assignments/runs, retry the failed plan or reset/delete/move the existing computer object. The original computer-reset/delete/move prohibition remains binding; any recovery requiring such writes needs a narrow explicit operator exception and a concrete reviewed procedure before execution. Remaining acceptance includes valid trust, SSSD, selected-user lookup, GPO, first graphical login/home, applications/signatures and a new idempotent plan.
 
-Implementation commits: `3ff6a77f14be43e58493f8496faf5658cf6ffb2f` (baseline fixture/module isolation), `a5dd3f4de5a50a2d4c1b8daea179142710a88164` (AD/Setup runtime, CLI, tests, operator documentation), `fa7e4893aa49472e149cd5d49be8f284608df912` (additional concurrency/identity regressions). The publication SHA also contains this report and the implementation checklist. Read [GitHub Actions](https://github.com/BorisDruzak/web_ovpn/actions) for that exact SHA; no green full-CI claim is made while independent failures remain. Publication evidence and exact-SHA run results are reported in the accompanying delivery message. No controller install is claimed.
+The operator subsequently approved **preparation and independent review only** of a limited recovery with possible machine-password reset while preserving the created computer GUID/OU and failed evidence. [Recovery plan](../superpowers/plans/2026-10-11-alt-partial-join-recovery.md) records the preparation/execution boundary. Review found cross-plan retry evasion and the name-based AD mutation race; both design findings were corrected and independently re-reviewed with no remaining actionable plan findings. The revised design uses a unique failed-run/computer-GUID reservation and refuses execution until an atomic immutable-target provider contract is proven. The plan is explicitly non-executable by design at this checkpoint. No recovery write or failed-state bypass has been performed; provider verification and recovery implementation remain pending work.
+
+Implementation commits: `3ff6a77f14be43e58493f8496faf5658cf6ffb2f` (baseline fixture/module isolation), `a5dd3f4de5a50a2d4c1b8daea179142710a88164` (AD/Setup runtime, CLI, tests, operator documentation), `fa7e4893aa49472e149cd5d49be8f284608df912` (additional concurrency/identity regressions), `473ffdbc5b95e4099a2a5dc8634f998f74caae8b` (initial checkpoint), subsequent CI fixture fix `882b7b63484d14064c387f0defca53fc2fe649c4`, and the three later full SHAs above. Source publication, exact deployed generation and workstation acceptance remain distinct. The goal is incomplete while L4 is failing.
