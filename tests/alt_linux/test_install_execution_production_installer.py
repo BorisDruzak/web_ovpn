@@ -141,6 +141,13 @@ def _environment(tmp_path: Path, *, listener: str = "", **overrides: str) -> dic
 
 
 def _run(tmp_path: Path, *, listener: str = "", **overrides: str) -> subprocess.CompletedProcess[str]:
+    # Simulate root-owned metadata only inside this fixture's child process.
+    # Real-root suite runs continue to exercise actual ownership operations.
+    prefix = []
+    if os.name == "posix" and os.geteuid() != 0:
+        fakeroot = shutil.which("fakeroot")
+        assert fakeroot is not None, "Non-root installer fixtures require fakeroot"
+        prefix = [fakeroot, "--"]
     root = tmp_path / "host-root"
     unit = (
         root
@@ -164,7 +171,7 @@ def _run(tmp_path: Path, *, listener: str = "", **overrides: str) -> subprocess.
         **overrides,
     }
     return subprocess.run(
-        [BASH, "-c", command],
+        [*prefix, BASH, "-c", command],
         text=True,
         capture_output=True,
         cwd=REPO_ROOT,

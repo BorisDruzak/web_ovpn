@@ -651,7 +651,7 @@ output="${@: -2:1}"
 def test_run_state_has_unpredictable_trust_anchor_and_exact_artifact_identity(
     tmp_path: Path,
 ) -> None:
-    first_state, first = _create_run_state(tmp_path / "first")
+    first_state, first = _create_run_state(tmp_path / ".private" / "first")
     _second_state, second = _create_run_state(tmp_path / "second")
 
     assert first["run_id"] != second["run_id"]
@@ -672,7 +672,20 @@ def test_run_state_has_unpredictable_trust_anchor_and_exact_artifact_identity(
         assert identity["initial_sha256"]
     private_key = first_state / "attestation-private.pem"
     assert private_key.is_file()
-    assert "private" not in json.dumps(first, sort_keys=True).lower()
+    def field_names(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield key
+                yield from field_names(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from field_names(child)
+
+    public_json = json.dumps(first, sort_keys=True)
+    assert all("private" not in key.lower() for key in field_names(first))
+    assert private_key.name not in public_json
+    assert "PRIVATE KEY" not in public_json
+    assert json.dumps(private_key.read_text(encoding="utf-8")) not in public_json
     public = serialization.load_pem_public_key(
         (first_state / "attestation-public.pem").read_bytes()
     )
@@ -1215,6 +1228,20 @@ def test_signed_chain_rejects_stale_postflight_from_another_run(
 def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     tmp_path: Path,
 ) -> None:
+    if os.name == "posix" and os.geteuid() != 0:
+        # A fake euid alone cannot model root-owned public evidence. Execute
+        # this synthetic scenario in a child with consistent fakeroot metadata.
+        fakeroot = shutil.which("fakeroot")
+        assert fakeroot is not None, "Non-root evidence fixtures require fakeroot"
+        result = subprocess.run(
+            [fakeroot, "--", sys.executable, "-m", "pytest", "-q", "--tb=short",
+             f"{__file__}::test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes",
+             "--basetemp", str(tmp_path / "root-metadata-fixture")],
+            cwd=REPO_ROOT, text=True, capture_output=True, timeout=60,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "1 passed" in result.stdout
+        return
     workdir = tmp_path / "work"
     state, manifest = _create_run_state(workdir)
     module = _support_module()
@@ -1498,6 +1525,14 @@ def test_signed_no_iso_boot_challenge_is_fresh_single_use_and_finalizes(
     verified = module.verify_public_evidence(
         public_evidence, euid=lambda: 0
     )
+    if os.name == "posix":
+        owner_probe = public_evidence / "evidence-index.json"
+        os.chown(owner_probe, 10001, -1)
+        try:
+            with pytest.raises(module.AcceptanceError, match="owner is invalid"):
+                module.verify_public_evidence(public_evidence, euid=lambda: 0)
+        finally:
+            os.chown(owner_probe, 0, -1)
     assert verified["receipt"]["result"] == "pass"
     assert verified["chain"][-1]["event"] == "acceptance_evidence"
     assert verified["chain"][-2]["event"] == "installed"

@@ -45,6 +45,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Install synthetic root-metadata fixture dependency
+        run: sudo apt-get update && sudo apt-get install --yes fakeroot
       - run: python -m pip install --quiet --upgrade pip
       - run: python -m pip install --quiet -r requirements.txt
       - name: Run and retain full pytest output
