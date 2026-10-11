@@ -281,6 +281,18 @@ This internal coordinator is not exposed as a CLI execution command. The fixed p
 
 Exact published `39de633896c7ae7a3671739b0d518cd2f33b354f` ALT CI [38145166769](https://github.com/BorisDruzak/web_ovpn/actions/runs/38145166769) passed. Its full runtime workflow [38145166777](https://github.com/BorisDruzak/web_ovpn/actions/runs/38145166777) was still running when this evidence was recorded.
 
+The in-memory offline keytab binding helper is implemented in `setup_recovery_keytab.py`:
+
+- [x] Parse bounded big-endian FILE-v2 entries, accepting only the two expected machine/host principals and reviewed AES128/AES256/optional RC4 key lengths. Require complete AES pairs, unique entries and the native offline current/previous placeholder versions. Reject foreign principals, unknown algorithms, positive input versions, missing extensions and nonzero holes or padding.
+- [x] Preserve current encryption key bytes, principal metadata and timestamps; remove previous entries and bind both the 8-bit and 32-bit version fields to the supplied positive directory KVNO. This function only returns bytes; it does not install a file, contact AD or establish trust. Its future caller must derive the KVNO from the verified single-write provider result.
+- [x] Observe the initial missing-module RED, then pass 28 new binary-format tests and 29 existing native-helper tests as the ALT service owner. Compile both new Python files successfully.
+- [x] Verify the actual installed Samba offline compose/import/password/keytab sequence in a private network-isolated synthetic fixture on the selected disposable PC. Transform the generated 1020-byte keytab to 511 bytes at synthetic KVNO 257 and validate its principals/enctypes/version with the real native keytab-list parser. The original live secrets checksum remained unchanged; the private fixture was removed. No real domain password was reset.
+- [x] Full ALT passed under root with 1448 passed and 1 skipped in 229.31 seconds, including all final additions. Independent review found no actionable issues and separately passed all 28 new tests on Windows Python 3.14 with the POSIX conftest disabled. No Python source changed after full-suite collection; complete diff inspection and diff checks passed.
+
+The selected PC reports MIT Kerberos 1.21.3. Its versioned primary [FILE keytab format documentation](https://web.mit.edu/kerberos/krb5-1.21/doc/formats/keytab_file_format.html) supports the binary layout and the 32-bit KVNO extension. Context7 resolved the Kerberos library but returned no matching format documentation, so this versioned primary reference was used. GitNexus was requested before the narrow native/keytab interface inspection; its transport was unavailable.
+
+Exact published `736b301fb55c7e5a2f7fdac562e3e845f037a19b` ALT CI [38145964265](https://github.com/BorisDruzak/web_ovpn/actions/runs/38145964265) passed. The preceding prewrite commit's full runtime CI [38145166777](https://github.com/BorisDruzak/web_ovpn/actions/runs/38145166777) completed with the same ten previously enumerated failures, 4004 passes and 11 skips. No broader runtime-green claim is made.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
