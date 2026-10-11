@@ -648,6 +648,19 @@ AD employee remains enabled. These facts are not recovery acceptance.
 Both CI workflows for preceding exact commit
 `d9f994ce6a8149f2aea5fffaeee5dcdcc20866bf` completed successfully.
 
+### Native online-check audit (2026-10-12)
+
+[Exact-package source audit](../../verification/ALT_RECOVERY_NATIVE_TESTJOIN_AUDIT_2026-10-12.md)
+confirmed the selected ALT release and relevant applied-source paths. Native
+testjoin's server option does not enforce one DC, and secrets/cache access can
+write scratch state. Independent review confirmed that enforced peer selection
+for native testjoin was an additional restriction, not the original L4 scope.
+Keep the mandatory independent pinned Kerberos/AD identity checks, then report
+native Samba success separately with peer pinning unverified. No network-policy
+or peer-enforcement work is introduced. Complete transitive credential-path and
+filesystem-sandbox verification before the bounded online worker. No live
+testjoin or recovery mutation was performed for this audit.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
