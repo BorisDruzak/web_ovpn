@@ -183,12 +183,39 @@ def _receipt(request,tools,snippet,backup):
 
 def verify(request,*,backup,probe,native,kerberos,importer,collect,runner,root=Path('/'),owner=0):
     if os.geteuid()!=owner or not root.is_absolute():raise ValueError('Fixed root policy verification required')
+    _request(request,backup=backup,kerberos=kerberos)
+    _current(request,backup=backup,probe=probe,native=native,kerberos=kerberos,importer=importer,
+        collect=collect,runner=runner,root=root,owner=owner)
+    result=verify_artifacts(request,backup=backup,probe=probe,native=native,kerberos=kerberos,
+        importer=importer,collect=collect,runner=runner,root=root,owner=owner)
+    bound=request['kerberos_request']
+    if importer.verify(bound['import_request'],backup=backup,probe=probe,collect=collect,
+            root=root,owner=owner)!=bound['import_receipt']:raise ValueError('Changed final local import')
+    importer._inactive(runner)
+    return result
+
+
+def verify_artifacts(request,*,backup,probe,native,kerberos,importer,collect,runner,root=Path('/'),owner=0):
+    """Retained offline policy proof; does not prove the running daemon consumed it."""
+    if os.geteuid()!=owner or not root.is_absolute():raise ValueError('Fixed root policy verification required')
     _request(request,backup=backup,kerberos=kerberos);leaf=path_for(request,backup=backup,root=root)
     backup._ancestry(leaf,root,owner);backup._directory(leaf,owner)
     if {path.name for path in leaf.iterdir()}!={'request.json','intent.json','original.json','original.conf','verified.json'}:
         raise ValueError('Incomplete or failed SSSD policy')
-    tools=_current(request,backup=backup,probe=probe,native=native,kerberos=kerberos,importer=importer,
-        collect=collect,runner=runner,root=root,owner=owner)
+    bound=request['kerberos_request']
+    if kerberos.verify_artifacts(bound,backup=backup,probe=probe,native=native,importer=importer,
+            collect=collect,runner=runner,root=root,owner=owner)!=request['kerberos_receipt']:
+        raise ValueError('Changed retained machine proof')
+    tools=_tools(probe=probe,runner=runner,root=root,owner=owner)
+    planned=bound['import_request']['rehearsal_request']['backup_request']['facts']['tools']
+    if any(tools[path]!=planned[name] for name,path in (('sssd','/usr/sbin/sssd'),('bwrap','/usr/bin/bwrap'))):
+        raise ValueError('Changed planned policy executable')
+    # Finish the lower chain after the final native query. This check deliberately
+    # performs protected reads only, so no later RPM callback can stale it.
+    if kerberos._verify_artifacts(bound,backup=backup,probe=probe,native=native,importer=importer,
+            collect=collect,root=root,owner=owner)!=request['kerberos_receipt']:
+        raise ValueError('Changed retained machine proof during policy read')
+    _unchanged_tools(tools,probe=probe,root=root,owner=owner)
     meta=native.validate_metadata(request['kerberos_request']['import_request']['rehearsal_request']['metadata']);snippet=_snippet(meta)
     _directory(root,owner,{Path(SNIPPET).name})
     info=probe._file(root,SNIPPET,private=True,owner=owner)
@@ -205,6 +232,25 @@ def verify(request,*,backup,probe,native,kerberos,importer,collect,runner,root=P
     for name,value in (('request.json',request),('intent.json',intent),('verified.json',result)):
         if backup._json(leaf/name,root=root,owner=owner)!=value:raise ValueError('Changed SSSD policy evidence')
     return result
+
+
+def _unchanged_tools(tools,*,probe,root,owner):
+    """Recheck executable/module bytes and lookup without native commands."""
+    for path in TOOLS:
+        if probe._file(root,path,maximum=probe.MAX_TOOL_BYTES,owner=owner)!={key:value for key,value in tools[path].items() if key!='package'}:
+            raise ValueError('Changed policy executable during read')
+    modules=tools['ldb_modules'];directory=root/MODULE_DIRECTORY.lstrip('/')
+    info=directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=owner or info.st_mode&0o022:
+        raise ValueError('Changed module directory during read')
+    names=set(modules)-{'lookup_link'}
+    if {path.name for path in directory.iterdir()}!=names:raise ValueError('Changed module set during read')
+    link=directory.parent/'ldb';info=link.lstat()
+    if not stat.S_ISLNK(info.st_mode) or dict(target=os.readlink(link),uid=info.st_uid,gid=info.st_gid,
+            mode=stat.S_IMODE(info.st_mode))!=modules['lookup_link']:raise ValueError('Changed module lookup during read')
+    for name in names:
+        if probe._file(root,MODULE_DIRECTORY+'/'+name,maximum=probe.MAX_TOOL_BYTES,owner=owner)!={key:value for key,value in modules[name].items() if key!='package'}:
+            raise ValueError('Changed policy module during read')
 
 
 def install_once(request,*,backup,probe,native,kerberos,importer,collect,runner,root=Path('/'),owner=0):

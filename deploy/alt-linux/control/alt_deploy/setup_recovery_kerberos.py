@@ -98,6 +98,30 @@ def _receipt(request,tools,meta,backup):
 
 
 def verify(request,*,backup,importer,probe,native,collect,runner,root=Path('/'),owner=0):
+    if os.geteuid()!=owner or not root.is_absolute():raise ValueError('Fixed root verification required')
+    _request(request,backup=backup)
+    _current(request,backup=backup,importer=importer,probe=probe,collect=collect,runner=runner,root=root,owner=owner)
+    result=verify_artifacts(request,backup=backup,importer=importer,probe=probe,native=native,
+        collect=collect,runner=runner,root=root,owner=owner)
+    if importer.verify(request['import_request'],backup=backup,probe=probe,collect=collect,
+            root=root,owner=owner)!=request['import_receipt']:raise ValueError('Changed final local import')
+    importer._inactive(runner)
+    return result
+
+
+def verify_artifacts(request,*,backup,importer,probe,native,collect,runner,root=Path('/'),owner=0):
+    if os.geteuid()!=owner or not root.is_absolute():raise ValueError('Fixed root verification required')
+    _request(request,backup=backup)
+    if importer.verify_artifacts(request['import_request'],backup=backup,probe=probe,collect=collect,
+            root=root,owner=owner)!=request['import_receipt']:raise ValueError('Changed retained import')
+    tools=_tools(probe=probe,runner=runner,root=root,owner=owner)
+    result=_verify_artifacts(request,backup=backup,importer=importer,probe=probe,native=native,
+        collect=collect,root=root,owner=owner)
+    if backup.digest(tools)!=result['tools_sha256']:raise ValueError('Changed Kerberos tools during read')
+    return result
+
+
+def _verify_artifacts(request,*,backup,importer,probe,native,collect,root,owner):
     # This verifies retained evidence and current files/tools only. It does not
     # repeat authentication or assert that a historical TGT remains valid.
     if os.geteuid()!=owner or not root.is_absolute():raise ValueError('Fixed root verification required')
@@ -106,7 +130,13 @@ def verify(request,*,backup,importer,probe,native,collect,runner,root=Path('/'),
     if {path.name for path in leaf.iterdir()}!={'request.json','intent.json','verified.json'}:
         raise ValueError('Incomplete or failed Kerberos proof')
     meta=native.validate_metadata(request['import_request']['rehearsal_request']['metadata'])
-    tools=_current(request,backup=backup,importer=importer,probe=probe,collect=collect,runner=runner,root=root,owner=owner)
+    if importer.verify_artifacts(request['import_request'],backup=backup,probe=probe,collect=collect,
+            root=root,owner=owner)!=request['import_receipt']:raise ValueError('Changed retained import')
+    # No commands here: the retained receipt binds the originally verified RPM
+    # identity, while protected metadata binds the same executable bytes now.
+    tools={path:dict(probe._file(root,path,maximum=probe.MAX_TOOL_BYTES,owner=owner),package=PACKAGE) for path in TOOLS}
+    if tools['/usr/bin/klist']!=request['import_request']['rehearsal_request']['backup_request']['facts']['tools']['klist']:
+        raise ValueError('Changed planned Kerberos executable')
     result=_receipt(request,tools,meta,backup)
     for name,value in (('request.json',request),('intent.json',_intent(request,tools,meta,backup)),('verified.json',result)):
         if backup._json(leaf/name,root=root,owner=owner)!=value:raise ValueError('Changed Kerberos evidence')

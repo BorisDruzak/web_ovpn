@@ -99,3 +99,66 @@ The authorized reboot and deployed read-only status/verify checks are complete; 
 The operator subsequently approved **preparation and independent review only** of a limited recovery with possible machine-password reset while preserving the created computer GUID/OU and failed evidence. [Recovery plan](../superpowers/plans/2026-10-11-alt-partial-join-recovery.md) records the preparation/execution boundary. Review found cross-plan retry evasion and the name-based AD mutation race; both design findings were corrected and independently re-reviewed with no remaining actionable plan findings. The revised design uses a unique failed-run/computer-GUID reservation and refuses execution until an atomic immutable-target provider contract is proven. The plan is explicitly non-executable by design at this checkpoint. No recovery write or failed-state bypass has been performed; provider verification and recovery implementation remain pending work.
 
 Implementation commits: `3ff6a77f14be43e58493f8496faf5658cf6ffb2f` (baseline fixture/module isolation), `a5dd3f4de5a50a2d4c1b8daea179142710a88164` (AD/Setup runtime, CLI, tests, operator documentation), `fa7e4893aa49472e149cd5d49be8f284608df912` (additional concurrency/identity regressions), `473ffdbc5b95e4099a2a5dc8634f998f74caae8b` (initial checkpoint), subsequent CI fixture fix `882b7b63484d14064c387f0defca53fc2fe649c4`, and the three later full SHAs above. Source publication, exact deployed generation and workstation acceptance remain distinct. The goal is incomplete while L4 is failing.
+
+### General regression baseline repaired
+
+Minimal test-only commits `feabe126952beadb7ffa67146584473b8a804b99`,
+`5d29a70af9cabbacf3b6396478169194d82cc438`,
+`5fb5f8e16c48c48dd40436c016ff1b072b97b7cb`, and
+`07d99f034f5ae757469e0fd50bb40cf95f27b67a` corrected the old CSS revision,
+isolated command fixtures, modelled root-owned fixtures under non-root POSIX,
+and isolated batch preview paths. Production ownership checks and test selection
+remain enforced. Actual root checks separately verified the ownership scenarios.
+
+At exact `5fb5f8e16c48c48dd40436c016ff1b072b97b7cb`,
+[runtime CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38162766019)
+completed successfully: **4337 passed, 21 skipped**, 804.08 seconds.
+At exact `07d99f034f5ae757469e0fd50bb40cf95f27b67a`,
+[runtime CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38163618964)
+also completed successfully: **4337 passed, 21 skipped**, 592.82 seconds.
+These terminal results supersede the historical red baseline above. They do not
+prove recovery, controller installation or the still-failing workstation L4.
+The corresponding complete non-root ALT development regression, with final
+test fixtures and an isolated bytecode cache, finished with **4338 passed,
+20 skipped** in 772.83 seconds. Its frozen sources were not changed during
+execution. The later retained-artifact delta is verified separately.
+
+### Retained artifact verification preparation
+
+Separate import, Kerberos and temporary-policy `verify_artifacts` interfaces
+verify the genuine protected retained records, original backup, current
+credential/configuration bytes and executable/module identities. The static
+snapshot excludes only process observations; identity, clock, Samba parameters,
+authentication files and unknown/missing facts remain checked. Historical
+Kerberos receipts do not assert that a ticket is still valid, and retained
+offline configuration does not assert that a running daemon consumed it.
+All receipts retain `trust_verified=false`.
+
+Existing pre-start `verify` interfaces still require full current facts and
+inactive authentication services. Their final checks follow native package
+queries. Independent review found a during-RPM stale-success race; new negative
+tests reproduced nine failures, and protected lower-chain/tool rereads after
+the final native call corrected it. Two additional tests reproduced service
+activation during package queries and verified the final inactive guards.
+Independent source review reported no remaining findings.
+The genuine facts collector itself reads file metadata before executing native
+read-only queries. Three further RED tests exposed a stale snapshot if bytes
+changed inside that interval; final protected authentication-file and native-tool
+rereads close it without another command cycle.
+
+Final non-root ALT focused verification passed **111 tests** in 16.40 seconds.
+The full final-source actual-root ALT suite passed **1773 tests, 1 skipped** in
+292.06 seconds. Source/test SHA-256 values matched the Windows candidate before
+and after execution, Python compilation and diff checks passed. An earlier
+incomplete scratch copy omitted documents and failed 28 documentation checks;
+those failures were preserved and the complete corrected copy passed the full
+suite. The final native-facts strengthening was independently re-reviewed.
+GitNexus located the committed policy/Kerberos workers and their transports;
+source inspection confirmed transports carry the complete fixed modules, so
+these new interfaces do not add an operator route or cross-repository contract.
+
+This block remains internal recovery preparation. It has no operator execution
+entrypoint and performs no AD reset, credential installation, machine
+authentication, service start or real workstation change. The fixed startup
+worker, bounded stdin transport, recovery coordinator and final exact-plan
+execution approval remain required.

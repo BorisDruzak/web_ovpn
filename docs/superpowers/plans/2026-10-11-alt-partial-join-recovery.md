@@ -470,6 +470,19 @@ Exact published `2e482310505c1053315485bce28c4e5b92e59283` ALT CI [38158362798](
 
 Full root ALT regression passed against the frozen reviewed collector candidate: 1738 passed and 1 skipped in 280.71 seconds. Both new Python files matched the local candidate by SHA-256 before and after the run. Focused root tests, compilation, complete source/test/document review and diff checks also passed. This evidence covers the diagnostic collector; recovery execution and live Setup acceptance remain pending.
 
+### Fixed startup worker implementation boundary
+
+Independent source review of the existing import/Kerberos/policy composition accepted a finite next implementation: one fixed SSSD startup worker and one controller transport. The conservative inventory is retained as an approval attachment; its digest binds the approved effects ledger. It is not a transaction simulator or a runtime promise that external manager clients cannot act. The final execution approval must explicitly cover the selected workstation's possible local service effects and unresolved observations; hashes alone do not review hooks or environment semantics.
+
+- Implement `start_once(request)` and read-only `verify_started(request, receipt)`. The request binds exact plan/approval SHA, failed-run/computer pair, UUID/GUID/SID/KVNO, existing import/Kerberos/policy receipt hashes, fixed source bundle and reviewed effects ledger. No operator-supplied command, path, module name or job mode is accepted.
+- Under the shared local recovery flock, run the genuine existing inactive-service verifiers, then check the stopped-unit baseline, stock SSSD source/options/environment, effective temporary policy, imported credential hashes and observed pending jobs. Write the permanent pair-specific request/start intent and repeat immediate guards before one fixed `systemctl start sssd.service --job-mode=ignore-requirements`. No retry, restart, reload or automatic cleanup follows.
+- Observe active/running within a fixed bound, a new nonempty InvocationID/MainPID, and unchanged NRestarts. Require repeated stable invocation observations. Command failure, timeout, invocation change or unexpected restart is terminal even if the daemon actually started; retain real state and policy/evidence. A successful startup receipt binds postchecks and says `trust_verified=false`.
+- Extract narrow protected-artifact verification and an explicit post-start static projection for retained records, five authentication files, tools, unit and policy hashes. Existing inactive/import pre-start interfaces stay strict. Do not introduce `allow_active`, substitute collect(), or reuse the old stopped-context chain after startup: policy.verify currently reaches kerberos._inactive, and importer.verify compares the full original facts.
+- The controller transport holds its lifecycle lock and validates the actual pinned AD GUID/SID/OU/KVNO, original protected history, source fingerprints, TTL and exact approval before SSH, after receipt and after persistence. Its permanent start intent excludes replay after any entered failure. Post-start composition uses the new artifact verifier instead of the old inactive-only context.
+- Use a short fixed isolated-Python bootstrap and bounded duplicate-free stdin envelope containing only the exact reviewed module bundle and closed request. The bootstrap pins per-module hashes and validates the entire envelope before exec. Pass the retained effects-ledger digest rather than the complete 880-KiB inventory in the execution request. RED cases cover stalls, size overflow, duplicate keys, source/wire substitution, generated-worker behavior, durable intent drift and ambiguous start outcomes.
+
+Startup is not online user identity, Samba trust or completed recovery. Those functional checks, restoration of only originally active smb/nmb, terminal temporary-policy restoration and immutable Setup continuation remain required. Current approval still authorizes preparation only; no executable recovery route is approved for live use.
+
 ### Runtime regression baseline fixture repairs
 
 Three of the ten previously enumerated runtime failures were reproduced on non-root ALT: 3 failed and 28 passed across `tests/test_netctl_client.py`, `tests/test_inventory_endpoint_web.py` and `tests/test_vpnctl_management.py`. The fake netctl executable lacked a shebang; the PC-card test asserted an obsolete CSS revision; the dashboard fixture created only a Windows command wrapper on Linux and consequently observed the host's real systemctl state. The first wrapper correction also reproduced a Windows failure because shell-false short-name resolution did not find the command wrapper.
@@ -479,6 +492,33 @@ The final test-only correction supplies the netctl shebang, matches the existing
 Seven previously enumerated ownership failures were reproduced without root: six production-installer fixtures could not assign root ownership, and the public-evidence scenario simulated euid but retained non-root file owners. Running their complete assertions under fakeroot first demonstrated 37 passes. The final fixture uses fakeroot only in the installer child or the single public-evidence child when the caller is non-root POSIX; genuine root runs retain actual ownership operations. The full runtime CI job explicitly installs fakeroot. Production code, verifier ownership checks and existing test selection remain unchanged; simulated metadata is not proof of real elevated permissions. The public-evidence scenario additionally changes one file to UID 10001, observes the unchanged verifier's owner rejection and restores its owner.
 
 A separate ALT-specific false positive occurred because a manifest test prohibited the substring `private` in legitimate `/tmp/.private` artifact paths. The fixture now deliberately includes that path component while checking recursive field names, private-key filename, PEM marker and JSON-escaped complete private material. The assertions retain artifact/trust-anchor checks. Non-root ALT passed all 83 installer/QEMU tests in 13.51 seconds; actual-root ALT passed all 83 in 10.59 seconds. Windows QEMU tests passed 46 with one platform skip in 9.73 seconds. Independent source review found no issues; its PEM escaping clarification was applied and the final QEMU source separately passed 47 cases under non-root ALT and actual root, plus the affected Windows case. Both final test files compiled and matched their ALT scratch copies by SHA-256; diff checks passed. The broader non-root regression remains running against its frozen source snapshot and has revealed additional failures; no full regression-green claim is made. This block performs no live installer, AD recovery, ISO or workstation configuration operation.
+
+The broader frozen non-root ALT regression completed with 6 failed, 4332 passed and 20 skipped in 776.70 seconds. Five failures were test-environment pollution: earlier actual-root runs left source bytecode caches inaccessible to the ordinary test user. Repeating all 13 backup-installer tests with a separate PYTHONPYCACHEPREFIX passed without a source change. The sixth failure was the batch-preview fixture reading host OpenVPN defaults; explicit temporary SERVER_CONF, STATUS_LOG and MANAGEMENT_SOCKET overrides reproduced RED then passed both batch tests on ALT and Windows. All 15 affected ALT cases passed together; compile, matching source hash, diff check and independent source review passed. The three-line test-only correction was published as `07d99f034f5ae757469e0fd50bb40cf95f27b67a` (`test(runtime): isolate batch preview from host configuration`). A fresh full ALT regression with the isolated cache and final test sources is running; no production VPN operation was performed.
+
+Exact `5d29a70af9cabbacf3b6396478169194d82cc438` runtime CI [38162130710](https://github.com/BorisDruzak/web_ovpn/actions/runs/38162130710) completed with 7 failed, 4330 passed and 21 skipped in 786.68 seconds. Its terminal failed-test list contained only the six installer ownership failures and the public-evidence ownership failure addressed by the subsequent `5fb5f8e16c48c48dd40436c016ff1b072b97b7cb` fixture block. CI for that later SHA remained running at this checkpoint; no full-CI success is implied.
+
+### Retained artifacts checkpoint
+
+The baseline repair CI at exact `5fb5f8e16c48c48dd40436c016ff1b072b97b7cb`
+and `07d99f034f5ae757469e0fd50bb40cf95f27b67a` subsequently completed
+successfully, each with 4337 passed and 21 skipped. Complete non-root ALT
+regression at the repaired baseline passed 4338 with 20 skipped in 772.83
+seconds. Earlier red counts above are historical checkpoints.
+
+The next narrow implementation exposes separate import/Kerberos/policy
+artifact verifiers. Only process observations are excluded from static facts;
+retained files, original backup, identities, tools, policy and clock remain
+bound. Historical receipts keep trust false. Strict pre-start verification
+retains full facts and closes with an inactive-service check. RED during-RPM,
+service-activation and collector-command races led to final protected rereads
+without further native commands. Independent review closed all findings.
+
+Final focused non-root ALT checks passed 111 cases in 16.40 seconds; the full
+final-source actual-root ALT suite passed 1773 with one skip in 292.06 seconds.
+Compilation, matching source hashes and diff checks passed. One earlier
+incomplete scratch copy failed 28 documentation checks because docs were absent;
+the full copy corrected that test-environment error. The new worker/startup
+transport/coordinator remain pending. No recovery execution occurred.
 
 ## Task 3: Explicit additive continuation
 

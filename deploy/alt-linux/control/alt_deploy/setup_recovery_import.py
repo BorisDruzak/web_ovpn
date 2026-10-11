@@ -140,6 +140,17 @@ def _receipt(request,files,*,backup):
 
 
 def verify(request,*,backup,probe,collect,root=Path('/'),owner=0):
+    receipt=verify_artifacts(request,backup=backup,probe=probe,collect=collect,root=root,owner=owner)
+    if collect()!=_expected(request,receipt['files']):raise ValueError('Changed local import snapshot')
+    return receipt
+
+
+def verify_artifacts(request,*,backup,probe,collect,root=Path('/'),owner=0):
+    """Verify retained import and all static facts, without asserting stopped services.
+
+    Process observations alone are excluded. The startup worker must independently
+    check service/process state; this result is neither fresh authentication nor trust.
+    """
     if os.geteuid()!=owner or collect is None or not root.is_absolute():raise ValueError('Fixed root import required')
     leaf=path_for(request,backup=backup,root=root);backup._ancestry(leaf,root,owner)
     backup._directory(leaf.parent,owner);backup._directory(leaf,owner)
@@ -157,11 +168,26 @@ def verify(request,*,backup,probe,collect,root=Path('/'),owner=0):
             raise ValueError('Changed install progress')
     intent={'schema_version':1,'request_sha256':backup.digest(request),'files':files}
     receipt=_receipt(request,files,backup=backup)
+    current=collect();expected_facts=_expected(request,files)
+    processes=current.get('incompatible_processes') if isinstance(current,dict) else None
+    if (not isinstance(processes,list) or any(not isinstance(item,str) for item in processes)
+            or set(current)!=set(expected_facts)
+            or {key:value for key,value in current.items() if key!='incompatible_processes'}
+                !={key:value for key,value in expected_facts.items() if key!='incompatible_processes'}):
+        raise ValueError('Changed local import static facts')
     if (backup._json(leaf/'install-intent.json',root=root,owner=owner)!=intent
             or backup._json(leaf/'installed.json',root=root,owner=owner)!=receipt
-            or collect()!=_expected(request,files)
             or backup.verify(request['rehearsal_request']['backup_request'],root=root,owner=owner)!=request['rehearsal_request']['backup_receipt']):
         raise ValueError('Changed local import evidence')
+    # The genuine collector runs native commands after reading file metadata.
+    # Close that interval with protected reads, without another command cycle.
+    for path,private in probe.AUTH_FILES.items():
+        if probe._file(root,path,private=private,owner=owner)!=expected_facts['files'][path]:
+            raise ValueError('Changed authentication file during artifact collection')
+    for name,path in probe.TOOLS.items():
+        metadata={key:value for key,value in expected_facts['tools'][name].items() if key!='package'}
+        if probe._file(root,path,maximum=probe.MAX_TOOL_BYTES,owner=owner)!=metadata:
+            raise ValueError('Changed native executable during artifact collection')
     backup._sync(leaf);return receipt
 
 
