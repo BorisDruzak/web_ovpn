@@ -353,6 +353,18 @@ Exact published `a8a0887ddb7fb1b4d48a6b5fa7487291f1170b1e` ALT CI [38149571945](
 
 This gate remains internal and is not connected to an operator execution route. Protected importer transport, service restoration/start policy, Kerberos/trust/SSSD proof, additive continuation, guarded deployment and final exact execution approval remain required. No selected recovery claim, real service stop, AD password reset, authentication replacement or recovery deployment occurred.
 
+The read-only post-write state adapter is implemented in `setup_recovery_postwrite.py`:
+
+- [x] Derive inputs from the protected current-time executable plan, permanent reservation, sealed credential, original preparation/service records and exact AD intent/result. Reconstruct the proof hash named by the intent; accept only KVNO original+1 and a later password timestamp. Recheck the current pinned writable DC over GSSAPI with minimum SSF 128, preserving every other computer field including GUID, SID, OU and SPNs.
+- [x] Keep the general reserved prewrite exclusion unchanged. The adapter uses the service gate's protected light context only to validate recorded bindings; it does not claim current local service/configuration/backup verification. Its future caller must hold the lifecycle lock and perform separate fixed local checks.
+- [x] Validate the exact credential document schema, every reservation identity field and ciphertext SHA without opening Vault. Repeat all protected evidence, current TTL/source SHA and transport settings after the directory read. Refuse terminal attempts, missing or changed intent/result/markers, original history drift and diagnostics exposure.
+- [x] Observe 23 initial missing-module RED cases. Reproduce the independent review's three pre-existing credential corruption cases and the self-audit transport-drift case as RED; fix them. Pass 130 combined post-write/service-gate/provider/prewrite/reserved-state tests, including 29 post-write cases. Both added Python files compiled. Independent follow-up source review closed the finding with no additional issues; the reviewer made no host calls.
+- [x] Full ALT passed under root with 1596 passed and 1 skipped in 274.03 seconds. Both added Python files matched the reviewed local candidate byte-for-byte by SHA-256; no Python changes occurred after test collection. Complete source/test/doc inspection and diff checks passed.
+
+This adapter does not open Vault, create a claim, reset AD, stop/start services or install credentials. It is not an operator execution route or a protected importer transport. No recovery deployment or selected workstation mutation was performed. Actual importer transport, safe service restoration/start, trust/SSSD proof, additive continuation and final exact execution approval remain required.
+
+Exact published `a1f160e13cebe030e9f5f120daf9c43056b44488` ALT CI [38151337011](https://github.com/BorisDruzak/web_ovpn/actions/runs/38151337011) passed. Its full runtime CI [38151336983](https://github.com/BorisDruzak/web_ovpn/actions/runs/38151336983) retained the same ten enumerated failures: the six production-installer ownership/readiness fixtures, public QEMU evidence owner, inventory CSS cache expectation, synthetic netctl executable format and vpnctl dashboard state. The exact failed-run summary was 10 failed, 4166 passed and 11 skipped in 757.11 seconds. No broader runtime-green claim is made.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
