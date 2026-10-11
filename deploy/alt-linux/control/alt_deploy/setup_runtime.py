@@ -111,7 +111,7 @@ class SetupRuntime:
                    '-o', 'ProxyCommand=none', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=10',
                    '-o', 'UserKnownHostsFile=' + str(self.settings.known_hosts_file),
                    '-i', str(self.settings.private_key_file), 'ansible@' + address,
-                   'sudo -n /usr/bin/python3 -c ' + shlex.quote(PROBE_SCRIPT) + ' ' + shlex.quote(login) + ' ' + shlex.quote(user['upn'])]
+                   'sudo -n /usr/bin/python3 -I -B -c ' + shlex.quote(PROBE_SCRIPT) + ' ' + shlex.quote(login) + ' ' + shlex.quote(user['upn'])]
         rc, stdout, _ = self.runner(command, environment=dict(os.environ), timeout=90)
         if rc:
             raise fail('setup_probe_failed', 'Read-only SSH probe failed; check host key, SSH, sudo and domain tools')

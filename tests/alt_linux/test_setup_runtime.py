@@ -47,6 +47,7 @@ def test_probe_uses_strict_ssh_and_fixed_readonly_script(tmp_path):
     assert 'StrictHostKeyChecking=yes' in command
     assert 'ProxyCommand=none' in command
     assert command[-2] == 'ansible@192.0.2.10'
+    assert command[-1].startswith('sudo -n /usr/bin/python3 -I -B -c ')
     assert 'net' in command[-1] and 'testjoin' in command[-1]
     assert 'reboot' not in command[-1] and 'gpupdate' not in command[-1]
 
