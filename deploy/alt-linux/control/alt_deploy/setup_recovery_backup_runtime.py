@@ -26,6 +26,20 @@ class RecoveryWorkstationBackupRuntime(RecoveryPlanningRuntime):
     def verify_backup(self, machine, failed_run_id, computer_guid, facts):
         return self._backup('verify', machine, failed_run_id, computer_guid, facts)
 
+    def backup_request(self, machine, failed_run_id, computer_guid, facts):
+        pair = _pair(failed_run_id, computer_guid)
+        identity = self.credentials._reservation(**pair)
+        if identity['machine_uuid'] != machine.uuid: raise ValueError
+        directory = Path(__file__).parent
+        owner = Path(__file__).lstat().st_uid
+        sources = [_read_source(directory/name, owner=owner)
+            for name in ('setup_recovery_probe.py', 'setup_recovery_backup.py')]
+        request = dict(pair, schema_version=1, claim_sha256=identity['claim_sha256'],
+            machine_uuid=machine.uuid, hostname=machine.hostname, facts=facts,
+            snapshot_sha256=digest(facts), source_sha256=digest(sources))
+        _request(request)
+        return request
+
     def _backup(self, action, machine, failed_run_id, computer_guid, facts):
         try:
             address = str(ipaddress.ip_address(machine.ip))
@@ -36,11 +50,9 @@ class RecoveryWorkstationBackupRuntime(RecoveryPlanningRuntime):
             owner = Path(__file__).lstat().st_uid
             sources = [_read_source(directory/name, owner=owner)
                 for name in ('setup_recovery_probe.py', 'setup_recovery_backup.py')]
+            request = self.backup_request(machine, **pair, facts=facts)
             source_sha = digest(sources)
-            request = dict(pair, schema_version=1, claim_sha256=identity['claim_sha256'],
-                machine_uuid=machine.uuid, hostname=machine.hostname, facts=facts,
-                snapshot_sha256=digest(facts), source_sha256=source_sha)
-            _request(request)
+            if request['source_sha256'] != source_sha: raise ValueError
             wire = canonical(request).decode('utf-8')
             if len(wire) > 131072: raise ValueError
         except (ControlError, ValueError, TypeError, KeyError, AttributeError):

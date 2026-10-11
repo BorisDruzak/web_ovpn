@@ -252,6 +252,20 @@ No actual selected recovery claim or native backup was created. The real prewrit
 
 Exact published `ac9417ebf2778f084b9acac0c4ab3f0923842fb0` ALT CI [38143834218](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143834218) passed. The preceding full runtime CI [38143108554](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143108554) retained the same ten previously enumerated independent failures, with 3947 passes and 11 skips; its focused runtime identity job passed.
 
+The operational prewrite verifier is implemented in `setup_recovery_prewrite.py`:
+
+- [x] Load only a protected closed-schema preparation record bound to the exact current-time executable plan, claim, snapshot and sealed credential. Recheck the supplied password against the exact sealed document; emit no credentials. This verifier creates no preparation record or external write.
+- [x] Resolve the same registered target, derive the backup request from the existing runtime's protected fixed sources and exact reserved facts, and validate offline metadata against the pinned writable DC/domain identity. Require matching results from native controller eligibility verification, protected workstation backup verification and protected offline rehearsal verification.
+- [x] Return exactly the existing one-write provider's operational receipt schema. Synthetic integration with the real gate/provider permits one GUID-only LDAP write for valid evidence and zero writes for a changed rehearsal receipt; injected native verifiers and mock LDAP remain unit fixtures, not live approval evidence.
+- [x] Reproduce and fix original-history drift during the final Vault reopening by repeating fresh-state and current-time plan checks afterward. Also refuse missing/changed preparation records, claim, plan, source request, metadata, cipher, password or verifier receipts. All 17 new verifier tests and 119 combined verifier/runtime/reserved/controller/provider/rehearsal tests passed as the service user; four changed Python files compiled.
+- [x] Full ALT passed under root with 1405 passed and 1 skipped in 230.97 seconds, including all final tests. Independent follow-up review closed with no remaining actionable findings; complete source/test/doc diff inspection and diff checks passed.
+
+The coordinator must still create the genuine preparation record using the protected producers before this gate can be used operationally. No selected-target claim, password reset, authentication installation or deployment occurred. GitNexus context was requested before source exploration; the transport was unavailable, so the interfaces were verified directly against the narrowly scoped source and tests.
+
+Exact published `ceeb2d67418dc470b74e5cd395def343c2a2c404` ALT CI [38144511995](https://github.com/BorisDruzak/web_ovpn/actions/runs/38144511995) passed. Its full runtime workflow [38144511867](https://github.com/BorisDruzak/web_ovpn/actions/runs/38144511867) retained the same ten previously enumerated independent failures, with 3987 passes and 11 skips.
+
+The preceding reserved-state commit's full runtime CI [38143834137](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143834137) retained the same ten enumerated independent failures, with 3971 passes and 11 skips. No broader runtime-green claim is made.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

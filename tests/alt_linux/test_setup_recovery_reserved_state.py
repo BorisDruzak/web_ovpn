@@ -18,6 +18,8 @@ def scenario(root):
     build,paths,machine,user,computer,ou,observed,facts,ready,calls=planning_scenario(root)
     service=build()
     computer['dc']['uri']='ldap://synthetic-dc.sosnadmin.local'
+    computer['dc'].update(dns_hostname='synthetic-dc.sosnadmin.local',
+        domain_guid='11111111-2222-3333-4444-555555555555',domain_sid='S-1-5-21-111-222-333')
     computer['pwd_last_set']=134046000000000000
     snapshot=service.snapshot(RUN,COMPUTER_GUID)
     payload={key:snapshot[key] for key in ('failed_run_id','computer_guid','machine_uuid','computer_sid','evidence_sha256')}
