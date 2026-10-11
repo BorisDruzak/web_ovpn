@@ -202,6 +202,8 @@ class LDAPTransport:
                     3: 'ad_timeout', 4: 'ad_results_limit'}.get(rc, 'ad_query_failed')
             if 'tls' in diagnostic or 'certificate' in diagnostic:
                 code = 'ad_tls_failed'
+            elif rc in (81, 91) or "can't contact ldap server" in diagnostic:
+                code = 'ad_dc_unavailable'
             elif 'gssapi' in diagnostic or 'kerberos' in diagnostic or 'sasl' in diagnostic:
                 code = 'ad_kerberos_failed'
             raise fail(code, 'AD query failed; check controller directory connectivity and authentication')

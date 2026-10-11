@@ -126,7 +126,13 @@ def test_transport_rejects_unsafe_uri(uri):
         DirectoryConfig(uri=uri, approved_ous=())
 
 
-@pytest.mark.parametrize('rc,stderr,code', [(49, 'SECRET password', 'ad_authentication_failed'), (50, 'SECRET', 'ad_permission_denied'), (81, 'SECRET', 'ad_dc_unavailable'), (4, 'SECRET', 'ad_results_limit'), (1, 'TLS: peer certificate untrusted SECRET', 'ad_tls_failed')])
+@pytest.mark.parametrize('rc,stderr,code', [(49, 'SECRET password', 'ad_authentication_failed'), (50, 'SECRET', 'ad_permission_denied'), (81, 'SECRET', 'ad_dc_unavailable'), (4, 'SECRET', 'ad_results_limit'), (1, 'TLS: peer certificate untrusted SECRET', 'ad_tls_failed'),
+    (81, "ldap_sasl_interactive_bind_s: Can't contact LDAP server (-1)", 'ad_dc_unavailable'),
+    (91, 'GSSAPI connection failed', 'ad_dc_unavailable'),
+    (255, "ldap_sasl_interactive_bind_s: Can't contact LDAP server (-1)", 'ad_dc_unavailable'),
+    (81, 'SASL TLS: peer certificate untrusted SECRET', 'ad_tls_failed'),
+    (1, 'GSSAPI: credentials unavailable SECRET', 'ad_kerberos_failed'),
+])
 def test_transport_safe_errors(rc, stderr, code):
     from alt_deploy.ad_transport import DirectoryConfig, LDAPTransport
     transport = LDAPTransport(DirectoryConfig(uri='ldap://sosnadmin.local', approved_ous=()), runner=lambda cmd, **kw: (rc, '', stderr))
