@@ -127,15 +127,27 @@
         mode: "0600"
 
     - name: Derive hardware fingerprint from the exact RPM payload
-      ansible.builtin.shell: |
-        set -euo pipefail
-        mkdir -p "{{ software_endpoint_agent_tempdir.path }}/fingerprint"
-        cd "{{ software_endpoint_agent_tempdir.path }}/fingerprint"
-        rpm2cpio "{{ software_endpoint_agent_tempdir.path }}/endpoint-agent.rpm" |
-          cpio -idm --quiet './usr/lib64/endpoint-agent/release-bundle/*'
-        exec "{{ software_endpoint_agent_tempdir.path }}/fingerprint/usr/lib64/endpoint-agent/release-bundle/pc_agent/pc_agent" --print-hardware-fingerprint
-      args:
-        executable: /bin/bash
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import os
+            from pathlib import Path
+            import subprocess
+            import sys
+            staging = Path(sys.argv[1])
+            extraction = staging / 'fingerprint'
+            extraction.mkdir(mode=0o700, exist_ok=True)
+            payload = staging / 'payload.cpio'
+            with payload.open('xb') as output:
+                subprocess.run(['rpm2cpio', str(staging / 'endpoint-agent.rpm')], stdout=output, check=True)
+            with payload.open('rb') as source:
+                subprocess.run(['cpio', '-idm', '--quiet', './usr/lib64/endpoint-agent/release-bundle/*'], stdin=source, cwd=extraction, check=True)
+            binary = str(extraction / 'usr/lib64/endpoint-agent/release-bundle/pc_agent/pc_agent')
+            os.execv(binary, [binary, '--print-hardware-fingerprint'])
+          - "{{ software_endpoint_agent_tempdir.path }}"
       register: software_endpoint_agent_fingerprint
       changed_when: false
 
@@ -214,10 +226,19 @@
       changed_when: software_endpoint_agent_install.rc == 0
 
     - name: Wait for Endpoint enrollment completion and claim finalization
-      ansible.builtin.shell: >-
-        test -f {{ software_endpoint_agent_credential_path | quote }} &&
-        test ! -e {{ (software_endpoint_agent_bootstrap_dir ~ '/provisioning-claim') | quote }} &&
-        test ! -e /etc/endpoint-agent/provisioning-claim
+      ansible.builtin.command:
+        expand_argument_vars: false
+        argv:
+          - /usr/bin/python3
+          - -c
+          - |
+            import os
+            import sys
+            credential, bootstrap_claim, installed_claim = sys.argv[1:]
+            sys.exit(0 if os.path.isfile(credential) and not os.path.exists(bootstrap_claim) and not os.path.exists(installed_claim) else 1)
+          - "{{ software_endpoint_agent_credential_path }}"
+          - "{{ software_endpoint_agent_bootstrap_dir }}/provisioning-claim"
+          - /etc/endpoint-agent/provisioning-claim
       register: software_endpoint_agent_enrollment
       retries: "{{ software_endpoint_agent_enrollment_retries }}"
       delay: "{{ software_endpoint_agent_enrollment_delay }}"
