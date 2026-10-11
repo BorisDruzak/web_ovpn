@@ -69,6 +69,34 @@ class RecoveryStartupPlans:
         path=Path(__file__).with_name('setup_recovery_native_testjoin.py')
         return self._sources()+[_read_source(path,owner=Path(__file__).lstat().st_uid)]
 
+    def _user_sources(self):
+        path=Path(__file__).with_name('setup_recovery_user_check.py')
+        return self._native_sources()+[_read_source(path,owner=Path(__file__).lstat().st_uid)]
+
+    def _user_scope(self,base):
+        from .setup_recovery_user_check import employee,TOOL,PACKAGE,NSS_MODULE,NSS_PACKAGE
+        sources=self._user_sources();snapshot=base['plan']['payload']['snapshot'];user=snapshot['user']
+        selected=employee({key:user[key] for key in ('object_guid','object_sid','login','upn')})
+        if (user['state']!='enabled' or len(sources)!=14 or sources[:-1]!=self._native_sources()
+                or digest(sources[:-2])!=base['source_sha256']
+                or any(not isinstance(value,str) or len(value.encode())>131072 for value in sources)):raise ValueError
+        tools=snapshot['workstation_facts']['snapshot']['tools']
+        if not isinstance(tools,dict) or not {'getent','nss_sss'}<=set(tools):raise ValueError
+        dependencies={key:copy.deepcopy(tools[key])
+            for key in ('getent','nss_sss')}
+        for key,package in (('getent',PACKAGE),('nss_sss',NSS_PACKAGE)):
+            item=dependencies[key]
+            if (not isinstance(item,dict) or set(item)!={'present','sha256','size','uid','gid','mode','package'}
+                    or item['present'] is not True or not _sha(item['sha256']) or item['package']!=package
+                    or any(type(item[field]) is not int for field in ('size','uid','gid','mode'))
+                    or not 1<=item['size']<=67108864 or item['uid']!=0 or item['gid']<0
+                    or not 0<=item['mode']<=0o7777 or item['mode'] & 0o022 or not item['mode'] & 0o111):raise ValueError
+        return dict(schema_version=1,operation='fixed_selected_user_nss_observation_once',
+            source_sha256=digest(sources),employee=selected,dependencies=dependencies,
+            paths={'getent':TOOL,'nss_sss':NSS_MODULE},argv=[TOOL,'-s','sss','passwd',selected['upn']],
+            timeout_seconds=15,local_duplicate='reject_before_lookup',nss_cache='may_be_used',
+            login_verified=False,online_user_authentication_verified=False,temporary_policy_retained=True)
+
     def _native_scope(self,base):
         from .setup_recovery_native_testjoin import TOOLS
         sources=self._native_sources();dc=base['identity']['dc']['dns_hostname']
@@ -108,9 +136,9 @@ class RecoveryStartupPlans:
             computer_ou=snapshot['computer_ou'],ou_identity=snapshot['ou_identity'],dc=snapshot['computer']['dc'])
         return dict(plan=plan,identity=identity,source_sha256=digest(sources))
 
-    def create(self,plan_id,confirmed_sha,*,sssd_unit,effects_ledger,native_check=False):
+    def create(self,plan_id,confirmed_sha,*,sssd_unit,effects_ledger,native_check=False,user_check=False):
         try:
-            if type(native_check) is not bool:raise ValueError
+            if type(native_check) is not bool or type(user_check) is not bool or (user_check and not native_check):raise ValueError
             with exclusive_lock(self.settings.lock_file):
                 base=self._base(plan_id,confirmed_sha);payload=base['plan']['payload'];pair=_pair(payload['failed_run_id'],payload['computer_guid'])
                 claim=self.planning.attempts.claim_path(**pair)
@@ -122,13 +150,17 @@ class RecoveryStartupPlans:
                 if len(canonical(unit))>65536:raise ValueError
                 _ledger(unit,ledger)
                 scope=self._native_scope(base) if native_check else None
+                user_scope=self._user_scope(base) if user_check else None
                 if (not _same(self.planning.snapshot(**pair),payload['snapshot']) or not _same(self._base(plan_id,confirmed_sha),base)
-                        or (native_check and not _same(self._native_scope(base),scope))):raise ValueError
+                        or (native_check and not _same(self._native_scope(base),scope))
+                        or (user_check and not _same(self._user_scope(base),user_scope))):raise ValueError
                 attachment=dict(schema_version=1,scope='one_fixed_sssd_start_with_retained_temporary_policy',
                     recovery_plan_id=plan_id,recovery_plan_sha256=confirmed_sha,recovery_payload_sha256=digest(payload),
                     identity=base['identity'],source_sha256=base['source_sha256'],sssd_unit=unit,effects_ledger=ledger)
                 if native_check:
                     attachment.update(scope='one_fixed_sssd_start_and_native_check_with_retained_temporary_policy',native_check=scope)
+                if user_check:
+                    attachment.update(scope='one_fixed_sssd_start_native_and_user_check_with_retained_temporary_policy',user_check=user_scope)
                 return self.store.create(attachment)
         except Exception:raise fail('recovery_startup_plan_invalid','Exact startup scope and protected recovery provenance did not verify') from None
 
@@ -140,6 +172,9 @@ class RecoveryStartupPlans:
             identity=base['identity'],source_sha256=base['source_sha256'],sssd_unit=unit,effects_ledger=ledger)
         if 'native_check' in approved:
             expected.update(scope='one_fixed_sssd_start_and_native_check_with_retained_temporary_policy',native_check=self._native_scope(base))
+        if 'user_check' in approved:
+            if 'native_check' not in approved:raise ValueError
+            expected.update(scope='one_fixed_sssd_start_native_and_user_check_with_retained_temporary_policy',user_check=self._user_scope(base))
         if (not _same(approved,expected) or attachment['created_at']<base['plan']['created_at']
                 or len(canonical(unit))>65536):raise ValueError
         validate_unit(unit);_ledger(unit,ledger)

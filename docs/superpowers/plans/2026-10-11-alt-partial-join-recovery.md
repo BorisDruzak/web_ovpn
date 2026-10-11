@@ -747,8 +747,12 @@ protected original getent/NSS-module dependency hashes/packages, retained
 native/startup proof, local-duplicate rejection, and permanent entered-failure
 exclusion. It does not prove user authentication. Independent review found
 and closed missing NSS-module pinning; see the user-observation verification
-report. Explicit user approval scope, fresh AD employee guard and fixed
-wire/controller binding are still required before this worker can be used.
+report. Explicit optional user approval scope now requires native selection,
+pins all fourteen sources and original NSS dependencies, and keeps old
+approvals unchanged. The combined native gate checks enabled employee identity
+before/after through the pinned postwrite directory and ends directory callbacks
+with protected local context rereads. Fixed user wire/controller binding,
+terminal handoff and the operational coordinator remain unfinished.
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
 

@@ -31,12 +31,24 @@ class RecoveryNativeAuthorization:
                 or not _same(private_read(intent_path),intended)):raise ValueError
         return result
 
+    def _employee(self,loaded):
+        approved=loaded['attachment']['payload']
+        if 'user_check' not in approved:return
+        selected=approved['user_check']['employee'];postwrite=self.startup_authorization.postwrite
+        expected=loaded['base']['plan']['payload']['snapshot']['computer']
+        config=postwrite._directory_config(expected)
+        actual=copy.deepcopy(postwrite.directory.user(selected['login']))
+        if (actual['state']!='enabled' or not _same({key:actual[key] for key in selected},selected)
+                or postwrite._directory_config(expected)!=config):raise ValueError
+
     def __call__(self,plan_id,sha,source_sha,request_sha,receipt_sha):
         try:
             gate=self.startup_authorization;plans=gate.plans
             loaded=copy.deepcopy(gate._load(plan_id,sha));approved=loaded['attachment']['payload']
-            if (approved['scope']!='one_fixed_sssd_start_and_native_check_with_retained_temporary_policy'
+            if (approved['scope'] not in ('one_fixed_sssd_start_and_native_check_with_retained_temporary_policy',
+                    'one_fixed_sssd_start_native_and_user_check_with_retained_temporary_policy')
                     or approved['native_check']['source_sha256']!=source_sha):raise ValueError
+            self._employee(loaded)
             sources=plans._native_sources()
             if digest(sources)!=source_sha:raise ValueError
             startup=gate(plan_id,sha,digest(sources[:-1]))
@@ -54,6 +66,11 @@ class RecoveryNativeAuthorization:
                     or not _same(self.startup_runtime._context(plan_id,sha),context)):raise ValueError
             if (plans._native_sources()!=sources or not _same(gate._load(plan_id,sha),loaded)
                     or not _same(gate.postwrite._protected(plan_id,sha)[0],protected)
+                    or not _same(self._records(plan_id,sha,context,request_sha,receipt_sha),result)):raise ValueError
+            self._employee(loaded)
+            # End the fresh directory callback with protected local rereads.
+            if (not _same(gate.postwrite._protected(plan_id,sha)[0],protected)
+                    or not _same(gate._load(plan_id,sha),loaded) or plans._native_sources()!=sources
                     or not _same(self._records(plan_id,sha,context,request_sha,receipt_sha),result)):raise ValueError
             gate._bound(plan,gate._expected(loaded))
             return dict(schema_version=1,plan_id=plan_id,plan_sha256=sha,source_sha256=source_sha,

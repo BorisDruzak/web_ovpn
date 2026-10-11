@@ -39,16 +39,17 @@ def test_start_only_confirmed_binding_cannot_authorize_native_check(tmp_path):
     with pytest.raises(ControlError):authorization(recovery['plan_id'],recovery['sha256'],digest(plans._sources()),'1'*64,'2'*64)
 
 
-def native_fixture(root):
+def native_fixture(root,*,user_check=False):
     from types import SimpleNamespace
     from alt_deploy.setup_recovery_startup_authorization import RecoveryStartupAuthorization
     from alt_deploy.setup_recovery_native_authorization import RecoveryNativeAuthorization
     from alt_deploy.setup_recovery_sssd_start_runtime import RecoverySSSDStartRuntime
     from alt_deploy import setup_recovery_sssd_start as start,setup_recovery_backup as backup
     _,plans,preparation,_,recovery,_,_,ledger,unit,protected=scenario(root)
-    attachment=plans.create(recovery['plan_id'],recovery['sha256'],sssd_unit=unit,effects_ledger=ledger,native_check=True)
-    postwrite=SimpleNamespace(load=lambda *a:dict(copy.deepcopy(protected),machine=None),
+    attachment=plans.create(recovery['plan_id'],recovery['sha256'],sssd_unit=unit,effects_ledger=ledger,native_check=True,user_check=user_check)
+    postwrite=SimpleNamespace(directory=plans.planning.directory,load=lambda *a:dict(copy.deepcopy(protected),machine=None),
         _protected=lambda *a:(copy.deepcopy(protected),None))
+    postwrite._directory_config=lambda expected:('gssapi','join-vault',128,expected['dc']['uri'])
     gate=RecoveryStartupAuthorization(preparation=preparation,postwrite=postwrite,plans=plans,
         startup_plan_id=attachment['plan_id'],confirmed_startup_sha=attachment['sha256'])
     gate.bind_once(recovery['plan_id'],recovery['sha256']);reserve(gate,recovery,protected)
