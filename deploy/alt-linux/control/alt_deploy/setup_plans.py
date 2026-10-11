@@ -36,8 +36,12 @@ def private_directory(path: Path) -> None:
         raise fail('setup_state_unsafe', 'Setup state directory must be private and owned by the operator service')
 
 
-def private_read(path: Path):
+def private_read_bytes(path: Path) -> bytes:
+    """Read protected bytes without following redirected ancestors or files."""
     try:
+        for ancestor in path.parents:
+            if not stat.S_ISDIR(ancestor.lstat().st_mode):
+                raise ValueError
         before = path.lstat()
         if not stat.S_ISREG(before.st_mode):
             raise ValueError
@@ -50,6 +54,17 @@ def private_read(path: Path):
                     or (os.name != 'nt' and (stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.geteuid()))):
                 raise ValueError
             raw = stream.read(MAX_STATE_BYTES + 1)
+            if len(raw) > MAX_STATE_BYTES:
+                raise ValueError
+        return raw
+    except (OSError, ValueError) as exc:
+        raise fail('setup_state_invalid', 'Protected setup state is missing, unsafe or invalid') from exc
+
+
+def decode_state_bytes(raw: bytes):
+    try:
+        if not isinstance(raw, bytes) or len(raw) > MAX_STATE_BYTES:
+            raise ValueError
         def strict(pairs):
             result = {}
             for key, value in pairs:
@@ -61,8 +76,12 @@ def private_read(path: Path):
         if not isinstance(document, dict):
             raise ValueError
         return document
-    except (OSError, ValueError, UnicodeError) as exc:
+    except (ValueError, UnicodeError) as exc:
         raise fail('setup_state_invalid', 'Protected setup state is missing, unsafe or invalid') from exc
+
+
+def private_read(path: Path):
+    return decode_state_bytes(private_read_bytes(path))
 
 
 def private_create(path: Path, payload) -> None:
@@ -91,8 +110,11 @@ def private_replace(path: Path, payload) -> None:
 
 
 class SetupPlanStore:
+    prefix = 'setup-'
+    directory = 'setup-plans'
+
     def __init__(self, state_root: Path, *, clock=None):
-        self.root = state_root / 'setup-plans'
+        self.root = state_root / self.directory
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def create(self, payload):
@@ -101,7 +123,7 @@ class SetupPlanStore:
                 'expires_at': (now + timedelta(minutes=30)).isoformat(),
                 'content_sha256': digest(payload), 'payload': payload}
         sha = digest(body)
-        plan = dict(body, plan_id='setup-' + sha, sha256=sha)
+        plan = dict(body, plan_id=self.prefix + sha, sha256=sha)
         path = self.root / (plan['plan_id'] + '.json')
         try:
             private_create(path, plan)
@@ -112,9 +134,9 @@ class SetupPlanStore:
         return plan
 
     def load(self, plan_id: str, confirmed_sha: str):
-        if not PLAN_ID_RE.fullmatch(plan_id):
+        if not isinstance(plan_id, str) or not re.fullmatch(re.escape(self.prefix) + '[0-9a-f]{64}', plan_id):
             raise fail('setup_plan_invalid', 'Setup plan identifier is invalid')
-        if not re.fullmatch('[0-9a-f]{64}', confirmed_sha) or plan_id != 'setup-' + confirmed_sha:
+        if not isinstance(confirmed_sha, str) or not re.fullmatch('[0-9a-f]{64}', confirmed_sha) or plan_id != self.prefix + confirmed_sha:
             raise fail('setup_plan_mismatch', 'Setup plan SHA confirmation differs')
         try:
             plan = private_read(self.root / (plan_id + '.json'))

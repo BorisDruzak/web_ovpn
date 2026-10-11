@@ -79,6 +79,17 @@ GUID addressing protects the selected immutable object from hostname replacement
 - [ ] Implement bounded snapshots using existing private state primitives; no raw IP identity selection or new secret storage.
 - [ ] GREEN: byte-preserving plan proof; reserve against original failed run + computer GUID before mutation; prove interrupted receipt and fresh-plan/attempt replay cannot write again.
 
+Storage foundation completed separately from historical eligibility and execution:
+
+- [x] Reuse protected plan envelopes with a distinct recovery namespace; normal Setup cannot load a recovery plan.
+- [x] Preserve exact historical JSON bytes and hashes in a fixed five-document archive; refuse missing/extra/invalid evidence and byte drift.
+- [x] Reserve once across competing processes and fresh plan IDs using original failed run + computer GUID. Interrupted, corrupt and failed-storage claims remain excluded.
+- [x] Fsync the claim and complete directory ancestry before returning success; simulated parent-sync failure never authorizes execution.
+- [x] Append a terminal receipt without replacing claim/evidence; a trust receipt requires exact pinned UUID/GUID/SID and strict successful trust/keytab/SSSD/user checks.
+- [x] Observe RED then GREEN and independently review the foundation. The review's first-directory durability finding was fixed with RED/GREEN coverage; no further findings in that scope.
+
+The foundation has no CLI entrypoint, provider, directory writer or automatic continuation. It does not validate full historical run eligibility yet. Focused ALT Python 3.12 checks: 35 new state tests plus existing AD/Setup tests, 98 passed. The full `tests/alt_linux` suite passed with 1047 passed and 1 skipped. Python compile and diff checks passed. The Windows runner cannot collect this POSIX-only suite; validation used an isolated source copy on ALT, not the installed controller code.
+
 ## Task 2: Fixed one-attempt recovery execution
 
 **Files:** Create a fixed recovery provider/runtime and focused provider/runtime tests under the existing control package; wire the fixed runner in `setup_recovery.py`. Do not create a generic Ansible override or expose LDAP attributes, scripts, command lines, paths or variables as operator inputs.
@@ -116,3 +127,4 @@ GUID addressing protects the selected immutable object from hostname replacement
 - Ruling: reject `changesecretpw` as the first local step on this target — its protected-copy domain metadata check failed. Offline import is a candidate local initializer, not a second AD password-writing join.
 - Ruling: scope the ODJ blob to local initialization — this version's RID0 is not the selected computer SID and cannot establish identity. External GUID/SID binding and real postchecks remain mandatory.
 - Ruling: preserve UNKNOWN for the original partial-join cause — no_log hid the decisive output; the missing local metadata is a recovery prerequisite failure, not proof of that original cause.
+- Ruling: prepare implementation in an attached managed worktree and validate it in a private ALT source copy — the primary checkout and deployed controller stay separate. Infrastructure recovery remains unexecuted.
