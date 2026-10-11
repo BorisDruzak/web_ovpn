@@ -61,3 +61,14 @@ def test_invalid_input_refuses_before_spawn(monkeypatch, invalid):
         run(['/usr/bin/false'], input_text=b'x' if invalid == 'bytes' else 'x'*(131073 if invalid == 'oversize' else 1),
             timeout=0 if invalid == 'deadline' else 1)
     assert calls == []
+
+
+def test_fixed_source_runs_standalone_with_safe_failures():
+    from pathlib import Path
+    from alt_deploy import setup_recovery_process
+    scope = {'__name__': 'fixed_recovery_process'}
+    exec(compile(Path(setup_recovery_process.__file__).read_text(), 'fixed-process', 'exec'), scope)
+    standalone = scope['bounded_recovery_run']
+    assert standalone([sys.executable, '-c', 'print("safe")'], environment={}, timeout=3) == (0, 'safe\n', '')
+    with pytest.raises(ValueError, match='recovery_process_failed'):
+        standalone([sys.executable, '-c', 'import time;time.sleep(60)'], environment={}, timeout=0.2)

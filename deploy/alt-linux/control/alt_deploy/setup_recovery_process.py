@@ -8,7 +8,14 @@ import subprocess
 import time
 from threading import Thread
 
-from .ad_directory import fail
+if __package__:
+    from .ad_directory import fail
+else:
+    # Fixed protected source is also transmitted to isolated workstation Python.
+    # That worker has no installed controller package; retain fail-closed bounds
+    # while returning only the stable error code, never subprocess diagnostics.
+    def fail(code, message):
+        return ValueError(code)
 
 MAX_INPUT = 131072
 MAX_OUTPUT = 16384
