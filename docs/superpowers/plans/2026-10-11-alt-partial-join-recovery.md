@@ -196,7 +196,7 @@ Fixed workstation preservation is implemented in `setup_recovery_backup.py` and 
 
 No real selected-workstation snapshot was created during this block. The wrapper deliberately requires a genuine protected reservation; the future coordinator must integrate preparation evidence and approval without fabricating a claim or bypassing public planning's attempt exclusion. Actual coordinated backups and the isolated native local-import rehearsal remain execution prerequisites. The installed controller and selected workstation authentication files are unchanged.
 
-Source inspection confirms that the native coordinated backup also acquires `/var/lib/alt-deploy/workstationctl.lock`. Its create/verify/rehearse lifecycle must occur before recovery owns that lock; the future locked prewrite producer must validate already-prepared native evidence without recursively acquiring it. Do not bypass the native guard or drop recovery serialization to work around nested locking.
+Source inspection confirms that native coordinated backup creation also acquires `/var/lib/alt-deploy/workstationctl.lock`. Complete preparation before recovery owns that lock. Native `rehearse-status` acquires only the separate nonblocking operation lock and verifies all bundle components and the manifest/verification/rehearsal link, so the future locked prewrite producer may use it to validate previously prepared native evidence. Do not bypass the native guard or drop recovery serialization to work around nested locking.
 
 Exact published `b331eccb401b38987fa519558eb70ff85653b148` ALT CI [38139466637](https://github.com/BorisDruzak/web_ovpn/actions/runs/38139466637) passed; focused runtime identity passed in [38139466654](https://github.com/BorisDruzak/web_ovpn/actions/runs/38139466654), whose full regression retained the same ten independent failures with 3833 passes and 11 skips.
 
@@ -238,6 +238,19 @@ The reserved fresh-state adapter is implemented in `setup_recovery_reserved_stat
 The real controller-backup producer, locked prewrite coordinator, authentication installation, trust proof and additive continuation remain required. No selected-target recovery claim, password reset, live authentication installation or deployment occurred in this block.
 
 Exact published `120e0218b7d749662231d9117e58b6cbfa0b80d2` ALT CI [38143108642](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143108642) passed; the focused runtime identity job in [38143108554](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143108554) passed while its full regression was still running when this evidence was recorded.
+
+The native controller backup producer is implemented in `setup_recovery_controller_backup.py`:
+
+- [x] Require the exact reserved fresh-state snapshot, protected claim/history and ready sealed credential document. Persist an exclusive preparation intent before the first external operation; the native controller-state snapshot includes this protected preparation state. A failed or interrupted preparation cannot create another backup for the attempt.
+- [x] Invoke only fixed native `guard`, `create`, `verify`, `rehearse` and `rehearse-status` commands with bounded process I/O, a minimal environment and no passwords. Bind the native backup ID, manifest SHA and verification SHA to the exact claim, plan, snapshot and sealed document. Preserve native artifacts on failure.
+- [x] Revalidate identity and intent before and after protected receipt persistence. Verification rejects failed/incomplete state and protected evidence drift, then performs native guard and full eligibility verification. It creates no backup and never recursively acquires the lifecycle lock.
+- [x] Reproduce and correct an independent-review finding: native create/verify return six components, distinct from the eleven rehearsal checks. Exercise the entire producer through the actual native dispatch/repository/rehearsal implementations in an isolated backup sandbox, with fixture executables and no live controller state.
+- [x] Reproduce and fix intent drift during native preparation. Cover native failures, unsafe IDs, changed sealed state, expiry, retry exclusion and a visible receipt after failed persistence. All 16 producer tests and 136 combined producer/provider/reserved/native-backup tests passed as the service user. Both new Python files compiled. Independent follow-up review closed with no remaining actionable findings.
+- [x] Full ALT passed under root with 1388 passed and 1 skipped in 228.81 seconds, including all final additions. No Python sources changed after collection; diff checks passed.
+
+No actual selected recovery claim or native backup was created. The real prewrite coordinator, authentication installation, trust proof and additive continuation still remain required.
+
+Exact published `ac9417ebf2778f084b9acac0c4ab3f0923842fb0` ALT CI [38143834218](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143834218) passed. The preceding full runtime CI [38143108554](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143108554) retained the same ten previously enumerated independent failures, with 3947 passes and 11 skips; its focused runtime identity job passed.
 
 ## Task 3: Explicit additive continuation
 
