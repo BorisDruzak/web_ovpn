@@ -36,6 +36,10 @@ def scenario(root):
         local_rehearsal=rehearsal)
     record=copy.deepcopy(record)
     private_create(gate.path(payload),record)
+    private_create(gate.attempts._path(**pair,suffix='.preparation-intent.json'),
+        {key:record[key] for key in ('schema_version','plan_sha256','claim_sha256','snapshot_sha256','sealed_sha256')})
+    private_create(gate.attempts._path(**pair,suffix='.preparation-ready.json'),
+        {'schema_version':1,'preparation_sha256':digest(record)})
     sealed={'claim_sha256':digest(claim),'sealed_sha256':document['sealed_sha256']}
     password=credentials.open(**pair)
     return gate,payload,claim,sealed,password,record,credentials,paths,runtime_calls
@@ -93,6 +97,15 @@ def test_record_drift_during_remote_verification_is_refused(tmp_path):
         return result
     gate.runtime.verify_rehearsal=changed
     with pytest.raises(ControlError):gate(payload,claim,sealed,password)
+
+
+@pytest.mark.parametrize('marker',['intent','ready'])
+def test_missing_preparation_marker_cannot_authorize_writing(tmp_path,marker):
+    gate,payload,claim,sealed,password,record,credentials,paths,calls=scenario(tmp_path)
+    pair={key:payload[key] for key in ('failed_run_id','computer_guid')}
+    gate.attempts._path(**pair,suffix='.preparation-'+marker+'.json').unlink()
+    with pytest.raises(ControlError):gate(payload,claim,sealed,password)
+    assert calls==[]
 
 
 @pytest.mark.parametrize('changed',[False,True])

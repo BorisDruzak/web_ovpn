@@ -266,6 +266,21 @@ Exact published `ceeb2d67418dc470b74e5cd395def343c2a2c404` ALT CI [38144511995](
 
 The preceding reserved-state commit's full runtime CI [38143834137](https://github.com/BorisDruzak/web_ovpn/actions/runs/38143834137) retained the same ten enumerated independent failures, with 3971 passes and 11 skips. No broader runtime-green claim is made.
 
+The fixed preparation coordinator is implemented in `setup_recovery_prepare.py`:
+
+- [x] Accept only the exact current-time executable envelope and confirmed SHA. Under the lifecycle lock, revalidate the public unreserved snapshot, resolve and validate the pinned writable DC's unique IPv4, preserve all five original bytes in an exclusive claim, create the sealed credential once and persist the bound preparation intent.
+- [x] Release the lifecycle lock for native coordinated controller backup creation, then reacquire it and revalidate the exact plan, claim, credential, history, registration and DC resolution before creating the private workstation backup and offline rehearsal. No directory password or live authentication file writer is called.
+- [x] Exclusively persist the closed preparation record and bound ready marker, then invoke the real operational prewrite gate. Return only plan/preparation/verification hashes; never include a password. Reserved failures append a terminal failed receipt where storage permits and retain all artifacts and exclusions.
+- [x] Require the prewrite gate to validate both the exact preparation intent and ready marker before and after artifact verification. Missing-marker regressions failed against the preceding published verifier and passed with the new checks. A visible ready marker after failed persistence is excluded by the terminal attempt receipt.
+- [x] Tests cover reservation/retry exclusion, real lifecycle-lock ordering, unchanged original history, native/remote preparation failures, intervening history drift, unsafe/ambiguous DNS and persistence failure. All 13 coordinator tests and 134 combined coordinator/prewrite/reserved/controller/provider/transport/rehearsal tests passed as the service user; four changed Python files compiled. Independent source review found no actionable issues.
+- [x] Full ALT passed under root with 1420 passed and 1 skipped in 228.97 seconds, including all final additions. No Python sources changed after collection; full diff inspection and diff checks passed.
+
+The coordinator tests use the real protected stores, credential codec wrapper, controller producer and prewrite gate with fixture Vault/native/remote dependencies. Those tests are not selected-target backups or live domain acceptance. A read-only `getent ahostsv4 localhost` on ALT confirmed the installed output format; resolution tests use synthetic domain names and addresses. GitNexus located the committed controller producer before interface inspection.
+
+This internal coordinator is not exposed as a CLI execution command. The fixed post-write local importer, trust/SSSD/keytab proof, additive Setup continuation, guarded deployment and exact operator execution approval remain required. No selected-target claim, password reset, authentication installation or deployment occurred in this block.
+
+Exact published `39de633896c7ae7a3671739b0d518cd2f33b354f` ALT CI [38145166769](https://github.com/BorisDruzak/web_ovpn/actions/runs/38145166769) passed. Its full runtime workflow [38145166777](https://github.com/BorisDruzak/web_ovpn/actions/runs/38145166777) was still running when this evidence was recorded.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

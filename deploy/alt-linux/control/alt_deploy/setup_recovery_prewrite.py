@@ -46,6 +46,11 @@ class RecoveryPrewriteGate:
             if (set(record) != set(expected)|{'controller_backup','backup_request','workstation_backup','rehearsal_metadata','local_rehearsal'}
                     or type(record['schema_version']) is not int
                     or any(record[key] != value for key,value in expected.items())): raise ValueError
+            def preparation_guard():
+                if (private_read(self.attempts._path(**pair,suffix='.preparation-intent.json')) != expected
+                        or private_read(self.attempts._path(**pair,suffix='.preparation-ready.json'))
+                            != {'schema_version':1,'preparation_sha256':digest(record)}): raise ValueError
+            preparation_guard()
             machine=self.machines.resolve(payload['machine_uuid'])
             if (machine.uuid != payload['machine_uuid'] or machine.hostname != payload['snapshot']['machine']['hostname']
                     or machine.ip != payload['snapshot']['machine']['ip']): raise ValueError
@@ -63,6 +68,7 @@ class RecoveryPrewriteGate:
                     backup_receipt=record['workstation_backup'],metadata=meta) != record['local_rehearsal']: raise ValueError
             guard()
             if private_read(self.path(payload)) != record: raise ValueError
+            preparation_guard()
             result={key:value for key,value in expected.items() if key!='plan_sha256'}
             return dict(result,controller_backup_verified=True,workstation_backup_verified=True,local_rehearsal_verified=True,
                 controller_backup_sha256=digest(record['controller_backup']),
