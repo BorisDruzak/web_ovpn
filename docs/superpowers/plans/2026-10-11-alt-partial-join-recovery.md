@@ -592,6 +592,62 @@ online user/trust checks, original-service restoration, temporary-policy
 restoration and execution coordinator remain required before the final live
 plan approval. No actual recovery operation was performed.
 
+### Exact startup approval preparation (2026-10-12)
+
+The internal startup attachment uses its own fixed content-addressed private
+plan directory and a 30-minute TTL. It binds the executable recovery plan
+ID/SHA/payload, original evidence and registration, employee/computer/OU/DC
+identity, deployment fingerprint, twelve protected worker sources, stock
+inactive SSSD unit and a closed bounded effects ledger. The ledger contains
+the exact controller start, stock automatic-restart/temporary-policy scope,
+conservative dependency interpretation, manager-interference limitation,
+specific reviewed effects and unresolved observations. An inventory digest
+alone is not review. The real collector/review producer remains required;
+there is no default ledger or operator JSON execution interface.
+
+The caller supplies both exact confirmed plan SHAs. Before reservation,
+`bind_once` rechecks the genuine fresh planning snapshot and retains a fixed
+pair-specific approval binding plus durable ready marker under the lifecycle
+lock. Existing claims/bindings/failed/revoked markers exclude replacement.
+Read-only authorization requires actual protected claim bytes and genuine
+post-write continuity; expected KVNO change is checked by the existing
+post-write adapter rather than comparing current AD to the pre-write snapshot.
+It rereads both immutable plans, original history, registry, source hashes and
+binding and returns an independent snapshot. Neither attachment nor stored
+binding alone is proof that the future operator coordinator obtained approval.
+
+Review reproduced visible-binding acceptance after failed fsync, an unreserved
+mock context, failure exclusion after lock release, a failed-marker creation
+failure and visible-marker durability uncertainty. The entered failure handler
+now runs before lock release. If creating a failure record is impossible, it
+renames only its exact private ready marker to a fixed revoked path, preserves
+all bytes and fsyncs the directory. Unconfirmed exclusion durability returns
+`recovery_startup_approval_ambiguous`; the workflow must stop for manual state
+recovery. No durable cross-crash guarantee is claimed for unwritable storage,
+and a future coordinator must never resume an unsuccessful binding.
+
+Initial missing-module RED covered 32 cases. Final focused verification passed
+169 tests in 92.42 seconds, including all 48 new approval cases. Full root ALT
+regression passed 1913 tests with one skip in 373.99 seconds against a fresh
+tracked-tree archive. Compilation of 86 candidate Python files and normalized
+Git/remote source hash comparisons passed; final independent source review
+reported no actionable findings. The first full run inherited staging umask 077
+and failed only the existing base-mode negative fixture (1912 passed, one skipped);
+the unchanged fixture's mkdir(0755) became safe 0700. Its five cases and the final
+full run passed with explicit umask 022, without source/test changes. Genuine post-write fixture tests
+cover expected KVNO success and changed KVNO/GUID/SID/OU/terminal refusal while
+retaining the five original history files and opening no Vault.
+
+This remains preparation. Protected inventory production, execution coordinator
+and CLI, online identity/trust, original-service and temporary-policy restoration,
+additive Setup continuation, guarded deployment and final exact live approval
+remain required. No real recovery, controller deployment or target mutation
+occurred. Fresh read-only inspection confirmed the selected target's identity,
+inactive SSSD with zero restarts and absent keytab/SSSD options file; the selected
+AD employee remains enabled. These facts are not recovery acceptance.
+Both CI workflows for preceding exact commit
+`d9f994ce6a8149f2aea5fffaeee5dcdcc20866bf` completed successfully.
+
 ## Task 3: Explicit additive continuation
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.

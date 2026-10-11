@@ -223,3 +223,45 @@ Both CI workflows for preceding exact SHA
 `86580626eac022bc8d6ff7e74f0dd95ed85b9621` completed successfully. No controller
 deployment, AD reset, target service start or real recovery execution occurred.
 The protected authorization gate and full recovery coordinator remain pending.
+
+### Exact startup approval preparation (2026-10-12)
+
+The new internal attachment binds both recovery/startup SHA confirmations to
+protected original history/registration, immutable identities, deployment and
+twelve worker sources, exact stock SSSD unit and a bounded readable effects
+ledger. A fixed durable binding/ready pair is created before reservation under
+the lifecycle lock. Later authorization requires the real protected claim and
+genuine post-write continuity, current TTLs and unchanged approval/source data.
+No default approval/ledger, operator JSON execution path, Vault opening or
+service action exists in this block. Extracting the shared unit validator did
+not change the existing worker's conditions.
+
+Thirty-two missing-module RED cases preceded implementation. Review-driven RED
+cases covered failed-fsync evidence accepted later, missing actual reservation,
+failure marker written after lock release, failed-marker creation after visible
+ready and failed exclusion fsync. Exclusion now runs inside the lock, preserves
+failed/revoked evidence, and confirms directory durability. Completely unconfirmed
+storage returns `recovery_startup_approval_ambiguous` and requires manual recovery;
+no cross-crash exclusion guarantee is claimed for unwritable storage. The future
+coordinator must not automatically resume a failed binding. Genuine post-write
+fixture tests retain original history bytes, open no Vault and accept only the
+recorded password version and immutable GUID/SID/OU identity.
+
+Final focused verification passed 169 tests in 92.42 seconds, including the 48
+new approval cases. Full root ALT regression passed 1913 tests with one skip in
+373.99 seconds. Compilation of 86 candidate Python files, normalized Git/remote
+source hashes, diff checks and final independent source review passed. The frozen
+tracked-tree archive SHA-256 was
+`509da338260b4b8c8f8d68ba72fe1f25f44ca71bfac3e056a366fe0a85b9e6a5`.
+The first full run inherited staging umask 077: the existing base-mode negative
+fixture's mkdir(0755) became safe 0700, causing one failure with 1912 passes and
+one skip. Its five cases and the final full run passed under explicit umask 022
+with unchanged source/tests. Reporting-only documentation was updated afterward.
+Fresh read-only target checks confirmed the selected identity, inactive SSSD
+with zero restarts and absent keytab/SSSD options file; the selected AD employee
+remains enabled. No live trust recovery or functional acceptance follows from
+these facts. Both CI workflows
+for preceding exact SHA `d9f994ce6a8149f2aea5fffaeee5dcdcc20866bf` passed. This
+approval block is uninstalled and not yet exposed through a coordinator or CLI.
+The protected inventory/review producer, remaining restoration/functional checks
+and final exact live execution approval remain required; no real recovery ran.

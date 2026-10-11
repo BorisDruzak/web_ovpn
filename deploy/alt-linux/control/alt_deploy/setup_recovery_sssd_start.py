@@ -35,7 +35,11 @@ def _request(request,*,backup,policy,kerberos,services):
     if (request['service_request']['backup_request']!=bound['backup_request']
             or request['service_request']['backup_receipt']!=bound['backup_receipt']):
         raise ValueError('Startup service and import histories differ')
-    unit=request['sssd_unit']
+    validate_unit(request['sssd_unit'])
+
+
+def validate_unit(unit):
+    """Shared unchanged stopped-unit policy for pre-reservation approval."""
     if (not isinstance(unit,dict) or set(unit)!={'properties','sources','opaque_sha256','source_resolution','lookup_absence'}
             or not isinstance(unit['properties'],dict)):raise ValueError('Invalid fixed startup unit')
     values=unit['properties']
