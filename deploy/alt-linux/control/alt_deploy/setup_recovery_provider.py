@@ -12,11 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .ad_directory import fail
-from .ad_transport import bounded_run
 from .locking import exclusive_lock
 from .setup_plans import digest, private_create, private_read
 from .setup_recovery import RecoveryAttemptStore, RecoveryPlanStore, _pair, _sync_directory
 from .setup_recovery_credential import RecoveryCredentialStore, RecoveryVaultCodec
+from .setup_recovery_process import bounded_recovery_run
 from .setup_runtime import source_fingerprint
 
 PROVIDER = 'guid_only_unicodepwd_v1'
@@ -29,7 +29,7 @@ class RecoveryPasswordProvider:
         self.directory = directory
         self.credentials = credentials or RecoveryCredentialStore(settings.state_root, codec=RecoveryVaultCodec(settings))
         self.fresh_check, self.prewrite = fresh_check, prewrite
-        self.runner = runner or bounded_run
+        self.runner = runner or bounded_recovery_run
         self.fingerprint = fingerprint or (lambda: source_fingerprint(settings.ansible_project_dir, Path(__file__).parent))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.plans = RecoveryPlanStore(settings.state_root, clock=self.clock)
