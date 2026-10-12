@@ -16,15 +16,15 @@ def api():
     return setup_recovery_user_check
 
 
-def scenario(root):
+def scenario(root,*,nss_mode=0o755,getent_mode=0o755):
     import test_setup_recovery_backup as fixture
     from test_setup_recovery_native_testjoin import scenario as native_fixture
     from alt_deploy import setup_recovery_native_testjoin as checker
     original=fixture.scenario
     def tools(directory):
         probe,calls,values,read=original(directory)
-        (directory/'usr/bin/getent').chmod(0o755)
-        (directory/'usr/lib64/libnss_sss.so.2').chmod(0o755)
+        (directory/'usr/bin/getent').chmod(getent_mode)
+        (directory/'usr/lib64/libnss_sss.so.2').chmod(nss_mode)
         def wrapped(command):
             if command[:3]==['/usr/bin/rpm','-qf','/usr/bin/getent']:return PACKAGE
             if command[:3]==['/usr/bin/rpm','-qf','/usr/lib64/libnss_sss.so.2']:return 'sssd-client 2.9.8-alt3'
@@ -101,3 +101,14 @@ def test_entered_user_check_failure_retains_permanent_exclusion(tmp_path,change)
     assert (leaf/'failed.json').exists() and not (leaf/'verified.json').exists()
     with pytest.raises(ValueError):module.check_once(request,**args)
     assert len(calls)==1
+
+def test_stock_readonly_nss_library_does_not_require_executable_bits(tmp_path):
+    module=api();request,args,calls,states=scenario(tmp_path,nss_mode=0o644)
+    result=module.check_once(request,**args)
+    assert result['status']=='selected_user_resolved' and len(calls)==1
+    assert module.verify(request,result,**args)==result
+
+def test_worker_still_requires_executable_getent_before_lookup(tmp_path):
+    module=api();request,args,calls,states=scenario(tmp_path,getent_mode=0o644,nss_mode=0o644)
+    with pytest.raises(ValueError):module.check_once(request,**args)
+    assert calls==[]

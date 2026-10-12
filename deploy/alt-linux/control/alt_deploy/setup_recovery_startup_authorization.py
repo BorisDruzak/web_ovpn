@@ -90,7 +90,9 @@ class RecoveryStartupPlans:
                     or item['present'] is not True or not _sha(item['sha256']) or item['package']!=package
                     or any(type(item[field]) is not int for field in ('size','uid','gid','mode'))
                     or not 1<=item['size']<=67108864 or item['uid']!=0 or item['gid']<0
-                    or not 0<=item['mode']<=0o7777 or item['mode'] & 0o022 or not item['mode'] & 0o111):raise ValueError
+                    or not 0<=item['mode']<=0o7777 or item['mode'] & 0o022
+                    or (key=='getent' and not item['mode'] & 0o111)
+                    or (key=='nss_sss' and not item['mode'] & 0o400)):raise ValueError
         return dict(schema_version=1,operation='fixed_selected_user_nss_observation_once',
             source_sha256=digest(sources),employee=selected,dependencies=dependencies,
             paths={'getent':TOOL,'nss_sss':NSS_MODULE},argv=[TOOL,'-s','sss','passwd',selected['upn']],

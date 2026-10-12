@@ -60,7 +60,10 @@ def _dependency(request,key,path,package,*,probe,runner,root,owner):
     metadata=probe._file(root,path,maximum=probe.MAX_TOOL_BYTES,owner=owner)
     facts=request['startup_request']['policy_request']['kerberos_request']['import_request']['rehearsal_request']['backup_request']['facts']
     expected=dict(facts['tools'][key]);expected.pop('package')
-    if metadata!=expected or metadata.get('present') is not True or metadata['mode'] & 0o111==0:raise ValueError('Changed planned NSS executable')
+    if (metadata!=expected or metadata.get('present') is not True
+            or (key=='getent' and metadata['mode'] & 0o111==0)
+            or (key=='nss_sss' and metadata['mode'] & 0o400==0)):
+        raise ValueError('Changed planned NSS dependency')
     rc,out,_=runner(['/usr/bin/rpm','-qf',path,'--qf','%{NAME} %{VERSION}-%{RELEASE}\n'],
         environment=dict(ENVIRONMENT),timeout=10)
     if type(rc) is not int or rc or out!=package+'\n':raise ValueError('Unreviewed NSS package')

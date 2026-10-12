@@ -133,3 +133,20 @@ def test_modified_user_attachment_is_rejected(tmp_path,change):
     else:payload['user_check']['source_sha256']='b'*64
     forged=plans.store.create(payload)
     with pytest.raises(ValueError):plans.load(forged['plan_id'],forged['sha256'],recovery['plan_id'],recovery['sha256'])
+
+def test_scope_accepts_stock_readonly_nss_library_while_getent_stays_executable(tmp_path):
+    _,plans,_,_,recovery,_,_,ledger,unit,_=fixture(tmp_path)
+    base=copy.deepcopy(plans._base(recovery['plan_id'],recovery['sha256']))
+    tools=base['plan']['payload']['snapshot']['workstation_facts']['snapshot']['tools']
+    tools['nss_sss']['mode']=0o644
+    scope=plans._user_scope(base)
+    assert scope['dependencies']['nss_sss']['mode']==0o644
+    tools['getent']['mode']=0o644
+    with pytest.raises(ValueError):plans._user_scope(base)
+
+@pytest.mark.parametrize('mode',[0o111,0o664,0o666])
+def test_scope_rejects_unreadable_or_writable_nss_module(tmp_path,mode):
+    _,plans,_,_,recovery,_,_,ledger,unit,_=fixture(tmp_path)
+    base=copy.deepcopy(plans._base(recovery['plan_id'],recovery['sha256']))
+    base['plan']['payload']['snapshot']['workstation_facts']['snapshot']['tools']['nss_sss']['mode']=mode
+    with pytest.raises(ValueError):plans._user_scope(base)
