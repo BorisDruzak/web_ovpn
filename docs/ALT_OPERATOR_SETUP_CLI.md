@@ -156,3 +156,10 @@ L0: цель/действия. L1: real user GUID/SID/state, OU, computer. L2: p
 Эти внутренние классы пока не предоставляют операторский recovery apply.
 Production coordinator должен явно передать genuine authority; возврат штатной
 политики служб, полная интеграционная проверка и live acceptance ещё требуются.
+
+Подготовлена отдельная внутренняя [проверка исходной конфигурации SSSD](verification/ALT_RECOVERY_ORIGINAL_POLICY_2026-10-12.md).
+Она читает сохранённый main config в фиксированном sandbox без recovery-snippet
+и сравнивает ту же конфигурацию после отсутствия snippet. Отсутствующие параметры
+не подтверждают runtime defaults; службы, snippet и credentials эта проверка не
+изменяет. Её source bundle и receipt ещё должны войти в отдельное подтверждение
+terminal handoff; сам возврат штатной политики пока не выполняется.

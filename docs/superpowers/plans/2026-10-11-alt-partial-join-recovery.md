@@ -796,3 +796,22 @@ while upstream observations and SSH replies remain synthetic. See the user
 controller verification report. Production coordinator composition, terminal
 handoff, operator execution, complete producer-chain proof and additive Setup
 continuation remain required. No recovery execution is authorized by this block.
+
+## Original configured-policy observation checkpoint
+
+The internal original-policy observer now parses the retained main configuration
+with no recovery snippet in a fixed sandbox, and can compare the same approved
+observation after exact host snippet absence. It preserves original records and
+finishes native callbacks with protected rereads. It reports configured values,
+not runtime defaults/daemon consumption/trust, and performs no service or snippet
+mutation. See the original-policy verification report. Future terminal approval
+must pin this source bundle and receipt before any stop/remove/normal start.
+Genuine parser compatibility, service lifecycle and fresh post-handoff evidence
+remain required; this observer is not the terminal handoff itself.
+The independently reviewed terminal contract is recorded in
+[the handoff specification](../specs/2026-10-12-alt-recovery-terminal-handoff.md).
+Review identified and removed an evidence cycle: before reservation, a new
+read-only baseline collector must approve stable original-policy fields without
+future import/startup receipts. The post-install observer then reproduces that
+projection; its full receipt is bound in the terminal intent. Implementing this
+baseline collector is the next prerequisite, not a completed live gate.
