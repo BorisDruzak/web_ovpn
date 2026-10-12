@@ -187,3 +187,29 @@ credentials или конфигурацию ПК. Только private parser sc
 handoff plan. Этот baseline не принимается `setup apply` и не подтверждает trust,
 парольный или графический вход. Проверки и ограничения описаны в
 [отчёте CLI](verification/ALT_RECOVERY_POLICY_BASELINE_CLI_2026-10-12.md).
+
+Для отдельного сбора operative settings и runtime dependencies после установки
+проверенного кода:
+
+```text
+workstationctl setup recovery policy-effects --failed-run RUN_ID --computer-guid GUID
+workstationctl --json setup recovery policy-effects --failed-run RUN_ID --computer-guid GUID
+```
+
+Команда заново читает тот же зарегистрированный ПК и защищённую историю,
+собирает baseline и расширенный inventory в одном фиксированном SSH/bootstrap.
+Она сохраняет собственный план с TTL 30 минут и SHA-256. Доступны configured
+presence/value для фиксированного набора identity/renewal/DNS options,
+имена прочих параметров и метаданные зависимостей. Значения произвольных
+параметров и private-key contents не выводятся; неизвестные имена остаются
+непроверенными. Краткий вывод показывает их число.
+
+`Execution available: false`, `Defaults reviewed: false` и
+`Effects reviewed: false` означают, что этот inventory ещё не разрешает
+возврат штатной политики или recovery apply. Он не резервирует attempt,
+не открывает recovery credential и не запускает службы/AD/DNS операции.
+Только private parser scratch создаётся и удаляется. Перед terminal handoff
+нужен отдельный reviewed manifest, который описывает helper behavior,
+conditional AD attribute/DNS RRset changes и оставшиеся ограничения.
+Этот план не принимается `setup apply`. См.
+[отчёт транспорта/CLI](verification/ALT_RECOVERY_POLICY_EFFECTS_CLI_2026-10-12.md).

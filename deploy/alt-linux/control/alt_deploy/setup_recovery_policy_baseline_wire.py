@@ -1,7 +1,7 @@
 """Fixed read-only baseline envelope; no transport or approval authority."""
 from __future__ import annotations
 
-import hashlib,re
+import ast,hashlib,io,json,re,tokenize
 
 from .setup_plans import canonical,digest
 from . import setup_recovery_policy_baseline as worker,setup_recovery_backup as backup,setup_recovery_native as native
@@ -13,13 +13,27 @@ MAX_REPLY_BYTES=16384
 MAX_WIRE_BYTES=1048576
 
 
-def _script(wire_sha,hashes):
+def _quote_safe(script):
+    # Fixed literal tokens use JSON/Python-compatible double quoting. Keeping
+    # single quotes out of the script avoids repeated POSIX shell quote escapes.
+    tokens=[]
+    for item in tokenize.generate_tokens(io.StringIO(script).readline):
+        value=json.dumps(ast.literal_eval(item.string),ensure_ascii=True) if item.type==tokenize.STRING else item.string
+        tokens.append((item.type,value))
+    return tokenize.untokenize(tokens)
+
+
+def _script(wire_sha,hashes,*,effects=False):
+    if type(effects) is not bool:raise ValueError
+    names=NAMES+('policy_effects',) if effects else NAMES
     if (not isinstance(wire_sha,str) or not re.fullmatch('[0-9a-f]{64}',wire_sha)
-            or not isinstance(hashes,dict) or set(hashes)!=set(NAMES)
+            or not isinstance(hashes,dict) or set(hashes)!=set(names)
             or any(not isinstance(value,str) or not re.fullmatch('[0-9a-f]{64}',value) for value in hashes.values())):raise ValueError
-    binding=canonical(dict(wire_sha=wire_sha,hashes=hashes,names=NAMES,auth_files=backup.AUTH_FILES,
+    binding=canonical(dict(wire_sha=wire_sha,hashes=hashes,names=names,auth_files=backup.AUTH_FILES,
+        kind='effects' if effects else 'baseline',deadline_seconds=180 if effects else 120,
+        error_code='recovery_policy_effects_wire_invalid' if effects else 'recovery_policy_baseline_wire_invalid',
         max_wire=MAX_WIRE_BYTES,max_source=MAX_SOURCE_BYTES,max_request=MAX_REQUEST_BYTES,max_reply=MAX_REPLY_BYTES)).decode()
-    return 'BINDING='+binding+'\n'+r'''import hashlib,ipaddress,json,re,sys,time,types,uuid
+    return _quote_safe('BINDING='+binding+'\n'+r'''import hashlib,ipaddress,json,re,sys,time,types,uuid
 def unique(pairs):
     result={}
     for key,value in pairs:
@@ -49,6 +63,7 @@ try:
         ordered.append(source)
     if request['source_sha256']!=digest(ordered):raise ValueError()
     bound=request['backup_request'];meta=request['metadata']
+    if BINDING['kind']=='effects' and (not isinstance(bound,dict) or bound.get('source_sha256')!=request['source_sha256']):raise ValueError()
     if (not isinstance(bound,dict) or set(bound)!={'schema_version','failed_run_id','computer_guid','claim_sha256',
             'machine_uuid','hostname','facts','snapshot_sha256','source_sha256'}
             or type(bound['schema_version']) is not int or bound['schema_version']!=1
@@ -78,7 +93,7 @@ try:
         scope={'__name__':'fixed_baseline_'+name,'__package__':None}
         exec(compile(sources[name],'fixed_baseline_'+name,'exec'),scope)
         modules[name]=types.SimpleNamespace(**scope)
-    deadline=time.monotonic()+120
+    deadline=time.monotonic()+BINDING['deadline_seconds']
     def runner(command,**options):
         remaining=deadline-time.monotonic()
         if remaining<=0:raise ValueError()
@@ -94,13 +109,17 @@ try:
     args={key:modules[name] for key,name in (('original','original_policy'),('policy','sssd_policy'),
         ('backup','backup'),('probe','probe'),('native','native'))}
     result=modules['policy_baseline'].observe(request,collect=collect,runner=runner,**args)
+    if BINDING['kind']=='effects':
+        effect_request=dict(schema_version=1,baseline_request=request,baseline_receipt=result,source_sha256=request['source_sha256'])
+        effect_result=modules['policy_effects'].observe(effect_request,baseline=modules['policy_baseline'],collect=collect,runner=runner,**args)
+        result=dict(baseline_receipt=result,effect_receipt=effect_result)
     raw=encoded(result)
     if not isinstance(result,dict) or len(raw)>BINDING['max_reply']:raise ValueError()
     sys.stdout.buffer.write(raw)
 except Exception:
-    sys.stdout.write('{"schema_version":1,"error_code":"recovery_policy_baseline_wire_invalid"}')
+    sys.stdout.write(json.dumps(dict(schema_version=1,error_code=BINDING['error_code']),sort_keys=True,separators=(',',':')))
     sys.exit(1)
-'''
+''')
 
 
 def build(sources,request):

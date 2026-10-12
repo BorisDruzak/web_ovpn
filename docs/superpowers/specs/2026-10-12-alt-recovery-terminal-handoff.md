@@ -27,7 +27,11 @@ import/Kerberos/policy receipts or an installed suppression snippet.
 After suppressed startup, the existing original-policy observer reproduces the
 same projection. Its full post-install request/receipt hashes are bound in the
 permanent terminal intent; they are not described as preapproved receipts.
-This baseline collector is an implementation prerequisite still outstanding.
+The baseline collector and its non-executable operator command are implemented.
+The ten-field path has separate read-only installed parser acceptance. Extended
+operative inventory is now exposed through `policy-effects`; its installed
+parser acceptance and reviewed default/helper/effect manifest must precede
+terminal authority. Neither collector grants reservation or execution authority.
 
 The normal-policy effect statement must say that restoring configured/default
 SSSD policy may enable ordinary machine renewal and dynamic DNS activity. Missing

@@ -849,3 +849,15 @@ authority. See the effect-inventory specification and verification report.
 Source review established conditional ordinary adcli hostname/encryption/SPN
 reconciliation beyond password renewal. Fixed transport, actual extended parser
 acceptance and a closed reviewed effect manifest must precede terminal approval.
+
+### Operative inventory transport and operator command
+
+`setup recovery policy-effects` now uses fixed eight-source bootstrap, genuine
+fresh recovery snapshots and a separate non-executable SHA/TTL plan. Baseline
+and extended inventory share one native deadline; the controller validates both
+closed receipts, helper ownership/packages and configured/unreviewed projection.
+The old seven-source baseline stays supported. Shell-safe literal serialization
+keeps both fixed programs below the existing 8192-byte remote-command bound.
+See the effect-inventory CLI verification report. Actual installed extended
+parser acceptance and the closed reviewed normal-policy manifest remain gates;
+the new command grants no reservation or execution authority.
