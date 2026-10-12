@@ -50,7 +50,8 @@ class RecoveryControllerBackup:
             if not isinstance(backup_id,str) or not _BACKUP.fullmatch(backup_id): raise ValueError
             command.append(backup_id)
         elif backup_id is not None: raise ValueError
-        rc,output,_=self.runner(command,environment={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'},
+        # Native rehearsal invokes ansible-core, which requires a UTF-8 locale.
+        rc,output,_=self.runner(command,environment={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C.UTF-8'},
                                 input_text='',timeout=360)
         if type(rc) is not int or rc != 0: raise ValueError
         result=decode_state_bytes(output.encode('utf-8'))

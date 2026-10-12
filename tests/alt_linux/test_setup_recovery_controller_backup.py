@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -23,7 +25,7 @@ def fixture(root, *, changed=None):
         operation=command[3];calls.append(operation)
         assert command[:3]==['/usr/bin/sudo','-n','/usr/local/sbin/alt-deploy-backup']
         assert kwargs['input_text']=='' and kwargs['timeout']==360
-        assert kwargs['environment']=={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'}
+        assert kwargs['environment']=={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C.UTF-8'}
         result={'status':'ok'}
         if operation=='guard':result['result']='control_plane_allowed'
         else:
@@ -43,6 +45,19 @@ def fixture(root, *, changed=None):
     from alt_deploy.setup_recovery_controller_backup import RecoveryControllerBackup
     producer=RecoveryControllerBackup(service.settings,credentials=credentials,fresh_check=checker,runner=run)
     return producer,service,plan,claim,credentials,paths,calls
+
+
+def test_native_rehearsal_process_receives_utf8_locale(tmp_path):
+    producer,*_=fixture(tmp_path)
+    native=producer.runner
+    def inspect_locale(command,**kwargs):
+        result=subprocess.run([sys.executable,'-I','-c',
+            "import locale; locale.setlocale(locale.LC_ALL, ''); print(locale.getencoding())"],
+            env=kwargs['environment'],capture_output=True,text=True,check=True)
+        assert result.stdout.strip().lower().replace('-','')=='utf8'
+        return native(command,**kwargs)
+    producer.runner=inspect_locale
+    assert producer._native('rehearse',BACKUP)['rehearsal_passed'] is True
 
 
 def test_native_backup_is_bound_to_exact_reserved_history_and_sealed_document(tmp_path):
