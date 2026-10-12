@@ -1,6 +1,6 @@
 # Limited recovery terminal handoff contract
 
-Status: design for implementation and independent review; no live execution
+Status: implementation and independent source review; no live execution
 approval. This continues the selected partial-join recovery scope and preserves
 the original failed run, binding and computer identity. No other machine or AD
 employee can be selected by this phase.
@@ -101,7 +101,11 @@ phase so the operator can review the retained condition without a repeated write
 Only a fresh successful terminal receipt plus current identity/trust proof can
 support an additive recovery-resolution receipt. Setup continuation uses a new
 plan/SHA and existing fixed stage-03 pipeline, skips join only under fresh proof,
-and preserves the original five failed-history records byte-for-byte. Graphical
+and preserves all original five failed-history byte blobs in immutable additive
+resolution before the normal latest binding advances. Recovery itself leaves
+all five live paths unchanged; later normal Setup changes only the canonical
+latest binding, not the archived original evidence or four original live
+plan/run/index/configuration-result files. Graphical
 login/home, GPO and core-apps/signature checks remain separate live acceptance.
 
 ## Pinned lifecycle documentation check

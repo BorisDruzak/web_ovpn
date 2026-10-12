@@ -104,7 +104,7 @@ workstationctl setup recovery plan --failed-run ORIGINAL_FAILED_RUN \
 
 UUID/hostname, сотрудник, OU и профили берутся из защищённой истории исходной ошибки. GUID должен совпасть с единственным существующим компьютером; OU/user identities, время создания объекта, writable DC, регистрация, задания, текущее состояние авторизации, хеши фиксированных файлов/утилит, часы и prerequisites проверяются заново. Сохранённые исходные plan/run/index/binding/configuration result перечитываются и остаются побайтно неизменными. Несовпадение возвращает `recovery_current_state_invalid`; неполная история — `recovery_history_invalid`; неверный компьютер — `recovery_computer_identity_invalid`. Уже существующая попытка, включая прерванную или повреждённую, блокирует новый план с `recovery_attempt_reserved`.
 
-План имеет TTL 30 минут, SHA и отдельное пространство `recovery-`; normal `setup apply` его не принимает. Вывод содержит **Execution available: false** и оставшиеся gates. Команды recovery apply пока нет. Планирование не резервирует попытку, не сбрасывает пароль и не разрешает повторный join. Время создания — свидетельство для проверки, не доказательство принадлежности объекта оператору. Исполнение требует проверенного фиксированного GUID-only provider/local importer, сохранённого credential и backup, повторных проверок под lifecycle lock и отдельного разрешения на конкретный объект/план. Предварительная проверка GUID не делает повторный join по hostname безопасным.
+План имеет TTL 30 минут, SHA и отдельное пространство `recovery-`; normal `setup apply` его не принимает. Вывод содержит **Execution available: false** и оставшиеся gates. Исполнение доступно только через отдельный операторский execution-plan и его точный SHA, описанные ниже. Планирование не резервирует попытку, не сбрасывает пароль и не разрешает повторный join. Время создания — свидетельство для проверки, не доказательство принадлежности объекта оператору. Исполнение требует проверенного фиксированного GUID-only provider/local importer, сохранённого credential и backup, повторных проверок под lifecycle lock и отдельного разрешения на конкретный объект/план. Предварительная проверка GUID не делает повторный join по hostname безопасным.
 
 Для подготовки review локальных эффектов служб доступен отдельный read-only сбор:
 
@@ -125,13 +125,9 @@ hooks, environment, manager actions и unresolved destinations. Этот пла�
 
 Внутренняя проверка выбранного пользователя через NSS подготовлена и описана
 в [отчёте](verification/ALT_RECOVERY_USER_OBSERVATION_2026-10-12.md). Отдельной
-операторской команды для её выполнения пока нет: сначала требуется привязать
-её к явно подтверждённому recovery-плану и свежему состоянию сотрудника AD.
-Внутреннее вложение плана теперь поддерживает явный scope выбранного
-сотрудника вместе с native-проверкой; он закрепляет идентичность, NSS
-зависимости и команду. Прежние подтверждения такое разрешение не получают.
-Свежая проверка сотрудника в combined gate описана в
-[отчёте scope](verification/ALT_RECOVERY_USER_SCOPE_2026-10-12.md); операторское исполнение этой проверки ещё требует реализации.
+The selected-user observation now belongs to the SHA-confirmed operator
+execution envelope; older preparation plans do not grant execution authority.
+
 Фиксированный stdin/bootstrap транспорта уже подготовлен и проверяет
 источники до исполнения; [отчёт транспорта](verification/ALT_RECOVERY_USER_WIRE_2026-10-12.md)
 отдельно описывает его ограничения. Сам builder не выполняет SSH и не
@@ -139,7 +135,7 @@ hooks, environment, manager actions и unresolved destinations. Этот пла�
 Отдельный [bundle-канал](verification/ALT_RECOVERY_BUNDLE_CHANNEL_2026-10-12.md)
 теперь принимает фиксированные source envelopes до 1 МиБ с прежним лимитом
 ответа 16 КиБ. Startup/native runtimes используют его по умолчанию; обычные
-native-команды сохраняют предел stdin 128 КиБ. NSS controller runtime подготовлен; операторский recovery apply ещё не подключён.
+native-команды сохраняют предел stdin 128 КиБ. NSS controller runtime подключён к фиксированной операторской цепочке, описанной ниже.
 Разрешение пользователя через NSS не подтверждает парольный или графический
 вход. Возврат штатной политики и служб остаётся отдельной частью recovery.
 
@@ -153,22 +149,23 @@ L0: цель/действия. L1: real user GUID/SID/state, OU, computer. L2: p
 сотрудника, исходными зависимостями и защищёнными startup/native receipts.
 Фиксированный SSH transport сохраняет intent/result/failure и отказывает при
 повторном запуске либо изменении данных. См. [отчёт](verification/ALT_RECOVERY_USER_CONTROLLER_2026-10-12.md).
-Эти внутренние классы пока не предоставляют операторский recovery apply.
-Production coordinator должен явно передать genuine authority; возврат штатной
-политики служб, полная интеграционная проверка и live acceptance ещё требуются.
+Эти классы теперь используются фиксированным operator coordinator.
+Coordinator uses genuine authority from the confirmed operator envelope,
+including fixed terminal handoff. Live recovery acceptance requires separate
+approval and execution.
 
 Подготовлена отдельная внутренняя [проверка исходной конфигурации SSSD](verification/ALT_RECOVERY_ORIGINAL_POLICY_2026-10-12.md).
 Она читает сохранённый main config в фиксированном sandbox без recovery-snippet
 и сравнивает ту же конфигурацию после отсутствия snippet. Отсутствующие параметры
 не подтверждают runtime defaults; службы, snippet и credentials эта проверка не
 изменяет. Её source bundle и receipt ещё должны войти в отдельное подтверждение
-terminal handoff; сам возврат штатной политики пока не выполняется.
+terminal handoff; возврат политики теперь реализован отдельным фиксированным этапом.
 
 Внутренний [baseline collector](verification/ALT_RECOVERY_POLICY_BASELINE_2026-10-12.md)
 теперь читает исходную конфигурацию до reservation, без будущих import/startup
 receipts. Стабильные поля сравниваются с поздним observer; runtime defaults и
 работа служб этим не подтверждаются. Операторская команда описана ниже;
-привязка результата к terminal approval ещё требует реализации.
+стабильная projection привязана к terminal approval в operator envelope.
 
 Для подготовки read-only baseline после установки проверенного кода:
 
@@ -213,3 +210,7 @@ presence/value для фиксированного набора identity/renewal
 conditional AD attribute/DNS RRset changes и оставшиеся ограничения.
 Этот план не принимается `setup apply`. См.
 [отчёт транспорта/CLI](verification/ALT_RECOVERY_POLICY_EFFECTS_CLI_2026-10-12.md).
+
+Текущий фиксированный recovery apply, terminal handoff и новое Setup продолжение
+описаны в [операторском recovery workflow](ALT_RECOVERY_OPERATOR.md). Старые
+read-only plans не являются разрешением на эти операции.

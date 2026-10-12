@@ -10,6 +10,8 @@ from .setup_recovery_planning import RecoveryPlanningService
 from .setup_recovery_startup_inventory import RecoveryStartupInventoryService
 from .setup_recovery_policy_baseline_runtime import RecoveryPolicyBaselineService
 from .setup_recovery_policy_effects_runtime import RecoveryPolicyEffectsService
+from .setup_recovery_operator import RecoveryOperatorService
+from .setup_recovery_continuation import RecoveryContinuationService
 
 
 def add_parsers(commands):
@@ -41,7 +43,7 @@ def add_parsers(commands):
     status.add_argument('run_id')
     verify = actions.add_parser('verify', allow_abbrev=False, help='Read current AD/SSH state for the recorded domain assignment')
     verify.add_argument('--machine', required=True)
-    recovery = actions.add_parser('recovery', allow_abbrev=False, help='Explicit recovery preparation; no reset or retry')
+    recovery = actions.add_parser('recovery', allow_abbrev=False, help='Exact reviewed recovery plans, one confirmed attempt and fresh Setup continuation')
     recovery_actions = recovery.add_subparsers(dest='recovery_action', required=True)
     recovery_plan = recovery_actions.add_parser('plan', allow_abbrev=False, help='Read current identities and preserve a non-executable recovery plan')
     recovery_plan.add_argument('--failed-run', required=True, help='Original initial failed Setup run; machine/user/OU come from its protected history')
@@ -58,6 +60,14 @@ def add_parsers(commands):
         help='Read original operative options and dependency inventory into a non-executable review plan')
     effects.add_argument('--failed-run', required=True)
     effects.add_argument('--computer-guid', required=True)
+    for name in ('execution-plan','continue-plan','status'):
+        command=recovery_actions.add_parser(name,allow_abbrev=False,
+            help='Fresh exact recovery execution envelope' if name=='execution-plan' else 'Fresh normal Setup plan after verified recovery' if name=='continue-plan' else 'Read retained recovery phase; never resume')
+        command.add_argument('--failed-run',required=True)
+        command.add_argument('--computer-guid',required=True)
+    recovery_apply=recovery_actions.add_parser('apply',allow_abbrev=False,help='One exact SHA-confirmed operator recovery; no retry or automatic Setup apply')
+    recovery_apply.add_argument('plan_id')
+    recovery_apply.add_argument('--confirm-sha256',required=True)
 
 
 def directory_for_settings(settings):
@@ -75,6 +85,12 @@ def handle(parsed, settings):
             return {'status': 'ok', 'ous': ous, 'count': len(ous)}
         return dict(directory.computer(parsed.hostname), status='ok')
     if parsed.setup_action == 'recovery':
+        if parsed.recovery_action in ('execution-plan','apply','continue-plan','status'):
+            operator=RecoveryOperatorService(settings)
+            if parsed.recovery_action=='execution-plan':return operator.plan(parsed.failed_run,parsed.computer_guid)
+            if parsed.recovery_action=='apply':return operator.apply(parsed.plan_id,parsed.confirm_sha256)
+            if parsed.recovery_action=='status':return operator.status(parsed.failed_run,parsed.computer_guid)
+            return RecoveryContinuationService(settings,terminal_verifier=operator._verify_terminal_locked).plan(parsed.failed_run,parsed.computer_guid)
         if parsed.recovery_action == 'policy-effects':
             return RecoveryPolicyEffectsService(RecoveryPlanningService(settings)).plan(parsed.failed_run, parsed.computer_guid)
         if parsed.recovery_action == 'policy-baseline':
@@ -93,6 +109,9 @@ def handle(parsed, settings):
     if parsed.setup_action == 'plan':
         return service.plan(parsed.machine, parsed.user, parsed.computer_ou, parsed.software_profile, parsed.remote_access_profile)
     if parsed.setup_action == 'apply':
+        plan=service.plans.load(parsed.plan_id,parsed.confirm_sha256)
+        if 'recovery_resolution' in plan['payload']:
+            service.recovery_resolutions.verifier=RecoveryOperatorService(settings)._verify_terminal_locked
         return service.apply(parsed.plan_id, parsed.confirm_sha256)
     return service.verify(parsed.machine)
 
@@ -100,6 +119,15 @@ def handle(parsed, settings):
 def write_text(stream, payload):
     if 'plan_id' in payload and 'payload' in payload:
         content = payload['payload']
+        if payload['plan_id'].startswith('recovery-operator-'):
+            stream.write(f"Recovery operator plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
+            stream.write(f"Machine: {content['machine']['uuid']} / {content['machine']['hostname']}\nOriginal failed run: {content['failed_run_id']}\n")
+            stream.write(f"Computer GUID: {content['computer_guid']}\nComputer SID: {content['computer_sid']}\nComputer OU: {content['computer_ou']}\nEmployee: {content['employee']['login']}\n")
+            stream.write('Manual machine password writes: 1. Identity/OU preserved. Ordinary SSSD policy may update AD attributes, Samba credentials and DNS RRsets.\n')
+            stream.write('Any observed renewal or unknown outcome stops with UNKNOWN; no replay or automatic rollback. Original failed history is retained.\n')
+            for name in ('recovery','startup','terminal'):stream.write(name+' SHA-256: '+content[name]['sha256']+'\n')
+            stream.write(f"Apply only after explicit approval: workstationctl setup recovery apply {payload['plan_id']} --confirm-sha256 {payload['sha256']}\n")
+            return
         if payload['plan_id'].startswith('recovery-policy-effects-'):
             stream.write(f"Original policy effect inventory plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
             stream.write(f"Machine: {content['machine']['uuid']} / {content['machine']['hostname']}\nOriginal failed run: {content['failed_run_id']}\n")

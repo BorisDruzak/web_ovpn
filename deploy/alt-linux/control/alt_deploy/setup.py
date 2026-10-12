@@ -34,7 +34,7 @@ def observed_computer_matches(observed, computer, hostname):
 
 class SetupService:
     def __init__(self, settings, *, directory=None, machines=None, planner=None,
-                 approved_ous=None, probe=None, prerequisites=None, clock=None):
+                 approved_ous=None, probe=None, prerequisites=None, clock=None, recovery_terminal_verifier=None):
         self.settings = settings
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         config = DirectoryConfig.load() if directory is None or approved_ous is None else None
@@ -51,8 +51,10 @@ class SetupService:
         self.prerequisites = prerequisites
         self.plans = SetupPlanStore(settings.state_root, clock=self.clock)
         self.assignments = DomainAssignmentStore(settings.state_root)
+        from .setup_recovery_resolution import RecoveryResolutionStore
+        self.recovery_resolutions = RecoveryResolutionStore(settings, terminal_verifier=recovery_terminal_verifier, clock=self.clock)
 
-    def _snapshot(self, identifier, login, ou, software, remote):
+    def _snapshot(self, identifier, login, ou, software, remote, *, recovery_resolution=None):
         machine = self.machines.resolve(identifier)
         if machine.registration_state != 'ready':
             raise fail('machine_not_ready', 'Machine registration is not ready')
@@ -76,7 +78,14 @@ class SetupService:
             'software_profile': software, 'remote_access_profile': remote,
         }, expected_uuid=machine.uuid)
         binding = self.assignments.identity_binding(machine.uuid, user, ou, software, remote)
-        existing = self.assignments.check(binding)
+        resolution = None
+        if recovery_resolution is None:
+            existing = self.assignments.check(binding)
+        else:
+            existing = self.assignments.get(machine.uuid)
+            resolution = self.recovery_resolutions.validate(recovery_resolution, existing)
+            if any(existing.get(key) != value for key, value in binding.items()):
+                raise fail("assignment_conflict", "Recovery continuation identity differs from original binding")
         ready = self.prerequisites(request)
         if ready.get('ready') is not True:
             raise fail('setup_prerequisites_failed', 'Controller setup prerequisites are not ready')
@@ -100,6 +109,9 @@ class SetupService:
                 raise fail('domain_computer_conflict', 'Joined computer identity or OU differs; no reset or move is allowed')
         elif objects or observed['domain']:
             raise fail('domain_computer_conflict', 'Existing computer account or broken domain binding requires recovery review')
+        if resolution is not None:
+            from .setup_recovery_continuation import validate_continuity
+            validate_continuity(resolution, user, ous[0], observed, computer, machine)
         preview = self.planner.preview(machine.uuid, request)
         changes = ['configure_domain_baseline', 'verify_selected_domain_user']
         if not observed['trust']:
@@ -108,13 +120,16 @@ class SetupService:
             changes.append('ensure_core_apps_including_signature_suite')
         if remote == 'krfb':
             changes.append('ensure_opt_in_krfb')
-        return {'machine': {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
+        payload = {'machine': {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
                             'registration_sha256': digest(machine.raw)},
                 'user': user, 'computer_ou': ou, 'ou_identity': ous[0], 'computer': computer,
                 'observed': observed, 'request': request.to_dict(), 'binding': binding,
                 'existing_assignment': existing, 'prerequisites': ready, 'changes': changes,
                 'actions': preview['actions'], 'warnings': ['delegated_computer_creation_right_not_proven'] if not observed['trust'] else [],
                 'deferred_actions': ['user_home_operations_wait_for_first_domain_login'] if not observed['home_exists'] else []}
+        if recovery_resolution is not None:
+            payload['recovery_resolution'] = recovery_resolution
+        return payload
 
     def plan(self, identifier, login, ou, software='core-apps', remote='none'):
         # Do not create a lock file, assignments or run records during preview.
@@ -142,7 +157,8 @@ class SetupService:
             before = plan['payload']
             request = ConfigureRequest.from_mapping(before['request'], expected_uuid=before['machine']['uuid'])
             current = self._snapshot(request.machine_uuid, before['user']['login'], request.computer_ou,
-                                      request.software_profile, request.remote_access_profile)
+                                      request.software_profile, request.remote_access_profile,
+                                      recovery_resolution=before.get('recovery_resolution'))
             if current != before:
                 raise fail('setup_plan_drift', 'Setup identity or prerequisites changed; create a new plan')
             run_id = 'setup-run-' + uuid.uuid4().hex
