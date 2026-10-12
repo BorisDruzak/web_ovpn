@@ -66,3 +66,33 @@ NSS is not GUI/password authentication. Setup continuation requires a separate
 fresh standard plan/SHA; original failed evidence is archived unchanged before
 normal binding revision advances. Live recovery and workstation acceptance
 remain unverified until explicitly approved and executed.
+
+## Non-root CI fixture admission
+
+The protected-policy worker cases initially failed 18/18 on a normal UID because
+fixture files were compared against production root metadata. The tests now
+require an explicit fakeroot child for those same 18 cases on non-root runners;
+exit zero, all 18 passes and no child skips are required. Root execution passed
+19 tests including the inert wrapper; non-root execution passed the required
+wrapper, which proves all 18 child cases (the outer duplicates are explicitly
+skipped). No production owner/permission guard or recovery source changed.
+The obsolete general CI run was cancelled after this reproducible harness
+failure; a new exact revision must pass CI before controller installation.
+
+Terminal fixtures also exposed the UID/GID ownership assumption with an ordinary
+UID and a different allowed primary group. The six new controller/terminal
+suites passed 113 tests on a matching normal UID/GID; 64 coordinator/continuation/
+operator cases passed under unequal UID/GID. Required bounded root children then
+executed all 38 terminal worker and 11 runtime cases with zero skips. Parent
+wrappers passed; parent duplicates are explicitly skipped. A fakeroot-only
+worker iteration timed out at 240 seconds and is not counted as PASS. The final
+terminal driver prefers eligible passwordless sudo, uses an inner fixed timeout
+with TERM/KILL teardown, Python -B and no pytest cache, and has a fakeroot
+fallback. This changes only fixture execution, not production checks.
+
+Final teardown pins the initial parent directory dev/inode/UID/GID/mode, opens
+that parent O_DIRECTORY|O_NOFOLLOW and removes only the fixed root-worker-child
+basename with fd-relative, symlink-attack-resistant rmtree. The final runtime
+wrapper passed with all 11 child cases and directory absence asserted in both
+sudo and forced fakeroot fallback modes. Historical disposable pytest garbage
+was not modified; old cleanup warnings were not treated as production failures.

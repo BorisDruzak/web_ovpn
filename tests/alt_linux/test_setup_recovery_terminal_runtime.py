@@ -2,6 +2,10 @@ import copy,json,subprocess,sys
 import pytest
 from alt_deploy.errors import ControlError
 from alt_deploy.setup_plans import digest
+from test_setup_recovery_terminal import root_owned_worker_child_coverage,run_root_owned_child
+
+def test_root_owned_terminal_runtime_cases_in_root_child(tmp_path):
+    run_root_owned_child(__file__,tmp_path,'test_root_owned_terminal_runtime_cases_in_root_child')
 
 def scenario(root):
     from test_setup_recovery_user_runtime import scenario as user_fixture

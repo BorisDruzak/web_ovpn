@@ -1,5 +1,57 @@
 import pytest
-import copy,json,time
+import copy,json,time,os,shutil,subprocess,sys
+from pathlib import Path
+
+@pytest.fixture(autouse=True)
+def root_owned_worker_child_coverage(request):
+    wrappers={'test_root_owned_terminal_cases_in_root_child','test_root_owned_terminal_runtime_cases_in_root_child'}
+    if os.geteuid()!=0 and request.node.name not in wrappers:
+        pytest.skip('Root-owned terminal worker cases execute in the required root child wrapper')
+
+def run_root_owned_child(test_file,tmp_path,wrapper_name):
+    if os.geteuid()==0:
+        return  # The ordinary cases already exercise root ownership directly.
+    sudo=shutil.which('sudo')
+    root_available=sudo is not None and subprocess.run([sudo,'-n','true'],capture_output=True,timeout=10).returncode==0
+    if root_available:prefix=[sudo,'-n']
+    else:
+        fakeroot=shutil.which('fakeroot')
+        assert fakeroot is not None,'Non-root terminal fixtures require sudo or fakeroot root child coverage'
+        prefix=[]
+    timeout=Path('/usr/bin/timeout')
+    assert timeout.is_file() and timeout.stat().st_uid==0 and timeout.stat().st_mode&0o022==0,'Fixed trusted root child timeout is required'
+    prefix.extend([str(timeout),'--signal=TERM','--kill-after=5','360'])
+    if not root_available:prefix.extend([fakeroot,'--'])
+    parent=tmp_path.resolve();child=parent/'root-worker-child'
+    assert child.is_absolute() and child.parent==parent and not child.is_symlink(),'Root child must stay beneath the owned fixture parent'
+    info=parent.lstat();identity=[str(getattr(info,name)) for name in ('st_dev','st_ino','st_uid','st_gid','st_mode')]
+    try:
+        result=subprocess.run([*prefix,sys.executable,'-B','-m','pytest','-p','no:cacheprovider',str(Path(test_file).resolve()),'-q',
+            '-k','not '+wrapper_name,'--basetemp',str(child)],
+            cwd=Path(test_file).resolve().parents[2],text=True,capture_output=True,timeout=390)
+    finally:
+        # Outside fakeroot: compare actual parent metadata in either branch.
+        cleanup='''import os,shutil,sys
+assert shutil.rmtree.avoids_symlink_attacks
+fd=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try:
+ info=os.fstat(fd)
+ assert tuple(getattr(info,name) for name in ('st_dev','st_ino','st_uid','st_gid','st_mode'))==tuple(map(int,sys.argv[2:]))
+ try:os.stat('root-worker-child',dir_fd=fd,follow_symlinks=False)
+ except FileNotFoundError:pass
+ else:shutil.rmtree('root-worker-child',dir_fd=fd)
+finally:os.close(fd)
+'''
+        cleanup_prefix=[sudo,'-n'] if root_available else []
+        removed=subprocess.run([*cleanup_prefix,str(timeout),'--signal=TERM','--kill-after=5','30',sys.executable,'-B','-c',cleanup,str(parent),*identity],
+            text=True,capture_output=True,timeout=40)
+        assert removed.returncode==0,removed.stdout+removed.stderr
+    assert not child.exists(),'Root-owned fixture artifacts must be removed before the parent exits'
+    assert result.returncode==0,result.stdout+result.stderr
+    assert ' skipped' not in result.stdout,'Root child must execute every selected root worker case: '+result.stdout
+
+def test_root_owned_terminal_cases_in_root_child(tmp_path):
+    run_root_owned_child(__file__,tmp_path,'test_root_owned_terminal_cases_in_root_child')
 
 def scenario(root):
     from test_setup_recovery_user_check import scenario as user_fixture

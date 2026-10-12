@@ -1,7 +1,24 @@
-import copy,os
+import copy,os,shutil,subprocess,sys
 from pathlib import Path
 import pytest
 from alt_deploy import setup_recovery_probe as probe
+
+@pytest.fixture(autouse=True)
+def root_owned_policy_worker_cases(request):
+    if os.geteuid()!=0 and request.node.name!='test_policy_worker_root_metadata_on_nonroot_runner':
+        pytest.skip('Root metadata cases are required in the fakeroot child test below')
+
+
+def test_policy_worker_root_metadata_on_nonroot_runner():
+    if os.geteuid()==0:return
+    fakeroot=shutil.which('fakeroot')
+    assert fakeroot is not None,'Non-root protected-policy fixtures require fakeroot'
+    result=subprocess.run([fakeroot,'--','/usr/bin/timeout','--signal=TERM','--kill-after=5','60',sys.executable,'-B','-m','pytest','-q','--tb=short',
+        '-p','no:cacheprovider',str(Path(__file__).resolve()),'-k','not test_policy_worker_root_metadata_on_nonroot_runner'],
+        capture_output=True,text=True,timeout=75)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert "18 passed" in result.stdout and "skipped" not in result.stdout,result.stdout+result.stderr
+
 
 TEXT='''[sssd]
 config_file_version=2
