@@ -6,9 +6,28 @@ from dataclasses import is_dataclass,replace
 from .ad_directory import fail
 from .setup_plans import digest,private_read,private_read_bytes,canonical
 
-def predecessor_inventory(state_root,pair):
+def context_layout(reference):
+    attempt=reference['attempt_id']
+    if isinstance(attempt,str) and re.fullmatch('successor-[0-9a-f]{64}',attempt):
+        return ('setup-recovery-successor-relations','setup-recovery-successor-admissions','setup-recovery-successor-attempts','admitted_prewrite_successor')
+    if isinstance(attempt,str) and re.fullmatch('rehearsal-successor-[0-9a-f]{64}',attempt):
+        return ('setup-recovery-rehearsal-successor-relations','setup-recovery-rehearsal-successor-admissions','setup-recovery-rehearsal-successor-attempts','admitted_rehearsal_successor')
+    raise ValueError('Unknown fixed attempt family')
+
+def lineage_documents(state_root,reference):
+    if not re.fullmatch('successor-[0-9a-f]{64}',reference['attempt_id']):raise ValueError('No corrective descendant')
+    document=validate_context(state_root,reference)
+    paths={'admission':state_root/'setup-recovery-successor-admissions'/(reference['attempt_id']+'.json'),
+        'relation':state_root/'setup-recovery-successor-relations'/(digest(document['pair'])+'.json')}
+    return {key:hashlib.sha256(private_read_bytes(path)).hexdigest() for key,path in paths.items()}
+
+def predecessor_inventory(state_root,pair,*,context=None):
     from .setup_recovery import _pair
     pair=_pair(**pair);root=state_root/'setup-recovery-attempts';prefix=digest(pair)
+    if context is not None:
+        if not re.fullmatch('successor-[0-9a-f]{64}',context['attempt_id']):raise ValueError('No corrective descendant')
+        validate_context(state_root,context,pair)
+        root=state_root/'setup-recovery-successor-attempts'/context['attempt_id']
     paths=sorted(root.glob(prefix+'.*'))
     if not 1<=len(paths)<=96:raise ValueError('Invalid predecessor inventory')
     return {path.name:hashlib.sha256(private_read_bytes(path)).hexdigest() for path in paths}
@@ -30,19 +49,26 @@ def validate_context(state_root,reference,pair=None):
         from .setup_recovery import _pair
         fields={'attempt_id','admission_sha256','failed_run_id','computer_guid'}
         if (not isinstance(reference,dict) or set(reference)!=fields
-                or not isinstance(reference['attempt_id'],str) or not re.fullmatch('successor-[0-9a-f]{64}',reference['attempt_id'])
                 or not isinstance(reference['admission_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',reference['admission_sha256'])):raise ValueError
+        relation_root,admission_root,_,status=context_layout(reference)
         selected=_pair(reference['failed_run_id'],reference['computer_guid'])
         if pair is not None and _pair(**pair)!=selected:raise ValueError
-        relation=private_read(state_root/'setup-recovery-successor-relations'/(digest(selected)+'.json'))
-        document=private_read(state_root/'setup-recovery-successor-admissions'/(reference['attempt_id']+'.json'))
+        relation=private_read(state_root/relation_root/(digest(selected)+'.json'))
+        document=private_read(state_root/admission_root/(reference['attempt_id']+'.json'))
+        parent=None
+        if status=='admitted_rehearsal_successor':
+            parent=document['proof']['predecessor_context']
+            if (not isinstance(parent,dict) or not isinstance(parent.get('attempt_id'),str)
+                    or not re.fullmatch('successor-[0-9a-f]{64}',parent['attempt_id'])):raise ValueError
+            validate_context(state_root,parent,selected)
+            if canonical(lineage_documents(state_root,parent))!=canonical(document['proof']['lineage_documents']):raise ValueError
         if (canonical(relation)!=canonical(reference) or digest(document)!=reference['admission_sha256']
                 or set(document)!={'schema_version','status','attempt_id','pair','predecessor_sha256','predecessor_files','proof'}
                 or type(document['schema_version']) is not int or document['schema_version']!=1
-                or document['status']!='admitted_prewrite_successor' or document['pair']!=selected
+                or document['status']!=status or document['pair']!=selected
                 or document['attempt_id']!=reference['attempt_id']
                 or not isinstance(document['predecessor_sha256'],str) or not re.fullmatch('[0-9a-f]{64}',document['predecessor_sha256'])
-                or canonical(predecessor_inventory(state_root,selected))!=canonical(document['predecessor_files'])):raise ValueError
+                or canonical(predecessor_inventory(state_root,selected,context=parent))!=canonical(document['predecessor_files'])):raise ValueError
         validate_envelopes(state_root,document['proof']['envelopes'])
         return document
     except Exception:

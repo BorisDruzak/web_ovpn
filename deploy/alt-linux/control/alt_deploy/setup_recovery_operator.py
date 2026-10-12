@@ -107,6 +107,17 @@ class RecoveryOperatorService:
 
     def _path(self,pair,suffix):return self.planning.attempts._path(**pair,suffix='.operator-'+suffix+'.json')
 
+    def _retained_guard(self):
+        context=self.planning.attempts.context
+        if context is None or not context['attempt_id'].startswith('rehearsal-successor-'):return
+        from .setup_recovery_attempt_context import validate_context
+        from .setup_recovery_rehearsal_successor_runtime import RecoveryRehearsalSuccessorRuntime
+        proof=validate_context(self.settings.state_root,context)['proof'];retained=proof['controller']['retained']
+        result=RecoveryRehearsalSuccessorRuntime(self.settings).bound(retained,**proof['native_interval'],
+            operation_sha256=proof['controller']['backup_audit']['operation_sha256'])
+        expected=dict(schema_version=1,retained_evidence_unchanged=True,protected_metadata_sha256=retained['protected_metadata_sha256'])
+        if canonical(result)!=canonical(expected):raise ValueError('Retained corrective evidence changed')
+
     def _capture(self,snapshot):
         machine=self.planning.machines.resolve(snapshot['machine_uuid'])
         meta=RecoveryPolicyEffectsService(self.planning)._metadata(snapshot)
@@ -133,6 +144,7 @@ class RecoveryOperatorService:
             terminal_authorization=authority,identity=self._identity,operator_guard=lambda:self._operator_guard(startup,terminal))
 
     def _operator_guard(self,startup,terminal):
+        self._retained_guard()
         if terminal is None:raise ValueError('No terminal execution authority')
         saved=self.terminals.load(terminal['plan_id'],terminal['sha256']);pair=_pair(saved['payload']['failed_run_id'],saved['payload']['computer_guid'])
         intended=private_read(self._path(pair,'intent'));ready=private_read(self._path(pair,'ready'))
@@ -161,6 +173,7 @@ class RecoveryOperatorService:
         try:
             pair=_pair(failed_run_id,computer_guid)
             with exclusive_lock(self.settings.lock_file):
+                self._retained_guard()
                 if self._path(pair,'intent').exists() or self._path(pair,'intent').is_symlink():raise ValueError
                 snapshot=copy.deepcopy(self.planning.snapshot(**pair));captured=self._capture(snapshot)
                 if canonical(self.planning.snapshot(**pair))!=canonical(snapshot):raise ValueError
@@ -214,6 +227,7 @@ class RecoveryOperatorService:
         try:
             with exclusive_lock(self.settings.lock_file):
                 operator,base,terminal=self._load(operator_id,confirmed_sha);payload=operator['payload'];pair=_pair(payload['failed_run_id'],payload['computer_guid'])
+                self._retained_guard()
                 path=self._path(pair,'intent')
                 if path.exists() or path.is_symlink():raise ValueError('Recovery already intended')
                 snapshot=self.planning.snapshot(**pair)

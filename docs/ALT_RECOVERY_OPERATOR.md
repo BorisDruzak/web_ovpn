@@ -120,6 +120,32 @@ workstationctl --json setup recovery continue-plan --failed-run ORIGINAL_FAILED_
 после успешного terminal использует тот же явно связанный recovery-контекст
 из защищённой resolution.
 
+## Отдельный корректирующий контекст после locale-отказа rehearsal
+
+Только для закрытого prewrite successor с `prepare` / `bind` допускается один
+дополнительный контекст, если native audit доказывает create/verify PASS и
+rehearse FAIL, старое фиксированное `LC_ALL=C` воспроизводит именно UTF-8 startup
+refusal Ansible, а `C.UTF-8` и проверки сохранённого tree проходят. Verified backup,
+tree, исходный admission и обе закрытые цепочки должны оставаться неизменными.
+Иной отказ, footprint на ПК, изменённая идентичность, активная операция или
+нехватка места блокируют допуск. Native verify/rehearse не повторяются для
+замены исторического evidence.
+
+```sh
+workstationctl --json setup recovery rehearsal-failure-plan \
+  --predecessor-operator CLOSED_SUCCESSOR_OPERATOR_ID \
+  --predecessor-sha256 CLOSED_SUCCESSOR_SHA
+```
+
+Цель определяется защищённым predecessor, без отдельного выбора ПК или root.
+Новый контекст имеет отдельные admission, claims, receipts и operator SHA/TTL;
+планирование не выполняет reset. Root evidence проверяется перед intent и перед
+фиксированными операциями. Требуется новое конкретное разрешение на reset.
+Этот контекст не может иметь следующего successor; replay и автоматический
+rollback отсутствуют. Частичный admission также запрещает выделить другой
+контекст. Статус и штатный Setup continuation выбираются через новый сохранённый
+`--operator-plan`, как для предыдущего successor.
+
 ## Новый Setup после recovery
 
 ```sh

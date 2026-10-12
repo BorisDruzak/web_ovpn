@@ -72,6 +72,9 @@ def add_parsers(commands):
     successor.add_argument('--failed-run',required=True)
     successor.add_argument('--computer-guid',required=True)
     successor.add_argument('--predecessor-sha256',required=True)
+    corrective=recovery_actions.add_parser('rehearsal-failure-plan',allow_abbrev=False,help='One separate corrective plan after an exact closed locale-rehearsal failure; never replay')
+    corrective.add_argument('--predecessor-operator',required=True)
+    corrective.add_argument('--predecessor-sha256',required=True)
     recovery_apply=recovery_actions.add_parser('apply',allow_abbrev=False,help='One exact SHA-confirmed operator recovery; no retry or automatic Setup apply')
     recovery_apply.add_argument('plan_id')
     recovery_apply.add_argument('--confirm-sha256',required=True)
@@ -92,6 +95,11 @@ def handle(parsed, settings):
             return {'status': 'ok', 'ous': ous, 'count': len(ous)}
         return dict(directory.computer(parsed.hostname), status='ok')
     if parsed.setup_action == 'recovery':
+        if parsed.recovery_action=='rehearsal-failure-plan':
+            from .setup_recovery_rehearsal_admission import RecoveryRehearsalAdmissionService
+            reference=RecoveryRehearsalAdmissionService(settings).prepare(parsed.predecessor_operator,parsed.predecessor_sha256)
+            operator=RecoveryOperatorService(with_context(settings,reference))
+            return operator.plan(reference['failed_run_id'],reference['computer_guid'])
         if parsed.recovery_action=='successor-plan':
             from .setup_recovery_successor import RecoverySuccessorService
             reference=RecoverySuccessorService(settings).prepare(parsed.failed_run,parsed.computer_guid,parsed.predecessor_sha256)

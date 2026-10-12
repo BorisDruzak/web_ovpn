@@ -71,10 +71,10 @@ class RecoveryAttemptStore:
         self.context=None
         self.root = state_root / 'setup-recovery-attempts'
         if context is not None:
-            from .setup_recovery_attempt_context import validate_context
+            from .setup_recovery_attempt_context import validate_context,context_layout
             validate_context(state_root,context)
             self.context=dict(context)
-            self.root=state_root/'setup-recovery-successor-attempts'/context['attempt_id']
+            self.root=state_root/context_layout(context)[2]/context['attempt_id']
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.plans = RecoveryPlanStore(state_root, clock=self.clock)
 

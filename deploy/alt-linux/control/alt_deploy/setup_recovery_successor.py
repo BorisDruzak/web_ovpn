@@ -22,10 +22,15 @@ def _equal(left,right):
 
 def validate_predecessor(settings,pair,sha,*,clock):
     """Archival integrity only; never load expired plans as current authority."""
+    return _validate_closed_preparation(settings,pair,sha,clock=clock)
+
+def _validate_closed_preparation(settings,pair,sha,*,clock,context=None):
+    """Internal exact closed-chain verifier; callers select a fixed family."""
     if not isinstance(sha,str) or not re.fullmatch('[0-9a-f]{64}',sha):raise ValueError
-    store=RecoveryAttemptStore(settings.state_root)
+    if getattr(settings,'recovery_attempt_context',None)!=context:raise ValueError('Mixed closed context')
+    store=RecoveryAttemptStore(settings.state_root,context=context)
     read=lambda suffix:private_read(store._path(**pair,suffix=suffix))
-    inventory=predecessor_inventory(settings.state_root,pair)
+    inventory=predecessor_inventory(settings.state_root,pair,context=context)
     if set(inventory)!=set(digest(pair)+suffix for suffix in SUFFIXES):raise ValueError('Unexpected predecessor footprint')
     intended=read('.operator-intent.json');approved=datetime.fromisoformat(intended['approved_at'])
     if approved.tzinfo is None or approved>clock():raise ValueError
@@ -37,6 +42,8 @@ def validate_predecessor(settings,pair,sha,*,clock):
     _equal(read('.operator-failed.json'),dict(schema_version=1,status='UNKNOWN',error_code='recovery_operator_failed'))
     for key,value in pair.items():_equal(p[key],value)
     fields={'failed_run_id','computer_guid','operation','execution_available','machine','computer_sid','computer_ou','employee','recovery','startup','terminal','snapshot_sha256','review_sha256','manual_password_writes','renewal_policy','setup_continuation'}
+    if context is not None:fields.add('recovery_attempt_context')
+    _equal(p.get('recovery_attempt_context'),context)
     if (set(p)!=fields or p['operation']!='selected_recovery_then_normal_policy_once' or p['execution_available'] is not True
             or type(p['manual_password_writes']) is not int or p['manual_password_writes']!=1
             or p['renewal_policy']!='any_change_UNKNOWN_no_retry' or p['setup_continuation']!='separate_fresh_normal_plan_after_current_terminal_proof'):raise ValueError
@@ -46,7 +53,7 @@ def validate_predecessor(settings,pair,sha,*,clock):
     startup=StartupPlanStore(settings.state_root,clock=historical).load(p['startup']['plan_id'],p['startup']['sha256'])
     terminal=TerminalPlanStore(settings.state_root,clock=historical).load(p['terminal']['plan_id'],p['terminal']['sha256'])
     snapshot=base['payload']['snapshot'];attachment=startup['payload'];tp=terminal['payload']
-    if 'recovery_attempt_context' in snapshot:raise ValueError('A successor cannot have another successor')
+    _equal(snapshot.get('recovery_attempt_context'),context)
     _equal(digest(snapshot),p['snapshot_sha256'])
     for key in ('machine','computer_sid','computer_ou'):_equal(p[key],snapshot[key])
     _equal(p['employee'],{key:snapshot['user'][key] for key in ('login','object_guid','object_sid','upn')})
@@ -84,7 +91,7 @@ def validate_predecessor(settings,pair,sha,*,clock):
     for kind,plan,directory in [('operator',operator,'setup-recovery-operator-plans'),('recovery',base,'setup-recovery-plans'),('startup',startup,'setup-recovery-startup-plans'),('terminal',terminal,'setup-recovery-terminal-plans')]:
         path=settings.state_root/directory/(plan['plan_id']+'.json');_equal(private_read(path),plan)
         envelopes[kind]=dict(plan_id=plan['plan_id'],sha256=plan['sha256'],raw_sha256=hashlib.sha256(private_read_bytes(path)).hexdigest())
-    _equal(predecessor_inventory(settings.state_root,pair),inventory)
+    _equal(predecessor_inventory(settings.state_root,pair,context=context),inventory)
     return dict(inventory=inventory,envelopes=envelopes,snapshot=snapshot,evidence=evidence,approved_at=approved.isoformat(),finished_at=finished.isoformat())
 
 class RecoverySuccessorService:
