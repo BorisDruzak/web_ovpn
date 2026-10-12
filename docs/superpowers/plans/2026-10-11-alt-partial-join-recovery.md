@@ -826,3 +826,15 @@ running-policy and trust claims false. See the baseline verification report.
 Fixed transport/CLI and immutable source/target approval binding, reviewed ALT
 package/default/effect semantics and the terminal service lifecycle are still
 required. The worker closes the evidence cycle but does not authorize recovery.
+
+### Read-only original-policy baseline command
+
+The baseline transport and controller service now expose `setup recovery
+policy-baseline --failed-run RUN_ID --computer-guid GUID`. It stores a separate
+private thirty-minute SHA plan, never reserves recovery and refuses identity,
+source, metadata or evidence drift. Its legacy-compatible request context hash
+is not a reservation claim. See the baseline CLI verification report. The real
+source worker pipeline is composed through bootstrap in fixtures, but native
+responses remain synthetic. Actual parser acceptance, reviewed ALT defaults/
+effects, terminal approval/service lifecycle, coordinator and Setup continuation
+remain required before live recovery can be proposed for execution.

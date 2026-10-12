@@ -8,6 +8,7 @@ from .ad_transport import DirectoryConfig, LDAPTransport
 from .setup import SetupService
 from .setup_recovery_planning import RecoveryPlanningService
 from .setup_recovery_startup_inventory import RecoveryStartupInventoryService
+from .setup_recovery_policy_baseline_runtime import RecoveryPolicyBaselineService
 
 
 def add_parsers(commands):
@@ -48,6 +49,10 @@ def add_parsers(commands):
         help='Read-only service graph evidence for later review; no reservation or execution permission')
     inventory.add_argument('--failed-run', required=True)
     inventory.add_argument('--computer-guid', required=True)
+    baseline = recovery_actions.add_parser('policy-baseline', allow_abbrev=False,
+        help='Read original configured SSSD policy into a non-executable baseline plan; no reservation')
+    baseline.add_argument('--failed-run', required=True)
+    baseline.add_argument('--computer-guid', required=True)
 
 
 def directory_for_settings(settings):
@@ -65,6 +70,8 @@ def handle(parsed, settings):
             return {'status': 'ok', 'ous': ous, 'count': len(ous)}
         return dict(directory.computer(parsed.hostname), status='ok')
     if parsed.setup_action == 'recovery':
+        if parsed.recovery_action == 'policy-baseline':
+            return RecoveryPolicyBaselineService(RecoveryPlanningService(settings)).plan(parsed.failed_run, parsed.computer_guid)
         if parsed.recovery_action == 'startup-inventory':
             return RecoveryStartupInventoryService(RecoveryPlanningService(settings)).plan(parsed.failed_run, parsed.computer_guid)
         return RecoveryPlanningService(settings).plan(parsed.failed_run, parsed.computer_guid)
@@ -86,6 +93,13 @@ def handle(parsed, settings):
 def write_text(stream, payload):
     if 'plan_id' in payload and 'payload' in payload:
         content = payload['payload']
+        if payload['plan_id'].startswith('recovery-policy-baseline-'):
+            stream.write(f"Original policy baseline plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
+            stream.write(f"Machine: {content['machine']['uuid']} / {content['machine']['hostname']}\nOriginal failed run: {content['failed_run_id']}\n")
+            stream.write(f"Original configuration SHA-256: {content['projection']['original_sha256']}\nParser/tool SHA-256: {content['projection']['tools_sha256']}\n")
+            stream.write('Execution available: false\nDefaults verified: false\n')
+            stream.write('Required review: ' + ', '.join(content['review_requirements']) + '\n')
+            return
         if payload['plan_id'].startswith('recovery-inventory-'):
             stream.write(f"Startup inventory plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
             stream.write(f"Machine: {content['machine']['uuid']} / {content['machine']['hostname']}\n")

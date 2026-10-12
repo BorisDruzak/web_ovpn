@@ -167,5 +167,23 @@ terminal handoff; сам возврат штатной политики пока
 Внутренний [baseline collector](verification/ALT_RECOVERY_POLICY_BASELINE_2026-10-12.md)
 теперь читает исходную конфигурацию до reservation, без будущих import/startup
 receipts. Стабильные поля сравниваются с поздним observer; runtime defaults и
-работа служб этим не подтверждаются. Фиксированный transport, операторская
-команда и привязка результата к immutable approval ещё требуют реализации.
+работа служб этим не подтверждаются. Операторская команда описана ниже;
+привязка результата к terminal approval ещё требует реализации.
+
+Для подготовки read-only baseline после установки проверенного кода:
+
+```text
+workstationctl setup recovery policy-baseline --failed-run RUN_ID --computer-guid GUID
+workstationctl --json setup recovery policy-baseline --failed-run RUN_ID --computer-guid GUID
+```
+
+Используйте исходный failed-run и точный GUID выбранного компьютера. Машина,
+сотрудник и OU берутся из защищённой истории; произвольные root/vars/playbook
+параметры не принимаются. Команда сохраняет собственный private план с TTL
+30 минут и SHA-256, не резервирует recovery attempt и не меняет AD, службы,
+credentials или конфигурацию ПК. Только private parser scratch создаётся и
+удаляется. Вывод `Execution available: false` и `Defaults verified: false`
+означает, что ещё нужны review runtime defaults/effects и отдельный terminal
+handoff plan. Этот baseline не принимается `setup apply` и не подтверждает trust,
+парольный или графический вход. Проверки и ограничения описаны в
+[отчёте CLI](verification/ALT_RECOVERY_POLICY_BASELINE_CLI_2026-10-12.md).
