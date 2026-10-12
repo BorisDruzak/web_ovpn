@@ -20,7 +20,7 @@ def test_cli_apply_dispatches_fixed_coordinator_once(monkeypatch):
     class Operator:
         def __init__(self,settings):pass
         def apply(self,*args):calls.append(args);return dict(status='normal_policy_handoff_succeeded')
-    monkeypatch.setattr(setup_cli,'RecoveryOperatorService',Operator)
+    monkeypatch.setattr(setup_cli,'operator_for_plan',lambda settings,plan_id,sha:Operator(settings))
     output=io.StringIO()
     assert cli.main(['--json','setup','recovery','apply','operator','--confirm-sha256','sha'],settings=Settings.from_env(),stdout=output)==0
     assert calls==[('operator','sha')] and json.loads(output.getvalue())['status']=='normal_policy_handoff_succeeded'

@@ -66,13 +66,35 @@ def _sync_directory(path):
 
 
 class RecoveryAttemptStore:
-    def __init__(self, state_root: Path, *, clock=None):
+    def __init__(self, state_root: Path, *, clock=None, context=None):
+        self.state_root=state_root
+        self.context=None
         self.root = state_root / 'setup-recovery-attempts'
+        if context is not None:
+            from .setup_recovery_attempt_context import validate_context
+            validate_context(state_root,context)
+            self.context=dict(context)
+            self.root=state_root/'setup-recovery-successor-attempts'/context['attempt_id']
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.plans = RecoveryPlanStore(state_root, clock=self.clock)
 
+    @classmethod
+    def for_settings(cls,settings,*,clock=None):
+        return cls(settings.state_root,clock=clock,context=getattr(settings,'recovery_attempt_context',None))
+
+    def assert_plan_context(self,plan):
+        if plan['payload'].get('snapshot',{}).get('recovery_attempt_context')!=self.context:
+            raise fail('recovery_attempt_context_mismatch','The exact plan and attempt store must share one explicit context')
+        if self.context is not None:
+            from .setup_recovery_attempt_context import validate_context
+            validate_context(self.state_root,self.context,_pair(plan['payload']['failed_run_id'],plan['payload']['computer_guid']))
+
     def _path(self, failed_run_id, computer_guid, suffix):
-        return self.root / (digest(_pair(failed_run_id, computer_guid)) + suffix)
+        pair=_pair(failed_run_id,computer_guid)
+        if self.context is not None:
+            from .setup_recovery_attempt_context import validate_context
+            validate_context(self.state_root,self.context,pair)
+        return self.root / (digest(pair) + suffix)
 
     def claim_path(self, failed_run_id, computer_guid):
         return self._path(failed_run_id, computer_guid, '.claim.json')
@@ -82,6 +104,7 @@ class RecoveryAttemptStore:
 
     def reserve(self, plan_id, confirmed_sha, raw_files):
         plan = self.plans.load(plan_id, confirmed_sha)
+        self.assert_plan_context(plan)
         payload = plan['payload']
         pair = _pair(payload.get('failed_run_id'), payload.get('computer_guid'))
         preserved = evidence_document(raw_files)

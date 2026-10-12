@@ -27,13 +27,13 @@ class RecoveryPasswordProvider:
                  prewrite=None, runner=None, fingerprint=None, clock=None):
         self.settings = settings
         self.directory = directory
-        self.credentials = credentials or RecoveryCredentialStore(settings.state_root, codec=RecoveryVaultCodec(settings))
+        self.credentials = credentials or RecoveryCredentialStore.for_settings(settings, codec=RecoveryVaultCodec(settings))
         self.fresh_check, self.prewrite = fresh_check, prewrite
         self.runner = runner or bounded_recovery_run
         self.fingerprint = fingerprint or (lambda: source_fingerprint(settings.ansible_project_dir, Path(__file__).parent))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.plans = RecoveryPlanStore(settings.state_root, clock=self.clock)
-        self.attempts = RecoveryAttemptStore(settings.state_root, clock=self.clock)
+        self.attempts = RecoveryAttemptStore.for_settings(settings, clock=self.clock)
 
     def intent_path(self, failed_run_id, computer_guid):
         return self.attempts._path(**_pair(failed_run_id, computer_guid), suffix='.ad-write-intent.json')
@@ -81,6 +81,7 @@ class RecoveryPasswordProvider:
             raise fail('recovery_prewrite_unavailable', 'Reviewed fixed recovery preparation and fresh-state producers are required')
         with exclusive_lock(self.settings.lock_file):
             plan = self.plans.load(plan_id, confirmed_sha)
+            self.attempts.assert_plan_context(plan)
             payload = plan['payload']
             try:
                 fields = {'failed_run_id', 'computer_guid', 'machine_uuid', 'computer_sid',

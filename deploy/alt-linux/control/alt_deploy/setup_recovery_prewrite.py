@@ -13,8 +13,8 @@ from .setup_recovery_rehearsal_runtime import RecoveryRehearsalRuntime
 class RecoveryPrewriteGate:
     def __init__(self, settings, *, machines, fresh_check, credentials=None, controller=None, runtime=None, plans=None):
         self.machines, self.fresh_check = machines, fresh_check
-        self.credentials=credentials or RecoveryCredentialStore(settings.state_root,codec=RecoveryVaultCodec(settings))
-        self.attempts=RecoveryAttemptStore(settings.state_root)
+        self.credentials=credentials or RecoveryCredentialStore.for_settings(settings,codec=RecoveryVaultCodec(settings))
+        self.attempts=RecoveryAttemptStore.for_settings(settings)
         self.plans=plans or RecoveryPlanStore(settings.state_root)
         self.controller=controller or RecoveryControllerBackup(settings,credentials=self.credentials,fresh_check=fresh_check)
         self.runtime=runtime or RecoveryRehearsalRuntime(settings,credentials=self.credentials)

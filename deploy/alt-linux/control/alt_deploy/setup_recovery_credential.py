@@ -132,8 +132,12 @@ class RecoveryVaultCodec:
 
 
 class RecoveryCredentialStore:
-    def __init__(self, state_root, *, codec):
-        self.attempts = RecoveryAttemptStore(state_root)
+    @classmethod
+    def for_settings(cls,settings,*,codec):
+        return cls(settings.state_root,codec=codec,attempts=RecoveryAttemptStore.for_settings(settings))
+
+    def __init__(self, state_root, *, codec,attempts=None):
+        self.attempts = attempts or RecoveryAttemptStore(state_root)
         self.codec = codec
 
     def path(self, failed_run_id, computer_guid):
@@ -156,6 +160,7 @@ class RecoveryCredentialStore:
             reserved = datetime.fromisoformat(claim['created_at'])
             plan = RecoveryPlanStore(self.attempts.plans.root.parent, clock=lambda: reserved).load(
                 claim['plan_id'], claim['plan_sha256'])
+            self.attempts.assert_plan_context(plan)
             preserved = private_read(self.attempts.evidence_path(**pair))
             raw = {key: base64.b64decode(value['bytes_b64'], validate=True) for key, value in preserved['files'].items()}
             if (evidence_document(raw) != preserved or digest(preserved) != claim['evidence_sha256']

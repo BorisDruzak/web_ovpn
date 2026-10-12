@@ -32,7 +32,7 @@ class RecoveryImportRuntime(RecoveryWorkstationBackupRuntime):
     def __init__(self, settings, *, postwrite, runner=None):
         super().__init__(settings,runner=bounded_bundle_run if runner is None else runner,credentials=postwrite.service_gate.preparation.credentials)
         self.postwrite=postwrite
-        self.attempts=RecoveryAttemptStore(settings.state_root)
+        self.attempts=RecoveryAttemptStore.for_settings(settings)
 
     def _sources(self):
         directory=Path(__file__).parent;owner=Path(__file__).lstat().st_uid

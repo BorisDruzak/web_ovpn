@@ -22,6 +22,8 @@ class Settings:
     workstationctl_path: Path
     service_user: str = "altserver"
     service_group: str = "altserver"
+    # Internal protected-plan composition only; no environment/CLI override.
+    recovery_attempt_context: dict | None = None
     install_sessions_dir: Path = Path(
         "/var/lib/alt-deploy/install-sessions"
     )

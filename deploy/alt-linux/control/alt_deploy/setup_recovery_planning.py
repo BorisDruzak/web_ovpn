@@ -27,7 +27,7 @@ class RecoveryPlanningService:
         self.runtime = runtime or RecoveryPlanningRuntime(settings)
         self.history = RecoveryHistoryStore(settings.state_root)
         self.plans = RecoveryPlanStore(settings.state_root, clock=self.clock)
-        self.attempts = RecoveryAttemptStore(settings.state_root, clock=self.clock)
+        self.attempts = RecoveryAttemptStore.for_settings(settings, clock=self.clock)
 
     def snapshot(self, failed_run_id, computer_guid):
         pair = _pair(failed_run_id, computer_guid)
@@ -98,7 +98,8 @@ class RecoveryPlanningService:
                     or self.history.load(failed_run_id)['raw_files'] != historical['raw_files']):
                 raise ValueError
             guard()
-            return dict(pair, machine_uuid=machine.uuid, computer_sid=computer['object_sid'],
+            context_fields={} if self.attempts.context is None else dict(recovery_attempt_context=dict(self.attempts.context))
+            return dict(pair, **context_fields, machine_uuid=machine.uuid, computer_sid=computer['object_sid'],
                 evidence_sha256=pinned['evidence_sha256'], historical_identity=pinned,
                 machine=registered, user=user, computer_ou=ou, ou_identity=ous[0], computer=computer,
                 request=request.to_dict(), observed=observed, workstation_facts=facts,

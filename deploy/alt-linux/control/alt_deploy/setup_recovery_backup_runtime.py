@@ -19,7 +19,7 @@ from .setup_recovery_runtime import RecoveryPlanningRuntime, _read_source
 class RecoveryWorkstationBackupRuntime(RecoveryPlanningRuntime):
     def __init__(self, settings, *, runner=None, credentials=None):
         super().__init__(settings, runner=bounded_bundle_run if runner is None else runner)
-        self.credentials = credentials or RecoveryCredentialStore(settings.state_root, codec=RecoveryVaultCodec(settings))
+        self.credentials = credentials or RecoveryCredentialStore.for_settings(settings, codec=RecoveryVaultCodec(settings))
 
     def create_backup(self, machine, failed_run_id, computer_guid, facts):
         return self._backup('create', machine, failed_run_id, computer_guid, facts)

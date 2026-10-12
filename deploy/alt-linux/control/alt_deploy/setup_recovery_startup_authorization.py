@@ -115,6 +115,7 @@ class RecoveryStartupPlans:
 
     def _base(self,plan_id,confirmed_sha):
         plan=copy.deepcopy(self.planning.plans.load(plan_id,confirmed_sha));payload=plan['payload']
+        self.planning.attempts.assert_plan_context(plan)
         fields={'failed_run_id','computer_guid','machine_uuid','computer_sid','evidence_sha256','execution_available','provider','snapshot'}
         if (set(payload)!=fields or payload['execution_available'] is not True or payload['provider']!=PROVIDER
                 or payload['snapshot']['execution_available'] is not False

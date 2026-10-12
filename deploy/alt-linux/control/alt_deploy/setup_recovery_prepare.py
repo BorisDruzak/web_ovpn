@@ -38,7 +38,7 @@ class RecoveryPreparationCoordinator:
     def __init__(self,planning,*,credentials=None,controller=None,runtime=None,resolver=None):
         self.planning,self.settings=planning,planning.settings
         self.plans,self.attempts=planning.plans,planning.attempts
-        self.credentials=credentials or RecoveryCredentialStore(self.settings.state_root,codec=RecoveryVaultCodec(self.settings))
+        self.credentials=credentials or RecoveryCredentialStore(self.settings.state_root,codec=RecoveryVaultCodec(self.settings),attempts=self.attempts)
         self.fresh_check=RecoveryReservedState(planning,credentials=self.credentials)
         self.controller=controller or RecoveryControllerBackup(self.settings,credentials=self.credentials,fresh_check=self.fresh_check)
         self.runtime=runtime or RecoveryRehearsalRuntime(self.settings,credentials=self.credentials)
@@ -60,6 +60,7 @@ class RecoveryPreparationCoordinator:
         try:
             with exclusive_lock(self.settings.lock_file):
                 plan=self.plans.load(plan_id,confirmed_sha);payload=plan['payload']
+                self.attempts.assert_plan_context(plan)
                 fields={'failed_run_id','computer_guid','machine_uuid','computer_sid','evidence_sha256',
                         'execution_available','provider','snapshot'}
                 if (set(payload)!=fields or payload['execution_available'] is not True or payload['provider']!=PROVIDER

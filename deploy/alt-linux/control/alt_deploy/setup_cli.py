@@ -10,7 +10,8 @@ from .setup_recovery_planning import RecoveryPlanningService
 from .setup_recovery_startup_inventory import RecoveryStartupInventoryService
 from .setup_recovery_policy_baseline_runtime import RecoveryPolicyBaselineService
 from .setup_recovery_policy_effects_runtime import RecoveryPolicyEffectsService
-from .setup_recovery_operator import RecoveryOperatorService
+from .setup_recovery_operator import RecoveryOperatorService,operator_for_plan,operator_for_execution_plan
+from .setup_recovery_attempt_context import with_context
 from .setup_recovery_continuation import RecoveryContinuationService
 
 
@@ -65,6 +66,12 @@ def add_parsers(commands):
             help='Fresh exact recovery execution envelope' if name=='execution-plan' else 'Fresh normal Setup plan after verified recovery' if name=='continue-plan' else 'Read retained recovery phase; never resume')
         command.add_argument('--failed-run',required=True)
         command.add_argument('--computer-guid',required=True)
+        if name in ('continue-plan','status'):
+            command.add_argument('--operator-plan',help='Explicit protected successor operator plan; omitted selects legacy retained attempt')
+    successor=recovery_actions.add_parser('successor-plan',allow_abbrev=False,help='One additive prewrite successor after complete closed-backup-failure admission')
+    successor.add_argument('--failed-run',required=True)
+    successor.add_argument('--computer-guid',required=True)
+    successor.add_argument('--predecessor-sha256',required=True)
     recovery_apply=recovery_actions.add_parser('apply',allow_abbrev=False,help='One exact SHA-confirmed operator recovery; no retry or automatic Setup apply')
     recovery_apply.add_argument('plan_id')
     recovery_apply.add_argument('--confirm-sha256',required=True)
@@ -85,12 +92,19 @@ def handle(parsed, settings):
             return {'status': 'ok', 'ous': ous, 'count': len(ous)}
         return dict(directory.computer(parsed.hostname), status='ok')
     if parsed.setup_action == 'recovery':
+        if parsed.recovery_action=='successor-plan':
+            from .setup_recovery_successor import RecoverySuccessorService
+            reference=RecoverySuccessorService(settings).prepare(parsed.failed_run,parsed.computer_guid,parsed.predecessor_sha256)
+            return RecoveryOperatorService(with_context(settings,reference)).plan(parsed.failed_run,parsed.computer_guid)
         if parsed.recovery_action in ('execution-plan','apply','continue-plan','status'):
-            operator=RecoveryOperatorService(settings)
+            if parsed.recovery_action=='apply':operator=operator_for_plan(settings,parsed.plan_id,parsed.confirm_sha256)
+            elif getattr(parsed,'operator_plan',None):
+                operator=operator_for_plan(settings,parsed.operator_plan,expected_pair=dict(failed_run_id=parsed.failed_run,computer_guid=parsed.computer_guid),archival=parsed.recovery_action=='status')
+            else:operator=RecoveryOperatorService(settings)
             if parsed.recovery_action=='execution-plan':return operator.plan(parsed.failed_run,parsed.computer_guid)
             if parsed.recovery_action=='apply':return operator.apply(parsed.plan_id,parsed.confirm_sha256)
             if parsed.recovery_action=='status':return operator.status(parsed.failed_run,parsed.computer_guid)
-            return RecoveryContinuationService(settings,terminal_verifier=operator._verify_terminal_locked).plan(parsed.failed_run,parsed.computer_guid)
+            return RecoveryContinuationService(operator.settings,terminal_verifier=operator._verify_terminal_locked).plan(parsed.failed_run,parsed.computer_guid)
         if parsed.recovery_action == 'policy-effects':
             return RecoveryPolicyEffectsService(RecoveryPlanningService(settings)).plan(parsed.failed_run, parsed.computer_guid)
         if parsed.recovery_action == 'policy-baseline':
@@ -111,7 +125,10 @@ def handle(parsed, settings):
     if parsed.setup_action == 'apply':
         plan=service.plans.load(parsed.plan_id,parsed.confirm_sha256)
         if 'recovery_resolution' in plan['payload']:
-            service.recovery_resolutions.verifier=RecoveryOperatorService(settings)._verify_terminal_locked
+            reference=plan['payload']['recovery_resolution']
+            resolution=service.recovery_resolutions.load(reference['failed_run_id'],reference['computer_guid'])
+            terminal=resolution['terminal']
+            service.recovery_resolutions.verifier=operator_for_execution_plan(settings,terminal['execution_plan_id'],terminal['execution_plan_sha256'])._verify_terminal_locked
         return service.apply(parsed.plan_id, parsed.confirm_sha256)
     return service.verify(parsed.machine)
 
@@ -123,6 +140,9 @@ def write_text(stream, payload):
             stream.write(f"Recovery operator plan: {payload['plan_id']}\nSHA-256: {payload['sha256']}\nExpires: {payload['expires_at']}\n")
             stream.write(f"Machine: {content['machine']['uuid']} / {content['machine']['hostname']}\nOriginal failed run: {content['failed_run_id']}\n")
             stream.write(f"Computer GUID: {content['computer_guid']}\nComputer SID: {content['computer_sid']}\nComputer OU: {content['computer_ou']}\nEmployee: {content['employee']['login']}\n")
+            if 'recovery_attempt_context' in content:
+                context=content['recovery_attempt_context']
+                stream.write(f"Successor attempt: {context['attempt_id']}\nAdmission SHA-256: {context['admission_sha256']}\nPredecessor remains closed and unchanged.\n")
             stream.write('Manual machine password writes: 1. Identity/OU preserved. Ordinary SSSD policy may update AD attributes, Samba credentials and DNS RRsets.\n')
             stream.write('Any observed renewal or unknown outcome stops with UNKNOWN; no replay or automatic rollback. Original failed history is retained.\n')
             for name in ('recovery','startup','terminal'):stream.write(name+' SHA-256: '+content[name]['sha256']+'\n')

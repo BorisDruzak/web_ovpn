@@ -76,6 +76,50 @@ workstationctl setup recovery status --failed-run ORIGINAL_FAILED_RUN \
 
 Это чтение сохранённого результата, а не resume и не текущий live PASS.
 
+## Отдельная попытка после доказанного отказа backup до записи в AD
+
+Закрытая попытка сохраняется навсегда. Только для исхода `prepare` / `bind`,
+при завершённом `backup_preflight_failed`, допускается один отдельный successor.
+Команда проверяет всю историческую цепочку, свежую неизменность AD и ПК,
+отсутствие workstation footprints и активных процессов, native operation lock,
+readiness и достаточное место. Отсутствующее или противоречивое доказательство
+блокирует допуск. Отказ после записи пароля, import или service mutation сюда
+не относится.
+
+```sh
+workstationctl --json setup recovery successor-plan \
+  --failed-run ORIGINAL_FAILED_RUN --computer-guid EXISTING_COMPUTER_GUID \
+  --predecessor-sha256 CLOSED_OPERATOR_SHA
+```
+
+SHA предшественника используется только для исторической проверки. Новый план
+имеет отдельный attempt ID, admission SHA, новые subplans/SHA/TTL и отдельные
+claims/receipts/credentials. Старые файлы не перемещаются и не заменяются;
+изменение любого исходного attempt record или одного из четырёх envelopes
+останавливает successor. Повторное read-only планирование возможно только
+до его первого intent/claim и только в той же неизменной namespace.
+
+После проверки нового плана требуется отдельное разрешение на его конкретный
+machine-password reset. Применяется обычная команда `setup recovery apply`
+с новым operator ID/SHA; контекст берётся из защищённых планов. Частичная
+запись admission/relationship остаётся блокирующей, без автоматической очистки.
+Второй successor и replay вступившей successor-попытки не предусмотрены.
+
+Для чтения результата successor или нового Setup-плана укажите его сохранённый
+operator ID явно:
+
+```sh
+workstationctl --json setup recovery status --failed-run ORIGINAL_FAILED_RUN \
+  --computer-guid EXISTING_COMPUTER_GUID --operator-plan SUCCESSOR_OPERATOR_ID
+workstationctl --json setup recovery continue-plan --failed-run ORIGINAL_FAILED_RUN \
+  --computer-guid EXISTING_COMPUTER_GUID --operator-plan SUCCESSOR_OPERATOR_ID
+```
+
+Без этого селектора `status` по-прежнему читает исходную закрытую попытку.
+Историческое чтение status не продлевает полномочия apply. Штатный Setup apply
+после успешного terminal использует тот же явно связанный recovery-контекст
+из защищённой resolution.
+
 ## Новый Setup после recovery
 
 ```sh

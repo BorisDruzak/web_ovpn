@@ -16,6 +16,8 @@ from .setup_recovery_startup_inventory import RecoveryStartupInventoryRuntime,In
 from .setup_recovery_controller_backup import RecoveryControllerBackup
 from .setup_recovery_execution import RecoveryExecutionCoordinator
 from .setup_recovery_sssd_start import START,validate_unit
+from .setup_recovery_attempt_context import with_context
+from .setup_recovery import RecoveryPlanStore
 
 UNIT_HASHES={'sssd.service':'b26ae44bc2527d6f730b749a7202f1967544294802245c9ef2fd846fab18fe6f',
  'smb.service':'86641f1fb781dcf50872e5ac6a0e3dd4d422c4075f1e1c94fa7fb3f953d6856c',
@@ -61,6 +63,37 @@ def reviewed_projection(captured):
     selected.pop('diagnostic_inventory',None)
     selected['ledger'].pop('inventory_sha256',None)
     return selected
+
+def operator_for_plan(settings,operator_id,sha=None,*,expected_pair=None,archival=False,clock=None):
+    """Reconstruct explicit context from a protected hash-confirmed envelope."""
+    try:
+        if not isinstance(operator_id,str) or not re.fullmatch('recovery-operator-[0-9a-f]{64}',operator_id):raise ValueError
+        confirmed=operator_id[len('recovery-operator-'):] if sha is None else sha
+        selected_clock=clock
+        if archival:
+            raw=private_read(settings.state_root/'setup-recovery-operator-plans'/(operator_id+'.json'))
+            created=datetime.fromisoformat(raw['created_at'])
+            if created.tzinfo is None or created>datetime.now(timezone.utc):raise ValueError
+            selected_clock=lambda:created
+        plan=OperatorPlanStore(settings.state_root,clock=selected_clock).load(operator_id,confirmed)
+        p=plan['payload'];pair=_pair(p['failed_run_id'],p['computer_guid'])
+        if expected_pair is not None and _pair(**expected_pair)!=pair:raise ValueError
+        ref=p['recovery'];base=RecoveryPlanStore(settings.state_root,clock=selected_clock).load(ref['plan_id'],ref['sha256'])
+        context=base['payload']['snapshot'].get('recovery_attempt_context')
+        if context!=p.get('recovery_attempt_context'):raise ValueError
+        if context is not None:
+            settings=with_context(settings,context)
+            if _pair(context['failed_run_id'],context['computer_guid'])!=pair:raise ValueError
+        elif getattr(settings,'recovery_attempt_context',None) is not None:raise ValueError
+        return RecoveryOperatorService(settings)
+    except Exception:raise fail('recovery_operator_context_invalid','Protected operator identity, exact SHA and explicit attempt context are required') from None
+
+def operator_for_execution_plan(settings,plan_id,sha):
+    base=RecoveryPlanStore(settings.state_root).load(plan_id,sha)
+    context=base['payload']['snapshot'].get('recovery_attempt_context')
+    if context is not None:settings=with_context(settings,context)
+    elif getattr(settings,'recovery_attempt_context',None) is not None:raise ValueError('Mixed recovery context')
+    return RecoveryOperatorService(settings)
 
 class RecoveryOperatorService:
     def __init__(self,settings,*,planning=None,review=None,inventory=None,pipeline_factory=None):
@@ -142,7 +175,8 @@ class RecoveryOperatorService:
                 startup=startup_ref,source_sha256=digest(pipeline.terminal._sources()),review=captured['review'],terminal_units=captured['terminal_units']))
             with exclusive_lock(self.settings.lock_file):
                 if canonical(self.planning.snapshot(**pair))!=canonical(snapshot):raise ValueError
-                return self.store.create(dict(pair,operation='selected_recovery_then_normal_policy_once',execution_available=True,
+                context_fields={} if self.planning.attempts.context is None else dict(recovery_attempt_context=dict(self.planning.attempts.context))
+                return self.store.create(dict(pair,**context_fields,operation='selected_recovery_then_normal_policy_once',execution_available=True,
                     machine=snapshot['machine'],computer_sid=snapshot['computer_sid'],computer_ou=snapshot['computer_ou'],
                     employee={key:snapshot['user'][key] for key in ('login','object_guid','object_sid','upn')},
                     recovery=dict(plan_id=base['plan_id'],sha256=base['sha256']),startup=startup_ref,
@@ -154,6 +188,8 @@ class RecoveryOperatorService:
     def _load(self,operator_id,sha):
         operator=self.store.load(operator_id,sha);payload=operator['payload']
         fields={'failed_run_id','computer_guid','operation','execution_available','machine','computer_sid','computer_ou','employee','recovery','startup','terminal','snapshot_sha256','review_sha256','manual_password_writes','renewal_policy','setup_continuation'}
+        if self.planning.attempts.context is not None:fields.add('recovery_attempt_context')
+        if payload.get('recovery_attempt_context')!=self.planning.attempts.context:raise ValueError('Mixed operator context')
         if (set(payload)!=fields or payload['execution_available'] is not True or payload['operation']!='selected_recovery_then_normal_policy_once'
                 or type(payload['manual_password_writes']) is not int or payload['manual_password_writes']!=1
                 or payload['renewal_policy']!='any_change_UNKNOWN_no_retry'
@@ -162,6 +198,7 @@ class RecoveryOperatorService:
         for ref in (payload['recovery'],payload['startup'],payload['terminal']):
             if not isinstance(ref,dict) or set(ref)!={'plan_id','sha256'}:raise ValueError
         base=self.planning.plans.load(payload['recovery']['plan_id'],payload['recovery']['sha256'])
+        self.planning.attempts.assert_plan_context(base)
         self.startup_plans.load(payload['startup']['plan_id'],payload['startup']['sha256'],base['plan_id'],base['sha256'])
         terminal=self.terminals.load(payload['terminal']['plan_id'],payload['terminal']['sha256'])
         if (terminal['payload']['recovery']!=payload['recovery'] or terminal['payload']['startup']!=payload['startup']

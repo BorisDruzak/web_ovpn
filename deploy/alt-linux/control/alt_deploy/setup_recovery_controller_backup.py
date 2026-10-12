@@ -19,8 +19,8 @@ _SHA = re.compile(r'[0-9a-f]{64}')
 
 class RecoveryControllerBackup:
     def __init__(self, settings, *, credentials=None, fresh_check=None, runner=None):
-        self.attempts = RecoveryAttemptStore(settings.state_root)
-        self.credentials = credentials or RecoveryCredentialStore(settings.state_root, codec=None)
+        self.attempts = RecoveryAttemptStore.for_settings(settings)
+        self.credentials = credentials or RecoveryCredentialStore(settings.state_root, codec=None,attempts=self.attempts)
         self.fresh_check = fresh_check
         self.runner = runner or bounded_recovery_run
 

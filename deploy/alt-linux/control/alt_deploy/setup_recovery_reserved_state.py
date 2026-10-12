@@ -17,7 +17,7 @@ class RecoveryReservedState:
         self.planning = planning
         # Only the existing protected reservation validator is used.  No Vault
         # operation or credential preparation is required for a fresh read.
-        self.credentials = credentials or RecoveryCredentialStore(planning.settings.state_root, codec=None)
+        self.credentials = credentials or RecoveryCredentialStore(planning.settings.state_root, codec=None,attempts=planning.attempts)
 
     def __call__(self, payload):
         try:

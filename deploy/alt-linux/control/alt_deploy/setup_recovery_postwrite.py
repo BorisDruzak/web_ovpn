@@ -27,6 +27,7 @@ class RecoveryPostwriteState:
     def _protected(self, plan_id, confirmed_sha):
         gate=self.service_gate;base=gate.preparation
         plan=base.plans.load(plan_id,confirmed_sha)
+        base.attempts.assert_plan_context(plan)
         payload=plan['payload']
         fields={'failed_run_id','computer_guid','machine_uuid','computer_sid','evidence_sha256',
             'execution_available','provider','snapshot'}
