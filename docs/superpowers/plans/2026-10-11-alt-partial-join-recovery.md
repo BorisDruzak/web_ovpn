@@ -838,3 +838,14 @@ source worker pipeline is composed through bootstrap in fixtures, but native
 responses remain synthetic. Actual parser acceptance, reviewed ALT defaults/
 effects, terminal approval/service lifecycle, coordinator and Setup continuation
 remain required before live recovery can be proposed for execution.
+
+### Original-policy operative effect inventory
+
+The fixed internal inventory worker now observes 30 configured identity/renewal/
+DNS fields with explicit presence, all generated section/key names and four
+protected runtime dependencies. Unknown keys remain unreviewed. It preserves
+existing baseline/suppression interfaces and grants no defaults/effects/execution
+authority. See the effect-inventory specification and verification report.
+Source review established conditional ordinary adcli hostname/encryption/SPN
+reconciliation beyond password renewal. Fixed transport, actual extended parser
+acceptance and a closed reviewed effect manifest must precede terminal approval.
