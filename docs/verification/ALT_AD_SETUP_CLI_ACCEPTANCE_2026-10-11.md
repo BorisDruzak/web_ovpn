@@ -265,3 +265,43 @@ for preceding exact SHA `d9f994ce6a8149f2aea5fffaeee5dcdcc20866bf` passed. This
 approval block is uninstalled and not yet exposed through a coordinator or CLI.
 The protected inventory/review producer, remaining restoration/functional checks
 and final exact live execution approval remain required; no real recovery ran.
+
+### Recovery-assisted disposable workstation acceptance (2026-10-13)
+
+For anonymized target `test-vm-02` and existing employee `employee-02`, the
+selected workstation's Setup completed successfully through the genuine
+SetupService, ConfigurePlanner and fixed stage-03 playbook. The first join and
+the subsequent hostname-verification failure remain retained as failed runs.
+One authorized machine-password repair preserved the existing computer's
+GUID, SID, OU and SPNs. Its worker result remains UNKNOWN; separate fresh
+observations proved working trust before a reviewed new Setup context ran.
+No new controller backups were created during this repair and continuation.
+
+The installed runtime is `d7499f005dd4ad5deb3e8b175db0a0eb75d3d698`, including
+`cf110fbfdd28339ed7ed07700778a5154176daf9`. These changes request explicit
+computer identity attributes from Samba and consistently accept the expected
+joined workstation FQDN. Native controller installation checks passed 2679
+tests with one skip. CI for the installed revision passed 5215 tests with
+89 skips; its ISO workflow also succeeded. The final real Setup playbook
+reported 276 successful tasks, 47 changes, no unreachable hosts and no failures.
+
+Fresh native `setup verify` confirmed trust, SSSD, selected-user lookup, absence
+of a duplicate local user and successful group-policy application. All selected
+core-apps components, including the signature suite, reported verified success.
+After the operator authenticated with the employee's AD credentials, SSH
+confirmed an active local X11 user session through LightDM, the matching domain
+UID, and the employee's home directory with matching owner and mode 0700.
+A subsequent native verification reported `home_exists=true` and
+`home_operations_deferred=false`. No further reboot was required.
+
+A fresh public CLI plan accepted the successful assignment and contained no
+domain-join action. Reapplying the completed plan returned its cached successful
+result without another configuration run or machine-password change. A wrong
+SHA was refused with `setup_plan_mismatch`, with protected results unchanged.
+These checks do not constitute a second execution of the complete playbook.
+
+This establishes recovery-assisted acceptance for the selected disposable
+workstation. The distribution's Samba package was not upgraded, and its
+fresh-join compatibility issue and the bootstrap root/sudo validation issue
+remain separate work. The complete original L5 live negative matrix and
+unassisted fresh-machine acceptance are not claimed as passed by this result.
