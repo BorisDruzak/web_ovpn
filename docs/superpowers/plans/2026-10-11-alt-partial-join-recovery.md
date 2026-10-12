@@ -756,6 +756,11 @@ duplicate-free envelope/module hashes, startup/native proof links and employee
 form before source execution, with fixed check/verify actions only. Controller
 binding/transport execution, terminal handoff and the operational coordinator
 remain unfinished; the wire builder supplies no authority.
+The distinct bounded bundle channel now fixes the demonstrated real-source
+stdin capacity gap for startup/native defaults (one-MiB input, original
+sixteen-KiB replies). Native-tool/inventory limits and approval ordering remain
+unchanged. The real user envelope passes a synthetic subprocess capacity check;
+UserRuntime and real recovery still require the remaining gates.
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
 

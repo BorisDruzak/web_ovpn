@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib,json,shlex
+import hashlib,json,shlex,sys
 from pathlib import Path
 
 import pytest
@@ -108,3 +108,8 @@ def test_real_fourteen_source_bundle_fits_fixed_transport(tmp_path):
     script,encoded=wire.build('check',sources,request)
     assert len(encoded.encode())<wire.MAX_WIRE_BYTES and len(script.encode())<8192
     assert len(('sudo -n /usr/bin/python3 -I -B -c '+shlex.quote(script)).encode())<8192
+    from alt_deploy.setup_recovery_process import bounded_bundle_run,bounded_recovery_run
+    from alt_deploy.errors import ControlError
+    command=[sys.executable,'-I','-B','-c','import sys; print(len(sys.stdin.buffer.read()))']
+    assert bounded_bundle_run(command,environment={},input_text=encoded,timeout=3)==(0,str(len(encoded.encode()))+'\n','')
+    with pytest.raises(ControlError):bounded_recovery_run(command,environment={},input_text=encoded,timeout=3)

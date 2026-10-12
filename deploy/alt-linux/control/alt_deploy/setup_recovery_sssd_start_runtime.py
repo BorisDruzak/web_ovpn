@@ -23,6 +23,7 @@ from . import setup_recovery_services as services
 from . import setup_recovery_sssd_policy as policy
 from . import setup_recovery_sssd_start as start
 from . import setup_recovery_start_wire as wire
+from .setup_recovery_process import bounded_bundle_run
 
 
 def _same(left,right):return canonical(left)==canonical(right)
@@ -33,7 +34,7 @@ class RecoverySSSDStartRuntime:
         if not callable(authorization):raise ValueError('Explicit startup authorization gate required')
         self.policy_runtime=policy_runtime;self.authorization=authorization
         self.settings=policy_runtime.settings;self.attempts=policy_runtime.attempts
-        self.runner=runner or policy_runtime.runner
+        self.runner=bounded_bundle_run if runner is None else runner
 
     def _sources(self):
         directory=Path(__file__).parent;owner=Path(__file__).lstat().st_uid

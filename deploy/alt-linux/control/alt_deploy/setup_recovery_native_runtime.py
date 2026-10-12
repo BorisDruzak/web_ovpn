@@ -17,6 +17,7 @@ from .setup_recovery_controller_backup import RecoveryControllerBackup
 from . import setup_recovery_backup as backup
 from . import setup_recovery_native_testjoin as worker
 from . import setup_recovery_native_wire as wire
+from .setup_recovery_process import bounded_bundle_run
 
 
 def _same(left,right):return canonical(left)==canonical(right)
@@ -27,7 +28,7 @@ class RecoveryNativeRuntime:
         if not callable(authorization):raise ValueError('Explicit native-check authorization required')
         self.startup_runtime=startup_runtime;self.authorization=authorization
         self.settings=startup_runtime.settings;self.attempts=startup_runtime.attempts
-        self.runner=runner or startup_runtime.runner
+        self.runner=bounded_bundle_run if runner is None else runner
 
     def _sources(self):
         path=Path(__file__).parent/'setup_recovery_native_testjoin.py'

@@ -24,6 +24,50 @@ def test_inventory_transport_accepts_large_bounded_metadata_without_relaxing_rec
     with pytest.raises(ControlError):bounded_inventory_command_run(command,environment={},timeout=3)
 
 
+def test_bundle_channel_accepts_one_mib_without_relaxing_native_tools():
+    from alt_deploy.setup_recovery_process import bounded_bundle_run
+    command=[sys.executable,'-c','import sys; print(len(sys.stdin.buffer.read()))']
+    assert bounded_bundle_run(command,environment={},input_text='x'*1048576,timeout=3)==(0,'1048576\n','')
+    with pytest.raises(ControlError):run(command,input_text='x'*166880,timeout=3)
+
+
+@pytest.mark.parametrize('stream',['stdout','stderr'])
+def test_bundle_replies_keep_original_sixteen_kib_bound(stream):
+    from alt_deploy.setup_recovery_process import bounded_bundle_run
+    with pytest.raises(ControlError) as caught:
+        bounded_bundle_run([sys.executable,'-c','import sys; sys.'+stream+'.write("SYNTHETIC_SECRET"*4096)'],environment={},timeout=3)
+    assert 'SYNTHETIC_SECRET' not in str(caught.value)
+
+
+def test_bundle_invalid_input_fails_before_spawn(monkeypatch):
+    from alt_deploy import setup_recovery_process
+    calls=[];monkeypatch.setattr(setup_recovery_process.subprocess,'Popen',lambda *a,**kw:calls.append(True))
+    with pytest.raises(ControlError):setup_recovery_process.bounded_bundle_run(['/usr/bin/false'],environment={},input_text='x'*1048577,timeout=1)
+    assert calls==[]
+
+
+def test_bundle_deadline_kills_stalled_large_input_child():
+    from alt_deploy.setup_recovery_process import bounded_bundle_run
+    started=time.monotonic()
+    with pytest.raises(ControlError):bounded_bundle_run([sys.executable,'-c','import time; time.sleep(60)'],
+        environment={},input_text='x'*1048576,timeout=0.2)
+    assert time.monotonic()-started<4
+
+
+@pytest.mark.parametrize('kind',['startup','native'])
+def test_runtime_default_channel_accepts_source_bundle_while_inner_runner_remains_small(kind):
+    from types import SimpleNamespace
+    from alt_deploy.setup_recovery_process import bounded_recovery_run
+    from alt_deploy.setup_recovery_sssd_start_runtime import RecoverySSSDStartRuntime
+    from alt_deploy.setup_recovery_native_runtime import RecoveryNativeRuntime
+    inner=SimpleNamespace(runner=bounded_recovery_run,settings=None,attempts=None)
+    runtime=(RecoverySSSDStartRuntime(policy_runtime=inner,authorization=lambda *a:None) if kind=='startup'
+        else RecoveryNativeRuntime(startup_runtime=inner,authorization=lambda *a:None))
+    command=[sys.executable,'-c','import sys; print(len(sys.stdin.buffer.read()))']
+    assert runtime.runner(command,environment={},input_text='x'*166880,timeout=3)==(0,'166880\n','')
+    with pytest.raises(ControlError):inner.runner(command,environment={},input_text='x'*166880,timeout=3)
+
+
 @pytest.mark.parametrize('stream',['stdout','stderr'])
 def test_inventory_transport_refuses_overflow_and_discards_diagnostics(stream):
     from alt_deploy.setup_recovery_process import bounded_inventory_run

@@ -26,6 +26,12 @@ def bounded_recovery_run(command, *, environment, input_text=None, timeout=20):
         maximum_input=MAX_INPUT,maximum_output=MAX_OUTPUT)
 
 
+def bounded_bundle_run(command, *, environment, input_text=None, timeout=150):
+    """Fixed controller SSH source envelopes; native-tool limits stay separate."""
+    return _bounded_run(command,environment=environment,input_text=input_text,timeout=timeout,
+        maximum_input=1048576,maximum_output=MAX_OUTPUT)
+
+
 def bounded_inventory_run(command, *, environment, input_text=None, timeout=60):
     """Fixed read-only inventory envelope, separate from execution receipts."""
     return _bounded_run(command,environment=environment,input_text=input_text,timeout=timeout,

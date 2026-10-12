@@ -137,6 +137,11 @@ hooks, environment, manager actions и unresolved destinations. Этот пла�
 источники до исполнения; [отчёт транспорта](verification/ALT_RECOVERY_USER_WIRE_2026-10-12.md)
 отдельно описывает его ограничения. Сам builder не выполняет SSH и не
 подтверждает полномочия оператора.
+Отдельный [bundle-канал](verification/ALT_RECOVERY_BUNDLE_CHANNEL_2026-10-12.md)
+теперь принимает фиксированные source envelopes до 1 МиБ с прежним лимитом
+ответа 16 КиБ. Startup/native runtimes используют его по умолчанию; обычные
+native-команды сохраняют предел stdin 128 КиБ. NSS controller runtime и
+операторский recovery apply ещё не подключены.
 Разрешение пользователя через NSS не подтверждает парольный или графический
 вход. Возврат штатной политики и служб остаётся отдельной частью recovery.
 

@@ -53,3 +53,7 @@ recording the capacity finding and final results; only this report changed
 afterward. Source/test SHA-256 values matched the isolated tested copy.
 Exact-commit general CI remains separate after publication. This is not live
 recovery acceptance or proof of the unfinished controller transport capacity.
+
+Subsequent preparation fixes the separate stdin capacity gate in the
+[bundle-channel report](ALT_RECOVERY_BUNDLE_CHANNEL_2026-10-12.md). UserRuntime,
+operator authorization/transport integration and real recovery remain pending.
