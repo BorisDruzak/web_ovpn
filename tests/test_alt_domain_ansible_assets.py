@@ -584,6 +584,24 @@ def test_workstation_identity_requires_explicit_hostname_mode_for_rename() -> No
     assert "ALT_PREFLIGHT_FAILURE:hostname_mismatch" in content
 
 
+@pytest.mark.parametrize(('observed', 'accepted'), [
+    ('alt-test-pc1', True), ('alt-test-pc1.sosnadmin.local', True),
+    ('ALT-TEST-PC1.SOSNADMIN.LOCAL\n', True),
+    ('alt-test-pc2.sosnadmin.local', False), ('alt-test-pc1.other.local', False),
+])
+def test_joined_hostname_final_assertion_accepts_only_the_requested_identity(observed, accepted):
+    tasks = yaml.safe_load((ROLES / 'workstation_identity/tasks/main.yml').read_text())
+    environment = NativeEnvironment(undefined=StrictUndefined)
+    facts = dict(final_hostname='alt-test-pc1', ad_domain='SOSNADMIN.LOCAL',
+                 workstation_identity_after={'stdout': observed})
+    definition = next(task['ansible.builtin.set_fact'] for task in tasks if 'ansible.builtin.set_fact' in task)
+    facts['workstation_identity_accepted_static_hostnames'] = [
+        environment.from_string(value).render(**facts)
+        for value in definition['workstation_identity_accepted_static_hostnames']]
+    assertion = tasks[-1]['ansible.builtin.assert']['that']
+    assert environment.from_string('{{ ' + assertion + ' }}').render(**facts) is accepted
+
+
 def test_domain_join_rejects_untrusted_existing_computer_before_join_write() -> None:
     role_path = ANSIBLE_ROOT / "roles" / "domain_join" / "tasks" / "main.yml"
     content = role_path.read_text(encoding="utf-8")

@@ -38,5 +38,7 @@
 
 - name: Verify resulting static hostname
   ansible.builtin.assert:
-    that: workstation_identity_after.stdout | trim == final_hostname
+    that: >-
+      workstation_identity_after.stdout | trim | lower
+      in workstation_identity_accepted_static_hostnames
     fail_msg: ALT_PREFLIGHT_FAILURE:hostname_mismatch static hostname does not match approved request
