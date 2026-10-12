@@ -785,3 +785,14 @@ UserRuntime and real recovery still require the remaining gates.
 - Ruling: scope the ODJ blob to local initialization — this version's RID0 is not the selected computer SID and cannot establish identity. External GUID/SID binding and real postchecks remain mandatory.
 - Ruling: preserve UNKNOWN for the original partial-join cause — no_log hid the decisive output; the missing local metadata is a recovery prerequisite failure, not proof of that original cause.
 - Ruling: prepare implementation in an attached managed worktree and validate it in a private ALT source copy — the primary checkout and deployed controller stay separate. Infrastructure recovery remains unexecuted.
+
+## User controller preparation checkpoint
+
+RecoveryUserAuthorization and RecoveryUserRuntime now bind the combined approval,
+protected native/startup evidence, employee identity and fourteen source hashes.
+Check/verify use fixed bounded SSH and immutable user records; entered failures
+exclude replay. Genuine authorizer/runtime joined tests close the interface gap,
+while upstream observations and SSH replies remain synthetic. See the user
+controller verification report. Production coordinator composition, terminal
+handoff, operator execution, complete producer-chain proof and additive Setup
+continuation remain required. No recovery execution is authorized by this block.

@@ -131,8 +131,7 @@ hooks, environment, manager actions и unresolved destinations. Этот пла�
 сотрудника вместе с native-проверкой; он закрепляет идентичность, NSS
 зависимости и команду. Прежние подтверждения такое разрешение не получают.
 Свежая проверка сотрудника в combined gate описана в
-[отчёте scope](verification/ALT_RECOVERY_USER_SCOPE_2026-10-12.md); transport
-и операторское исполнение этой проверки ещё требуют реализации.
+[отчёте scope](verification/ALT_RECOVERY_USER_SCOPE_2026-10-12.md); операторское исполнение этой проверки ещё требует реализации.
 Фиксированный stdin/bootstrap транспорта уже подготовлен и проверяет
 источники до исполнения; [отчёт транспорта](verification/ALT_RECOVERY_USER_WIRE_2026-10-12.md)
 отдельно описывает его ограничения. Сам builder не выполняет SSH и не
@@ -140,8 +139,7 @@ hooks, environment, manager actions и unresolved destinations. Этот пла�
 Отдельный [bundle-канал](verification/ALT_RECOVERY_BUNDLE_CHANNEL_2026-10-12.md)
 теперь принимает фиксированные source envelopes до 1 МиБ с прежним лимитом
 ответа 16 КиБ. Startup/native runtimes используют его по умолчанию; обычные
-native-команды сохраняют предел stdin 128 КиБ. NSS controller runtime и
-операторский recovery apply ещё не подключены.
+native-команды сохраняют предел stdin 128 КиБ. NSS controller runtime подготовлен; операторский recovery apply ещё не подключён.
 Разрешение пользователя через NSS не подтверждает парольный или графический
 вход. Возврат штатной политики и служб остаётся отдельной частью recovery.
 
@@ -150,3 +148,11 @@ native-команды сохраняют предел stdin 128 КиБ. NSS cont
 ## Live acceptance
 
 L0: цель/действия. L1: real user GUID/SID/state, OU, computer. L2: plan/no mutations. L3: approved guarded deployment и confirmed apply. L4: trust/SSSD/getent/GPO/no local duplicate/identity continuity/repeated plan. L5: safe negatives без AD writes. Graphical login/home после reboot — только с отдельным разрешением. Code/CI/readiness эти gates не заменяют.
+
+Контроллерная проверка связывает явное combined-подтверждение со свежим состоянием
+сотрудника, исходными зависимостями и защищёнными startup/native receipts.
+Фиксированный SSH transport сохраняет intent/result/failure и отказывает при
+повторном запуске либо изменении данных. См. [отчёт](verification/ALT_RECOVERY_USER_CONTROLLER_2026-10-12.md).
+Эти внутренние классы пока не предоставляют операторский recovery apply.
+Production coordinator должен явно передать genuine authority; возврат штатной
+политики служб, полная интеграционная проверка и live acceptance ещё требуются.
