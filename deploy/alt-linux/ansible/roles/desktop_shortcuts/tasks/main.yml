@@ -60,7 +60,7 @@
 
 - name: Resolve domain test user for existing desktop shortcuts
   ansible.builtin.command:
-    argv: [getent, passwd, "{{ domain_test_user }}"]
+    argv: [getent, -s, sss, passwd, "{{ assigned_domain_user | default(domain_test_user, true) }}"]
   register: desktop_shortcuts_user_lookup
   changed_when: false
   failed_when: false
@@ -72,13 +72,77 @@
   when: desktop_shortcuts_user_lookup.rc == 0
   no_log: true
 
+- name: Validate the selected domain profile identity before home operations
+  ansible.builtin.assert:
+    that:
+      - desktop_shortcuts_user_fields | length == 7
+      - desktop_shortcuts_user_fields[2] | int > 0
+      - desktop_shortcuts_user_fields[3] | int > 0
+      - desktop_shortcuts_user_fields[5] is match('^/home/[^/]+(?:/[^/]+)?$')
+      - desktop_shortcuts_user_fields[0] | lower in [(assigned_domain_user | default(domain_test_user, true) | lower), (assigned_domain_user | default(domain_test_user, true) | lower).split('@')[0]]
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_profile_identity_invalid
+  when: desktop_shortcuts_user_lookup.rc == 0
+  no_log: true
+
 - name: Inspect existing domain test user home
   ansible.builtin.stat:
     path: "{{ desktop_shortcuts_user_fields[5] }}"
+    follow: false
   register: desktop_shortcuts_user_home
   when:
     - desktop_shortcuts_user_lookup.rc == 0
     - desktop_shortcuts_user_fields | length == 7
+  no_log: true
+
+- name: Validate existing home ownership without following a symlink
+  ansible.builtin.assert:
+    that:
+      - desktop_shortcuts_user_home.stat.isdir
+      - not desktop_shortcuts_user_home.stat.islnk
+      - desktop_shortcuts_user_home.stat.uid == desktop_shortcuts_user_fields[2] | int
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_profile_home_unsafe
+  when:
+    - desktop_shortcuts_user_home.stat.exists | default(false)
+  no_log: true
+
+- name: Inspect the domain home parents without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ ['/home', desktop_shortcuts_user_fields[5] | dirname] }}"
+  register: desktop_shortcuts_home_parents
+  when: desktop_shortcuts_user_home.stat.exists | default(false)
+  no_log: true
+
+- name: Require actual root-owned domain home parents
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.uid == 0
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_profile_parent_unsafe
+  loop: "{{ desktop_shortcuts_home_parents.results | default([]) }}"
+  when: not item.skipped | default(false)
+  no_log: true
+
+- name: Inspect existing profile destinations before the first home write
+  ansible.builtin.stat:
+    path: "{{ desktop_shortcuts_user_fields[5] }}/{{ item }}"
+    follow: false
+  loop: "{{ [desktop_shortcuts_user_desktop_name, '.config', '.config/autostart', '.config/autostart/' ~ desktop_shortcuts_nextcloud_entry] + desktop_shortcuts_application_entries | map('regex_replace', '^', desktop_shortcuts_user_desktop_name ~ '/') | list }}"
+  register: desktop_shortcuts_profile_destinations
+  when: desktop_shortcuts_user_home.stat.exists | default(false)
+  no_log: true
+
+- name: Refuse symlinked or foreign-owned profile destinations
+  ansible.builtin.assert:
+    that:
+      - not item.stat.exists or not item.stat.islnk
+      - not item.stat.exists or item.stat.uid == desktop_shortcuts_user_fields[2] | int
+    fail_msg: ALT_PREFLIGHT_FAILURE:desktop_profile_destination_unsafe
+  loop: "{{ desktop_shortcuts_profile_destinations.results | default([]) }}"
+  when:
+    - not item.skipped | default(false)
   no_log: true
 
 - name: Create existing domain test user desktop directory
@@ -143,3 +207,16 @@
     - desktop_shortcuts_user_home is defined
     - desktop_shortcuts_user_home.stat.exists
   no_log: true
+
+- name: Record verified shortcuts and home-dependent deferral
+  ansible.builtin.set_fact:
+    desktop_shortcuts_verified: true
+    desktop_shortcuts_home_deferred: "{{ not (desktop_shortcuts_user_home.stat.exists | default(false)) }}"
+    configure_result: >-
+      {{ configure_result | default({'components': {}, 'verification': {}}) | combine({
+        'components': (configure_result | default({})).get('components', {}) | combine({
+          'desktop_shortcuts': {'status': 'ok', 'verified': true,
+            'home_deferred': not (desktop_shortcuts_user_home.stat.exists | default(false))}
+        }),
+        'verification': (configure_result | default({})).get('verification', {}) | combine({'desktop_shortcuts': true})
+      }) }}

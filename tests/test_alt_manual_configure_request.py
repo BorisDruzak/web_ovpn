@@ -628,8 +628,9 @@ def test_configure_start_rejects_invalid_stage_03_legacy_result(
     assert set(exc.value.details) == {"run_id"}
 
 
+@pytest.mark.parametrize('setup_endpoint', [None, 'ldap://dc-test.sosnadmin.local'])
 def test_configure_start_uses_fixed_playbook_and_private_run_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup_endpoint
 ) -> None:
     from alt_deploy.config import Settings
     from alt_deploy.vault import VaultHealthChecker
@@ -665,15 +666,55 @@ def test_configure_start_uses_fixed_playbook_and_private_run_files(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
-    request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
-    result = ConfigurePlanner(settings, machines=SimpleNamespace(get=lambda _: machine)).start(MACHINE_UUID, request)
+    payload = valid_request()
+    options = {}
+    if setup_endpoint:
+        from alt_deploy.setup_assignments import DomainAssignmentStore
+        from alt_deploy.ad_transport import DirectoryConfig
+        payload.update(domain_test_user='pilot.user@sosnadmin.local', software_profile='base',
+                       remote_access_profile='none', assigned_domain_user='pilot.user@sosnadmin.local')
+        run_id = 'setup-run-' + 'a'*32
+        binding = {'run_id': run_id, 'result': 'running', 'login': 'pilot.user',
+                   'computer_ou': payload['computer_ou'], 'software_profile': 'base', 'remote_access_profile': 'none'}
+        monkeypatch.setattr(DomainAssignmentStore, 'get', lambda self, uuid: binding)
+        monkeypatch.setattr(DirectoryConfig, 'load', classmethod(lambda cls: DirectoryConfig(uri=setup_endpoint)))
+        options.update(_lock_held=True, setup_run_id=run_id, setup_directory_uri=setup_endpoint)
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    result = ConfigurePlanner(settings, machines=SimpleNamespace(get=lambda _: machine)).start(MACHINE_UUID, request, **options)
 
     assert "03-configure-domain-workstation.yml" in " ".join(captured)
     assert "192.168.101.56," in captured
     assert "ansible" in captured
     assert result["verification"]["domain_join"] is True
+    assert (json.dumps({'ad_ldap_uri': setup_endpoint}, separators=(',', ':')) in captured) is bool(setup_endpoint)
     if os.name != "nt":
         assert (settings.state_root / "configure-runs").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize('has_binding,changed', [(False, False), (True, True)])
+def test_setup_directory_endpoint_cannot_bypass_binding_or_fresh_configuration(tmp_path, monkeypatch, has_binding, changed):
+    from alt_deploy.config import Settings
+    from alt_deploy.setup_assignments import DomainAssignmentStore
+    from alt_deploy.ad_transport import DirectoryConfig
+    settings = SimpleNamespace(state_root=tmp_path/'state', lock_file=tmp_path/'lock', ansible_project_dir=tmp_path/'ansible')
+    run_id = 'setup-run-' + 'b'*32
+    payload = valid_request()
+    payload.update(domain_test_user='pilot.user@sosnadmin.local', software_profile='base',
+                   remote_access_profile='none', assigned_domain_user='pilot.user@sosnadmin.local')
+    binding = {'run_id': run_id, 'result': 'running', 'login': 'pilot.user',
+               'computer_ou': payload['computer_ou'], 'software_profile': 'base', 'remote_access_profile': 'none'}
+    monkeypatch.setattr(DomainAssignmentStore, 'get', lambda self, uuid: binding if has_binding else None)
+    current = 'ldap://other-test.sosnadmin.local' if changed else 'ldap://dc-test.sosnadmin.local'
+    monkeypatch.setattr(DirectoryConfig, 'load', classmethod(lambda cls: DirectoryConfig(uri=current)))
+    planner = ConfigurePlanner(settings)
+    calls = []
+    monkeypatch.setattr(planner, '_start_unlocked', lambda *args, **kwargs: calls.append(args))
+    request = ConfigureRequest.from_mapping(payload, expected_uuid=MACHINE_UUID)
+    with pytest.raises(ControlError) as caught:
+        planner.start(MACHINE_UUID, request, _lock_held=True, setup_run_id=run_id,
+                      setup_directory_uri='ldap://dc-test.sosnadmin.local')
+    assert caught.value.code == 'setup_plan_drift'
+    assert calls == []
 
 
 def test_ad_join_vault_gate_reports_only_boolean_checks() -> None:

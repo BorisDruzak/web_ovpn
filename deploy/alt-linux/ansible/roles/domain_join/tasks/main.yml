@@ -54,6 +54,33 @@
       {{ computer_ou | regex_replace(',DC=sosnadmin,DC=local$', '')
          | regex_findall('OU=([^,]+)') | reverse | join('/') }}
 
+- name: Create the root-owned fixed first-join helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not domain_join_already_joined
+
+- name: Install the fixed native first-join compatibility adapter
+  ansible.builtin.copy:
+    src: first_join.py
+    dest: /usr/local/libexec/alt-first-join.py
+    owner: root
+    group: root
+    mode: "0700"
+  when: not domain_join_already_joined
+
+- name: Install the unchanged reviewed offline keytab parser
+  ansible.builtin.copy:
+    src: /opt/alt-deploy-control/alt_deploy/setup_recovery_keytab.py
+    dest: /usr/local/libexec/alt-first-join-keytab.py
+    owner: root
+    group: root
+    mode: "0600"
+  when: not domain_join_already_joined
+
 - name: Join workstation to Active Directory with Kerberos credentials
   block:
     - name: Acquire temporary Kerberos ticket
@@ -112,6 +139,11 @@
     - name: Join workstation through ALT system-auth
       ansible.builtin.command:
         argv:
+          - /usr/bin/python3
+          - -I
+          - /usr/local/libexec/alt-first-join.py
+          - "{{ ad_ldap_uri }}"
+          - "{{ computer_ou }}"
           - system-auth
           - write
           - ad
@@ -129,6 +161,11 @@
       when:
         - domain_join_computer_lookup.rc == 0
         - not domain_join_computer_exists
+
+    - name: Refuse compatibility failure even when Samba trust exists
+      ansible.builtin.assert:
+        that: "'ALT_PREFLIGHT_FAILURE:domain_join_compatibility_failed' not in (domain_join_command.stdout | default('') ~ domain_join_command.stderr | default(''))"
+        fail_msg: ALT_PREFLIGHT_FAILURE:domain_join_failed first-join credentials were not fully verified
 
     - name: Record accepted domain join before trust verification
       ansible.builtin.set_fact:
@@ -209,6 +246,11 @@
         - name: Perform the only permitted second ALT domain join
           ansible.builtin.command:
             argv:
+              - /usr/bin/python3
+              - -I
+              - /usr/local/libexec/alt-first-join.py
+              - "{{ ad_ldap_uri }}"
+              - "{{ computer_ou }}"
               - system-auth
               - write
               - ad
@@ -224,6 +266,11 @@
           when:
             - domain_join_retry_lookup.rc == 0
             - domain_join_retry_lookup.stdout is not search('(?im)^dn:')
+
+        - name: Refuse second-attempt compatibility failure even when Samba trust exists
+          ansible.builtin.assert:
+            that: "'ALT_PREFLIGHT_FAILURE:domain_join_compatibility_failed' not in (domain_join_retry_command.stdout | default('') ~ domain_join_retry_command.stderr | default(''))"
+            fail_msg: ALT_PREFLIGHT_FAILURE:domain_join_failed first-join credentials were not fully verified
 
         - name: Record accepted second join before trust verification
           ansible.builtin.set_fact:

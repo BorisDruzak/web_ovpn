@@ -193,14 +193,78 @@
     path: "{{ software_gosuslugi_plugin_native_host }}"
   register: software_gosuslugi_plugin_native_host_stat
 
+- name: Verify the actual ГосПлагин native messaging launcher
+  ansible.builtin.stat:
+    path: "{{ software_gosuslugi_plugin_native_host }}.sh"
+  register: software_gosuslugi_plugin_launcher_stat
+
 - name: Require ГосПлагин browser integration
   ansible.builtin.assert:
     that:
       - software_gosuslugi_plugin_native_host_stat.stat.exists
       - software_gosuslugi_plugin_native_host_stat.stat.isreg
-      - "'jabjbhgjaidecageckilhonbggakppme' in (software_gosuslugi_plugin_manifest.content | b64decode)"
-      - software_gosuslugi_plugin_native_host in (software_gosuslugi_plugin_manifest.content | b64decode)
+      - software_gosuslugi_plugin_native_host_stat.stat.executable
+      - software_gosuslugi_plugin_launcher_stat.stat.exists
+      - software_gosuslugi_plugin_launcher_stat.stat.isreg
+      - software_gosuslugi_plugin_launcher_stat.stat.executable
+      - (software_gosuslugi_plugin_manifest.content | b64decode | from_json).name == 'chrome.gosuslugi.plugin'
+      - (software_gosuslugi_plugin_manifest.content | b64decode | from_json).type == 'stdio'
+      - (software_gosuslugi_plugin_manifest.content | b64decode | from_json).path == software_gosuslugi_plugin_native_host ~ '.sh'
+      - "'chrome-extension://jabjbhgjaidecageckilhonbggakppme/' in (software_gosuslugi_plugin_manifest.content | b64decode | from_json).allowed_origins"
     fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_native_host_missing
+
+- name: Create native messaging directory used by the approved ALT browser
+  ansible.builtin.file:
+    path: /etc/chromium/native-messaging-hosts
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Register signature native hosts in the approved ALT browser
+  ansible.builtin.copy:
+    src: "/etc/opt/chrome/native-messaging-hosts/{{ item }}"
+    dest: "/etc/chromium/native-messaging-hosts/{{ item }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - chrome.gosuslugi.plugin.json
+    - ru.cryptopro.nmcades.json
+
+- name: Create managed extension policy directory for the approved browser
+  ansible.builtin.file:
+    path: /etc/opt/yandex/browser/policies/managed
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the approved signature browser extensions automatically
+  ansible.builtin.copy:
+    dest: /etc/opt/yandex/browser/policies/managed/alt-signature-suite.json
+    content: |
+      {
+        "ExtensionInstallForcelist": [
+          "jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx",
+          "iifchhfnnmpdbibifmljnfjhpififfog;https://clients2.google.com/service/update2/crx"
+        ]
+      }
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Read back the signature extension policy
+  ansible.builtin.slurp:
+    src: /etc/opt/yandex/browser/policies/managed/alt-signature-suite.json
+  register: software_gosuslugi_plugin_browser_policy
+
+- name: Verify the fixed signature extension policy
+  ansible.builtin.assert:
+    that:
+      - (software_gosuslugi_plugin_browser_policy.content | b64decode | from_json).ExtensionInstallForcelist == ['jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx', 'iifchhfnnmpdbibifmljnfjhpififfog;https://clients2.google.com/service/update2/crx']
+    fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_browser_policy_missing
 
 - name: Publish ГосПлагин verification facts
   ansible.builtin.set_fact:
@@ -211,7 +275,9 @@
     configure_result: >-
       {{ configure_result | combine({
         'components': configure_result.components | combine({
-          'gosuslugi_plugin': {'status': 'ok', 'verified': true}
+          'gosuslugi_plugin': {'status': 'ok', 'verified': true,
+            'native_host_verified': true, 'browser_policy_verified': true,
+            'browser_extension': 'pending_browser_start_and_download'}
         }),
         'verification': configure_result.verification | combine({'software_gosuslugi_plugin': true})
       }) }}

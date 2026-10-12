@@ -17,7 +17,11 @@ from .vault import VaultHealthChecker
 # The operator supplies no script, shell fragment, or command selection.
 PROBE_SCRIPT = r'''
 import json, os, pathlib, re, subprocess, sys, uuid
-login, upn = sys.argv[1:]
+login, upn = sys.argv[1:3]
+dc = sys.argv[3] if len(sys.argv) == 4 else ''
+if dc and not re.fullmatch(r'[a-zA-Z0-9.-]+', dc):
+    raise RuntimeError('directory controller name invalid')
+server = ['-S', dc] if dc else []
 def read(args):
     result = subprocess.run(args, capture_output=True, text=True, timeout=10,
                             env=dict(os.environ, LC_ALL='C'))
@@ -36,12 +40,12 @@ domain = parts[1] if parts[0] == 'ad' and len(parts) > 1 else ''
 hostname = read(['hostname', '-s'])[1].lower()
 if not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', hostname) or len(hostname) > 63:
     raise RuntimeError('machine hostname invalid')
-trust_rc, _ = read(['net', 'ads', 'testjoin'])
+trust_rc, _ = read(['net', *server, 'ads', 'testjoin'])
 computer_identity = None
 if trust_rc == 0:
     # Samba's status command has a fixed attribute list which omits GUID/DN.
     # Request exactly the attributes needed for immutable identity checks.
-    status_rc, status = read(['net', '-P', 'ads', 'search',
+    status_rc, status = read(['net', '-P', *server, 'ads', 'search',
         '(&(objectClass=computer)(sAMAccountName=' + hostname + '$))',
         'objectGUID', 'objectSid', 'sAMAccountName', 'distinguishedName', 'dNSHostName'])
     if status_rc != 0:
@@ -116,11 +120,14 @@ class SetupRuntime:
         login = normalize_login(user['login'])
         if user['upn'] != login + '@' + DOMAIN:
             raise fail('ad_user_identity_invalid', 'Selected domain user name differs')
+        from urllib.parse import urlsplit
+        from .ad_transport import DirectoryConfig
+        dc = urlsplit(DirectoryConfig.load().uri).hostname
         command = ['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                    '-o', 'ProxyCommand=none', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=10',
                    '-o', 'UserKnownHostsFile=' + str(self.settings.known_hosts_file),
                    '-i', str(self.settings.private_key_file), 'ansible@' + address,
-                   'sudo -n /usr/bin/python3 -I -B -c ' + shlex.quote(PROBE_SCRIPT) + ' ' + shlex.quote(login) + ' ' + shlex.quote(user['upn'])]
+                   'sudo -n /usr/bin/python3 -I -B -c ' + shlex.quote(PROBE_SCRIPT) + ' ' + shlex.quote(login) + ' ' + shlex.quote(user['upn']) + ' ' + shlex.quote(dc)]
         rc, stdout, _ = self.runner(command, environment=dict(os.environ), timeout=90)
         if rc:
             raise fail('setup_probe_failed', 'Read-only SSH probe failed; check host key, SSH, sudo and domain tools')
@@ -159,6 +166,8 @@ class SetupRuntime:
             raise fail('setup_component_prerequisites_failed', 'Controller component artifacts, catalog or required Vault values failed preflight')
         # Bind all published Ansible content to the plan; encrypted Vault and
         # local secret paths are excluded from the public source fingerprint.
-        return {'ready': True, 'source_sha256': source_fingerprint(settings.ansible_project_dir, Path(__file__).parent), 'ssh_files_present': True,
+        from .ad_transport import DirectoryConfig
+        return {'ready': True, 'directory_uri': DirectoryConfig.load().uri,
+                'source_sha256': source_fingerprint(settings.ansible_project_dir, Path(__file__).parent), 'ssh_files_present': True,
                 'vault_ad_join_ready': True, 'component_preflight': True,
                 'krfb_network_confirmed': request.remote_access_profile == 'krfb'}

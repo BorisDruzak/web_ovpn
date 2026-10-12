@@ -94,6 +94,30 @@ def test_plan_is_nonmutating_and_apply_uses_selected_user(tmp_path):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize('endpoint_changed', [False, True])
+def test_confirmed_directory_endpoint_is_bound_and_forwarded(tmp_path, endpoint_changed):
+    service, machine, user, observed, computer, calls = scenario(tmp_path)
+    endpoint = ['ldap://dc-test.sosnadmin.local']
+    service.prerequisites = lambda request: {'ready': True, 'directory_uri': endpoint[0]}
+    original = service.planner.start
+    seen = []
+    def start(identifier, request, **kwargs):
+        seen.append(kwargs)
+        return original(identifier, request, **kwargs)
+    service.planner.start = start
+    plan = service.plan(machine.hostname, user['login'], OU, 'base', 'none')
+    if endpoint_changed:
+        endpoint[0] = 'ldap://other-test.sosnadmin.local'
+        with pytest.raises(ControlError) as caught:
+            service.apply(plan['plan_id'], plan['sha256'])
+        assert caught.value.code == 'setup_plan_drift'
+        assert seen == calls == []
+    else:
+        result = service.apply(plan['plan_id'], plan['sha256'])
+        assert result['status'] == 'successful'
+        assert seen[0]['setup_directory_uri'] == endpoint[0]
+
+
 @pytest.mark.parametrize('change,code', [
     ('user_guid', 'setup_plan_drift'), ('login', 'setup_plan_drift'),
     ('ip', 'setup_plan_drift'), ('registration', 'setup_plan_drift'),

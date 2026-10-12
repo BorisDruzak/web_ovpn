@@ -25,6 +25,7 @@ CRITICAL_ROLES = [
     "plasma_baseline",
     "standard_software",
     "government_ca",
+    "desktop_shortcuts",
     "remote_access_krfb",
     "domain_verify",
 ]

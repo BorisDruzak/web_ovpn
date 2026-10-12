@@ -92,6 +92,11 @@
       ansible.builtin.include_role:
         name: government_ca
 
+    - name: Configure application shortcuts after the selected applications
+      ansible.builtin.include_role:
+        name: desktop_shortcuts
+      when: software_profile == 'core-apps'
+
     - name: Run requested KRFB profile
       ansible.builtin.include_role:
         name: remote_access_krfb

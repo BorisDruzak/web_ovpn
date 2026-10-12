@@ -63,6 +63,22 @@ def test_probe_rejects_address_injection_and_suppresses_errors(tmp_path):
         runtime.probe(SimpleNamespace(ip='--ProxyCommand=bad'), {'login': 'user', 'upn': 'user@sosnadmin.local'})
 
 
+def test_native_probe_pins_directory_identity_reads_to_the_configured_dc(tmp_path, monkeypatch):
+    from alt_deploy.setup_runtime import SetupRuntime
+    from alt_deploy.ad_transport import DirectoryConfig
+    config = DirectoryConfig(uri='ldap://dc-test.sosnadmin.local')
+    monkeypatch.setattr(DirectoryConfig, 'load', classmethod(lambda cls: config))
+    calls = []
+    observed = {'uuid': '11111111-2222-3333-4444-555555555555', 'hostname': 'alt-a1-pc3',
+                'domain': '', 'trust': False, 'sssd': False, 'user_lookup': False,
+                'local_duplicate': False, 'home_exists': False, 'computer_identity': None}
+    runtime = SetupRuntime(SimpleNamespace(known_hosts_file=tmp_path/'known_hosts', private_key_file=tmp_path/'key'),
+                           runner=lambda cmd, **kw: calls.append(cmd) or (0, json.dumps(observed), ''))
+    runtime.probe(SimpleNamespace(ip='192.0.2.10'), {'login': 'user', 'upn': 'user@sosnadmin.local'})
+    import shlex
+    assert shlex.split(calls[0][-1])[-1] == 'dc-test.sosnadmin.local'
+
+
 @pytest.mark.parametrize('reply_count', [1, 2])
 def test_native_probe_requests_identity_attributes_missing_from_samba_status(monkeypatch, capsys, reply_count):
     import subprocess

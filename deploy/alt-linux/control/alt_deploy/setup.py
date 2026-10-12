@@ -171,7 +171,9 @@ class SetupService:
             private_create(index_path, {'run_id': run_id})
             self.assignments.write(current['binding'], run_id=run_id, result='running', date=date, revision=revision)
             try:
-                result = self.planner.start(request.machine_uuid, request, _lock_held=True, setup_run_id=run_id)
+                endpoint = current['prerequisites'].get('directory_uri')
+                options = {'setup_directory_uri': endpoint} if endpoint is not None else {}
+                result = self.planner.start(request.machine_uuid, request, _lock_held=True, setup_run_id=run_id, **options)
                 run.update(configuration_run_id=result['run_id'], result=result,
                            reboot_required=result.get('reboot_required', False))
                 private_replace(self._run_path(run_id), run)

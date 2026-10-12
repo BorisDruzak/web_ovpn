@@ -389,7 +389,8 @@ class ConfigurePlanner:
         return self.settings.ansible_project_dir / "playbooks" / "03-configure-domain-workstation.yml"
 
     def start(self, machine_uuid: str, request: ConfigureRequest, *,
-              _lock_held: bool = False, setup_run_id: str | None = None) -> dict[str, object]:
+              _lock_held: bool = False, setup_run_id: str | None = None,
+              setup_directory_uri: str | None = None) -> dict[str, object]:
         from contextlib import nullcontext
         from .locking import exclusive_lock
         from .setup_assignments import DomainAssignmentStore
@@ -406,9 +407,16 @@ class ConfigurePlanner:
                         or request.software_profile != binding['software_profile']
                         or request.remote_access_profile != binding['remote_access_profile']):
                     raise ControlError('assignment_conflict', 'Configure request differs from reserved domain binding', 4)
+            if setup_directory_uri is not None:
+                from .ad_transport import DirectoryConfig
+                if (binding is None or setup_run_id is None
+                        or DirectoryConfig.load().uri != setup_directory_uri):
+                    raise ControlError('setup_plan_drift', 'Confirmed controller directory endpoint changed', 4)
+                return self._start_unlocked(machine_uuid, request, setup_directory_uri=setup_directory_uri)
             return self._start_unlocked(machine_uuid, request)
 
-    def _start_unlocked(self, machine_uuid: str, request: ConfigureRequest) -> dict[str, object]:
+    def _start_unlocked(self, machine_uuid: str, request: ConfigureRequest, *,
+                        setup_directory_uri: str | None = None) -> dict[str, object]:
         machine = self.machines.get(machine_uuid)
         if not machine.ip:
             raise ControlError(code="machine_missing_ip", message="Registered machine has no IP address", exit_code=5)
@@ -471,6 +479,8 @@ class ConfigurePlanner:
                     ),
                 ]
             )
+        if setup_directory_uri is not None:
+            command.extend(['-e', json.dumps({'ad_ldap_uri': setup_directory_uri}, separators=(',', ':'))])
         command.append(str(self.configure_playbook))
         environment = os.environ.copy()
         environment.pop(KRFB_NETWORK_CONFIRMATION_VARIABLE, None)

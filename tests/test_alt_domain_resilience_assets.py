@@ -154,7 +154,7 @@ def test_join_retry_requires_transient_failure_and_failed_trust_reconciliation(j
 ])
 def test_only_second_join_is_gated_by_successful_post_failure_ldap_absence(lookup_rc, stdout, allowed):
     tasks = list(flatten(role("domain_join")))
-    writes = [task for task in tasks if task.get("ansible.builtin.command", {}).get("argv", [])[:3] == ["system-auth", "write", "ad"]]
+    writes = [task for task in tasks if task.get("ansible.builtin.command", {}).get("argv", [])[5:8] == ["system-auth", "write", "ad"]]
     assert len(writes) == 2
     retry = by_register("domain_join", "domain_join_retry_command")
     assert "until" not in retry and "retries" not in retry
@@ -171,7 +171,7 @@ def test_domain_join_credentials_and_trust_checks_remain_secret_and_cleanup_is_u
     tasks = list(flatten(role("domain_join")))
     for task in tasks:
         argv = task.get("ansible.builtin.command", {}).get("argv", [])
-        if argv and (argv[0] in ["kinit", "kdestroy", "ldapsearch", "net"] or argv[:3] == ["system-auth", "write", "ad"]):
+        if argv and (argv[0] in ["kinit", "kdestroy", "ldapsearch", "net"] or argv[5:8] == ["system-auth", "write", "ad"]):
             assert task.get("no_log") is True
             assert not any("password" in argument.lower() for argument in argv)
     block = next(task for task in role("domain_join") if "always" in task)
@@ -222,7 +222,7 @@ def test_login_baseline_owns_pam_write_and_precedes_software_remote_and_verifica
     assert names == ["manual_preflight", "workstation_identity", "prejoin_upgrade", "workstation_base",
                      "alt_group_policy_prerequisites", "workstation_network", "domain_join",
                      "alt_group_policy_client", "domain_login_baseline", "plasma_baseline", "standard_software", "government_ca",
-                     "remote_access_krfb", "domain_verify"]
+                     "desktop_shortcuts", "remote_access_krfb", "domain_verify"]
     krfb = next(task for task in flatten(phase)
                 if task.get("ansible.builtin.include_role", {}).get("name") == "remote_access_krfb")
     assert krfb["when"] == ["remote_access_profile == 'krfb'"]
