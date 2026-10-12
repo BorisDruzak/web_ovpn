@@ -305,3 +305,33 @@ workstation. The distribution's Samba package was not upgraded, and its
 fresh-join compatibility issue and the bootstrap root/sudo validation issue
 remain separate work. The complete original L5 live negative matrix and
 unassisted fresh-machine acceptance are not claimed as passed by this result.
+
+### Unassisted fresh-workstation attempt (2026-10-13)
+
+Runtime `ce0e007eaebb363e271d5eef243ebb01553d56d4` includes the technical-user
+bootstrap privilege check, fixed desktop-role inclusion, native-host and browser
+policy checks, and the first-join compatibility adapter. Its published runtime
+CI passed 5244 tests with 89 skips; the ISO workflow also succeeded. Native
+controller installation passed 2682 tests with one skip. No new controller
+backup was created for this installation or workstation attempt.
+
+For anonymized fresh target `test-vm-03` and existing enabled employee
+`employee-03`, the ordinary served bootstrap completed without manual marker
+or privilege changes. Native workstation preflight passed all 13 checks. One
+exactly confirmed public Setup plan launched the genuine configuration pipeline.
+Its full package upgrade completed before the first domain join.
+
+The attempt failed at the compatibility verification gate during domain join:
+93 tasks succeeded, nine changed, and one failed. A new computer object was
+created in the approved OU with password version 1, but fresh read-only checks
+found no system keytab, invalid machine trust and inactive SSSD. The original
+native failure detail was censored by the credential-protecting Ansible block;
+the precise failure cause remains UNKNOWN. The earlier successful offline-keytab
+check on an already joined workstation did not establish first-join acceptance.
+
+The failed Setup and configuration results remain retained. No join replay,
+computer reset, deletion or employee change was performed. A native read-only
+recovery plan preserves the selected identities and explicitly reports
+`execution_available=false`. Applications and browser-extension installation
+were not reached on this fresh target. Unassisted Setup acceptance is FAIL;
+the CLI's fully automatic fresh-machine path is not ready for acceptance.
