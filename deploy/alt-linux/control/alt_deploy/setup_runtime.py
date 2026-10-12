@@ -33,12 +33,21 @@ if not parts or parts[0] not in ('ad', 'local', 'local-users', 'ldap', 'krb5'):
 if parts[0] not in ('ad', 'local', 'local-users'):
     raise RuntimeError('incompatible authentication scheme')
 domain = parts[1] if parts[0] == 'ad' and len(parts) > 1 else ''
+hostname = read(['hostname', '-s'])[1].lower()
+if not re.fullmatch(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*', hostname) or len(hostname) > 63:
+    raise RuntimeError('machine hostname invalid')
 trust_rc, _ = read(['net', 'ads', 'testjoin'])
 computer_identity = None
 if trust_rc == 0:
-    status_rc, status = read(['net', '-P', 'ads', 'status'])
+    # Samba's status command has a fixed attribute list which omits GUID/DN.
+    # Request exactly the attributes needed for immutable identity checks.
+    status_rc, status = read(['net', '-P', 'ads', 'search',
+        '(&(objectClass=computer)(sAMAccountName=' + hostname + '$))',
+        'objectGUID', 'objectSid', 'sAMAccountName', 'distinguishedName', 'dNSHostName'])
     if status_rc != 0:
         raise RuntimeError('machine account identity unavailable')
+    if not status.splitlines() or status.splitlines()[0] != 'Got 1 replies':
+        raise RuntimeError('machine account identity ambiguous')
     values = {}
     names = {'objectguid', 'objectsid', 'samaccountname', 'distinguishedname', 'dnshostname'}
     for line in status.splitlines():
@@ -62,7 +71,7 @@ if fields and (len(fields) != 7 or fields[0].lower() not in (login, upn)):
     raise RuntimeError('user lookup identity differs')
 local_names = [line.split(':', 1)[0].lower() for line in pathlib.Path('/etc/passwd').read_text().splitlines()]
 result = dict(uuid=pathlib.Path('/sys/class/dmi/id/product_uuid').read_text().strip().lower(),
-              hostname=read(['hostname', '-s'])[1].lower(), domain=domain,
+              hostname=hostname, domain=domain,
               trust=trust_rc == 0, sssd=sssd_rc == 0 and sssd == 'active',
               user_lookup=user_rc == 0, local_duplicate=login in local_names or upn in local_names,
               home_exists=bool(fields and os.path.isdir(fields[5])), computer_identity=computer_identity)

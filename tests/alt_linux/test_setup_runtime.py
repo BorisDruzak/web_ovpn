@@ -61,3 +61,36 @@ def test_probe_rejects_address_injection_and_suppresses_errors(tmp_path):
     assert 'SECRET' not in str(caught.value)
     with pytest.raises(ControlError):
         runtime.probe(SimpleNamespace(ip='--ProxyCommand=bad'), {'login': 'user', 'upn': 'user@sosnadmin.local'})
+
+
+@pytest.mark.parametrize('reply_count', [1, 2])
+def test_native_probe_requests_identity_attributes_missing_from_samba_status(monkeypatch, capsys, reply_count):
+    import subprocess
+    from alt_deploy.setup_runtime import PROBE_SCRIPT
+    identity = ('Got %s replies\n\ndistinguishedName: CN=ALT-TEST-PC1,OU=TEST,DC=sosnadmin,DC=local\n'
+                'objectGUID: 11111111-2222-4333-8444-555555555555\n'
+                'objectSid: S-1-5-21-1-2-3-1010\n'
+                'sAMAccountName: ALT-TEST-PC1$\ndNSHostName: alt-test-pc1.sosnadmin.local\n') % reply_count
+    def native(args, **kwargs):
+        outputs = {('system-auth', 'status'): 'ad SOSNADMIN.LOCAL ALT-TEST-PC1 SOSNADM',
+                   ('hostname', '-s'): 'alt-test-pc1', ('net', 'ads', 'testjoin'): 'Join is OK',
+                   ('net', '-P', 'ads', 'status'): 'sAMAccountName: ALT-TEST-PC1$\n',
+                   ('systemctl', 'is-active', 'sssd'): 'active',
+                   ('getent', 'passwd', 'synthetic.user@sosnadmin.local'): 'synthetic.user:*:123:123::/home/synthetic.user:/bin/bash'}
+        expected = ['net', '-P', 'ads', 'search', '(&(objectClass=computer)(sAMAccountName=alt-test-pc1$))',
+                    'objectGUID', 'objectSid', 'sAMAccountName', 'distinguishedName', 'dNSHostName']
+        if args[:4] == ['net', '-P', 'ads', 'search']:
+            assert args == expected
+            return subprocess.CompletedProcess(args, 0, identity, '')
+        return subprocess.CompletedProcess(args, 0, outputs[tuple(args)], '')
+    monkeypatch.setattr(subprocess, 'run', native)
+    monkeypatch.setattr(sys, 'argv', ['probe', 'synthetic.user', 'synthetic.user@sosnadmin.local'])
+    monkeypatch.setattr(Path, 'read_text', lambda self: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' if str(self).endswith('product_uuid') else 'root:x:0:0::/root:/bin/bash')
+    if reply_count == 2:
+        with pytest.raises(RuntimeError, match='ambiguous'):
+            exec(PROBE_SCRIPT, {'__name__': 'native_probe'})
+    else:
+        exec(PROBE_SCRIPT, {'__name__': 'native_probe'})
+        observed = json.loads(capsys.readouterr().out)
+        assert observed['computer_identity']['object_guid'] == '11111111-2222-4333-8444-555555555555'
+        assert observed['trust'] and observed['sssd'] and observed['user_lookup']
