@@ -216,7 +216,7 @@ chmod 0440 \
 visudo -cf \
     "/etc/sudoers.d/90-${ANSIBLE_USER}"
 
-if ! sudo -n -u "${ANSIBLE_USER}" true; then
+if ! runuser -u "${ANSIBLE_USER}" -- sudo -n true; then
     echo "ERROR: ansible passwordless sudo validation failed" >&2
     exit 1
 fi

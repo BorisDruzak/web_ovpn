@@ -26,5 +26,5 @@ def test_manual_bootstrap_validates_key_and_ansible_sudo() -> None:
 
     assert 'ssh-keygen -lf "${temporary}" -E sha256' in source
     assert 'visudo -cf' in source
-    assert 'sudo -n -u "${ANSIBLE_USER}" true' in source
+    assert 'runuser -u "${ANSIBLE_USER}" -- sudo -n true' in source
     assert 'ALT\\ Workstation\\ K\\ 11\\.' in source
