@@ -815,3 +815,14 @@ read-only baseline collector must approve stable original-policy fields without
 future import/startup receipts. The post-install observer then reproduces that
 projection; its full receipt is bound in the terminal intent. Implementing this
 baseline collector is the next prerequisite, not a completed live gate.
+
+## Pre-reservation baseline worker checkpoint
+
+The internal original-policy baseline worker now operates with fresh facts and
+empty conf.d, without requiring future import/startup evidence. Its stable
+projection matches the later original-policy observer; full post-only receipts
+remain terminal-intent evidence. It observes configured values and keeps defaults,
+running-policy and trust claims false. See the baseline verification report.
+Fixed transport/CLI and immutable source/target approval binding, reviewed ALT
+package/default/effect semantics and the terminal service lifecycle are still
+required. The worker closes the evidence cycle but does not authorize recovery.

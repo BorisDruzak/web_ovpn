@@ -163,3 +163,9 @@ Production coordinator должен явно передать genuine authority;
 не подтверждают runtime defaults; службы, snippet и credentials эта проверка не
 изменяет. Её source bundle и receipt ещё должны войти в отдельное подтверждение
 terminal handoff; сам возврат штатной политики пока не выполняется.
+
+Внутренний [baseline collector](verification/ALT_RECOVERY_POLICY_BASELINE_2026-10-12.md)
+теперь читает исходную конфигурацию до reservation, без будущих import/startup
+receipts. Стабильные поля сравниваются с поздним observer; runtime defaults и
+работа служб этим не подтверждаются. Фиксированный transport, операторская
+команда и привязка результата к immutable approval ещё требуют реализации.
