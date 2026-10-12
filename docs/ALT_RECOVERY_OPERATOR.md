@@ -9,6 +9,28 @@ playbook, command, root или vars-file через этот CLI выбрать 
 Readiness и свежих OR-3P3 backup/verify/rehearsal. Code/CI/read-only план не
 подтверждают выполненный recovery или acceptance реального рабочего места.
 
+## Диагностика отказа controller backup
+
+Новая версия backup добавляет к ошибке необязательный `diagnostic`: фиксированные
+`component` и `reason`, коды возврата tar/zstd либо `null` и ограниченный список
+`signals`. При отказе всей bundle `component` может быть `null`. Прежние code,
+message и exit code сохраняются. Native audit записывает безопасную структуру
+append-only; raw stderr, команды, пути и содержимое файлов не экспортируются.
+
+`signals` — только найденные текстовые признаки, они сами не доказывают RCA.
+Неизвестные ответы остаются UNKNOWN. Stderr ограничен 16 KiB для каждого процесса,
+capture имеет фиксированный deadline 120 секунд; при отказе оба процесса
+останавливаются перед ограниченными cleanup waits.
+
+Recovery сохраняет безопасный native failure summary отдельно, в защищённом
+`setup-recovery-backup-failures` внутри controller state. Exclusive artifact связан
+с reservation identity и выбранным recovery context; прежние attempt records и
+failure markers не заменяются. Ошибка записи диагностики не разрешает повтор.
+
+Диагностика не открывает recovery authority, replay или следующую попытку. Она
+не восстанавливает потерянную подпричину исторического отказа. Использование
+новой версии на контроллере требует отдельной штатной установки и разрешения.
+
 ## Операторский план и единственное подтверждённое выполнение
 
 ```sh

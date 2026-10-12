@@ -52,11 +52,12 @@ def _preflight(message: str) -> BackupError:
     )
 
 
-def _component_failure(message: str) -> BackupError:
+def _component_failure(message: str,reason='UNKNOWN') -> BackupError:
     return BackupError(
         code="backup_component_failed",
         message=message,
         exit_code=4,
+        diagnostic=dict(component=None,reason=reason,tar_returncode=None,zstd_returncode=None,signals=[]),
     )
 
 
@@ -409,7 +410,7 @@ class BackupRepository:
                     after = source_inventory(source_paths)
                     if after != before:
                         raise _component_failure(
-                            "Controller sources changed during backup capture"
+                            "Controller sources changed during backup capture",'controller_sources_changed'
                         )
                     manifest = BackupManifest(
                         schema_version=SCHEMA_VERSION,
@@ -446,7 +447,7 @@ class BackupRepository:
                         fsync_directory(self.settings.backup_root)
                     except (OSError, BackupError) as exc:
                         raise _component_failure(
-                            "Backup bundle publication failed"
+                            "Backup bundle publication failed",'bundle_publication_failed'
                         ) from exc
                     result = CreateResult(
                         backup_id=backup_id,

@@ -7,6 +7,9 @@ import pwd
 import secrets
 import stat
 import subprocess
+import selectors
+import time
+import math
 import tarfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -44,11 +47,12 @@ class ArchiveInspection:
     total_size: int
 
 
-def _component_error(message: str) -> BackupError:
+def _component_error(message: str,diagnostic=None) -> BackupError:
     return BackupError(
         code="backup_component_failed",
         message=message,
         exit_code=4,
+        diagnostic=diagnostic,
     )
 
 
@@ -75,6 +79,7 @@ def _safe_group(gid: int) -> str:
 
 
 class ArchiveEngine:
+    capture_timeout=120
     def __init__(self, settings: BackupSettings):
         self.settings = settings
 
@@ -241,11 +246,15 @@ class ArchiveEngine:
             ) from exc
         tar_process: subprocess.Popen[bytes] | None = None
         zstd_process: subprocess.Popen[bytes] | None = None
+        io_reason='archive_command_unavailable'
+        def diagnostic(reason,signals=None):
+            return dict(component=spec.name,reason=reason,tar_returncode=tar_process.poll() if tar_process else None,
+                zstd_returncode=zstd_process.poll() if zstd_process else None,signals=signals or [])
         try:
             tar_process = subprocess.Popen(
                 self._capture_argv(spec, list_path),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             if tar_process.stdout is None:
                 raise _component_error(
@@ -255,27 +264,48 @@ class ArchiveEngine:
                 [str(self.settings.zstd_path), "-q", "-c"],
                 stdin=tar_process.stdout,
                 stdout=descriptor,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             tar_process.stdout.close()
-            zstd_code = zstd_process.wait()
-            tar_code = tar_process.wait()
+            timeout=self.capture_timeout
+            if type(timeout) not in (int,float) or not math.isfinite(timeout) or not 0<timeout<=120:raise ValueError('Invalid fixed capture deadline')
+            deadline=time.monotonic()+timeout;buffers=[b'',b'']
+            # Keep both tools in the caller's process group so an outer native
+            # deadline also terminates this pipeline; never detach children.
+            with selectors.DefaultSelector() as selector:
+                for index,process in enumerate((tar_process,zstd_process)):
+                    os.set_blocking(process.stderr.fileno(),False)
+                    selector.register(process.stderr,selectors.EVENT_READ,index)
+                while selector.get_map() or any(p.poll() is None for p in (tar_process,zstd_process)):
+                    remaining=deadline-time.monotonic()
+                    if remaining<=0:raise _component_error('Component archive deadline exceeded',diagnostic('deadline_exceeded'))
+                    for key,_ in selector.select(min(0.1,remaining)):
+                        raw=os.read(key.fileobj.fileno(),4096)
+                        if not raw:selector.unregister(key.fileobj);key.fileobj.close();continue
+                        buffers[key.data]+=raw
+                        if len(buffers[key.data])>16384:raise _component_error('Component archive diagnostic limit exceeded',diagnostic('stderr_limit'))
+            tar_code=tar_process.wait(timeout=1);zstd_code=zstd_process.wait(timeout=1)
+            markers={'file_changed':b'file changed as we read it','permission_denied':b'Permission denied',
+                'no_space':b'No space left on device','cannot_stat':b'Cannot stat','file_removed':b'File removed before we read it'}
+            signals=sorted(name for name,marker in markers.items() if any(marker in data for data in buffers))
             if tar_code != 0 or zstd_code != 0:
                 raise _component_error(
-                    "Component archive command failed"
+                    "Component archive command failed",diagnostic('archive_command_failed',signals)
                 )
+            io_reason='archive_publication_failed'
             os.fsync(descriptor)
         except OSError as exc:
             raise _component_error(
-                "Component archive command cannot run"
+                "Component archive command cannot run",diagnostic(io_reason)
             ) from exc
         finally:
-            if tar_process is not None and tar_process.poll() is None:
-                tar_process.kill()
-                tar_process.wait()
-            if zstd_process is not None and zstd_process.poll() is None:
-                zstd_process.kill()
-                zstd_process.wait()
+            live=[p for p in (tar_process,zstd_process) if p is not None and p.poll() is None]
+            for process in live:process.kill()
+            for process in live:
+                try:process.wait(timeout=1)
+                except subprocess.TimeoutExpired:pass
+            for process in (tar_process,zstd_process):
+                if process is not None and process.stderr is not None:process.stderr.close()
             os.close(descriptor)
 
     @staticmethod
@@ -325,19 +355,20 @@ class ArchiveEngine:
         destination: Path,
     ) -> ComponentRecord:
         assert_safe_parents(destination)
+        destination_diagnostic=dict(component=spec.name,reason='archive_destination_failed',tar_returncode=None,zstd_returncode=None,signals=[])
         try:
             parent = destination.parent.lstat()
         except OSError as exc:
             raise _component_error(
-                "Component destination parent is unavailable"
+                "Component destination parent is unavailable",destination_diagnostic
             ) from exc
         if not stat.S_ISDIR(parent.st_mode):
             raise _component_error(
-                "Component destination parent is unsafe"
+                "Component destination parent is unsafe",destination_diagnostic
             )
         if destination.exists() or destination.is_symlink():
             raise _component_error(
-                "Component destination already exists"
+                "Component destination already exists",destination_diagnostic
             )
 
         present_paths = tuple(
@@ -353,17 +384,19 @@ class ArchiveEngine:
         )
         published = False
         completed = False
+        failure_stage='archive_publication_failed'
         try:
             self._run_capture_pipeline(spec, list_path, temporary)
             after = source_inventory(present_paths)
             if after != before:
                 raise _component_error(
-                    "Component sources changed during capture"
+                    "Component sources changed during capture",dict(component=spec.name,reason='source_changed',tar_returncode=None,zstd_returncode=None,signals=[])
                 )
             os.replace(temporary, destination)
             published = True
             os.chmod(destination, 0o600)
             fsync_directory(destination.parent)
+            failure_stage='archive_hash_failed'
             size, digest = self._file_digest(destination)
             record = ComponentRecord(
                 name=spec.name,
@@ -379,11 +412,20 @@ class ArchiveEngine:
             )
             completed = True
             return record
-        except BackupError:
+        except BackupError as exc:
+            if exc.code=='backup_component_failed' and exc.diagnostic is None:
+                reasons={'Temporary component archive cannot be created':'archive_destination_failed',
+                    'Component archive cannot be opened safely':'archive_hash_failed',
+                    'Component archive is not a regular file':'archive_hash_failed',
+                    'Component archive changed while hashing':'archive_hash_failed',
+                    'Component destination parent is unavailable':'archive_destination_failed',
+                    'Component destination parent is unsafe':'archive_destination_failed',
+                    'Component destination already exists':'archive_destination_failed'}
+                exc.diagnostic=dict(component=spec.name,reason=reasons.get(exc.message,'UNKNOWN'),tar_returncode=None,zstd_returncode=None,signals=[])
             raise
         except OSError as exc:
             raise _component_error(
-                "Component archive publication failed"
+                "Component archive publication failed",dict(component=spec.name,reason=failure_stage,tar_returncode=None,zstd_returncode=None,signals=[])
             ) from exc
         finally:
             for cleanup_path in (list_path, temporary):

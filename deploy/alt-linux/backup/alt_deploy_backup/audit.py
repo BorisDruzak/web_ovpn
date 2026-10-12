@@ -5,7 +5,7 @@ import os
 import stat
 from datetime import datetime, timezone
 
-from .errors import BackupError
+from .errors import BackupError,validated_diagnostic
 from .fs import assert_safe_parents
 from .settings import BackupSettings
 
@@ -20,6 +20,7 @@ _ALLOWED_FIELDS = frozenset(
         "checks",
         "status",
         "result",
+        "diagnostic",
     }
 )
 _MAX_RECORD_BYTES = 8192
@@ -85,7 +86,10 @@ class AuditLog:
             raise _invalid("Backup audit event is invalid")
         if set(safe_fields) - _ALLOWED_FIELDS:
             raise _invalid("Backup audit field is not allowed")
-        if not all(_bounded(value) for value in safe_fields.values()):
+        if 'diagnostic' in safe_fields:
+            try:safe_fields['diagnostic']=validated_diagnostic(safe_fields['diagnostic'])
+            except (ValueError,TypeError):raise _invalid('Backup diagnostic is invalid') from None
+        if not all(key=='diagnostic' or _bounded(value) for key,value in safe_fields.items()):
             raise _invalid("Backup audit value is invalid")
         for value in (
             self.operation_id,

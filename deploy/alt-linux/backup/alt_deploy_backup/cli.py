@@ -267,6 +267,7 @@ def main(
                     "command_failed",
                     status="error",
                     error_code=exc.code,
+                    **({'diagnostic':exc.to_dict()['error']['diagnostic']} if exc.diagnostic is not None else {}),
                 )
             except BackupError as audit_error:
                 exc = audit_error
