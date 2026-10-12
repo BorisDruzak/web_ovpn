@@ -751,8 +751,11 @@ report. Explicit optional user approval scope now requires native selection,
 pins all fourteen sources and original NSS dependencies, and keeps old
 approvals unchanged. The combined native gate checks enabled employee identity
 before/after through the pinned postwrite directory and ends directory callbacks
-with protected local context rereads. Fixed user wire/controller binding,
-terminal handoff and the operational coordinator remain unfinished.
+with protected local context rereads. Fixed user wire now verifies bounded
+duplicate-free envelope/module hashes, startup/native proof links and employee
+form before source execution, with fixed check/verify actions only. Controller
+binding/transport execution, terminal handoff and the operational coordinator
+remain unfinished; the wire builder supplies no authority.
 
 **Files:** Extend `setup_recovery.py`, `setup.py`, `setup_assignments.py`, and `tests/alt_linux/test_setup_service.py`; update operator/error documentation.
 
