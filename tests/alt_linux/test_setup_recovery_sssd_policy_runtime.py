@@ -34,7 +34,7 @@ def test_once_only_policy_transport_and_retained_verify(tmp_path):
     for option in ('StrictHostKeyChecking=yes','BatchMode=yes','IdentitiesOnly=yes','ProxyJump=none','ProxyCommand=none'):
         assert option in command
     wire=json.loads(options['input_text']);request=wire['request']
-    assert set(wire)=={'request','service_request','service_receipt'}
+    assert set(wire)=={'request','service_request','service_receipt','_worker'}
     assert request['source_sha256']==digest(runtime._sources())
     assert request['kerberos_request']['source_sha256']==digest(previous._sources())
     assert request['kerberos_request']['import_request']['source_sha256']==digest(previous.import_runtime._sources())
@@ -159,9 +159,11 @@ original_verify = policy.verify
 policy.verify = lambda request,**kw: original_verify(request,root=fixture_root,owner=0,**kw)
 '''
         program=program.replace('try:\n    raw = sys.stdin.buffer.read',injection+'try:\n    raw = sys.stdin.buffer.read',1)
+        from alt_deploy.setup_recovery_source_stdin import build_source_stdin
+        program,encoded=build_source_stdin(program,wire)
         output=io.StringIO()
         with monkeypatch.context() as patched,contextlib.redirect_stdout(output):
-            patched.setattr(sys,'stdin',type('Input',(),{'buffer':io.BytesIO(json.dumps(wire).encode())})())
+            patched.setattr(sys,'stdin',type('Input',(),{'buffer':io.BytesIO(encoded.encode())})())
             try:
                 exec(compile(program,'<fixed-policy-worker>','exec'),dict(fixture_collect=args['collect'],
                     fixture_runner=args['runner'],fixture_root=args['root'],fixture_snapshot=snapshot))

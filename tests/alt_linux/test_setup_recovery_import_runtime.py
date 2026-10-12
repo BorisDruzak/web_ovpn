@@ -69,7 +69,7 @@ def test_once_only_fixed_import_and_readonly_verify(tmp_path):
     for option in ('StrictHostKeyChecking=yes','BatchMode=yes','IdentitiesOnly=yes','ProxyJump=none','ProxyCommand=none'):
         assert option in command
     assert PASSWORD not in str(command) and PASSWORD not in str(receipt)
-    assert set(json.loads(options['input_text']))=={'request','service_request','service_receipt','password'}
+    assert set(json.loads(options['input_text']))=={'request','service_request','service_receipt','password','_worker'}
     compile(shlex.split(command[-1])[-1],'<fixed-import-worker>','exec')
     with pytest.raises(ControlError):runtime.install_once('plan','a'*64)
     assert len(calls)==1
@@ -172,7 +172,8 @@ def test_generated_worker_uses_real_isolated_importer_and_checks_units_between_w
             return service_runner(command,**options)
         return data['runner'](command,**options)
     def execute(command,**options):
-        program=shlex.split(command[-1])[-1]
+        frame=json.loads(options['input_text'])
+        program=frame.pop('_worker')
         injection='''probe.collect = fixture_collect
 process.bounded_recovery_run = fixture_runner
 original_snapshot = services.snapshot
@@ -186,7 +187,8 @@ importer.verify = lambda request,**kw: original_verify(request,root=fixture_root
 '''
         program=program.replace('try:\n    raw = sys.stdin.buffer.read',injection+'try:\n    raw = sys.stdin.buffer.read',1)
         output=io.StringIO()
-        wire=options['input_text']
+        from alt_deploy.setup_recovery_source_stdin import build_source_stdin
+        program,wire=build_source_stdin(program,frame)
         if drift=='wire':
             value=json.loads(wire);value['request']['directory_result']['computer_guid']='ffffffff-ffff-ffff-ffff-ffffffffffff'
             wire=json.dumps(value)

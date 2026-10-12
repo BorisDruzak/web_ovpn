@@ -52,7 +52,7 @@ def test_fixed_service_transport_has_no_operator_command_or_secret(tmp_path, act
     assert command[-2]=='ansible@192.0.2.10' and '-I -B -c' in command[-1]
     assert options['timeout']==360 and 'SYNTHETIC_SECRET' not in str(result)
     wire=json.loads(options['input_text'])
-    assert set(wire)==({'backup_request','backup_receipt','source_sha256'} if action=='capture_services' else {'request'})
+    assert set(wire)==(({'backup_request','backup_receipt','source_sha256'} if action=='capture_services' else {'request'})|{'_worker'})
     assert 'SYNTHETIC_SECRET' not in options['input_text']
     compile(shlex.split(command[-1])[-1],'<fixed-services-wire>','exec')
     assert result==snapshot if action=='capture_services' else result['status']=='services_quiesced'
@@ -104,7 +104,7 @@ def test_generated_stop_and_verify_workers_use_real_isolated_producers(tmp_path,
     shutil.copytree(tmp_path/'usr',root/'usr',dirs_exist_ok=True)
     service_runner=data['runner']
     def execute(command,**options):
-        program=shlex.split(command[-1])[-1]
+        frame=json.loads(options['input_text']);program=frame.pop('_worker')
         injection='''probe.collect = fixture_collect
 original_snapshot = services.snapshot
 original_quiesce = services.quiesce_once
@@ -116,9 +116,11 @@ original_backup_verify = backup.verify
 backup.verify = lambda request,**kw: original_backup_verify(request,root=fixture_root,owner=fixture_owner)
 '''
         program=program.replace('try:\n    raw = sys.stdin.buffer.read',injection+'try:\n    raw = sys.stdin.buffer.read',1)
+        from alt_deploy.setup_recovery_source_stdin import build_source_stdin
+        program,encoded=build_source_stdin(program,frame)
         output=io.StringIO()
         with monkeypatch.context() as patch,contextlib.redirect_stdout(output):
-            patch.setattr(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(options['input_text'].encode())))
+            patch.setattr(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(encoded.encode())))
             exec(compile(program,'<fixed-services-worker>','exec'),{'fixture_collect':collect,
                 'fixture_runner':service_runner,'fixture_root':root,'fixture_owner':os.geteuid()})
         return 0,output.getvalue(),''

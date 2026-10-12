@@ -48,7 +48,7 @@ def test_once_only_bound_proof_and_readonly_retained_verification(tmp_path):
     assert receipt['trust_verified'] is False and receipt['status']=='machine_keytab_authenticated'
     command,options=calls[0]
     assert command[:3]==['/usr/bin/ssh','-F','/dev/null'] and command[-2]=='ansible@192.0.2.10'
-    assert set(json.loads(options['input_text']))=={'request','service_request','service_receipt'}
+    assert set(json.loads(options['input_text']))=={'request','service_request','service_receipt','_worker'}
     request=json.loads(options['input_text'])['request']
     assert request['import_request']['source_sha256']==digest(imported._sources())
     assert request['source_sha256']==digest(runtime._sources())
@@ -158,9 +158,11 @@ original_verify = kerberos.verify
 kerberos.verify = lambda request,**kw: original_verify(request,root=fixture_root,owner=0,**kw)
 '''
         program=program.replace('try:\n    raw = sys.stdin.buffer.read',injection+'try:\n    raw = sys.stdin.buffer.read',1)
+        from alt_deploy.setup_recovery_source_stdin import build_source_stdin
+        program,encoded=build_source_stdin(program,wire)
         output=io.StringIO()
         with monkeypatch.context() as patched,contextlib.redirect_stdout(output):
-            patched.setattr(sys,'stdin',type('Input',(),{'buffer':io.BytesIO(json.dumps(wire).encode())})())
+            patched.setattr(sys,'stdin',type('Input',(),{'buffer':io.BytesIO(encoded.encode())})())
             try:
                 exec(compile(program,'<fixed-kerberos-worker>','exec'),dict(fixture_collect=data['collect'],
                     fixture_runner=native_runner,fixture_root=data['root'],fixture_now=NOW,fixture_snapshot=snapshot))

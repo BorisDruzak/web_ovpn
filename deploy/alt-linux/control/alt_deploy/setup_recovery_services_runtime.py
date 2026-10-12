@@ -10,6 +10,7 @@ from pathlib import Path
 import shlex
 
 from .ad_directory import fail
+from .setup_recovery_source_stdin import build, MAX_REPLY_BYTES
 from .setup_plans import canonical, decode_state_bytes, digest
 from .setup_recovery import _pair
 from .setup_recovery_backup_runtime import RecoveryWorkstationBackupRuntime
@@ -30,6 +31,7 @@ class RecoveryServicesRuntime(RecoveryWorkstationBackupRuntime):
 
     def _services(self, action, machine, failed_run_id, computer_guid, backup_request, backup_receipt, snapshot=None):
         try:
+            if action not in ('capture','quiesce','verify'):raise ValueError
             pair = _pair(failed_run_id, computer_guid)
             identity = self.credentials._reservation(**pair)
             address = str(ipaddress.ip_address(machine.ip))
@@ -94,6 +96,7 @@ except Exception:
     print(json.dumps({"schema_version": 1, "error_code": "recovery_services_failed"}))
     sys.exit(1)
 '''
+            script,wire=build(script,wire)
             command = ['/usr/bin/ssh', '-F', '/dev/null', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
                 '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=10',
                 '-o', 'UserKnownHostsFile=' + str(self.settings.known_hosts_file), '-i', str(self.settings.private_key_file),
@@ -104,7 +107,7 @@ except Exception:
                 raise ValueError
             rc, stdout, _ = self.runner(command, environment={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'},
                 input_text=wire, timeout=360)
-            if rc:
+            if type(rc) is not int or rc != 0 or not isinstance(stdout,str) or len(stdout.encode())>MAX_REPLY_BYTES:
                 raise ValueError
             result = decode_state_bytes(stdout.encode('utf-8'))
             if action == 'capture':

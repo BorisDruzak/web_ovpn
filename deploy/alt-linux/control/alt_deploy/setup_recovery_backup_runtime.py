@@ -6,18 +6,19 @@ import shlex
 from pathlib import Path
 
 from .ad_directory import fail
+from .setup_recovery_source_stdin import build, MAX_REPLY_BYTES
 from .errors import ControlError
 from .setup_plans import canonical, decode_state_bytes, digest
 from .setup_recovery import _pair
 from .setup_recovery_backup import _request
 from .setup_recovery_credential import RecoveryCredentialStore, RecoveryVaultCodec
-from .setup_recovery_process import bounded_recovery_run
+from .setup_recovery_process import bounded_bundle_run
 from .setup_recovery_runtime import RecoveryPlanningRuntime, _read_source
 
 
 class RecoveryWorkstationBackupRuntime(RecoveryPlanningRuntime):
     def __init__(self, settings, *, runner=None, credentials=None):
-        super().__init__(settings, runner=runner or bounded_recovery_run)
+        super().__init__(settings, runner=bounded_bundle_run if runner is None else runner)
         self.credentials = credentials or RecoveryCredentialStore(settings.state_root, codec=RecoveryVaultCodec(settings))
 
     def create_backup(self, machine, failed_run_id, computer_guid, facts):
@@ -42,6 +43,7 @@ class RecoveryWorkstationBackupRuntime(RecoveryPlanningRuntime):
 
     def _backup(self, action, machine, failed_run_id, computer_guid, facts):
         try:
+            if action not in ('create','verify'):raise ValueError
             address = str(ipaddress.ip_address(machine.ip))
             pair = _pair(failed_run_id, computer_guid)
             identity = self.credentials._reservation(**pair)
@@ -85,6 +87,7 @@ except Exception:
     print(json.dumps({"schema_version": 1, "error_code": "recovery_backup_failed"}))
     sys.exit(1)
 '''
+        script,wire=build(script,wire)
         command = ['/usr/bin/ssh', '-F', '/dev/null', '-o', 'BatchMode=yes',
             '-o', 'StrictHostKeyChecking=yes', '-o', 'ProxyCommand=none', '-o', 'ProxyJump=none',
             '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=10',
@@ -94,7 +97,7 @@ except Exception:
         try:
             rc, stdout, _ = self.runner(command, environment={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'},
                 input_text=wire, timeout=360)
-            if rc: raise ValueError
+            if type(rc) is not int or rc != 0 or not isinstance(stdout,str) or len(stdout.encode())>MAX_REPLY_BYTES: raise ValueError
             result = decode_state_bytes(stdout.encode('utf-8'))
             expected = {key: request[key] for key in ('schema_version', 'failed_run_id', 'computer_guid',
                 'claim_sha256', 'machine_uuid', 'snapshot_sha256', 'source_sha256')}

@@ -99,7 +99,7 @@ def test_generated_worker_executes_create_and_verify_in_isolated_fixture(tmp_pat
     runtime,machine,request,calls,_,_=scenario(tmp_path)
     collector,native_runner=runtime._fixture_collector,runtime._fixture_native_runner
     def execute(command,**kwargs):
-        program=shlex.split(command[-1])[-1]
+        frame=json.loads(kwargs['input_text']);program=frame.pop('_worker')
         inject='''probe.collect = fixture_collect
 original_create = rehearsal.create
 original_verify = rehearsal.verify
@@ -109,9 +109,11 @@ rehearsal.verify = lambda request,**kw: original_verify(request,backup=backup,co
         program=program.replace('try:\n    raw = sys.stdin.buffer.read',inject+'try:\n    raw = sys.stdin.buffer.read',1)
         scope={'__name__':'fixture_worker','fixture_collect':collector,'fixture_runner':native_runner,
                'fixture_root':tmp_path,'fixture_owner':os.geteuid()}
+        from alt_deploy.setup_recovery_source_stdin import build_source_stdin
+        program,encoded=build_source_stdin(program,frame)
         captured=io.StringIO()
         with monkeypatch.context() as patch,contextlib.redirect_stdout(captured):
-            patch.setattr(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(kwargs['input_text'].encode())))
+            patch.setattr(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(encoded.encode())))
             exec(compile(program,'<fixed-rehearsal-worker>','exec'),scope)
         return 0,captured.getvalue(),''
     runtime.runner=execute

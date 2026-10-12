@@ -20,7 +20,7 @@ def scenario(tmp_path, **changes):
     calls = []
     def runner(command, **kwargs):
         calls.append((command, kwargs))
-        wire = json.loads(kwargs['input_text'])
+        wire = json.loads(kwargs['input_text']); wire.pop('_worker')
         assert 'SYNTHETIC_SECRET_CONTENT' not in kwargs['input_text']
         receipt = {key: wire[key] for key in ('schema_version', 'failed_run_id', 'computer_guid',
             'claim_sha256', 'machine_uuid', 'snapshot_sha256', 'source_sha256')}
@@ -50,7 +50,7 @@ def test_fixed_backup_transport_binds_claim_target_sources_and_manifest(tmp_path
     compile(shlex.split(command[-1])[-1], '<fixed-backup-wire>', 'exec')
     assert 'SYNTHETIC_SECRET' not in str(receipt)
     assert receipt['claim_sha256'] == identity['claim_sha256']
-    assert ('["create"]' if method == 'create_backup' else '["verify"]') in command[-1]
+    assert ('["create"]' if method == 'create_backup' else '["verify"]') in json.loads(options['input_text'])['_worker']
 
 
 @pytest.mark.parametrize('changed', ['claim_sha256', 'machine_uuid', 'snapshot_sha256', 'source_sha256', 'backup_id', 'manifest_sha256'])
@@ -93,15 +93,17 @@ def test_generated_worker_creates_and_verifies_only_isolated_fixture(tmp_path, m
     runtime, machine, facts, calls, identity = scenario(tmp_path)
     fixed_collect = runtime._fixture_collect
     def execute(command, **options):
-        script = shlex.split(command[-1])[-1]
+        frame=json.loads(options['input_text']); script=frame.pop('_worker')
         # Test-only fixture injection. Production wire has neither alternate
         # roots nor collector selection in its JSON request or command.
         fixture_setup = ('probe["collect"] = fixed_collect\n'
             'for name in ("create", "verify"):\n'
             '    backup[name].__kwdefaults__.update(root=fixture_root, owner=fixture_owner)\n')
         script = script.replace('try:\n    raw =', fixture_setup + 'try:\n    raw =', 1)
+        from alt_deploy.setup_recovery_source_stdin import build_source_stdin
+        script,encoded=build_source_stdin(script,frame)
         output = io.StringIO()
-        monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(options['input_text'].encode())))
+        monkeypatch.setattr(sys, 'stdin', SimpleNamespace(buffer=io.BytesIO(encoded.encode())))
         with redirect_stdout(output):
             exec(compile(script, '<isolated-wire>', 'exec'), {'fixed_collect': fixed_collect,
                 'fixture_root': tmp_path, 'fixture_owner': os.geteuid()})

@@ -11,6 +11,8 @@ import re
 import shlex
 
 from .ad_directory import fail
+from .setup_recovery_source_stdin import build_source_stdin, MAX_REPLY_BYTES
+from .setup_recovery_process import bounded_bundle_run
 from .locking import exclusive_lock
 from .setup_plans import canonical, decode_state_bytes, digest, private_read
 from .setup_recovery import RecoveryAttemptStore, _pair
@@ -28,7 +30,7 @@ NAMES=('probe','backup','native','process','rehearsal','keytab','import','servic
 
 class RecoveryImportRuntime(RecoveryWorkstationBackupRuntime):
     def __init__(self, settings, *, postwrite, runner=None):
-        super().__init__(settings,runner=runner,credentials=postwrite.service_gate.preparation.credentials)
+        super().__init__(settings,runner=bounded_bundle_run if runner is None else runner,credentials=postwrite.service_gate.preparation.credentials)
         self.postwrite=postwrite
         self.attempts=RecoveryAttemptStore(settings.state_root)
 
@@ -89,6 +91,7 @@ class RecoveryImportRuntime(RecoveryWorkstationBackupRuntime):
 
     @staticmethod
     def _script(action,sources,source_sha,wire_hashes):
+        if action not in ('install','verify') or len(sources)!=len(NAMES):raise ValueError
         script='import json, sys, types\n'
         for name,source in zip(NAMES,sources):
             alias='importer' if name=='import' else name
@@ -160,15 +163,14 @@ except Exception:
                 if private_read(intent_path)!=intended:raise ValueError
             if self._context(plan_id,confirmed_sha)!=context or private_read(intent_path)!=intended:raise ValueError
             hashes={key:digest(context[key]) for key in ('request','service_request','service_receipt')}
-            script=self._script(action,context['sources'],request['source_sha256'],hashes)
-            encoded=canonical(wire).decode('utf-8')
-            if len(encoded.encode('utf-8'))>131072:raise ValueError
+            worker=self._script(action,context['sources'],request['source_sha256'],hashes)
+            script,encoded=build_source_stdin(worker,wire)
             command=['/usr/bin/ssh','-F','/dev/null','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
                 '-o','ProxyCommand=none','-o','ProxyJump=none','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10',
                 '-o','UserKnownHostsFile='+str(self.settings.known_hosts_file),'-i',str(self.settings.private_key_file),
                 'ansible@'+context['address'],'sudo -n /usr/bin/python3 -I -B -c '+shlex.quote(script)]
             rc,out,_=self.runner(command,environment={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'},input_text=encoded,timeout=360)
-            if type(rc) is not int or rc!=0:raise ValueError
+            if type(rc) is not int or rc!=0 or not isinstance(out,str) or len(out.encode())>MAX_REPLY_BYTES:raise ValueError
             result=decode_state_bytes(out.encode('utf-8'));self._receipt(request,result)
             if self._context(plan_id,confirmed_sha)!=context or private_read(intent_path)!=intended:raise ValueError
             if action=='install':RecoveryControllerBackup._persist(result_path,result)

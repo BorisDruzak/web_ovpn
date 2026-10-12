@@ -10,6 +10,7 @@ import re
 import shlex
 
 from .ad_directory import fail
+from .setup_recovery_source_stdin import build_source_stdin, MAX_REPLY_BYTES
 from .locking import exclusive_lock
 from .setup_plans import canonical,decode_state_bytes,digest,private_read
 from .setup_recovery_controller_backup import RecoveryControllerBackup
@@ -25,7 +26,7 @@ NAMES=KERBEROS_NAMES+('sssd_policy',)
 class RecoverySSSDPolicyRuntime:
     def __init__(self,*,kerberos_runtime,runner=None):
         self.kerberos_runtime=kerberos_runtime;self.settings=kerberos_runtime.settings
-        self.attempts=kerberos_runtime.attempts;self.runner=runner or kerberos_runtime.runner
+        self.attempts=kerberos_runtime.attempts;self.runner=kerberos_runtime.runner if runner is None else runner
 
     def _sources(self):
         path=Path(__file__).parent/'setup_recovery_sssd_policy.py'
@@ -128,16 +129,15 @@ except Exception:
                 self._receipt(request,private_read(result_path))
             wire={key:context[key] for key in ('request','service_request','service_receipt')}
             hashes={key:digest(value) for key,value in wire.items()}
-            script=self._script(action,context['sources'],request['source_sha256'],hashes)
-            encoded=canonical(wire).decode('utf-8')
-            if len(encoded.encode('utf-8'))>131072:raise ValueError
+            worker=self._script(action,context['sources'],request['source_sha256'],hashes)
+            script,encoded=build_source_stdin(worker,wire)
             command=['/usr/bin/ssh','-F','/dev/null','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
                 '-o','ProxyCommand=none','-o','ProxyJump=none','-o','IdentitiesOnly=yes','-o','ConnectTimeout=10',
                 '-o','UserKnownHostsFile='+str(self.settings.known_hosts_file),'-i',str(self.settings.private_key_file),
                 'ansible@'+context['address'],'sudo -n /usr/bin/python3 -I -B -c '+shlex.quote(script)]
             if self._context(plan_id,confirmed_sha)!=context or private_read(intent_path)!=intended:raise ValueError
             rc,out,_=self.runner(command,environment={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'},input_text=encoded,timeout=360)
-            if type(rc) is not int or rc!=0:raise ValueError
+            if type(rc) is not int or rc!=0 or not isinstance(out,str) or len(out.encode())>MAX_REPLY_BYTES:raise ValueError
             result=decode_state_bytes(out.encode('utf-8'));self._receipt(request,result)
             if self._context(plan_id,confirmed_sha)!=context or private_read(intent_path)!=intended:raise ValueError
             if action=='install':RecoveryControllerBackup._persist(result_path,result)
