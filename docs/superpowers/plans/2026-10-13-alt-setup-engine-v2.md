@@ -18,7 +18,7 @@ strict SSH, private atomic JSON state and pytest on Linux. No new database/broke
 
 **Spec:** `docs/superpowers/specs/2026-10-13-alt-setup-engine-v2-design.md`
 **Baseline:** `3935bad3ab728c886f8f7dca2f93e5baa3ed16f9`
-**Execution:** Pending plan review/method selection; recommend inline in this chat.
+**Execution:** User approved this plan and inline execution in this chat on 2026-10-13.
 
 ## Global constraints
 

@@ -105,3 +105,151 @@ software_catalog:
     architecture: x86_64
     installer_filename: Gosplugin_Alt-RedOS_Installer.rpm.sh
     payload_filename: gosuslugi-plugin-1.3.42.0-1.x86_64.rpm
+
+# Published Setup declarations. Never supplied by the operator at runtime.
+setup_catalog:
+  schema_version: 1
+  version: 1
+  components:
+    - id: system.base
+      version: 1
+      name: ALT system baseline
+      category: system
+      supported_os: [alt-kworkstation-11]
+      dependencies: []
+      execution: {role: workstation_base, operation: configure, scope: system, requires_domain: false, requires_user_home: false, requires_reboot: false, retry_policy: guarded}
+      preflight: {recipe: system}
+      verification: {recipe: system_base, functional_verification_required: false}
+    - id: domain.ready
+      version: 1
+      name: Protected domain and GPO stage
+      category: domain
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base]
+      execution: {adapter: legacy_domain_critical, operation: protected_critical, scope: system, requires_domain: false, requires_user_home: false, requires_reboot: true, retry_policy: non_replayable}
+      preflight: {recipe: identity}
+      verification: {recipe: domain, functional_verification_required: false}
+    - id: desktop.plasma
+      version: 1
+      name: Plasma baseline
+      category: desktop
+      supported_os: [alt-kworkstation-11]
+      dependencies: [domain.ready]
+      execution: {role: plasma_baseline, operation: configure, scope: system_and_user, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: identity}
+      verification: {recipe: plasma, functional_verification_required: false}
+    - id: software.browser
+      version: 1
+      name: Yandex Browser
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_browser, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: browser}
+      verification: {recipe: package, functional_verification_required: false}
+    - id: software.onlyoffice
+      version: 1
+      name: ONLYOFFICE Desktop
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_onlyoffice, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: onlyoffice}
+      verification: {recipe: package, functional_verification_required: false}
+    - id: software.nextcloud
+      version: 1
+      name: Nextcloud Desktop
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_nextcloud_desktop, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: nextcloud_desktop}
+      verification: {recipe: package, functional_verification_required: false}
+    - id: software.directum
+      version: 1
+      name: Directum WebAccessAgent
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_directum, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: directum}
+      verification: {recipe: package, functional_verification_required: true}
+    - id: software.cryptopro
+      version: 1
+      name: CryptoPro CSP
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_cryptopro, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: cryptopro}
+      verification: {recipe: package, functional_verification_required: true}
+    - id: software.cades
+      version: 1
+      name: CAdES Browser Plugin
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [software.cryptopro]
+      execution: {role: software_cryptopro_cades, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: cryptopro_cades}
+      verification: {recipe: package, functional_verification_required: true}
+    - id: software.gosplugin
+      version: 1
+      name: GosPlugin
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_gosuslugi_plugin, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: gosuslugi_plugin}
+      verification: {recipe: package, functional_verification_required: true}
+    - id: certificates.government
+      version: 1
+      name: Government certificate authorities
+      category: certificates
+      supported_os: [alt-kworkstation-11]
+      dependencies: [domain.ready]
+      execution: {role: government_ca, operation: configure, scope: system_and_user, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: government_ca}
+      verification: {recipe: government_ca, functional_verification_required: false}
+    - id: desktop.shortcuts
+      version: 1
+      name: Application shortcuts and Nextcloud autostart
+      category: desktop
+      supported_os: [alt-kworkstation-11]
+      dependencies: [domain.ready, software.browser, software.onlyoffice, software.nextcloud]
+      execution: {role: desktop_shortcuts, operation: configure, scope: system_and_user, requires_domain: true, requires_user_home: true, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: user_home}
+      verification: {recipe: shortcuts, functional_verification_required: false}
+    - id: remote.krfb
+      version: 1
+      name: Opt-in KRFB remote access
+      category: remote_access
+      supported_os: [alt-kworkstation-11]
+      dependencies: [domain.ready]
+      execution: {role: remote_access_krfb, operation: configure, scope: user, requires_domain: true, requires_user_home: true, requires_reboot: false, retry_policy: guarded}
+      preflight: {recipe: krfb}
+      verification: {recipe: krfb, functional_verification_required: true}
+  profiles:
+    - id: base
+      version: 1
+      name: Legacy base
+      components: [system.base, domain.ready, desktop.plasma, certificates.government]
+      optional_components: [remote.krfb]
+      confirmation_policy: sha256
+    - id: core-apps
+      version: 1
+      name: Legacy core applications with signature suite
+      components: [system.base, domain.ready, desktop.plasma, software.browser, software.onlyoffice, software.nextcloud, software.directum, software.cryptopro, software.cades, software.gosplugin, certificates.government, desktop.shortcuts]
+      optional_components: [remote.krfb]
+      confirmation_policy: sha256
+    - id: office-standard-v1
+      version: 1
+      name: Office standard without signature suite
+      components: [system.base, domain.ready, desktop.plasma, software.browser, software.onlyoffice, software.nextcloud, software.directum, certificates.government, desktop.shortcuts]
+      optional_components: [remote.krfb]
+      confirmation_policy: sha256
+    - id: office-signature-v1
+      version: 1
+      name: Office with signature suite
+      components: [system.base, domain.ready, desktop.plasma, software.browser, software.onlyoffice, software.nextcloud, software.directum, software.cryptopro, software.cades, software.gosplugin, certificates.government, desktop.shortcuts]
+      optional_components: [remote.krfb]
+      confirmation_policy: sha256
