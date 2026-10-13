@@ -1,25 +1,33 @@
 ---
-- name: Select fixed software components for the requested profile
-  ansible.builtin.set_fact:
-    selected_software_components: >-
-      {{ {
-        'base': [],
-        'core-apps': ['browser', 'onlyoffice', 'nextcloud_desktop', 'directum', 'cryptopro', 'cryptopro_cades', 'gosuslugi_plugin']
-      }.get(software_profile, []) }}
+- name: Load the published component and artifact registry
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../group_vars/software_catalog.yml"
+    name: approved_software_catalog
 
-- name: Assert supported component preflight profiles
+- name: Derive the selected profile or single component from the validated registry
+  ansible.builtin.set_fact:
+    setup_selected_catalog: "{{ approved_software_catalog | alt_setup_selection(software_profile, setup_component_id | default('')) }}"
+
+- name: Select published software keys and their approved roles
+  ansible.builtin.set_fact:
+    selected_software_components: "{{ setup_selected_catalog.selected_software_components }}"
+    software_component_role_map: "{{ setup_selected_catalog.software_component_role_map }}"
+
+- name: Assert supported remote access profile
   ansible.builtin.assert:
     that:
-      - software_profile in ['base', 'core-apps']
       - remote_access_profile in ['none', 'krfb']
     fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
 
-- name: Assert selected software catalog is available
+- name: Require all selected artifact contracts to equal the published registry
   ansible.builtin.assert:
     that:
       - software_catalog is mapping
+      - software_catalog[selected_component] == approved_software_catalog.software_catalog[selected_component]
     fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
-  when: selected_software_components | length > 0
+  loop: "{{ selected_software_components }}"
+  loop_control:
+    loop_var: selected_component
 
 - name: Assert selected software catalog entries are enabled and complete
   ansible.builtin.assert:
@@ -58,68 +66,6 @@
   loop_control:
     loop_var: selected_component
 
-- name: Assert the fixed browser contract before any component mutation
-  ansible.builtin.assert:
-    that:
-      - software_catalog.browser.source == 'rpm'
-      - software_catalog.browser.artifact_path == '/opt/alt-deploy-control/artifacts/yandex-browser/Yandex.rpm'
-      - software_catalog.browser.package_name == 'yandex-browser-stable'
-      - software_catalog.browser.package_evr == '26.4.4.968-1'
-      - software_catalog.browser.architecture == 'x86_64'
-      - software_catalog.browser.executable == '/usr/bin/yandex-browser-stable'
-    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
-  when: "'browser' in selected_software_components"
-
-- name: Assert the fixed OnlyOffice contract before any component mutation
-  ansible.builtin.assert:
-    that:
-      - software_catalog.onlyoffice.source == 'rpm'
-      - software_catalog.onlyoffice.artifact_path == '/opt/alt-deploy-control/artifacts/onlyoffice/onlyoffice-desktopeditors-9.4.0-epm1.repacked.130.x86_64.rpm'
-      - software_catalog.onlyoffice.package_name == 'onlyoffice-desktopeditors'
-      - software_catalog.onlyoffice.package_evr == '9.4.0-epm1.repacked.130'
-      - software_catalog.onlyoffice.package_epoch | default(-1) == 100
-      - software_catalog.onlyoffice.architecture == 'x86_64'
-      - software_catalog.onlyoffice.executable == '/usr/bin/onlyoffice-desktopeditors'
-    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
-  when: "'onlyoffice' in selected_software_components"
-
-- name: Assert the fixed Nextcloud repository contract before any component mutation
-  ansible.builtin.assert:
-    that:
-      - software_catalog.nextcloud_desktop.source == 'alt-repository'
-      - software_catalog.nextcloud_desktop.packages == ['nextcloud-client', 'nextcloud-client-kde']
-      - software_catalog.nextcloud_desktop.executable == '/usr/bin/nextcloud'
-    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
-  when: "'nextcloud_desktop' in selected_software_components"
-
-- name: Assert the fixed Directum contract before any component mutation
-  ansible.builtin.assert:
-    that:
-      - software_catalog.directum.source == 'rpm'
-      - software_catalog.directum.artifact_path == '/opt/alt-deploy-control/artifacts/directum/WebAccessAgent-6.0.3-1010.x86_64.rpm'
-      - software_catalog.directum.package_name == 'WebAccessAgent'
-      - software_catalog.directum.package_evr == '6.0.3-1010'
-      - software_catalog.directum.package_epoch | default(0) == 0
-      - software_catalog.directum.architecture == 'x86_64'
-      - software_catalog.directum.executable == '/usr/webaccessagent/Launcher'
-    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
-  when: "'directum' in selected_software_components"
-
-- name: Load the committed signature artifact contracts
-  ansible.builtin.include_vars:
-    file: "{{ playbook_dir }}/../group_vars/software_catalog.yml"
-    name: approved_software_catalog
-  when: software_profile == 'core-apps'
-
-- name: Require the fixed signature contracts before any workstation mutation
-  ansible.builtin.assert:
-    that:
-      - software_catalog[signature_component] == approved_software_catalog.software_catalog[signature_component]
-    fail_msg: ALT_PREFLIGHT_FAILURE:software_component_catalog_invalid
-  loop: "{{ ['cryptopro', 'cryptopro_cades', 'gosuslugi_plugin'] if software_profile == 'core-apps' else [] }}"
-  loop_control:
-    loop_var: signature_component
-
 - name: Require CryptoPro license presence without exposing its value
   ansible.builtin.assert:
     that:
@@ -127,7 +73,7 @@
       - vault_cryptopro_license is string
       - vault_cryptopro_license | trim | length > 0
     fail_msg: ALT_PREFLIGHT_FAILURE:cryptopro_license_unavailable
-  when: software_profile == 'core-apps'
+  when: "'cryptopro' in selected_software_components"
   no_log: true
 
 - name: Inspect selected package artifacts on the controller

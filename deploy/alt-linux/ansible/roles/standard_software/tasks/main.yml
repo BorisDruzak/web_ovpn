@@ -3,8 +3,8 @@
   ansible.builtin.assert:
     that:
       - configure_component_preflight_passed | default(false) | bool
-      - selected_software_components == ([] if software_profile == 'base' else ['browser', 'onlyoffice', 'nextcloud_desktop', 'directum', 'cryptopro', 'cryptopro_cades', 'gosuslugi_plugin'])
-      - software_profile in ['base', 'core-apps']
+      - selected_software_components == setup_selected_catalog.selected_software_components
+      - software_component_role_map == setup_selected_catalog.software_component_role_map
     fail_msg: Software component selection is invalid
 
 - name: Set configure phase to software components
@@ -15,15 +15,6 @@
 - name: Run selected approved software roles
   ansible.builtin.include_role:
     name: "{{ software_component_role_map[software_component] }}"
-  vars:
-    software_component_role_map:
-      browser: software_browser
-      onlyoffice: software_onlyoffice
-      nextcloud_desktop: software_nextcloud_desktop
-      directum: software_directum
-      cryptopro: software_cryptopro
-      cryptopro_cades: software_cryptopro_cades
-      gosuslugi_plugin: software_gosuslugi_plugin
   loop: "{{ selected_software_components }}"
   loop_control:
     loop_var: software_component

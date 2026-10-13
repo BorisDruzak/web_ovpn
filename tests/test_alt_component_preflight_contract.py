@@ -2,6 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 import re
+import sys
 
 import pytest
 import yaml
@@ -10,12 +11,17 @@ from jinja2.nativetypes import NativeEnvironment
 
 
 ROOT = Path(__file__).resolve().parents[1] / "deploy/alt-linux/ansible"
+sys.path.insert(0, str(ROOT.parent/'control'))
+from alt_deploy.component_catalog import ComponentCatalog
+from alt_deploy.setup_execution import catalog_selection
 
 
 def environment():
     env = NativeEnvironment(undefined=StrictUndefined)
     env.tests["match"] = lambda value, pattern: isinstance(value, str) and bool(re.match(pattern, value))
     env.filters["bool"] = bool
+    env.filters['alt_setup_selection'] = lambda document, profile, component='': catalog_selection(
+        ComponentCatalog(ROOT, document), profile=profile, component_id=component)
     return env
 
 

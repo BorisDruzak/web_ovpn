@@ -1,0 +1,54 @@
+---
+- name: Require the confirmed component identity
+  ansible.builtin.assert:
+    that:
+      - setup_job_id is match('^job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$')
+      - setup_plan_sha256 is match('^[0-9a-f]{64}$')
+      - setup_component_id is string
+      - setup_component_version is number
+      - setup_component_result_file is match('^/')
+    fail_msg: Setup component confirmation is invalid
+  tags: [alt_setup_preflight]
+
+- name: Validate all selected component artifacts before workstation contact
+  ansible.builtin.import_tasks: configure_component_preflight.yml
+  tags: [alt_setup_preflight]
+
+- name: Require exactly one approved independently executable component
+  ansible.builtin.assert:
+    that:
+      - setup_selected_catalog.execution_components | length == 1
+      - setup_selected_catalog.execution_components[0].id == setup_component_id
+      - setup_selected_catalog.execution_components[0].version == setup_component_version
+      - setup_selected_catalog.execution_components[0].execution.adapter is not defined
+    fail_msg: Setup component boundary is invalid
+  tags: [alt_setup_preflight]
+
+- name: Initialize compatible role results for the selected component
+  ansible.builtin.set_fact:
+    configure_result:
+      schema_version: 1
+      status: failed
+      components: {}
+      verification: {}
+      phase: components
+
+- name: Gather facts after the complete controller preflight
+  ansible.builtin.setup:
+
+- name: Execute only the selected published role
+  ansible.builtin.include_role:
+    name: "{{ setup_selected_catalog.execution_components[0].execution.role }}"
+
+- name: Write completion evidence after the selected role and its cleanup
+  ansible.builtin.copy:
+    dest: "{{ setup_component_result_file }}"
+    content: >-
+      {{ {'schema_version': 1, 'job_id': setup_job_id, 'plan_sha256': setup_plan_sha256,
+          'machine_uuid': machine_uuid, 'component_id': setup_component_id,
+          'component_version': setup_component_version | int, 'status': 'applied',
+          'reboot_required': setup_selected_catalog.execution_components[0].execution.requires_reboot | bool} | to_json }}
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  tags: [alt_setup_verify]

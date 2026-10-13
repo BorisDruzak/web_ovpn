@@ -63,11 +63,14 @@ def test_critical_phase_runs_components_between_login_baseline_and_verification(
     assert "loop:" not in rendered
 
 
-def test_standard_software_uses_a_fixed_role_map() -> None:
+def test_standard_software_uses_the_published_catalog_role_map() -> None:
     text = (ANSIBLE_ROOT / "roles/standard_software/tasks/main.yml").read_text()
     tasks = yaml.safe_load(text)
     include = next(task for task in tasks if "ansible.builtin.include_role" in task)
-    assert include["vars"]["software_component_role_map"] == {
+    from test_alt_component_preflight_contract import environment
+    published = yaml.safe_load((ANSIBLE_ROOT/'group_vars/software_catalog.yml').read_text())
+    selection = environment().filters['alt_setup_selection'](published, 'core-apps')
+    assert selection['software_component_role_map'] == {
         "browser": "software_browser",
         "onlyoffice": "software_onlyoffice",
         "nextcloud_desktop": "software_nextcloud_desktop",
@@ -76,6 +79,7 @@ def test_standard_software_uses_a_fixed_role_map() -> None:
         "cryptopro_cades": "software_cryptopro_cades",
         "gosuslugi_plugin": "software_gosuslugi_plugin",
     }
+    assert 'vars' not in include
     assert include["ansible.builtin.include_role"]["name"] == (
         "{{ software_component_role_map[software_component] }}"
     )

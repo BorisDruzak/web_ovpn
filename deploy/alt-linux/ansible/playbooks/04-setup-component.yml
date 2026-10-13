@@ -1,0 +1,12 @@
+---
+- name: Execute one confirmed Setup component
+  hosts: all
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/vault.yml
+    - ../group_vars/software_catalog.yml
+  tasks:
+    - name: Execute the approved component boundary
+      ansible.builtin.import_tasks: tasks/setup_component_execution.yml

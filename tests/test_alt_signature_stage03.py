@@ -4,7 +4,7 @@ from copy import deepcopy
 import pytest
 import yaml
 
-from test_alt_component_preflight_contract import ROOT, preflight
+from test_alt_component_preflight_contract import ROOT, preflight, environment
 
 
 SIGNATURE = ["cryptopro", "cryptopro_cades", "gosuslugi_plugin"]
@@ -50,7 +50,8 @@ def test_license_presence_is_required_only_for_core_apps(catalog, license_value)
 def test_signature_roles_run_after_browser_and_before_government_import():
     tasks = yaml.safe_load((ROOT / "roles/standard_software/tasks/main.yml").read_text())
     include = next(t for t in tasks if "ansible.builtin.include_role" in t)
-    mapping = include["vars"]["software_component_role_map"]
+    published = yaml.safe_load((ROOT/'group_vars/software_catalog.yml').read_text())
+    mapping = environment().filters['alt_setup_selection'](published, 'core-apps')['software_component_role_map']
     assert [mapping[k] for k in SIGNATURE] == ["software_" + k for k in SIGNATURE]
     phase = yaml.safe_load((ROOT / "playbooks/tasks/configure_critical_phase.yml").read_text())
     roles = [t["ansible.builtin.include_role"]["name"] for t in phase[1]["block"] if "ansible.builtin.include_role" in t]
@@ -72,4 +73,4 @@ def test_license_preflight_is_not_logged():
     tasks = yaml.safe_load((ROOT / "playbooks/tasks/configure_component_preflight.yml").read_text())
     gate = next(t for t in tasks if "license" in t["name"].lower())
     assert gate["no_log"] is True
-    assert gate["when"] == "software_profile == 'core-apps'"
+    assert gate["when"] == "'cryptopro' in selected_software_components"

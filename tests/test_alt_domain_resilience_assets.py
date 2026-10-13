@@ -353,14 +353,14 @@ def test_component_finalizer_preserves_partial_results_and_redacts_failure_detai
 
 
 def test_base_software_profile_selects_no_roles_and_does_not_change_result():
-    selection = load("playbooks/tasks/configure_component_preflight.yml")[0]
-    selected = env().from_string(selection["ansible.builtin.set_fact"]["selected_software_components"]).render(
-        software_profile="base"
-    )
+    from test_alt_component_preflight_contract import environment
+    selection = environment().filters['alt_setup_selection'](load('group_vars/software_catalog.yml'), 'base')
+    selected = selection['selected_software_components']
     assert selected == []
     tasks = role("standard_software")
     values = {"software_profile": "base", "selected_software_components": selected,
-              "configure_component_preflight_passed": True}
+              "configure_component_preflight_passed": True, 'setup_selected_catalog': selection,
+              'software_component_role_map': selection['software_component_role_map']}
     assert evaluate(tasks[0]["ansible.builtin.assert"]["that"], values)
     for task in tasks:
         if "ansible.builtin.set_fact" in task:
