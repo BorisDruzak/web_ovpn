@@ -20,6 +20,22 @@ ANSIBLE_USER="ansible"
 MARKER="/var/lib/alt-bootstrap-completed"
 REGISTER_MARKER="/var/lib/alt-bootstrap-registered"
 
+# Change only the stock, signed p11 origin; preserve branch and components.
+P11_MIRROR_PATTERN='^([ \t]*rpm(-src)?[ \t]+\[p11\][ \t]+)http(s)?://ftp\.altlinux\.org/pub/distributions/ALTLinux([ \t]+p11/branch/(x86_64|x86_64-i586|i586|noarch)[ \t]+[^\r\n]+)$'
+P11_MIRROR_REPLACEMENT='\1https://download.basealt.ru/pub/distributions/ALTLinux\4'
+
+select_p11_mirror() {
+    local source_file
+    for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+        if [[ -L "${source_file}" ]]; then
+            echo "ERROR: redirected APT source file" >&2
+            return 1
+        fi
+        [[ -f "${source_file}" ]] || continue
+        sed -E -i "s@${P11_MIRROR_PATTERN}@${P11_MIRROR_REPLACEMENT}@" "${source_file}"
+    done
+}
+
 validate_alt_workstation() {
     local release
 
@@ -178,6 +194,7 @@ fi
 
 echo "Installing bootstrap dependencies..."
 
+select_p11_mirror
 apt-get update
 
 apt-get install -y \
