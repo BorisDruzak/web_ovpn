@@ -123,3 +123,22 @@ def test_waiting_continuation_is_read_only_and_requires_fresh_state(component_se
     assert engine.verify_continuation(job.job_id)['state'] == 'successful'
     assert calls == ['software.onlyoffice']
     assert private_read(job.job_dir/'execution.json')['components']['software.onlyoffice']['changed'] is True
+    assert private_read(job.job_dir/'execution.json')['reboot_required'] is False
+
+
+def test_waiting_reboot_cannot_accept_a_changed_original_boot_proof(component_service):
+    from alt_deploy.setup_plans import private_replace
+    good = copy.deepcopy(component_service[4]['components']['software.onlyoffice'])
+    component_service[4]['components']['software.onlyoffice'].update(packages=[], executable=False)
+    jobs, _, settings, job = claimed(component_service)
+    def applied(plan, job):
+        component_service[4]['components']['software.onlyoffice'] = good
+        return {'status':'applied','changed':True,'reboot_required':True}
+    engine, _ = engine_for(component_service, jobs, settings, applied)
+    result = engine.execute(job.job_id)
+    assert result['state'] == 'waiting_reboot'
+    result['original_boot_id'] = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    private_replace(job.job_dir/'execution.json', result)
+    with pytest.raises(ControlError) as rejected: engine.verify_continuation(job.job_id)
+    assert rejected.value.code == 'setup_execution_result_invalid'
+    assert jobs.get(job.job_id).state == 'waiting_reboot'

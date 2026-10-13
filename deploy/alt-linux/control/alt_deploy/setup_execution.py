@@ -55,9 +55,12 @@ class SetupExecutionEngine:
         for identifier in selected:
             selected[identifier]['verification'] = verification['components'][identifier]
         outcomes = [verification['components'][i] for i in selected]
-        if not package_health_ready(observed) or verification['overall_status'] == 'unknown_requires_review':
+        reboot_unproven = result['reboot_required'] and result['original_boot_id'] is None
+        result['reboot_required'] = bool(result['reboot_required'] and
+            (reboot_unproven or observed['machine']['boot_id'] == result['original_boot_id']))
+        if reboot_unproven or not package_health_ready(observed) or verification['overall_status'] == 'unknown_requires_review':
             state = 'unknown_requires_review'
-        elif result['reboot_required'] and observed['machine']['boot_id'] == result['original_boot_id']:
+        elif result['reboot_required']:
             state = 'waiting_reboot'
         elif (not observed['user']['home_exists'] and
               any(c.get('operator_action') == 'first_domain_login' for c in outcomes)):
@@ -205,8 +208,12 @@ class SetupExecutionEngine:
             if job.state not in ('waiting_reboot', 'waiting_first_login'):
                 raise fail('setup_continuation_not_waiting', 'Read-only continuation requires a waiting job')
             result = private_read(job.job_dir/'execution.json')
+            payload = job.request['plan']['payload']
+            original = payload['observed'] if job.request['operation'] == 'component' else payload['component_observed']
             if (result.get('schema_version') != 2 or result.get('job_id') != job_id
                     or result.get('plan_sha256') != job.status['plan_sha256']
+                    or result.get('original_boot_id') != original['machine']['boot_id']
+                    or job.state == 'waiting_reboot' and result.get('reboot_required') is not True
                     or result.get('state') != job.state):
                 raise fail('setup_execution_result_invalid', 'Waiting execution evidence differs')
             self._services(job.request['operation'])
