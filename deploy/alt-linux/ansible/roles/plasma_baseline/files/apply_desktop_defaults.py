@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import configparser
 
 OFFICE_DESKTOP = 'onlyoffice-desktopeditors.desktop'
 MIME_TYPES = (
@@ -75,8 +76,28 @@ def resolve_profile(username):
     return home / '.config', prefix, uid
 
 
-def apply_settings(config, prefix, call=run, expected_uid=None):
-    files = {entry[0] for entry in SETTINGS} | {'mimeapps.list'}
+def keyboard_settings(template):
+    if not isinstance(template, str) or len(template) > 4096:
+        raise ValueError('Published keyboard template is invalid')
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    parser.optionxform = str
+    parser.read_string(template)
+    if parser.sections() != ['Layout'] or len(parser['Layout']) > 32:
+        raise ValueError('Published keyboard template is invalid')
+    settings = []
+    for key, value in parser['Layout'].items():
+        if not re.fullmatch('[A-Za-z][A-Za-z0-9]{0,63}', key) or len(value) > 256:
+            raise ValueError('Published keyboard template is invalid')
+        settings.append(('kxkbrc', 'Layout', key, value))
+    if not settings:
+        raise ValueError('Published keyboard template is empty')
+    return settings
+
+
+def apply_settings(config, prefix, call=run, expected_uid=None, *, settings=None):
+    keyboard = settings is not None
+    settings = SETTINGS if settings is None else settings
+    files = {entry[0] for entry in settings} | (set() if keyboard else {'mimeapps.list'})
     # Validate every destination before the first write; never follow a link.
     for path in (config, *config.parents, *(config / name for name in sorted(files))):
         if path.is_symlink():
@@ -107,13 +128,13 @@ def apply_settings(config, prefix, call=run, expected_uid=None):
                 raise RuntimeError('Desktop setting did not persist')
             changed_files.add(filename)
 
-    for filename, group, key, desired in SETTINGS:
+    for filename, group, key, desired in settings:
         merge(filename, group, key, desired)
-    for mime in MIME_TYPES:
+    for mime in (() if keyboard else MIME_TYPES):
         merge('mimeapps.list', 'Default Applications', mime, OFFICE_DESKTOP + ';')
         merge('mimeapps.list', 'Added Associations', mime, OFFICE_DESKTOP + ';', association=True)
     cache_refreshed = False
-    if prefix:
+    if prefix and not keyboard:
         # Also retry after a previous run wrote MIME keys but failed to refresh.
         call(prefix + ['kbuildsycoca6'], check=True)
         cache_refreshed = True
@@ -121,11 +142,11 @@ def apply_settings(config, prefix, call=run, expected_uid=None):
             'changed_files': sorted(changed_files), 'cache_refreshed': cache_refreshed}
 
 
-def apply(username):
+def apply(username, *, settings=None):
     config, prefix, uid = resolve_profile(username)
     if config is None:
         return {'changed': False, 'profile_exists': False}
-    return apply_settings(config, prefix, expected_uid=uid)
+    return apply_settings(config, prefix, expected_uid=uid, settings=settings)
 
 
 if __name__ == '__main__':
@@ -133,6 +154,8 @@ if __name__ == '__main__':
         raise ValueError('Run the desktop baseline through the privileged playbook')
     if sys.argv[1] == '--skel':
         result = apply_settings(Path(sys.argv[2]), [], expected_uid=0)
+    elif sys.argv[1] == '--keyboard':
+        result = apply(sys.argv[2], settings=keyboard_settings(sys.argv[3]))
     else:
         result = apply(sys.argv[1])
     print(json.dumps(result))

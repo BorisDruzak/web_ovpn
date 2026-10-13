@@ -88,7 +88,7 @@ def _power_template(path):
     return _ini(''.join(match[2].replace('{{ profile }}', p) for p in profiles) + text[match.end():])
 
 
-def desired_queries(project, catalog, components):
+def desired_queries(project, catalog, components, *, profile_id='base'):
     """Reuse package manifests, role defaults, templates and literal helper declarations."""
     project = Path(project)
     queries = []
@@ -126,9 +126,18 @@ def desired_queries(project, catalog, components):
                          keyboard=_ini((path/'templates/kxkbrc.j2').read_text(encoding='utf-8')))
         elif recipe == 'government_ca':
             query['certificates'] = _yaml(roles/'government_ca/defaults/main.yml')['government_ca_certificates']
+            for filename in ('import_user_certificates.py', 'alt-government-ca.desktop'):
+                _regular(roles/'government_ca/files'/filename)
+            query['installed_files'] = {
+                '/usr/local/libexec/alt-government-ca-user-import.py': {'sha256': hashlib.sha256(
+                    (roles/'government_ca/files/import_user_certificates.py').read_bytes()).hexdigest(), 'mode': 0o755},
+                '/etc/xdg/autostart/alt-government-ca.desktop': {'sha256': hashlib.sha256(
+                    (roles/'government_ca/files/alt-government-ca.desktop').read_bytes()).hexdigest(), 'mode': 0o644}}
         elif recipe == 'shortcuts':
             query['defaults'] = _yaml(roles/'desktop_shortcuts/defaults/main.yml')
-            query['signature_selected'] = any(c['id'] == 'software.cryptopro' for c in components)
+            selected_ids = set(catalog.profile(profile_id)['components']) | {c['id'] for c in components}
+            query['entries'] = [entry for identifier, entry in query['defaults']['desktop_shortcuts_component_entries'].items()
+                                if identifier in selected_ids]
         elif recipe == 'krfb':
             template = (roles/'remote_access_krfb/templates/krfbrc.j2').read_text(encoding='utf-8')
             template = template.replace("{{ 'xcb' if workstation_desktop_session | default('x11') == 'x11' else 'pw' }}",
@@ -184,7 +193,7 @@ class ComponentProbe:
         self.settings = settings
         self.runner = runner or bounded_run
 
-    def observe(self, machine, user: dict, components: list[dict], *, allow_unresolved=False) -> dict:
+    def observe(self, machine, user: dict, components: list[dict], *, allow_unresolved=False, profile_id='base') -> dict:
         try:
             login = normalize_login(user['login'])
             if user['upn'] != login+'@'+DOMAIN:
@@ -195,7 +204,7 @@ class ComponentProbe:
             catalog = ComponentCatalog.load(self.settings.ansible_project_dir)
             query = {'schema_version': 1, 'machine_uuid': machine.uuid, 'hostname': machine.hostname,
                      'login': login, 'upn': user['upn'],
-                     'components': desired_queries(self.settings.ansible_project_dir, catalog, components)}
+                     'components': desired_queries(self.settings.ansible_project_dir, catalog, components, profile_id=profile_id)}
             script = Path(__file__).with_name('component_probe_script.py')
             _regular(script)
             command = ['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',

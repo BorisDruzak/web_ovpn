@@ -18,15 +18,17 @@ class SetupExecutionEngine:
         self.settings = settings
         self.setup = setup
         self.components = components
+        self._setup_injected = setup is not None
+        self._components_injected = components is not None
         self.jobs = jobs or SetupJobRepository(settings)
         self.events = events or SetupEventStore(settings)
         self.component_executor = component_executor
 
     def _services(self, operation):
-        if operation == 'component' and self.components is None:
+        if operation == 'component' and not self._components_injected:
             from .component_setup import ComponentSetupService
-            self.components = ComponentSetupService(self.settings, setup=self.setup)
-        if operation == 'full_setup' and self.setup is None:
+            self.components = ComponentSetupService(self.settings, setup=self.setup if self._setup_injected else None)
+        if operation == 'full_setup' and not self._setup_injected:
             from .setup import SetupService
             self.setup = SetupService(self.settings)
 
@@ -69,6 +71,12 @@ class SetupExecutionEngine:
         return self._persist(job, result, state, state)
 
     def execute(self, job_id):
+        from .setup_confirmations import confirmed_network
+        job = self.jobs.get(job_id)
+        with confirmed_network(job.request['plan']):
+            return self._execute(job_id)
+
+    def _execute(self, job_id):
         from .component_catalog import ComponentCatalog
         from .errors import ControlError
         job = self.jobs.get(job_id)
@@ -167,12 +175,14 @@ class SetupExecutionEngine:
                 try:
                     if job.request['operation'] == 'component':
                         machine = self.components.setup.machines.resolve(job.machine_uuid)
-                        facts = self.components.probe.observe(machine, payload['user'], payload['components'])
+                        facts = self.components.probe.observe(machine, payload['user'], payload['components'],
+                                                              profile_id=payload['profile']['id'])
                     else:
                         from .component_probe import ComponentProbe
                         machine = self.setup.machines.resolve(job.machine_uuid)
                         facts = (self.setup.component_probe or ComponentProbe(self.settings)).observe(
-                            machine, payload['user'], payload['components'], allow_unresolved=True)
+                            machine, payload['user'], payload['components'], allow_unresolved=True,
+                            profile_id=payload['profile']['id'])
                     result['post_error_package_manager'] = facts['package_manager']
                     from .component_verification import _package_status
                     from .component_catalog import ComponentCatalog
@@ -219,7 +229,12 @@ def catalog_selection(catalog, *, profile='base', component_id=''):
         components = [catalog.component(i) for i in catalog.profile(profile)['components']]
     software = [c for c in components if c['execution']['operation'] == 'software']
     keys = [c['preflight']['artifact_key'] for c in software]
+    profile_ids = catalog.profile(profile)['components']
+    if component_id:
+        required = catalog.ordered([component_id], os_id='alt-kworkstation-11')
+        profile_ids = list(dict.fromkeys(profile_ids + [c['id'] for c in required]))
     return {'execution_components': components, 'selected_software_components': keys,
+            'profile_component_ids': profile_ids,
             'software_component_role_map': {c['preflight']['artifact_key']: c['execution']['role'] for c in software}}
 
 

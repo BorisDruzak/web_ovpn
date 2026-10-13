@@ -22,7 +22,7 @@ def test_core_apps_includes_shortcuts_after_software_before_final_verification()
              if 'ansible.builtin.include_role' in t]
     assert roles.index('standard_software') < roles.index('desktop_shortcuts') < roles.index('domain_verify')
     shortcuts = next(t for t in block if t.get('ansible.builtin.include_role', {}).get('name') == 'desktop_shortcuts')
-    assert shortcuts['when'] == "software_profile == 'core-apps'"
+    assert shortcuts['when'] == "'desktop.shortcuts' in (execution_components | map(attribute='id') | list)"
 
 
 def test_shortcuts_report_verified_and_deferred_home_separately():
@@ -84,7 +84,7 @@ def test_all_existing_desktop_destinations_are_inspected_before_copy():
     env = NativeEnvironment()
     env.filters['regex_replace'] = lambda value, pattern, replacement: re.sub(pattern, replacement, value)
     result = env.from_string(inspection['loop']).render(desktop_shortcuts_user_desktop_name='Desktop',
-                desktop_shortcuts_nextcloud_entry='nextcloud.desktop', desktop_shortcuts_application_entries=['office.desktop', 'browser.desktop'])
+                desktop_shortcuts_nextcloud_entry='nextcloud.desktop', desktop_shortcuts_selected_entries=['office.desktop', 'browser.desktop'])
     assert result == ['Desktop', '.config', '.config/autostart', '.config/autostart/nextcloud.desktop',
                       'Desktop/office.desktop', 'Desktop/browser.desktop']
     assert inspection['ansible.builtin.stat']['follow'] is False

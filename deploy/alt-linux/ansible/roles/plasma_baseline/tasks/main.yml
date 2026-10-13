@@ -51,3 +51,17 @@
   changed_when: (plasma_baseline_existing_desktop.stdout | from_json).changed | bool
   when: not ansible_check_mode
   no_log: true
+
+- name: Merge published keyboard defaults into the existing domain profile
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - '-'
+      - --keyboard
+      - "{{ assigned_domain_user | default(domain_test_user, true) }}"
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/templates/kxkbrc.j2') }}"
+    stdin: "{{ lookup('ansible.builtin.file', role_path ~ '/files/apply_desktop_defaults.py') }}"
+  register: plasma_baseline_existing_keyboard
+  changed_when: (plasma_baseline_existing_keyboard.stdout | from_json).changed | bool
+  when: not ansible_check_mode
+  no_log: true

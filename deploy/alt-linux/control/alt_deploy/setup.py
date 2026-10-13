@@ -180,11 +180,12 @@ class SetupService:
             selection = profile['components'] + (['remote.krfb'] if remote == 'krfb' else [])
             components = catalog.ordered(selection, os_id='alt-kworkstation-11')
             probe = self.component_probe or ComponentProbe(self.settings)
-            facts = probe.observe(machine, user, components, allow_unresolved=not observed['trust'])
+            facts = probe.observe(machine, user, components, allow_unresolved=not observed['trust'], profile_id=software)
             if (not valid_evidence(facts, allow_unresolved=not observed['trust'])
                     or facts['machine']['uuid'] != machine.uuid or facts['machine']['hostname'] != machine.hostname
                     or facts['machine']['os_id'] != 'alt-kworkstation-11'
                     or facts['user']['login'] != user['login']
+                    or (facts['user']['uid'] is not None and facts['user']['home_safe'] is not True)
                     or not package_health_ready(facts)):
                 raise fail('setup_probe_invalid', 'Full Setup component preflight cannot verify machine or package activity')
             from .setup_runtime import source_fingerprint
@@ -195,6 +196,10 @@ class SetupService:
                            component_verification=VerificationEngine(catalog).evaluate(facts, selection),
                            ssh_binding=ssh_binding(self.settings, machine),
                            source_sha256=source_fingerprint(self.settings.ansible_project_dir, Path(__file__).parent))
+            if remote == 'krfb':
+                from .configure import KRFB_NETWORK_CONFIRMATION_VARIABLE
+                import os
+                payload['network_restriction_confirmed'] = os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) == 'true'
         return payload
 
     def plan(self, identifier, login, ou, software='core-apps', remote='none'):
@@ -267,7 +272,7 @@ class SetupService:
         before = plan['payload']
         catalog = self._catalog()
         machine = self.machines.resolve(before['machine']['uuid'])
-        identity = self.verify(machine.uuid)
+        identity = self._verify_identity(machine.uuid)
         user = self.directory.user(before['user']['login'])
         if (identity['status'] != 'successful' or user != before['user']
                 or digest(machine.raw) != before['machine']['registration_sha256']
@@ -276,7 +281,8 @@ class SetupService:
                 or ssh_binding(self.settings, machine) != before['ssh_binding']
                 or source_fingerprint(self.settings.ansible_project_dir, Path(__file__).parent) != before['source_sha256']):
             raise fail('setup_post_verification_failed', 'Full Setup current identity or published source differs')
-        observed = (self.component_probe or ComponentProbe(self.settings)).observe(machine, user, before['components'])
+        observed = (self.component_probe or ComponentProbe(self.settings)).observe(machine, user, before['components'],
+                                                                                 profile_id=before['profile']['id'])
         return observed, VerificationEngine(catalog).evaluate(observed, [c['id'] for c in before['components']])
 
     def _execute_locked(self, plan_id, confirmed_sha, *, own_job_id=None):
@@ -313,6 +319,10 @@ class SetupService:
             run = {'schema_version': 1, 'run_id': run_id, 'plan_id': plan_id, 'plan_sha256': confirmed_sha,
                    'machine_uuid': request.machine_uuid, 'status': 'running', 'created_at': date,
                    'reboot_required': None, 'deferred_actions': current['deferred_actions']}
+            if current.get('engine_schema_version') == 2:
+                run.update(original_boot_id=current['component_observed']['machine']['boot_id'],
+                           catalog_version=current['catalog_version'], profile_version=current['profile']['version'],
+                           source_sha256=current['source_sha256'])
             private_create(self._run_path(run_id), run)
             private_create(index_path, {'run_id': run_id})
             self.assignments.write(current['binding'], run_id=run_id, result='running', date=date, revision=revision)
@@ -370,7 +380,7 @@ class SetupService:
             return run
 
 
-    def verify(self, identifier):
+    def _verify_identity(self, identifier):
         machine = self.machines.resolve(identifier)
         binding = self.assignments.get(machine.uuid)
         if binding is None:
@@ -396,3 +406,34 @@ class SetupService:
                 'verification': observed, 'computer': computer, 'run': previous_run,
                 'group_policy_last_run': previous_run.get('result', {}).get('verification', {}).get('group_policy'),
                 'home_operations_deferred': not observed['home_exists']}
+
+    def verify(self, identifier):
+        result = self._verify_identity(identifier)
+        catalog = self._catalog()
+        if catalog is None:
+            return result
+        from .component_probe import ComponentProbe
+        from .component_verification import VerificationEngine, package_health_ready
+        binding = self.assignments.get(result['machine_uuid'])
+        selected = catalog.profile(binding['software_profile'])['components']
+        if binding['remote_access_profile'] == 'krfb':
+            selected = selected+['remote.krfb']
+        machine = self.machines.resolve(result['machine_uuid'])
+        user = self.directory.user(binding['login'])
+        try:
+            observed = (self.component_probe or ComponentProbe(self.settings)).observe(
+                machine, user, catalog.ordered(selected, os_id='alt-kworkstation-11'), profile_id=binding['software_profile'])
+            prior = result['run']
+            verification = VerificationEngine(catalog).evaluate(observed, selected,
+                reboot_required=prior.get('reboot_required', False) if prior.get('original_boot_id') else False,
+                original_boot_id=prior.get('original_boot_id'))
+            verification['reboot_evidence'] = 'recorded' if prior.get('original_boot_id') else 'legacy_not_recorded'
+            if not package_health_ready(observed):
+                verification['overall_status'] = 'unknown_requires_review'
+                verification['operator_action_required'] = True
+        except ControlError:
+            verification = VerificationEngine(catalog).evaluate({}, selected)
+        result['component_verification'] = verification
+        if result['status'] == 'successful':
+            result['status'] = verification['overall_status']
+        return result

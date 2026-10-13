@@ -120,3 +120,32 @@ def test_current_desktop_keyboard_drift_is_detected(tmp_path):
     (skel/'kxkbrc').write_text('[Layout]\nSwitchMode=Global\n')
     (user/'kxkbrc').write_text('[Layout]\nSwitchMode=WinClass\n')
     assert desktop_ready(tmp_path, query, home, os.getuid()) is False
+
+
+def test_shortcuts_compare_autostart_and_launchers_for_selected_office_profile(tmp_path):
+    query, call, _ = fixture(tmp_path, 'desktop.shortcuts')
+    catalog = ComponentCatalog.load(CATALOG)
+    query['components'] = desired_queries(CATALOG, catalog, [catalog.component('desktop.shortcuts')], profile_id='office-standard-v1')
+    recipe = query['components'][0]
+    defaults = recipe['defaults']
+    home = tmp_path/'home/synthetic.user'
+    desktop = home/defaults['desktop_shortcuts_user_desktop_name']
+    desktop.mkdir(parents=True)
+    applications = tmp_path/defaults['desktop_shortcuts_applications_dir'].lstrip('/')
+    applications.mkdir(parents=True)
+    for entry in recipe['entries']:
+        payload = '[Desktop Entry]\nType=Application\nName='+entry+'\n'
+        (applications/entry).write_text(payload)
+        target = desktop/entry
+        target.write_text(payload)
+        target.chmod(0o755)
+    autostart = home/'.config/autostart'/defaults['desktop_shortcuts_nextcloud_entry']
+    autostart.parent.mkdir(parents=True)
+    autostart.write_bytes((applications/defaults['desktop_shortcuts_nextcloud_entry']).read_bytes())
+    autostart.chmod(0o644)
+    for link in defaults['desktop_shortcuts_relative_links']:
+        (desktop/link['name']).symlink_to(link['src'])
+    assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is True
+    autostart.write_text('[Desktop Entry]\nExec=false\n')
+    assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is False
+    assert not (desktop/'cptools.desktop').exists()

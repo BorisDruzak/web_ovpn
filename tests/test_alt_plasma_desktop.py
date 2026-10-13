@@ -45,6 +45,25 @@ def test_merge_preserves_unrelated_settings_and_is_idempotent(tmp_path):
     assert len(writes) == count
 
 
+def test_keyboard_uses_published_template_and_preserves_other_keys(tmp_path):
+    module = helper()
+    template = HELPER.parent.parent/'templates/kxkbrc.j2'
+    settings = module.keyboard_settings(template.read_text())
+    assert settings == [('kxkbrc', 'Layout', 'SwitchMode', 'Global')]
+    values = {('kxkbrc', 'Layout', 'SwitchMode'): 'WinClass', ('kxkbrc', 'Layout', 'LayoutList'): 'us,ru'}
+    calls = []
+    def run(argv, **kwargs):
+        key = (Path(argv[argv.index('--file')+1]).name, argv[argv.index('--group')+1], argv[argv.index('--key')+1])
+        if 'kwriteconfig6' in argv:
+            values[key] = argv[-1]
+            calls.append(key)
+        return SimpleNamespace(returncode=0, stdout=values.get(key, '__ALT_MISSING__'))
+    assert module.apply_settings(tmp_path, [], run, settings=settings)['changed'] is True
+    assert values[('kxkbrc', 'Layout', 'LayoutList')] == 'us,ru'
+    assert module.apply_settings(tmp_path, [], run, settings=settings)['changed'] is False
+    assert calls == [('kxkbrc', 'Layout', 'SwitchMode')]
+
+
 def test_symlinked_target_is_rejected_before_any_write(tmp_path):
     module = helper()
     outside = tmp_path.parent/'outside-desktop-config'

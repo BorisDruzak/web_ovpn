@@ -89,7 +89,7 @@ class VerificationEngine:
     def __init__(self, catalog):
         self.catalog = catalog
 
-    def evaluate(self, evidence: dict, selected: list[str]) -> dict:
+    def evaluate(self, evidence: dict, selected: list[str], *, reboot_required=False, original_boot_id=None) -> dict:
         # Resolve selection through the validated complete graph, even if evidence fails.
         ordered = self.catalog.ordered(selected, os_id='alt-kworkstation-11')
         selected_ids = {component['id'] for component in ordered}
@@ -140,10 +140,14 @@ class VerificationEngine:
             elif status != 'unknown':
                 result['operator_action'] = 'new_confirmed_plan'
         outcomes = [components[c]['status'] for c in selected_ids]
+        pending_reboot = bool(reboot_required) and (not safe or original_boot_id is None
+                            or evidence['machine']['boot_id'] == original_boot_id)
         overall = ('unknown_requires_review' if not safe or 'unknown' in outcomes else
+                   'unknown_requires_review' if reboot_required and original_boot_id is None else
+                   'waiting_reboot' if pending_reboot else
                    'successful' if outcomes and all(s == 'compliant' for s in outcomes) else 'degraded')
         return {'schema_version': 2, 'operation': 'component_verification',
                 'machine_uuid': evidence['machine']['uuid'] if safe else None,
                 'overall_status': overall, 'components': components,
-                'reboot_required': False,
-                'operator_action_required': any(components[c].get('operator_action') is not None for c in selected_ids)}
+                'reboot_required': pending_reboot,
+                'operator_action_required': pending_reboot or any(components[c].get('operator_action') is not None for c in selected_ids)}

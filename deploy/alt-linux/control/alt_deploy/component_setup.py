@@ -36,6 +36,26 @@ class ComponentSetupService:
 
     def _preflight(self, component):
         catalog = self.catalog or ComponentCatalog.load(self.settings.ansible_project_dir)
+        if component['verification']['recipe'] == 'government_ca':
+            from .component_probe import _yaml
+            entries = _yaml(self.settings.ansible_project_dir/'roles/government_ca/defaults/main.yml')['government_ca_certificates']
+            for entry in entries:
+                try:
+                    if Path(entry['filename']).name != entry['filename']:
+                        raise ValueError
+                    certificate = self.settings.ansible_project_dir/'files/government_ca'/entry['filename']
+                    if any(p.is_symlink() for p in (certificate, *certificate.parents)):
+                        raise ValueError
+                    info = certificate.stat()
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > 1048576:
+                        raise ValueError
+                    payload = certificate.read_bytes()
+                    if (len(payload) > 1048576 or b'PRIVATE KEY' in payload
+                            or payload.count(b'-----BEGIN CERTIFICATE-----') != 1
+                            or hashlib.sha256(payload).hexdigest() != entry['sha256']):
+                        raise ValueError
+                except (OSError, ValueError, KeyError):
+                    return {'ready': False, 'error_code': 'component_certificate_source_unverified'}
         artifact = catalog.artifact(component['id'])
         if artifact and artifact['source'] != 'alt-repository':
             path = Path(artifact['artifact_path'])
@@ -78,7 +98,7 @@ class ComponentSetupService:
                 return {'ready': False, 'error_code': 'component_secret_unavailable'}
         return {'ready': True}
 
-    def _snapshot(self, identifier, component_id, *, own_job_id=None, expected_plan=None, after_job=None):
+    def _snapshot(self, identifier, component_id, *, own_job_id=None, expected_plan=None, after_job=None, read_only=False):
         catalog = self.catalog or ComponentCatalog.load(self.settings.ansible_project_dir)
         component = catalog.component(component_id)
         machine = self.setup.machines.resolve(identifier)
@@ -89,7 +109,7 @@ class ComponentSetupService:
         if machine.registration_state != 'ready' or machine.assignment:
             raise fail('component_machine_not_ready', 'Component requires ready registration without a legacy local assignment')
         active = machine.active_job
-        if active:
+        if active and not read_only:
             owned = (isinstance(active, dict) and expected_plan is not None and own_job_id is not None
                      and active.get('schema_version') == 2 and active.get('kind') == 'setup'
                      and active.get('job_id') == own_job_id and active.get('machine_uuid') == machine.uuid
@@ -113,21 +133,27 @@ class ComponentSetupService:
         if (user.get('state') != 'enabled' or user.get('object_guid') != binding['object_guid']
                 or user.get('object_sid') != binding['object_sid'] or not user.get('object_sid')):
             raise fail('assignment_conflict', 'Recorded selected employee identity changed')
-        identity = self.setup.verify(machine.uuid)
+        identity = self.setup._verify_identity(machine.uuid)
         if identity['status'] != 'successful':
             raise fail('component_identity_unverified', 'Existing machine/domain identity is not verified')
         previous = identity['run']
         if previous.get('status') not in ('successful', 'degraded'):
             raise fail('setup_previous_run_unresolved', 'Original Setup requires review before component changes')
         selected = catalog.ordered([component_id], os_id='alt-kworkstation-11')
-        observed = self.probe.observe(machine, user, selected)
+        observed = self.probe.observe(machine, user, selected, profile_id=profile['id'])
         if (not valid_evidence(observed) or observed['machine']['uuid'] != machine.uuid
                 or observed['machine']['hostname'] != machine.hostname or observed['user']['login'] != user['login']):
             raise fail('component_probe_unverified', 'Current component identity evidence is invalid')
         verification = VerificationEngine(catalog).evaluate(observed, [component_id])
         state = verification['components'][component_id]['status']
         action = {'compliant': 'noop', 'missing': 'install', 'drifted': 'repair'}.get(state, 'blocked')
-        preflight = self.preflight(component) if action != 'noop' else {'ready': True, 'required': False}
+        preflight = self.preflight(component) if action != 'noop' and not read_only else {'ready': True, 'required': False}
+        network_confirmed = None
+        if component_id == 'remote.krfb':
+            from .configure import KRFB_NETWORK_CONFIRMATION_VARIABLE
+            network_confirmed = os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) == 'true'
+            if not network_confirmed:
+                preflight = {'ready': False, 'error_code': 'remote_access_network_restriction_unconfirmed'}
         if action != 'noop' and observed['package_manager'].get('source', {}).get('status') != 'approved_p11':
             preflight = {'ready': False, 'error_code': 'component_package_source_unverified'}
         if (not isinstance(preflight, dict) or preflight.get('ready') is not True
@@ -150,13 +176,15 @@ class ComponentSetupService:
                 'action': action, 'execution_budget_seconds': 5400}
         if predecessor is not None:
             payload['predecessor_job'] = predecessor
+        if network_confirmed is not None:
+            payload['network_restriction_confirmed'] = network_confirmed
         return payload
 
     def plan(self, identifier: str, component_id: str, *, after_job=None) -> dict:
         return self.plans.create(self._snapshot(identifier, component_id, after_job=after_job))
 
     def verify(self, identifier: str, component_id: str) -> dict:
-        return self._snapshot(identifier, component_id)['verification']
+        return self._snapshot(identifier, component_id, read_only=True)['verification']
 
     def apply(self, plan_id: str, sha256: str) -> dict:
         from .setup_jobs import SetupJobRepository

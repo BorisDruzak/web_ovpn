@@ -323,7 +323,13 @@ def certificates_ready(root, recipe, home, name, uid, call):
                 rc, output = call(args)
                 if rc or entry['thumbprint_sha1'] not in re.sub('[^0-9a-f]', '', output.lower()):
                     return False
-    return safe_file(path(root, '/usr/local/libexec/alt-government-ca-user-import.py')) and safe_file(path(root, '/etc/xdg/autostart/alt-government-ca.desktop'))
+    root_uid = 0 if root == Path('/') else os.getuid()
+    for name, expected in recipe['installed_files'].items():
+        target = path(root, name)
+        if (not safe_file(target, uid=root_uid, mode=expected['mode'])
+                or hashlib.sha256(target.read_bytes()).hexdigest() != expected['sha256']):
+            return False
+    return True
 
 
 def inspect_component(root, recipe, user, home, name, call):
@@ -372,19 +378,22 @@ def inspect_component(root, recipe, user, home, name, call):
             fact['checks']['ready'] = certificates_ready(root, recipe, home, name, uid, call)
         elif kind == 'shortcuts':
             defaults = recipe['defaults']
-            entries = defaults['desktop_shortcuts_application_entries']
-            if not recipe['signature_selected']:
-                entries = [e for e in entries if e != 'cptools.desktop']
+            entries = recipe['entries']
             targets = [path(root, home+'/'+defaults['desktop_shortcuts_user_desktop_name']+'/'+e) for e in entries]
-            targets.append(path(root, home+'/.config/autostart/'+defaults['desktop_shortcuts_nextcloud_entry']))
-            fact['checks']['ready'] = all(safe_file(p, uid=uid) for p in targets)
+            autostart = path(root, home+'/.config/autostart/'+defaults['desktop_shortcuts_nextcloud_entry'])
+            original_autostart = path(root, defaults['desktop_shortcuts_applications_dir']+'/'+defaults['desktop_shortcuts_nextcloud_entry'])
+            fact['checks']['ready'] = (all(safe_file(p, uid=uid, mode=0o755) for p in targets)
+                and safe_file(autostart, uid=uid, mode=0o644) and safe_file(original_autostart)
+                and autostart.read_bytes() == original_autostart.read_bytes())
             for entry in entries:
                 original = path(root, defaults['desktop_shortcuts_applications_dir']+'/'+entry)
                 target = path(root, home+'/'+defaults['desktop_shortcuts_user_desktop_name']+'/'+entry)
                 fact['checks']['ready'] = fact['checks']['ready'] and original.is_file() and target.is_file() and original.read_bytes() == target.read_bytes()
             for link in defaults['desktop_shortcuts_relative_links']:
                 target = path(root, home+'/'+defaults['desktop_shortcuts_user_desktop_name']+'/'+link['name'])
-                fact['checks']['ready'] = fact['checks']['ready'] and target.is_symlink() and os.readlink(target) == link['src']
+                fact['checks']['ready'] = (fact['checks']['ready'] and target.is_symlink()
+                    and target.lstat().st_uid == uid and target.lstat().st_gid == user['gid']
+                    and os.readlink(target) == link['src'])
         else:
             config = path(root, home+'/.config/krfbrc')
             autostart = path(root, home+'/.config/autostart/org.sosn.krfb.desktop')

@@ -1,4 +1,11 @@
 ---
+- name: Select launchers from the published profile and verified component dependencies
+  ansible.builtin.set_fact:
+    desktop_shortcuts_selected_entries: >-
+      {{ desktop_shortcuts_component_entries | dict2items |
+         selectattr('key', 'in', setup_selected_catalog.profile_component_ids) |
+         map(attribute='value') | list }}
+
 - name: Create desktop directory for future domain users
   ansible.builtin.file:
     path: "{{ desktop_shortcuts_skel_dir }}"
@@ -10,7 +17,7 @@
 - name: Inspect installed desktop application entries
   ansible.builtin.stat:
     path: "{{ desktop_shortcuts_applications_dir }}/{{ item }}"
-  loop: "{{ desktop_shortcuts_application_entries }}"
+  loop: "{{ desktop_shortcuts_selected_entries }}"
   register: desktop_shortcuts_application_entry_stats
 
 - name: Require installed desktop application entries
@@ -31,7 +38,7 @@
     owner: root
     group: root
     mode: "0755"
-  loop: "{{ desktop_shortcuts_application_entries }}"
+  loop: "{{ desktop_shortcuts_selected_entries }}"
 
 - name: Create folder links in future domain user desktops
   ansible.builtin.file:
@@ -129,7 +136,7 @@
   ansible.builtin.stat:
     path: "{{ desktop_shortcuts_user_fields[5] }}/{{ item }}"
     follow: false
-  loop: "{{ [desktop_shortcuts_user_desktop_name, '.config', '.config/autostart', '.config/autostart/' ~ desktop_shortcuts_nextcloud_entry] + desktop_shortcuts_application_entries | map('regex_replace', '^', desktop_shortcuts_user_desktop_name ~ '/') | list }}"
+  loop: "{{ [desktop_shortcuts_user_desktop_name, '.config', '.config/autostart', '.config/autostart/' ~ desktop_shortcuts_nextcloud_entry] + desktop_shortcuts_selected_entries | map('regex_replace', '^', desktop_shortcuts_user_desktop_name ~ '/') | list }}"
   register: desktop_shortcuts_profile_destinations
   when: desktop_shortcuts_user_home.stat.exists | default(false)
   no_log: true
@@ -165,7 +172,7 @@
     owner: "{{ desktop_shortcuts_user_fields[2] | int }}"
     group: "{{ desktop_shortcuts_user_fields[3] | int }}"
     mode: "0755"
-  loop: "{{ desktop_shortcuts_application_entries }}"
+  loop: "{{ desktop_shortcuts_selected_entries }}"
   when:
     - desktop_shortcuts_user_home is defined
     - desktop_shortcuts_user_home.stat.exists
@@ -202,6 +209,8 @@
     dest: "{{ desktop_shortcuts_user_fields[5] }}/{{ desktop_shortcuts_user_desktop_name }}/{{ item.name }}"
     state: link
     force: true
+    owner: "{{ desktop_shortcuts_user_fields[2] | int }}"
+    group: "{{ desktop_shortcuts_user_fields[3] | int }}"
   loop: "{{ desktop_shortcuts_relative_links }}"
   when:
     - desktop_shortcuts_user_home is defined
