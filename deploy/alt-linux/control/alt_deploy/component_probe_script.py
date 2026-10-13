@@ -416,7 +416,9 @@ def collect(query, *, root=Path('/'), call=run):
         raise ValueError('probe user')
     if not isinstance(query['components'], list) or not 0 < len(query['components']) <= 256:
         raise ValueError('probe selection')
-    actual_uuid = text(path(root, '/sys/class/dmi/id/product_uuid')).strip().lower()
+    # /sys/class/dmi/id is a normal kernel symlink. Use the fixed physical
+    # sysfs location while retaining strict file/ancestry checks everywhere.
+    actual_uuid = text(path(root, '/sys/devices/virtual/dmi/id/product_uuid')).strip().lower()
     rc, hostname = call(['hostname', '-s'])
     if actual_uuid != query['machine_uuid'] or rc or hostname.lower() != query['hostname']:
         raise ValueError('probe machine identity')

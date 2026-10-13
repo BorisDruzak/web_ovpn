@@ -18,7 +18,7 @@ from test_component_verification import UUID, CATALOG
 def fixture(root, identifier='software.onlyoffice'):
     catalog = ComponentCatalog.load(CATALOG)
     files = {
-        'sys/class/dmi/id/product_uuid': UUID,
+        'sys/devices/virtual/dmi/id/product_uuid': UUID,
         'proc/sys/kernel/random/boot_id': 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee',
         'etc/os-release': 'ID=altlinux\nVERSION_ID=11.1\nPRETTY_NAME="ALT Workstation K 11.1"\n',
         'usr/bin/onlyoffice-desktopeditors': 'synthetic executable',
@@ -65,6 +65,15 @@ def test_shipped_package_collector_is_readonly_and_does_not_create_home(tmp_path
     assert all(c[0] in ('hostname', 'getent', 'rpm', 'ps', 'apt-get') for c in calls)
     assert all(c[1] in ('-q', '-qa') for c in calls if c[0] == 'rpm')
     assert all('--simulate' in c and 'Debug::NoLocking=true' in c for c in calls if c[0] == 'apt-get')
+
+
+def test_normal_linux_dmi_class_symlink_does_not_break_identity(tmp_path):
+    query, call, _ = fixture(tmp_path)
+    original = tmp_path/'sys/class/dmi/id'
+    physical = tmp_path/'sys/devices/virtual/dmi/id'
+    original.parent.mkdir(parents=True)
+    original.symlink_to('../../devices/virtual/dmi/id', target_is_directory=True)
+    assert collect(query, root=tmp_path, call=call)['machine']['uuid'] == UUID
 
 
 def test_unknown_package_probe_and_process_state_remain_unknown(tmp_path):
