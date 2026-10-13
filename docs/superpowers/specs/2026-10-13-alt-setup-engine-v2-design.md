@@ -40,6 +40,9 @@ dynamic relationships in addition to the graph.
 * Legacy provision admits jobs under the lifecycle lock and runs a detached worker.
   Setup, ConfigurePlanner, reconcile and numerous recovery operations also use that
   lock. Per-machine locks alone cannot prove safe controller-wide parallel writes.
+  In particular, `worker.run_job` releases the lock between stage updates and runs
+  Ansible outside it. A Setup execution lock must be combined with explicit checks
+  of admitted legacy jobs; the lock by itself does not exclude a legacy process.
 * Software selection is repeated in component preflight and `standard_software`.
   `software_catalog.yml` already holds approved package sources and identities.
 * Software roles verify pinned payloads and installed packages. They are reusable,
@@ -52,6 +55,11 @@ dynamic relationships in addition to the graph.
   arbitrary output as its primary evidence.
 * The ALT pytest directory requires POSIX and is skipped on Windows. Verification
   must use an isolated Linux runner; a Windows skip is not a passing ALT regression.
+  Local WSL is unavailable. The existing GitHub Actions Linux workflow is available;
+  [baseline run `38439218745`](https://github.com/BorisDruzak/web_ovpn/actions/runs/38439218745)
+  completed successfully for the exact baseline SHA: focused tests `555 passed`;
+  full `python -m pytest -q` regression `5346 passed, 89 skipped, 3315 warnings`.
+  That run is baseline evidence only and contains no V2 implementation or acceptance.
 
 ## Approach selection
 
@@ -90,6 +98,9 @@ mandatory preflight/verification and execution parameter allowlists. Unknown
 recipes fail closed. Role membership comes from the published Git package, never
 from runtime YAML upload. A new approved role and its declarative recipes are a
 normal Git/deployment change; adding a component does not change the orchestrator.
+Reject a component that directly maps to domain-join, AD-account, recovery or
+legacy provisioning roles even if those roles exist in the published bundle.
+Their only valid catalog representation is the protected critical-stage adapter.
 
 Initial IDs and existing integrations:
 
@@ -142,6 +153,10 @@ All required dependencies must be freshly compliant before component application
 Changed identity, catalog, source, SSH binding or relevant observed state requires
 a fresh plan and SHA confirmation. Preserve the 30-minute TTL and single-use plan
 reservation; completed plans cannot execute again.
+Include published event callback/plugin code in the source fingerprint explicitly:
+the current fingerprint does not include Python callback files outside roles.
+Bind SSH to the selected target's known-host/public-key identity without exposing
+private-key bytes or their hashes in public plans or evidence.
 
 Do not include observation timestamps in drift equality. Report timestamps beside
 the canonical observation projection. Mutable job/process state is validated as an
@@ -161,6 +176,11 @@ private atomic state I/O; store immutable request/plan, job state, per-component
 stages, safe events and protected logs. Do not rewrite provision history or its
 stage vocabulary. Teach active-job queries and lifecycle admission about Setup
 reservations without interpreting them as provision requests.
+Make durable publication crash-consistent: fsync file content, atomically publish
+the record and fsync its parent directory. Interrupted multi-record admission
+must remain detectable and block execution until reconciled, without losing or
+reviving a consumed plan. Existing retention must not delete Setup records in
+waiting or review-required states, or their reservation/evidence links.
 
 States: `queued`, `preflight`, `running`, `waiting_reboot`, `waiting_first_login`,
 `verifying`, `successful`, `degraded`, `failed`, `unknown_requires_review`.
@@ -179,6 +199,11 @@ for UUID, hostname and AD computer GUID. At execution retain the existing lifecy
 lock and a per-machine lock. Initially allow one controller mutation at a time,
 including compatibility with admitted legacy provision jobs. Holding the legacy
 execution lock remains necessary until all consumers permit a narrower contract.
+Under that lock, the V2 worker must refuse dispatch while any conflicting legacy
+job is queued/running or has ambiguous live-process evidence. Legacy provision
+admission must check V2 reservations under the same lock. Preserve its existing
+stage-update lock contract to avoid nested flock deadlocks; do not wrap its whole
+worker in the lock while stage updates reacquire it.
 New read-only list/status/detect/verify operations avoid that execution lock.
 Document any remaining legacy read path that still takes the lock.
 
