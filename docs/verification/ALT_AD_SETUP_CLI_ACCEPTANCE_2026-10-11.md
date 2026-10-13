@@ -400,3 +400,12 @@ unknown login, `setup_ou_not_approved` for an unapproved nonexistent OU, and
 the complete original L5 matrix.
 A fresh ordinary plan accepted the successful assignment and existing trust;
 confirmation with a wrong SHA returned `setup_plan_mismatch` before execution.
+
+The installed public CLI also refused the original now-expired successful
+continuation plan with `setup_plan_expired`, before any replay. Before/after
+hashes of the failed and successful Setup records and the Configure-run
+directory inventory were identical. A separate in-memory DirectoryConfig
+with a confirmed closed loopback LDAP endpoint exercised the actual installed
+LDAP transport and returned `ad_dc_unavailable`. The production directory
+configuration was not changed, and no workstation configuration was launched.
+Ambiguous AD user objects were not manufactured for live acceptance.
