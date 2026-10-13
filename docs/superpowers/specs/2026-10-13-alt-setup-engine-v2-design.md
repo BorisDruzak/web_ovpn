@@ -1,6 +1,6 @@
-# ALT Setup Engine V2 — design for review
+# ALT Setup Engine V2 — approved design
 
-Date: 2026-10-13. Status: proposed design; implementation and acceptance pending.
+Date: 2026-10-13. Status: user-approved design; implementation and acceptance pending.
 Repository baseline: `3935bad3ab728c886f8f7dca2f93e5baa3ed16f9` on `main`.
 
 ## Purpose and boundaries
@@ -288,7 +288,7 @@ Leave deployment/live criteria explicitly pending until actually demonstrated.
 
 ## Review decision
 
-Review this written design before generating the implementation plan. Suggested
+The user approved this written design on 2026-10-13. Suggested
 execution method: inline in this chat, with milestone test gates and one independent
 review before publication. Catalog and execution share identity/plan interfaces,
 so per-task delegation would repeatedly reload the same coupled safeguards.
