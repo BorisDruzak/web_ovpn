@@ -31,6 +31,18 @@ def add_parsers(commands):
 
     setup = commands.add_parser('setup', allow_abbrev=False, help='Plan, confirm and verify existing-employee workstation setup')
     actions = setup.add_subparsers(dest='setup_action', required=True)
+    for area, identifier in (('components', 'component_id'), ('profiles', 'profile_id')):
+        parser = actions.add_parser(area, allow_abbrev=False, help='Inspect the published catalog without contacting AD')
+        sub = parser.add_subparsers(dest='catalog_action', required=True)
+        sub.add_parser('list', allow_abbrev=False)
+        show = sub.add_parser('show', allow_abbrev=False)
+        show.add_argument(identifier)
+    component = actions.add_parser('component', allow_abbrev=False, help='Read-only individual component lifecycle')
+    sub = component.add_subparsers(dest='component_action', required=True)
+    for name in ('plan', 'verify'):
+        command = sub.add_parser(name, allow_abbrev=False)
+        command.add_argument('--machine', required=True)
+        command.add_argument('--component', required=True)
     plan = actions.add_parser('plan', allow_abbrev=False, help='Read-only AD/SSH inspection and protected 30-minute plan')
     plan.add_argument('--machine', required=True, help='Registered UUID or unique hostname; IP is not an identifier')
     plan.add_argument('--user', required=True, help='Existing employee sAMAccountName or sosnadmin.local UPN')
@@ -85,6 +97,23 @@ def directory_for_settings(settings):
 
 
 def handle(parsed, settings):
+    if parsed.command == 'setup' and parsed.setup_action in ('components', 'profiles'):
+        from .component_catalog import ComponentCatalog
+        catalog = ComponentCatalog.load(settings.ansible_project_dir)
+        area = parsed.setup_action
+        result = {'schema_version': 2, 'operation': area+'_'+parsed.catalog_action,
+                  'catalog_version': catalog.version, 'catalog_sha256': catalog.fingerprint}
+        if parsed.catalog_action == 'list':
+            result[area] = catalog.components() if area == 'components' else catalog.profiles()
+        elif area == 'components':
+            result['component'] = catalog.component(parsed.component_id)
+        else:
+            result['profile'] = catalog.profile(parsed.profile_id)
+        return result
+    if parsed.command == 'setup' and parsed.setup_action == 'component':
+        from .component_setup import ComponentSetupService
+        service = ComponentSetupService(settings)
+        return getattr(service, parsed.component_action)(parsed.machine, parsed.component)
     if parsed.command == 'ad':
         directory = directory_for_settings(settings)
         if parsed.ad_area == 'users':
@@ -142,6 +171,13 @@ def handle(parsed, settings):
 
 
 def write_text(stream, payload):
+    if payload.get('operation') == 'component' or (isinstance(payload.get('payload'), dict)
+            and payload['payload'].get('operation') == 'component'):
+        content = payload.get('payload', payload)
+        stream.write('Component plan: '+payload['plan_id']+'\nSHA-256: '+payload['sha256']+'\n')
+        stream.write('Component: '+content['component']['id']+'\nAction: '+content['action']+'\n')
+        stream.write('Expires: '+payload['expires_at']+'\n')
+        return
     if 'plan_id' in payload and 'payload' in payload:
         content = payload['payload']
         if payload['plan_id'].startswith('recovery-operator-'):

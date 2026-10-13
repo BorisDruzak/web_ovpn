@@ -112,6 +112,8 @@ def private_replace(path: Path, payload) -> None:
 class SetupPlanStore:
     prefix = 'setup-'
     directory = 'setup-plans'
+    plan_schema_version = 1
+    plan_operation = None
 
     def __init__(self, state_root: Path, *, clock=None):
         self.root = state_root / self.directory
@@ -119,9 +121,11 @@ class SetupPlanStore:
 
     def create(self, payload):
         now = self.clock().replace(microsecond=0)
-        body = {'schema_version': 1, 'created_at': now.isoformat(),
+        body = {'schema_version': self.plan_schema_version, 'created_at': now.isoformat(),
                 'expires_at': (now + timedelta(minutes=30)).isoformat(),
                 'content_sha256': digest(payload), 'payload': payload}
+        if self.plan_operation is not None:
+            body['operation'] = self.plan_operation
         sha = digest(body)
         plan = dict(body, plan_id=self.prefix + sha, sha256=sha)
         path = self.root / (plan['plan_id'] + '.json')
@@ -140,12 +144,16 @@ class SetupPlanStore:
             raise fail('setup_plan_mismatch', 'Setup plan SHA confirmation differs')
         try:
             plan = private_read(self.root / (plan_id + '.json'))
-            if set(plan) != {'schema_version', 'created_at', 'expires_at', 'content_sha256', 'payload', 'plan_id', 'sha256'}:
+            fields = {'schema_version', 'created_at', 'expires_at', 'content_sha256', 'payload', 'plan_id', 'sha256'}
+            if self.plan_operation is not None:
+                fields.add('operation')
+            if set(plan) != fields:
                 raise ValueError
             body = {key: value for key, value in plan.items() if key not in ('plan_id', 'sha256')}
             if (plan['plan_id'] != plan_id or plan['sha256'] != confirmed_sha
-                    or digest(body) != confirmed_sha or plan['schema_version'] != 1
+                    or digest(body) != confirmed_sha or plan['schema_version'] != self.plan_schema_version
                     or type(plan['schema_version']) is not int
+                    or (self.plan_operation is not None and plan['operation'] != self.plan_operation)
                     or not isinstance(plan['payload'], dict)
                     or digest(plan['payload']) != plan['content_sha256']):
                 raise ValueError

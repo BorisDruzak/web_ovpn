@@ -74,3 +74,25 @@ Missing or malformed observations remain unknown. A missing domain home remains
 deferred; detection does not create it. Technical installation verification and
 functional acceptance are separate fields: Directum document opening and token
 signing still require actual operator/user evidence.
+
+## Read-only operator commands
+
+```sh
+workstationctl --json setup components list
+workstationctl --json setup components show software.onlyoffice
+workstationctl --json setup profiles list
+workstationctl --json setup profiles show office-standard-v1
+workstationctl --json setup component plan --machine UUID --component software.onlyoffice
+workstationctl --json setup component verify --machine UUID --component software.onlyoffice
+```
+
+Inspection uses only the published catalog. Component plan/verify requires a
+registered machine and resolved existing Setup employee/domain assignment.
+Plans use `setup-component-<SHA256>`, response schema 2, SHA confirmation and the
+existing 30-minute TTL. They freeze profile/component declarations, AD and SSH
+public identities, source SHA and relevant actual observations. Changed identities,
+source/catalog or relevant evidence invalidate an older plan; observation time
+alone does not. An active job is allowed only as the exact current plan's own
+verified reservation. Healthy components plan noop without reading an installation
+payload or decrypting a software license. No component apply command exists at
+this milestone; durable execution follows in Milestone 2.
