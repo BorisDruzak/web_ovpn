@@ -57,6 +57,11 @@ published profile needs a new version; it does not rewrite historical results.
 Catalog installation/execution and live acceptance are later delivery gates;
 adding the declarations alone does not deploy or contact a workstation.
 
+See [operator commands](ALT_SETUP_OPERATOR_GUIDE.md) and
+[worker/backend/restore contracts](ALT_SETUP_ENGINE_V2.md). Functional acceptance
+is explicitly attested against a fresh compliant plan; package presence never
+produces `accepted` automatically.
+
 ## Independent detection
 
 The fixed probe reads installed RPM names/EVR/epoch/architecture, executables,

@@ -184,7 +184,12 @@ class ComponentSetupService:
         return self.plans.create(self._snapshot(identifier, component_id, after_job=after_job))
 
     def verify(self, identifier: str, component_id: str) -> dict:
-        return self._snapshot(identifier, component_id, read_only=True)['verification']
+        from .component_acceptance import project_acceptance
+        return project_acceptance(self.settings, self._snapshot(identifier, component_id, read_only=True))
+
+    def accept(self, plan_id: str, sha256: str, *, confirmed=False) -> dict:
+        from .component_acceptance import accept
+        return accept(self, plan_id, sha256, confirmed=confirmed)
 
     def apply(self, plan_id: str, sha256: str) -> dict:
         from .setup_jobs import SetupJobRepository

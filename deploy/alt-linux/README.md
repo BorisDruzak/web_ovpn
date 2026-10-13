@@ -1,5 +1,15 @@
 # ALT Workstation Provisioning
 
+## ALT Setup Engine V2
+
+The published component catalog, durable systemd Setup worker and independent
+verification are documented in [ALT_SETUP_ENGINE_V2.md](../../docs/ALT_SETUP_ENGINE_V2.md).
+Use the [operator guide](../../docs/ALT_SETUP_OPERATOR_GUIDE.md) for catalog/profile
+inspection, SHA-confirmed component jobs, safe events, interruption/reboot/login
+handling and explicit functional acceptance. Implementation, guarded controller
+deployment and [live acceptance](../../docs/verification/ALT_SETUP_ENGINE_V2_ACCEPTANCE_2026-10-13.md)
+are separate gates.
+
 ## Manual bootstrap and Ansible MVP
 
 An additional manual-install path is documented in

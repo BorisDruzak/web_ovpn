@@ -48,6 +48,10 @@ def add_parsers(commands):
     component_apply = sub.add_parser('apply', allow_abbrev=False)
     component_apply.add_argument('plan_id')
     component_apply.add_argument('--confirm-sha256', required=True)
+    acceptance = sub.add_parser('accept', allow_abbrev=False, help='Record an explicitly completed real user workflow against a fresh noop plan')
+    acceptance.add_argument('plan_id')
+    acceptance.add_argument('--confirm-sha256', required=True)
+    acceptance.add_argument('--confirm-functional', action='store_true', required=True)
     plan = actions.add_parser('plan', allow_abbrev=False, help='Read-only AD/SSH inspection and protected 30-minute plan')
     plan.add_argument('--machine', required=True, help='Registered UUID or unique hostname; IP is not an identifier')
     plan.add_argument('--user', required=True, help='Existing employee sAMAccountName or sosnadmin.local UPN')
@@ -58,6 +62,18 @@ def add_parsers(commands):
     apply.add_argument('plan_id')
     apply.add_argument('--confirm-sha256', required=True)
     apply.add_argument('--detach', action='store_true', help='Return durable job_id; the systemd worker performs Setup')
+    jobs = actions.add_parser('jobs', allow_abbrev=False, help='Read durable Setup jobs and safe events')
+    job_commands = jobs.add_subparsers(dest='setup_job_action', required=True)
+    job_list = job_commands.add_parser('list', allow_abbrev=False)
+    job_list.add_argument('--machine', help='Registered machine UUID')
+    job_list.add_argument('--offset', type=int, default=0)
+    job_list.add_argument('--limit', type=int, default=100)
+    for name in ('status', 'events', 'verify-continuation'):
+        command = job_commands.add_parser(name, allow_abbrev=False)
+        command.add_argument('job_id')
+        if name == 'events':
+            command.add_argument('--after', type=int, default=0)
+            command.add_argument('--limit', type=int, default=100)
     status = actions.add_parser('status', allow_abbrev=False, help='Read protected run result; does not retry a failed run')
     status.add_argument('run_id')
     verify = actions.add_parser('verify', allow_abbrev=False, help='Read current AD/SSH state for the recorded domain assignment')
@@ -103,6 +119,16 @@ def directory_for_settings(settings):
 
 
 def handle(parsed, settings):
+    if parsed.command == 'setup' and parsed.setup_action == 'jobs':
+        from .setup_jobs_view import SetupJobsService
+        service = SetupJobsService(settings)
+        if parsed.setup_job_action == 'list':
+            return service.list(parsed.machine, offset=parsed.offset, limit=parsed.limit)
+        if parsed.setup_job_action == 'events':
+            return service.events_for(parsed.job_id, after=parsed.after, limit=parsed.limit)
+        if parsed.setup_job_action == 'verify-continuation':
+            return service.verify_continuation(parsed.job_id)
+        return service.status(parsed.job_id)
     if parsed.command == 'setup' and parsed.setup_action in ('components', 'profiles'):
         from .component_catalog import ComponentCatalog
         catalog = ComponentCatalog.load(settings.ansible_project_dir)
@@ -119,6 +145,8 @@ def handle(parsed, settings):
     if parsed.command == 'setup' and parsed.setup_action == 'component':
         from .component_setup import ComponentSetupService
         service = ComponentSetupService(settings)
+        if parsed.component_action == 'accept':
+            return service.accept(parsed.plan_id, parsed.confirm_sha256, confirmed=parsed.confirm_functional)
         if parsed.component_action == 'apply':
             return service.apply(parsed.plan_id, parsed.confirm_sha256)
         if parsed.component_action == 'plan' and parsed.after_job:
@@ -182,6 +210,18 @@ def handle(parsed, settings):
 
 
 def write_text(stream, payload):
+    if payload.get('operation') in ('setup_apply', 'component_apply'):
+        stream.write('Job: '+payload['job_id']+'\nState: '+payload['state']+'\n')
+        stream.write('Inspect: workstationctl setup jobs status '+payload['job_id']+'\n')
+        return
+    if payload.get('operation') in ('setup_job_status', 'setup_job_continuation'):
+        job = payload['job']
+        stream.write('Job: '+job['job_id']+'\nState: '+job['state']+'\nStage: '+job['stage']+'\n')
+        stream.write('Error code: '+str(job['error_code'])+'\nNext: '+job['recommended_action']+'\n')
+        for identifier, component in job['components'].items():
+            verification = component['verification'] or {}
+            stream.write(identifier+': '+verification.get('status', 'unverified')+'; changed='+str(component['changed'])+'\n')
+        return
     if payload.get('operation') == 'component' or (isinstance(payload.get('payload'), dict)
             and payload['payload'].get('operation') == 'component'):
         content = payload.get('payload', payload)
