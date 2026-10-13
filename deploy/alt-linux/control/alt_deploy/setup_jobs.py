@@ -78,6 +78,14 @@ def fsync_directory(path: Path):
 
 @contextmanager
 def setup_queue_lock(settings, *, allow_root=False):
+    from .setup_maintenance import admission_guard
+    with admission_guard(settings.state_root):
+        with _setup_queue_lock(settings, allow_root=allow_root):
+            yield
+
+
+@contextmanager
+def _setup_queue_lock(settings, *, allow_root=False):
     """One service-owned lock, shared by root legacy and service Setup admission."""
     uid = service_uid(settings)
     if os.geteuid() != uid and not (allow_root and os.geteuid() == 0):
@@ -395,11 +403,10 @@ class SetupJobRepository:
     def locked(self):
         if os.geteuid() != service_uid(self.settings):
             raise fail('setup_job_actor_invalid', 'Run Setup jobs as the configured service account')
-        private_directory(self.settings.state_root)
-        for path in (self.claims, self.reservations, self.settings.jobs_dir):
-            private_directory(path)
-        fsync_directory(self.settings.state_root)
         with setup_queue_lock(self.settings):
+            for path in (self.claims, self.reservations, self.settings.jobs_dir):
+                private_directory(path)
+            fsync_directory(self.settings.state_root)
             yield
 
     def _read(self, path):
@@ -440,14 +447,15 @@ class SetupJobRepository:
             if store.load(plan['plan_id'], plan['sha256']) != plan:
                 raise fail('setup_plan_mismatch', 'Published Setup plan differs')
             self._check_admissions()
-            from .setup_retry import validate_predecessor, reviewed_jobs
-            prior = validate_predecessor(self.settings, plan) if operation == 'component' else None
+            from .setup_retry import validate_predecessor, reviewed_jobs, reviewed_full_runs
+            prior = validate_predecessor(self.settings, plan)
+            prior_runs = reviewed_full_runs(self.settings, plan['payload']) if operation == 'full_setup' and prior else set()
             reviewed = reviewed_jobs(self.settings)
             if prior in reviewed:
                 raise fail('setup_retry_already_reviewed', 'This predecessor already has a confirmed successor')
             if any(r['state'] in ('running', 'unknown_requires_review') and
                    (r['machine_uuid'] == identity['uuid'] or r['hostname'] == identity['hostname'])
-                   for r in unresolved_legacy_reservations(self.settings)):
+                    for r in unresolved_legacy_reservations(self.settings) if r['run_id'] not in prior_runs):
                 raise fail('setup_active_job', 'Machine has an unresolved legacy execution')
             for reservation_path in self.reservations.glob('*.json'):
                 reservation = self._read(reservation_path)

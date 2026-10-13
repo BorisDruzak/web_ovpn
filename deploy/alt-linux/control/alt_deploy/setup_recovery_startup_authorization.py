@@ -127,10 +127,12 @@ class RecoveryStartupPlans:
                 or self.fingerprint()!=snapshot['prerequisites']['source_sha256']):raise ValueError
         history=self.planning.history.load(pair['failed_run_id'])
         machine=self.planning.machines.resolve(payload['machine_uuid'])
+        from .setup_retry import closed_full_job_only
         if (not _same(history['identity'],snapshot['historical_identity'])
                 or history['identity']['evidence_sha256']!=payload['evidence_sha256']
                 or machine.uuid!=payload['machine_uuid'] or machine.hostname!=snapshot['machine']['hostname']
-                or machine.ip!=snapshot['machine']['ip'] or machine.registration_state!='ready' or machine.active_job or machine.assignment
+                or machine.ip!=snapshot['machine']['ip'] or machine.registration_state!='ready'
+                or not closed_full_job_only(self.settings, machine, pair['failed_run_id']) or machine.assignment
                 or digest(machine.raw)!=snapshot['machine']['registration_sha256']
                 or not _same(self.planning.plans.load(plan_id,confirmed_sha),plan)):raise ValueError
         identity=dict(pair,machine_uuid=payload['machine_uuid'],computer_sid=payload['computer_sid'],

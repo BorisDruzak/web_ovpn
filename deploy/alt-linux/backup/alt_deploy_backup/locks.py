@@ -142,6 +142,37 @@ def exclusive_operation_lock(
 
 
 @contextmanager
+def exclusive_setup_maintenance(settings):
+    # The stable inode is outside controller_state_root and is never archived.
+    # Keep the backup utility usable after restoring a pre-V2 control package.
+    path = settings.controller_state_root.parent/'alt-deploy-setup-admission.lock'
+    assert_safe_parents(path)
+    parent = path.parent.lstat()
+    if parent.st_uid != settings.expected_root_uid or not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o022:
+        raise _lock_error('backup_source_unsafe', 'Setup admission guard parent is unsafe')
+    try:
+        created = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        pass
+    else:
+        os.fchmod(created, 0o644)
+        os.fsync(created)
+        os.close(created)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if info.st_uid != settings.expected_root_uid or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o644:
+            raise _lock_error('backup_source_unsafe', 'Setup admission guard metadata is unsafe')
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
 def exclusive_lifecycle_lock(
     settings: BackupSettings,
 ) -> Iterator[None]:

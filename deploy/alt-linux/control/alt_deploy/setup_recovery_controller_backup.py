@@ -40,6 +40,7 @@ class _NativeFailure(ValueError):
 
 class RecoveryControllerBackup:
     def __init__(self, settings, *, credentials=None, fresh_check=None, runner=None):
+        self.settings = settings
         self.failure_root=settings.state_root/'setup-recovery-backup-failures'
         self.attempts = RecoveryAttemptStore.for_settings(settings)
         self.credentials = credentials or RecoveryCredentialStore(settings.state_root, codec=None,attempts=self.attempts)
@@ -69,9 +70,13 @@ class RecoveryControllerBackup:
         return dict(identity, snapshot_sha256=digest(payload['snapshot']),
                     sealed_sha256=document['sealed_sha256'],document_sha256=digest(document))
 
-    def _native(self, operation, backup_id=None):
+    def _native(self, operation, backup_id=None, *, recovery_admission=None):
         if operation not in ('guard','create','verify','rehearse','rehearse-status'): raise ValueError
         command=['/usr/bin/sudo','-n','/usr/local/sbin/alt-deploy-backup',operation]
+        if recovery_admission is not None:
+            if operation != 'create' or not _SHA.fullmatch(recovery_admission): raise ValueError
+            command[-1] = 'create-recovery'
+            command.append(recovery_admission)
         if operation in ('verify','rehearse','rehearse-status'):
             if not isinstance(backup_id,str) or not _BACKUP.fullmatch(backup_id): raise ValueError
             command.append(backup_id)
@@ -130,11 +135,13 @@ class RecoveryControllerBackup:
             # Persist exclusion before the first external operation. This is
             # included in the native controller-state snapshot, not regenerated.
             self._persist(intent,identity)
+            from .setup_recovery_backup_admission import prepare
+            admission = prepare(self, payload, identity, intent)
         except Exception:
             raise fail('recovery_controller_backup_invalid','Controller backup requires an exact fresh reservation and an unused preparation') from None
         try:
             self._native('guard')
-            created=self._native('create')
+            created=self._native('create', recovery_admission=admission)
             backup_id=created['backup_id'];manifest=created['manifest_sha256']
             for operation in ('verify','rehearse','rehearse-status'):
                 result=self._native(operation,backup_id)

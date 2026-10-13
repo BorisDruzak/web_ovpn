@@ -191,6 +191,13 @@ class StateValidator:
                 raise _failure("Job store contains an invalid entry")
             status, _ = _read_object(job_dir / "status.json")
             request, _ = _read_object(job_dir / "request.json")
+            if status.get('kind') == 'setup' or status.get('schema_version') == 2:
+                try:
+                    from .setup_compat import validate_job
+                    validate_job(request, status, job_dir)
+                except Exception as exc:
+                    raise _failure('Retained Setup job is invalid') from exc
+                continue
             job_id = status.get("job_id", job_dir.name)
             state = status.get("state")
             stage = status.get("stage")
@@ -504,6 +511,11 @@ class StateValidator:
             / "alt-deploy"
             / "registration"
         )
+        try:
+            from .setup_compat import validate_ledger
+            validate_ledger(controller_state)
+        except Exception as exc:
+            raise _failure('Retained Setup admission ledger is invalid') from exc
         checks = (
             self._validate_jobs(controller_state / "jobs"),
             self._validate_assignments(

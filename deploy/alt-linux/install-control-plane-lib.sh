@@ -449,6 +449,18 @@ ensure_private_state_directories() {
         "${root_prefix}" \
         /var/lib/alt-deploy)
     lock_file="${state_root}/workstationctl.lock"
+    local admission_lock
+    admission_lock="$(dirname "${state_root}")/alt-deploy-setup-admission.lock"
+    if [[ ! -d "$(dirname "${admission_lock}")" ]]; then
+        install -d -o root -g root -m 0755 "$(dirname "${admission_lock}")"
+    fi
+    if [[ -L "${admission_lock}" ]] || [[ -e "${admission_lock}" && ! -f "${admission_lock}" ]]; then
+        echo "Unsafe Setup admission guard" >&2
+        return 1
+    fi
+    if [[ ! -e "${admission_lock}" ]]; then
+        install -o root -g root -m 0644 /dev/null "${admission_lock}"
+    fi
 
     install -d -o altserver -g altserver -m 0700 \
         "${state_root}" \

@@ -19,6 +19,7 @@ from .settings import BackupSettings
 
 COMMANDS_WITHOUT_ID = {"create", "list", "guard", "install-check"}
 COMMANDS_WITH_ID = {
+    "create-recovery",
     "verify",
     "rehearse",
     "rehearse-status",
@@ -127,8 +128,8 @@ def _dispatch(
             "result": "rollout_completed",
             "backup_id": backup_id,
         }
-    repository = BackupRepository(settings)
-    if command == "create":
+    repository = BackupRepository(settings, recovery_admission=backup_id if command == 'create-recovery' else None)
+    if command in {"create", "create-recovery"}:
         result = repository.create()
         return {
             "status": "ok",

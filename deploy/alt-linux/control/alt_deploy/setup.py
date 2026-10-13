@@ -71,16 +71,24 @@ class SetupService:
                   own_job_id=None, expected_plan=None, legacy=False):
         catalog = None if legacy else self._catalog()
         machine = self.machines.resolve(identifier)
+        pending_predecessor = None
         if machine.registration_state != 'ready':
             raise fail('machine_not_ready', 'Machine registration is not ready')
         if machine.active_job:
             active = machine.active_job
-            if not (isinstance(active, dict) and own_job_id is not None and expected_plan is not None
+            owned = (isinstance(active, dict) and own_job_id is not None and expected_plan is not None
                     and active.get('schema_version') == 2 and active.get('kind') == 'setup'
                     and active.get('job_id') == own_job_id and active.get('machine_uuid') == machine.uuid
                     and active.get('plan_id') == expected_plan['plan_id']
-                    and active.get('plan_sha256') == expected_plan['sha256']):
-                raise fail('setup_active_job', 'Machine has an active incompatible job')
+                    and active.get('plan_sha256') == expected_plan['sha256'])
+            if not owned:
+                binding = self.assignments.get(machine.uuid)
+                if (not isinstance(active, dict) or active.get('kind') != 'setup'
+                        or active.get('state') != 'unknown_requires_review'
+                        or binding is None or binding['result'] != 'failed'):
+                    raise fail('setup_active_job', 'Machine has an active incompatible job')
+                from .setup_retry import full_predecessor
+                pending_predecessor = full_predecessor(self.settings, active['job_id'], machine.uuid, binding['run_id'])
         if machine.assignment:
             raise fail('assignment_conflict', 'Existing local provision assignment requires compatibility review')
         if not ou or ou not in self.approved_ous:
@@ -200,6 +208,13 @@ class SetupService:
                 from .configure import KRFB_NETWORK_CONFIRMATION_VARIABLE
                 import os
                 payload['network_restriction_confirmed'] = os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) == 'true'
+            prior = pending_predecessor or (expected_plan or {}).get('payload', {}).get('predecessor_job')
+            if prior:
+                from .setup_retry import full_predecessor
+                proof = retry or recovery_resolution
+                if not proof or full_predecessor(self.settings, prior['job_id'], machine.uuid, proof['failed_run_id']) != prior:
+                    raise fail('setup_retry_not_permitted', 'Full predecessor requires the original verified continuation gate')
+                payload['predecessor_job'] = prior
         return payload
 
     def plan(self, identifier, login, ou, software='core-apps', remote='none'):
@@ -254,6 +269,13 @@ class SetupService:
     def _validate_job_plan(self, plan, *, own_job_id):
         self.plans.load(plan['plan_id'], plan['sha256'])
         before = plan['payload']
+        if before.get('recovery_resolution') and self.recovery_resolutions.verifier is None:
+            from .setup_recovery_operator import operator_for_execution_plan
+            reference = before['recovery_resolution']
+            resolution = self.recovery_resolutions.load(reference['failed_run_id'], reference['computer_guid'])
+            terminal = resolution['terminal']
+            self.recovery_resolutions.verifier = operator_for_execution_plan(self.settings,
+                terminal['execution_plan_id'], terminal['execution_plan_sha256'])._verify_terminal_locked
         request = ConfigureRequest.from_mapping(before['request'], expected_uuid=before['machine']['uuid'],
                                                 catalog=self._catalog())
         current = self._snapshot(request.machine_uuid, before['user']['login'], request.computer_ou,

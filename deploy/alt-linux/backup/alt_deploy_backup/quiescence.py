@@ -53,15 +53,25 @@ class QuiescenceChecker:
         settings: BackupSettings,
         *,
         systemd_manager: SystemdManager | None = None,
+        recovery_admission: str | None = None,
     ) -> None:
         self.settings = settings
+        self.recovery_admission = recovery_admission
         self.systemd = systemd_manager or SystemdManager(settings)
 
     def _jobs(self) -> list[dict[str, str]]:
         jobs_root = self.settings.controller_state_root / "jobs"
         if not _directory_or_absent(jobs_root):
+            from .setup_compat import ledger_present, unresolved_jobs
+            if ledger_present(self.settings.controller_state_root) or self.recovery_admission is not None:
+                try:
+                    return [{'job_id': job_id, 'state': 'unresolved', 'stage': 'setup'} for job_id in
+                            unresolved_jobs(self.settings.controller_state_root, self.recovery_admission)]
+                except Exception as exc:
+                    raise _preflight('Setup admission evidence requires review') from exc
             return []
         active: list[dict[str, str]] = []
+        setup_present = False
         try:
             children = sorted(jobs_root.iterdir(), key=lambda item: item.name)
         except OSError as exc:
@@ -86,6 +96,15 @@ class QuiescenceChecker:
                 raise _preflight("Job status JSON is invalid") from exc
             if not isinstance(payload, dict):
                 raise _preflight("Job status must be an object")
+            if payload.get('kind') == 'setup' or payload.get('schema_version') == 2:
+                setup_present = True
+                try:
+                    from .setup_compat import validate_job
+                    request = json.loads(read_regular_bytes(job_dir/'request.json', max_bytes=16*1024*1024))
+                    validate_job(request, payload, job_dir)
+                except Exception as exc:
+                    raise _preflight('Setup job evidence is invalid') from exc
+                continue
             payload_job_id = payload.get("job_id", job_dir.name)
             state = payload.get("state")
             stage = payload.get("stage")
@@ -105,6 +124,13 @@ class QuiescenceChecker:
                         "stage": stage,
                     }
                 )
+        from .setup_compat import ledger_present, unresolved_jobs
+        if setup_present or ledger_present(self.settings.controller_state_root) or self.recovery_admission is not None:
+            try:
+                active.extend({'job_id': job_id, 'state': 'unresolved', 'stage': 'setup'}
+                              for job_id in unresolved_jobs(self.settings.controller_state_root, self.recovery_admission))
+            except Exception as exc:
+                raise _preflight('Setup admission evidence requires review') from exc
         return active
 
     def _pending(self) -> tuple[str, ...]:

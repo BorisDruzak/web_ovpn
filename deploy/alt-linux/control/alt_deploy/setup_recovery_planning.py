@@ -47,10 +47,11 @@ class RecoveryPlanningService:
         historical = self.history.load(failed_run_id)
         pinned = historical['identity']
         original = decode_state_bytes(historical['raw_files']['plan'])['payload']
+        from .setup_retry import closed_full_job_only
         try:
             machine = self.machines.resolve(pinned['machine_uuid'])
             if (machine.uuid != pinned['machine_uuid'] or machine.hostname != pinned['hostname']
-                    or machine.registration_state != 'ready' or machine.active_job or machine.assignment):
+                    or machine.registration_state != 'ready' or not closed_full_job_only(self.settings, machine, failed_run_id) or machine.assignment):
                 raise ValueError
             registered = {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
                           'registration_sha256': digest(machine.raw)}
@@ -74,7 +75,8 @@ class RecoveryPlanningService:
             if (computer['object_guid'] != computer_guid or not computer_matches(computer, machine.hostname, ou)
                     or not start <= created <= finish or computer['dc']['is_writable'] is not True):
                 raise ValueError
-            request = ConfigureRequest.from_mapping(original['request'], expected_uuid=machine.uuid)
+            from .configure import historical_setup_request
+            request = historical_setup_request(original, expected_uuid=machine.uuid)
             prerequisites = self.runtime.prerequisites(request)
             if prerequisites['ready'] is not True:
                 raise ValueError
@@ -92,7 +94,7 @@ class RecoveryPlanningService:
             # Reads may take time: refuse replacement of the registry or any of
             # the five originals before creating even a non-executable plan.
             current = self.machines.resolve(pinned['machine_uuid'])
-            if (digest(current.raw) != registered['registration_sha256'] or current.active_job or current.assignment
+            if (digest(current.raw) != registered['registration_sha256'] or not closed_full_job_only(self.settings, current, failed_run_id) or current.assignment
                     or current.registration_state != 'ready' or current.uuid != machine.uuid
                     or current.hostname != machine.hostname or current.ip != machine.ip
                     or self.history.load(failed_run_id)['raw_files'] != historical['raw_files']):

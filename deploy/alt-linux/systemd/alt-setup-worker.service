@@ -1,6 +1,7 @@
 [Unit]
 Description=ALT Setup serialized durable worker
-After=network-online.target
+Requires=alt-deploy-guard.service
+After=network-online.target alt-deploy-guard.service
 Wants=network-online.target
 
 [Service]

@@ -230,7 +230,9 @@ class BundleManager:
                 for source in spec.paths
             )
             actual_paths = tuple(item.absolute_path for item in record.paths)
-            if actual_paths != expected_paths:
+            optional_v2 = {'/usr/local/libexec/alt-setup-worker', '/etc/systemd/system/alt-setup-worker.service'}
+            legacy_paths = tuple(p for p in expected_paths if p not in optional_v2)
+            if actual_paths not in (expected_paths, legacy_paths):
                 raise _integrity("Manifest component paths do not match policy")
 
             archive_path = entries[record.filename]

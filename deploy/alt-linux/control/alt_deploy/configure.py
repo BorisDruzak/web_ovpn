@@ -130,6 +130,22 @@ def _krfb_network_restriction_confirmed() -> bool:
     return os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE, "false") == "true"
 
 
+def historical_setup_request(payload, *, expected_uuid):
+    """Parse a SHA-validated historical profile; never use it as a current role map."""
+    catalog = None
+    if payload.get('engine_schema_version') == 2:
+        from types import SimpleNamespace
+        from .component_catalog import ID_RE
+        profile = payload.get('profile', {})
+        if (not isinstance(profile.get('id'), str) or not ID_RE.fullmatch(profile['id'])
+                or type(profile.get('version')) is not int or profile['version'] < 1
+                or profile['id'] != payload['request'].get('software_profile')
+                or not re.fullmatch('[0-9a-f]{64}', str(payload.get('catalog_sha256', '')))):
+            raise _invalid_request('Historical catalog profile is invalid')
+        catalog = SimpleNamespace(profiles=lambda: [profile])
+    return ConfigureRequest.from_mapping(payload['request'], expected_uuid=expected_uuid, catalog=catalog)
+
+
 def _read_configure_result(
     payload: object,
     request: "ConfigureRequest",

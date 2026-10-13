@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .ad_directory import DOMAIN, fail
-from .configure import ConfigureRequest, _read_configure_result
+from .configure import ConfigureRequest, _read_configure_result, historical_setup_request
 from .errors import ControlError
 from .setup_assignments import DomainAssignmentStore
 from .setup_plans import SetupPlanStore, decode_state_bytes, digest, private_read_bytes
@@ -110,7 +110,7 @@ class RecoveryHistoryStore:
                 raise ValueError
             payload = plan['payload']
             machine, user = payload['machine'], payload['user']
-            request = ConfigureRequest.from_mapping(payload['request'], expected_uuid=machine_uuid)
+            request = historical_setup_request(payload, expected_uuid=machine_uuid)
             _guid(user['object_guid'])
             if (not isinstance(user['object_sid'], str)
                     or not re.fullmatch(r'S-1-5-21-(?:[0-9]+-){3}[0-9]+', user['object_sid'])

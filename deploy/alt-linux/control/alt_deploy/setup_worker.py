@@ -78,7 +78,8 @@ class SetupWorker:
             if any(job.state in ACTIVE_STATES for job in JobRepository(self.settings).list()
                    if job.status.get('kind') != 'setup'):
                 return {'status': 'blocked', 'code': 'legacy_job_active'}
-            if unresolved_legacy_reservations(self.settings):
+            from .setup_retry import reviewed_legacy_runs
+            if any(r['run_id'] not in reviewed_legacy_runs(self.settings) for r in unresolved_legacy_reservations(self.settings)):
                 return {'status': 'blocked', 'code': 'legacy_execution_unresolved'}
             jobs = self.jobs.list()
             from .setup_retry import reviewed_jobs

@@ -4,6 +4,7 @@ Before=alt-deploy-http.service
 Before=alt-deploy-register.service
 Before=alt-deploy-process.path
 Before=alt-deploy-process.service
+Before=alt-setup-worker.service
 
 [Service]
 Type=oneshot

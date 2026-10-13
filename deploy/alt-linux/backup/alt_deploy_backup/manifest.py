@@ -799,7 +799,7 @@ def parse_manifest(raw: bytes) -> BackupManifest:
     )
 
     raw_units = payload["systemd_units"]
-    if not isinstance(raw_units, list) or len(raw_units) != len(MANAGED_UNITS):
+    if not isinstance(raw_units, list) or len(raw_units) not in (4, len(MANAGED_UNITS)):
         raise _invalid("Manifest systemd unit count is invalid")
     units = tuple(
         _parse_unit(item, index)

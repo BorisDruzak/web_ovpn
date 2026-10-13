@@ -14,8 +14,10 @@ MANAGED_UNITS = (
     "alt-deploy-register.service",
     "alt-deploy-process.path",
     "alt-deploy-process.service",
+    "alt-setup-worker.service",
 )
 MAINTENANCE_STOP_ORDER = (
+    "alt-setup-worker.service",
     "alt-deploy-process.path",
     "alt-deploy-register.service",
     "alt-deploy-http.service",
@@ -23,6 +25,7 @@ MAINTENANCE_STOP_ORDER = (
 HEALTH_SERVICE_START_ORDER = (
     "alt-deploy-http.service",
     "alt-deploy-register.service",
+    "alt-setup-worker.service",
 )
 PROCESSOR_UNIT = "alt-deploy-process.service"
 PROCESS_PATH_UNIT = "alt-deploy-process.path"
@@ -238,7 +241,9 @@ class SystemdManager:
         activate_health_services: bool,
     ) -> None:
         by_name = {state.name: state for state in states}
-        if len(by_name) != len(states) or set(by_name) != set(MANAGED_UNITS):
+        if set(by_name) == set(MANAGED_UNITS[:4]):
+            by_name['alt-setup-worker.service'] = UnitState('alt-setup-worker.service', 'not-found', 'not-found', 'inactive', 'dead', False)
+        if len(states) not in (4, 5) or len({state.name for state in states}) != len(states) or set(by_name) != set(MANAGED_UNITS):
             raise _service_restore_failed("Systemd state set is invalid")
         if by_name[PROCESSOR_UNIT].active_state == "active":
             raise _service_restore_failed(

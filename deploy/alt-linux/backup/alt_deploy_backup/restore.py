@@ -12,7 +12,7 @@ import subprocess
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +29,7 @@ from .fs import (
     source_inventory,
 )
 from .guard import GuardState
-from .locks import exclusive_lifecycle_lock, exclusive_operation_lock
+from .locks import exclusive_lifecycle_lock, exclusive_operation_lock, exclusive_setup_maintenance
 from .manifest import BackupManifest
 from .repository import BackupRepository
 from .restore_journal import RestoreJournal, terminal_phases
@@ -740,6 +740,18 @@ class RestoreService:
                             present=record.present,
                         )
                     )
+            # V1 bundles do not list V2 helpers. Remove any newer helper/unit on
+            # promotion rather than leave a daemon attached to an old runtime.
+            for absolute, component in (('/usr/local/libexec/alt-setup-worker', 'runtime'),
+                                        ('/etc/systemd/system/alt-setup-worker.service', 'systemd')):
+                if not any(p.absolute_path == absolute for p in staged_paths):
+                    production = self.repository._controller_path(absolute)
+                    staged_paths.append(StagedPath(component=component, absolute_path=absolute,
+                        production_path=production, staged_path=None,
+                        rollback_path=production.parent/self._rollback_path_name(transaction.restore_id, production),
+                        present=False))
+            order = {absolute: index for index, (_, absolute) in enumerate(self._expected_staged_policy())}
+            staged_paths.sort(key=lambda p: order[p.absolute_path])
             transaction.transition(
                 "prepared",
                 "staged",
@@ -1226,7 +1238,7 @@ class RestoreService:
 
     @staticmethod
     def _deserialize_states(raw: object) -> tuple[UnitState, ...]:
-        if not isinstance(raw, list) or len(raw) != 4:
+        if not isinstance(raw, list) or len(raw) not in (4, 5):
             raise _staging("Restore journal service state is invalid")
         expected_keys = {
             "name",
@@ -1647,9 +1659,10 @@ class RestoreService:
     def restore(self, backup_id: str) -> RestoreResult:
         self.repository.assert_rehearsed_eligibility(backup_id)
         self.repository.quiescence.assert_quiescent()
-        with exclusive_operation_lock(self.settings):
+        with exclusive_operation_lock(self.settings), ExitStack() as maintenance:
             verified = self._assert_eligibility_unlocked(backup_id)
             self._assert_restore_capacity(verified)
+            maintenance.enter_context(exclusive_setup_maintenance(self.settings))
             pre_states = self.repository.systemd.capture()
             journal = RestoreJournal.create(self.settings, backup_id)
             journal.record_phase(
@@ -1682,6 +1695,14 @@ class RestoreService:
                         }
                     )
                     staged = self.stage(backup_id, journal)
+                    from .setup_compat import assert_restore_history, ledger_present
+                    state_path = next((p for p in staged.paths if p.absolute_path == '/var/lib/alt-deploy'), None)
+                    if state_path is not None:
+                        if state_path.staged_path is None:
+                            raise _staging('Controller state generation is missing')
+                        assert_restore_history(self.settings.controller_state_root, state_path.staged_path)
+                    elif ledger_present(self.settings.controller_state_root):
+                        raise _staging('Retained Setup history requires a staged controller state')
                     journal.transition(
                         "staged",
                         "services_stopped",

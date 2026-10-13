@@ -321,7 +321,7 @@ class RehearsalService:
             selected / "systemd" / "etc" / "systemd" / "system"
         )
         units = (
-            sorted(unit_root.glob("alt-deploy-*"))
+            sorted([*unit_root.glob("alt-deploy-*"), *unit_root.glob("alt-setup-*")])
             if unit_root.exists()
             else []
         )

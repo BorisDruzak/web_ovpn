@@ -56,6 +56,7 @@ def component_specs(settings: BackupSettings) -> tuple[ComponentSpec, ...]:
                 settings.workstationctl_path,
                 settings.worker_path,
                 settings.stage_helper_path,
+                settings.worker_path.parent / 'alt-setup-worker',
             ),
             excludes=(),
         ),

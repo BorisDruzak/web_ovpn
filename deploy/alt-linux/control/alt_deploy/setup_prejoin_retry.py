@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 
 from .ad_directory import fail
-from .configure import ConfigureRequest
+from .configure import historical_setup_request
 from .setup_plans import SetupPlanStore, digest, private_read, private_read_bytes
 
 
@@ -49,7 +49,7 @@ def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity,
         # Validate the original plan at the original apply instant, never replay it.
         plan = SetupPlanStore(root, clock=lambda: created).load(run['plan_id'], run['plan_sha256'])
         old = plan['payload']
-        request = ConfigureRequest.from_mapping(old['request'], expected_uuid=machine['uuid'])
+        request = historical_setup_request(old, expected_uuid=machine['uuid'])
         if (any(binding.get(k) != v for k, v in old['binding'].items()) or
                 old['machine'] != machine or
                 any(old['user'].get(k) != user.get(k) for k in ('object_guid', 'object_sid', 'login', 'upn')) or
@@ -67,11 +67,35 @@ def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity,
         raw = {k: private_read_bytes(p) for k, p in paths.items()}
         if raw['run'] != raw_run or private_read(paths['request']) != request.to_dict():
             raise ValueError
-        log = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', raw['log'].decode('utf-8'))
-        labels = [line for line in log.splitlines() if line.startswith('TASK [')]
-        if (not labels or not labels[-1].startswith('TASK [prejoin_upgrade :') or
-                any(line.startswith('TASK [domain_join :') for line in labels)):
-            raise ValueError
+        if old.get('engine_schema_version') == 2:
+            from types import SimpleNamespace
+            from .setup_events import SetupEventStore
+            from .setup_jobs import SetupJobRepository
+            import pwd
+            settings = SimpleNamespace(state_root=root, jobs_dir=root/'jobs',
+                                       service_user=pwd.getpwuid(root.stat().st_uid).pw_name)
+            candidates = [j for j in SetupJobRepository(settings).list() if j.request['operation'] == 'full_setup'
+                          and j.request['plan'] == plan]
+            if len(candidates) != 1 or candidates[0].state != 'unknown_requires_review':
+                raise ValueError
+            job = candidates[0]
+            outcome = private_read(job.job_dir/'execution.json')
+            events = SetupEventStore(settings)._read(job)
+            tasks = [e for e in events if e['type'].startswith('task_')]
+            if (outcome.get('legacy_error_run_id') != run_id or not tasks
+                    or tasks[-1]['component_id'] != 'domain.ready'
+                    or tasks[-1]['stage'] not in ('upgrade', 'download', 'transaction')
+                    or any(e['stage'] == 'domain_join' or e['component_id'] not in ('domain.ready', 'system.base') for e in tasks)):
+                raise ValueError
+            # Preserve original log hashes while also sealing every safe event.
+            for path in sorted((job.job_dir/'events').glob('*.json')):
+                raw['event_'+path.stem] = private_read_bytes(path)
+        else:
+            log = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', raw['log'].decode('utf-8'))
+            labels = [line for line in log.splitlines() if line.startswith('TASK [')]
+            if (not labels or not labels[-1].startswith('TASK [prejoin_upgrade :') or
+                    any(line.startswith('TASK [domain_join :') for line in labels)):
+                raise ValueError
         return {'failed_run_id': run_id, 'configuration_run_id': config_id,
                 'binding_sha256': digest(binding),
                 'evidence_sha256': {k: hashlib.sha256(v).hexdigest() for k, v in raw.items()}}

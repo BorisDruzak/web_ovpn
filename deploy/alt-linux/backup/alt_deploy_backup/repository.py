@@ -1,4 +1,5 @@
 from __future__ import annotations
+from contextlib import ExitStack
 
 import hashlib
 import os
@@ -21,7 +22,7 @@ from .fs import (
     source_inventory,
     validate_private_directory,
 )
-from .locks import exclusive_lifecycle_lock, exclusive_operation_lock
+from .locks import exclusive_lifecycle_lock, exclusive_operation_lock, exclusive_setup_maintenance
 from .manifest import (
     SCHEMA_VERSION,
     BackupManifest,
@@ -78,6 +79,7 @@ class BackupRepository:
         systemd_manager: SystemdManager | None = None,
         quiescence_checker: QuiescenceChecker | None = None,
         secret_provider: SecretIdentityProvider | None = None,
+        recovery_admission: str | None = None,
     ) -> None:
         self.settings = settings
         self.archive_engine = archive_engine or ArchiveEngine(settings)
@@ -85,6 +87,7 @@ class BackupRepository:
         self.quiescence = quiescence_checker or QuiescenceChecker(
             settings,
             systemd_manager=self.systemd,
+            recovery_admission=recovery_admission,
         )
         self.secrets = secret_provider or SecretIdentityProvider(settings)
 
@@ -378,12 +381,13 @@ class BackupRepository:
         return hashlib.sha256(raw).hexdigest()
 
     def create(self) -> CreateResult:
-        with exclusive_operation_lock(self.settings):
+        with exclusive_operation_lock(self.settings), ExitStack() as maintenance:
             self._validate_roots()
             self._validate_commands()
             specs = component_specs(self.settings)
             source_paths = self._source_paths(specs)
             self._check_disk_space(source_paths)
+            maintenance.enter_context(exclusive_setup_maintenance(self.settings))
             secret_identities = self.secrets.capture()
             self.quiescence.assert_quiescent()
             original_states = self.systemd.capture()

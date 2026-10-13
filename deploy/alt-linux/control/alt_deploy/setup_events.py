@@ -4,11 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import re
+import stat
 
 from .ad_directory import fail
 from .jobs import JobRepository
 from .locks import exclusive_lock
-from .setup_jobs import fsync_directory, publish, timestamp
+from .setup_jobs import fsync_directory, publish, timestamp, service_uid
 from .setup_plans import canonical, private_directory, private_read
 
 TYPES = {'task_start', 'task_ok', 'task_failed', 'task_unreachable', 'task_skipped', 'component_start', 'component_completed'}
@@ -74,14 +75,17 @@ class SetupEventStore:
         root = job.job_dir/'events'
         if not root.exists() and not root.is_symlink():
             return []
-        private_directory(root)
+        metadata = root.lstat()
+        uid = service_uid(self.settings)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != uid or stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise fail('setup_event_invalid', 'Setup event directory is unsafe')
         paths = sorted(root.glob('*.json'))
         if len(paths) > MAX_EVENTS:
             raise fail('setup_event_invalid', 'Setup event limit exceeded')
         scope = self._scope(job)
         events = []
         for sequence, path in enumerate(paths, 1):
-            event = private_read(path)
+            event = private_read(path, owner_uid=uid)
             self._validate(event, scope, persisted=True)
             if (event['job_id'] != job.job_id or event['sequence'] != sequence
                     or path.name != f'{sequence:012d}.json'):
