@@ -511,6 +511,39 @@ password Modify, sealed credentials, network-isolated native offline preparation
 fixed local import, stock-policy verification and genuine Setup continuation.
 Eight private synthetic tests and nine isolated native operations passed.
 Reusing native existing-account join was rejected because its fallback can
-repeat password operations after partial LDAP failure. Concrete reset approval
-and live continuation remain pending; no AD mutation was performed by this
-extension and fresh-VM automatic Setup acceptance remains incomplete.
+repeat password operations after partial LDAP failure. At this preparation gate,
+concrete reset approval and live continuation were pending; no AD mutation had
+been performed by the extension and fresh-VM Setup acceptance was incomplete.
+
+### 2026-10-13: selected-target recovery and ordinary Setup passed
+
+The separately SHA-authorized one-shot GUID-only password Modify on
+`test-vm-04` returned zero. The same computer retained GUID/SID/OU and other
+observed attributes; KVNO advanced from 1 to 2. Offline native credentials
+were prepared and checked before the write, imported once, and verified with
+pinned-DC machine AS and Samba trust. Stock SSSD policy was preserved and its
+services restored. No new backup, join replay or additional reboot occurred.
+
+One genuine ordinary stage-03 continuation finished successfully in about
+six minutes. Its component checks passed for domain identity, SSSD, GPO,
+government CA, Plasma, browser, OnlyOffice, Directum, Nextcloud, CryptoPro,
+CAdES, GosPlugin and desktop shortcuts. The initial home operation was deferred
+until the selected employee's first login; the employee then confirmed that
+the desktop opened. SSH inspection verified an active local domain X11 session,
+the correct home owner and mode 0700, four executable application shortcuts,
+folder links and Nextcloud autostart. Fresh CLI verification reported
+`home_exists=true` and `home_operations_deferred=false` with healthy trust and
+no local employee duplicate.
+
+A fresh non-root Yandex profile automatically downloaded GosPlugin 1.3.43.0
+and CAdES 1.3.17, both MV3; native messaging manifests and launchers were
+verified. Signing with a real employee certificate was not tested.
+The archived failed revision 2 remained readable after the successful current
+binding advanced to revision 3. Exactly 261 existing history files were
+byte-unchanged; only the expected mutable binding advanced. A new ordinary
+CLI plan omitted domain join and observed the existing home. Controller
+readiness passed 14 checks after completion.
+
+This establishes recovery and configured-workstation acceptance. The failed
+initial join used the earlier package/pre-join release, so first automatic join
+with the corrected native metadata adapter on a clean VM remains **pending**.
