@@ -26,6 +26,7 @@ EXPECTED_CHECKS = {
     "ansible_preflight_syntax",
     "ansible_provision_syntax",
     "ansible_manual_configure_syntax",
+    'ansible_component_syntax',
 }
 
 

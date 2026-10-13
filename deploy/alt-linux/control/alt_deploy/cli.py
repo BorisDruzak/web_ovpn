@@ -633,6 +633,11 @@ def main(
             parsed.command == "jobs"
             and parsed.job_command == "active"
         ):
+            from .setup_jobs import SetupJobRepository, unresolved_legacy_reservations
+            SetupJobRepository(active_settings)._check_admissions()
+            if unresolved_legacy_reservations(active_settings):
+                raise ControlError('setup_previous_run_unresolved',
+                                   'Legacy Setup/Configure execution requires review', 4)
             active_jobs = [
                 job
                 for job in JobRepository(

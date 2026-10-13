@@ -22,6 +22,7 @@ class Settings:
     workstationctl_path: Path
     service_user: str = "altserver"
     service_group: str = "altserver"
+    setup_worker_path: Path = Path('/usr/local/libexec/alt-setup-worker')
     # Internal protected-plan composition only; no environment/CLI override.
     recovery_attempt_context: dict | None = None
     install_sessions_dir: Path = Path(
@@ -150,6 +151,7 @@ class Settings:
                 "ALT_DEPLOY_SERVICE_GROUP",
                 "altserver",
             ),
+            setup_worker_path=Path(os.environ.get('ALT_DEPLOY_SETUP_WORKER', '/usr/local/libexec/alt-setup-worker')),
             install_sessions_dir=Path(
                 os.environ.get(
                     "ALT_DEPLOY_INSTALL_SESSIONS",

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import copy
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+import fcntl
 import os
 from pathlib import Path
 import pwd
@@ -17,8 +19,7 @@ import stat
 from .ad_directory import fail
 from .assignments import assert_safe_payload
 from .jobs import JobRepository
-from .locks import exclusive_lock
-from .setup_plans import digest, private_create, private_directory, private_read, private_replace
+from .setup_plans import canonical, digest, private_create, private_directory, private_read, private_replace
 
 ACTIVE_SETUP_STATES = frozenset({'queued', 'preflight', 'running', 'verifying',
                                 'waiting_reboot', 'waiting_first_login', 'unknown_requires_review'})
@@ -38,6 +39,7 @@ TRANSITIONS = {
 HEX = re.compile(r'^[0-9a-f]{64}$')
 UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 STAGE = re.compile(r'^[a-z][a-z0-9_.-]{0,95}$')
+_LEGACY_CONTEXT = ContextVar('legacy_setup_reservation', default=None)
 
 
 def service_uid(settings):
@@ -53,6 +55,166 @@ def fsync_directory(path: Path):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def setup_queue_lock(settings, *, allow_root=False):
+    """One service-owned lock, shared by root legacy and service Setup admission."""
+    uid = service_uid(settings)
+    if os.geteuid() != uid and not (allow_root and os.geteuid() == 0):
+        raise fail('setup_job_actor_invalid', 'Setup admission requires the configured service account')
+    root = settings.state_root
+    # Legacy state initialization already uses this permission contract.
+    if not root.exists():
+        private_directory(root)
+    for ancestor in (root, *root.parents):
+        if not stat.S_ISDIR(ancestor.lstat().st_mode):
+            raise fail('setup_state_unsafe', 'Setup queue ancestor is unsafe')
+    info = root.lstat()
+    if info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
+        raise fail('setup_state_unsafe', 'Setup queue root must be private and service-owned')
+    path = root/'setup-queue.lock'
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    except FileExistsError:
+        fd = os.open(path, os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0))
+    else:
+        if os.geteuid() == 0:
+            account = pwd.getpwnam(settings.service_user)
+            os.fchown(fd, account.pw_uid, account.pw_gid)
+        os.fsync(fd)
+        fsync_directory(root)
+    try:
+        metadata = os.fstat(fd)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != uid
+                or stat.S_IMODE(metadata.st_mode) != 0o600):
+            raise fail('setup_state_unsafe', 'Setup queue lock is unsafe')
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+@contextmanager
+def legacy_setup_admission(settings, machine_uuid, hostname, *, own_job_id=None):
+    """Caller retains lifecycle, then briefly takes queue across reservation."""
+    with setup_queue_lock(settings, allow_root=True):
+        jobs = SetupJobRepository(settings)
+        jobs._check_admissions()
+        for job in jobs.list():
+            if job.job_id == own_job_id:
+                continue
+            identity = job.request['identities']
+            if job.state in ACTIVE_SETUP_STATES and (identity['uuid'] == machine_uuid or identity['hostname'] == hostname.casefold()):
+                raise fail('setup_job_identity_reserved', 'Machine identity is reserved by a Setup job')
+        yield
+
+
+def legacy_execution_reservations(settings):
+    root = settings.state_root/'legacy-setup-reservations'
+    if not root.exists() and not root.is_symlink():
+        return []
+    uid = service_uid(settings)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700:
+        raise fail('setup_state_unsafe', 'Legacy execution reservation directory is unsafe')
+    records = []
+    for path in root.glob('*.json'):
+        record = private_read(path, owner_uid=uid)
+        try:
+            if (set(record) != {'schema_version', 'operation', 'reservation_id', 'machine_uuid', 'hostname', 'state', 'run_id', 'supersedes'}
+                    or record['schema_version'] != 1 or type(record['schema_version']) is not int
+                    or record['operation'] not in ('configure', 'full_setup')
+                    or record['state'] not in ('running', 'completed', 'unknown_requires_review')
+                    or not UUID.fullmatch(record['machine_uuid'])
+                    or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9-]{0,62}', record['hostname'])
+                    or not re.fullmatch(r'[0-9a-f]{32}', record['reservation_id'])
+                    or not re.fullmatch(r'(setup-run-)?[0-9a-f]{32}', record['run_id'])
+                    or not isinstance(record['supersedes'], list)
+                    or len(record['supersedes']) > 1024
+                    or len(set(record['supersedes'])) != len(record['supersedes'])
+                    or any(not re.fullmatch(r'[0-9a-f]{32}', value) for value in record['supersedes'])
+                    or path.name != record['reservation_id']+'.json'):
+                raise fail('setup_state_invalid', 'Legacy execution reservation is invalid')
+        except (KeyError, TypeError, ValueError) as exc:
+            raise fail('setup_state_invalid', 'Legacy execution reservation is invalid') from exc
+        records.append(record)
+    return records
+
+
+def unresolved_legacy_reservations(settings):
+    records = legacy_execution_reservations(settings)
+    resolved = {identifier for r in records if r['state'] == 'completed' for identifier in r['supersedes']}
+    return [r for r in records if r['state'] in ('running', 'unknown_requires_review') and r['reservation_id'] not in resolved]
+
+
+def _legacy_publish(settings, path, record, *, create=False):
+    """Root legacy callers publish service-owned evidence without weakening private I/O."""
+    import secrets
+    root = path.parent
+    if not root.exists() and not root.is_symlink():
+        root.mkdir(mode=0o700)
+        if os.geteuid() == 0:
+            account = pwd.getpwnam(settings.service_user)
+            os.chown(root, account.pw_uid, account.pw_gid)
+        fsync_directory(root.parent)
+    # Validate the directory and every existing record before modifying it.
+    legacy_execution_reservations(settings)
+    target = path if create else path.with_name('.'+path.name+'-'+secrets.token_hex(8))
+    if path.is_symlink():
+        raise fail('setup_state_unsafe', 'Legacy execution reservation is unsafe')
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        if os.geteuid() == 0:
+            account = pwd.getpwnam(settings.service_user)
+            os.fchown(fd, account.pw_uid, account.pw_gid)
+        with os.fdopen(fd, 'wb') as output:
+            fd = -1
+            output.write(canonical(record)+b'\n')
+            output.flush()
+            os.fsync(output.fileno())
+        if not create:
+            os.replace(target, path)
+        fsync_directory(root)
+    finally:
+        if fd != -1: os.close(fd)
+        if not create: target.unlink(missing_ok=True)
+
+
+@contextmanager
+def legacy_setup_execution(settings, machine_uuid, hostname, *, operation, run_id, reviewed_predecessor_runs=()):
+    import uuid
+    reservation_id = uuid.uuid4().hex
+    path = settings.state_root/'legacy-setup-reservations'/(reservation_id+'.json')
+    record = {'schema_version': 1, 'reservation_id': reservation_id, 'operation': operation,
+              'machine_uuid': machine_uuid, 'hostname': hostname.casefold(), 'state': 'running',
+              'run_id': run_id, 'supersedes': []}
+    with legacy_setup_admission(settings, machine_uuid, hostname):
+        existing = unresolved_legacy_reservations(settings)
+        parent = _LEGACY_CONTEXT.get()
+        inherited = parent['supersedes'] if parent and parent['machine_uuid'] == machine_uuid else []
+        record['supersedes'] = [r['reservation_id'] for r in existing if r['machine_uuid'] == machine_uuid
+                               and (r['run_id'] in reviewed_predecessor_runs or r['reservation_id'] in inherited)]
+        if any((r['machine_uuid'] == machine_uuid or r['hostname'] == hostname.casefold())
+               and r['reservation_id'] not in record['supersedes']
+               and (parent is None or r['reservation_id'] != parent['reservation_id']) for r in existing):
+            raise fail('setup_previous_run_unresolved', 'Earlier legacy execution requires review')
+        _legacy_publish(settings, path, record, create=True)
+    context = _LEGACY_CONTEXT.set(record)
+    try:
+        yield
+    except BaseException:
+        with setup_queue_lock(settings, allow_root=True):
+            _legacy_publish(settings, path, dict(record, state='unknown_requires_review'))
+        raise
+    else:
+        with setup_queue_lock(settings, allow_root=True):
+            _legacy_publish(settings, path, dict(record, state='completed'))
+    finally:
+        _LEGACY_CONTEXT.reset(context)
 
 
 def publish(path: Path, payload, *, create=False):
@@ -209,14 +371,11 @@ class SetupJobRepository:
         for path in (self.claims, self.reservations, self.settings.jobs_dir):
             private_directory(path)
         fsync_directory(self.settings.state_root)
-        # Protect against unsafe existing lock ownership/modes before flock.
-        if self.queue_lock.exists() or self.queue_lock.is_symlink():
-            info = self.queue_lock.lstat()
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                    or stat.S_IMODE(info.st_mode) != 0o600):
-                raise fail('setup_state_unsafe', 'Setup queue lock is unsafe')
-        with exclusive_lock(self.queue_lock):
+        with setup_queue_lock(self.settings):
             yield
+
+    def _read(self, path):
+        return private_read(path, owner_uid=service_uid(self.settings))
 
     def get(self, job_id):
         job = self.jobs.get(job_id)
@@ -237,7 +396,7 @@ class SetupJobRepository:
         with self.locked():
             path = self.claims/(plan['sha256']+'.json')
             if path.exists() or path.is_symlink():
-                claim = private_read(path)
+                claim = self._read(path)
                 try:
                     old = self.get(claim['job_id'])
                     self._check_claim(old, claim)
@@ -253,16 +412,21 @@ class SetupJobRepository:
             if store.load(plan['plan_id'], plan['sha256']) != plan:
                 raise fail('setup_plan_mismatch', 'Published Setup plan differs')
             self._check_admissions()
+            if any(r['state'] in ('running', 'unknown_requires_review') and
+                   (r['machine_uuid'] == identity['uuid'] or r['hostname'] == identity['hostname'])
+                   for r in unresolved_legacy_reservations(self.settings)):
+                raise fail('setup_active_job', 'Machine has an unresolved legacy execution')
             for reservation_path in self.reservations.glob('*.json'):
-                reservation = private_read(reservation_path)
+                reservation = self._read(reservation_path)
                 job = self.get(reservation['job_id'])
                 self._check_claim(job, reservation)
                 if (job.state in ACTIVE_SETUP_STATES and any(identity.get(k) == v for k, v in reservation['identities'].items())):
                     raise fail('setup_job_identity_reserved', 'UUID, hostname or AD computer identity is already reserved')
-            if any(job.machine_uuid == identity['uuid'] and job.state in ('queued', 'running')
+            if any((job.machine_uuid == identity['uuid'] or str(job.request.get('final_hostname', '')).casefold() == identity['hostname'])
+                   and job.state in ('queued', 'running')
                    for job in self.jobs.list() if job.status.get('kind') != 'setup'):
                 raise fail('setup_active_job', 'Machine has an active legacy provision job')
-            sequence = 1 + max((private_read(p)['admission_sequence'] for p in self.claims.glob('*.json')), default=0)
+            sequence = 1 + max((self._read(p)['admission_sequence'] for p in self.claims.glob('*.json')), default=0)
             job_id = self.jobs._generate_job_id()
             record = {'schema_version': 2, 'kind': 'setup', 'operation': operation,
                       'job_id': job_id, 'machine_uuid': identity['uuid'], 'identities': identity,
@@ -290,19 +454,27 @@ class SetupJobRepository:
         expected = {'schema_version': 2, 'job_id': job.job_id, 'plan_id': job.status['plan_id'],
                     'plan_sha256': job.status['plan_sha256'], 'request_sha256': job.status['request_sha256'],
                     'identities': job.request['identities'], 'admission_sequence': job.status['admission_sequence']}
-        if claim != expected or private_read(self.reservations/(job.job_id+'.json')) != claim:
+        if claim != expected or self._read(self.reservations/(job.job_id+'.json')) != claim:
             raise fail('setup_job_admission_requires_review', 'Setup admission evidence differs or is missing')
 
     def _check_admissions(self):
         try:
+            sequences = set()
             for path in self.claims.glob('*.json'):
-                claim = private_read(path)
+                claim = self._read(path)
                 job = self.get(claim['job_id'])
-                if path.name != job.status['plan_sha256']+'.json':
+                if path.name != job.status['plan_sha256']+'.json' or claim['admission_sequence'] in sequences:
                     raise ValueError
+                sequences.add(claim['admission_sequence'])
                 self._check_claim(job, claim)
+            for path in self.reservations.glob('*.json'):
+                reservation = self._read(path)
+                job = self.get(reservation['job_id'])
+                if path.name != job.job_id+'.json' or self._read(self.claims/(job.status['plan_sha256']+'.json')) != reservation:
+                    raise ValueError
+                self._check_claim(job, reservation)
             for job in self.list():
-                claim = private_read(self.claims/(job.status['plan_sha256']+'.json'))
+                claim = self._read(self.claims/(job.status['plan_sha256']+'.json'))
                 self._check_claim(job, claim)
         except Exception as exc:
             raise fail('setup_job_admission_requires_review', 'Interrupted or inconsistent Setup admission requires review') from exc

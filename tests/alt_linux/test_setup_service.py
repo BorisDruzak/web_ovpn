@@ -28,7 +28,10 @@ def scenario(tmp_path):
                 'sssd': False, 'user_lookup': False, 'local_duplicate': False, 'home_exists': False}
     computer = {'hostname': machine.hostname, 'exists': False, 'objects': []}
     calls = []
-    settings = SimpleNamespace(state_root=tmp_path, lock_file=tmp_path / 'lifecycle.lock')
+    tmp_path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp_path.chmod(0o700)
+    settings = SimpleNamespace(state_root=tmp_path, lock_file=tmp_path / 'lifecycle.lock',
+                               jobs_dir=tmp_path/'jobs', service_user='altserver', service_group='altserver')
     class Directory:
         def user(self, login):
             assert login == user['login']

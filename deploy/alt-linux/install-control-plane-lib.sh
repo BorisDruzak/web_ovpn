@@ -123,6 +123,7 @@ for key in ("manifest_sha256", "verification_sha256"):
 }
 
 stop_control_plane_after_failed_rollout() {
+    stop_if_loaded alt-setup-worker.service || true
     stop_if_loaded alt-deploy-process.path || true
     stop_if_loaded alt-deploy-register.service || true
     stop_if_loaded alt-deploy-http.service || true
@@ -144,6 +145,7 @@ validate_source_layout() {
     local required_files=(
         "${ALT_ROOT}/control/workstationctl"
         "${ALT_ROOT}/control/alt-provision-worker"
+        "${ALT_ROOT}/control/alt-setup-worker"
         "${ALT_ROOT}/control/alt-job-stage"
         "${ALT_ROOT}/api/static_server.py"
         "${ALT_ROOT}/api/register_api.py"
@@ -152,6 +154,11 @@ validate_source_layout() {
         "${ALT_ROOT}/systemd/alt-deploy-register.service"
         "${ALT_ROOT}/systemd/alt-deploy-process.path"
         "${ALT_ROOT}/systemd/alt-deploy-process.service"
+        "${ALT_ROOT}/systemd/alt-setup-worker.service"
+        "${ALT_ROOT}/ansible/group_vars/software_catalog.yml"
+        "${ALT_ROOT}/ansible/callback_plugins/alt_setup_events.py"
+        "${ALT_ROOT}/ansible/filter_plugins/alt_setup_catalog.py"
+        "${ALT_ROOT}/ansible/playbooks/04-setup-component.yml"
         "${ALT_ROOT}/ansible/ansible.cfg"
         "${ALT_ROOT}/ansible/group_vars/all.yml"
         "${ALT_ROOT}/ansible/playbooks/01-preflight.yml"
@@ -312,7 +319,10 @@ run_repository_verification() {
         "${ALT_ROOT}/api/static_server.py" \
         "${ALT_ROOT}/api/register_api.py" \
         "${ALT_ROOT}/api/process_pending.py" \
-        "${ALT_ROOT}/control/alt-job-stage"
+        "${ALT_ROOT}/control/alt-job-stage" \
+        "${ALT_ROOT}/control/alt-setup-worker" \
+        "${ALT_ROOT}/ansible/callback_plugins"/*.py \
+        "${ALT_ROOT}/ansible/filter_plugins"/*.py
 
     bash -n "${ALT_ROOT}/install-control-plane.sh"
     bash -n "${ALT_ROOT}/install-control-plane-args.sh"
@@ -388,6 +398,7 @@ stop_if_loaded() {
 }
 
 enter_control_plane_maintenance() {
+    stop_if_loaded alt-setup-worker.service
     stop_if_loaded alt-deploy-process.path
     stop_if_loaded alt-deploy-register.service
     stop_if_loaded alt-deploy-http.service
@@ -425,6 +436,9 @@ install_controller_package() {
     install -o root -g root -m 0755 \
         "${ALT_ROOT}/control/alt-job-stage" \
         "$(install_destination "${root_prefix}" /usr/local/libexec/alt-job-stage)"
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/control/alt-setup-worker" \
+        "$(install_destination "${root_prefix}" /usr/local/libexec/alt-setup-worker)"
 }
 
 ensure_private_state_directories() {
@@ -447,6 +461,8 @@ ensure_private_state_directories() {
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/ready)" \
         "$(install_destination "${root_prefix}" /srv/alt-deploy/registration/failed)" \
         "$(install_destination "${root_prefix}" /home/altserver/.ssh)"
+    install -d -o altserver -g altserver -m 0700 \
+        "$(install_destination "${root_prefix}" /home/altserver/.ansible)"
 
     if [[ -L "${lock_file}" ]] \
         || [[ -e "${lock_file}" && ! -f "${lock_file}" ]]; then
@@ -475,6 +491,9 @@ install_ansible_project() {
         "${ansible_root}" \
         "${ansible_root}/playbooks" \
         "${ansible_root}/roles" \
+        "${ansible_root}/callback_plugins" \
+        "${ansible_root}/filter_plugins" \
+        "${ansible_root}/files" \
         "${ansible_root}/group_vars"
 
     install -o altserver -g altserver -m 0644 \
@@ -483,18 +502,33 @@ install_ansible_project() {
     install -o altserver -g altserver -m 0644 \
         "${ALT_ROOT}/ansible/group_vars/all.yml" \
         "${ansible_root}/group_vars/all.yml"
+    install -o altserver -g altserver -m 0644 \
+        "${ALT_ROOT}/ansible/group_vars/software_catalog.yml" \
+        "${ansible_root}/group_vars/software_catalog.yml"
 
     cp -a "${ALT_ROOT}/ansible/playbooks/." "${ansible_root}/playbooks/"
     cp -a "${ALT_ROOT}/ansible/roles/." "${ansible_root}/roles/"
+    cp -a "${ALT_ROOT}/ansible/callback_plugins/." "${ansible_root}/callback_plugins/"
+    cp -a "${ALT_ROOT}/ansible/filter_plugins/." "${ansible_root}/filter_plugins/"
+    cp -a "${ALT_ROOT}/ansible/files/." "${ansible_root}/files/"
     chown -R altserver:altserver \
         "${ansible_root}/playbooks" \
+        "${ansible_root}/callback_plugins" \
+        "${ansible_root}/filter_plugins" \
+        "${ansible_root}/files" \
         "${ansible_root}/roles"
     find \
         "${ansible_root}/playbooks" \
+        "${ansible_root}/callback_plugins" \
+        "${ansible_root}/filter_plugins" \
+        "${ansible_root}/files" \
         "${ansible_root}/roles" \
         -type d -exec chmod 0750 {} +
     find \
         "${ansible_root}/playbooks" \
+        "${ansible_root}/callback_plugins" \
+        "${ansible_root}/filter_plugins" \
+        "${ansible_root}/files" \
         "${ansible_root}/roles" \
         -type f -exec chmod 0640 {} +
 }
@@ -543,7 +577,8 @@ install_systemd_units() {
         alt-deploy-http.service \
         alt-deploy-register.service \
         alt-deploy-process.path \
-        alt-deploy-process.service; do
+        alt-deploy-process.service \
+        alt-setup-worker.service; do
         install -o root -g root -m 0644 \
             "${ALT_ROOT}/systemd/${unit}" \
             "${systemd_root}/${unit}"
@@ -555,6 +590,7 @@ activate_control_plane() {
     systemctl enable --now alt-deploy-http.service
     systemctl enable --now alt-deploy-register.service
     systemctl enable --now alt-deploy-process.path
+    systemctl enable --now alt-setup-worker.service
 }
 
 run_installed_readiness() {

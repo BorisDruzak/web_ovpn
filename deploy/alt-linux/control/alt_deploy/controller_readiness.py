@@ -10,7 +10,7 @@ from urllib.request import urlopen
 from .config import Settings
 from .controller_permissions import ControllerPermissionAuditor
 from .errors import ControlError
-from .jobs import ACTIVE_STATES, JobRepository
+from .jobs import JobRepository, is_active_job
 from .vault import VaultHealthChecker
 
 RUNTIME_ENTRYPOINTS = {
@@ -21,6 +21,7 @@ RUNTIME_ENTRYPOINTS = {
     "job_stage_helper": Path(
         "/usr/local/libexec/alt-job-stage"
     ),
+    'setup_worker': Path('/usr/local/libexec/alt-setup-worker'),
 }
 
 API_FILES = {
@@ -57,6 +58,7 @@ STATIC_FILES = {
 }
 
 EXPECTED_UNIT_STATE = {
+    'alt-setup-worker.service': ('loaded', 'active', 'enabled'),
     "alt-deploy-http.service": (
         "loaded",
         "active",
@@ -150,10 +152,14 @@ class ControllerReadinessChecker:
     def active_jobs_empty(self) -> bool:
         try:
             jobs = JobRepository(self.settings).list()
+            from .setup_jobs import SetupJobRepository, unresolved_legacy_reservations
+            SetupJobRepository(self.settings)._check_admissions()
+            if unresolved_legacy_reservations(self.settings):
+                return False
         except (ControlError, OSError, ValueError):
             return False
         return not any(
-            job.state in ACTIVE_STATES
+            is_active_job(job)
             for job in jobs
         )
 
@@ -377,6 +383,7 @@ class ControllerReadinessChecker:
                     "03-configure-domain-workstation.yml"
                 )
             ),
+            'ansible_component_syntax': self.ansible_syntax_ok('04-setup-component.yml'),
         }
         result: dict[str, object] = {
             "ready": all(checks.values()),

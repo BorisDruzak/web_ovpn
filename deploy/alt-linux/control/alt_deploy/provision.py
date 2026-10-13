@@ -505,9 +505,9 @@ class ProvisionPlanner:
                 request,
             )
 
-            job = self.jobs.create(
-                request.to_dict()
-            )
+            from .setup_jobs import legacy_setup_admission
+            with legacy_setup_admission(self.settings, request.machine_uuid, request.final_hostname):
+                job = self.jobs.create(request.to_dict())
 
             expected_systemd_unit = (
                 f"alt-provision-{job.job_id}.service"

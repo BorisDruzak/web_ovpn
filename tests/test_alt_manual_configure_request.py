@@ -50,6 +50,29 @@ if sys.platform == "win32":
 MACHINE_UUID = "53b03180-5d78-11f0-bd95-f027db877a00"
 
 
+@pytest.fixture(autouse=True)
+def controller_service_account(monkeypatch):
+    """Use the test actor for the service-owned POSIX reservation boundary."""
+    if os.name != 'nt':
+        import pwd
+        original = pwd.getpwnam
+        actor = pwd.getpwuid(os.getuid())
+        monkeypatch.setattr(pwd, 'getpwnam', lambda name: actor if name == 'altserver' else original(name))
+    else:
+        # These Windows tests simulate subprocesses and flock; durable admission
+        # is exercised in tests/alt_linux with real separate Linux processes.
+        from contextlib import contextmanager
+        temporary_fcntl = sys.modules.get('fcntl')
+        sys.modules['fcntl'] = types.SimpleNamespace(LOCK_EX=2, LOCK_UN=8, flock=lambda *_args: None)
+        from alt_deploy import setup_jobs
+        if temporary_fcntl is None: sys.modules.pop('fcntl', None)
+        else: sys.modules['fcntl'] = temporary_fcntl
+        @contextmanager
+        def simulated_admission(*args, **kwargs):
+            yield
+        monkeypatch.setattr(setup_jobs, 'legacy_setup_execution', simulated_admission)
+
+
 def valid_request() -> dict[str, str]:
     return {
         "machine_uuid": MACHINE_UUID,

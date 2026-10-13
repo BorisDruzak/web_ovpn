@@ -126,7 +126,7 @@ def test_mixed_history_does_not_enter_legacy_reconcile_or_worker(component_servi
     with pytest.raises(ControlError): JobRepository(settings).update(setup_job.job_id, state='failed')
 
 
-@pytest.mark.parametrize('tamper', ['symlink', 'ancestor', 'large', 'mode', 'duplicate', 'request', 'claim_removed', 'reservation_removed'])
+@pytest.mark.parametrize('tamper', ['symlink', 'ancestor', 'large', 'mode', 'duplicate', 'request', 'claim_removed', 'reservation_removed', 'orphan_reservation'])
 def test_unsafe_or_inconsistent_admission_blocks_dispatch(component_service, tamper):
     jobs, plan, settings = jobs_fixture(component_service)
     job = jobs.submit(plan, operation='component')
@@ -148,6 +148,9 @@ def test_unsafe_or_inconsistent_admission_blocks_dispatch(component_service, tam
         private_replace(job.job_dir/'request.json', request)
     elif tamper == 'claim_removed': (jobs.claims/(plan['sha256']+'.json')).unlink()
     elif tamper == 'reservation_removed': (jobs.reservations/(job.job_id+'.json')).unlink()
+    elif tamper == 'orphan_reservation':
+        from alt_deploy.setup_jobs import publish
+        publish(jobs.reservations/'orphan.json', private_read(jobs.reservations/(job.job_id+'.json')), create=True)
     with pytest.raises(ControlError):
         jobs.claim(job.job_id, {'boot_id': 'a'*8+'-bbbb-cccc-dddd-'+'e'*12, 'pid': 1234, 'start_ticks': 100})
 

@@ -456,88 +456,90 @@ class ConfigurePlanner:
                 )
 
         run_id = uuid.uuid4().hex
-        run_dir = self.settings.state_root / "configure-runs" / run_id
-        run_dir.mkdir(parents=True, exist_ok=False)
-        os.chmod(run_dir.parent, 0o700)
-        os.chmod(run_dir, 0o700)
-        request_path = run_dir / "request.json"
-        result_path = run_dir / "result.json"
-        log_path = run_dir / "ansible.log"
-        atomic_write_json(request_path, request.to_dict())
+        from .setup_jobs import legacy_setup_execution
+        with legacy_setup_execution(self.settings, machine.uuid, request.final_hostname, operation='configure', run_id=run_id):
+            run_dir = self.settings.state_root / "configure-runs" / run_id
+            run_dir.mkdir(parents=True, exist_ok=False)
+            os.chmod(run_dir.parent, 0o700)
+            os.chmod(run_dir, 0o700)
+            request_path = run_dir / "request.json"
+            result_path = run_dir / "result.json"
+            log_path = run_dir / "ansible.log"
+            atomic_write_json(request_path, request.to_dict())
 
-        strict_ssh_arguments = (
-            f"-o UserKnownHostsFile={self.settings.known_hosts_file} "
-            "-o StrictHostKeyChecking=yes -o ProxyCommand=none "
-            "-o IdentitiesOnly=yes -o ConnectTimeout=10"
-        )
-        command = [
-            str(self.settings.ansible_playbook_path), "-i", f"{machine.ip},", "-u", "ansible",
-            f"--private-key={self.settings.private_key_file}",
-            f"--ssh-common-args={strict_ssh_arguments}",
-            "-e", "ansible_python_interpreter=/usr/bin/python3",
-            "-e", f"@{request_path}",
-            "-e", f"configure_result_file={result_path}",
-        ]
-        if krfb_network_restriction_confirmed:
-            command.extend(
-                [
-                    "-e",
-                    json.dumps(
-                        {KRFB_ANSIBLE_CONFIRMATION_VARIABLE: True},
-                        separators=(",", ":"),
-                    ),
-                ]
+            strict_ssh_arguments = (
+                f"-o UserKnownHostsFile={self.settings.known_hosts_file} "
+                "-o StrictHostKeyChecking=yes -o ProxyCommand=none "
+                "-o IdentitiesOnly=yes -o ConnectTimeout=10"
             )
-        if setup_directory_uri is not None:
-            command.extend(['-e', json.dumps({'ad_ldap_uri': setup_directory_uri}, separators=(',', ':'))])
-        command.append(str(self.configure_playbook))
-        environment = os.environ.copy()
-        environment.pop(KRFB_NETWORK_CONFIRMATION_VARIABLE, None)
-        environment["ANSIBLE_CONFIG"] = str(
-            self.settings.ansible_project_dir / "ansible.cfg"
-        )
-        try:
-            with log_path.open("w", encoding="utf-8") as log_stream:
-                os.chmod(log_path, 0o600)
-                completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=21600 if setup_fresh_install else 5400, check=False, cwd=self.settings.ansible_project_dir, env=environment)
-        except subprocess.TimeoutExpired as exc:
-            if setup_fresh_install:
-                phase = 'configuration'
-                if log_path.stat().st_size <= 8 * 1024 * 1024:
-                    content = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', log_path.read_text(encoding='utf-8', errors='replace'))
-                    labels = [line for line in content.splitlines()
-                              if line.startswith('TASK [')]
-                    if labels and labels[-1].startswith('TASK [prejoin_upgrade :'):
-                        phase = 'upgrade'
-                    elif labels and labels[-1].startswith('TASK [domain_join :'):
-                        phase = 'domain_join'
+            command = [
+                str(self.settings.ansible_playbook_path), "-i", f"{machine.ip},", "-u", "ansible",
+                f"--private-key={self.settings.private_key_file}",
+                f"--ssh-common-args={strict_ssh_arguments}",
+                "-e", "ansible_python_interpreter=/usr/bin/python3",
+                "-e", f"@{request_path}",
+                "-e", f"configure_result_file={result_path}",
+            ]
+            if krfb_network_restriction_confirmed:
+                command.extend(
+                    [
+                        "-e",
+                        json.dumps(
+                            {KRFB_ANSIBLE_CONFIRMATION_VARIABLE: True},
+                            separators=(",", ":"),
+                        ),
+                    ]
+                )
+            if setup_directory_uri is not None:
+                command.extend(['-e', json.dumps({'ad_ldap_uri': setup_directory_uri}, separators=(',', ':'))])
+            command.append(str(self.configure_playbook))
+            environment = os.environ.copy()
+            environment.pop(KRFB_NETWORK_CONFIRMATION_VARIABLE, None)
+            environment["ANSIBLE_CONFIG"] = str(
+                self.settings.ansible_project_dir / "ansible.cfg"
+            )
+            try:
+                with log_path.open("w", encoding="utf-8") as log_stream:
+                    os.chmod(log_path, 0o600)
+                    completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=21600 if setup_fresh_install else 5400, check=False, cwd=self.settings.ansible_project_dir, env=environment)
+            except subprocess.TimeoutExpired as exc:
+                if setup_fresh_install:
+                    phase = 'configuration'
+                    if log_path.stat().st_size <= 8 * 1024 * 1024:
+                        content = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', log_path.read_text(encoding='utf-8', errors='replace'))
+                        labels = [line for line in content.splitlines()
+                                  if line.startswith('TASK [')]
+                        if labels and labels[-1].startswith('TASK [prejoin_upgrade :'):
+                            phase = 'upgrade'
+                        elif labels and labels[-1].startswith('TASK [domain_join :'):
+                            phase = 'domain_join'
+                    raise ControlError(
+                        code='setup_upgrade_timeout' if phase == 'upgrade' else 'setup_configuration_timeout',
+                        message='Ansible setup timed out during package upgrade' if phase == 'upgrade' else 'Ansible setup timed out',
+                        exit_code=7, details={'run_id': run_id, 'phase': phase},
+                    ) from exc
                 raise ControlError(
-                    code='setup_upgrade_timeout' if phase == 'upgrade' else 'setup_configuration_timeout',
-                    message='Ansible setup timed out during package upgrade' if phase == 'upgrade' else 'Ansible setup timed out',
-                    exit_code=7, details={'run_id': run_id, 'phase': phase},
+                    code="domain_join_timeout",
+                    message="Ansible domain configure timed out",
+                    exit_code=7,
+                    details={"run_id": run_id},
                 ) from exc
-            raise ControlError(
-                code="domain_join_timeout",
-                message="Ansible domain configure timed out",
-                exit_code=7,
-                details={"run_id": run_id},
-            ) from exc
 
-        if completed.returncode != 0:
-            error_code = "domain_join_failed"
-            marker_codes = (
-                "hostname_mismatch",
-                "domain_computer_conflict",
-            )
-            log_content = log_path.read_text(encoding="utf-8", errors="replace")
-            for marker_code in marker_codes:
-                if f"ALT_PREFLIGHT_FAILURE:{marker_code}" in log_content:
-                    error_code = marker_code
-                    break
-            raise ControlError(code=error_code, message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
-        try:
-            result = _read_configure_result(read_json(result_path), request)
-        except (OSError, ValueError) as exc:
-            raise ControlError(code="domain_verification_failed", message="Domain configure did not produce a valid result", exit_code=7, details={"run_id": run_id}) from exc
-        result["run_id"] = run_id
-        return result
+            if completed.returncode != 0:
+                error_code = "domain_join_failed"
+                marker_codes = (
+                    "hostname_mismatch",
+                    "domain_computer_conflict",
+                )
+                log_content = log_path.read_text(encoding="utf-8", errors="replace")
+                for marker_code in marker_codes:
+                    if f"ALT_PREFLIGHT_FAILURE:{marker_code}" in log_content:
+                        error_code = marker_code
+                        break
+                raise ControlError(code=error_code, message="Ansible domain configure failed", exit_code=7, details={"run_id": run_id})
+            try:
+                result = _read_configure_result(read_json(result_path), request)
+            except (OSError, ValueError) as exc:
+                raise ControlError(code="domain_verification_failed", message="Domain configure did not produce a valid result", exit_code=7, details={"run_id": run_id}) from exc
+            result["run_id"] = run_id
+            return result
