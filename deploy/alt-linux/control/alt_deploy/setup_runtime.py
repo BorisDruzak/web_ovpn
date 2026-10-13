@@ -216,7 +216,7 @@ def source_fingerprint(project, control):
     hashes = {}
     for path in sorted(project.rglob('*')):
         relative = path.relative_to(project).as_posix()
-        if relative == 'group_vars/vault.yml':
+        if relative == 'group_vars/vault.yml' or '__pycache__' in path.parts or path.suffix in ('.pyc', '.pyo'):
             continue
         included = (relative.startswith(('roles/', 'callback_plugins/', 'filter_plugins/'))
                     or path.suffix in ('.yml', '.yaml', '.cfg'))

@@ -55,8 +55,9 @@ def scenario(tmp_path):
         def start(self, identifier, request, **kwargs):
             calls.append(request.to_dict())
             observed.update(domain='sosnadmin.local', trust=True, sssd=True, user_lookup=True)
-            computer.update(exists=True, objects=[{'object_guid': 'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa',
-                'dn': 'CN=alt-a1-pc3,' + OU, 'dns_hostname': 'alt-a1-pc3.sosnadmin.local'}])
+            if not computer['exists']:
+                computer.update(exists=True, objects=[{'object_guid': 'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa',
+                    'dn': 'CN=alt-a1-pc3,' + OU, 'dns_hostname': 'alt-a1-pc3.sosnadmin.local'}])
             return {'run_id': 'c' * 32, 'status': 'successful', 'reboot_required': True,
                     'verification': {'domain_join': True, 'sssd': True, 'domain_user_lookup': True, 'group_policy': True}}
     def probe(machine, user):

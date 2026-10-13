@@ -26,6 +26,23 @@ def test_setup_parser_contract_and_old_configure_command():
             cli.build_parser().parse_args(['setup', 'plan', abbreviated, 'value'])
 
 
+def test_durable_setup_and_component_apply_parser_dispatch(monkeypatch):
+    from alt_deploy import setup_cli, component_setup
+    calls = []
+    class Service:
+        def __init__(self, settings):
+            self.plans = type('Plans', (), {'load': lambda *a: {'payload': {}}})()
+        def apply(self, *a, **k):
+            calls.append((a, k))
+            return {'schema_version': 2, 'operation': 'setup_apply', 'job_id': 'synthetic', 'state': 'queued'}
+    monkeypatch.setattr(setup_cli, 'SetupService', Service)
+    monkeypatch.setattr(component_setup, 'ComponentSetupService', Service)
+    for command, options in [('apply', ['--detach']), ('component apply', [])]:
+        args = cli.build_parser().parse_args(['setup', *command.split(), 'plan', '--confirm-sha256', 'a'*64, *options])
+        assert setup_cli.handle(args, object())['state'] == 'queued'
+    assert calls == [(('plan', 'a'*64), {'detach': True}), (('plan', 'a'*64), {})]
+
+
 def test_recovery_startup_inventory_parser_dispatch_and_safe_text(monkeypatch):
     from alt_deploy import setup_cli
     calls=[]

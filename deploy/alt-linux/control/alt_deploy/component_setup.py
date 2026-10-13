@@ -144,6 +144,26 @@ class ComponentSetupService:
     def verify(self, identifier: str, component_id: str) -> dict:
         return self._snapshot(identifier, component_id)['verification']
 
+    def apply(self, plan_id: str, sha256: str) -> dict:
+        from .setup_jobs import SetupJobRepository
+        plan = self.plans.load(plan_id, sha256)
+        job = SetupJobRepository(self.settings, clock=self.clock).submit(plan, operation='component')
+        return {'schema_version': 2, 'operation': 'component_apply', 'job_id': job.job_id,
+                'machine_uuid': job.machine_uuid, 'state': job.state,
+                'plan_id': plan_id, 'plan_sha256': sha256}
+
+    def observe_result(self, plan, *, own_job_id):
+        """Allow the expected installed facts to change, never the identity/source."""
+        before = plan['payload']
+        current = self._snapshot(before['machine']['uuid'], before['component']['id'],
+                                 own_job_id=own_job_id, expected_plan=plan)
+        for key in ('machine', 'user', 'computer', 'ou_identity', 'binding', 'profile',
+                    'catalog_version', 'catalog_sha256', 'component', 'components',
+                    'ssh_binding', 'source_sha256'):
+            if current[key] != before[key]:
+                raise fail('component_plan_drift', 'Post-apply identity or published source changed')
+        return dict(current['observed'], observed_at=current['observed_at']), current['verification']
+
     def validate(self, plan_id: str, sha256: str, *, own_job_id: str | None=None) -> dict:
         plan = self.plans.load(plan_id, sha256)
         before = plan['payload']

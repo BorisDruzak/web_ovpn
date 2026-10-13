@@ -27,16 +27,35 @@ class CallbackModule(CallbackBase):
         self.component = {'id': os.environ['ALT_SETUP_COMPONENT_ID'],
                           'version': int(os.environ['ALT_SETUP_COMPONENT_VERSION'])}
         self.failed = False
+        self.full = os.environ.get('ALT_SETUP_FULL_SETUP') == 'true'
+        self.started = {}
+        self.role_components = {}
+        if self.full:
+            job = self.store.jobs.get(self.job_id)
+            self.role_components = {c['execution']['role']: {'id': c['id'], 'version': c['version']}
+                for c in job.request['plan']['payload']['components'] if 'role' in c['execution']}
 
     def v2_playbook_on_start(self, playbook):
-        self.store.append(self.job_id, {'schema_version': 1, 'component_id': self.component['id'],
-            'component_version': self.component['version'], 'stage': 'apply', 'task_id': 'component',
+        self._start(self.component)
+
+    def _start(self, component):
+        if component['id'] in self.started:
+            return
+        self.started[component['id']] = component
+        self.store.append(self.job_id, {'schema_version': 1, 'component_id': component['id'],
+            'component_version': component['version'], 'stage': 'apply', 'task_id': 'component',
             'type': 'component_start', 'changed': False, 'code': 'started'})
 
     def _event(self, result, event_type):
         # Callback exceptions alone do not make Ansible fail; its caller checks
         # the completion journal independently before trusting the result.
-        self.store.append(self.job_id, safe_task_event(result, component=self.component, event_type=event_type))
+        component = self.component
+        if self.full:
+            role = getattr(result._task, '_role', None)
+            if role is not None:
+                component = self.role_components.get(role.get_name(), self.component)
+        self._start(component)
+        self.store.append(self.job_id, safe_task_event(result, component=component, event_type=event_type))
 
     def v2_playbook_on_task_start(self, task, is_conditional):
         self._event(SimpleNamespace(_task=task, _result={}), 'task_start')
@@ -56,8 +75,9 @@ class CallbackModule(CallbackBase):
         self._event(result, 'task_skipped')
 
     def v2_playbook_on_stats(self, stats):
-        if not self.failed and all(not stats.summarize(host)['failures'] and not stats.summarize(host)['unreachable']
+        if (self.full or not self.failed) and all(not stats.summarize(host)['failures'] and not stats.summarize(host)['unreachable']
                                    for host in stats.processed):
-            self.store.append(self.job_id, {'schema_version': 1, 'component_id': self.component['id'],
-                'component_version': self.component['version'], 'stage': 'complete', 'task_id': 'component',
-                'type': 'component_completed', 'changed': False, 'code': 'completed'})
+            for component in self.started.values():
+                self.store.append(self.job_id, {'schema_version': 1, 'component_id': component['id'],
+                    'component_version': component['version'], 'stage': 'complete', 'task_id': 'component',
+                    'type': 'component_completed', 'changed': False, 'code': 'completed'})

@@ -30,9 +30,9 @@ TRANSITIONS = {
     'preflight': {'running', 'verifying', 'failed', 'unknown_requires_review'},
     'running': {'running', 'waiting_reboot', 'waiting_first_login', 'verifying', 'failed', 'unknown_requires_review'},
     'verifying': {'successful', 'degraded', 'failed', 'waiting_reboot', 'waiting_first_login', 'unknown_requires_review'},
-    # A claimed job is never resumed; a new plan requires explicit resolution.
-    'waiting_reboot': {'unknown_requires_review'},
-    'waiting_first_login': {'unknown_requires_review'},
+    # Continuation may only re-observe; it cannot return to running/apply.
+    'waiting_reboot': {'verifying', 'unknown_requires_review'},
+    'waiting_first_login': {'verifying', 'unknown_requires_review'},
     'unknown_requires_review': set(),
     'successful': set(), 'degraded': set(), 'failed': set(),
 }
@@ -40,6 +40,25 @@ HEX = re.compile(r'^[0-9a-f]{64}$')
 UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 STAGE = re.compile(r'^[a-z][a-z0-9_.-]{0,95}$')
 _LEGACY_CONTEXT = ContextVar('legacy_setup_reservation', default=None)
+_SETUP_CONTEXT = ContextVar('setup_execution', default=None)
+
+
+@contextmanager
+def setup_job_execution(settings, job_id, plan):
+    job = SetupJobRepository(settings).get(job_id)
+    if (job.state != 'running' or not job.status['claimed']
+            or job.request['operation'] != 'full_setup' or job.request['plan'] != plan):
+        raise fail('setup_job_not_claimed', 'Managed full execution requires its exact claimed plan')
+    token = _SETUP_CONTEXT.set(job_id)
+    try:
+        yield
+    finally:
+        _SETUP_CONTEXT.reset(token)
+
+
+def current_setup_job(settings):
+    job_id = _SETUP_CONTEXT.get()
+    return SetupJobRepository(settings).get(job_id) if job_id else None
 
 
 def service_uid(settings):
@@ -106,6 +125,11 @@ def legacy_setup_admission(settings, machine_uuid, hostname, *, own_job_id=None)
         jobs._check_admissions()
         for job in jobs.list():
             if job.job_id == own_job_id:
+                if (job.state != 'running' or not job.status['claimed']
+                        or job.request['operation'] != 'full_setup'
+                        or job.machine_uuid != machine_uuid
+                        or job.request['identities']['hostname'] != hostname.casefold()):
+                    raise fail('setup_job_identity_reserved', 'Managed execution ownership differs')
                 continue
             identity = job.request['identities']
             if job.state in ACTIVE_SETUP_STATES and (identity['uuid'] == machine_uuid or identity['hostname'] == hostname.casefold()):
@@ -192,7 +216,7 @@ def legacy_setup_execution(settings, machine_uuid, hostname, *, operation, run_i
     record = {'schema_version': 1, 'reservation_id': reservation_id, 'operation': operation,
               'machine_uuid': machine_uuid, 'hostname': hostname.casefold(), 'state': 'running',
               'run_id': run_id, 'supersedes': []}
-    with legacy_setup_admission(settings, machine_uuid, hostname):
+    with legacy_setup_admission(settings, machine_uuid, hostname, own_job_id=_SETUP_CONTEXT.get()):
         existing = unresolved_legacy_reservations(settings)
         parent = _LEGACY_CONTEXT.get()
         inherited = parent['supersedes'] if parent and parent['machine_uuid'] == machine_uuid else []

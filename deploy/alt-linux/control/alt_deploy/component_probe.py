@@ -184,7 +184,7 @@ class ComponentProbe:
         self.settings = settings
         self.runner = runner or bounded_run
 
-    def observe(self, machine, user: dict, components: list[dict]) -> dict:
+    def observe(self, machine, user: dict, components: list[dict], *, allow_unresolved=False) -> dict:
         try:
             login = normalize_login(user['login'])
             if user['upn'] != login+'@'+DOMAIN:
@@ -206,7 +206,7 @@ class ComponentProbe:
             rc, output, _ = self.runner(command, environment=dict(os.environ),
                                         input_text=json.dumps(query), timeout=180)
             document = json.loads(output)
-            if (rc or not valid_evidence(document) or document['machine']['uuid'] != machine.uuid
+            if (rc or not valid_evidence(document, allow_unresolved=allow_unresolved) or document['machine']['uuid'] != machine.uuid
                     or document['machine']['hostname'] != machine.hostname or document['user']['login'] != login):
                 raise ValueError
             return document

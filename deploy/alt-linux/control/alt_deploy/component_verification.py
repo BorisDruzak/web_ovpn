@@ -8,7 +8,7 @@ from datetime import datetime
 from .component_catalog import EVR_RE, PACKAGE_RE
 
 
-def valid_evidence(evidence):
+def valid_evidence(evidence, *, allow_unresolved=False):
     try:
         if not isinstance(evidence, dict) or set(evidence) != {
             'schema_version', 'observed_at', 'machine', 'user', 'package_manager', 'components'}:
@@ -37,7 +37,9 @@ def valid_evidence(evidence):
             return False
         if any(type(user[k]) is not bool for k in ('home_exists', 'home_safe')):
             return False
-        if any(type(user[k]) is not int or user[k] <= 0 for k in ('uid', 'gid')):
+        unresolved = (allow_unresolved and user['uid'] is None and user['gid'] is None
+                      and user['home_exists'] is False and user['home_safe'] is False)
+        if not unresolved and any(type(user[k]) is not int or user[k] <= 0 for k in ('uid', 'gid')):
             return False
         if not isinstance(evidence['package_manager'], dict) or not isinstance(evidence['components'], dict):
             return False

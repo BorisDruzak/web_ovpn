@@ -37,21 +37,25 @@ def add_parsers(commands):
         sub.add_parser('list', allow_abbrev=False)
         show = sub.add_parser('show', allow_abbrev=False)
         show.add_argument(identifier)
-    component = actions.add_parser('component', allow_abbrev=False, help='Read-only individual component lifecycle')
+    component = actions.add_parser('component', allow_abbrev=False, help='Guarded individual component lifecycle')
     sub = component.add_subparsers(dest='component_action', required=True)
     for name in ('plan', 'verify'):
         command = sub.add_parser(name, allow_abbrev=False)
         command.add_argument('--machine', required=True)
         command.add_argument('--component', required=True)
+    component_apply = sub.add_parser('apply', allow_abbrev=False)
+    component_apply.add_argument('plan_id')
+    component_apply.add_argument('--confirm-sha256', required=True)
     plan = actions.add_parser('plan', allow_abbrev=False, help='Read-only AD/SSH inspection and protected 30-minute plan')
     plan.add_argument('--machine', required=True, help='Registered UUID or unique hostname; IP is not an identifier')
     plan.add_argument('--user', required=True, help='Existing employee sAMAccountName or sosnadmin.local UPN')
     plan.add_argument('--computer-ou', required=True, help='Exact existing OU from the controller approved_ous list')
-    plan.add_argument('--software-profile', choices=('base', 'core-apps'), default='core-apps')
+    plan.add_argument('--software-profile', default='core-apps', help='Published catalog profile ID')
     plan.add_argument('--remote-access-profile', choices=('none', 'krfb'), default='none', help='KRFB requires separate TCP 5900 restriction confirmation')
     apply = actions.add_parser('apply', allow_abbrev=False, help='Revalidate and execute only the exact SHA-confirmed plan')
     apply.add_argument('plan_id')
     apply.add_argument('--confirm-sha256', required=True)
+    apply.add_argument('--detach', action='store_true', help='Return durable job_id; the systemd worker performs Setup')
     status = actions.add_parser('status', allow_abbrev=False, help='Read protected run result; does not retry a failed run')
     status.add_argument('run_id')
     verify = actions.add_parser('verify', allow_abbrev=False, help='Read current AD/SSH state for the recorded domain assignment')
@@ -113,6 +117,8 @@ def handle(parsed, settings):
     if parsed.command == 'setup' and parsed.setup_action == 'component':
         from .component_setup import ComponentSetupService
         service = ComponentSetupService(settings)
+        if parsed.component_action == 'apply':
+            return service.apply(parsed.plan_id, parsed.confirm_sha256)
         return getattr(service, parsed.component_action)(parsed.machine, parsed.component)
     if parsed.command == 'ad':
         directory = directory_for_settings(settings)
@@ -166,7 +172,8 @@ def handle(parsed, settings):
             resolution=service.recovery_resolutions.load(reference['failed_run_id'],reference['computer_guid'])
             terminal=resolution['terminal']
             service.recovery_resolutions.verifier=operator_for_execution_plan(settings,terminal['execution_plan_id'],terminal['execution_plan_sha256'])._verify_terminal_locked
-        return service.apply(parsed.plan_id, parsed.confirm_sha256)
+        options = {'detach': True} if parsed.detach else {}
+        return service.apply(parsed.plan_id, parsed.confirm_sha256, **options)
     return service.verify(parsed.machine)
 
 

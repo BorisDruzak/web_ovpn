@@ -107,3 +107,33 @@ def test_real_callback_never_displays_task_name_or_secret_output(ansible_runtime
     assert events['events'][-1]['type'] == 'component_completed'
     assert sentinel not in json.dumps(events)
     assert sentinel not in (job.job_dir/'ansible.log').read_text()
+
+
+def test_real_full_callback_attributes_changes_to_catalog_role(ansible_runtime, component_service, monkeypatch):
+    from test_setup_detach import full_fixture
+    executable, project, env = ansible_runtime
+    service, setup, *_ = component_service
+    setup.settings.ansible_project_dir = project
+    setup.settings.service_user = pwd.getpwuid(os.getuid()).pw_name
+    setup, jobs, _, _, _ = full_fixture(component_service, monkeypatch)
+    setup.settings.service_user = pwd.getpwuid(os.getuid()).pw_name
+    plan = setup.plan(component_service[2].uuid, component_service[3]['login'],
+                      setup.approved_ous[0], 'core-apps')
+    job = jobs.submit(plan, operation='full_setup')
+    sentinel = 'SENTINEL-PRIVATE-FULL-TASK'
+    (project/'roles/software_onlyoffice/tasks/main.yml').write_text(yaml.safe_dump([
+        {'name': sentinel, 'ansible.builtin.debug': {'msg': sentinel}, 'changed_when': True, 'no_log': True}]))
+    play = project/'synthetic-full-callback.yml'
+    play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
+        'tasks': [{'ansible.builtin.include_role': {'name': 'software_onlyoffice'}}]}]))
+    env.update(ANSIBLE_STDOUT_CALLBACK='alt_setup_events',
+        ANSIBLE_CALLBACK_PLUGINS=str(project/'callback_plugins'), ALT_DEPLOY_STATE_ROOT=str(setup.settings.state_root),
+        ALT_DEPLOY_SERVICE_USER=setup.settings.service_user, ALT_SETUP_JOB_ID=job.job_id,
+        ALT_SETUP_COMPONENT_ID='domain.ready', ALT_SETUP_COMPONENT_VERSION='1', ALT_SETUP_FULL_SETUP='true')
+    result = subprocess.run([str(executable), '-i', 'localhost,', '-e', 'ansible_connection=local',
+        str(play)], cwd=project, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout+result.stderr
+    events = SetupEventStore(setup.settings).read(job.job_id, limit=1000)['events']
+    assert any(e['component_id'] == 'software.onlyoffice' and e['changed'] for e in events)
+    assert events[-1]['type'] == 'component_completed'
+    assert sentinel not in result.stdout+result.stderr+json.dumps(events)

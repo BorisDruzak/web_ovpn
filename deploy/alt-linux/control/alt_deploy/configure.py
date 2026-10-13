@@ -213,6 +213,7 @@ class ConfigureRequest:
         payload: Mapping[str, object],
         *,
         expected_uuid: str,
+        catalog=None,
     ) -> "ConfigureRequest":
         payload_keys = set(payload)
         if payload_keys not in (REQUEST_FIELDS, REQUEST_FIELDS | PROFILE_FIELDS):
@@ -247,7 +248,8 @@ class ConfigureRequest:
                 payload, "remote_access_profile"
             ).lower()
             if (
-                software_profile not in SOFTWARE_PROFILES
+                software_profile not in (SOFTWARE_PROFILES if catalog is None else
+                                         {p['id'] for p in catalog.profiles()})
                 or remote_access_profile not in REMOTE_ACCESS_PROFILES
             ):
                 raise _invalid_request("Configure profile is unsupported")
@@ -267,7 +269,7 @@ class ConfigureRequest:
                 raise _invalid_request("Configure assigned domain user must be text or null")
 
             if (
-                (software_profile == "core-apps" or remote_access_profile == "krfb")
+                (software_profile != "base" or remote_access_profile == "krfb")
                 and assigned_domain_user is None
             ):
                 raise _invalid_request("Configure assigned domain user is required")
@@ -328,6 +330,8 @@ class ConfigureRequest:
         component_actions: list[str] = []
         if self.software_profile == "core-apps":
             component_actions.append("install_core_apps")
+        elif self.software_profile != 'base':
+            component_actions.append('install_published_software_profile')
         if self.remote_access_profile == "krfb":
             component_actions.append("configure_krfb")
         actions[-1:-1] = component_actions
@@ -498,6 +502,17 @@ class ConfigurePlanner:
             environment["ANSIBLE_CONFIG"] = str(
                 self.settings.ansible_project_dir / "ansible.cfg"
             )
+            from .setup_jobs import current_setup_job
+            managed_job = current_setup_job(self.settings)
+            if managed_job is not None:
+                domain_component = next(c for c in managed_job.request['plan']['payload']['components']
+                                        if c['id'] == 'domain.ready')
+                environment.update(ANSIBLE_STDOUT_CALLBACK='alt_setup_events',
+                    ANSIBLE_CALLBACK_PLUGINS=str(self.settings.ansible_project_dir/'callback_plugins'),
+                    ANSIBLE_CALLBACKS_ENABLED='', ALT_DEPLOY_STATE_ROOT=str(self.settings.state_root),
+                    ALT_DEPLOY_SERVICE_USER=self.settings.service_user, ALT_SETUP_JOB_ID=managed_job.job_id,
+                    ALT_SETUP_COMPONENT_ID='domain.ready', ALT_SETUP_COMPONENT_VERSION=str(domain_component['version']),
+                    ALT_SETUP_FULL_SETUP='true', PYTHONPATH=str(Path(__file__).resolve().parent.parent))
             try:
                 with log_path.open("w", encoding="utf-8") as log_stream:
                     os.chmod(log_path, 0o600)
@@ -531,7 +546,7 @@ class ConfigurePlanner:
                     "hostname_mismatch",
                     "domain_computer_conflict",
                 )
-                log_content = log_path.read_text(encoding="utf-8", errors="replace")
+                log_content = '' if managed_job else log_path.read_text(encoding="utf-8", errors="replace")
                 for marker_code in marker_codes:
                     if f"ALT_PREFLIGHT_FAILURE:{marker_code}" in log_content:
                         error_code = marker_code
@@ -542,4 +557,10 @@ class ConfigurePlanner:
             except (OSError, ValueError) as exc:
                 raise ControlError(code="domain_verification_failed", message="Domain configure did not produce a valid result", exit_code=7, details={"run_id": run_id}) from exc
             result["run_id"] = run_id
+            if managed_job is not None:
+                from .setup_events import SetupEventStore
+                events = SetupEventStore(self.settings)._read(managed_job)
+                if not events or events[-1]['type'] != 'component_completed':
+                    raise ControlError('setup_component_result_invalid', 'Full Setup completion journal is incomplete',
+                                       7, {'run_id': run_id})
             return result

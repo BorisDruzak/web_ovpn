@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import uuid
+import time
 from datetime import datetime, timezone
 
 from .ad_directory import ADDirectory, DOMAIN, fail
@@ -34,8 +35,12 @@ def observed_computer_matches(observed, computer, hostname):
 
 class SetupService:
     def __init__(self, settings, *, directory=None, machines=None, planner=None,
-                 approved_ous=None, probe=None, prerequisites=None, clock=None, recovery_terminal_verifier=None, retry_probe=None):
+                 approved_ous=None, probe=None, prerequisites=None, clock=None, recovery_terminal_verifier=None, retry_probe=None,
+                 catalog=None, component_probe=None, job_waiter=None):
         self.settings = settings
+        self.catalog = catalog
+        self.component_probe = component_probe
+        self.job_waiter = job_waiter
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         config = DirectoryConfig.load() if directory is None or approved_ous is None else None
         self.directory = directory or ADDirectory(LDAPTransport(config, settings=settings))
@@ -55,12 +60,27 @@ class SetupService:
         from .setup_recovery_resolution import RecoveryResolutionStore
         self.recovery_resolutions = RecoveryResolutionStore(settings, terminal_verifier=recovery_terminal_verifier, clock=self.clock)
 
-    def _snapshot(self, identifier, login, ou, software, remote, *, recovery_resolution=None):
+    def _catalog(self):
+        from .component_catalog import ComponentCatalog
+        # Injected legacy adapters may use the old interface without an Ansible bundle.
+        # Production Settings always supply the fixed, published project directory.
+        return self.catalog or (ComponentCatalog.load(self.settings.ansible_project_dir)
+                                if hasattr(self.settings, 'ansible_project_dir') else None)
+
+    def _snapshot(self, identifier, login, ou, software, remote, *, recovery_resolution=None,
+                  own_job_id=None, expected_plan=None, legacy=False):
+        catalog = None if legacy else self._catalog()
         machine = self.machines.resolve(identifier)
         if machine.registration_state != 'ready':
             raise fail('machine_not_ready', 'Machine registration is not ready')
         if machine.active_job:
-            raise fail('setup_active_job', 'Machine has an active incompatible job')
+            active = machine.active_job
+            if not (isinstance(active, dict) and own_job_id is not None and expected_plan is not None
+                    and active.get('schema_version') == 2 and active.get('kind') == 'setup'
+                    and active.get('job_id') == own_job_id and active.get('machine_uuid') == machine.uuid
+                    and active.get('plan_id') == expected_plan['plan_id']
+                    and active.get('plan_sha256') == expected_plan['sha256']):
+                raise fail('setup_active_job', 'Machine has an active incompatible job')
         if machine.assignment:
             raise fail('assignment_conflict', 'Existing local provision assignment requires compatibility review')
         if not ou or ou not in self.approved_ous:
@@ -77,7 +97,7 @@ class SetupService:
             'realm': 'SOSNADMIN.LOCAL', 'workgroup': 'SOSNADM', 'computer_ou': ou,
             'domain_test_user': user['upn'], 'assigned_domain_user': user['upn'],
             'software_profile': software, 'remote_access_profile': remote,
-        }, expected_uuid=machine.uuid)
+        }, expected_uuid=machine.uuid, catalog=catalog)
         binding = self.assignments.identity_binding(machine.uuid, user, ou, software, remote)
         resolution = None
         retry_binding = None
@@ -136,6 +156,8 @@ class SetupService:
             changes[0:0] = ['select_approved_p11_package_mirror', 'upgrade_alt_before_domain_join', 'domain_join']
         if software == 'core-apps':
             changes.append('ensure_core_apps_including_signature_suite')
+        elif software != 'base':
+            changes.append('ensure_published_software_profile')
         if remote == 'krfb':
             changes.append('ensure_opt_in_krfb')
         payload = {'machine': {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
@@ -151,6 +173,28 @@ class SetupService:
         if retry is not None:
             payload['prejoin_retry'] = retry
             changes.append('continue_after_proven_prejoin_timeout')
+        if catalog is not None:
+            from .component_probe import ComponentProbe, ssh_binding
+            from .component_verification import VerificationEngine, valid_evidence
+            profile = catalog.profile(software)
+            selection = profile['components'] + (['remote.krfb'] if remote == 'krfb' else [])
+            components = catalog.ordered(selection, os_id='alt-kworkstation-11')
+            probe = self.component_probe or ComponentProbe(self.settings)
+            facts = probe.observe(machine, user, components, allow_unresolved=not observed['trust'])
+            if (not valid_evidence(facts, allow_unresolved=not observed['trust'])
+                    or facts['machine']['uuid'] != machine.uuid or facts['machine']['hostname'] != machine.hostname
+                    or facts['machine']['os_id'] != 'alt-kworkstation-11'
+                    or facts['user']['login'] != user['login']
+                    or facts['package_manager'].get('processes_absent') is not True):
+                raise fail('setup_probe_invalid', 'Full Setup component preflight cannot verify machine or package activity')
+            from .setup_runtime import source_fingerprint
+            from pathlib import Path
+            payload.update(engine_schema_version=2, catalog_version=catalog.version,
+                           catalog_sha256=catalog.fingerprint, profile=profile, components=components,
+                           component_observed={k: v for k, v in facts.items() if k != 'observed_at'},
+                           component_verification=VerificationEngine(catalog).evaluate(facts, selection),
+                           ssh_binding=ssh_binding(self.settings, machine),
+                           source_sha256=source_fingerprint(self.settings.ansible_project_dir, Path(__file__).parent))
         return payload
 
     def plan(self, identifier, login, ou, software='core-apps', remote='none'):
@@ -166,93 +210,164 @@ class SetupService:
     def status(self, run_id):
         return private_read(self._run_path(run_id))
 
-    def apply(self, plan_id, confirmed_sha):
-        with exclusive_lock(self.settings.lock_file):
-            plan = self.plans.load(plan_id, confirmed_sha)
-            index_path = self.settings.state_root / 'setup-plan-runs' / (plan_id + '.json')
-            if index_path.exists() or index_path.is_symlink():
-                index = private_read(index_path)
-                result = self.status(index['run_id'])
-                if result.get('status') in ('running', 'failed', 'interrupted'):
-                    raise fail('setup_previous_run_unresolved', 'This plan already has a run requiring manual review; automatic replay is blocked')
-                return result
-            before = plan['payload']
-            request = ConfigureRequest.from_mapping(before['request'], expected_uuid=before['machine']['uuid'])
-            current = self._snapshot(request.machine_uuid, before['user']['login'], request.computer_ou,
-                                      request.software_profile, request.remote_access_profile,
-                                      recovery_resolution=before.get('recovery_resolution'))
-            if current != before:
-                raise fail('setup_plan_drift', 'Setup identity or prerequisites changed; create a new plan')
-            run_id = 'setup-run-' + uuid.uuid4().hex
-            from .setup_jobs import legacy_setup_execution
-            predecessors = []
-            if current.get('prejoin_retry'):
-                predecessors = [current['prejoin_retry']['failed_run_id'], current['prejoin_retry']['configuration_run_id']]
-            elif current.get('recovery_resolution'):
-                failed_id = current['recovery_resolution']['failed_run_id']
-                predecessors = [failed_id, self.status(failed_id)['configuration_run_id']]
-            with legacy_setup_execution(self.settings, request.machine_uuid, request.final_hostname,
-                                        operation='full_setup', run_id=run_id, reviewed_predecessor_runs=predecessors):
-                date = self.clock().isoformat()
-                revision = (current['existing_assignment'] or {}).get('revision', 0) + 1
-                run = {'schema_version': 1, 'run_id': run_id, 'plan_id': plan_id, 'plan_sha256': confirmed_sha,
-                       'machine_uuid': request.machine_uuid, 'status': 'running', 'created_at': date,
-                       'reboot_required': None, 'deferred_actions': current['deferred_actions']}
-                private_create(self._run_path(run_id), run)
-                private_create(index_path, {'run_id': run_id})
-                self.assignments.write(current['binding'], run_id=run_id, result='running', date=date, revision=revision)
-                try:
-                    endpoint = current['prerequisites'].get('directory_uri')
-                    options = {'setup_directory_uri': endpoint} if endpoint is not None else {}
-                    if not current['computer']['exists']:
-                        options['setup_fresh_install'] = True
-                    result = self.planner.start(request.machine_uuid, request, _lock_held=True, setup_run_id=run_id, **options)
-                    run.update(configuration_run_id=result['run_id'], result=result,
-                               reboot_required=result.get('reboot_required', False))
-                    private_replace(self._run_path(run_id), run)
-                    machine = self.machines.get(request.machine_uuid)
-                    post = self.probe(machine, current['user'])
-                    fresh_user = self.directory.user(current['user']['login'])
-                    computer = self.directory.computer(machine.hostname)
-                    if (fresh_user['object_guid'] != current['user']['object_guid']
-                            or fresh_user.get('object_sid') != current['user'].get('object_sid')
-                            or fresh_user['upn'] != current['user']['upn']
-                            or fresh_user['state'] != 'enabled'
-                            or post['uuid'] != request.machine_uuid or post['hostname'] != request.final_hostname
-                            or post['domain'] != DOMAIN or not post['trust'] or not post['sssd']
-                            or not post['user_lookup'] or post['local_duplicate']
-                            or result.get('verification', {}).get('group_policy') is not True
-                            or len(computer['objects']) != 1
-                            or not computer_matches(computer['objects'][0], machine.hostname, request.computer_ou)
-                            or not observed_computer_matches(post, computer['objects'][0], machine.hostname)
-                            or (current['computer']['objects'] and any(
-                                computer['objects'][0].get(key) != current['computer']['objects'][0].get(key)
-                                for key in ('object_guid', 'object_sid')))):
-                        raise fail('setup_post_verification_failed', 'Setup did not verify the selected domain identity and computer OU')
-                    run.update(status=result.get('status', 'successful'), configuration_run_id=result['run_id'],
-                               result=result, verification=post, computer=computer,
-                               reboot_required=result.get('reboot_required', False), finished_at=self.clock().isoformat())
-                except Exception as exc:
-                    code = exc.code if isinstance(exc, ControlError) else 'setup_execution_failed'
-                    run.update(status='failed', error={'code': code, 'message': 'Setup execution failed; inspect protected configuration result before any retry'},
-                               finished_at=self.clock().isoformat(), partial_failure=True)
-                    if isinstance(exc, ControlError) and re.fullmatch(r'[0-9a-f]{32}', str(exc.details.get('run_id', ''))):
-                        run['configuration_run_id'] = exc.details['run_id']
-                        if exc.details.get('phase') in ('upgrade', 'domain_join', 'configuration'):
-                            run['failure_phase'] = exc.details['phase']
-                        try:
-                            configuration_result = _read_configure_result(private_read(
-                                self.settings.state_root / 'configure-runs' / exc.details['run_id'] / 'result.json'), request)
-                            run.update(result=configuration_result,
-                                       reboot_required=configuration_result.get('reboot_required', False))
-                        except (ControlError, ValueError, OSError):
-                            run['configuration_result_unavailable'] = True
-                    private_replace(self._run_path(run_id), run)
-                    self.assignments.write(current['binding'], run_id=run_id, result='failed', date=date, revision=revision)
-                    raise ControlError('setup_execution_failed', 'Setup failed; manual review is required before retry', 7, {'run_id': run_id}) from None
+    def apply(self, plan_id, confirmed_sha, *, detach=False):
+        plan = self.plans.load(plan_id, confirmed_sha)
+        if plan['payload'].get('engine_schema_version') != 2:
+            if detach:
+                raise fail('setup_legacy_plan_requires_refresh', 'Create a new catalog-bound plan before detached execution')
+            with exclusive_lock(self.settings.lock_file):
+                return self._execute_locked(plan_id, confirmed_sha)
+        from .setup_jobs import SetupJobRepository
+        jobs = SetupJobRepository(self.settings, clock=self.clock)
+        job = jobs.submit(plan, operation='full_setup')
+        if detach:
+            return {'schema_version': 2, 'operation': 'setup_apply', 'job_id': job.job_id,
+                    'machine_uuid': job.machine_uuid, 'state': job.state,
+                    'plan_id': plan_id, 'plan_sha256': confirmed_sha}
+        if self.job_waiter is not None:
+            job = self.job_waiter(job)
+        else:
+            # The persistent systemd worker owns execution. Exiting this wait never
+            # sends a signal to it, its Ansible child or the workstation.
+            while job.state in ('queued', 'preflight', 'running', 'verifying'):
+                time.sleep(1)
+                job = jobs.get(job.job_id)
+        if not (job.job_dir/'execution.json').is_file():
+            raise ControlError('setup_execution_unverified', 'Setup job has no verified completion evidence',
+                               7, {'job_id': job.job_id})
+        result = private_read(job.job_dir/'execution.json')
+        if result.get('legacy_run') is not None and job.state in ('successful', 'degraded', 'waiting_reboot', 'waiting_first_login'):
+            return result['legacy_run']
+        details = {'job_id': job.job_id}
+        if result.get('legacy_error_run_id'):
+            details['run_id'] = result['legacy_error_run_id']
+        elif result.get('legacy_run'):
+            details['run_id'] = result['legacy_run']['run_id']
+        raise ControlError(result.get('error_code') or 'setup_execution_unverified',
+                           'Setup job requires review; inspect its safe status', 7, details)
+
+    def _validate_job_plan(self, plan, *, own_job_id):
+        self.plans.load(plan['plan_id'], plan['sha256'])
+        before = plan['payload']
+        request = ConfigureRequest.from_mapping(before['request'], expected_uuid=before['machine']['uuid'],
+                                                catalog=self._catalog())
+        current = self._snapshot(request.machine_uuid, before['user']['login'], request.computer_ou,
+                                 request.software_profile, request.remote_access_profile,
+                                 recovery_resolution=before.get('recovery_resolution'),
+                                 own_job_id=own_job_id, expected_plan=plan)
+        if current != before:
+            raise fail('setup_plan_drift', 'Full Setup identity, observed facts or published source changed')
+        return current
+
+    def _observe_job_result(self, plan, *, own_job_id):
+        from .component_probe import ComponentProbe, ssh_binding
+        from .component_verification import VerificationEngine
+        from .setup_runtime import source_fingerprint
+        from pathlib import Path
+        before = plan['payload']
+        catalog = self._catalog()
+        machine = self.machines.resolve(before['machine']['uuid'])
+        identity = self.verify(machine.uuid)
+        user = self.directory.user(before['user']['login'])
+        if (identity['status'] != 'successful' or user != before['user']
+                or digest(machine.raw) != before['machine']['registration_sha256']
+                or machine.ip != before['machine']['ip']
+                or catalog.fingerprint != before['catalog_sha256']
+                or ssh_binding(self.settings, machine) != before['ssh_binding']
+                or source_fingerprint(self.settings.ansible_project_dir, Path(__file__).parent) != before['source_sha256']):
+            raise fail('setup_post_verification_failed', 'Full Setup current identity or published source differs')
+        observed = (self.component_probe or ComponentProbe(self.settings)).observe(machine, user, before['components'])
+        return observed, VerificationEngine(catalog).evaluate(observed, [c['id'] for c in before['components']])
+
+    def _execute_locked(self, plan_id, confirmed_sha, *, own_job_id=None):
+        plan = self.plans.load(plan_id, confirmed_sha)
+        index_path = self.settings.state_root / 'setup-plan-runs' / (plan_id + '.json')
+        if index_path.exists() or index_path.is_symlink():
+            index = private_read(index_path)
+            result = self.status(index['run_id'])
+            if result.get('status') in ('running', 'failed', 'interrupted'):
+                raise fail('setup_previous_run_unresolved', 'This plan already has a run requiring manual review; automatic replay is blocked')
+            return result
+        before = plan['payload']
+        request = ConfigureRequest.from_mapping(before['request'], expected_uuid=before['machine']['uuid'],
+                                               catalog=self._catalog() if before.get('engine_schema_version') == 2 else None)
+        current = self._snapshot(request.machine_uuid, before['user']['login'], request.computer_ou,
+                                  request.software_profile, request.remote_access_profile,
+                                  recovery_resolution=before.get('recovery_resolution'),
+                                  own_job_id=own_job_id, expected_plan=plan,
+                                  legacy=before.get('engine_schema_version') != 2)
+        if current != before:
+            raise fail('setup_plan_drift', 'Setup identity or prerequisites changed; create a new plan')
+        run_id = 'setup-run-' + uuid.uuid4().hex
+        from .setup_jobs import legacy_setup_execution
+        predecessors = []
+        if current.get('prejoin_retry'):
+            predecessors = [current['prejoin_retry']['failed_run_id'], current['prejoin_retry']['configuration_run_id']]
+        elif current.get('recovery_resolution'):
+            failed_id = current['recovery_resolution']['failed_run_id']
+            predecessors = [failed_id, self.status(failed_id)['configuration_run_id']]
+        with legacy_setup_execution(self.settings, request.machine_uuid, request.final_hostname,
+                                    operation='full_setup', run_id=run_id, reviewed_predecessor_runs=predecessors):
+            date = self.clock().isoformat()
+            revision = (current['existing_assignment'] or {}).get('revision', 0) + 1
+            run = {'schema_version': 1, 'run_id': run_id, 'plan_id': plan_id, 'plan_sha256': confirmed_sha,
+                   'machine_uuid': request.machine_uuid, 'status': 'running', 'created_at': date,
+                   'reboot_required': None, 'deferred_actions': current['deferred_actions']}
+            private_create(self._run_path(run_id), run)
+            private_create(index_path, {'run_id': run_id})
+            self.assignments.write(current['binding'], run_id=run_id, result='running', date=date, revision=revision)
+            try:
+                endpoint = current['prerequisites'].get('directory_uri')
+                options = {'setup_directory_uri': endpoint} if endpoint is not None else {}
+                if not current['computer']['exists']:
+                    options['setup_fresh_install'] = True
+                result = self.planner.start(request.machine_uuid, request, _lock_held=True, setup_run_id=run_id, **options)
+                run.update(configuration_run_id=result['run_id'], result=result,
+                           reboot_required=result.get('reboot_required', False))
                 private_replace(self._run_path(run_id), run)
-                self.assignments.write(current['binding'], run_id=run_id, result=run['status'], date=date, revision=revision)
-                return run
+                machine = self.machines.get(request.machine_uuid)
+                post = self.probe(machine, current['user'])
+                fresh_user = self.directory.user(current['user']['login'])
+                computer = self.directory.computer(machine.hostname)
+                if (fresh_user['object_guid'] != current['user']['object_guid']
+                        or fresh_user.get('object_sid') != current['user'].get('object_sid')
+                        or fresh_user['upn'] != current['user']['upn']
+                        or fresh_user['state'] != 'enabled'
+                        or post['uuid'] != request.machine_uuid or post['hostname'] != request.final_hostname
+                        or post['domain'] != DOMAIN or not post['trust'] or not post['sssd']
+                        or not post['user_lookup'] or post['local_duplicate']
+                        or result.get('verification', {}).get('group_policy') is not True
+                        or len(computer['objects']) != 1
+                        or not computer_matches(computer['objects'][0], machine.hostname, request.computer_ou)
+                        or not observed_computer_matches(post, computer['objects'][0], machine.hostname)
+                        or (current['computer']['objects'] and any(
+                            computer['objects'][0].get(key) != current['computer']['objects'][0].get(key)
+                            for key in ('object_guid', 'object_sid')))):
+                    raise fail('setup_post_verification_failed', 'Setup did not verify the selected domain identity and computer OU')
+                run.update(status=result.get('status', 'successful'), configuration_run_id=result['run_id'],
+                           result=result, verification=post, computer=computer,
+                           reboot_required=result.get('reboot_required', False), finished_at=self.clock().isoformat())
+            except Exception as exc:
+                code = exc.code if isinstance(exc, ControlError) else 'setup_execution_failed'
+                run.update(status='failed', error={'code': code, 'message': 'Setup execution failed; inspect protected configuration result before any retry'},
+                           finished_at=self.clock().isoformat(), partial_failure=True)
+                if isinstance(exc, ControlError) and re.fullmatch(r'[0-9a-f]{32}', str(exc.details.get('run_id', ''))):
+                    run['configuration_run_id'] = exc.details['run_id']
+                    if exc.details.get('phase') in ('upgrade', 'domain_join', 'configuration'):
+                        run['failure_phase'] = exc.details['phase']
+                    try:
+                        configuration_result = _read_configure_result(private_read(
+                            self.settings.state_root / 'configure-runs' / exc.details['run_id'] / 'result.json'), request)
+                        run.update(result=configuration_result,
+                                   reboot_required=configuration_result.get('reboot_required', False))
+                    except (ControlError, ValueError, OSError):
+                        run['configuration_result_unavailable'] = True
+                private_replace(self._run_path(run_id), run)
+                self.assignments.write(current['binding'], run_id=run_id, result='failed', date=date, revision=revision)
+                raise ControlError('setup_execution_failed', 'Setup failed; manual review is required before retry', 7, {'run_id': run_id}) from None
+            private_replace(self._run_path(run_id), run)
+            self.assignments.write(current['binding'], run_id=run_id, result=run['status'], date=date, revision=revision)
+            return run
 
 
     def verify(self, identifier):

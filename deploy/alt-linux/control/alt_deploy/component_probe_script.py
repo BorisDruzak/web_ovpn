@@ -96,6 +96,11 @@ def os_id(root):
 def user_identity(root, query, call):
     rc, output = call(['getent', '-s', 'sss', 'passwd', query['upn']])
     entries = output.splitlines()
+    if rc in (0, 2) and not entries:
+        # Explicitly unresolved SSS identity is useful before first domain join.
+        # It is never accepted by component apply or post-apply verification.
+        return {'login': query['login'], 'uid': None, 'gid': None,
+                'home_exists': False, 'home_safe': False}, '', query['upn']
     if rc or len(entries) != 1 or len(entries[0].split(':')) != 7:
         raise ValueError('user identity unavailable')
     name, _, uid, gid, _, home, _ = entries[0].split(':')
