@@ -16,10 +16,11 @@ from test_component_catalog import project, SOURCE
 from test_setup_execution import claimed, engine_for
 
 
-def test_package_source_simulation_and_budget_are_readonly(tmp_path):
+@pytest.mark.parametrize('components', ['classic', 'classic gostcrypto'])
+def test_package_source_simulation_and_budget_are_readonly(tmp_path, components):
     sources = tmp_path/'etc/apt/sources.list'
     sources.parent.mkdir(parents=True)
-    sources.write_text('rpm [p11] https://download.basealt.ru/pub/distributions/ALTLinux p11/branch/x86_64 classic\n')
+    sources.write_text('rpm [p11] https://download.basealt.ru/pub/distributions/ALTLinux p11/branch/x86_64 '+components+'\n')
     sources.chmod(0o644)
     calls = []
     def call(command):
@@ -63,6 +64,22 @@ def test_package_unknown_or_busy_is_never_invented_healthy(tmp_path, fault):
     if fault == 'source': assert result['source']['status'] == 'unknown'
     if fault == 'simulation': assert result['simulation']['software.nextcloud']['status'] == 'unavailable'
     assert 'SENTINEL' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('branch,components', [
+    ('x86_64', 'classic gostcrypto untrusted'), ('x86_64', 'classic debuginfo'),
+    ('x86_64', 'gostcrypto'), ('noarch', 'classic gostcrypto'),
+    ('x86_64-i586', 'classic gostcrypto'), ('x86_64', 'classic classic'),
+])
+def test_additional_source_components_do_not_bypass_p11_policy(tmp_path, branch, components):
+    source = tmp_path/'etc/apt/sources.list'
+    source.parent.mkdir(parents=True)
+    source.write_text('rpm [p11] https://download.basealt.ru/pub/distributions/ALTLinux p11/branch/'+branch+' '+components+'\n')
+    source.chmod(0o644)
+    original = source.read_bytes()
+    result = package_health(tmp_path, [], lambda command: (1, ''))
+    assert result['source']['status'] == 'unknown'
+    assert source.read_bytes() == original
 
 
 def unknown_job(component_service):

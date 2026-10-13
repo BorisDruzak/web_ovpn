@@ -33,6 +33,12 @@ running. Save job/plan IDs and SHA. Safe events identify stage/component/errors;
 sensitive logs remain in protected controller stores. Never edit or delete
 claims, reservations, status or review links to get past a gate.
 
+APT probes require root-owned cache metadata without group/other write access.
+An unsafe cache leaves package health unknown; arrange approved maintenance
+before making a fresh plan. Probes never change cache permissions or contents.
+Approved p11 sources support `classic`, and x86_64 also supports the standard
+`classic gostcrypto` form. Other source components remain unapproved.
+
 ## Full Setup
 
 ```bash

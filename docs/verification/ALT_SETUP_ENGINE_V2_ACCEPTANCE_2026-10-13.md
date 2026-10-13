@@ -39,7 +39,34 @@ empty supplementary groups, `--simulate --no-download` and `Debug::NoLocking`.
 Dependency check returned zero; Nextcloud simulation reported two installs and
 zero removals. Cache metadata stayed unchanged. An earlier ordinary root
 simulation rebuilt cache metadata, so the collector now drops privileges.
-No package installation, domain join, bootstrap, reboot or deployment occurred.
+This early preparation performed no package installation, domain join, bootstrap,
+reboot or deployment.
+
+Subsequent operator-authorized VM preparation ran the unchanged published
+bootstrap after validating its exact hash and controller public-key fingerprint.
+Registration and preflight succeeded; strict controller SSH and passwordless sudo
+were verified. The VM remains unjoined, with SSSD inactive and no selected-employee
+home. Bootstrap dependency installation is VM preparation, not Setup acceptance.
+
+The real read-only collector confirmed physical DMI UUID and returned observations
+for all thirteen components; missing domain helpers and home remained unready or
+unknown. An existing root-owned APT cache directory with mode `02770` blocked the
+protected-cache gate. Authorized VM preparation changed only that directory to
+`02755`, preserving owner/group/setgid; no collector safeguard was relaxed.
+Native APT health then passed, with cache metadata unchanged during probes.
+
+The same native check exposed a source-validator defect: standard p11 x86_64
+`classic gostcrypto` was incorrectly unknown. A focused RED case reproduced it;
+the bounded parser fix passes 63 collector/planning/retry/CLI checks, including
+negative extra-component cases. The same independent reviewer accepted the fix.
+Actual VM probe now reports `approved_p11`, all package-health predicates true,
+and a Nextcloud simulation of two installs and zero removals. It does not install
+Nextcloud or demonstrate installed V2 CLI/live Setup acceptance. A full regression
+for the final source revision remains required because of this real target finding.
+
+The standard source form is documented in the
+[official ALT 11.1 manual](https://docs.altlinux.org/ru-RU/alt-server/11.1/pdf/alt-server/alt-server-11.1-alt-server-ru-RU.pdf)
+and the [official p11 component registry](https://packages.altlinux.org/ru/p11/about/).
 
 ## Design rulings
 

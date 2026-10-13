@@ -167,7 +167,9 @@ def package_health(root, recipes, call):
                 if not line or line.startswith('#'):
                     continue
                 fields = line.split()
-                if len(fields) != 5 or fields[0] not in ('rpm', 'rpm-src') or fields[1] != '[p11]' or fields[4] != 'classic':
+                if (len(fields) not in (5, 6) or fields[0] not in ('rpm', 'rpm-src') or fields[1] != '[p11]'
+                        or fields[4:] not in (['classic'], ['classic', 'gostcrypto'])
+                        or len(fields) == 6 and fields[3] != 'p11/branch/x86_64'):
                     raise ValueError
                 urls = [v for v in fields if v.startswith(('https://', 'http://'))]
                 if len(urls) != 1:
