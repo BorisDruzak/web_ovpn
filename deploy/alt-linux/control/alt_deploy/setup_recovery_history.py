@@ -6,6 +6,7 @@ All paths derive from validated protected IDs, never operator-supplied paths.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from datetime import datetime
@@ -35,6 +36,47 @@ def _guid(value):
 class RecoveryHistoryStore:
     def __init__(self, state_root: Path):
         self.root = state_root
+
+    def _prejoin_revision(self, payload, binding, plan_created):
+        """Admit exactly one closed initial upgrade timeout before this join.
+
+        The original five-file recovery envelope remains unchanged. Its plan
+        already seals the prior evidence hashes; revalidate those protected
+        files on every live history read, without consuming or rewriting them.
+        """
+        from .setup_prejoin_retry import historical_prejoin_retry_evidence
+        prior = payload['existing_assignment']
+        proof = payload['prejoin_retry']
+        if (not isinstance(prior, dict) or type(prior.get('schema_version')) is not int
+                or prior['schema_version'] != 1 or type(prior.get('revision')) is not int
+                or prior['revision'] != 1):
+            raise ValueError
+        verified = historical_prejoin_retry_evidence(
+            self.root, prior, payload['machine'], payload['user'], payload['ou_identity'],
+            payload['observed'], payload['computer'])
+        if proof != verified:
+            raise ValueError
+        raw_run = private_read_bytes(self.root/'setup-runs'/(verified['failed_run_id']+'.json'))
+        if hashlib.sha256(raw_run).hexdigest() != verified['evidence_sha256']['run']:
+            raise ValueError
+        old_run = decode_state_bytes(raw_run)
+        if _timestamp(old_run['finished_at']) > plan_created:
+            raise ValueError
+        expected = dict(binding, schema_version=1, revision=1, run_id=old_run['run_id'],
+                        date=old_run['created_at'], result='failed')
+        if prior != expected:
+            raise ValueError
+        raw_plan = private_read_bytes(self.root/'setup-plans'/(old_run['plan_id']+'.json'))
+        if hashlib.sha256(raw_plan).hexdigest() != verified['evidence_sha256']['plan']:
+            raise ValueError
+        old_payload = decode_state_bytes(raw_plan)['payload']
+        if old_payload['existing_assignment'] is not None or 'prejoin_retry' in old_payload:
+            raise ValueError
+        old_index = decode_state_bytes(private_read_bytes(
+            self.root/'setup-plan-runs'/(old_run['plan_id']+'.json')))
+        if old_index != {'run_id': old_run['run_id']}:
+            raise ValueError
+        return 2
 
     def load(self, failed_run_id):
         try:
@@ -82,7 +124,6 @@ class RecoveryHistoryStore:
                     or request.assigned_domain_user != user['upn'] or request.domain_test_user != user['upn']
                     or request.computer_ou != payload['computer_ou']
                     or payload['ou_identity']['dn'] != request.computer_ou
-                    or payload['existing_assignment'] is not None
                     or 'domain_join' not in payload['changes']):
                 raise ValueError
             _guid(payload['ou_identity']['object_guid'])
@@ -98,12 +139,17 @@ class RecoveryHistoryStore:
                                                             request.software_profile, request.remote_access_profile)
             if payload['binding'] != binding:
                 raise ValueError
+            revision = 1
+            if payload['existing_assignment'] is not None:
+                revision = self._prejoin_revision(payload, binding, historical_clock)
+            elif 'prejoin_retry' in payload:
+                raise ValueError
             raw['index'] = private_read_bytes(self.root / 'setup-plan-runs' / (plan_id + '.json'))
             if decode_state_bytes(raw['index']) != {'run_id': failed_run_id}:
                 raise ValueError
             raw['binding'] = private_read_bytes(self.root / 'domain-assignments' / (machine_uuid + '.json'))
             assignment = decode_state_bytes(raw['binding'])
-            expected_assignment = dict(binding, schema_version=1, revision=1,
+            expected_assignment = dict(binding, schema_version=1, revision=revision,
                                        run_id=failed_run_id, date=run['created_at'], result='failed')
             # Strict validated assignment schema rejects bool-as-int metadata.
             validated = DomainAssignmentStore(self.root).get(machine_uuid)

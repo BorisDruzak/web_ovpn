@@ -15,16 +15,27 @@ from .setup_plans import SetupPlanStore, digest, private_read, private_read_byte
 
 
 def prejoin_retry_evidence(settings, binding, machine, user, ou_identity, observed, computer):
+    snapshot = {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
+                'registration_sha256': digest(machine.raw)}
+    return historical_prejoin_retry_evidence(settings.state_root, binding, snapshot, user,
+                                            ou_identity, observed, computer)
+
+
+def historical_prejoin_retry_evidence(root, binding, machine, user, ou_identity, observed, computer):
+    """Revalidate closed evidence against an immutable machine snapshot.
+
+    This historical read is not a fresh absence/process probe or execution
+    authorization. Normal Setup separately supplies its live observations.
+    """
     try:
         run_id = binding['run_id']
         if binding['result'] != 'failed' or not re.fullmatch(r'setup-run-[0-9a-f]{32}', run_id):
             raise ValueError
-        root = settings.state_root
         paths = {'run': root/'setup-runs'/(run_id+'.json')}
         raw_run = private_read_bytes(paths['run'])
         run = private_read(paths['run'])
         if (type(run.get('schema_version')) is not int or run.get('schema_version') != 1 or run.get('run_id') != run_id or
-                run.get('machine_uuid') != machine.uuid or run.get('status') != 'failed' or
+                run.get('machine_uuid') != machine['uuid'] or run.get('status') != 'failed' or
                 run.get('partial_failure') is not True or run.get('configuration_result_unavailable') is not True or
                 run.get('error', {}).get('code') not in ('domain_join_timeout', 'setup_upgrade_timeout')):
             raise ValueError
@@ -38,10 +49,9 @@ def prejoin_retry_evidence(settings, binding, machine, user, ou_identity, observ
         # Validate the original plan at the original apply instant, never replay it.
         plan = SetupPlanStore(root, clock=lambda: created).load(run['plan_id'], run['plan_sha256'])
         old = plan['payload']
-        request = ConfigureRequest.from_mapping(old['request'], expected_uuid=machine.uuid)
+        request = ConfigureRequest.from_mapping(old['request'], expected_uuid=machine['uuid'])
         if (any(binding.get(k) != v for k, v in old['binding'].items()) or
-                old['machine'] != {'uuid': machine.uuid, 'hostname': machine.hostname, 'ip': machine.ip,
-                                   'registration_sha256': digest(machine.raw)} or
+                old['machine'] != machine or
                 any(old['user'].get(k) != user.get(k) for k in ('object_guid', 'object_sid', 'login', 'upn')) or
                 old['user'].get('state') != 'enabled' or user.get('state') != 'enabled' or
                 old['ou_identity'] != ou_identity or old['computer'].get('exists') is not False or

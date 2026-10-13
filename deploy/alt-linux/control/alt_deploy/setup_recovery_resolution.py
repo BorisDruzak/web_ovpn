@@ -5,9 +5,10 @@ import re
 from datetime import datetime, timedelta, timezone
 import uuid
 from .ad_directory import DOMAIN, fail
+from .errors import ControlError
 from .setup_plans import digest, private_create, private_read, private_read_bytes, decode_state_bytes
 from .setup_recovery import _pair, evidence_document, _sync_directory
-from .setup_recovery_history import RecoveryHistoryStore
+from .setup_recovery_history import RecoveryHistoryStore, _timestamp
 
 class RecoveryResolutionStore:
     """prepare/validate require the caller's controller lifecycle lock.
@@ -60,6 +61,15 @@ class RecoveryResolutionStore:
             run = decode_state_bytes(raw['run'])
             plan = decode_state_bytes(raw['plan'])
             binding = decode_state_bytes(raw['binding'])
+            revision = 1
+            if plan['payload']['existing_assignment'] is not None:
+                created = _timestamp(plan['created_at'])
+                if created > _timestamp(run['created_at']):
+                    raise ValueError
+                revision = RecoveryHistoryStore(self.settings.state_root)._prejoin_revision(
+                    plan['payload'], binding, created)
+            elif 'prejoin_retry' in plan['payload']:
+                raise ValueError
             if (run.get('run_id') != pair['failed_run_id'] or run.get('status') != 'failed'
                     or run.get('machine_uuid') != document['identity']['machine_uuid']
                     or not re.fullmatch('[0-9a-f]{32}',str(run.get('configuration_run_id','')))
@@ -69,8 +79,8 @@ class RecoveryResolutionStore:
                     or binding.get('run_id') != pair['failed_run_id'] or binding.get('result') != 'failed'
                     or binding.get('machine_uuid') != run['machine_uuid']
                     or str(uuid.UUID(run['machine_uuid'])) != run['machine_uuid']
-                    or binding.get('revision') != 1 or type(binding.get('revision')) is not int): raise ValueError
-        except (KeyError, ValueError, TypeError):
+                    or binding.get('revision') != revision or type(binding.get('revision')) is not int): raise ValueError
+        except (ControlError, KeyError, ValueError, TypeError):
             raise fail('recovery_resolution_invalid', 'Protected additive resolution is invalid') from None
         return document
 

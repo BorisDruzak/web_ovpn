@@ -479,3 +479,23 @@ focused regression passed **421 tests with one skip**. Independent review
 found no remaining confirmed P1/P2 after fixing the unaffected-version bypass.
 Corrected live first-join/recovery, reboot and graphical-login acceptance remain
 **pending**; this result is not a completed fresh-VM Setup.
+
+### 2026-10-13: bounded recovery history after a pre-join timeout
+
+The approved extension admits exactly one closed initial pre-join timeout,
+followed by a separately closed first-join failure. It verifies sealed prior
+run/plan/request/log hashes, both plan-run indexes, unchanged identities,
+strict revision metadata and non-overlapping chronology. Original history
+bytes and the five-file recovery envelope remain unchanged. Archived resolution
+reads retain this validation after a successful assignment advances. This does
+not authorize reset, replay or assignment edits.
+
+RED-to-GREEN covered live history and archived resolution reads. Native broad
+regression before the final archived-resolution delta passed **3327 tests with
+82 skips**; all recovery tests plus Setup service/runtime tests on the final
+delta passed **1641 tests with 77 skips**. Independent review found no remaining
+confirmed P1/P2. GitNexus identified the direct planning/resolution consumers;
+source and tests verified the continuation and operator paths. Read-only loading
+of the selected live failed history passed from the isolated source copy.
+Controller installation, concrete recovery approval and live continuation remain
+pending. No new backup or AD mutation was performed by this extension.
