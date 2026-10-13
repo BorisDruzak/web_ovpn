@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from types import SimpleNamespace
 import subprocess
 from pathlib import Path
 
@@ -116,8 +118,8 @@ def test_or1_provision_start_requires_root(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "alt_deploy.provision.os.geteuid",
-        lambda: 1000,
+        "alt_deploy.provision.os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 1000})),
     )
 
     result = run_json_cli(
@@ -150,8 +152,8 @@ def test_or1_launch_failure_is_persisted(
     sandbox.register_machine(preflight_ok=True)
 
     monkeypatch.setattr(
-        "alt_deploy.provision.os.geteuid",
-        lambda: 0,
+        "alt_deploy.provision.os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})),
     )
     monkeypatch.setattr(
         "alt_deploy.provision.os.chown",

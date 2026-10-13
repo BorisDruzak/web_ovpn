@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+from types import SimpleNamespace
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -144,8 +146,8 @@ def test_provision_start_creates_and_launches_job(
     launcher = RecordingLauncher()
 
     monkeypatch.setattr(
-        "alt_deploy.provision.os.geteuid",
-        lambda: 0,
+        "alt_deploy.provision.os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})),
     )
 
     planner = ProvisionPlanner(
@@ -180,8 +182,8 @@ def test_provision_start_requires_root(
     settings = prepare_preview_environment(tmp_path)
 
     monkeypatch.setattr(
-        "alt_deploy.provision.os.geteuid",
-        lambda: 1000,
+        "alt_deploy.provision.os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 1000})),
     )
 
     planner = ProvisionPlanner(
@@ -206,8 +208,8 @@ def test_launch_failure_is_persisted(
     settings = prepare_preview_environment(tmp_path)
 
     monkeypatch.setattr(
-        "alt_deploy.provision.os.geteuid",
-        lambda: 0,
+        "alt_deploy.provision.os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})),
     )
 
     planner = ProvisionPlanner(
@@ -242,8 +244,8 @@ def test_launching_stage_is_persisted_before_launcher_runs(
 ) -> None:
     settings = prepare_preview_environment(tmp_path)
     monkeypatch.setattr(
-        "alt_deploy.provision.os.geteuid",
-        lambda: 0,
+        "alt_deploy.provision.os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})),
     )
 
     class InspectingLauncher:
@@ -274,8 +276,8 @@ def test_second_active_job_is_rejected(
     settings = prepare_preview_environment(tmp_path)
 
     monkeypatch.setattr(
-        "alt_deploy.provision.os.geteuid",
-        lambda: 0,
+        "alt_deploy.provision.os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})),
     )
 
     planner = ProvisionPlanner(
@@ -424,9 +426,9 @@ def test_start_prepares_altserver_owned_job_before_launch(
     ownership_calls: list[Path] = []
 
     monkeypatch.setattr(
-        provision_module.os,
-        "geteuid",
-        lambda: 0,
+        provision_module,
+        "os",
+        SimpleNamespace(**(vars(os) | {"geteuid": lambda: 0})),
     )
     monkeypatch.setattr(
         provision_module,

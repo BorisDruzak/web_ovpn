@@ -634,15 +634,15 @@ def main(
             and parsed.job_command == "active"
         ):
             from .setup_jobs import SetupJobRepository, unresolved_legacy_reservations
+            # Preserve legacy corruption errors before checking V2 admission.
+            stored_jobs = JobRepository(active_settings).list()
             SetupJobRepository(active_settings)._check_admissions()
             if unresolved_legacy_reservations(active_settings):
                 raise ControlError('setup_previous_run_unresolved',
                                    'Legacy Setup/Configure execution requires review', 4)
             active_jobs = [
                 job
-                for job in JobRepository(
-                    active_settings
-                ).list()
+                for job in stored_jobs
                 if is_active_job(job, settings=active_settings)
             ]
 

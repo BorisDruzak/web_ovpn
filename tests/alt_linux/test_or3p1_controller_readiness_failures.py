@@ -30,6 +30,7 @@ CHECK_NAMES = (
     "ansible_preflight_syntax",
     "ansible_provision_syntax",
     "ansible_manual_configure_syntax",
+    "ansible_component_syntax",
 )
 
 
@@ -96,6 +97,10 @@ def test_controller_readiness_reports_each_failed_boundary_exactly(
         and not (
             failed_check == "ansible_manual_configure_syntax"
             and name == "03-configure-domain-workstation.yml"
+        )
+        and not (
+            failed_check == "ansible_component_syntax"
+            and name == "04-setup-component.yml"
         ),
     )
 

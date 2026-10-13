@@ -41,7 +41,9 @@ def scenario(root):
         result={'status':'ok','result':'control_plane_allowed'}
         if operation!='guard':
             result.update(backup_id='backup-20261011T123456Z-12345678',manifest_sha256='a'*64)
-            if operation=='create':result.update(result='backup_created',component_count=6,services_restored=True)
+            if operation in ('create','create-recovery'):
+                if operation=='create-recovery':assert len(command)==5 and len(command[4])==64
+                result.update(result='backup_created',component_count=6,services_restored=True)
             elif operation=='verify':result.update(result='backup_verified',component_count=6,evidence_written=True)
             elif operation=='rehearse':result.update(result='backup_rehearsed',check_count=11,rehearsal_passed=True)
             else:result.update(result='backup_rehearsed',verification_sha256='b'*64)
@@ -51,13 +53,13 @@ def scenario(root):
     # Eligibility verification uses only the nonblocking backup operation lock,
     # while native creation requires the controller lifecycle lock to be free.
     original_native=controller._native
-    def checked(operation,*args):
+    def checked(operation,*args,**kwargs):
         if operation in ('guard','rehearse-status'):
             runner=controller.runner
             controller.runner=lambda command,**kwargs: native_without_lock(command,**kwargs)
-            try:return original_native(operation,*args)
+            try:return original_native(operation,*args,**kwargs)
             finally:controller.runner=runner
-        return original_native(operation,*args)
+        return original_native(operation,*args,**kwargs)
     def native_without_lock(command,**kwargs):
         operation=command[3]
         if operation=='guard':return 0,json.dumps({'status':'ok','result':'control_plane_allowed'}),''

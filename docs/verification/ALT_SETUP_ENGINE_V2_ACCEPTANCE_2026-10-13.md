@@ -15,7 +15,7 @@ operator CLI and reusable backend contracts.
 | CLI/continuity/backup compatibility | Final isolated snapshot: 143 passing operator/jobs/continuity/native recovery/restore/collector checks; two additional missing-directory corruption cases pass. Earlier broader 241 and 32 checks overlap and are not a combined unique total. |
 | Integrated synthetic flow | Full Setup -> reboot -> first-login -> independent component -> child worker termination -> UNKNOWN -> fresh noop successor passes. No live AD/SSH/Ansible call in this fixture. |
 | Independent review | One whole-change review satisfied after fixing physical DMI lookup, exact reserved recovery snapshot admission, successor-lineage and reservation bindings. |
-| Complete regression | Pending one final exact-SHA Linux CI run. Earlier baseline CI is not V2 proof. |
+| Complete regression | First V2 full Linux CI at `2babea4b45ef1d5e87a7f19480b9698319def324`: 5590 passed, 47 failed, 89 skipped, exit 1. Legacy error sequencing and outdated recovery/readiness/UID fixtures corrected; 94 focused checks pass. CI now explicitly installs controller-compatible Ansible 2.18.6 instead of relying on the hosted runner's pipx runtime. Final exact-SHA full CI remains pending. Earlier baseline CI is not V2 proof. |
 | Exact-SHA main publication | Pending final regression, review and exact-SHA CI. |
 | Controller deployment | Not performed; separate guarded deployment approval required. |
 | Live Setup/component/noop/interruption/reboot/login | Not performed; separately confirmed exact plans required. |
@@ -68,3 +68,7 @@ and recovery and JobRepository upstream impact of 28 symbols (10 direct).
 Dynamic worker/lease/backup relationships were additionally verified against
 source and focused tests. This change adds no cross-repository HTTP contract.
 No manual group synchronization or generated manifest edits were performed.
+
+The same independent reviewer accepted the narrow post-CI CLI sequencing fix:
+legacy malformed-job errors remain compatible and V2 claim/admission checks
+remain mandatory. Production ownership and recovery safeguards were not relaxed.
