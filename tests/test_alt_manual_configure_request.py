@@ -1119,8 +1119,10 @@ def test_configure_start_maps_known_hostname_marker_without_log_disclosure(
     assert set(exc.value.details) == {"run_id"}
 
 
+@pytest.mark.parametrize('fresh_setup', [False, True])
+@pytest.mark.parametrize('colored', [False, True])
 def test_configure_start_maps_long_running_timeout_without_disclosure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fresh_setup: bool, colored: bool
 ) -> None:
     from alt_deploy.config import Settings
     from alt_deploy.vault import VaultHealthChecker
@@ -1145,23 +1147,37 @@ def test_configure_start_maps_long_running_timeout_without_disclosure(
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         timeouts.append(kwargs["timeout"])  # type: ignore[arg-type]
+        label = 'TASK [prejoin_upgrade : Perform the full ALT upgrade before first domain join] ***'
+        kwargs['stdout'].write(('\x1b[0;36m' + label + '\x1b[0m' if colored else label) + '\n')
+        kwargs['stdout'].flush()
         raise timeout_error
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(VaultHealthChecker, "check_ad_join", lambda _self: {"status": "ok"})
 
     with pytest.raises(ControlError) as exc:
-        ConfigurePlanner(
+        planner = ConfigurePlanner(
             settings, machines=SimpleNamespace(get=lambda _: machine)
-        ).start(
-            MACHINE_UUID,
-            ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID),
         )
+        request = ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID)
+        if fresh_setup:
+            planner._start_unlocked(MACHINE_UUID, request, setup_fresh_install=True)
+        else:
+            planner.start(MACHINE_UUID, request)
 
-    assert timeouts == [5400]
-    assert exc.value.code == "domain_join_timeout"
+    assert timeouts == [21600 if fresh_setup else 5400]
+    assert exc.value.code == ("setup_upgrade_timeout" if fresh_setup else "domain_join_timeout")
     assert exc.value.exit_code == 7
-    assert exc.value.message == "Ansible domain configure timed out"
-    assert set(exc.value.details) == {"run_id"}
+    assert exc.value.message == ("Ansible setup timed out during package upgrade" if fresh_setup else "Ansible domain configure timed out")
+    assert set(exc.value.details) == ({"run_id", "phase"} if fresh_setup else {"run_id"})
+    if fresh_setup:
+        assert exc.value.details['phase'] == 'upgrade'
     assert isinstance(exc.value.details["run_id"], str)
     assert exc.value.__cause__ is timeout_error
+
+
+def test_fresh_setup_budget_requires_a_reserved_managed_run(tmp_path):
+    planner = ConfigurePlanner(SimpleNamespace(state_root=tmp_path, lock_file=tmp_path/'lock'))
+    with pytest.raises(ControlError) as exc:
+        planner.start(MACHINE_UUID, ConfigureRequest.from_mapping(valid_request(), expected_uuid=MACHINE_UUID), setup_fresh_install=True)
+    assert exc.value.code == 'setup_assignment_managed'

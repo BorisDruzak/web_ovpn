@@ -192,6 +192,9 @@ def write_text(stream, payload):
         stream.write(f"Profiles: {content['request']['software_profile']} / {content['request']['remote_access_profile']}\n")
         for label, key in [('Changes', 'changes'), ('Warnings', 'warnings'), ('Deferred', 'deferred_actions')]:
             stream.write(label + ': ' + ', '.join(content[key]) + '\n')
+        stream.write('Execution budget (seconds): ' + str(content.get('execution_budget_seconds', 5400)) + '\n')
+        if 'prejoin_retry' in content:
+            stream.write('Preserved pre-join failed run: ' + content['prejoin_retry']['failed_run_id'] + '\n')
         stream.write(f"Apply after reviewing: workstationctl setup apply {payload['plan_id']} --confirm-sha256 {payload['sha256']}\n")
         return
     stream.write('Status: ' + str(payload.get('status', 'ok')) + '\n')

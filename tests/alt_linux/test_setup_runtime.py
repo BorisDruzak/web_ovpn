@@ -11,6 +11,59 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'deploy/alt-linux/c
 from alt_deploy.errors import ControlError
 
 
+def test_prejoin_probe_uses_only_fixed_identity_and_quiescence_script(tmp_path):
+    from alt_deploy.setup_runtime import SetupRuntime
+    calls = []
+    machine = SimpleNamespace(ip='192.0.2.10', uuid='11111111-2222-3333-4444-555555555555', hostname='alt-test-01')
+    observed = dict(uuid=machine.uuid, hostname=machine.hostname, credentials_absent=True, processes_absent=True)
+    settings = SimpleNamespace(known_hosts_file=tmp_path/'known_hosts', private_key_file=tmp_path/'key', state_root=tmp_path)
+    runtime = SetupRuntime(settings, runner=lambda command, **kwargs: calls.append(command) or (0, json.dumps(observed), ''))
+    assert runtime.probe_prejoin(machine, 'a'*32) == observed
+    assert 'StrictHostKeyChecking=yes' in calls[0]
+    assert 'O_RDONLY' in calls[0][-1] and 'tdb_firstkey' in calls[0][-1]
+    assert 'tdbtool' not in calls[0][-1] and 'reboot' not in calls[0][-1]
+
+
+@pytest.mark.parametrize('credential_keys,quiet', [('SECRETS/SID/DOMAIN', True),
+    ('SECRETS/MACHINE_PASSWORD/DOMAIN', False), ('unexpected output', False)])
+@pytest.mark.parametrize('process_line,ps_rc,process_quiet', [
+    ('systemd /sbin/init', 0, True), ('apt-get apt-get upgrade', 0, False),
+    ('rpm rpm --upgrade', 0, False), ('net net ads join', 0, False),
+    ('system-auth system-auth write ad', 0, False),
+    ('python3 python3 /tmp/ansible/AnsiballZ_command.py', 0, False),
+    ('systemd /sbin/init', 1, False), (None, 0, False),
+])
+def test_native_prejoin_probe_never_accepts_credentials_or_unknown_database_output(monkeypatch, capsys, credential_keys, quiet, process_line, ps_rc, process_quiet):
+    import subprocess
+    import stat
+    from alt_deploy.setup_runtime import PREJOIN_PROBE_SCRIPT
+    import socket
+    import os
+    monkeypatch.setattr(os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(socket, 'gethostname', lambda: 'alt-test-01')
+    monkeypatch.setattr(sys, 'argv', ['probe', '11111111-2222-3333-4444-555555555555', 'alt-test-01'])
+    original_read = Path.read_text
+    monkeypatch.setattr(Path, 'read_text', lambda p, **kw: '11111111-2222-3333-4444-555555555555' if str(p).endswith('product_uuid') else original_read(p, **kw))
+    monkeypatch.setattr(Path, 'exists', lambda p: str(p) == '/var/lib/samba/private/secrets.tdb')
+    monkeypatch.setattr(Path, 'is_symlink', lambda p: False)
+    monkeypatch.setattr(Path, 'lstat', lambda p: SimpleNamespace(st_mode=stat.S_IFREG|0o600, st_uid=0))
+    def run(args, **kwargs):
+        if args[0] == 'testparm': out = '/var/lib/samba/private'
+        elif args[0] == 'ps':
+            out = 'COMMAND COMMAND\n' + process_line + '\n' if process_line is not None else ''
+            return subprocess.CompletedProcess(args, ps_rc, out, '')
+        else: raise AssertionError(args)
+        return subprocess.CompletedProcess(args, 0, out, '')
+    monkeypatch.setattr(subprocess, 'run', run)
+    # Key-reader ABI and file invariance are tested separately on synthetic DBs.
+    script = PREJOIN_PROBE_SCRIPT.replace('keys = readonly_tdb_keys(tdb)', 'keys = _fixture_keys(tdb)')
+    exec(compile(script, '<fixed prejoin probe>', 'exec'), {'_fixture_keys': lambda p: [credential_keys]})
+    result = json.loads(capsys.readouterr().out)
+    assert result['credentials_absent'] is quiet
+    assert result['processes_absent'] is process_quiet
+    assert 'SECRETS/' not in json.dumps(result)
+
+
 def test_source_fingerprint_binds_role_scripts_templates_and_excludes_vault(tmp_path):
     from alt_deploy.setup_runtime import source_fingerprint
     project = tmp_path / 'ansible'

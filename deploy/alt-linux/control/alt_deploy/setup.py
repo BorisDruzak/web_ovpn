@@ -34,7 +34,7 @@ def observed_computer_matches(observed, computer, hostname):
 
 class SetupService:
     def __init__(self, settings, *, directory=None, machines=None, planner=None,
-                 approved_ous=None, probe=None, prerequisites=None, clock=None, recovery_terminal_verifier=None):
+                 approved_ous=None, probe=None, prerequisites=None, clock=None, recovery_terminal_verifier=None, retry_probe=None):
         self.settings = settings
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         config = DirectoryConfig.load() if directory is None or approved_ous is None else None
@@ -49,6 +49,7 @@ class SetupService:
             prerequisites = prerequisites or runtime.prerequisites
         self.probe = probe
         self.prerequisites = prerequisites
+        self.retry_probe = retry_probe
         self.plans = SetupPlanStore(settings.state_root, clock=self.clock)
         self.assignments = DomainAssignmentStore(settings.state_root)
         from .setup_recovery_resolution import RecoveryResolutionStore
@@ -79,8 +80,15 @@ class SetupService:
         }, expected_uuid=machine.uuid)
         binding = self.assignments.identity_binding(machine.uuid, user, ou, software, remote)
         resolution = None
+        retry_binding = None
         if recovery_resolution is None:
-            existing = self.assignments.check(binding)
+            try:
+                existing = self.assignments.check(binding)
+            except ControlError as exc:
+                existing = self.assignments.get(machine.uuid)
+                if exc.code != 'setup_previous_run_unresolved' or existing is None or existing.get('result') != 'failed':
+                    raise
+                retry_binding = existing
         else:
             existing = self.assignments.get(machine.uuid)
             resolution = self.recovery_resolutions.validate(recovery_resolution, existing)
@@ -112,10 +120,20 @@ class SetupService:
         if resolution is not None:
             from .setup_recovery_continuation import validate_continuity
             validate_continuity(resolution, user, ous[0], observed, computer, machine)
+        retry = None
+        if retry_binding is not None:
+            from .setup_prejoin_retry import prejoin_retry_evidence
+            from .setup_runtime import SetupRuntime
+            retry = prejoin_retry_evidence(self.settings, retry_binding, machine, user, ous[0], observed, computer)
+            retry_probe = self.retry_probe or SetupRuntime(self.settings).probe_prejoin
+            quiet = retry_probe(machine, retry['configuration_run_id'])
+            if (not isinstance(quiet, dict) or quiet.get('uuid') != machine.uuid or quiet.get('hostname') != machine.hostname or
+                    quiet.get('credentials_absent') is not True or quiet.get('processes_absent') is not True):
+                raise fail('setup_previous_run_unresolved', 'Pre-join processes or credentials are present or cannot be verified')
         preview = self.planner.preview(machine.uuid, request)
         changes = ['configure_domain_baseline', 'verify_selected_domain_user']
         if not observed['trust']:
-            changes.insert(0, 'domain_join')
+            changes[0:0] = ['select_approved_p11_package_mirror', 'upgrade_alt_before_domain_join', 'domain_join']
         if software == 'core-apps':
             changes.append('ensure_core_apps_including_signature_suite')
         if remote == 'krfb':
@@ -127,8 +145,12 @@ class SetupService:
                 'existing_assignment': existing, 'prerequisites': ready, 'changes': changes,
                 'actions': preview['actions'], 'warnings': ['delegated_computer_creation_right_not_proven'] if not observed['trust'] else [],
                 'deferred_actions': ['user_home_operations_wait_for_first_domain_login'] if not observed['home_exists'] else []}
+        payload['execution_budget_seconds'] = 5400 if computer['exists'] else 21600
         if recovery_resolution is not None:
             payload['recovery_resolution'] = recovery_resolution
+        if retry is not None:
+            payload['prejoin_retry'] = retry
+            changes.append('continue_after_proven_prejoin_timeout')
         return payload
 
     def plan(self, identifier, login, ou, software='core-apps', remote='none'):
@@ -173,6 +195,8 @@ class SetupService:
             try:
                 endpoint = current['prerequisites'].get('directory_uri')
                 options = {'setup_directory_uri': endpoint} if endpoint is not None else {}
+                if not current['computer']['exists']:
+                    options['setup_fresh_install'] = True
                 result = self.planner.start(request.machine_uuid, request, _lock_held=True, setup_run_id=run_id, **options)
                 run.update(configuration_run_id=result['run_id'], result=result,
                            reboot_required=result.get('reboot_required', False))
@@ -205,6 +229,8 @@ class SetupService:
                            finished_at=self.clock().isoformat(), partial_failure=True)
                 if isinstance(exc, ControlError) and re.fullmatch(r'[0-9a-f]{32}', str(exc.details.get('run_id', ''))):
                     run['configuration_run_id'] = exc.details['run_id']
+                    if exc.details.get('phase') in ('upgrade', 'domain_join', 'configuration'):
+                        run['failure_phase'] = exc.details['phase']
                     try:
                         configuration_result = _read_configure_result(private_read(
                             self.settings.state_root / 'configure-runs' / exc.details['run_id'] / 'result.json'), request)

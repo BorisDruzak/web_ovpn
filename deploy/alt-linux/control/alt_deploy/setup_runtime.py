@@ -82,6 +82,134 @@ result = dict(uuid=pathlib.Path('/sys/class/dmi/id/product_uuid').read_text().st
 print(json.dumps(result))
 '''
 
+READONLY_TDB_KEYS_SCRIPT = r'''
+import ctypes, fcntl, os, stat
+
+class TdbData(ctypes.Structure):
+    _fields_ = [('dptr', ctypes.c_void_p), ('dsize', ctypes.c_size_t)]
+
+class ReadLock(ctypes.Structure):
+    _fields_ = [('l_type', ctypes.c_short), ('l_whence', ctypes.c_short),
+                ('l_start', ctypes.c_longlong), ('l_len', ctypes.c_longlong), ('l_pid', ctypes.c_int)]
+
+def readonly_tdb_keys(path):
+    # Samba 4.21 lib/tdb/include/tdb.h: key iteration returns malloc-owned keys.
+    # NOMMAP avoids mapping value pages; O_RDONLY forbids all database writes.
+    lib = ctypes.CDLL('libtdb.so.1')
+    lib.tdb_open.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+    lib.tdb_open.restype = ctypes.c_void_p
+    lib.tdb_firstkey.argtypes = [ctypes.c_void_p]
+    lib.tdb_firstkey.restype = TdbData
+    lib.tdb_nextkey.argtypes = [ctypes.c_void_p, TdbData]
+    lib.tdb_nextkey.restype = TdbData
+    lib.tdb_error.argtypes = [ctypes.c_void_p]
+    lib.tdb_error.restype = ctypes.c_int
+    lib.tdb_close.argtypes = [ctypes.c_void_p]
+    lib.tdb_close.restype = ctypes.c_int
+    lib.tdb_fd.argtypes = [ctypes.c_void_p]
+    lib.tdb_fd.restype = ctypes.c_int
+    libc = ctypes.CDLL(None)
+    libc.free.argtypes = [ctypes.c_void_p]
+    libc.free.restype = None
+    # libtdb rejects lockall on O_RDONLY contexts. A Linux OFD read lock
+    # conflicts with Samba's POSIX writers and survives its per-key unlocks.
+    guard = None
+    handle = None
+    key = TdbData()
+    try:
+        guard = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        before = os.fstat(guard)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError('credential database is not a regular file')
+        fcntl.fcntl(guard, fcntl.F_OFD_SETLK, bytes(ReadLock(fcntl.F_RDLCK, os.SEEK_SET, 0, 0, 0)))
+        # TDB1 fixed header (tdb_private.h). Reject mutex/unknown features:
+        # mutex-only writers do not honor the POSIX/OFD read lock.
+        header = os.pread(guard, 68, 0)
+        if (len(header) != 68 or header[:9] != b'TDB file\n' or
+                not any(int.from_bytes(header[32:36], endian) == 0x2601196d for endian in ('little', 'big')) or
+                any(header[60:68])):
+            raise RuntimeError('credential database format is not supported for safe key reads')
+        handle = lib.tdb_open(os.fsencode(path), 0, 8, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, 0)
+        if not handle:
+            raise RuntimeError('credential database cannot be read safely')
+        opened = os.fstat(lib.tdb_fd(handle))
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise RuntimeError('credential database was replaced')
+        result = []
+        key = lib.tdb_firstkey(handle)
+        while key.dptr:
+            if not 0 < key.dsize <= 65536 or len(result) >= 1024:
+                raise RuntimeError('credential database key bounds exceeded')
+            raw = ctypes.string_at(key.dptr, key.dsize)
+            result.append(raw.removesuffix(b'\0').decode('ascii'))
+            following = lib.tdb_nextkey(handle, key)
+            libc.free(key.dptr)
+            key = following
+        if lib.tdb_error(handle) != 0:
+            raise RuntimeError('credential database iteration failed')
+        after = os.stat(path, follow_symlinks=False)
+        if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+            raise RuntimeError('credential database changed')
+        return result
+    except OSError as exc:
+        raise RuntimeError('credential database read lock unavailable') from exc
+    finally:
+        if key.dptr:
+            libc.free(key.dptr)
+        closed = lib.tdb_close(handle) if handle else 0
+        if guard is not None:
+            os.close(guard)
+        if closed != 0:
+            raise RuntimeError('credential database cleanup failed')
+'''
+
+PREJOIN_PROBE_SCRIPT = READONLY_TDB_KEYS_SCRIPT + r'''
+import json, os, pathlib, re, socket, stat, subprocess, sys
+expected_uuid, expected_hostname = sys.argv[1:3]
+actual_uuid = pathlib.Path('/sys/class/dmi/id/product_uuid').read_text().strip().lower()
+actual_hostname = socket.gethostname().split('.')[0].lower()
+if actual_uuid != expected_uuid or actual_hostname != expected_hostname or os.geteuid() != 0:
+    raise RuntimeError('prejoin identity differs')
+
+def read(args):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=5,
+                            env=dict(os.environ, LC_ALL='C'))
+    if len(result.stdout.encode()) > 262144 or len(result.stderr.encode()) > 262144:
+        raise RuntimeError('prejoin output exceeds limit')
+    return result
+
+private = read(['testparm', '-s', '--parameter-name=private dir'])
+credentials_absent = private.returncode == 0 and private.stdout.strip() == '/var/lib/samba/private'
+for path in ('/etc/krb5.keytab', '/var/lib/samba/private/secrets.ldb', '/var/lib/samba/secrets.tdb'):
+    p = pathlib.Path(path)
+    if p.exists() or p.is_symlink():
+        credentials_absent = False
+tdb = pathlib.Path('/var/lib/samba/private/secrets.tdb')
+if tdb.is_symlink():
+    credentials_absent = False
+elif tdb.exists():
+    info = tdb.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0:
+        credentials_absent = False
+    else:
+        # Read only key names through O_RDONLY firstkey/nextkey, never values.
+        keys = readonly_tdb_keys(tdb)
+        credentials_absent = credentials_absent and all(
+            re.fullmatch(r'SECRETS/SID/[A-Za-z0-9_.-]+', key) for key in keys)
+processes = read(['ps', '-eo', 'comm,args'])
+process_lines = processes.stdout.splitlines()
+busy_names = {'apt-get', 'http', 'https', 'rpm', 'system-auth', 'net', 'ansible', 'ansible-playboo', 'ansible-playbook'}
+busy = False
+for line in process_lines[1:]:
+    fields = line.split(maxsplit=1)
+    if fields and (fields[0] in busy_names or (len(fields) == 2 and re.search(
+            r'(?:^|\s)/[^ ]*/AnsiballZ_[^ ]+\.py(?:\s|$)', fields[1]))):
+        busy = True
+print(json.dumps(dict(uuid=actual_uuid, hostname=actual_hostname,
+    credentials_absent=bool(credentials_absent), processes_absent=processes.returncode == 0 and bool(process_lines)
+    and process_lines[0].split() == ['COMMAND', 'COMMAND'] and not busy)))
+'''
+
 
 def source_fingerprint(project, control):
     """Bind published role assets and source without reading local Vault secrets."""
@@ -111,6 +239,36 @@ class SetupRuntime:
     def __init__(self, settings, *, runner=None):
         self.settings = settings
         self.runner = runner or bounded_run
+
+    def probe_prejoin(self, machine, config_id):
+        """Read-only process and credential gate for a new pre-join plan."""
+        import re
+        import subprocess
+        if not re.fullmatch('[0-9a-f]{32}', config_id):
+            raise fail('setup_previous_run_unresolved', 'Previous configuration ID is invalid')
+        try:
+            address = str(ipaddress.ip_address(machine.ip))
+            if not re.fullmatch('[0-9a-f-]{36}', machine.uuid) or not re.fullmatch('[a-z][a-z0-9-]{0,62}', machine.hostname):
+                raise ValueError
+            workers = subprocess.run(['ps', '-eo', 'args'], capture_output=True, text=True, timeout=5)
+            marker = str(self.settings.state_root/'configure-runs'/config_id) + '/'
+            if workers.returncode or len(workers.stdout.encode()) > 1048576 or marker in workers.stdout:
+                raise ValueError
+            command = ['/usr/bin/ssh', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                '-o', 'ProxyCommand=none', '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=10',
+                '-o', 'UserKnownHostsFile=' + str(self.settings.known_hosts_file), '-i', str(self.settings.private_key_file),
+                'ansible@' + address, 'sudo -n /usr/bin/python3 -I -B -c ' + shlex.quote(PREJOIN_PROBE_SCRIPT) +
+                ' ' + shlex.quote(machine.uuid) + ' ' + shlex.quote(machine.hostname)]
+            rc, stdout, _ = self.runner(command, environment=dict(os.environ), timeout=30)
+            if rc:
+                raise ValueError
+            result = json.loads(stdout)
+            if (set(result) != {'uuid', 'hostname', 'credentials_absent', 'processes_absent'} or
+                    any(type(result[key]) is not bool for key in ('credentials_absent', 'processes_absent'))):
+                raise ValueError
+            return result
+        except Exception as exc:
+            raise fail('setup_previous_run_unresolved', 'Pre-join process and credential absence could not be verified') from exc
 
     def probe(self, machine, user):
         try:

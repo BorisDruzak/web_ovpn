@@ -409,3 +409,29 @@ with a confirmed closed loopback LDAP endpoint exercised the actual installed
 LDAP transport and returned `ad_dc_unavailable`. The production directory
 configuration was not changed, and no workstation configuration was launched.
 Ambiguous AD user objects were not manufactured for live acceptance.
+
+### 2026-10-13: clean-VM package timeout diagnosis
+
+On a separately selected clean workstation `test-vm-04`, normal served bootstrap,
+registration and native preflight succeeded. The operator selected enabled
+existing `employee-04`; one ordinary public Setup plan/apply then stopped during
+the pre-join full package upgrade at the controller's 5400-second subprocess
+deadline. No domain-join task had executed. The closed failed run remains
+retained; post-failure checks found no AD computer object or machine keytab,
+with local authentication and no valid trust. No reset or new backup occurred.
+
+The configured `ftp.altlinux.org` package origin downloaded at approximately
+0.06–0.15 MB/s in bounded independent probes on this VM. The same p11 RPM from
+`download.basealt.ru` downloaded at 2.15–3.38 MB/s; a separate control origin was
+also substantially faster. This establishes the slow configured origin/path
+combined with the global timeout as the Setup failure mechanism. It does not
+establish whether the remote mirror or a provider/path condition causes that
+origin's slowdown. The installed CLI's `domain_join_timeout` label was misleading
+for this pre-join failure.
+
+The approved correction selects only stock signed p11 origins, adds a six-hour
+fresh Setup budget, reports timeout phase and permits a new normal plan after
+strict proof of a closed pre-join timeout. First unassisted join acceptance on
+this target remains **pending** publication, guarded installation, fresh
+plan/apply, reboot and graphical-login verification. Synthetic tests and
+staged read-only inspection alone do not establish that acceptance.

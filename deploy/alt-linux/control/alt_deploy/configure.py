@@ -390,13 +390,18 @@ class ConfigurePlanner:
 
     def start(self, machine_uuid: str, request: ConfigureRequest, *,
               _lock_held: bool = False, setup_run_id: str | None = None,
-              setup_directory_uri: str | None = None) -> dict[str, object]:
+              setup_directory_uri: str | None = None,
+              setup_fresh_install: bool = False) -> dict[str, object]:
         from contextlib import nullcontext
         from .locking import exclusive_lock
         from .setup_assignments import DomainAssignmentStore
         context = nullcontext() if _lock_held else exclusive_lock(self.settings.lock_file)
         with context:
             binding = DomainAssignmentStore(self.settings.state_root).get(machine_uuid)
+            if (type(setup_fresh_install) is not bool or
+                    (setup_fresh_install and (binding is None or not _lock_held or
+                     setup_run_id != binding.get('run_id') or binding.get('result') != 'running'))):
+                raise ControlError('setup_assignment_managed', 'Fresh setup budget requires its reserved managed run', 4)
             if binding is not None:
                 if (not _lock_held or setup_run_id != binding.get('run_id')
                         or binding.get('result') != 'running'):
@@ -412,11 +417,15 @@ class ConfigurePlanner:
                 if (binding is None or setup_run_id is None
                         or DirectoryConfig.load().uri != setup_directory_uri):
                     raise ControlError('setup_plan_drift', 'Confirmed controller directory endpoint changed', 4)
-                return self._start_unlocked(machine_uuid, request, setup_directory_uri=setup_directory_uri)
+                options = {'setup_fresh_install': True} if setup_fresh_install else {}
+                return self._start_unlocked(machine_uuid, request, setup_directory_uri=setup_directory_uri, **options)
+            if setup_fresh_install:
+                return self._start_unlocked(machine_uuid, request, setup_fresh_install=True)
             return self._start_unlocked(machine_uuid, request)
 
     def _start_unlocked(self, machine_uuid: str, request: ConfigureRequest, *,
-                        setup_directory_uri: str | None = None) -> dict[str, object]:
+                        setup_directory_uri: str | None = None,
+                        setup_fresh_install: bool = False) -> dict[str, object]:
         machine = self.machines.get(machine_uuid)
         if not machine.ip:
             raise ControlError(code="machine_missing_ip", message="Registered machine has no IP address", exit_code=5)
@@ -490,8 +499,23 @@ class ConfigurePlanner:
         try:
             with log_path.open("w", encoding="utf-8") as log_stream:
                 os.chmod(log_path, 0o600)
-                completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=5400, check=False, cwd=self.settings.ansible_project_dir, env=environment)
+                completed = subprocess.run(command, shell=False, text=True, stdout=log_stream, stderr=subprocess.STDOUT, timeout=21600 if setup_fresh_install else 5400, check=False, cwd=self.settings.ansible_project_dir, env=environment)
         except subprocess.TimeoutExpired as exc:
+            if setup_fresh_install:
+                phase = 'configuration'
+                if log_path.stat().st_size <= 8 * 1024 * 1024:
+                    content = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', log_path.read_text(encoding='utf-8', errors='replace'))
+                    labels = [line for line in content.splitlines()
+                              if line.startswith('TASK [')]
+                    if labels and labels[-1].startswith('TASK [prejoin_upgrade :'):
+                        phase = 'upgrade'
+                    elif labels and labels[-1].startswith('TASK [domain_join :'):
+                        phase = 'domain_join'
+                raise ControlError(
+                    code='setup_upgrade_timeout' if phase == 'upgrade' else 'setup_configuration_timeout',
+                    message='Ansible setup timed out during package upgrade' if phase == 'upgrade' else 'Ansible setup timed out',
+                    exit_code=7, details={'run_id': run_id, 'phase': phase},
+                ) from exc
             raise ControlError(
                 code="domain_join_timeout",
                 message="Ansible domain configure timed out",
