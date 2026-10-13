@@ -248,7 +248,7 @@
       {
         "ExtensionInstallForcelist": [
           "jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx",
-          "iifchhfnnmpdbibifmljnfjhpififfog;https://clients2.google.com/service/update2/crx"
+          "pfhgbfnnjiafkhfdkmpiflachepdcjod;https://clients2.google.com/service/update2/crx"
         ]
       }
     owner: root
@@ -263,7 +263,7 @@
 - name: Verify the fixed signature extension policy
   ansible.builtin.assert:
     that:
-      - (software_gosuslugi_plugin_browser_policy.content | b64decode | from_json).ExtensionInstallForcelist == ['jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx', 'iifchhfnnmpdbibifmljnfjhpififfog;https://clients2.google.com/service/update2/crx']
+      - (software_gosuslugi_plugin_browser_policy.content | b64decode | from_json).ExtensionInstallForcelist == ['jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx', 'pfhgbfnnjiafkhfdkmpiflachepdcjod;https://clients2.google.com/service/update2/crx']
     fail_msg: ALT_PREFLIGHT_FAILURE:gosuslugi_plugin_browser_policy_missing
 
 - name: Publish ГосПлагин verification facts
