@@ -497,5 +497,20 @@ delta passed **1641 tests with 77 skips**. Independent review found no remaining
 confirmed P1/P2. GitNexus identified the direct planning/resolution consumers;
 source and tests verified the continuation and operator paths. Read-only loading
 of the selected live failed history passed from the isolated source copy.
-Controller installation, concrete recovery approval and live continuation remain
-pending. No new backup or AD mutation was performed by this extension.
+The extension was published and installed from
+`e9b6ba7b2c56a38f8fd2acb40b7a2d13c4f1cccd`. Exact-head runtime-identity CI
+passed **5346 tests with 89 skips**, and ISO CI passed. One guarded install
+passed **2746 tests with one skip**, using existing rollback evidence. Its
+120 control modules and 61 Ansible files byte-matched the source; 262 retained
+history files and directory configuration were unchanged; readiness passed
+14 checks. No new backup was created.
+
+An independently reviewed, selected-target recovery plan was prepared and
+verified without claiming an attempt or writing AD. It uses one GUID-only
+password Modify, sealed credentials, network-isolated native offline preparation,
+fixed local import, stock-policy verification and genuine Setup continuation.
+Eight private synthetic tests and nine isolated native operations passed.
+Reusing native existing-account join was rejected because its fallback can
+repeat password operations after partial LDAP failure. Concrete reset approval
+and live continuation remain pending; no AD mutation was performed by this
+extension and fresh-VM automatic Setup acceptance remains incomplete.
