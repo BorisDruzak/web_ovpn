@@ -162,13 +162,23 @@ def bind_keytab(directory, hostname, realm, dc, ou):
 def net_wrapper(directory, hostname, realm, dc, ou, argv):
     trusted_file(directory / 'net')
     validate_identity(hostname, realm, dc)
-    command = net_command(str(directory / 'offline.keytab'), hostname, realm, argv)
+    joining = argv[:2] == ['ads', 'join']
+    # Separate the directory write from local keytab generation; keep Samba's
+    # inline synchronization outside this first-join path.
+    command = (['/usr/bin/net', '--option=sync machine password to keytab=disabled', *argv]
+               if joining else net_command(str(directory / 'offline.keytab'), hostname, realm, argv))
     result = run(command)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode:
         return result.returncode
-    if argv[:2] == ['ads', 'join']:
+    if joining:
+        created = run(net_command(str(directory / 'offline.keytab'), hostname, realm,
+                                  ['ads', 'keytab', 'create']))
+        sys.stdout.write(created.stdout)
+        sys.stderr.write(created.stderr)
+        if created.returncode:
+            return created.returncode
         bind_keytab(directory, hostname, realm, dc, ou)
     return 0
 

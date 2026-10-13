@@ -128,3 +128,28 @@ def test_role_refuses_adapter_failure_before_trust_only_reconciliation():
     observed = {'rc': 89, 'stdout': '', 'stderr': 'ALT_PREFLIGHT_FAILURE:domain_join_compatibility_failed'}
     rendered = env.from_string('{{ ' + gate['ansible.builtin.assert']['that'] + ' }}').render(domain_join_command=observed)
     assert rendered == 'False'
+
+
+@pytest.mark.parametrize('join_rc,keytab_rc', [(0, 0), (1, 0), (0, 1)])
+def test_join_disables_inline_sync_and_creates_offline_keys_after_success(
+        tmp_path, monkeypatch, join_rc, keytab_rc):
+    m = helper()
+    monkeypatch.setattr(m, 'trusted_file', lambda path: path)
+    calls, bindings = [], []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        rc = keytab_rc if argv[-3:] == ['ads', 'keytab', 'create'] else join_rc
+        return SimpleNamespace(returncode=rc, stdout='', stderr='')
+    monkeypatch.setattr(m, 'run', run)
+    monkeypatch.setattr(m, 'bind_keytab', lambda *args: bindings.append(args))
+    argv = ['ads', 'join', '-S', 'dc.example.test', 'createcomputer=TEST']
+    result = m.net_wrapper(tmp_path, 'vm-test', 'example.test', 'dc.example.test',
+                           'OU=TEST,DC=example,DC=test', argv)
+    assert calls[0] == ['/usr/bin/net', '--option=sync machine password to keytab=disabled', *argv]
+    if join_rc:
+        assert result == join_rc and len(calls) == 1 and not bindings
+    else:
+        assert calls[1] == m.net_command(str(tmp_path/'offline.keytab'), 'vm-test',
+                                       'example.test', ['ads', 'keytab', 'create'])
+        assert result == keytab_rc
+        assert bool(bindings) == (keytab_rc == 0)
