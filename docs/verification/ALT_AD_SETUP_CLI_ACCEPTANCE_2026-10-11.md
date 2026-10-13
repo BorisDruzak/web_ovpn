@@ -547,3 +547,39 @@ readiness passed 14 checks after completion.
 This establishes recovery and configured-workstation acceptance. The failed
 initial join used the earlier package/pre-join release, so first automatic join
 with the corrected native metadata adapter on a clean VM remains **pending**.
+
+### 2026-10-13: clean VM first automatic Setup passed
+
+A new clean `test-vm-05`, assigned to the same `employee-04`, initially had
+local authentication, no machine keytab, no AD computer object and no
+assignment. The original bootstrap ran once, followed by one ordinary CLI
+Setup apply. Full package upgrade, first domain join and all stage-03
+components succeeded in 35 minutes 13 seconds. The new machine keytab had
+KVNO 1; the structured result reported `recovered=false`. No recovery,
+existing-account reset or new backup was used.
+
+One authorized reboot completed. Read-only verification confirmed a new boot,
+healthy domain trust, stock SSSD policy, active SSSD/SMB/NMB and selected-user
+lookup. A fresh non-root Yandex profile automatically downloaded GosPlugin
+1.3.43.0 and CAdES 1.3.17, both MV3; their native hosts were verified.
+
+After the employee confirmed graphical login, SSH inspection verified an
+active local domain X11 session, home ownership matching the domain UID/GID,
+mode 0700, four executable application shortcuts, network/home folder links
+and Nextcloud autostart. Fresh CLI verification reported `home_exists=true`,
+`home_operations_deferred=false`, successful GPO verification and no local
+employee duplicate. A second ordinary plan omitted domain join; it was not
+applied. Operational execution counts were one bootstrap, two plans, one
+Setup apply and repeated read-only verification around reboot and login.
+
+Initial graphical attempts used the hostname as the login and failed with
+`UNKNOWN USER`; the correct AD login succeeded. A private verification helper
+had incorrect encoding in Russian path literals; correcting that helper
+allowed all checks to pass without workstation remediation. These were not
+Setup or first-join failures.
+
+This completes clean-VM first automatic Setup acceptance for the tested ALT
+image and installed release. Actual signing with an employee certificate was
+not tested. The existing HTTP bootstrap-helper download transport limitation
+remains outside this functional acceptance; this result does not establish
+authenticated bootstrap transport or fleet-wide compatibility.
