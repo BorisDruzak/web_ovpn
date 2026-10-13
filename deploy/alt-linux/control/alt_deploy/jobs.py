@@ -20,7 +20,6 @@ from .job_stages import (
 from .jsonio import (
     atomic_write_json,
     ensure_private_dir,
-    read_json,
 )
 from .models import JobRecord
 
@@ -37,6 +36,13 @@ ACTIVE_STATES = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def is_active_job(job: JobRecord) -> bool:
+    if job.status.get('kind') == 'setup':
+        from .setup_jobs import ACTIVE_SETUP_STATES
+        return job.state in ACTIVE_SETUP_STATES
+    return job.state in ACTIVE_STATES
 
 
 class JobRepository:
@@ -73,8 +79,8 @@ class JobRepository:
         status_path = job_dir / "status.json"
 
         try:
-            request = read_json(request_path)
-            status_payload = read_json(status_path)
+            request = self._read_state(request_path)
+            status_payload = self._read_state(status_path)
         except (OSError, ValueError) as exc:
             raise ControlError(
                 code="job_invalid",
@@ -84,10 +90,15 @@ class JobRepository:
                 exit_code=4,
             ) from exc
 
-        validate_job_stage_status(
-            status_payload,
-            job_id=job_dir.name,
-        )
+        if any(isinstance(p, dict) and (p.get('schema_version') == 2 or p.get('kind') == 'setup')
+               for p in (request, status_payload)):
+            from .setup_jobs import read_setup_record
+            request, status_payload = read_setup_record(self.settings, job_dir)
+        else:
+            validate_job_stage_status(
+                status_payload,
+                job_id=job_dir.name,
+            )
 
         return JobRecord(
             job_id=str(
@@ -116,11 +127,29 @@ class JobRepository:
             status=status_payload,
         )
 
+    @staticmethod
+    def _read_state(path: Path):
+        from .setup_plans import MAX_STATE_BYTES, decode_state_bytes
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_STATE_BYTES:
+            raise ValueError
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if ((before.st_dev, before.st_ino) != (info.st_dev, info.st_ino)
+                    or not stat.S_ISREG(info.st_mode) or info.st_size > MAX_STATE_BYTES):
+                raise ValueError
+            return decode_state_bytes(stream.read(MAX_STATE_BYTES + 1))
+
     def create(
         self,
         request: Mapping[str, object],
     ) -> JobRecord:
         record = dict(request)
+
+        if record.get('kind') == 'setup' or record.get('schema_version') == 2:
+            raise ControlError(code='setup_job_admission_required',
+                               message='Setup jobs require typed single-use admission', exit_code=4)
 
         assert_safe_payload(record)
 
@@ -253,6 +282,9 @@ class JobRepository:
             )
 
         job = self.get(job_id)
+        if job.status.get('kind') == 'setup':
+            raise ControlError(code='setup_job_update_forbidden',
+                               message='Setup jobs require typed Setup transitions', exit_code=4)
         status_payload = dict(job.status)
 
         fields.pop("job_id", None)
@@ -288,7 +320,7 @@ class JobRepository:
         for job in self.list():
             if (
                 job.machine_uuid.lower() == normalized
-                and job.state in ACTIVE_STATES
+                and is_active_job(job)
             ):
                 return job
 

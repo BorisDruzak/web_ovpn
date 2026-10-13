@@ -22,7 +22,7 @@ from .job_reconcile import JobReconciler
 from .job_retention import JobRetentionManager
 from .install_session_approval import InstallSessionApprovalService
 from .install_session_repository import InstallSessionRepository
-from .jobs import ACTIVE_STATES, JobRepository
+from .jobs import JobRepository, is_active_job
 from .jsonio import read_json
 from .machine_archive import MachineArchiveService
 from .stale_registration_recovery import (
@@ -638,7 +638,7 @@ def main(
                 for job in JobRepository(
                     active_settings
                 ).list()
-                if job.state in ACTIVE_STATES
+                if is_active_job(job)
             ]
 
             payload = {

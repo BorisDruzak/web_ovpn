@@ -276,6 +276,10 @@ class JobStageManager:
 
         job = self.jobs.get(job_id)
 
+        if job.status.get('kind') == 'setup':
+            raise ControlError(code='setup_job_update_forbidden',
+                               message='Setup jobs require typed Setup transitions', exit_code=4)
+
         if job.state in TERMINAL_STATES:
             raise ControlError(
                 code="job_stage_terminal",

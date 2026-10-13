@@ -36,9 +36,13 @@ def private_directory(path: Path) -> None:
         raise fail('setup_state_unsafe', 'Setup state directory must be private and owned by the operator service')
 
 
-def private_read_bytes(path: Path) -> bytes:
+def private_read_bytes(path: Path, *, owner_uid: int | None = None) -> bytes:
     """Read protected bytes without following redirected ancestors or files."""
     try:
+        actor_uid = getattr(os, 'geteuid', lambda: 0)()
+        expected_uid = actor_uid if owner_uid is None else owner_uid
+        if actor_uid not in (0, expected_uid):
+            raise ValueError
         for ancestor in path.parents:
             if not stat.S_ISDIR(ancestor.lstat().st_mode):
                 raise ValueError
@@ -51,7 +55,7 @@ def private_read_bytes(path: Path) -> bytes:
             info = os.fstat(stream.fileno())
             if ((info.st_dev, info.st_ino) != (before.st_dev, before.st_ino)
                     or not stat.S_ISREG(info.st_mode) or info.st_size > MAX_STATE_BYTES
-                    or (os.name != 'nt' and (stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != os.geteuid()))):
+                    or (os.name != 'nt' and (stat.S_IMODE(info.st_mode) != 0o600 or info.st_uid != expected_uid))):
                 raise ValueError
             raw = stream.read(MAX_STATE_BYTES + 1)
             if len(raw) > MAX_STATE_BYTES:
@@ -80,8 +84,8 @@ def decode_state_bytes(raw: bytes):
         raise fail('setup_state_invalid', 'Protected setup state is missing, unsafe or invalid') from exc
 
 
-def private_read(path: Path):
-    return decode_state_bytes(private_read_bytes(path))
+def private_read(path: Path, *, owner_uid: int | None = None):
+    return decode_state_bytes(private_read_bytes(path, owner_uid=owner_uid))
 
 
 def private_create(path: Path, payload) -> None:

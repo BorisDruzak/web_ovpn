@@ -294,7 +294,7 @@ class JobReconciler:
         active_jobs = [
             job
             for job in self.jobs.list()
-            if job.state in ACTIVE_STATES
+            if job.state in ACTIVE_STATES and job.status.get('kind') != 'setup'
         ]
         changed: list[dict[str, object]] = []
         unchanged: list[dict[str, object]] = []

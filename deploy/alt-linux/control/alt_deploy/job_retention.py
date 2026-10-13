@@ -94,6 +94,8 @@ class JobRetentionManager:
         retention_days: int,
         archive_after_days: int,
     ) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+        if job.status.get('kind') == 'setup':
+            return None, {'job_id': job.job_id, 'state': job.state, 'reason': 'setup_evidence_retained'}
         if job.state in ACTIVE_STATES:
             return None, {
                 "job_id": job.job_id,

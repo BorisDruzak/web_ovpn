@@ -140,6 +140,10 @@ def run_job(
 
     job = jobs.get(job_id)
 
+    if job.status.get('kind') == 'setup':
+        raise ControlError(code='setup_job_worker_required',
+                           message='Setup jobs require the dedicated Setup worker', exit_code=4)
+
     if job.state != "queued":
         raise ControlError(
             code="job_not_queued",
