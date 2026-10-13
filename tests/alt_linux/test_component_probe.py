@@ -1,0 +1,86 @@
+"""The controller sends only the fixed read-only probe and validated data."""
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'deploy/alt-linux/control'))
+from alt_deploy.component_catalog import ComponentCatalog
+from alt_deploy.component_probe import ComponentProbe, ssh_binding
+from alt_deploy.errors import ControlError
+from alt_deploy.setup_runtime import source_fingerprint
+from test_component_verification import evidence, UUID, CATALOG
+
+
+def test_probe_only_uses_fixed_read_commands(tmp_path):
+    catalog = ComponentCatalog.load(CATALOG)
+    settings = SimpleNamespace(ansible_project_dir=CATALOG, known_hosts_file=tmp_path/'known',
+                               private_key_file=tmp_path/'key')
+    machine = SimpleNamespace(uuid=UUID, hostname='alt-a1-pc3', ip='192.0.2.10')
+    user = {'login': 'synthetic.user', 'upn': 'synthetic.user@sosnadmin.local'}
+    commands = []
+    def runner(command, **kwargs):
+        commands.append((command, kwargs))
+        return 0, json.dumps(evidence(catalog)), ''
+    probe = ComponentProbe(settings, runner=runner)
+    result = probe.observe(machine, user, catalog.ordered(['software.onlyoffice'], os_id='alt-kworkstation-11'))
+    assert result['machine']['uuid'] == UUID
+    command, options = commands[0]
+    assert 'StrictHostKeyChecking=yes' in command
+    assert 'ProxyCommand=none' in command
+    assert options['timeout'] <= 180
+    assert json.loads(options['input_text'])['machine_uuid'] == UUID
+    assert 'sudo -n /usr/bin/python3 -I -B -c ' in command[-1]
+    assert all(value not in command[-1] for value in ('kwriteconfig', "'-install'", "'-set'", "'dist-upgrade'"))
+    with pytest.raises(ControlError):
+        probe.observe(machine, {'login': 'bad;command', 'upn': 'bad;command@sosnadmin.local'}, catalog.components())
+    assert len(commands) == 1
+
+
+def test_probe_invalid_output_timeout_and_uuid_never_verify(tmp_path):
+    catalog = ComponentCatalog.load(CATALOG)
+    settings = SimpleNamespace(ansible_project_dir=CATALOG, known_hosts_file=tmp_path/'known', private_key_file=tmp_path/'key')
+    machine = SimpleNamespace(uuid=UUID, hostname='alt-a1-pc3', ip='192.0.2.10')
+    user = {'login': 'synthetic.user', 'upn': 'synthetic.user@sosnadmin.local'}
+    for output in ('{}', 'not json', json.dumps(dict(evidence(catalog), machine={'uuid': 'different'}))):
+        with pytest.raises(ControlError):
+            ComponentProbe(settings, runner=lambda *a, **k: (0, output, '')).observe(machine, user, catalog.components())
+    with pytest.raises(ControlError):
+        ComponentProbe(settings, runner=lambda *a, **k: (1, '', 'secret must not leak')).observe(machine, user, catalog.components())
+
+
+def test_source_binding_includes_callback_plugins(tmp_path):
+    project = tmp_path/'ansible'
+    (project/'callback_plugins').mkdir(parents=True)
+    (project/'group_vars').mkdir()
+    callback = project/'callback_plugins/events.py'
+    callback.write_text('version=1')
+    vault = project/'group_vars/vault.yml'
+    vault.write_text('excluded private fixture')
+    first = source_fingerprint(project, tmp_path/'control')
+    callback.write_text('version=2')
+    second = source_fingerprint(project, tmp_path/'control')
+    assert first != second
+    vault.write_text('another private fixture')
+    assert source_fingerprint(project, tmp_path/'control') == second
+
+
+def test_ssh_binding_changes_without_reading_private_key(tmp_path):
+    known = tmp_path/'known'
+    key = tmp_path/'key'
+    key.write_text('private fixture never fingerprinted')
+    known.write_text('192.0.2.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHyh+/CNXGsDRIBcoDnMBEeUx6pkcuWWCCvdMv7Dfmu4\n')
+    settings = SimpleNamespace(known_hosts_file=known, private_key_file=key)
+    machine = SimpleNamespace(ip='192.0.2.10')
+    calls = []
+    def runner(command, **kwargs):
+        calls.append(command)
+        return 0, 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHyh+/CNXGsDRIBcoDnMBEeUx6pkcuWWCCvdMv7Dfmu4 fixture', ''
+    first = ssh_binding(settings, machine, runner=runner)
+    key.write_text('changed private fixture')
+    assert ssh_binding(settings, machine, runner=runner) == first
+    assert all(c[0] == '/usr/bin/ssh-keygen' and '-y' in c for c in calls)
+    assert 'private' not in json.dumps(first)

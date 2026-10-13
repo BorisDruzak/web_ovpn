@@ -218,7 +218,8 @@ def source_fingerprint(project, control):
         relative = path.relative_to(project).as_posix()
         if relative == 'group_vars/vault.yml':
             continue
-        included = relative.startswith('roles/') or path.suffix in ('.yml', '.yaml', '.cfg')
+        included = (relative.startswith(('roles/', 'callback_plugins/', 'filter_plugins/'))
+                    or path.suffix in ('.yml', '.yaml', '.cfg'))
         if not included:
             continue
         if path.is_symlink():

@@ -54,6 +54,7 @@ def test_catalog_initial_profiles():
     assert catalog.profile('office-signature-v1')['components'] == core['components']
     assert catalog.component('domain.ready')['execution']['adapter'] == 'legacy_domain_critical'
     assert catalog.component('software.onlyoffice')['preflight']['artifact_key'] == 'onlyoffice'
+    assert catalog.component('software.cryptopro')['verification']['services'] == ['pcscd.socket']
 
 
 @pytest.mark.parametrize('bad', [

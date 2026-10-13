@@ -224,8 +224,10 @@ class ComponentCatalog:
         if 'artifact_key' in preflight:
             require(isinstance(preflight['artifact_key'], str) and preflight['artifact_key'] in artifacts)
         verification = component['verification']
-        _keys(verification, {'recipe', 'functional_verification_required'})
+        _keys(verification, {'recipe', 'functional_verification_required'}, {'services'})
         require(verification['recipe'] in RECIPES and type(verification['functional_verification_required']) is bool)
+        if 'services' in verification:
+            _ids(verification['services'])
         if execution['operation'] == 'software':
             require(preflight['recipe'] == 'artifact' and 'artifact_key' in preflight
                     and verification['recipe'] == 'package')

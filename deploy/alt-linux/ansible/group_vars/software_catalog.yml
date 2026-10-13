@@ -182,7 +182,7 @@ setup_catalog:
       dependencies: [system.base, domain.ready]
       execution: {role: software_cryptopro, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
       preflight: {recipe: artifact, artifact_key: cryptopro}
-      verification: {recipe: package, functional_verification_required: true}
+      verification: {recipe: package, functional_verification_required: true, services: [pcscd.socket]}
     - id: software.cades
       version: 1
       name: CAdES Browser Plugin

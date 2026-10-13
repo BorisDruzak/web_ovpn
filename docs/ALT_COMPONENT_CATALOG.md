@@ -18,6 +18,8 @@ Components declare `id`, integer `version`, `name`, `category`, `supported_os`,
 either a published role or the protected domain adapter, operation/scope,
 domain/home/reboot requirements and retry policy. Supported verification recipes
 are fixed controller code; catalog values never contain executable expressions.
+Package verification may declare required `services`; CryptoPro declares
+`pcscd.socket` here rather than in a separate Python selection/role table.
 
 `domain.ready` represents the existing protected domain/GPO stage. It cannot become
 an independently replayable component. Direct domain/account/recovery/provisioning
@@ -54,3 +56,21 @@ published profile needs a new version; it does not rewrite historical results.
 
 Catalog installation/execution and live acceptance are later delivery gates;
 adding the declarations alone does not deploy or contact a workstation.
+
+## Independent detection
+
+The fixed probe reads installed RPM names/EVR/epoch/architecture, executables,
+required services, session configuration, domain trust/GPO, current and future
+Plasma settings, certificate identities/stores, user-owned shortcuts and KRFB
+configuration. It never executes a role's apply helper. Desired values come from
+the published artifact records, role defaults/templates and literal declarations.
+
+GPO detection uses read-only `gpupdate-setup status/active-backend/active-policy`
+and current service result evidence; it does not run `gpupdate` or `gpoa`.
+These inspection actions are documented in the
+[ALT Domain administrator guide](https://docs.altlinux.org/ru-RU/alt-domain/11.1/html-single/alt-domain/index.html).
+
+Missing or malformed observations remain unknown. A missing domain home remains
+deferred; detection does not create it. Technical installation verification and
+functional acceptance are separate fields: Directum document opening and token
+signing still require actual operator/user evidence.
