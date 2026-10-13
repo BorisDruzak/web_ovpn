@@ -432,6 +432,50 @@ for this pre-join failure.
 The approved correction selects only stock signed p11 origins, adds a six-hour
 fresh Setup budget, reports timeout phase and permits a new normal plan after
 strict proof of a closed pre-join timeout. First unassisted join acceptance on
-this target remains **pending** publication, guarded installation, fresh
-plan/apply, reboot and graphical-login verification. Synthetic tests and
+this target was subsequently attempted as recorded below. Synthetic tests and
 staged read-only inspection alone do not establish that acceptance.
+
+### 2026-10-13: package correction passed; delegated OS-write mismatch found
+
+Published package/pre-join corrections:
+`2cfac53584d7e0570dcb00dc69abf1cde4e64aa5` and
+`32d4f852bbfd81d3fe6d40dbb6b9f67ed0ba8221`.
+Exact-head runtime-identity CI passed 5311 tests with 89 skips; the ALT ISO
+workflow passed. The guarded controller installer passed 2730 tests with one
+skip using existing rollback evidence; 173 installed files byte-matched,
+readiness passed 14 checks, and eight historical Setup records were unchanged.
+No new backup was created.
+
+A new ordinary plan retained the earlier pre-join failed run and used the
+six-hour budget. One apply on `test-vm-04` completed the full package upgrade
+in approximately 17 minutes, with observed download throughput around
+5–6 MB/s. The resulting packages were ALT 11.4, Samba 4.21.9-alt4.p11.1 and
+alterator-auth 0.55. This apply then **failed at first domain join** after
+creating the computer in the approved OU. The computer remained at KVNO 1;
+keytab was absent, trust invalid and SSSD inactive. Application roles had not
+run. The failed run is closed and retained; no join replay/reset occurred.
+
+Read-only schema, computer DACL and effective group observations established
+a deterministic authorization mismatch: the admitted join principal has no
+WriteProperty permission on any of `operatingSystem`, `operatingSystemVersion`
+or `operatingSystemServicePack`, through direct, group, broad or property-set
+grants. The pinned ALT Samba source revision
+`532170350db04e6b9b96943c6ecac92a8c4ae0d2` sends these three properties in one
+LDAP Modify when native `osName/osVer` are present, before storing secrets and
+creating the keytab. Initial computer creation alone supplies the observed
+password, DNS name and four SPNs. Historical native LDAP stderr was censored
+and not retained; the precise returned LDAP diagnostic remains unavailable.
+
+An isolated network namespace on the same VM generated an offline keytab from
+synthetic credentials and passed the existing byte parser. No real machine
+secret values or AD mutations were used for that check. Thus successful
+offline-generation tests do not establish successful first-join admission.
+
+The bounded correction omits both optional OS arguments from a validated native
+join, preserving DC/OU/Kerberos/cache/no-DNS and all credential verification.
+It applies the metadata adapter to newer Samba versions as well; the separate
+offline-keytab workaround remains version-gated. RED-to-GREEN tests and native
+focused regression passed **421 tests with one skip**. Independent review
+found no remaining confirmed P1/P2 after fixing the unaffected-version bypass.
+Corrected live first-join/recovery, reboot and graphical-login acceptance remain
+**pending**; this result is not a completed fresh-VM Setup.

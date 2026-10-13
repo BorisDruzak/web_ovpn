@@ -1,7 +1,8 @@
-"""Keep native ALT first join, avoiding Samba 4.21's cross-DC keytab sync.
+"""Keep native ALT first join within delegated computer-account rights.
 
 No existing-account repair is admitted. The root-private adapter changes only
 the native script's net executable; the packaged script itself is untouched.
+Optional OS metadata is omitted; only affected Samba splits keytab creation.
 """
 import importlib.util
 import json
@@ -44,6 +45,54 @@ def net_command(keytab, hostname, realm, argv):
     return ['/usr/bin/net', '--option=sync machine password to keytab=' +
             keytab + ':account_name:spns=host/' + hostname + '.' + realm +
             ':machine_password', *argv]
+
+
+def native_join_args(argv, hostname, realm, dc, ou):
+    """Keep the admitted join, without requiring optional OS-property rights.
+
+    Native ALT adds osName/osVer; Samba turns those into a separate atomic
+    write of three OS attributes before storing credentials. Computer-create,
+    password and validated SPN rights do not authorize that optional write.
+    Reject a changed native interface before invoking the directory writer.
+    """
+    if not isinstance(argv, list) or argv[:2] != ['ads', 'join']:
+        raise ValueError('Unsupported native join interface')
+    createcomputer = 'createcomputer=' + '/'.join(reversed(re.findall(r'(?:^|,)OU=([^,]+)', ou)))
+    counts = {}
+    result = argv[:2]
+    position = 2
+    while position < len(argv):
+        value = argv[position]
+        if not isinstance(value, str) or not value or len(value) > 4096 or any(ord(c) < 32 for c in value):
+            raise ValueError('Unsupported native join argument')
+        if value == '-S':
+            if position + 1 >= len(argv) or argv[position + 1] != dc:
+                raise ValueError('Unsupported native join controller')
+            name = 'server'
+            result.extend([value, argv[position + 1]])
+            position += 2
+        else:
+            if value in ('--use-kerberos=required', '--no-dns-updates', createcomputer):
+                name = value
+            elif value.startswith('--use-krb5-ccache=') and value.partition('=')[2]:
+                name = 'cache'
+            elif value == 'dnshostname=' + hostname + '.' + realm:
+                name = 'dns'
+            elif value.startswith(('osName=', 'osVer=')) and value.partition('=')[2]:
+                name = value.partition('=')[0]
+            else:
+                raise ValueError('Unsupported native join argument')
+            if name not in ('osName', 'osVer'):
+                result.append(value)
+            position += 1
+        counts[name] = counts.get(name, 0) + 1
+        if counts[name] != 1:
+            raise ValueError('Ambiguous native join argument')
+    required = {'--use-kerberos=required', '--no-dns-updates', createcomputer,
+                'cache', 'server', 'osName', 'osVer'}
+    if not required.issubset(counts):
+        raise ValueError('Incomplete native join interface')
+    return result
 
 
 def attributes(raw):
@@ -159,20 +208,25 @@ def bind_keytab(directory, hostname, realm, dc, ou):
     return kvno
 
 
-def net_wrapper(directory, hostname, realm, dc, ou, argv):
+def net_wrapper(directory, hostname, realm, dc, ou, argv, *, split_keytab=True):
     trusted_file(directory / 'net')
     validate_identity(hostname, realm, dc)
     joining = argv[:2] == ['ads', 'join']
+    if joining:
+        argv = native_join_args(argv, hostname, realm, dc, ou)
     # Separate the directory write from local keytab generation; keep Samba's
     # inline synchronization outside this first-join path.
-    command = (['/usr/bin/net', '--option=sync machine password to keytab=disabled', *argv]
-               if joining else net_command(str(directory / 'offline.keytab'), hostname, realm, argv))
+    if not split_keytab:
+        command = ['/usr/bin/net', *argv]
+    else:
+        command = (['/usr/bin/net', '--option=sync machine password to keytab=disabled', *argv]
+                   if joining else net_command(str(directory / 'offline.keytab'), hostname, realm, argv))
     result = run(command)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode:
         return result.returncode
-    if joining:
+    if joining and split_keytab:
         created = run(net_command(str(directory / 'offline.keytab'), hostname, realm,
                                   ['ads', 'keytab', 'create']))
         sys.stdout.write(created.stdout)
@@ -193,8 +247,7 @@ def first_join(uri, ou, command):
     version = run(['/usr/bin/rpm', '-q', '--qf', '%{VERSION}', 'samba-client'])
     if version.returncode:
         raise ValueError('Samba version unavailable')
-    if not affected(version.stdout):
-        return relay(run(['/usr/sbin/system-auth', *command[1:]], env=os.environ.copy()))
+    split_keytab = affected(version.stdout)
     validate_identity(hostname, realm, dc.hostname)
     if (not re.fullmatch(r'[A-Za-z0-9_-]{1,15}', workgroup)
             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._@-]{0,127}', user)
@@ -212,7 +265,8 @@ def first_join(uri, ou, command):
     if attributes(ldap(dc.hostname, realm, hostname, 'dn')):
         raise ValueError('Existing computer requires separate recovery')
     # Validate the parser before the only domain write.
-    keytab_parser()
+    if split_keytab:
+        keytab_parser()
     with tempfile.TemporaryDirectory(prefix='alt-first-join-', dir='/run') as temporary:
         directory = Path(temporary)
         native = directory / 'system-auth'
@@ -220,7 +274,8 @@ def first_join(uri, ou, command):
         native.chmod(0o700)
         wrapper = directory / 'net'
         args = [sys.executable, '-I', str(trusted_file('/usr/local/libexec/alt-first-join.py')),
-                '--net-wrapper', str(directory), hostname, realm, dc.hostname, ou, '--']
+                '--net-wrapper', str(directory), hostname, realm, dc.hostname, ou,
+                'split' if split_keytab else 'native', '--']
         wrapper.write_text('#!/bin/sh\nexec ' + shlex.join(args) + ' "$@"\n')
         wrapper.chmod(0o700)
         result = run([str(native), *command[1:], '--target-server=' + dc.hostname])
@@ -250,9 +305,10 @@ def main():
     if os.geteuid() != 0:
         raise ValueError('First join requires root')
     if sys.argv[1:2] == ['--net-wrapper']:
-        if len(sys.argv) < 10 or sys.argv[7] != '--':
+        if len(sys.argv) < 11 or sys.argv[7] not in ('split', 'native') or sys.argv[8] != '--':
             raise ValueError('Invalid native adapter invocation')
-        return net_wrapper(Path(sys.argv[2]), *sys.argv[3:7], sys.argv[8:])
+        return net_wrapper(Path(sys.argv[2]), *sys.argv[3:7], sys.argv[9:],
+                           split_keytab=sys.argv[7] == 'split')
     if len(sys.argv) < 4:
         raise ValueError('Invalid first-join invocation')
     return first_join(sys.argv[1], sys.argv[2], sys.argv[3:])

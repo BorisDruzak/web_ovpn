@@ -56,24 +56,26 @@ def test_unsafe_or_unsupported_identity_is_rejected_before_join(hostname, realm,
         helper().validate_identity(hostname, realm, dc)
 
 
-def test_unaffected_native_failure_preserves_retry_evidence(monkeypatch, capsys):
+def test_unaffected_wrapper_keeps_native_keytab_sync_and_omits_os_metadata(tmp_path, monkeypatch):
     m = helper()
-    replies = iter([SimpleNamespace(returncode=0, stdout='4.21.10', stderr=''),
-                    SimpleNamespace(returncode=1, stdout='native result\n', stderr='Connection timed out\n')])
-    calls = []
+    monkeypatch.setattr(m, 'trusted_file', lambda path: path)
+    calls, bindings = [], []
     def run(argv, **kwargs):
         calls.append(argv)
-        return next(replies)
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
     monkeypatch.setattr(m, 'run', run)
-    command = ['system-auth', 'write', 'ad', 'example.test', 'vm-test', 'EXAMPLE', 'joiner', '--createcomputer=TEST', '--gpo']
-    assert m.first_join('ldap://dc.example.test', 'OU=TEST,DC=example,DC=test', command) == 1
-    output = capsys.readouterr()
-    assert output.out == 'native result\n' and output.err == 'Connection timed out\n'
-    assert calls[-1] == ['/usr/sbin/system-auth', *command[1:]]
+    monkeypatch.setattr(m, 'bind_keytab', lambda *args: bindings.append(args))
+    argv = native_join_argv()
+    assert m.net_wrapper(tmp_path, 'vm-test', 'example.test', 'dc.example.test',
+                         'OU=TEST,DC=example,DC=test', argv, split_keytab=False) == 0
+    expected = [arg for arg in argv if not arg.startswith(('osName=', 'osVer='))]
+    assert calls == [['/usr/bin/net', *expected]]
+    assert not bindings
 
 
+@pytest.mark.parametrize('version', ['4.21.9', '4.21.10', '4.22.0'])
 @pytest.mark.parametrize('native_rc,machine_rc', [(0, 0), (0, 1), (1, 0)])
-def test_affected_execution_requires_machine_as_exchange_even_with_valid_trust(tmp_path, monkeypatch, native_rc, machine_rc):
+def test_execution_requires_machine_as_exchange_even_with_valid_trust(tmp_path, monkeypatch, native_rc, machine_rc, version):
     m = helper()
     native_source = tmp_path / 'stock-system-auth'
     native_source.write_text('net_cmd="/usr/bin/net"\n# target-server:\n')
@@ -88,7 +90,7 @@ def test_affected_execution_requires_machine_as_exchange_even_with_valid_trust(t
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
         if argv[0] == '/usr/bin/rpm':
-            rc, out = 0, '4.21.9'
+            rc, out = 0, version
         elif argv[:2] == ['/usr/sbin/system-auth', 'status']:
             rc, out = 0, 'local\n'
         elif argv == ['/usr/bin/net', 'ads', 'testjoin']:
@@ -142,10 +144,11 @@ def test_join_disables_inline_sync_and_creates_offline_keys_after_success(
         return SimpleNamespace(returncode=rc, stdout='', stderr='')
     monkeypatch.setattr(m, 'run', run)
     monkeypatch.setattr(m, 'bind_keytab', lambda *args: bindings.append(args))
-    argv = ['ads', 'join', '-S', 'dc.example.test', 'createcomputer=TEST']
+    argv = native_join_argv()
     result = m.net_wrapper(tmp_path, 'vm-test', 'example.test', 'dc.example.test',
                            'OU=TEST,DC=example,DC=test', argv)
-    assert calls[0] == ['/usr/bin/net', '--option=sync machine password to keytab=disabled', *argv]
+    expected = [arg for arg in argv if not arg.startswith(('osName=', 'osVer='))]
+    assert calls[0] == ['/usr/bin/net', '--option=sync machine password to keytab=disabled', *expected]
     if join_rc:
         assert result == join_rc and len(calls) == 1 and not bindings
     else:
@@ -153,3 +156,62 @@ def test_join_disables_inline_sync_and_creates_offline_keys_after_success(
                                        'example.test', ['ads', 'keytab', 'create'])
         assert result == keytab_rc
         assert bool(bindings) == (keytab_rc == 0)
+
+
+def native_join_argv():
+    # Packaged ALT system-auth 0.55: optional OS metadata triggers a separate
+    # three-property AD Modify before Samba stores machine credentials.
+    return ['ads', 'join', '--use-kerberos=required', '--no-dns-updates',
+            '--use-krb5-ccache=FILE:/tmp/synthetic-ticket', 'osName=ALT',
+            'osVer=11.4', 'createcomputer=TEST', '-S', 'dc.example.test']
+
+
+def test_native_join_omits_optional_os_metadata_and_keeps_authorization_inputs():
+    m = helper()
+    argv = native_join_argv()
+    argv.insert(-2, 'dnshostname=vm-test.example.test')
+    expected = [arg for arg in argv if not arg.startswith(('osName=', 'osVer='))]
+    assert m.native_join_args(argv, 'vm-test', 'example.test', 'dc.example.test',
+                              'OU=TEST,DC=example,DC=test') == expected
+    assert argv == native_join_argv()[:-2] + ['dnshostname=vm-test.example.test'] + native_join_argv()[-2:]
+
+
+@pytest.mark.parametrize('change', [
+    lambda a: a + ['osName=OTHER'],
+    lambda a: [x for x in a if not x.startswith('osVer=')],
+    lambda a: [x.replace('createcomputer=TEST', 'createcomputer=OTHER') for x in a],
+    lambda a: [x.replace('dc.example.test', 'other.example.test') for x in a],
+    lambda a: a + ['osServicePack='],
+    lambda a: a + ['--use-kerberos=off'],
+    lambda a: a + ['--user=arbitrary'],
+    lambda a: a + ['dnshostname=other.example.test'],
+    lambda a: [x for x in a if x != '--no-dns-updates'],
+    lambda a: [x.replace('FILE:/tmp/synthetic-ticket', '') for x in a],
+])
+def test_changed_native_join_interface_fails_before_any_directory_write(tmp_path, monkeypatch, change):
+    m = helper()
+    monkeypatch.setattr(m, 'trusted_file', lambda path: path)
+    calls = []
+    monkeypatch.setattr(m, 'run', lambda *a, **k: calls.append(a))
+    with pytest.raises(ValueError, match='native join'):
+        m.net_wrapper(tmp_path, 'vm-test', 'example.test', 'dc.example.test',
+                      'OU=TEST,DC=example,DC=test', change(native_join_argv()))
+    assert not calls
+
+
+@pytest.mark.parametrize('mode,split', [('split', True), ('native', False)])
+def test_private_wrapper_dispatch_keeps_the_version_mode(tmp_path, monkeypatch, mode, split):
+    m = helper()
+    monkeypatch.setattr(m.os, 'geteuid', lambda: 0, raising=False)
+    argv = native_join_argv()
+    monkeypatch.setattr(m.sys, 'argv', ['helper', '--net-wrapper', str(tmp_path),
+                        'vm-test', 'example.test', 'dc.example.test',
+                        'OU=TEST,DC=example,DC=test', mode, '--', *argv])
+    calls = []
+    def wrapper(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 0
+    monkeypatch.setattr(m, 'net_wrapper', wrapper)
+    assert m.main() == 0
+    assert calls == [((tmp_path, 'vm-test', 'example.test', 'dc.example.test',
+                     'OU=TEST,DC=example,DC=test', argv), {'split_keytab': split})]
