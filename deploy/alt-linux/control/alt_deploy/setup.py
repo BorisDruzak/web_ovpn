@@ -175,7 +175,7 @@ class SetupService:
             changes.append('continue_after_proven_prejoin_timeout')
         if catalog is not None:
             from .component_probe import ComponentProbe, ssh_binding
-            from .component_verification import VerificationEngine, valid_evidence
+            from .component_verification import VerificationEngine, valid_evidence, package_health_ready
             profile = catalog.profile(software)
             selection = profile['components'] + (['remote.krfb'] if remote == 'krfb' else [])
             components = catalog.ordered(selection, os_id='alt-kworkstation-11')
@@ -185,7 +185,7 @@ class SetupService:
                     or facts['machine']['uuid'] != machine.uuid or facts['machine']['hostname'] != machine.hostname
                     or facts['machine']['os_id'] != 'alt-kworkstation-11'
                     or facts['user']['login'] != user['login']
-                    or facts['package_manager'].get('processes_absent') is not True):
+                    or not package_health_ready(facts)):
                 raise fail('setup_probe_invalid', 'Full Setup component preflight cannot verify machine or package activity')
             from .setup_runtime import source_fingerprint
             from pathlib import Path

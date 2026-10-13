@@ -33,6 +33,7 @@
     loop_var: government_cert
 
 - name: Install certificate management prerequisites
+  tags: [alt_setup_transaction]
   ansible.builtin.package:
     name: [ca-certificates, nss-utils]
     state: present

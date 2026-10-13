@@ -10,11 +10,31 @@ import ssl
 import stat
 import subprocess
 import sys
+import fcntl
+import pwd
+from urllib.parse import urlsplit
 
 
 def run(argv):
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=10,
-                            env=dict(os.environ, LC_ALL='C'))
+    options = {}
+    if argv[0] == 'apt-get':
+        # ALT APT 0.5 may rebuild disk caches even during --simulate. Drop all
+        # privileges for APT so the read-only collector cannot write system state.
+        account = pwd.getpwnam('nobody')
+        if account.pw_uid <= 0 or account.pw_gid <= 0:
+            raise ValueError('unprivileged package probe unavailable')
+        for value in ('/var/cache/apt', '/var/cache/apt/pkgcache.bin', '/var/cache/apt/srcpkgcache.bin'):
+            target = Path(value)
+            if target.exists() or target.is_symlink():
+                info = target.lstat()
+                if target.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+                    raise ValueError('package cache is not protected')
+        options = {'user': account.pw_uid, 'group': account.pw_gid, 'extra_groups': []}
+    environment = dict(os.environ, LC_ALL='C')
+    if argv[0] == 'apt-get':
+        environment = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C', 'HOME': '/'}
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=30 if argv[0] == 'apt-get' else 10,
+                            env=environment, **options)
     if len(result.stdout.encode()) > 262144 or len(result.stderr.encode()) > 262144:
         raise ValueError('probe limit')
     return result.returncode, result.stdout.strip()
@@ -79,6 +99,116 @@ def active(service, call):
     if rc not in (0, 3, 4):
         raise ValueError('service probe unavailable')
     return rc == 0 and output == 'active'
+
+
+def package_health(root, recipes, call):
+    """Read existing locks/database/dependencies; never update or acquire a write lock."""
+    result = {'processes_absent': None, 'remote_execution_absent': None, 'locks_clear': None,
+              'database_readable': None, 'dependencies_healthy': None,
+              'source': {'status': 'unknown'}, 'simulation': {}}
+    simulation_command = ['apt-get', '--simulate', '--no-download', '-o', 'Debug::NoLocking=true',
+                          '-o', 'Dir::Cache::pkgcache=/var/cache/apt/pkgcache.bin',
+                          '-o', 'Dir::Cache::srcpkgcache=/var/cache/apt/srcpkgcache.bin']
+    try:
+        rc, processes = call(['ps', '-eo', 'comm'])
+        result['processes_absent'] = None if rc else not any(p.strip() in
+            ('rpm', 'apt-get', 'apt', 'http', 'https', 'epm', 'eepm') for p in processes.splitlines()[1:])
+        rc, processes = call(['ps', '-eo', 'pid,args'])
+        if not rc:
+            rows = [line.strip().split(None, 1) for line in processes.splitlines()[1:]]
+            if all(len(row) == 2 and row[0].isdigit() for row in rows):
+                result['remote_execution_absent'] = not any(int(pid) != os.getpid() and
+                    (re.search(r'(?:^|/)AnsiballZ_[a-zA-Z0-9_]+\.py(?:\s|$)', args)
+                     or re.search(r'(?:^|/)(ansible-playbook|system-auth|adcli)(?:\s|$)', args)) for pid, args in rows)
+    except Exception:
+        pass
+    try:
+        clear = True
+        for name in ('/var/lib/rpm/.rpm.lock', '/var/lib/apt/lists/lock', '/var/cache/apt/archives/lock'):
+            target = path(root, name)
+            if not target.exists() and not target.is_symlink():
+                continue
+            if not safe_file(target):
+                raise ValueError
+            fd = os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+            try:
+                for lock in (fcntl.flock, fcntl.lockf):
+                    try:
+                        lock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        lock(fd, fcntl.LOCK_UN)
+                    except BlockingIOError:
+                        clear = False
+            finally:
+                os.close(fd)
+        result['locks_clear'] = clear
+    except Exception:
+        pass
+    try:
+        rc, names = call(['rpm', '-qa', '--queryformat', '%{NAME}\n'])
+        result['database_readable'] = (rc == 0 and bool(names) and
+            all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.-]{0,127}', name) for name in names.splitlines()))
+        rc, _ = call(simulation_command+['check'])
+        result['dependencies_healthy'] = True if rc == 0 else None
+    except Exception:
+        pass
+    try:
+        paths = [path(root, '/etc/apt/sources.list')]
+        paths.extend(sorted(path(root, '/etc/apt/sources.list.d').glob('*.list')))
+        enabled, fingerprints = 0, []
+        for source in paths:
+            if not source.exists() and not source.is_symlink():
+                continue
+            expected_owner = 0 if root == Path('/') else os.getuid()
+            if not safe_file(source, uid=expected_owner) or source.stat().st_mode & 0o022:
+                raise ValueError
+            content = text(source)
+            for line in content.splitlines():
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                fields = line.split()
+                if len(fields) != 5 or fields[0] not in ('rpm', 'rpm-src') or fields[1] != '[p11]' or fields[4] != 'classic':
+                    raise ValueError
+                urls = [v for v in fields if v.startswith(('https://', 'http://'))]
+                if len(urls) != 1:
+                    raise ValueError
+                uri = urlsplit(urls[0])
+                if (uri.scheme != 'https' or uri.hostname != 'download.basealt.ru'
+                        or uri.username or uri.password or uri.query or uri.fragment
+                        or uri.path != '/pub/distributions/ALTLinux'
+                        or not any(re.fullmatch(r'p11/branch/(x86_64|x86_64-i586|i586|noarch)', f) for f in fields)):
+                    raise ValueError
+                enabled += 1
+            # Fingerprint validated active entries only, never comments/private URLs.
+            fingerprints.extend(hashlib.sha256(' '.join(line.split()).encode()).hexdigest()
+                for line in content.splitlines() if line.strip() and not line.strip().startswith('#'))
+        if enabled:
+            result['source'] = {'status': 'approved_p11', 'enabled_entries': enabled,
+                                'sha256': hashlib.sha256(json.dumps(fingerprints).encode()).hexdigest()}
+    except Exception:
+        pass
+    for recipe in recipes:
+        artifact = recipe.get('artifact')
+        if not artifact:
+            continue
+        simulation = {'status': 'unavailable', 'install': [], 'remove': []}
+        if artifact['source'] == 'alt-repository':
+            try:
+                rc, output = call(simulation_command+['install', *artifact['packages']])
+                if rc == 0:
+                    installs, removals = [], []
+                    for line in output.splitlines():
+                        if line.startswith(('Inst ', 'Remv ')):
+                            operation, name, *_ = line.split()
+                            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9+_.-]{0,127}', name):
+                                raise ValueError
+                            (installs if operation == 'Inst' else removals).append(name)
+                    if len(installs)+len(removals) <= 256:
+                        simulation = {'status': 'available', 'install': sorted(set(installs)), 'remove': sorted(set(removals))}
+            except Exception:
+                pass
+        result['simulation'][recipe['id']] = simulation
+    return result
 
 
 def os_id(root):
@@ -282,8 +412,7 @@ def collect(query, *, root=Path('/'), call=run):
     if actual_uuid != query['machine_uuid'] or rc or hostname.lower() != query['hostname']:
         raise ValueError('probe machine identity')
     user, home, name = user_identity(root, query, call)
-    rc, processes = call(['ps', '-eo', 'comm'])
-    absent = None if rc else not any(p.strip() in ('rpm', 'apt-get', 'apt', 'http', 'https') for p in processes.splitlines()[1:])
+    manager = package_health(root, query['components'], call)
     components = {}
     for recipe in query['components']:
         identifier = recipe['id']
@@ -296,7 +425,7 @@ def collect(query, *, root=Path('/'), call=run):
     return {'schema_version': 1, 'observed_at': datetime.now(timezone.utc).isoformat(),
             'machine': {'uuid': actual_uuid, 'hostname': hostname.lower(), 'os_id': os_id(root),
                         'boot_id': text(path(root, '/proc/sys/kernel/random/boot_id')).strip()},
-            'user': user, 'package_manager': {'processes_absent': absent}, 'components': components}
+            'user': user, 'package_manager': manager, 'components': components}
 
 
 if __name__ == '__main__':

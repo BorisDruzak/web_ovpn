@@ -1,5 +1,6 @@
 ---
 - name: Install ALT domain prerequisites
+  tags: [alt_setup_transaction]
   ansible.builtin.package:
     name: "{{ domain_prerequisite_packages }}"
     state: present

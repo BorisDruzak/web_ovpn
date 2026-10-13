@@ -43,6 +43,8 @@ def add_parsers(commands):
         command = sub.add_parser(name, allow_abbrev=False)
         command.add_argument('--machine', required=True)
         command.add_argument('--component', required=True)
+        if name == 'plan':
+            command.add_argument('--after-job', help='Review one unknown idempotent component using a new confirmed plan')
     component_apply = sub.add_parser('apply', allow_abbrev=False)
     component_apply.add_argument('plan_id')
     component_apply.add_argument('--confirm-sha256', required=True)
@@ -119,6 +121,8 @@ def handle(parsed, settings):
         service = ComponentSetupService(settings)
         if parsed.component_action == 'apply':
             return service.apply(parsed.plan_id, parsed.confirm_sha256)
+        if parsed.component_action == 'plan' and parsed.after_job:
+            return service.plan(parsed.machine, parsed.component, after_job=parsed.after_job)
         return getattr(service, parsed.component_action)(parsed.machine, parsed.component)
     if parsed.command == 'ad':
         directory = directory_for_settings(settings)

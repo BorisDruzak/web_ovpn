@@ -159,7 +159,7 @@ class ControllerReadinessChecker:
         except (ControlError, OSError, ValueError):
             return False
         return not any(
-            is_active_job(job)
+            is_active_job(job, settings=self.settings)
             for job in jobs
         )
 

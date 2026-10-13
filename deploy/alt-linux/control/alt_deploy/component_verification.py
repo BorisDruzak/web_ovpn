@@ -8,6 +8,12 @@ from datetime import datetime
 from .component_catalog import EVR_RE, PACKAGE_RE
 
 
+def package_health_ready(evidence):
+    manager = evidence.get('package_manager', {})
+    return isinstance(manager, dict) and all(manager.get(k) is True for k in (
+        'processes_absent', 'remote_execution_absent', 'locks_clear', 'database_readable', 'dependencies_healthy'))
+
+
 def valid_evidence(evidence, *, allow_unresolved=False):
     try:
         if not isinstance(evidence, dict) or set(evidence) != {

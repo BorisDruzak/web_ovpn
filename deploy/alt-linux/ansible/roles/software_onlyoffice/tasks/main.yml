@@ -75,6 +75,7 @@
       register: software_onlyoffice_temporary
 
     - name: Copy the approved onlyoffice RPM into the private temporary path
+      tags: [alt_setup_download]
       ansible.builtin.copy:
         src: "{{ software_catalog.onlyoffice.artifact_path }}"
         dest: "{{ software_onlyoffice_temporary.path }}"
@@ -111,10 +112,12 @@
         fail_msg: Transferred software RPM metadata verification failed
 
     - name: Install exactly the verified temporary onlyoffice RPM
+      tags: [alt_setup_transaction]
       ansible.builtin.command:
         argv: [apt-get, -y, install, "{{ software_onlyoffice_temporary.path }}"]
 
     - name: Query the installed onlyoffice package identity
+      tags: [alt_setup_verify]
       ansible.builtin.command:
         argv: [rpm, -q, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}", "onlyoffice-desktopeditors"]
       changed_when: false

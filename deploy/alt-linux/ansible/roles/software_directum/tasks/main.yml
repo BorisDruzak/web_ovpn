@@ -89,6 +89,7 @@
     register: software_directum_temporary
     when: software_directum_install_needed
   - name: Copy the approved directum RPM into the private temporary path
+    tags: [alt_setup_download]
     ansible.builtin.copy:
       src: '{{ software_catalog.directum.artifact_path }}'
       dest: '{{ software_directum_temporary.path }}'
@@ -130,6 +131,7 @@
       fail_msg: Transferred software RPM metadata verification failed
     when: software_directum_install_needed
   - name: Install exactly the verified temporary directum RPM
+    tags: [alt_setup_transaction]
     ansible.builtin.command:
       argv:
       - apt-get

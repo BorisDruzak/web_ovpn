@@ -81,7 +81,9 @@ class SetupWorker:
             if unresolved_legacy_reservations(self.settings):
                 return {'status': 'blocked', 'code': 'legacy_execution_unresolved'}
             jobs = self.jobs.list()
-            if any(job.state in EXECUTING | {'unknown_requires_review'} for job in jobs):
+            from .setup_retry import reviewed_jobs
+            reviewed = reviewed_jobs(self.settings)
+            if any(job.state in EXECUTING | {'unknown_requires_review'} and job.job_id not in reviewed for job in jobs):
                 return {'status': 'blocked', 'code': 'setup_job_unresolved'}
             queued = sorted((job for job in jobs if job.state == 'queued' and not job.status['claimed']),
                             key=lambda j: j.status['admission_sequence'])

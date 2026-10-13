@@ -20,7 +20,9 @@ def evidence(catalog):
                           'boot_id': 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'},
               'user': {'login': 'synthetic.user', 'uid': 10001, 'gid': 10001,
                        'home_exists': True, 'home_safe': True},
-              'package_manager': {'processes_absent': True}, 'components': {}}
+              'package_manager': {'processes_absent': True, 'remote_execution_absent': True,
+                                  'locks_clear': True, 'database_readable': True, 'dependencies_healthy': True,
+                                  'source': {'status': 'approved_p11'}, 'simulation': {}}, 'components': {}}
     for component in catalog.components():
         fact = {'schema_version': 1, 'checks': {'ready': True}, 'error_code': None}
         artifact = catalog.artifact(component['id'])

@@ -45,7 +45,7 @@ class SetupExecutionEngine:
         return self.setup._observe_job_result(job.request['plan'], own_job_id=job.job_id)
 
     def _verified(self, job, result, observed, verification):
-        from .component_verification import valid_evidence
+        from .component_verification import valid_evidence, package_health_ready
         if not valid_evidence(observed) or verification['machine_uuid'] != job.machine_uuid:
             raise fail('setup_post_verification_failed', 'Fresh workstation evidence is invalid')
         result['verification'] = verification
@@ -53,13 +53,13 @@ class SetupExecutionEngine:
         for identifier in selected:
             selected[identifier]['verification'] = verification['components'][identifier]
         outcomes = [verification['components'][i] for i in selected]
-        if result['reboot_required'] and observed['machine']['boot_id'] == result['original_boot_id']:
+        if not package_health_ready(observed) or verification['overall_status'] == 'unknown_requires_review':
+            state = 'unknown_requires_review'
+        elif result['reboot_required'] and observed['machine']['boot_id'] == result['original_boot_id']:
             state = 'waiting_reboot'
         elif (not observed['user']['home_exists'] and
               any(c.get('operator_action') == 'first_domain_login' for c in outcomes)):
             state = 'waiting_first_login'
-        elif verification['overall_status'] == 'unknown_requires_review':
-            state = 'unknown_requires_review'
         elif all(c['status'] == 'compliant' for c in outcomes):
             state = 'successful'
         else:
@@ -100,6 +100,7 @@ class SetupExecutionEngine:
                     stage = payload['component']['id']+'.apply'
                     self.jobs.transition(job_id, 'running', stage={'id': stage})
                     dispatched = True
+                    result['components'][payload['component']['id']]['changed'] = None
                     executor = self.component_executor or ComponentExecutor(self.settings,
                                   ComponentCatalog.load(self.settings.ansible_project_dir))
                     applied = executor.run(plan, job)
@@ -116,6 +117,8 @@ class SetupExecutionEngine:
                 self.jobs.transition(job_id, 'running', stage={'id': 'full_setup.apply'})
                 stage = 'full_setup.apply'
                 dispatched = True
+                for component in result['components'].values():
+                    component['changed'] = None
                 from .setup_jobs import setup_job_execution
                 with setup_job_execution(self.settings, job_id, plan):
                     run = self.setup._execute_locked(plan['plan_id'], plan['sha256'], own_job_id=job_id)
@@ -132,6 +135,19 @@ class SetupExecutionEngine:
             code = exc.code if isinstance(exc, ControlError) else 'setup_execution_unverified'
             # Error messages/details and Ansible output never enter the safe projection.
             result['error_code'] = code
+            try:
+                journal = self.events._read(job)
+                task_events = [e for e in journal if e['type'].startswith('task_')]
+                if task_events:
+                    failures = [e for e in task_events if e['type'] in ('task_failed', 'task_unreachable')]
+                    # Preserve the originating failure, before generic rescue/finalizer tasks.
+                    last = failures[0] if failures else task_events[-1]
+                    stage = last['component_id']+'.'+last['stage']
+                for identifier, component in result['components'].items():
+                    if any(e['component_id'] == identifier and e['changed'] for e in journal):
+                        component['changed'] = True
+            except Exception:
+                journal = []
             if isinstance(exc, ControlError) and job.request['operation'] == 'full_setup':
                 from .setup import RUN_RE
                 run_id = str(exc.details.get('run_id', ''))
@@ -139,11 +155,37 @@ class SetupExecutionEngine:
                     result['legacy_error_run_id'] = run_id
             result['finished_at'] = self.jobs.clock().isoformat()
             no_change = not dispatched
-            if dispatched and job.request['operation'] == 'component' and stage.endswith('.apply'):
-                journal = self.events._read(job)
+            if dispatched and job.request['operation'] == 'component':
                 tasks = [e for e in journal if e['type'].startswith('task_')]
                 no_change = (bool(tasks) and tasks[-1]['code'] == 'component_preflight_failed'
                              and all(e['stage'] == 'preflight' and e['changed'] is False for e in tasks))
+            if no_change:
+                for component in result['components'].values():
+                    component['changed'] = False
+            if dispatched:
+                # A timeout on the controller does not prove a remote transaction stopped.
+                try:
+                    if job.request['operation'] == 'component':
+                        machine = self.components.setup.machines.resolve(job.machine_uuid)
+                        facts = self.components.probe.observe(machine, payload['user'], payload['components'])
+                    else:
+                        from .component_probe import ComponentProbe
+                        machine = self.setup.machines.resolve(job.machine_uuid)
+                        facts = (self.setup.component_probe or ComponentProbe(self.settings)).observe(
+                            machine, payload['user'], payload['components'], allow_unresolved=True)
+                    result['post_error_package_manager'] = facts['package_manager']
+                    from .component_verification import _package_status
+                    from .component_catalog import ComponentCatalog
+                    catalog = ComponentCatalog.load(self.settings.ansible_project_dir)
+                    packages = {}
+                    for identifier in result['components']:
+                        artifact = catalog.artifact(identifier)
+                        fact = facts['components'].get(identifier, {})
+                        if artifact and _package_status(artifact, fact) != 'unknown':
+                            packages[identifier] = fact['packages']
+                    result['post_error_packages'] = packages
+                except Exception:
+                    result['post_error_package_manager'] = {'status': 'unavailable'}
             return self._persist(job, result, 'failed' if no_change else 'unknown_requires_review', stage)
 
     def verify_continuation(self, job_id):

@@ -643,7 +643,7 @@ def main(
                 for job in JobRepository(
                     active_settings
                 ).list()
-                if is_active_job(job)
+                if is_active_job(job, settings=active_settings)
             ]
 
             payload = {

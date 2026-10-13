@@ -38,8 +38,10 @@ def fixture(root, identifier='software.onlyoffice'):
         if command[0] == 'hostname': return 0, 'alt-a1-pc3'
         if command[0] == 'getent':
             return 0, f"synthetic.user:x:{max(1, os.getuid())}:{max(1, os.getgid())}:Synthetic:/home/synthetic.user:/bin/bash"
-        if command[0] == 'ps': return 0, 'COMMAND\npython3'
+        if command[0] == 'ps': return 0, 'COMMAND\npython3' if command[-1] == 'comm' else 'PID COMMAND\n9999 /usr/bin/sshd'
+        if command[:2] == ['rpm', '-qa']: return 0, 'rpm\napt'
         if command[0] == 'rpm': return 0, 'onlyoffice-desktopeditors|9.4.0-epm1.repacked.130|x86_64|100'
+        if command[0] == 'apt-get': return 0, ''
         raise AssertionError('Unexpected mutation or command')
     return query, call, calls
 
@@ -60,8 +62,9 @@ def test_shipped_package_collector_is_readonly_and_does_not_create_home(tmp_path
     assert result['components']['software.onlyoffice']['executable'] is True
     assert before == tree(tmp_path)
     assert not (tmp_path/'home').exists()
-    assert all(c[0] in ('hostname', 'getent', 'rpm', 'ps') for c in calls)
-    assert all(c[1] == '-q' for c in calls if c[0] == 'rpm')
+    assert all(c[0] in ('hostname', 'getent', 'rpm', 'ps', 'apt-get') for c in calls)
+    assert all(c[1] in ('-q', '-qa') for c in calls if c[0] == 'rpm')
+    assert all('--simulate' in c and 'Debug::NoLocking=true' in c for c in calls if c[0] == 'apt-get')
 
 
 def test_unknown_package_probe_and_process_state_remain_unknown(tmp_path):

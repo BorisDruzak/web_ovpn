@@ -520,7 +520,15 @@ class ConfigurePlanner:
             except subprocess.TimeoutExpired as exc:
                 if setup_fresh_install:
                     phase = 'configuration'
-                    if log_path.stat().st_size <= 8 * 1024 * 1024:
+                    if managed_job:
+                        from .setup_events import SetupEventStore
+                        journal = SetupEventStore(self.settings)._read(managed_job)
+                        tasks = [e for e in journal if e['type'].startswith('task_')]
+                        if tasks and tasks[-1]['component_id'] == 'domain.ready' and tasks[-1]['stage'] in ('download', 'transaction', 'upgrade'):
+                            phase = 'upgrade'
+                        elif tasks and tasks[-1]['stage'] == 'domain_join':
+                            phase = 'domain_join'
+                    elif log_path.stat().st_size <= 8 * 1024 * 1024:
                         content = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', log_path.read_text(encoding='utf-8', errors='replace'))
                         labels = [line for line in content.splitlines()
                                   if line.startswith('TASK [')]

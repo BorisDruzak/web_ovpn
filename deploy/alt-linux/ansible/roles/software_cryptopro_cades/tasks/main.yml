@@ -31,6 +31,7 @@
   no_log: true
 
 - name: Inspect installed CryptoPro CAdES package versions
+  tags: [alt_setup_verify]
   ansible.builtin.command:
     argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
   loop: "{{ software_cryptopro_cades_catalog.packages }}"
@@ -58,6 +59,7 @@
       register: software_cryptopro_cades_tempdir
 
     - name: Copy approved CryptoPro CAdES archive
+      tags: [alt_setup_download]
       ansible.builtin.copy:
         src: "{{ software_cryptopro_cades_catalog.artifact_path }}"
         dest: "{{ software_cryptopro_cades_tempdir.path }}/cades-linux-amd64.tar.gz"
@@ -115,6 +117,7 @@
       no_log: true
 
     - name: Install approved CryptoPro CAdES RPMs in one transaction
+      tags: [alt_setup_transaction]
       ansible.builtin.command:
         argv: "{{ ['apt-get', '-y', 'install'] + software_cryptopro_cades_rpm_paths }}"
       register: software_cryptopro_cades_install
@@ -130,6 +133,7 @@
   when: software_cryptopro_cades_install_required
 
 - name: Verify installed CryptoPro CAdES package versions
+  tags: [alt_setup_verify]
   ansible.builtin.command:
     argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
   loop: "{{ software_cryptopro_cades_catalog.packages }}"

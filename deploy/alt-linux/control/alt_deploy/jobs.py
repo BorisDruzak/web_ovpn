@@ -38,9 +38,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def is_active_job(job: JobRecord) -> bool:
+def is_active_job(job: JobRecord, *, settings=None) -> bool:
     if job.status.get('kind') == 'setup':
         from .setup_jobs import ACTIVE_SETUP_STATES
+        if settings is not None and job.state == 'unknown_requires_review':
+            from .setup_retry import reviewed_jobs
+            if job.job_id in reviewed_jobs(settings):
+                return False
         return job.state in ACTIVE_SETUP_STATES
     return job.state in ACTIVE_STATES
 
@@ -320,7 +324,7 @@ class JobRepository:
         for job in self.list():
             if (
                 job.machine_uuid.lower() == normalized
-                and is_active_job(job)
+                and is_active_job(job, settings=self.settings)
             ):
                 return job
 

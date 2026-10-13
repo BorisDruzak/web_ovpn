@@ -14,7 +14,9 @@ from .setup_plans import canonical, private_directory, private_read
 TYPES = {'task_start', 'task_ok', 'task_failed', 'task_unreachable', 'task_skipped', 'component_start', 'component_completed'}
 CODES = {'started', 'ok', 'task_failed', 'unreachable', 'skipped', 'component_preflight_failed', 'completed'}
 INPUT_FIELDS = {'schema_version', 'component_id', 'component_version', 'stage', 'task_id', 'type', 'changed', 'code'}
-STAGES = {'preflight', 'apply', 'verify', 'complete'}
+STAGE_PRIORITY = ('transaction', 'download', 'verify', 'preflight', 'domain_join',
+                  'domain_core_verify', 'upgrade', 'identity', 'network', 'configuration', 'apply', 'complete')
+STAGES = set(STAGE_PRIORITY)
 MAX_EVENTS = 10000
 
 
@@ -23,9 +25,9 @@ def safe_task_event(result, *, component, event_type):
     path = task.get_path()
     task_id = 'task-'+hashlib.sha256(path.encode('utf-8')).hexdigest()[:16]
     stage = 'apply'
-    for tag in getattr(task, 'tags', ()):
-        if tag in ('alt_setup_preflight', 'alt_setup_verify'):
-            stage = tag.removeprefix('alt_setup_')
+    for candidate in STAGE_PRIORITY:
+        if 'alt_setup_'+candidate in getattr(task, 'tags', ()):
+            stage = candidate
             break
     code = {'task_ok': 'ok', 'task_failed': 'task_failed', 'task_unreachable': 'unreachable',
             'task_skipped': 'skipped', 'task_start': 'started'}[event_type]

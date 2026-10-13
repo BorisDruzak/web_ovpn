@@ -106,6 +106,9 @@ def test_packages_retry_only_recognized_transient_failures(role_name, message, a
              or t.get("ansible.builtin.command", {}).get("argv", [None])[0] == "apt-get"]
     assert tasks
     for task in tasks:
+        if task.get('ansible.builtin.command', {}).get('argv') == ['apt-get', '-y', 'dist-upgrade']:
+            assert not {'until', 'retries', 'delay'} & set(task)
+            continue
         assert "until" in task
         result = {"stdout": "", "stderr": message, "msg": "", "rc": int(failed),
                   "failed": failed, "attempts": attempt}

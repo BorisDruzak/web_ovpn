@@ -135,6 +135,7 @@
   no_log: true
 
 - name: Install the fixed KRFB package
+  tags: [alt_setup_transaction]
   ansible.builtin.package:
     name: krfb
     state: present

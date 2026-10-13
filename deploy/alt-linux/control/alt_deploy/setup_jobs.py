@@ -123,7 +123,11 @@ def legacy_setup_admission(settings, machine_uuid, hostname, *, own_job_id=None)
     with setup_queue_lock(settings, allow_root=True):
         jobs = SetupJobRepository(settings)
         jobs._check_admissions()
+        from .setup_retry import reviewed_jobs
+        reviewed = reviewed_jobs(settings)
         for job in jobs.list():
+            if job.job_id in reviewed:
+                continue
             if job.job_id == own_job_id:
                 if (job.state != 'running' or not job.status['claimed']
                         or job.request['operation'] != 'full_setup'
@@ -436,6 +440,11 @@ class SetupJobRepository:
             if store.load(plan['plan_id'], plan['sha256']) != plan:
                 raise fail('setup_plan_mismatch', 'Published Setup plan differs')
             self._check_admissions()
+            from .setup_retry import validate_predecessor, reviewed_jobs
+            prior = validate_predecessor(self.settings, plan) if operation == 'component' else None
+            reviewed = reviewed_jobs(self.settings)
+            if prior in reviewed:
+                raise fail('setup_retry_already_reviewed', 'This predecessor already has a confirmed successor')
             if any(r['state'] in ('running', 'unknown_requires_review') and
                    (r['machine_uuid'] == identity['uuid'] or r['hostname'] == identity['hostname'])
                    for r in unresolved_legacy_reservations(self.settings)):
@@ -444,7 +453,8 @@ class SetupJobRepository:
                 reservation = self._read(reservation_path)
                 job = self.get(reservation['job_id'])
                 self._check_claim(job, reservation)
-                if (job.state in ACTIVE_SETUP_STATES and any(identity.get(k) == v for k, v in reservation['identities'].items())):
+                if (job.job_id not in reviewed | ({prior} if prior else set()) and job.state in ACTIVE_SETUP_STATES
+                        and any(identity.get(k) == v for k, v in reservation['identities'].items())):
                     raise fail('setup_job_identity_reserved', 'UUID, hostname or AD computer identity is already reserved')
             if any((job.machine_uuid == identity['uuid'] or str(job.request.get('final_hostname', '')).casefold() == identity['hostname'])
                    and job.state in ('queued', 'running')
@@ -472,7 +482,10 @@ class SetupJobRepository:
                       'state': 'queued', 'stage': 'created', 'stage_history': [{'state': 'queued', 'stage': 'created', 'at': now}],
                       'created_at': now, 'updated_at': now, 'claimed': False, 'process_identity': None}
             publish(job_dir/'status.json', status, create=True)
-            return self.get(job_id)
+            job = self.get(job_id)
+            from .setup_retry import publish_review
+            publish_review(self.settings, job)
+            return job
 
     def _check_claim(self, job, claim):
         expected = {'schema_version': 2, 'job_id': job.job_id, 'plan_id': job.status['plan_id'],
@@ -500,6 +513,12 @@ class SetupJobRepository:
             for job in self.list():
                 claim = self._read(self.claims/(job.status['plan_sha256']+'.json'))
                 self._check_claim(job, claim)
+            from .setup_retry import reviewed_jobs
+            reviewed = reviewed_jobs(self.settings)
+            for job in self.list():
+                reference = job.request['plan']['payload'].get('predecessor_job')
+                if reference is not None and reference.get('job_id') not in reviewed:
+                    raise ValueError
         except Exception as exc:
             raise fail('setup_job_admission_requires_review', 'Interrupted or inconsistent Setup admission requires review') from exc
 

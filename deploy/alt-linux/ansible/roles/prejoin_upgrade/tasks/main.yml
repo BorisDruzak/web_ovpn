@@ -50,6 +50,7 @@
     - not prejoin_upgrade_already_joined
 
 - name: Refresh ALT package metadata before first domain join
+  tags: [alt_setup_download]
   ansible.builtin.command:
     argv: [apt-get, update]
   environment:
@@ -86,14 +87,7 @@
   vars:
     alt_package_retry_output: >-
       {{ [prejoin_upgrade_dist_upgrade.stdout | default(''), prejoin_upgrade_dist_upgrade.stderr | default(''), prejoin_upgrade_dist_upgrade.msg | default('')] | join('\n') }}
-  until: >-
-    prejoin_upgrade_dist_upgrade is succeeded or
-    alt_package_retry_output | regex_search(alt_package_fatal_pattern) is not none or
-    (alt_package_retry_output | regex_search(alt_package_lock_pattern) is none and
-      (alt_package_retry_output | regex_search(alt_package_transient_pattern) is none or
-       prejoin_upgrade_dist_upgrade.attempts | int >= alt_transient_retry_attempts | int))
-  retries: "{{ alt_package_lock_retry_attempts | int - 1 }}"
-  delay: "{{ alt_package_lock_retry_delay }}"
+  tags: [alt_setup_transaction]
   when:
     - prejoin_upgrade_enabled | bool
     - not prejoin_upgrade_already_joined

@@ -31,6 +31,7 @@
   no_log: true
 
 - name: Inspect installed CryptoPro package versions
+  tags: [alt_setup_verify]
   ansible.builtin.command:
     argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
   loop: "{{ software_cryptopro_catalog.packages }}"
@@ -67,6 +68,7 @@
       when: software_cryptopro_install_required
 
     - name: Copy approved CryptoPro archive
+      tags: [alt_setup_download]
       ansible.builtin.copy:
         src: "{{ software_cryptopro_catalog.artifact_path }}"
         dest: "{{ software_cryptopro_tempdir.path }}/linux-amd64.tgz"
@@ -136,6 +138,7 @@
       when: software_cryptopro_install_required
 
     - name: Install CryptoPro prerequisite package
+      tags: [alt_setup_transaction]
       ansible.builtin.command:
         argv: [apt-get, -y, install, cryptopro-preinstall]
       register: software_cryptopro_preinstall
@@ -143,6 +146,7 @@
       when: software_cryptopro_install_required
 
     - name: Install approved CryptoPro RPMs in one transaction
+      tags: [alt_setup_transaction]
       ansible.builtin.command:
         argv: "{{ ['apt-get', '-y', 'install'] + software_cryptopro_rpm_paths }}"
       register: software_cryptopro_install
@@ -167,6 +171,7 @@
       no_log: true
 
     - name: Verify installed CryptoPro package versions
+      tags: [alt_setup_verify]
       ansible.builtin.command:
         argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ item.package_name }}"]
       loop: "{{ software_cryptopro_catalog.packages }}"

@@ -24,11 +24,13 @@
   no_log: true
 
 - name: Install the fixed Nextcloud packages from configured ALT repositories
+  tags: [alt_setup_transaction]
   ansible.builtin.command:
     argv: [apt-get, -y, install, nextcloud-client, nextcloud-client-kde]
   no_log: true
 
 - name: Verify both installed Nextcloud repository package identities
+  tags: [alt_setup_verify]
   ansible.builtin.command:
     argv: [rpm, -q, --queryformat, "%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}", "{{ nextcloud_package }}"]
   loop: [nextcloud-client, nextcloud-client-kde]

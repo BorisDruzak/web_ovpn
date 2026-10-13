@@ -31,6 +31,7 @@
   no_log: true
 
 - name: Inspect installed ГосПлагин RPM version
+  tags: [alt_setup_verify]
   ansible.builtin.command:
     argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_gosuslugi_plugin_catalog.package_name }}"]
   register: software_gosuslugi_plugin_existing_evr
@@ -47,6 +48,7 @@
 - name: Install approved ГосПлагин payload without running vendor installer
   block:
     - name: Install ZIP extraction prerequisite
+      tags: [alt_setup_transaction]
       ansible.builtin.command:
         argv: [apt-get, -y, install, unzip]
       register: software_gosuslugi_plugin_unzip
@@ -60,6 +62,7 @@
       register: software_gosuslugi_plugin_tempdir
 
     - name: Copy approved ГосПлагин ZIP archive
+      tags: [alt_setup_download]
       ansible.builtin.copy:
         src: "{{ software_gosuslugi_plugin_catalog.artifact_path }}"
         dest: "{{ software_gosuslugi_plugin_tempdir.path }}/gosuslugi-plugin.zip"
@@ -156,6 +159,7 @@
       no_log: true
 
     - name: Install approved ГосПлагин RPM payload
+      tags: [alt_setup_transaction]
       ansible.builtin.command:
         argv: [apt-get, -y, install, "{{ software_gosuslugi_plugin_rpm_files.files[0].path }}"]
       register: software_gosuslugi_plugin_install
@@ -171,6 +175,7 @@
   when: software_gosuslugi_plugin_install_required
 
 - name: Verify installed ГосПлагин RPM version
+  tags: [alt_setup_verify]
   ansible.builtin.command:
     argv: [rpm, -q, --qf, "%{VERSION}-%{RELEASE}", "{{ software_gosuslugi_plugin_catalog.package_name }}"]
   register: software_gosuslugi_plugin_installed_evr

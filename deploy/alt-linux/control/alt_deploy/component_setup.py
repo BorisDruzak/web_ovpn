@@ -11,7 +11,7 @@ import stat
 from .ad_directory import fail
 from .component_catalog import ComponentCatalog
 from .component_probe import ComponentProbe, ssh_binding
-from .component_verification import VerificationEngine, valid_evidence
+from .component_verification import VerificationEngine, valid_evidence, package_health_ready
 from .setup import SetupService
 from .setup_plans import SetupPlanStore, digest
 from .setup_runtime import source_fingerprint
@@ -78,10 +78,14 @@ class ComponentSetupService:
                 return {'ready': False, 'error_code': 'component_secret_unavailable'}
         return {'ready': True}
 
-    def _snapshot(self, identifier, component_id, *, own_job_id=None, expected_plan=None):
+    def _snapshot(self, identifier, component_id, *, own_job_id=None, expected_plan=None, after_job=None):
         catalog = self.catalog or ComponentCatalog.load(self.settings.ansible_project_dir)
         component = catalog.component(component_id)
         machine = self.setup.machines.resolve(identifier)
+        predecessor = None
+        if after_job is not None:
+            from .setup_retry import predecessor as inspect_predecessor
+            predecessor = inspect_predecessor(self.settings, after_job, component, machine.uuid)
         if machine.registration_state != 'ready' or machine.assignment:
             raise fail('component_machine_not_ready', 'Component requires ready registration without a legacy local assignment')
         active = machine.active_job
@@ -91,7 +95,10 @@ class ComponentSetupService:
                      and active.get('job_id') == own_job_id and active.get('machine_uuid') == machine.uuid
                      and active.get('plan_id') == expected_plan['plan_id']
                      and active.get('plan_sha256') == expected_plan['sha256'])
-            if not owned:
+            reviewed = (isinstance(active, dict) and predecessor is not None and active.get('job_id') == after_job
+                        and active.get('schema_version') == 2 and active.get('kind') == 'setup'
+                        and active.get('state') == 'unknown_requires_review' and active.get('machine_uuid') == machine.uuid)
+            if not owned and not reviewed:
                 raise fail('setup_active_job', 'Machine has an incompatible active job')
         binding = self.setup.assignments.get(machine.uuid)
         if binding is None or binding['result'] not in ('successful', 'degraded'):
@@ -121,13 +128,17 @@ class ComponentSetupService:
         state = verification['components'][component_id]['status']
         action = {'compliant': 'noop', 'missing': 'install', 'drifted': 'repair'}.get(state, 'blocked')
         preflight = self.preflight(component) if action != 'noop' else {'ready': True, 'required': False}
+        if action != 'noop' and observed['package_manager'].get('source', {}).get('status') != 'approved_p11':
+            preflight = {'ready': False, 'error_code': 'component_package_source_unverified'}
         if (not isinstance(preflight, dict) or preflight.get('ready') is not True
                 or component['execution'].get('adapter') is not None
-                or (action != 'noop' and observed['package_manager'].get('processes_absent') is not True)):
+                or (action != 'noop' and not package_health_ready(observed))):
             action = 'blocked'
+        if predecessor is not None and not package_health_ready(observed):
+            raise fail('setup_retry_requires_fresh_health', 'Package health and absence of remote execution are not verified')
         projection = {k: copy.deepcopy(v) for k, v in observed.items() if k != 'observed_at'}
         projection['components'] = {c['id']: projection['components'].get(c['id']) for c in selected}
-        return {'operation': 'component', 'machine': {'uuid': machine.uuid, 'hostname': machine.hostname,
+        payload = {'operation': 'component', 'machine': {'uuid': machine.uuid, 'hostname': machine.hostname,
                 'ip': machine.ip, 'registration_sha256': digest(machine.raw)},
                 'user': {'login': user['login'], 'upn': user['upn'], 'object_guid': user['object_guid'], 'object_sid': user['object_sid']},
                 'computer': identity['computer'], 'ou_identity': ous[0], 'binding': binding, 'profile': profile,
@@ -137,9 +148,12 @@ class ComponentSetupService:
                 'ssh_binding': ssh_binding(self.settings, machine), 'preflight': preflight,
                 'source_sha256': source_fingerprint(self.settings.ansible_project_dir, Path(__file__).parent),
                 'action': action, 'execution_budget_seconds': 5400}
+        if predecessor is not None:
+            payload['predecessor_job'] = predecessor
+        return payload
 
-    def plan(self, identifier: str, component_id: str) -> dict:
-        return self.plans.create(self._snapshot(identifier, component_id))
+    def plan(self, identifier: str, component_id: str, *, after_job=None) -> dict:
+        return self.plans.create(self._snapshot(identifier, component_id, after_job=after_job))
 
     def verify(self, identifier: str, component_id: str) -> dict:
         return self._snapshot(identifier, component_id)['verification']
@@ -156,7 +170,7 @@ class ComponentSetupService:
         """Allow the expected installed facts to change, never the identity/source."""
         before = plan['payload']
         current = self._snapshot(before['machine']['uuid'], before['component']['id'],
-                                 own_job_id=own_job_id, expected_plan=plan)
+                                 own_job_id=own_job_id, expected_plan=plan, after_job=before.get('predecessor_job', {}).get('job_id'))
         for key in ('machine', 'user', 'computer', 'ou_identity', 'binding', 'profile',
                     'catalog_version', 'catalog_sha256', 'component', 'components',
                     'ssh_binding', 'source_sha256'):
@@ -168,7 +182,7 @@ class ComponentSetupService:
         plan = self.plans.load(plan_id, sha256)
         before = plan['payload']
         current = self._snapshot(before['machine']['uuid'], before['component']['id'],
-                                 own_job_id=own_job_id, expected_plan=plan)
+                                 own_job_id=own_job_id, expected_plan=plan, after_job=before.get('predecessor_job', {}).get('job_id'))
         projection = lambda p: {key: value for key, value in p.items() if key != 'observed_at'}
         if projection(before) != projection(current):
             raise fail('component_plan_drift', 'Component identity, source or observed state changed; create a new plan')
