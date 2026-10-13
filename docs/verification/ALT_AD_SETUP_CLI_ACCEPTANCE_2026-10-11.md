@@ -335,3 +335,68 @@ recovery plan preserves the selected identities and explicitly reports
 `execution_available=false`. Applications and browser-extension installation
 were not reached on this fresh target. Unassisted Setup acceptance is FAIL;
 the CLI's fully automatic fresh-machine path is not ready for acceptance.
+
+### Separate recovery-assisted continuation (2026-10-13)
+
+The same anonymized `test-vm-03` subsequently received one explicitly authorized
+machine-password repair. Its worker returned a nonzero result and remains
+closed as UNKNOWN. That result was not replayed or rewritten. Independent
+observations confirmed working machine credentials and preserved computer
+GUID, SID, OU and SPNs; the selected employee remained unchanged.
+
+The operator separately authorized restoration of the stock SSSD policy and
+previously active SMB/NMB services, followed by a fresh ordinary Setup context.
+This continuation performed no further join or password reset and created no
+new controller backup. The genuine stage-03 execution succeeded with 296
+successful tasks, 52 changes, zero failures and zero unreachable hosts.
+
+Fresh public `setup verify` confirmed trust, active SSSD, selected-user lookup,
+no duplicate local employee, successful group policy and all selected core-apps
+components. Four executable application launchers were present in the skeleton
+desktop. After the operator logged in with the employee's AD password,
+read-only SSH checks confirmed an active local LightDM X11 session with the
+selected domain UID, a matching home owner with mode 0700, and all four
+executable desktop launchers owned by that employee. Fresh public verification
+reported `home_exists=true` and `home_operations_deferred=false`.
+No additional reboot was requested by Setup.
+
+Runtime `0a63441607fbd8fd92e8f5760ad5ac4692fb1d86` separates the native first
+join from offline keytab creation. Native installation checks passed 2682 tests
+with one skip; its full CI passed 5247 tests with 89 skips and its ISO workflow
+succeeded. The initial unassisted failure remains retained. Recovery-assisted
+success does not establish first-join acceptance for this revised adapter.
+
+A separate fresh technical browser profile, running as a non-root user with
+the normal browser sandbox and TLS validation, automatically downloaded
+GosPlugin version 1.3.43.0 from the managed policy. The CAdES policy still used
+the legacy Manifest V2 identifier and did not download that extension during
+the observation window. The installed CAdES native host already allows the
+supported Manifest V3 identifier. Commit
+`0ea86163433d23cb8328d695f1f9ad3f31898faf` corrects that identifier in the
+existing role and its contract test. Actual electronic signing is not claimed.
+
+The corrected role was installed through the normal guarded controller
+installer using existing rollback evidence. Native checks passed 2682 tests
+with one skip, controller readiness passed all 14 checks, and the installed
+role bytes matched the exact published archive.
+Full CI for this exact revision passed 5247 tests with 89 skips; its ISO
+workflow also succeeded.
+
+A new ordinary public Setup plan/apply on the successfully joined workstation
+then passed 259 tasks, with 14 changes, zero failures and zero unreachable
+hosts. The existing user home was configured without deferral. No reboot was
+required. A new isolated non-root browser profile automatically downloaded
+both GosPlugin 1.3.43.0 and CAdES 1.3.17, each using Manifest V3, with no manual
+extension installation, sandbox bypass or TLS override. The temporary
+technical profile and its browser process were cleaned up after the check;
+the employee's graphical session was not used for this isolated proof.
+Post-run read-only checks confirmed the unchanged computer identity and
+machine-password version 2, retained original UNKNOWN evidence, successful
+trust/SSSD/user lookup/GPO, and no home-operation deferral.
+
+Additional live non-mutating CLI checks returned `ad_user_not_found` for an
+unknown login, `setup_ou_not_approved` for an unapproved nonexistent OU, and
+`machine_not_found` for an unknown UUID. These selected checks do not establish
+the complete original L5 matrix.
+A fresh ordinary plan accepted the successful assignment and existing trust;
+confirmation with a wrong SHA returned `setup_plan_mismatch` before execution.
