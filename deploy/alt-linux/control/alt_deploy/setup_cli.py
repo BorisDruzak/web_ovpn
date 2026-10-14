@@ -68,6 +68,12 @@ def add_parsers(commands):
     job_list.add_argument('--machine', help='Registered machine UUID')
     job_list.add_argument('--offset', type=int, default=0)
     job_list.add_argument('--limit', type=int, default=100)
+    maintenance_plan = job_commands.add_parser('maintenance-plan', allow_abbrev=False,
+        help='Read-only controller maintenance proof; UNKNOWN and target gates remain unchanged')
+    maintenance_plan.add_argument('job_id')
+    maintenance_confirm = job_commands.add_parser('maintenance-confirm', allow_abbrev=False)
+    maintenance_confirm.add_argument('plan_id')
+    maintenance_confirm.add_argument('--confirm-sha256', required=True)
     for name in ('status', 'events', 'verify-continuation'):
         command = job_commands.add_parser(name, allow_abbrev=False)
         command.add_argument('job_id')
@@ -120,6 +126,11 @@ def directory_for_settings(settings):
 
 def handle(parsed, settings):
     if parsed.command == 'setup' and parsed.setup_action == 'jobs':
+        if parsed.setup_job_action in ('maintenance-plan', 'maintenance-confirm'):
+            from .setup_maintenance_review_bridge import review_service
+            review = review_service(settings)
+            return (review.plan(parsed.job_id) if parsed.setup_job_action == 'maintenance-plan'
+                    else review.confirm(parsed.plan_id, parsed.confirm_sha256))
         from .setup_jobs_view import SetupJobsService
         service = SetupJobsService(settings)
         if parsed.setup_job_action == 'list':

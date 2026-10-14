@@ -40,6 +40,13 @@ def test_control_plane_argument_parser_accepts_exact_backup_id() -> None:
     assert result.stdout.strip() == DEFAULT_ROLLBACK_BACKUP_ID
 
 
+def test_control_plane_argument_parser_accepts_only_exact_maintenance_sha():
+    result = _parse('--rollback-backup-id', DEFAULT_ROLLBACK_BACKUP_ID, '--maintenance-review', 'a'*64)
+    assert result.returncode == 0 and result.stdout.strip() == DEFAULT_ROLLBACK_BACKUP_ID
+    for suffix in (('--maintenance-review', 'invalid'), ('--other', 'a'*64), ('--maintenance-review',)):
+        assert _parse('--rollback-backup-id', DEFAULT_ROLLBACK_BACKUP_ID, *suffix).returncode != 0
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

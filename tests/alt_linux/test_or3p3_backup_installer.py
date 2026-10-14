@@ -44,6 +44,41 @@ def test_backup_installer_library_supports_synthetic_root(
     ).is_file()
 
 
+def test_shared_maintenance_validator_is_readable_without_exposing_backup_data(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    sandbox = BackupInstallerSandbox.create(tmp_path)
+    result = sandbox.run_library()
+    assert result.returncode == 0, result.stderr
+    shared = sandbox.destination('/opt/alt-deploy-maintenance')
+    assert shared.is_dir()
+    files = {p.name for p in (shared/'alt_deploy_backup').glob('*.py')}
+    assert files == {'__init__.py', 'setup_maintenance_review.py', 'setup_compat.py', 'errors.py',
+                     'fs.py', 'state_validation.py', 'manifest.py', 'components.py', 'settings.py',
+                     'systemd.py', 'secrets.py'}
+    assert all(stat.S_IMODE(p.stat().st_mode) == 0o644 for p in (shared/'alt_deploy_backup').glob('*.py'))
+    for name in files:
+        assert (shared/'alt_deploy_backup'/name).read_bytes() == sandbox.destination('/opt/alt-deploy-backup/alt_deploy_backup/'+name).read_bytes()
+    if os.geteuid() != 0: pytest.skip('Real differing service UID proof requires root runner')
+    # The ordinary pytest parent is private. Use one disposable public code tree
+    # to test real kernel DAC, with a separate root-only private-data sentinel.
+    with tempfile.TemporaryDirectory(prefix='alt-maintenance-dac-', dir='/var/tmp') as directory:
+        root = Path(directory)
+        root.chmod(0o755)
+        shutil.copytree(shared, root/'code')
+        secret = root/'private'
+        secret.mkdir(mode=0o700)
+        (secret/'sentinel').write_text('synthetic-private-data')
+        (secret/'sentinel').chmod(0o600)
+        script = "import alt_deploy_backup.setup_maintenance_review; from pathlib import Path; p=Path(__import__('sys').argv[1]);\ntry: p.read_bytes()\nexcept PermissionError: pass\nelse: raise SystemExit(2)"
+        proof = subprocess.run(['/usr/bin/python3', '-B', '-c', script, str(secret/'sentinel')],
+            env={'PYTHONPATH': str(root/'code'), 'PATH': '/usr/bin:/bin'},
+            user=65534, group=65534, extra_groups=[], capture_output=True, text=True)
+        assert proof.returncode == 0, proof.stderr
+
+
 def test_backup_installer_publishes_only_backup_assets(
     tmp_path: Path,
 ) -> None:

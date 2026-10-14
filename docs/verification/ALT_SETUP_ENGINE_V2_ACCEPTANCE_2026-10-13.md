@@ -174,6 +174,40 @@ The old assertion required the undefined bare variable. Its expected published
 contract was corrected to the validated catalog reference; production files were
 unchanged by that test correction. This failed CI is not publication acceptance.
 
+The corrected exact SHA `3a6bf545be313f80c64c14205d3218dcfa098be4`
+passed full CI with **5654 passed, 89 skipped, 3315 warnings in 1476.12s**
+([run 38540693531](https://github.com/BorisDruzak/web_ovpn/actions/runs/38540693531));
+the retained pytest exit code is 0. It was fast-forwarded and pushed to main.
+This source publication does not update the controller or resolve live UNKNOWN.
+
+## Limited controller maintenance review
+
+The operator approved development of the written limited maintenance-review
+scope. One canonical native-backup validator produces service-owned protected
+30-minute plans and additive SHA-confirmed six-hour receipts. It checks one
+finished full-Setup UNKNOWN, its exact two nested leases, immutable original
+history, real lifecycle lock and fresh read-only machine/AD/SSH/package/user
+evidence. It performs no target write or original-history reclassification.
+
+Focused root testing first failed on missing implementation and explicit
+backup/readiness/installer support. The canonical/CLI/readiness/backup subset
+passed 71 tests in 35.60s before shared packaging. Native sandbox capture,
+verify, rehearsal and restore preserved UNKNOWN and review metadata; default
+maintenance remained blocked. Independent review found installed service-user
+code readability and missing safe SSS-user evidence. Shared trusted validator
+packaging keeps private backup data closed; a real differing-UID process imports
+the code but cannot read a root-only sentinel. Safe resolved UID/GID, home path
+and realm now have negative coverage. The maintenance/backup-installer subset
+passed 42 tests in 36.18s. The reviewer accepted both bounded corrections.
+Expanded root regression across maintenance, native backup/history/recovery,
+worker/jobs/full dispatch, readiness, backup/control installers and CLI passed
+160 tests with one expected non-root-boundary skip in 118.18s. One additional
+native-observer composition test passed in 1.19s with fixed read-only collectors.
+
+Final whole regression/publication and live metadata confirmation/deployment are
+separate pending gates. No live maintenance receipt, new installed source,
+reboot, first login or complete VM acceptance is claimed by these tests.
+
 ## Design rulings
 
 - One published catalog drives artifacts, role selection, profile closure and order.

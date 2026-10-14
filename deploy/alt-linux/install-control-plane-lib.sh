@@ -72,7 +72,11 @@ run_installed_backup_tool() {
         echo "Installed OR-3P3 backup utility metadata is unsafe" >&2
         return 1
     fi
-    "${executable}" "$@"
+    local review_args=()
+    if [[ -n ${MAINTENANCE_REVIEW:-} ]]; then
+        review_args=(--maintenance-review "${MAINTENANCE_REVIEW}")
+    fi
+    "${executable}" "$@" "${review_args[@]}"
 }
 
 validate_rollback_backup() {
@@ -196,8 +200,12 @@ validate_active_jobs() {
     local root_prefix=$1
     local jobs_json
     local active_count
+    local review_args=()
+    if [[ -n ${MAINTENANCE_REVIEW:-} ]]; then
+        review_args=(--maintenance-review "${MAINTENANCE_REVIEW}")
+    fi
 
-    if ! jobs_json=$(run_source_cli "${root_prefix}" jobs active); then
+    if ! jobs_json=$(run_source_cli "${root_prefix}" jobs active "${review_args[@]}"); then
         echo "Unable to validate active provision jobs" >&2
         return 1
     fi
@@ -609,6 +617,10 @@ run_installed_readiness() {
     local root_prefix=$1
     local workstationctl
     local attempt
+    local review_args=()
+    if [[ -n ${MAINTENANCE_REVIEW:-} ]]; then
+        review_args=(--maintenance-review "${MAINTENANCE_REVIEW}")
+    fi
     workstationctl=$(install_destination \
         "${root_prefix}" \
         /usr/local/sbin/workstationctl)
@@ -617,7 +629,7 @@ run_installed_readiness() {
         if sudo -u altserver \
             "${workstationctl}" \
             --json \
-            controller readiness >/dev/null; then
+            controller readiness "${review_args[@]}" >/dev/null; then
             return 0
         fi
         if (( attempt < 15 )); then

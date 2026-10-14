@@ -147,6 +147,8 @@ backup_validate_destination_layout() {
     backup_validate_existing_directory \
         "${root_prefix}" \
         /opt/alt-deploy-backup
+    backup_validate_existing_directory "${root_prefix}" /opt/alt-deploy-maintenance public
+    backup_validate_existing_directory "${root_prefix}" /opt/alt-deploy-maintenance/alt_deploy_backup public
     backup_validate_existing_directory \
         "${root_prefix}" \
         /var/lib/alt-deploy-backup \
@@ -221,6 +223,19 @@ backup_install_package() {
         install -o root -g root -m 0640 \
             "${source_file}" \
             "${package_root}/alt_deploy_backup/${source_file##*/}"
+    done
+
+    # Only this validator and its read-only schema/import dependencies are
+    # shared. Backup wrappers, bundles, audit data and keys keep their modes.
+    local shared_root
+    shared_root=$(backup_install_destination "${root_prefix}" /opt/alt-deploy-maintenance)
+    install -d -o root -g root -m 0755 "${shared_root}" "${shared_root}/alt_deploy_backup"
+    for source_file in __init__.py setup_maintenance_review.py setup_compat.py errors.py fs.py \
+        state_validation.py manifest.py components.py settings.py systemd.py secrets.py; do
+        backup_require_regular_nonempty "${ALT_ROOT}/backup/alt_deploy_backup/${source_file}"
+        backup_validate_existing_regular "${root_prefix}" "/opt/alt-deploy-maintenance/alt_deploy_backup/${source_file}"
+        install -o root -g root -m 0644 "${ALT_ROOT}/backup/alt_deploy_backup/${source_file}" \
+            "${shared_root}/alt_deploy_backup/${source_file}"
     done
 
     install -o root -g root -m 0750 \

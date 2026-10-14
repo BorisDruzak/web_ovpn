@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    job_commands.add_parser("active")
+    job_commands.add_parser("active").add_argument('--maintenance-review')
 
     job_status = job_commands.add_parser("status")
     job_status.add_argument("job_id")
@@ -162,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="controller_command",
         required=True,
     )
-    controller_commands.add_parser("readiness")
+    controller_commands.add_parser("readiness").add_argument('--maintenance-review')
     permissions = controller_commands.add_parser(
         "permissions"
     )
@@ -637,13 +637,17 @@ def main(
             # Preserve legacy corruption errors before checking V2 admission.
             stored_jobs = JobRepository(active_settings).list()
             SetupJobRepository(active_settings)._check_admissions()
-            if unresolved_legacy_reservations(active_settings):
+            exclusion = {'job_ids': set(), 'lease_ids': set()}
+            if parsed.maintenance_review is not None:
+                from .setup_maintenance_review_bridge import review_service
+                exclusion = review_service(active_settings).exclusions(parsed.maintenance_review)
+            if any(r['reservation_id'] not in exclusion['lease_ids'] for r in unresolved_legacy_reservations(active_settings)):
                 raise ControlError('setup_previous_run_unresolved',
                                    'Legacy Setup/Configure execution requires review', 4)
             active_jobs = [
                 job
                 for job in stored_jobs
-                if is_active_job(job, settings=active_settings)
+                if job.job_id not in exclusion['job_ids'] and is_active_job(job, settings=active_settings)
             ]
 
             payload = {
@@ -660,6 +664,8 @@ def main(
                 ],
                 "count": len(active_jobs),
             }
+            if parsed.maintenance_review is not None:
+                payload.update(purpose='controller_maintenance_only', maintenance_review=parsed.maintenance_review)
 
         elif (
             parsed.command == "jobs"
@@ -737,7 +743,7 @@ def main(
             payload = {
                 "status": "ok",
                 "controller_readiness": ControllerReadinessChecker(
-                    active_settings
+                    active_settings, maintenance_review=parsed.maintenance_review
                 ).check(),
             }
 

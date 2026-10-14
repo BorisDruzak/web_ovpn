@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import re
+from dataclasses import replace
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -46,6 +48,16 @@ def _parse(argv: Sequence[str]) -> tuple[str, str | None]:
     )
 
 
+def maintenance_args(args):
+    if '--maintenance-review' not in args: return list(args), None
+    allowed = {'create', 'verify', 'rehearse', 'rehearse-status', 'restore', 'recover',
+               'rollout-begin', 'rollout-authorize', 'rollout-revoke', 'rollout-abort', 'rollout-complete'}
+    if (len(args) < 3 or args[0] not in allowed or args[-2] != '--maintenance-review'
+            or args.count('--maintenance-review') != 1 or not re.fullmatch('[0-9a-f]{64}', args[-1])):
+        raise BackupError('backup_usage', 'Invalid explicit maintenance review scope', 2)
+    return list(args[:-2]), args[-1]
+
+
 def _test_uid_override(environ: Mapping[str, str]) -> int | None:
     raw = environ.get("ALT_DEPLOY_BACKUP_EFFECTIVE_UID")
     if raw is None:
@@ -86,6 +98,12 @@ def _dispatch(
     backup_id: str | None,
     settings: BackupSettings,
 ) -> dict[str, object]:
+    if settings.maintenance_review is not None:
+        from .quiescence import QuiescenceChecker
+        try:
+            if QuiescenceChecker(settings)._unresolved(): raise ValueError
+        except Exception:
+            raise BackupError('backup_preflight_failed', 'Fresh maintenance review validation failed', 4) from None
     if command == "install-check":
         FingerprintKeyStore(settings).ensure()
         return {"status": "ok", "result": "backup_tool_ready"}
@@ -239,8 +257,9 @@ def main(
                 message="Backup operation requires root",
                 exit_code=6,
             )
+        args, maintenance_review = maintenance_args(args)
         command, backup_id = _parse(args)
-        settings = _settings(env)
+        settings = replace(_settings(env), maintenance_review=maintenance_review)
         if command == "install-check":
             payload = _dispatch(command, backup_id, settings)
             print(json.dumps(payload, ensure_ascii=False))

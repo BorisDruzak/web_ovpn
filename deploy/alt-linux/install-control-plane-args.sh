@@ -1,8 +1,12 @@
 #!/bin/bash
 
 parse_control_plane_args() {
-    if (( $# != 2 )) || [[ ${1:-} != "--rollback-backup-id" ]]; then
-        echo "Usage: install-control-plane.sh --rollback-backup-id <backup-id>" >&2
+    if (( $# != 2 && $# != 4 )) || [[ ${1:-} != "--rollback-backup-id" ]]; then
+        echo "Usage: install-control-plane.sh --rollback-backup-id <backup-id> [--maintenance-review SHA256]" >&2
+        return 2
+    fi
+    if (( $# == 4 )) && { [[ ${3:-} != "--maintenance-review" ]] || [[ ! ${4:-} =~ ^[0-9a-f]{64}$ ]]; }; then
+        echo "Invalid maintenance review SHA" >&2
         return 2
     fi
 

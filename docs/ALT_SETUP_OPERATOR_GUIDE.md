@@ -100,6 +100,52 @@ maintenance. Invalid/partial admission evidence requires review, not claim
 deletion. Restore rejects older archives with differing retained execution
 history; use a current matching backup.
 
+## Controller maintenance after a closed UNKNOWN
+
+A stopped full Setup can require a source correction while its UNKNOWN and two
+nested legacy reservations block normal maintenance. Limited maintenance review
+permits backup/guarded controller deployment only. It does not authorize target
+execution, join, recovery, reboot or login. Ordinary readiness stays blocked.
+
+```bash
+sudo -u altserver workstationctl --json setup jobs maintenance-plan JOB_ID
+# Inspect the protected plan and separately approve its exact SHA.
+sudo -u altserver workstationctl --json setup jobs maintenance-confirm PLAN_ID --confirm-sha256 SHA256
+```
+
+Plans expire after 30 minutes; confirmation creates an immutable six-hour
+maintenance receipt. Duplicate confirmation cannot extend it. Each explicit
+admission freshly checks registered machine, AD employee/OU/computer, strict SSH,
+boot identity, positive SSS UID/GID, safe user home path, five package-health
+predicates and original history under the lifecycle lock. A home may be absent
+before first login. The finished job's idle worker daemon may remain alive.
+Unrelated work, unsafe state, drift, busy execution or expiry denies admission.
+
+The published native backup tool must contain the validator before scoped
+backup. Install it through its normal procedure within separately approved
+controller deployment preparation. Source CLI uses the trusted sibling backup
+package. Installed CLI uses `/opt/alt-deploy-maintenance`: root-owned readable
+validator code and its schema/import dependencies only. Backup executables,
+bundles, private data and keys retain restricted modes. Root checks shared and
+private validator code equality before running the read-only observer as the
+service user. Restored code is never a receipt validator.
+
+```bash
+sudo alt-deploy-backup create --maintenance-review SHA256
+sudo alt-deploy-backup verify BACKUP_ID --maintenance-review SHA256
+sudo alt-deploy-backup rehearse BACKUP_ID --maintenance-review SHA256
+# After separate approval of exact source and matching rollback backup:
+sudo ./deploy/alt-linux/install-control-plane.sh --rollback-backup-id BACKUP_ID --maintenance-review SHA256
+sudo -u altserver workstationctl --json controller readiness --maintenance-review SHA256
+```
+
+Scoped readiness is labelled `controller_maintenance_only`; all other guards
+remain mandatory. Restore/recover also require this explicit scope and exact
+retained history. Older archives cannot erase UNKNOWN, claims, reservations or
+maintenance metadata. Ordinary target admission never consumes this exception.
+A failed protected Setup still needs its existing separately authorized
+continuation/recovery contract.
+
 ## Functional acceptance
 
 Perform the real document/token/signature or desktop workflow first. Installation

@@ -63,7 +63,8 @@ def setup_settings(root):
 
 def ledger_present(root):
     return any((root/name).exists() or (root/name).is_symlink() for name in
-               ('setup-job-plan-claims', 'setup-job-reservations', 'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance'))
+               ('setup-job-plan-claims', 'setup-job-reservations', 'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
+                'setup-maintenance-plans', 'setup-maintenance-reviews'))
 
 
 def validate_ledger(root):
@@ -76,6 +77,8 @@ def validate_ledger(root):
     settings = setup_settings(root)
     module.SetupJobRepository(settings)._check_admissions()
     module.legacy_execution_reservations(settings)
+    from .setup_maintenance_review import validate_artifacts
+    validate_artifacts(root)
     acceptance = root/'setup-functional-acceptance'
     if acceptance.exists() or acceptance.is_symlink():
         import re
@@ -92,7 +95,7 @@ def validate_ledger(root):
                 raise ValueError('Invalid functional acceptance receipt')
 
 
-def unresolved_jobs(root, recovery_admission=None):
+def unresolved_jobs(root, recovery_admission=None, *, maintenance_review=None, maintenance_settings=None):
     module = control_module('setup_jobs')
     settings = setup_settings(root)
     validate_ledger(root)
@@ -100,6 +103,14 @@ def unresolved_jobs(root, recovery_admission=None):
     exclusion = {'job_ids': set(), 'lease_ids': set()}
     if recovery_admission is not None:
         exclusion = control_module('setup_recovery_backup_admission').load(settings, recovery_admission)
+    if maintenance_review is not None:
+        if recovery_admission is not None:
+            raise ValueError('Maintenance and recovery scopes cannot be combined')
+        from dataclasses import replace
+        from .setup_maintenance_review import MaintenanceReview
+        scoped_settings = maintenance_settings or replace(control_module('config').Settings.from_env(),
+                                                          state_root=root, jobs_dir=root/'jobs')
+        exclusion = MaintenanceReview(scoped_settings).exclusions(maintenance_review)
     jobs = [j.job_id for j in module.SetupJobRepository(settings).list()
             if j.state in module.ACTIVE_SETUP_STATES and j.job_id not in reviewed | exclusion['job_ids']]
     reviewed_runs = control_module('setup_retry').reviewed_legacy_runs(settings)
@@ -116,7 +127,8 @@ def history_fingerprint(root):
         return result
     validate_ledger(root)
     paths = [root/name for name in ('setup-job-plan-claims', 'setup-job-reservations',
-                                   'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance') if (root/name).exists()]
+                                   'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
+                                   'setup-maintenance-plans', 'setup-maintenance-reviews') if (root/name).exists()]
     jobs_root = root/'jobs'
     if jobs_root.exists():
         from .state_validation import _read_object

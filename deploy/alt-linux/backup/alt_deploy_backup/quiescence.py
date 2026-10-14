@@ -59,14 +59,26 @@ class QuiescenceChecker:
         self.recovery_admission = recovery_admission
         self.systemd = systemd_manager or SystemdManager(settings)
 
+    def _unresolved(self):
+        from dataclasses import replace
+        from .setup_compat import control_module, unresolved_jobs
+        scope = getattr(self.settings, 'maintenance_review', None)
+        settings = None
+        if scope is not None:
+            settings = replace(control_module('config').Settings.from_env(),
+                state_root=self.settings.controller_state_root, jobs_dir=self.settings.controller_state_root/'jobs',
+                lock_file=self.settings.lifecycle_lock, ansible_project_dir=self.settings.ansible_root)
+        return unresolved_jobs(self.settings.controller_state_root, self.recovery_admission,
+                               maintenance_review=scope, maintenance_settings=settings)
+
     def _jobs(self) -> list[dict[str, str]]:
         jobs_root = self.settings.controller_state_root / "jobs"
         if not _directory_or_absent(jobs_root):
             from .setup_compat import ledger_present, unresolved_jobs
-            if ledger_present(self.settings.controller_state_root) or self.recovery_admission is not None:
+            if ledger_present(self.settings.controller_state_root) or self.recovery_admission is not None or getattr(self.settings, 'maintenance_review', None) is not None:
                 try:
                     return [{'job_id': job_id, 'state': 'unresolved', 'stage': 'setup'} for job_id in
-                            unresolved_jobs(self.settings.controller_state_root, self.recovery_admission)]
+                            self._unresolved()]
                 except Exception as exc:
                     raise _preflight('Setup admission evidence requires review') from exc
             return []
@@ -128,7 +140,7 @@ class QuiescenceChecker:
         if setup_present or ledger_present(self.settings.controller_state_root) or self.recovery_admission is not None:
             try:
                 active.extend({'job_id': job_id, 'state': 'unresolved', 'stage': 'setup'}
-                              for job_id in unresolved_jobs(self.settings.controller_state_root, self.recovery_admission))
+                              for job_id in self._unresolved())
             except Exception as exc:
                 raise _preflight('Setup admission evidence requires review') from exc
         return active

@@ -146,21 +146,27 @@ def _response_status(response: object) -> int | None:
 
 
 class ControllerReadinessChecker:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, maintenance_review=None) -> None:
         self.settings = settings
+        self.maintenance_review = maintenance_review
 
     def active_jobs_empty(self) -> bool:
         try:
             jobs = JobRepository(self.settings).list()
             from .setup_jobs import SetupJobRepository, unresolved_legacy_reservations
             SetupJobRepository(self.settings)._check_admissions()
-            if unresolved_legacy_reservations(self.settings):
+            exclusion = {'job_ids': set(), 'lease_ids': set()}
+            if self.maintenance_review is not None:
+                from .setup_maintenance_review_bridge import review_service
+                exclusion = review_service(self.settings).exclusions(self.maintenance_review)
+            if any(r['reservation_id'] not in exclusion['lease_ids'] for r in unresolved_legacy_reservations(self.settings)):
                 return False
         except (ControlError, OSError, ValueError):
             return False
         return not any(
             is_active_job(job, settings=self.settings)
             for job in jobs
+            if job.job_id not in exclusion['job_ids']
         )
 
     def permissions_ok(self) -> bool:
@@ -394,6 +400,8 @@ class ControllerReadinessChecker:
                 if not succeeded
             ],
         }
+        if self.maintenance_review is not None:
+            result.update(purpose='controller_maintenance_only', maintenance_review=self.maintenance_review)
         if not result["ready"]:
             raise ControlError(
                 code="controller_not_ready",

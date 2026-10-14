@@ -14,6 +14,7 @@ ALT_ROOT="${REPO_ROOT}/deploy/alt-linux"
 
 source "${ALT_ROOT}/install-control-plane-args.sh"
 ROLLBACK_BACKUP_ID=$(parse_control_plane_args "$@")
+MAINTENANCE_REVIEW=${4:-}
 
 source "${ALT_ROOT}/install-control-plane-lib.sh"
 install_control_plane_main "" "${ROLLBACK_BACKUP_ID}"

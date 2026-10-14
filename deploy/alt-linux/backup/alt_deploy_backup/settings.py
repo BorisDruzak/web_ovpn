@@ -103,6 +103,7 @@ class BackupSettings:
     expected_service_uid: int
     expected_service_gid: int
     test_mode: bool
+    maintenance_review: str | None = None
 
     @classmethod
     def from_env(
