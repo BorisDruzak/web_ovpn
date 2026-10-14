@@ -41,15 +41,15 @@ systemd worker, native backup validator and pytest. No new dependency.
 the persisted safe cancellation result. It uses existing repository claim,
 publish and transition methods; it adds no state enum or relaxed schema.
 
-- [ ] Write failing tests for exact queued cancellation, wrong SHA, executing or
+- [x] Write failing tests for exact queued cancellation, wrong SHA, executing or
   UNKNOWN denial, repeated cancellation without a new claim, and interrupted
   claim without a terminal receipt. Assert the original blocker is unchanged.
-- [ ] Run the new test cases and observe the missing command/service failures.
-- [ ] Implement the CLI and service under the lifecycle lock. Bind current
+- [x] Run the new test cases and observe the missing command/service failures.
+- [x] Implement the CLI and service under the lifecycle lock. Bind current
   service process identity, persist the cancellation result before failed status,
   and preserve all admission artifacts. A partial cancellation fails closed.
-- [ ] Run `python3 -m pytest -q tests/alt_linux/test_setup_jobs.py tests/alt_linux/test_setup_jobs_cli.py tests/alt_linux/test_setup_worker.py`.
-- [ ] Inspect the complete diff, run `git diff --check`, stage only these files
+- [x] Run `python3 -m pytest -q tests/alt_linux/test_setup_jobs.py tests/alt_linux/test_setup_jobs_cli.py tests/alt_linux/test_setup_worker.py`.
+- [x] Inspect the complete diff, run `git diff --check`, stage only these files
   and commit `feat(alt-setup): cancel unstarted queued jobs safely`.
 
 ## Task 2: One-candidate queue review and serialized dispatch
@@ -70,44 +70,44 @@ existing ALT Setup acceptance report with actual results.
 `validate_artifacts(root)` validates retained records without fresh execution
 authority. Bridge `queue_review_service(settings)` loads trusted installed code.
 
-- [ ] Write failing tests using the closed-full fixture and a distinct queued
+- [x] Write failing tests using the closed-full fixture and a distinct queued
   candidate: no-review/wrong-purpose, exact valid review, UUID/hostname/GUID
   collision, stale request/status/source/history, expired Setup or review plan,
   expired receipt, unsafe file, live/unknown processes, unhealthy packages,
   extra leases/provision jobs, FIFO blockage, and unchanged original records.
-- [ ] Add retention/restore tests for expired and consumed reviews; add CLI
+- [x] Add retention/restore tests for expired and consumed reviews; add CLI
   parser/dispatcher tests and public installer copy/origin tests.
-- [ ] Run new tests and observe failures caused by missing queue-review APIs.
-- [ ] Factor native closure snapshot helpers to accept only the exact candidate
+- [x] Run new tests and observe failures caused by missing queue-review APIs.
+- [x] Factor native closure snapshot helpers to accept only the exact candidate
   exemption and a closed-job-specific immutable history scope. Preserve default
   maintenance behavior and its existing tests.
-- [ ] Implement the protected queue plans/receipts, exact candidate binding and
+- [x] Implement the protected queue plans/receipts, exact candidate binding and
   current source checks. Bind the shared validator and queue module hashes;
   retain all sensitive snapshots privately. Validate stored artifacts separately
   from live admission, and include them in backup history comparison.
-- [ ] Add CLI commands and trusted bridge/installer module support. In worker,
+- [x] Add CLI commands and trusted bridge/installer module support. In worker,
   select FIFO candidate, apply fresh queue exclusions only when ordinary guards
   block, then claim once under the existing lifecycle lock and execute normally.
-- [ ] Run `python3 -m pytest -q tests/alt_linux/test_setup_queue_review.py tests/alt_linux/test_setup_maintenance_review.py tests/alt_linux/test_setup_worker.py tests/alt_linux/test_setup_jobs_cli.py tests/alt_linux/test_setup_backup_compatibility.py` plus changed installer tests identified from source.
-- [ ] Run the applicable ALT suite, review GitNexus impact and dynamic paths,
+- [x] Run `python3 -m pytest -q tests/alt_linux/test_setup_queue_review.py tests/alt_linux/test_setup_maintenance_review.py tests/alt_linux/test_setup_worker.py tests/alt_linux/test_setup_jobs_cli.py tests/alt_linux/test_setup_backup_compatibility.py` plus changed installer tests identified from source.
+- [x] Run the applicable ALT suite, review GitNexus impact and dynamic paths,
   inspect the whole diff, run `git diff --check`, and commit
   `feat(alt-setup): review isolated queued machine admission`.
 
 ## Publication, deployment and live acceptance
 
-- [ ] Perform one fresh whole-branch review and address substantive findings.
-- [ ] Run one full repository regression and confirm its retained exit status.
-- [ ] Publish verified commits to main using the normal non-forced workflow.
-- [ ] Prepare a current native maintenance review and fresh backup; verify and
+- [x] Perform one fresh whole-branch review and address substantive findings.
+- [x] Run one full repository regression and confirm its retained exit status.
+- [x] Publish verified commits to main using the normal non-forced workflow.
+- [x] Prepare a current native maintenance review and fresh backup; verify and
   rehearse it, check actual disk space and guarded deployment prerequisites.
-- [ ] Obtain applicable concrete source/review approval and deploy the verified
+- [x] Obtain applicable concrete source/review approval and deploy the verified
   runtime through the stock guarded installer. Verify installed file digests.
-- [ ] Create a fresh protected Setup plan/job for the approved disposable target.
+- [x] Create a fresh protected Setup plan/job for the approved disposable target.
   Confirm the exact one-job queue review and monitor that same worker job handle.
-- [ ] Complete actual full Setup, independent component apply/verify/noop,
+- [x] Complete actual full Setup, independent component apply/verify/noop,
   controlled interruption/status reconciliation and permitted retry, authorized
   reboot and real selected-user first login. Record limitations honestly.
-- [ ] Verify all original task requirements before marking the goal complete.
+- [x] Verify all original task requirements before marking the goal complete.
 
 ## Self-review
 

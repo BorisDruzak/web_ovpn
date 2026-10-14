@@ -39,6 +39,15 @@ before making a fresh plan. Probes never change cache permissions or contents.
 Approved p11 sources support `classic`, and x86_64 also supports the standard
 `classic gostcrypto` form. Other source components remain unapproved.
 
+The approved browser RPM can create an enabled vendor source at
+`/etc/apt/sources.list.d/yandex-browser.list`. It is outside the pinned-artifact
+and approved p11 source policy, so later mutation plans correctly become
+`blocked` even when the installed browser verifies. Under authorized workstation
+maintenance, inspect and retain the original file, disable only the confirmed
+RPM-generated source entry, then create a fresh component plan. Do not broaden
+the probe allowlist, delete package locks or reuse the blocked plan. The browser
+role does not automatically normalize this RPM side effect.
+
 ## Full Setup
 
 ```bash

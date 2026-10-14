@@ -6,7 +6,9 @@ operator CLI and reusable backend contracts.
 
 This ledger records implementation checks and subsequent controller and disposable
 VM evidence. Exact-SHA publication receipts remain in Git/GitHub metadata.
-Completed controller deployment and incomplete workstation acceptance are separate.
+Controller deployment, technical workstation acceptance and user workflow
+attestation are separate. The table summarizes the latest evidence; the dated
+entries below retain earlier failures and gates as history.
 
 ## Gates and evidence
 
@@ -14,16 +16,16 @@ Completed controller deployment and incomplete workstation acceptance are separa
 | --- | --- |
 | Catalog/read-only planning | Targeted POSIX tests cover thirteen components, profiles, invalid catalogs and target/source/identity drift. |
 | Durable execution | Synthetic claims/crash/FIFO/conflicts/restart/PID reuse and real localhost Ansible callback tests. |
-| Package interruption | Targeted tests and native ALT unprivileged APT simulation. One partial live full-Setup installation has run; live interruption/recovery acceptance remains pending. |
+| Package interruption | Targeted package-transaction interruption tests and native ALT unprivileged APT simulation pass. Live interruption uses a file-only component; no live mid-APT interruption is claimed. |
 | Deep verification | Targeted system/domain/certificate/user/component tests; reboot/home/functional states remain separate. |
 | CLI/continuity/backup compatibility | Final isolated snapshot: 143 passing operator/jobs/continuity/native recovery/restore/collector checks; two additional missing-directory corruption cases pass. Earlier broader 241 and 32 checks overlap and are not a combined unique total. |
 | Integrated synthetic flow | Full Setup -> reboot -> first-login -> independent component -> child worker termination -> UNKNOWN -> fresh noop successor passes. No live AD/SSH/Ansible call in this fixture. |
 | Independent review | One whole-change review satisfied after fixing physical DMI lookup, exact reserved recovery snapshot admission, successor-lineage and reservation bindings. |
-| Complete regression | Production revision `ecaeffb9bd1770227c705b195acc4fd407c8d7b4`: 5684 passed, 90 skipped, 3315 warnings in 1471.14s, exit 0 ([run 38545045725](https://github.com/BorisDruzak/web_ovpn/actions/runs/38545045725)). CI uses controller-compatible Ansible 2.18.6. |
-| Controller-native pre-install checks | Native guarded installer at the same production revision: 3084 passed, 1 skipped in 991.98s. |
-| Exact-SHA main publication | Production revision `ecaeffb9bd1770227c705b195acc4fd407c8d7b4`, including shortcuts/GPO corrections and limited maintenance review, is published on main. |
-| Controller deployment | Authorized guarded deployment of the same production revision completed: installer exit 0, 259/259 installed files matched, protected inputs and original history unchanged, rollout complete, worker active/enabled, scoped readiness passed. Ordinary target admission retains UNKNOWN gates. |
-| Live Setup/component/noop/interruption/reboot/login | The approved full-Setup attempt remains immutable UNKNOWN. Authorized reboot and independent domain/software verification now pass. Independent component planning still rejects this failed protected predecessor; component/noop/interruption and real first-login acceptance remain pending. |
+| Complete regression | Runtime revision `314cce46ab8c4f7dbe62b6066791994e25e1f98b`: 5733 passed, 90 skipped, 3315 warnings in 1746.06s, retained exit 0 ([run 38599420531](https://github.com/BorisDruzak/web_ovpn/actions/runs/38599420531)). CI uses controller-compatible Ansible 2.18.6. |
+| Controller-native pre-install checks | Stock guarded installer at the same runtime revision: 3133 passed, 1 skipped in 1032.20s. |
+| Exact-SHA main publication | Runtime revision `314cce46ab8c4f7dbe62b6066791994e25e1f98b`, including atomic one-candidate queue review, is published on main. This final evidence update changes documentation only. |
+| Controller deployment | Authorized guarded deployment completed: installer exit 0, 261/261 installed files matched, protected inputs and original history unchanged, rollout complete, worker active/enabled, scoped readiness passed. The fresh backup verified and rehearsed 11/11 checks. Ordinary UNKNOWN gates remain. |
+| Live Setup/component/noop/interruption/reboot/login | New disposable target: full Setup, authorized reboot, real login, shortcuts repair, independent ONLYOFFICE install/verify/noop, file-only interruption/reconciliation and freshly confirmed noop successor pass. Final native whole-machine verification is successful: all nine selected components compliant. The original failed protected attempt and interrupted component remain immutable UNKNOWN. |
 
 Milestones through Task 9 include 341 passing package/worker/resilience checks
 and 228 passing verification/role checks. These overlap and are not a unique
@@ -348,3 +350,119 @@ authority. The six-file native regression including before/after publication
 interruption and unsafe staging checks passed **110 tests in 112.25s, exit 0**.
 Actual disposable-target execution and full repository regression remain
 separate gates; this result does not claim installed or live acceptance.
+
+## Final technical acceptance — 2026-10-15
+
+The authorized second disposable ALT workstation completed the selected
+`office-standard-v1` flow on installed runtime
+`314cce46ab8c4f7dbe62b6066791994e25e1f98b`. Native CLI now independently verifies
+all nine selected components as compliant, with no reboot pending. Eight have
+`technical_verified`; Directum has `installed_verified` and correctly retains
+`functional_verification_required`. No document-opening attestation was invented.
+Private root receipts retain the exact target UUID, selected AD identities,
+plans, SHA confirmations, command outputs and timestamps. This public report
+omits private topology and employee identities.
+
+### Installed release and actual operations
+
+The stock guarded controller deployment completed once after a fresh confirmed
+maintenance review and backup create/verify/rehearse. Rehearsal passed 11/11
+checks. Installer ALT regression passed **3133 tests, 1 skipped, 1032.20s**.
+Deployment and final live audit both matched **261 installed files** to the
+published runtime. Worker remains active/enabled. Original protected inputs and
+failed full-Setup history were not rewritten. Readiness passed within the
+authorized maintenance scope at deployment time; ordinary UNKNOWN guards remain.
+
+| Actual durable job | Operation | Observed outcome |
+| --- | --- | --- |
+| `job-20261014T174057Z-19e93d26` | Full office Setup | 518 structured events; waiting_reboot, one authorized actual reboot, waiting_first_login, real login, then degraded for launcher mode drift. This historical result remains unchanged after component repair. |
+| `job-20261014T211114Z-626b213f` | `desktop.shortcuts` repair | successful, changed=true, independently compliant |
+| `job-20261014T211448Z-0cb1ded8` | `software.onlyoffice` install | successful, changed=true; 74 structured events and separate native verify successful |
+| `job-20261014T212018Z-23ff6c14` | Fresh ONLYOFFICE repeat | noop, successful, changed=false, no Ansible log or events |
+| `job-20261014T212351Z-a9f69b61` | Controlled file-only interruption | Worker stopped after a changed apply event; restart reconciled to unknown_requires_review/worker_identity_unverified, without replay |
+| `job-20261014T212744Z-3eed57d5` | Fresh same-component `--after-job` successor | Current facts compliant; noop, successful, changed=false; original UNKNOWN request/status unchanged |
+
+Independent software installation used an explicit disposable fixture: RPM's
+removal dependency test passed, and complete before/after package identities
+proved that only ONLYOFFICE was removed. Its newly confirmed native plan then
+reported missing/install. For interruption, only one existing selected-user
+launcher mode changed; bytes and ownership remained unchanged. No live package
+transaction or domain operation was killed. The stopped service MainPID matched
+the claimed worker identity before interruption.
+
+Every component submission used the installed native CLI and background worker,
+not a direct Ansible invocation. Each queued candidate received its own fresh
+closed-UNKNOWN queue review. One retry queue-plan request was rejected;
+subsequent read-only ledger, predecessor, candidate, history and
+lock checks passed, and a fresh request for that same candidate succeeded. The
+initial cause was not reproduced or declared fixed. Its failed response remains
+retained. No consumed Setup plan or claim was replayed.
+
+Final native audit passed catalog/profile list/show, target job history, whole
+machine verification and independent ONLYOFFICE verification. Both UNKNOWN
+histories remain intact, the interrupted component has a native validated
+successor link, and the retained ledger validates after consumption/expiration.
+Component source fingerprints were unchanged; component jobs dispatched no
+protected domain adapter. No AD employee creation/change, computer reset, OS
+reinstallation, production-network change or fleet rollout was performed.
+
+### Delivered contracts and operator use
+
+The versioned YAML catalog, immutable component plans, single-use claims/FIFO
+worker, structured Ansible events, independent probes and read-only continuation
+form the shared `CLI -> service -> plan -> durable job -> catalog -> Ansible ->
+verification` path. `base` and `core-apps` retain legacy meanings. Published
+profiles add `office-standard-v1` and `office-signature-v1`.
+
+Integrated executors are `workstation_base`, `plasma_baseline`,
+`software_browser`, `software_onlyoffice`, `software_nextcloud_desktop`,
+`software_directum`, `software_cryptopro`, `software_cryptopro_cades`,
+`software_gosuslugi_plugin`, `government_ca`, `desktop_shortcuts` and optional
+`remote_access_krfb`. `domain.ready` uses the existing protected critical adapter;
+it is never an ordinary independently replayable software role.
+
+The [catalog guide](../ALT_COMPONENT_CATALOG.md) explains adding a published
+approved role/component with an existing verification recipe, dependencies and
+new profile version, without rewriting Setup Orchestrator. A new verification
+recipe still requires its own reviewed read-only implementation and tests.
+The [operator guide](../ALT_SETUP_OPERATOR_GUIDE.md) contains exact commands for
+catalog/profile inspection, full or component plan/apply/verify, job status/events,
+continuation, permitted retry and actual functional attestation. SHA/TTL, AD/SSH
+identity and source drift checks remain mandatory. Arbitrary runtime YAML,
+playbooks, paths and shell expressions are not operator inputs.
+
+The [backend guide](../ALT_SETUP_ENGINE_V2.md) records reusable service boundaries
+for a future API: component/catalog and job responses use schema 2, events and
+protected queue/maintenance records use schema 1. Job status uses the `job`
+envelope; component verification exposes `overall_status` and `components`.
+Future HTTP authentication/authorization must preserve the same service gates.
+No web page, HTTP route, database or message broker was added.
+
+### Verification and remaining operational limits
+
+Exact-runtime full CI: **5733 passed, 90 skipped, 3315 warnings, 1746.06s, exit 0**
+([retained run](https://github.com/BorisDruzak/web_ovpn/actions/runs/38599420531)).
+The final atomic queue-publication correction had 2 observed RED failures and
+then **110 passing native tests in 112.25s**. Earlier milestone and native counts
+overlap; they are not summed into a larger unique total. This final documentation
+update changes no deployed executable files and requires no repeated heavy CI.
+
+Mutation remains serialized. Signature-profile and KRFB contracts have regression
+coverage, but this live office run did not select them; CryptoPro licensing and
+real signing workflows are not accepted. Directum document opening remains a
+real-user functional check. A login can create launcher/autostart files with
+stricter modes than the published baseline, requiring a fresh shortcuts repair.
+
+The browser RPM generated one active vendor APT source outside the approved p11
+policy. Authorized disposable-workstation maintenance retained the original and
+disabled only that exact entry; later plans then verified three approved sources.
+The browser role does not automatically normalize this side effect. See the
+operator guide before a later mutation plan; do not weaken source checks.
+
+Historical UNKNOWN is preserved even after a healthy successor. Queue review
+recognizes validated native predecessor links. The narrow controller-maintenance
+review retains its original scope and rejects additional UNKNOWN jobs; this live
+test does not claim current general backup/deployment clearance. A later
+maintenance operation must satisfy its actual current guards and approved scope.
+The pre-deployment backup/review cannot be reused to erase the newer execution
+history. Reboot and first login always remain explicit operator/user actions.
