@@ -154,6 +154,10 @@ def test_shortcuts_compare_autostart_and_launchers_for_selected_office_profile(t
     autostart.chmod(0o644)
     for link in defaults['desktop_shortcuts_relative_links']:
         (desktop/link['name']).symlink_to(link['src'])
+    # Match the positive synthetic SSS identity when pytest runs as root.
+    if os.getuid() == 0:
+        for target in (home, *home.rglob('*')):
+            os.chown(target, max(1, os.getuid()), max(1, os.getgid()), follow_symlinks=False)
     assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is True
     autostart.write_text('[Desktop Entry]\nExec=false\n')
     assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is False

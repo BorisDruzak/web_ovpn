@@ -22,7 +22,7 @@ controller and workstation acceptance still require the separate live gates.
 | Complete regression | Full Linux CI at `6c999dfe4a2da19ad342034c83ff0ef199300933`: 5645 passed, 89 skipped, 3315 warnings in 933.80s, exit 0 ([run 38485906695](https://github.com/BorisDruzak/web_ovpn/actions/runs/38485906695)). CI explicitly installs controller-compatible Ansible 2.18.6. This is implementation regression evidence; the final pre-install fixture correction requires its own exact-SHA publication CI. |
 | Controller-native pre-install checks | Isolated full ALT subset: 2962 passed, 82 skipped, one host-dependent unit-fixture failure in 930.89s. The cache metadata fixture was corrected; both affected test files then passed all 39 checks in 24.57s. Installed production sources were unchanged. |
 | Exact-SHA main publication | Requires successful final fixture-revision CI, clean tree and normal main fast-forward. Actual publication receipt is recorded in Git/GitHub metadata. |
-| Controller deployment | Not performed; separate guarded deployment approval required. |
+| Controller deployment | Authorized attempt at `5978aa2ccac927717b14f297021c2f8276b13503` stopped during the mandatory root regression, before maintenance/runtime replacement. Corrected fixture revision requires exact-SHA CI and renewed deployment authorization. |
 | Live Setup/component/noop/interruption/reboot/login | Not performed; separately confirmed exact plans required. |
 
 Milestones through Task 9 include 341 passing package/worker/resilience checks
@@ -82,6 +82,22 @@ The full native ALT subset then exposed one unit fixture that mocked APT but
 still read the host's cache permissions. Supplying synthetic protected metadata
 fixed that dependency; 39 focused tests passed. Neither correction changes the
 production filter or collector, and these tests do not constitute deployment.
+
+Operator-authorized storage cleanup removed idle rehearsal/pytest trees,
+reproducible caches, six unreferenced old backup generations and one verified
+duplicate RPM. Retained histories, credentials, runtime artifacts and all October
+backups were preserved. Native backup and retained-restore capacity checks passed;
+the operator explicitly accepted the remaining root headroom for guarded deployment.
+The independent backup tool was updated, a fresh coordinated generation was
+created, verified and rehearsed, and protected input identities stayed unchanged.
+
+The installer then ran the full ALT subset as root: 3043 passed, one skipped,
+one failed in 950.69s. Its shortcuts fixture reported a positive synthetic SSS
+UID/GID while its home, files and symlinks remained root-owned. The collector
+correctly rejected that ownership mismatch. Only the fixture now assigns its
+declared synthetic ownership inside its temporary home; all seven collector
+tests pass under root in 0.58s. Production checks are unchanged. No rollout marker
+was created and the V2 worker was not installed by the rejected attempt.
 
 ## Design rulings
 
