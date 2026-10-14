@@ -174,6 +174,13 @@ UNKNOWN, claims, reservations and assignment remain unchanged. Maintenance-only
 review cannot authorize this execution, and queue review cannot authorize backup
 or deployment. A real domain login is still required for user-home components.
 
+Confirmation publishes one immutable candidate-keyed receipt atomically. Exact
+duplicate confirmation returns that receipt without extending its lifetime;
+confirming a different review for the same candidate is rejected before writing.
+An interrupted unpublished write grants no authority and can be retried with the
+same plan while its TTL and fresh checks remain valid. Protected partial staging
+bytes are retained as history and cannot authorize dispatch.
+
 Cancel an unstarted queued job, including an expired plan, using its admitted SHA:
 
 ```bash

@@ -337,3 +337,14 @@ queue-closure compatibility failure (RED). Recognizing already validated native
 review links only for queue admission fixed it: the same six-file native suite
 then passed **101 tests in 97.29s, exit 0**. Maintenance-only checks and the
 original UNKNOWN/reservation records remain unchanged.
+
+Whole-branch review found a publication atomicity defect: confirming a different
+review for the same candidate, or interruption between receipt and pointer,
+could leave an orphan that blocked ledger validation. Both cases reproduced
+as **2 failed** on the reviewed source. Confirmation now atomically publishes
+one candidate-keyed receipt. Exact retries preserve its lifetime, conflicting
+confirmations write nothing, and protected partial staging bytes grant no
+authority. The six-file native regression including before/after publication
+interruption and unsafe staging checks passed **110 tests in 112.25s, exit 0**.
+Actual disposable-target execution and full repository regression remain
+separate gates; this result does not claim installed or live acceptance.

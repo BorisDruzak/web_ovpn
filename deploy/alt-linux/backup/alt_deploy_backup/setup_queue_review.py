@@ -2,9 +2,11 @@
 from datetime import timedelta, datetime
 import copy
 import hashlib
+import os
 from pathlib import Path
 import re
 import stat
+import uuid
 
 from .setup_compat import control_module, setup_settings
 from .setup_maintenance_review import MaintenanceReview, maintenance_lock
@@ -79,27 +81,64 @@ class QueueAdmissionReview(MaintenanceReview):
     def confirm(self, plan_id, sha):
         try:
             with maintenance_lock(self.settings):
-                receipt = super().confirm(plan_id, sha)
-                plan, _, _ = self._protected_plan(plan_id, sha)
+                plan, _, expires = self._protected_plan(plan_id, sha)
                 candidate = plan['payload']['candidate']['job_id']
-                pointer = {'schema_version': 1, 'purpose': self.purpose,
-                           'candidate_job_id': candidate, 'review_sha256': sha}
-                path = self.settings.state_root/'setup-queue-admissions'/(candidate+'.json')
-                try: self.io.private_create(path, pointer)
-                except FileExistsError:
-                    if self._read(path) != pointer: raise denied()
-                return receipt
+                path = self.reviews/(candidate+'.json')
+                # Reject a different confirmation before publishing any record.
+                existing = self._receipt(sha) if path.exists() or path.is_symlink() else None
+                if self.clock() >= expires or self._plan_snapshot(plan['payload']) != plan['payload']: raise denied()
+                if existing is not None: return existing
+                now = self.clock().replace(microsecond=0)
+                record = {'schema_version': 1, 'purpose': self.purpose, 'candidate_job_id': candidate,
+                          'review_sha256': sha, 'confirmed_at': now.isoformat(),
+                          'valid_until': (now+timedelta(hours=6)).isoformat()}
+                self._publish(path, record)
+                return record
         except Exception: raise denied() from None
+
+    @staticmethod
+    def _sync(directory):
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+
+    def _publish(self, path, record):
+        self.io.private_directory(self.reviews)
+        pending = self.reviews/'.pending'
+        self.io.private_directory(pending)
+        self._sync(self.reviews.parent)
+        self._sync(self.reviews)
+        temporary = pending/(uuid.uuid4().hex+'.tmp')
+        try:
+            self.io.private_create(temporary, record)
+            # The final candidate-keyed receipt appears complete or not at all.
+            # link refuses to overwrite any existing confirmation.
+            os.link(temporary, path, follow_symlinks=False)
+            self._sync(self.reviews)
+        finally:
+            temporary.unlink(missing_ok=True)
+            self._sync(pending)
+
+    def _receipt(self, sha):
+        plan, created, expires = self._protected_plan(self.prefix+sha, sha)
+        candidate = plan['payload']['candidate']['job_id']
+        record = self._read(self.reviews/(candidate+'.json'))
+        if (set(record) != {'schema_version','purpose','candidate_job_id','review_sha256','confirmed_at','valid_until'}
+                or type(record['schema_version']) is not int or record['schema_version'] != 1
+                or record['purpose'] != self.purpose or record['candidate_job_id'] != candidate
+                or record['review_sha256'] != sha): raise denied()
+        confirmed, until = (datetime.fromisoformat(record[k]) for k in ('confirmed_at','valid_until'))
+        if (confirmed.tzinfo is None or until.tzinfo is None or not created <= confirmed < expires
+                or until-confirmed != timedelta(hours=6) or not confirmed <= self.clock() < until): raise denied()
+        return record
 
     def for_candidate(self, candidate_job_id):
         try:
             with maintenance_lock(self.settings):
                 # Resolve first: a caller cannot supply a filesystem path.
                 self.jobs.SetupJobRepository(self.settings).get(candidate_job_id)
-                pointer = self._read(self.settings.state_root/'setup-queue-admissions'/(candidate_job_id+'.json'))
-                sha = pointer['review_sha256']
-                if pointer != {'schema_version': 1, 'purpose': self.purpose,
-                    'candidate_job_id': candidate_job_id, 'review_sha256': sha}: raise denied()
+                receipt = self._read(self.reviews/(candidate_job_id+'.json'))
+                sha = receipt['review_sha256']
                 self._receipt(sha)
                 plan, _, _ = self._protected_plan(self.prefix+sha, sha)
                 payload = plan['payload']
@@ -114,13 +153,25 @@ def validate_artifacts(root):
     io = control_module('setup_plans')
     uid = root.stat().st_uid
     repository = control_module('setup_jobs').SetupJobRepository(setup_settings(root))
-    plans, receipts, admissions = {}, {}, {}
+    plans = {}
     def documents(name):
         directory = root/name
         if not directory.exists() and not directory.is_symlink(): return []
         info = directory.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700: raise denied()
-        return [(p, io.private_read(p, owner_uid=uid)) for p in directory.iterdir()]
+        values = []
+        for path in directory.iterdir():
+            if name == QueueAdmissionReview.review_directory and path.name == '.pending':
+                info = path.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) != 0o700: raise denied()
+                for temporary in path.iterdir():
+                    if not re.fullmatch('[0-9a-f]{32}\\.tmp', temporary.name): raise denied()
+                    # A killed writer may leave partial bytes here. They are
+                    # protected history, never a dispatch authorization.
+                    io.private_read_bytes(temporary, owner_uid=uid)
+                continue
+            values.append((path, io.private_read(path, owner_uid=uid)))
+        return values
     for path, value in documents(QueueAdmissionReview.plan_directory):
         sha = value.get('sha256')
         if (not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha)
@@ -161,19 +212,13 @@ def validate_artifacts(root):
         plans[sha] = value
     for path, value in documents(QueueAdmissionReview.review_directory):
         sha = value.get('review_sha256')
-        if (sha not in plans or path.name != sha+'.json'
-                or set(value) != {'schema_version','purpose','review_sha256','confirmed_at','valid_until'}
+        if (sha not in plans or path.name != plans[sha]['payload']['candidate']['job_id']+'.json'
+                or set(value) != {'schema_version','purpose','candidate_job_id','review_sha256','confirmed_at','valid_until'}
                 or type(value['schema_version']) is not int or value['schema_version'] != 1
+                or value['candidate_job_id'] != plans[sha]['payload']['candidate']['job_id']
                 or value['purpose'] != QueueAdmissionReview.purpose): raise denied()
         confirmed, until = (datetime.fromisoformat(value[k]) for k in ('confirmed_at','valid_until'))
         if (confirmed.tzinfo is None or until.tzinfo is None or until-confirmed != timedelta(hours=6)
                 or not datetime.fromisoformat(plans[sha]['created_at']) <= confirmed < datetime.fromisoformat(plans[sha]['expires_at'])): raise denied()
-        receipts[sha] = value
-    for path, value in documents('setup-queue-admissions'):
-        sha = value.get('review_sha256')
-        if (sha not in receipts or type(value.get('schema_version')) is not int
-                or value != {'schema_version':1,'purpose':QueueAdmissionReview.purpose,
-                    'candidate_job_id':plans[sha]['payload']['candidate']['job_id'],'review_sha256':sha}
-                or path.name != value['candidate_job_id']+'.json'): raise denied()
-        admissions[sha] = value
-    if set(receipts) != set(admissions): raise denied()
+    # The prepublication two-record prototype was never deployed.
+    if (root/'setup-queue-admissions').exists() or (root/'setup-queue-admissions').is_symlink(): raise denied()

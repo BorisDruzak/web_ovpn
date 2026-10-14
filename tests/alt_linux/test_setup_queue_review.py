@@ -40,6 +40,96 @@ def freeze_old(old, root):
             and (old.job_id in str(p) or p.parent.name == 'legacy-setup-reservations')}
 
 
+def test_second_confirmation_rejection_preserves_valid_history(queued):
+    from alt_deploy_backup.setup_compat import history_fingerprint, validate_ledger
+    settings, old, candidate, _, date, _ = queued
+    review = review_for(queued)
+    first = review.plan(old.job_id, candidate.job_id)
+    receipt = review.confirm(first['plan_id'], first['sha256'])
+    date[0] += timedelta(seconds=1)
+    second = review.plan(old.job_id, candidate.job_id)
+    assert first['sha256'] != second['sha256']
+    before = history_fingerprint(settings.state_root)
+    with pytest.raises(ControlError): review.confirm(second['plan_id'], second['sha256'])
+    validate_ledger(settings.state_root)
+    assert history_fingerprint(settings.state_root) == before
+    assert review.confirm(first['plan_id'], first['sha256']) == receipt
+
+
+def test_interrupted_confirmation_retries_without_orphan_receipt(queued, monkeypatch):
+    from alt_deploy_backup.setup_compat import validate_ledger
+    settings, old, candidate, _, _, _ = queued
+    review = review_for(queued)
+    plan = review.plan(old.job_id, candidate.job_id)
+    create = review.io.private_create
+    def interrupted(path, value):
+        create(path, value)
+        if path.parent.name in ('setup-queue-reviews', '.pending'):
+            raise KeyboardInterrupt()
+    with monkeypatch.context() as patch:
+        patch.setattr(review.io, 'private_create', interrupted)
+        with pytest.raises(KeyboardInterrupt): review.confirm(plan['plan_id'], plan['sha256'])
+    validate_ledger(settings.state_root)
+    review.confirm(plan['plan_id'], plan['sha256'])
+    assert review.for_candidate(candidate.job_id)['job_ids'] == {old.job_id}
+    validate_ledger(settings.state_root)
+
+
+@pytest.mark.parametrize('published', [False, True])
+def test_atomic_publication_interruption_preserves_authority_and_exact_retry(queued, monkeypatch, published):
+    from alt_deploy_backup import setup_queue_review
+    from alt_deploy_backup.setup_compat import validate_ledger
+    settings, old, candidate, _, _, _ = queued
+    review = review_for(queued)
+    plan = review.plan(old.job_id, candidate.job_id)
+    link = setup_queue_review.os.link
+    def interrupted(source, destination, **kwargs):
+        if published: link(source, destination, **kwargs)
+        raise KeyboardInterrupt()
+    with monkeypatch.context() as patch:
+        patch.setattr(setup_queue_review.os, 'link', interrupted)
+        with pytest.raises(KeyboardInterrupt): review.confirm(plan['plan_id'], plan['sha256'])
+    validate_ledger(settings.state_root)
+    if published:
+        assert review.for_candidate(candidate.job_id)['job_ids'] == {old.job_id}
+        before = private_read(review.reviews/(candidate.job_id+'.json'))
+    else:
+        with pytest.raises(ControlError): review.for_candidate(candidate.job_id)
+    receipt = review.confirm(plan['plan_id'], plan['sha256'])
+    if published: assert receipt == before
+    assert review.for_candidate(candidate.job_id)['job_ids'] == {old.job_id}
+
+
+@pytest.mark.parametrize('unsafe', [None, 'directory', 'mode', 'symlink', 'name'])
+def test_partial_staging_bytes_never_authorize_and_unsafe_staging_is_rejected(queued, unsafe):
+    from alt_deploy.setup_plans import private_directory
+    from alt_deploy_backup.setup_compat import history_fingerprint, validate_ledger
+    settings, old, candidate, _, _, _ = queued
+    review = review_for(queued)
+    plan = review.plan(old.job_id, candidate.job_id)
+    pending = review.reviews/'.pending'
+    private_directory(review.reviews)
+    private_directory(pending)
+    path = pending/('a'*32+'.tmp')
+    path.write_bytes(b'{"schema_version":')
+    path.chmod(0o600)
+    if unsafe == 'directory': pending.chmod(0o755)
+    elif unsafe == 'mode': path.chmod(0o644)
+    elif unsafe == 'symlink': path.unlink();path.symlink_to(plan['plan_id']+'.json')
+    elif unsafe == 'name': path.rename(pending/'unexpected.json')
+    with pytest.raises(ControlError): review.for_candidate(candidate.job_id)
+    if unsafe:
+        with pytest.raises(ControlError): validate_ledger(settings.state_root)
+        with pytest.raises(ControlError): review.confirm(plan['plan_id'], plan['sha256'])
+    else:
+        validate_ledger(settings.state_root)
+        before = history_fingerprint(settings.state_root)
+        assert before['setup-queue-reviews/.pending/'+path.name]
+        review.confirm(plan['plan_id'], plan['sha256'])
+        assert path.read_bytes() == b'{"schema_version":'
+        assert review.for_candidate(candidate.job_id)['job_ids'] == {old.job_id}
+
+
 def test_confirmed_review_dispatches_only_candidate_without_rewriting_unknown(queued, monkeypatch):
     settings, old, candidate, facts, date, jobs = queued
     review = review_for(queued)
@@ -101,7 +191,7 @@ def test_fresh_dispatch_review_denies_changed_or_expired_evidence(queued, drift)
     elif drift == 'boot': facts['boot_id'] = 'aaaaaaaa-3333-4444-5555-666666666666'
     elif drift == 'plan_ttl': date[0] += timedelta(minutes=30)
     elif drift == 'receipt_ttl': date[0] += timedelta(hours=6)
-    elif drift == 'unsafe': (review.reviews/(receipt['review_sha256']+'.json')).chmod(0o644)
+    elif drift == 'unsafe': (review.reviews/(candidate.job_id+'.json')).chmod(0o644)
     with pytest.raises(ControlError): review.for_candidate(candidate.job_id)
 
 
@@ -157,7 +247,7 @@ def test_wrong_purpose_or_missing_candidate_mapping_never_authorizes_dispatch(qu
     settings,old,candidate,*_=queued
     review=review_for(queued);plan=review.plan(old.job_id,candidate.job_id)
     receipt=review.confirm(plan['plan_id'],plan['sha256'])
-    path=settings.state_root/'setup-queue-admissions'/(candidate.job_id+'.json')
+    path=review.reviews/(candidate.job_id+'.json')
     pointer=private_read(path);pointer['purpose']='controller_maintenance_only';private_replace(path,pointer)
     with pytest.raises(ControlError):review.for_candidate(candidate.job_id)
     assert not SetupJobRepository(settings).get(candidate.job_id).status['claimed']
