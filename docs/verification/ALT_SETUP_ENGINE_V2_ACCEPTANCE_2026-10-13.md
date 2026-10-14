@@ -115,8 +115,41 @@ environment override, uses the published config without a real Vault credential
 path and launches the fixed localhost preflight from a different directory.
 It failed at filter discovery before the correction, then all 11 runtime tests
 passed under root in 23.52s. Active controller source and the VM were not patched
-by this isolated source test. The operator selected `office-standard-v1` for the
-future VM plan; no Setup/component apply or reboot has been performed.
+by this isolated source test. At that filter-discovery gate, the operator selected
+`office-standard-v1`; Setup/component apply and reboot had not yet been performed.
+
+## Approved disposable-VM apply: incomplete acceptance
+
+Controller revision `76b5d1334e17d43eec2b65c8582010c9d851892d` completed
+the native guarded deployment regression: 3045 passed, 1 skipped in 948.81s.
+All 246 installed public files matched the published revision, protected secret
+identities matched the fresh verified and rehearsed rollback bundle, and worker,
+rollout completion and controller readiness checks passed.
+
+After rechecking the VM snapshot, the operator approved a fresh protected
+`office-standard-v1` plan. Native `setup apply --confirm-sha256 ... --detach`
+admitted one job before its TTL expired. The worker continued after CLI/SSH exit.
+System upgrade, first domain join and the selected application roles ran. The
+configure result recorded verified browser, ONLYOFFICE, Nextcloud and Directum
+packages. This does not establish independent or functional acceptance.
+
+The run stopped at the full Setup inclusion of `desktop_shortcuts`. The task
+referenced a bare `execution_components` variable, while published preflight
+creates that list inside `setup_selected_catalog`. The native callback identifies
+this failing task and the subsequent rescue failure without exposing task output.
+A real localhost Ansible reproduction using the published preflight and inclusion
+task failed for all four profiles with `execution_components is undefined`.
+The correction references `setup_selected_catalog.execution_components`; the
+baseline runtime file passed 11 tests, and the corrected file passed 15 tests
+under root in 27.16s. The test role is synthetic and never contacts the VM.
+
+The actual job remains immutable `unknown_requires_review`. Fresh native
+read-only verification confirms machine identity, Samba trust, active SSSD,
+selected-user resolution and one computer object. Full verification still reports
+failure; the domain component is drifted and dependent components are blocked.
+Reboot is required and the real user home is absent. No reboot, real first login,
+automatic replay, account reset, history repair or successful live acceptance is
+claimed. Target/job identifiers remain in ignored local operational receipts.
 
 ## Design rulings
 

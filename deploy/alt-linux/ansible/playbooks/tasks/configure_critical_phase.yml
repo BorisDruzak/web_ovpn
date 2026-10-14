@@ -111,7 +111,7 @@
     - name: Configure application shortcuts after the selected applications
       ansible.builtin.include_role:
         name: desktop_shortcuts
-      when: "'desktop.shortcuts' in (execution_components | map(attribute='id') | list)"
+      when: "'desktop.shortcuts' in (setup_selected_catalog.execution_components | map(attribute='id') | list)"
 
     - name: Run requested KRFB profile
       ansible.builtin.include_role:

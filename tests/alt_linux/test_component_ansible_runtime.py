@@ -101,6 +101,32 @@ def test_published_filter_loads_from_unrelated_operator_directory(ansible_runtim
     assert 'synthetic-test-license' not in result.stdout+result.stderr
 
 
+@pytest.mark.parametrize('profile, selected', [
+    ('base', False), ('core-apps', True),
+    ('office-standard-v1', True), ('office-signature-v1', True),
+])
+def test_full_setup_shortcuts_use_preflight_catalog_selection(ansible_runtime, profile, selected):
+    executable, project, env = ansible_runtime
+    preflight = yaml.safe_load((project/'playbooks/tasks/configure_component_preflight.yml').read_text())
+    critical = yaml.safe_load((project/'playbooks/tasks/configure_critical_phase.yml').read_text())
+    block = next(task['block'] for task in critical if 'block' in task)
+    shortcuts = next(task for task in block
+                     if task.get('ansible.builtin.include_role', {}).get('name') == 'desktop_shortcuts')
+    marker = 'SYNTHETIC-SHORTCUTS-ROLE-SELECTED'
+    (project/'roles/desktop_shortcuts/tasks/main.yml').write_text(yaml.safe_dump([
+        {'ansible.builtin.debug': {'msg': marker}}]))
+    play = project/'playbooks/synthetic-shortcuts-selection.yml'
+    play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
+        'tasks': preflight[:2] + [shortcuts]}]))
+    variables = {'software_profile': profile, 'ansible_connection': 'local',
+                 'ansible_become': False, 'ansible_python_interpreter': sys.executable}
+    result = subprocess.run([str(executable), '-i', 'localhost,', '-e', json.dumps(variables),
+        str(play)], cwd=project, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout+result.stderr
+    assert (marker in result.stdout) is selected
+    assert 'changed=0' in result.stdout
+
+
 def test_real_callback_never_displays_task_name_or_secret_output(ansible_runtime, component_service):
     executable, project, env = ansible_runtime
     sentinel = 'SENTINEL-NEVER-PUBLIC-TASK-SECRET'
