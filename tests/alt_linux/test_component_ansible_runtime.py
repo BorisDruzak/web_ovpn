@@ -32,7 +32,10 @@ def ansible_runtime(project):
         shutil.copytree(SOURCE/name, project/name)
     shutil.copyfile(SOURCE/'group_vars/all.yml', project/'group_vars/all.yml')
     (project/'group_vars/vault.yml').write_text('vault_cryptopro_license: synthetic-test-license\n')
-    (project/'ansible.cfg').write_text('[defaults]\nroles_path=./roles\nhost_key_checking=True\nstdout_callback=default\n')
+    # Exercise the published plugin paths without a real Vault credential path.
+    config = SOURCE.joinpath('ansible.cfg').read_text()
+    (project/'ansible.cfg').write_text('\n'.join(
+        line for line in config.splitlines() if not line.startswith('vault_password_file')) + '\n')
     document = yaml.safe_load((project/'group_vars/software_catalog.yml').read_text())
     metadata = {}
     for key, entry in document['software_catalog'].items():
@@ -78,6 +81,22 @@ def test_real_ansible_nonmutating_selected_preflight(ansible_runtime, profile, c
         str(project/'playbooks/03-setup-controller-preflight.yml')], cwd=project, env=env,
         text=True, capture_output=True, timeout=45)
     assert (result.returncode != 0) == (failure in ('missing_artifact', 'blank_license')), result.stdout+result.stderr
+    assert 'changed=0' in result.stdout
+    assert 'synthetic-test-license' not in result.stdout+result.stderr
+
+
+def test_published_filter_loads_from_unrelated_operator_directory(ansible_runtime, tmp_path):
+    executable, project, env = ansible_runtime
+    env = env.copy()
+    env.pop('ANSIBLE_FILTER_PLUGINS', None)
+    operator_home = tmp_path / 'operator-home'
+    operator_home.mkdir()
+    variables = {'software_profile': 'office-standard-v1', 'remote_access_profile': 'none',
+                 'ansible_python_interpreter': sys.executable}
+    result = subprocess.run([str(executable), '-i', 'localhost,', '-e', json.dumps(variables),
+        str(project/'playbooks/03-setup-controller-preflight.yml')], cwd=operator_home, env=env,
+        text=True, capture_output=True, timeout=45)
+    assert result.returncode == 0, result.stdout+result.stderr
     assert 'changed=0' in result.stdout
     assert 'synthetic-test-license' not in result.stdout+result.stderr
 

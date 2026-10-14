@@ -22,7 +22,7 @@ controller and workstation acceptance still require the separate live gates.
 | Complete regression | Full Linux CI at `6c999dfe4a2da19ad342034c83ff0ef199300933`: 5645 passed, 89 skipped, 3315 warnings in 933.80s, exit 0 ([run 38485906695](https://github.com/BorisDruzak/web_ovpn/actions/runs/38485906695)). CI explicitly installs controller-compatible Ansible 2.18.6. This is implementation regression evidence; the final pre-install fixture correction requires its own exact-SHA publication CI. |
 | Controller-native pre-install checks | Isolated full ALT subset: 2962 passed, 82 skipped, one host-dependent unit-fixture failure in 930.89s. The cache metadata fixture was corrected; both affected test files then passed all 39 checks in 24.57s. Installed production sources were unchanged. |
 | Exact-SHA main publication | Requires successful final fixture-revision CI, clean tree and normal main fast-forward. Actual publication receipt is recorded in Git/GitHub metadata. |
-| Controller deployment | Authorized attempt at `5978aa2ccac927717b14f297021c2f8276b13503` stopped during the mandatory root regression, before maintenance/runtime replacement. Corrected fixture revision requires exact-SHA CI and renewed deployment authorization. |
+| Controller deployment | Guarded deployment of approved `a50db1bb24fd59342afec16d1c8e1881677d7c6e` completed: native root regression 3044 passed, 1 skipped in 945.58s, installer exit 0, all 246 published installed files matched, protected identities unchanged, rollout complete, worker active/enabled, controller ready, no active jobs. The subsequent filter-discovery correction still requires its own exact-SHA CI and deployment approval. |
 | Live Setup/component/noop/interruption/reboot/login | Not performed; separately confirmed exact plans required. |
 
 Milestones through Task 9 include 341 passing package/worker/resilience checks
@@ -98,6 +98,25 @@ correctly rejected that ownership mismatch. Only the fixture now assigns its
 declared synthetic ownership inside its temporary home; all seven collector
 tests pass under root in 0.58s. Production checks are unchanged. No rollout marker
 was created and the V2 worker was not installed by the rejected attempt.
+
+The corrected fixture revision `a50db1bb24fd59342afec16d1c8e1881677d7c6e`
+passed full CI: 5645 passed, 89 skipped, 3315 warnings in 1503.19s, exit 0
+([run 38513142725, attempt 2](https://github.com/BorisDruzak/web_ovpn/actions/runs/38513142725)).
+Attempt 1 reached the existing 30-minute job limit; only that job was rerun once.
+It was published to main and separately approved for the successful guarded
+controller deployment above.
+
+The first installed read-only Setup plan then stopped at component preflight:
+Ansible could not discover `alt_setup_selection` from an unrelated operator
+directory. The earlier synthetic runtime fixture supplied its plugin path in
+the environment, masking the missing published config setting. The config now
+declares its relative filter directory. A real Ansible regression removes that
+environment override, uses the published config without a real Vault credential
+path and launches the fixed localhost preflight from a different directory.
+It failed at filter discovery before the correction, then all 11 runtime tests
+passed under root in 23.52s. Active controller source and the VM were not patched
+by this isolated source test. The operator selected `office-standard-v1` for the
+future VM plan; no Setup/component apply or reboot has been performed.
 
 ## Design rulings
 
