@@ -3,7 +3,7 @@ import copy
 import re
 
 from .ad_directory import fail
-from .setup_jobs import SetupJobRepository, UUID, service_uid
+from .setup_jobs import SetupJobRepository, UUID, service_uid, publish, timestamp
 from .setup_events import SetupEventStore
 from .setup_plans import private_read
 
@@ -20,6 +20,32 @@ EXECUTION_FIELDS = {'schema_version', 'operation', 'job_id', 'machine_uuid', 'pl
     'components', 'original_boot_id', 'reboot_required', 'operator_action_required', 'error_code',
     'created_at', 'finished_at', 'state', 'stage'}
 OPTIONAL_EXECUTION_FIELDS = {'verification', 'legacy_run', 'legacy_error_run_id', 'post_error_package_manager', 'post_error_packages'}
+CANCEL_STAGE = 'operator_cancelled_before_execution'
+CANCEL_FIELDS = {'schema_version', 'operation', 'job_id', 'machine_uuid', 'plan_id', 'plan_sha256',
+    'state', 'stage', 'error_code', 'components', 'reboot_required', 'operator_action_required',
+    'target_changes_started', 'created_at', 'finished_at'}
+
+
+def _cancellation(job, result):
+    try:
+        history = job.status['stage_history']
+        if (set(result) != CANCEL_FIELDS or type(result['schema_version']) is not int
+                or result['schema_version'] != 2 or result['operation'] != 'setup_job_cancel'
+                or any(result[k] != job.status[k] for k in ('job_id', 'machine_uuid', 'plan_id', 'plan_sha256'))
+                or result['state'] != 'failed' or result['stage'] != CANCEL_STAGE
+                or result['error_code'] != CANCEL_STAGE or result['components'] != {}
+                or any(result[k] is not False for k in ('reboot_required', 'operator_action_required', 'target_changes_started'))
+                or not job.status['claimed'] or len(history) not in (2, 3)
+                or [h['state'] for h in history[:2]] != ['queued', 'preflight']
+                or history[1]['stage'] != 'preflight'
+                or len(history) == 3 and not (history[2]['state'] == 'unknown_requires_review'
+                    or history[2]['state'] == 'failed' and history[2]['stage'] == CANCEL_STAGE)
+                or not timestamp(history[1]['at']) <= timestamp(result['created_at']) <= timestamp(result['finished_at'])
+                or job.state == 'failed' and timestamp(result['finished_at']) > timestamp(job.status['updated_at'])):
+            raise ValueError
+        return result
+    except (TypeError, ValueError, KeyError) as exc:
+        raise _invalid() from exc
 
 
 def _invalid():
@@ -65,6 +91,12 @@ class SetupJobsService:
         path = job.job_dir/'execution.json'
         if path.exists() or path.is_symlink():
             result = private_read(path, owner_uid=service_uid(self.settings))
+            if result.get('operation') == 'setup_job_cancel':
+                cancelled = _cancellation(job, result)
+                result = {k: v for k, v in cancelled.items() if k != 'target_changes_started'}
+                result.update(operation='setup_execution', original_boot_id=None,
+                    components={c['id']: {'version': c['version'], 'changed': False, 'verification': None}
+                                for c in selected})
             try:
                 if (not EXECUTION_FIELDS <= set(result) <= EXECUTION_FIELDS | OPTIONAL_EXECUTION_FIELDS
                         or result['schema_version'] != 2 or result['operation'] != 'setup_execution'
@@ -117,6 +149,32 @@ class SetupJobsService:
     def status(self, job_id):
         return {'schema_version': 2, 'operation': 'setup_job_status', 'status': 'ok',
                 'job': self._project(self.jobs.get(job_id))}
+
+    def cancel(self, job_id, confirmed_plan_sha):
+        from .locks import exclusive_lock
+        from .setup_worker import process_identity
+        with exclusive_lock(self.settings.lock_file):
+            self.jobs._check_admissions()
+            job = self.jobs.get(job_id)
+            if (not isinstance(confirmed_plan_sha, str) or not re.fullmatch('[0-9a-f]{64}', confirmed_plan_sha)
+                    or confirmed_plan_sha != job.status['plan_sha256']):
+                raise fail('setup_cancel_plan_mismatch', 'Cancellation requires the exact admitted plan SHA')
+            path = job.job_dir/'execution.json'
+            if job.state == 'failed' and job.stage == CANCEL_STAGE:
+                return copy.deepcopy(_cancellation(job, private_read(path, owner_uid=service_uid(self.settings))))
+            if job.state != 'queued' or job.status['claimed'] or path.exists() or path.is_symlink():
+                raise fail('setup_cancel_not_permitted', 'Only an unclaimed queued job can be cancelled')
+            job = self.jobs.claim(job_id, process_identity(self.settings))
+            now = self.jobs.clock().isoformat()
+            result = {'schema_version': 2, 'operation': 'setup_job_cancel', 'job_id': job_id,
+                'machine_uuid': job.machine_uuid, 'plan_id': job.status['plan_id'],
+                'plan_sha256': job.status['plan_sha256'], 'state': 'failed', 'stage': CANCEL_STAGE,
+                'error_code': CANCEL_STAGE, 'components': {}, 'reboot_required': False,
+                'operator_action_required': False, 'target_changes_started': False,
+                'created_at': now, 'finished_at': now}
+            publish(path, result, create=True)
+            self.jobs.transition(job_id, 'failed', stage={'id': CANCEL_STAGE})
+            return copy.deepcopy(result)
 
     def events_for(self, job_id, *, after=0, limit=100):
         self.jobs.get(job_id)

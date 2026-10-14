@@ -74,6 +74,9 @@ def add_parsers(commands):
     maintenance_confirm = job_commands.add_parser('maintenance-confirm', allow_abbrev=False)
     maintenance_confirm.add_argument('plan_id')
     maintenance_confirm.add_argument('--confirm-sha256', required=True)
+    cancel = job_commands.add_parser('cancel', allow_abbrev=False, help='Cancel only an unclaimed queued job, preserving its used plan')
+    cancel.add_argument('job_id')
+    cancel.add_argument('--confirm-plan-sha256', required=True)
     for name in ('status', 'events', 'verify-continuation'):
         command = job_commands.add_parser(name, allow_abbrev=False)
         command.add_argument('job_id')
@@ -133,6 +136,8 @@ def handle(parsed, settings):
                     else review.confirm(parsed.plan_id, parsed.confirm_sha256))
         from .setup_jobs_view import SetupJobsService
         service = SetupJobsService(settings)
+        if parsed.setup_job_action == 'cancel':
+            return service.cancel(parsed.job_id, parsed.confirm_plan_sha256)
         if parsed.setup_job_action == 'list':
             return service.list(parsed.machine, offset=parsed.offset, limit=parsed.limit)
         if parsed.setup_job_action == 'events':
