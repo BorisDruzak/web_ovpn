@@ -133,7 +133,8 @@ No HTTP route or UI is added. A future authenticated/authorized API can reuse:
 | `SetupJobsService.cancel` | SHA-confirmed cancellation of an unclaimed queued job |
 | `QueueAdmissionReview` | one different queued candidate after fresh closed-UNKNOWN proof |
 
-Public V2 envelopes use integer `schema_version: 2` and a fixed `operation`.
+Job and component V2 envelopes use integer `schema_version: 2` and a fixed
+`operation`. Protected maintenance/queue review envelopes use `schema_version: 1`.
 Job pages contain at most 100 jobs, event pages at most 1000 events. Job reads
 use bounded projections and construct no AD/SSH service. Protected requests,
 raw results and logs are not public response fields. Only explicit workstation

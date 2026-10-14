@@ -153,6 +153,8 @@ read its protected status and the candidate's status first. The candidate must b
 unclaimed `queued`, have an unexpired source-bound Setup plan, and differ in UUID,
 hostname and existing AD computer GUID. Other active or unexplained work must be
 resolved through its own existing contract; the review cannot exclude it.
+Historical component UNKNOWNs already linked through a valid native idempotent
+review are recognized as reviewed; unreviewed UNKNOWNs remain blockers.
 
 ```bash
 sudo -u altserver workstationctl --json setup jobs queue-review-plan UNKNOWN_JOB --candidate QUEUED_JOB

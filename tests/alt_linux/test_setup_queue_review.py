@@ -171,6 +171,31 @@ def test_candidate_request_tampering_is_denied_without_changing_original(queued)
     assert freeze_old(old,settings.state_root)==before
 
 
+def test_native_reviewed_component_unknown_does_not_block_its_new_candidate_review(queued, component_service):
+    from alt_deploy.component_setup import ComponentPlanStore
+    from alt_deploy.setup_retry import predecessor, reviewed_jobs
+    from alt_deploy.setup_worker import process_identity
+    settings,old,full,facts,date,jobs=queued
+    # Complete the first synthetic candidate; no legacy target writes occur here.
+    jobs.claim(full.job_id,process_identity(settings));jobs.transition(full.job_id,'failed')
+    payload=copy.deepcopy(full.request['plan']['payload'])
+    payload.pop('engine_schema_version')
+    payload['component']=next(c for c in payload['components'] if c['id']=='software.onlyoffice')
+    payload['observed']=copy.deepcopy(component_service[4])
+    store=ComponentPlanStore(settings.state_root,clock=lambda:date[0])
+    interrupted=jobs.submit(store.create(payload),operation='component')
+    jobs.claim(interrupted.job_id,process_identity(settings));jobs.transition(interrupted.job_id,'unknown_requires_review')
+    payload['predecessor_job']=predecessor(settings,interrupted.job_id,payload['component'],interrupted.machine_uuid)
+    successor=jobs.submit(store.create(payload),operation='component')
+    assert interrupted.job_id in reviewed_jobs(settings)
+    before=freeze_old(old,settings.state_root)
+    review=review_for(queued)
+    plan=review.plan(old.job_id,successor.job_id)
+    review.confirm(plan['plan_id'],plan['sha256'])
+    assert review.for_candidate(successor.job_id)['job_ids']=={old.job_id}
+    assert freeze_old(old,settings.state_root)==before
+
+
 @pytest.mark.parametrize('field', ['status_sha256','source_sha256','identities','job_id'])
 def test_retained_plan_validates_candidate_reference_even_with_recomputed_outer_hash(queued, field):
     from alt_deploy.setup_plans import digest,private_create

@@ -197,6 +197,9 @@ class MaintenanceReview:
                     or candidate.request['identities']['hostname'] == job.request['identities']['hostname']):
                 raise denied()
             allowed.add(candidate_job_id)
+            # Native reviewed predecessors are historical, not unexplained work.
+            # Their exact successor links are revalidated by the existing gate.
+            allowed.update(control_module('setup_retry').reviewed_jobs(self.settings))
         if any(j.job_id not in allowed and j.state in self.jobs.ACTIVE_SETUP_STATES for j in repository.jobs.list()):
             raise denied()
         history = history_fingerprint(root)

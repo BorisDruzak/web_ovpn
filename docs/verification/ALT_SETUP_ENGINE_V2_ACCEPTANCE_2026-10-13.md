@@ -332,3 +332,8 @@ GitNexus identifies four upstream symbols for the committed MaintenanceReview
 baseline (one direct). Its empty worker impact result was not treated as absence
 of dependencies: dynamic CLI/worker/lease/backup paths were verified in source
 and native tests. No cross-repository HTTP contract is changed.
+The required native component-review retry chain additionally reproduced a
+queue-closure compatibility failure (RED). Recognizing already validated native
+review links only for queue admission fixed it: the same six-file native suite
+then passed **101 tests in 97.29s, exit 0**. Maintenance-only checks and the
+original UNKNOWN/reservation records remain unchanged.
