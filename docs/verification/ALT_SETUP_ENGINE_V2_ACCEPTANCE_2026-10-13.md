@@ -4,9 +4,9 @@ Approved baseline: `3935bad3ab728c886f8f7dca2f93e5baa3ed16f9`.
 Scope: component catalog, independent lifecycle, durable jobs, verification,
 operator CLI and reusable backend contracts.
 
-This ledger records the pre-publication acceptance checkpoint. Subsequent
-exact-SHA publication evidence is the Git commit and GitHub workflow metadata;
-controller and workstation acceptance still require the separate live gates.
+This ledger records implementation checks and subsequent controller and disposable
+VM evidence. Exact-SHA publication receipts remain in Git/GitHub metadata.
+Completed controller deployment and incomplete workstation acceptance are separate.
 
 ## Gates and evidence
 
@@ -14,16 +14,16 @@ controller and workstation acceptance still require the separate live gates.
 | --- | --- |
 | Catalog/read-only planning | Targeted POSIX tests cover thirteen components, profiles, invalid catalogs and target/source/identity drift. |
 | Durable execution | Synthetic claims/crash/FIFO/conflicts/restart/PID reuse and real localhost Ansible callback tests. |
-| Package interruption | Targeted tests and native ALT unprivileged APT simulation; no live installation. |
+| Package interruption | Targeted tests and native ALT unprivileged APT simulation. One partial live full-Setup installation has run; live interruption/recovery acceptance remains pending. |
 | Deep verification | Targeted system/domain/certificate/user/component tests; reboot/home/functional states remain separate. |
 | CLI/continuity/backup compatibility | Final isolated snapshot: 143 passing operator/jobs/continuity/native recovery/restore/collector checks; two additional missing-directory corruption cases pass. Earlier broader 241 and 32 checks overlap and are not a combined unique total. |
 | Integrated synthetic flow | Full Setup -> reboot -> first-login -> independent component -> child worker termination -> UNKNOWN -> fresh noop successor passes. No live AD/SSH/Ansible call in this fixture. |
 | Independent review | One whole-change review satisfied after fixing physical DMI lookup, exact reserved recovery snapshot admission, successor-lineage and reservation bindings. |
-| Complete regression | Full Linux CI at `6c999dfe4a2da19ad342034c83ff0ef199300933`: 5645 passed, 89 skipped, 3315 warnings in 933.80s, exit 0 ([run 38485906695](https://github.com/BorisDruzak/web_ovpn/actions/runs/38485906695)). CI explicitly installs controller-compatible Ansible 2.18.6. This is implementation regression evidence; the final pre-install fixture correction requires its own exact-SHA publication CI. |
+| Complete regression | Latest completed source CI at `76b5d1334e17d43eec2b65c8582010c9d851892d`: 5646 passed, 89 skipped, 3315 warnings in 1507.11s, exit 0 ([run 38521286521](https://github.com/BorisDruzak/web_ovpn/actions/runs/38521286521)). CI installs controller-compatible Ansible 2.18.6. The subsequent shortcuts-selection correction requires its own exact-SHA CI. |
 | Controller-native pre-install checks | Isolated full ALT subset: 2962 passed, 82 skipped, one host-dependent unit-fixture failure in 930.89s. The cache metadata fixture was corrected; both affected test files then passed all 39 checks in 24.57s. Installed production sources were unchanged. |
-| Exact-SHA main publication | Requires successful final fixture-revision CI, clean tree and normal main fast-forward. Actual publication receipt is recorded in Git/GitHub metadata. |
-| Controller deployment | Guarded deployment of approved `a50db1bb24fd59342afec16d1c8e1881677d7c6e` completed: native root regression 3044 passed, 1 skipped in 945.58s, installer exit 0, all 246 published installed files matched, protected identities unchanged, rollout complete, worker active/enabled, controller ready, no active jobs. The subsequent filter-discovery correction still requires its own exact-SHA CI and deployment approval. |
-| Live Setup/component/noop/interruption/reboot/login | Not performed; separately confirmed exact plans required. |
+| Exact-SHA main publication | Revision `76b5d1334e17d43eec2b65c8582010c9d851892d` is published through normal main fast-forward. The subsequent shortcuts-selection correction awaits exact-SHA CI and main integration. |
+| Controller deployment | Guarded deployment of approved `76b5d1334e17d43eec2b65c8582010c9d851892d` completed: native root regression 3045 passed, 1 skipped in 948.81s, installer exit 0, all 246 published installed files matched, protected identities unchanged, rollout complete, worker active/enabled, controller ready with no active jobs at the post-deployment checkpoint. The subsequent shortcuts-selection correction is not deployed and requires separate authorization. |
+| Live Setup/component/noop/interruption/reboot/login | One approved full-Setup attempt partially changed the disposable VM and ended in immutable UNKNOWN; full live acceptance is incomplete. Independent component/noop/interruption, authorized reboot and real first login remain pending. |
 
 Milestones through Task 9 include 341 passing package/worker/resilience checks
 and 228 passing verification/role checks. These overlap and are not a unique
