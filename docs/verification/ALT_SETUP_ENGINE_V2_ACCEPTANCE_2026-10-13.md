@@ -19,7 +19,7 @@ Completed controller deployment and incomplete workstation acceptance are separa
 | CLI/continuity/backup compatibility | Final isolated snapshot: 143 passing operator/jobs/continuity/native recovery/restore/collector checks; two additional missing-directory corruption cases pass. Earlier broader 241 and 32 checks overlap and are not a combined unique total. |
 | Integrated synthetic flow | Full Setup -> reboot -> first-login -> independent component -> child worker termination -> UNKNOWN -> fresh noop successor passes. No live AD/SSH/Ansible call in this fixture. |
 | Independent review | One whole-change review satisfied after fixing physical DMI lookup, exact reserved recovery snapshot admission, successor-lineage and reservation bindings. |
-| Complete regression | Latest completed source CI at `76b5d1334e17d43eec2b65c8582010c9d851892d`: 5646 passed, 89 skipped, 3315 warnings in 1507.11s, exit 0 ([run 38521286521](https://github.com/BorisDruzak/web_ovpn/actions/runs/38521286521)). CI installs controller-compatible Ansible 2.18.6. The subsequent shortcuts-selection correction requires its own exact-SHA CI. |
+| Complete regression | Latest successful source CI at `76b5d1334e17d43eec2b65c8582010c9d851892d`: 5646 passed, 89 skipped, 3315 warnings in 1507.11s, exit 0 ([run 38521286521](https://github.com/BorisDruzak/web_ovpn/actions/runs/38521286521)). CI installs controller-compatible Ansible 2.18.6. Subsequent corrections require their own exact-SHA CI. |
 | Controller-native pre-install checks | Isolated full ALT subset: 2962 passed, 82 skipped, one host-dependent unit-fixture failure in 930.89s. The cache metadata fixture was corrected; both affected test files then passed all 39 checks in 24.57s. Installed production sources were unchanged. |
 | Exact-SHA main publication | Revision `76b5d1334e17d43eec2b65c8582010c9d851892d` is published through normal main fast-forward. The subsequent shortcuts-selection correction awaits exact-SHA CI and main integration. |
 | Controller deployment | Guarded deployment of approved `76b5d1334e17d43eec2b65c8582010c9d851892d` completed: native root regression 3045 passed, 1 skipped in 948.81s, installer exit 0, all 246 published installed files matched, protected identities unchanged, rollout complete, worker active/enabled, controller ready with no active jobs at the post-deployment checkpoint. The subsequent shortcuts-selection correction is not deployed and requires separate authorization. |
@@ -166,6 +166,13 @@ before the correction; all 11 probe-script tests then passed under root in 0.80s
 The actual VM still lacks a recorded `gpupdate.service` start; correcting the
 enum alone cannot establish GPO compliance. No GPO execution or reboot was
 performed during this investigation.
+
+Full CI of `440bebf57623fc2874c664a93948f6ddeba56c0a` completed with
+5653 passed, 89 skipped and one failed static asset assertion in 1491.58s
+([run 38536710602](https://github.com/BorisDruzak/web_ovpn/actions/runs/38536710602)).
+The old assertion required the undefined bare variable. Its expected published
+contract was corrected to the validated catalog reference; production files were
+unchanged by that test correction. This failed CI is not publication acceptance.
 
 ## Design rulings
 

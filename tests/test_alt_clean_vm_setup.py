@@ -22,7 +22,7 @@ def test_core_apps_includes_shortcuts_after_software_before_final_verification()
              if 'ansible.builtin.include_role' in t]
     assert roles.index('standard_software') < roles.index('desktop_shortcuts') < roles.index('domain_verify')
     shortcuts = next(t for t in block if t.get('ansible.builtin.include_role', {}).get('name') == 'desktop_shortcuts')
-    assert shortcuts['when'] == "'desktop.shortcuts' in (execution_components | map(attribute='id') | list)"
+    assert shortcuts['when'] == "'desktop.shortcuts' in (setup_selected_catalog.execution_components | map(attribute='id') | list)"
 
 
 def test_shortcuts_report_verified_and_deferred_home_separately():
