@@ -151,6 +151,22 @@ Reboot is required and the real user home is absent. No reboot, real first login
 automatic replay, account reset, history repair or successful live acceptance is
 claimed. Target/job identifiers remain in ignored local operational receipts.
 
+The fresh domain-component probe also exposed a separate status-contract error.
+The installed `gpupdate-0.16.1-alt1` reports `enabled` for `gpupdate-setup status`,
+`samba` for `active-backend`, and `workstation` for `active-policy`. The collector
+incorrectly required `workstation` for both status and policy. The
+[ALT Domain administrator guide](https://docs.altlinux.org/ru-RU/alt-domain/11.1/html-single/alt-domain/index.html)
+defines status and active-policy as separate read-only operations.
+
+The probe correction changes only the expected status to `enabled`. It retains
+Samba trust, active SSSD, backend/policy, successful service result/exit and a
+recorded service start as mandatory evidence. Synthetic enabled/disabled/wrong
+status and absent/failed service-start cases produced two expected failures
+before the correction; all 11 probe-script tests then passed under root in 0.80s.
+The actual VM still lacks a recorded `gpupdate.service` start; correcting the
+enum alone cannot establish GPO compliance. No GPO execution or reboot was
+performed during this investigation.
+
 ## Design rulings
 
 - One published catalog drives artifacts, role selection, profile closure and order.

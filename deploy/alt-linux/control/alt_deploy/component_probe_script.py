@@ -363,7 +363,7 @@ def inspect_component(root, recipe, user, home, name, call):
         state_rc, state = call(['systemctl', 'show', 'gpupdate.service', '--property=Result',
                                '--property=ExecMainStatus', '--property=ExecMainStartTimestampMonotonic'])
         properties = dict(line.split('=', 1) for line in state.splitlines() if '=' in line)
-        fact['checks']['ready'] = (joined == 0 and active('sssd', call) and gp_rc == 0 and gp == 'workstation'
+        fact['checks']['ready'] = (joined == 0 and active('sssd', call) and gp_rc == 0 and gp == 'enabled'
             and backend_rc == 0 and backend == 'samba' and policy_rc == 0 and policy == 'workstation'
             and state_rc == 0 and properties.get('Result') == 'success' and properties.get('ExecMainStatus') == '0'
             and int(properties.get('ExecMainStartTimestampMonotonic', '0')) > 0)

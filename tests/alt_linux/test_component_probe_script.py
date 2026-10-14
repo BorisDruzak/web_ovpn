@@ -90,19 +90,26 @@ def test_unknown_package_probe_and_process_state_remain_unknown(tmp_path):
     assert 'private output' not in json.dumps(result)
 
 
-def test_domain_probe_checks_current_gpo_without_running_gpupdate(tmp_path):
+@pytest.mark.parametrize('status, start, service_result, expected', [
+    ('enabled', '10000000', 'success', True),
+    ('workstation', '10000000', 'success', False),
+    ('disabled', '10000000', 'success', False),
+    ('enabled', '0', 'success', False),
+    ('enabled', '10000000', 'failed', False),
+])
+def test_domain_probe_checks_current_gpo_without_running_gpupdate(tmp_path, status, start, service_result, expected):
     query, original, calls = fixture(tmp_path, 'domain.ready')
     def call(command):
         calls.append(command)
         if command[0] == 'net': return 0, 'Join is OK'
         if command[0] == 'gpupdate-setup':
-            return 0, 'samba' if command[1] == 'active-backend' else 'workstation'
+            return 0, {'status': status, 'active-backend': 'samba', 'active-policy': 'workstation'}[command[1]]
         if command[:2] == ['systemctl', 'is-active']: return 0, 'active'
         if command[:2] == ['systemctl', 'show']:
-            return 0, 'Result=success\nExecMainStatus=0\nExecMainStartTimestampMonotonic=10000000'
+            return 0, 'Result='+service_result+'\nExecMainStatus=0\nExecMainStartTimestampMonotonic='+start
         return original(command)
     result = collect(query, root=tmp_path, call=call)
-    assert result['components']['domain.ready']['checks']['ready'] is True
+    assert result['components']['domain.ready']['checks']['ready'] is expected
     assert not any(c[0] in ('gpupdate', 'gpoa', 'reboot') for c in calls)
     assert all(c[1] in ('status', 'active-backend', 'active-policy') for c in calls if c[0] == 'gpupdate-setup')
     assert all(c[-1] == 'testjoin' for c in calls if c[0] == 'net')
