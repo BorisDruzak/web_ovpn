@@ -79,15 +79,24 @@ class SetupWorker:
                    if job.status.get('kind') != 'setup'):
                 return {'status': 'blocked', 'code': 'legacy_job_active'}
             from .setup_retry import reviewed_legacy_runs
-            if any(r['run_id'] not in reviewed_legacy_runs(self.settings) for r in unresolved_legacy_reservations(self.settings)):
-                return {'status': 'blocked', 'code': 'legacy_execution_unresolved'}
             jobs = self.jobs.list()
-            from .setup_retry import reviewed_jobs
-            reviewed = reviewed_jobs(self.settings)
-            if any(job.state in EXECUTING | {'unknown_requires_review'} and job.job_id not in reviewed for job in jobs):
-                return {'status': 'blocked', 'code': 'setup_job_unresolved'}
             queued = sorted((job for job in jobs if job.state == 'queued' and not job.status['claimed']),
                             key=lambda j: j.status['admission_sequence'])
+            from .setup_retry import reviewed_jobs
+            reviewed = reviewed_jobs(self.settings)
+            leases = [r for r in unresolved_legacy_reservations(self.settings)
+                      if r['run_id'] not in reviewed_legacy_runs(self.settings)]
+            blocked = [job for job in jobs if job.state in EXECUTING | {'unknown_requires_review'} and job.job_id not in reviewed]
+            if leases or blocked:
+                exclusion = {'job_ids': set(), 'lease_ids': set()}
+                if queued:
+                    from .setup_maintenance_review_bridge import queue_review_service
+                    try: exclusion = queue_review_service(self.settings).for_candidate(queued[0].job_id)
+                    except Exception: pass  # Default denial never changes a claim or target.
+                if any(r['reservation_id'] not in exclusion['lease_ids'] for r in leases):
+                    return {'status': 'blocked', 'code': 'legacy_execution_unresolved'}
+                if any(job.job_id not in exclusion['job_ids'] for job in blocked):
+                    return {'status': 'blocked', 'code': 'setup_job_unresolved'}
             if not queued:
                 return {'status': 'idle'}
             job = self.jobs.claim(queued[0].job_id, process_identity(self.settings))

@@ -130,6 +130,8 @@ No HTTP route or UI is added. A future authenticated/authorized API can reuse:
 | `ComponentSetupService` | plan, apply, verify, explicit functional accept |
 | `SetupService` | protected full plan/apply and current deep verification |
 | `SetupJobsService` | paged list, status, safe events, read-only continuation |
+| `SetupJobsService.cancel` | SHA-confirmed cancellation of an unclaimed queued job |
+| `QueueAdmissionReview` | one different queued candidate after fresh closed-UNKNOWN proof |
 
 Public V2 envelopes use integer `schema_version: 2` and a fixed `operation`.
 Job pages contain at most 100 jobs, event pages at most 1000 events. Job reads
@@ -140,3 +142,26 @@ authorization remain responsibilities of the future API.
 
 Main publication, controller deployment and live acceptance are separate gates.
 See the [acceptance ledger](verification/ALT_SETUP_ENGINE_V2_ACCEPTANCE_2026-10-13.md).
+
+## One-job queue review after a closed UNKNOWN
+
+Ordinary dispatch still blocks unresolved legacy execution or UNKNOWN. A separate
+`queued_other_machine_only` review can exclude one closed full UNKNOWN and exactly
+its two correlated failed legacy reservations for one different queued candidate.
+It preserves their records and never permits recovery or join replay on the old
+machine. UUID, hostname and an existing AD computer GUID cannot collide.
+
+The review binds candidate request/initial queued status/plan/source hashes and
+fresh native closure, package/process and AD/SSH identity evidence. Worker checks
+it under the existing lifecycle lock before the single-use claim, retains FIFO,
+and executes through the normal full preflight and engine. Other active work or
+unexplained leases remain blocked. Parallel target mutation is not enabled.
+
+Private queue plans, reviews and candidate admissions are included in retained
+backup history. Expired or consumed evidence remains valid history but gives no
+execution permission. Maintenance and queue review purposes are separate.
+
+Queued cancellation consumes the existing single-use worker claim, records zero
+target changes and transitions preflight to failed with
+`operator_cancelled_before_execution`. Interrupted cancellation remains ambiguous
+and cannot be replayed. Cancellation never applies to an executing or UNKNOWN job.

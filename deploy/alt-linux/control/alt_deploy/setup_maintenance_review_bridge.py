@@ -7,10 +7,10 @@ import sys
 from .ad_directory import fail
 
 
-def review_service(settings):
+def _service(settings, module_name, class_name):
     sibling = Path(__file__).parents[2]/'backup'
     root = sibling if sibling.exists() else Path('/opt/alt-deploy-maintenance')
-    module = root/'alt_deploy_backup/setup_maintenance_review.py'
+    module = root/'alt_deploy_backup'/(module_name+'.py')
     for path in (root, *root.parents, module.parent):
         info = path.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -19,7 +19,15 @@ def review_service(settings):
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise fail('setup_maintenance_code_unsafe', 'Native maintenance validator code is unsafe')
     sys.path.insert(0, str(root))
-    loaded = importlib.import_module('alt_deploy_backup.setup_maintenance_review')
+    loaded = importlib.import_module('alt_deploy_backup.'+module_name)
     if Path(loaded.__file__).resolve() != module.resolve():
         raise fail('setup_maintenance_code_unsafe', 'Native maintenance validator origin differs')
-    return loaded.MaintenanceReview(settings)
+    return getattr(loaded, class_name)(settings)
+
+
+def review_service(settings):
+    return _service(settings, 'setup_maintenance_review', 'MaintenanceReview')
+
+
+def queue_review_service(settings):
+    return _service(settings, 'setup_queue_review', 'QueueAdmissionReview')

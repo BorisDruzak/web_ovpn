@@ -64,7 +64,8 @@ def setup_settings(root):
 def ledger_present(root):
     return any((root/name).exists() or (root/name).is_symlink() for name in
                ('setup-job-plan-claims', 'setup-job-reservations', 'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
-                'setup-maintenance-plans', 'setup-maintenance-reviews'))
+                'setup-maintenance-plans', 'setup-maintenance-reviews',
+                'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions'))
 
 
 def validate_ledger(root):
@@ -79,6 +80,8 @@ def validate_ledger(root):
     module.legacy_execution_reservations(settings)
     from .setup_maintenance_review import validate_artifacts
     validate_artifacts(root)
+    from .setup_queue_review import validate_artifacts as validate_queue_artifacts
+    validate_queue_artifacts(root)
     acceptance = root/'setup-functional-acceptance'
     if acceptance.exists() or acceptance.is_symlink():
         import re
@@ -128,7 +131,8 @@ def history_fingerprint(root):
     validate_ledger(root)
     paths = [root/name for name in ('setup-job-plan-claims', 'setup-job-reservations',
                                    'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
-                                   'setup-maintenance-plans', 'setup-maintenance-reviews') if (root/name).exists()]
+                                   'setup-maintenance-plans', 'setup-maintenance-reviews',
+                                   'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions') if (root/name).exists()]
     jobs_root = root/'jobs'
     if jobs_root.exists():
         from .state_validation import _read_object

@@ -119,7 +119,7 @@ def native_observe(settings, job):
         for path in (directory, *directory.parents):
             info = path.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022: raise denied()
-    for name in ('__init__.py', 'setup_maintenance_review.py', 'setup_compat.py', 'errors.py', 'fs.py',
+    for name in ('__init__.py', 'setup_maintenance_review.py', 'setup_queue_review.py', 'setup_compat.py', 'errors.py', 'fs.py',
                  'state_validation.py', 'manifest.py', 'components.py', 'settings.py', 'systemd.py', 'secrets.py'):
         path = root/'alt_deploy_backup'/name
         info = path.lstat()
@@ -140,19 +140,25 @@ def native_observe(settings, job):
 
 
 class MaintenanceReview:
+    prefix = 'setup-maintenance-'
+    operation = 'setup_maintenance_plan'
+    purpose = 'controller_maintenance_only'
+    plan_directory = 'setup-maintenance-plans'
+    review_directory = 'setup-maintenance-reviews'
+
     def __init__(self, settings, *, observer=None, clock=None):
         self.settings = settings
         self.observer = observer or (lambda job: native_observe(settings, job))
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.plans = settings.state_root/'setup-maintenance-plans'
-        self.reviews = settings.state_root/'setup-maintenance-reviews'
+        self.plans = settings.state_root/self.plan_directory
+        self.reviews = settings.state_root/self.review_directory
         self.io = control_module('setup_plans')
         self.jobs = control_module('setup_jobs')
 
     def _read(self, path):
         return self.io.private_read(path, owner_uid=self.jobs.service_uid(self.settings))
 
-    def _history(self, job_id):
+    def _history(self, job_id, *, candidate_job_id=None):
         root = self.settings.state_root
         repository = self.jobs.SetupJobRepository(self.settings)
         repository._check_admissions()
@@ -183,11 +189,24 @@ class MaintenanceReview:
                 or any(r['machine_uuid'] != job.machine_uuid or r['hostname'] != job.request['identities']['hostname']
                        or r['state'] != 'unknown_requires_review' or r['supersedes'] for r in leases)):
             raise denied()
-        if any(j.job_id != job_id and j.state in self.jobs.ACTIVE_SETUP_STATES for j in repository.jobs.list()):
+        allowed = {job_id}
+        if candidate_job_id is not None:
+            candidate = repository.get(candidate_job_id)
+            if (candidate.state != 'queued' or candidate.status['claimed']
+                    or candidate.machine_uuid == job.machine_uuid
+                    or candidate.request['identities']['hostname'] == job.request['identities']['hostname']):
+                raise denied()
+            allowed.add(candidate_job_id)
+        if any(j.job_id not in allowed and j.state in self.jobs.ACTIVE_SETUP_STATES for j in repository.jobs.list()):
             raise denied()
         history = history_fingerprint(root)
         # Maintenance state is additive and is validated separately below.
         history = {k: v for k, v in history.items() if not k.startswith('setup-maintenance-')}
+        if candidate_job_id is not None:
+            exact = {'setup-job-plan-claims/'+job.status['plan_sha256']+'.json',
+                     'setup-job-reservations/'+job_id+'.json'}
+            exact.update('legacy-setup-reservations/'+r['reservation_id']+'.json' for r in leases)
+            history = {k: v for k, v in history.items() if k in exact or k.startswith('jobs/'+job_id+'/')}
         for path in (root/'setup-runs'/(run_id+'.json'), configure/'request.json', configure/'result.json',
                      root/'domain-assignments'/(job.machine_uuid+'.json')):
             if path.exists() or path.is_symlink():
@@ -195,8 +214,8 @@ class MaintenanceReview:
                     self.io.private_read_bytes(path, owner_uid=self.jobs.service_uid(self.settings))).hexdigest()
         return job, history, {r['reservation_id'] for r in leases}
 
-    def _snapshot(self, job_id):
-        job, history, leases = self._history(job_id)
+    def _snapshot(self, job_id, *, candidate_job_id=None):
+        job, history, leases = self._history(job_id, candidate_job_id=candidate_job_id)
         fresh = self.observer(job)
         original = job.request['plan']['payload']
         module = control_module('setup')
@@ -228,19 +247,22 @@ class MaintenanceReview:
                 or any(not isinstance(objects[0].get(k), str) for k in ('object_guid', 'object_sid'))): raise denied()
         initial = original['computer'].get('objects', [])
         if initial and any(initial[0].get(k) != objects[0].get(k) for k in ('object_guid', 'object_sid')): raise denied()
-        if self._history(job_id)[1:] != (history, leases): raise denied()
+        if self._history(job_id, candidate_job_id=candidate_job_id)[1:] != (history, leases): raise denied()
         return {'job_id': job_id, 'history': history, 'lease_ids': sorted(leases), 'evidence': fresh,
                 'validator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                'purpose': 'controller_maintenance_only', 'execution_window_seconds': 21600}
+                'purpose': self.purpose, 'execution_window_seconds': 21600}
+
+    def _plan_snapshot(self, payload):
+        return self._snapshot(payload['job_id'])
 
     def _protected_plan(self, plan_id, sha):
-        if not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha) or plan_id != 'setup-maintenance-'+sha:
+        if not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha) or plan_id != self.prefix+sha:
             raise denied()
         plan = self._read(self.plans/(plan_id+'.json'))
         body = {k: v for k, v in plan.items() if k not in ('plan_id', 'sha256')}
         if (set(plan) != {'schema_version', 'operation', 'created_at', 'expires_at', 'content_sha256',
                          'payload', 'plan_id', 'sha256'} or plan['schema_version'] != 1
-                or plan['operation'] != 'setup_maintenance_plan' or self.io.digest(body) != sha
+                or plan['operation'] != self.operation or self.io.digest(body) != sha
                 or plan['sha256'] != sha or plan['plan_id'] != plan_id
                 or self.io.digest(plan['payload']) != plan['content_sha256']): raise denied()
         created, expires = (datetime.fromisoformat(plan[k]) for k in ('created_at', 'expires_at'))
@@ -253,11 +275,11 @@ class MaintenanceReview:
             with maintenance_lock(self.settings):
                 payload = self._snapshot(job_id)
                 now = self.clock().replace(microsecond=0)
-                body = {'schema_version': 1, 'operation': 'setup_maintenance_plan', 'created_at': now.isoformat(),
+                body = {'schema_version': 1, 'operation': self.operation, 'created_at': now.isoformat(),
                         'expires_at': (now+timedelta(minutes=30)).isoformat(),
                         'payload': payload, 'content_sha256': self.io.digest(payload)}
                 sha = self.io.digest(body)
-                plan = dict(body, plan_id='setup-maintenance-'+sha, sha256=sha)
+                plan = dict(body, plan_id=self.prefix+sha, sha256=sha)
                 path = self.plans/(plan['plan_id']+'.json')
                 try: self.io.private_create(path, plan)
                 except FileExistsError:
@@ -270,23 +292,23 @@ class MaintenanceReview:
         try:
             with maintenance_lock(self.settings):
                 plan, created, expires = self._protected_plan(plan_id, sha)
-                if self.clock() >= expires or self._snapshot(plan['payload']['job_id']) != plan['payload']: raise denied()
+                if self.clock() >= expires or self._plan_snapshot(plan['payload']) != plan['payload']: raise denied()
                 path = self.reviews/(sha+'.json')
                 if path.exists() or path.is_symlink():
                     record = self._receipt(sha)
                 else:
                     now = self.clock().replace(microsecond=0)
-                    record = {'schema_version': 1, 'purpose': 'controller_maintenance_only', 'review_sha256': sha,
+                    record = {'schema_version': 1, 'purpose': self.purpose, 'review_sha256': sha,
                               'confirmed_at': now.isoformat(), 'valid_until': (now+timedelta(seconds=21600)).isoformat()}
                     self.io.private_create(path, record)
                 return record
         except Exception: raise denied() from None
 
     def _receipt(self, sha):
-        plan, created, expires = self._protected_plan('setup-maintenance-'+sha, sha)
+        plan, created, expires = self._protected_plan(self.prefix+sha, sha)
         record = self._read(self.reviews/(sha+'.json'))
         if (set(record) != {'schema_version', 'purpose', 'review_sha256', 'confirmed_at', 'valid_until'}
-                or record['schema_version'] != 1 or record['purpose'] != 'controller_maintenance_only'
+                or record['schema_version'] != 1 or record['purpose'] != self.purpose
                 or record['review_sha256'] != sha): raise denied()
         confirmed, until = (datetime.fromisoformat(record[k]) for k in ('confirmed_at', 'valid_until'))
         if (confirmed.tzinfo is None or until.tzinfo is None or not created <= confirmed < expires

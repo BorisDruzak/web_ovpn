@@ -77,6 +77,12 @@ def add_parsers(commands):
     cancel = job_commands.add_parser('cancel', allow_abbrev=False, help='Cancel only an unclaimed queued job, preserving its used plan')
     cancel.add_argument('job_id')
     cancel.add_argument('--confirm-plan-sha256', required=True)
+    queue_plan = job_commands.add_parser('queue-review-plan', allow_abbrev=False, help='Review one queued different machine after a closed full UNKNOWN')
+    queue_plan.add_argument('job_id')
+    queue_plan.add_argument('--candidate', required=True)
+    queue_confirm = job_commands.add_parser('queue-review-confirm', allow_abbrev=False)
+    queue_confirm.add_argument('plan_id')
+    queue_confirm.add_argument('--confirm-sha256', required=True)
     for name in ('status', 'events', 'verify-continuation'):
         command = job_commands.add_parser(name, allow_abbrev=False)
         command.add_argument('job_id')
@@ -129,6 +135,11 @@ def directory_for_settings(settings):
 
 def handle(parsed, settings):
     if parsed.command == 'setup' and parsed.setup_action == 'jobs':
+        if parsed.setup_job_action in ('queue-review-plan', 'queue-review-confirm'):
+            from .setup_maintenance_review_bridge import queue_review_service
+            review = queue_review_service(settings)
+            return (review.plan(parsed.job_id, parsed.candidate) if parsed.setup_job_action == 'queue-review-plan'
+                    else review.confirm(parsed.plan_id, parsed.confirm_sha256))
         if parsed.setup_job_action in ('maintenance-plan', 'maintenance-confirm'):
             from .setup_maintenance_review_bridge import review_service
             review = review_service(settings)

@@ -146,6 +146,44 @@ maintenance metadata. Ordinary target admission never consumes this exception.
 A failed protected Setup still needs its existing separately authorized
 continuation/recovery contract.
 
+## A different queued machine after a closed UNKNOWN
+
+If normal dispatch is blocked by a closed failed full Setup on another machine,
+read its protected status and the candidate's status first. The candidate must be
+unclaimed `queued`, have an unexpired source-bound Setup plan, and differ in UUID,
+hostname and existing AD computer GUID. Other active or unexplained work must be
+resolved through its own existing contract; the review cannot exclude it.
+
+```bash
+sudo -u altserver workstationctl --json setup jobs queue-review-plan UNKNOWN_JOB --candidate QUEUED_JOB
+sudo -u altserver workstationctl --json setup jobs queue-review-confirm REVIEW_PLAN --confirm-sha256 REVIEW_SHA
+sudo -u altserver workstationctl --json setup jobs status QUEUED_JOB
+```
+
+Review the exact plan before confirmation. Planning and confirming do not install
+roles; confirmation allows the persistent worker to claim that exact candidate
+after another fresh closure check. The worker retains its lifecycle lock and FIFO
+ordering. Its ordinary source/SSH/AD/registration/SHA/TTL preflight still runs.
+
+The review plan expires in 30 minutes; the confirmed receipt lasts at most six
+hours and never extends the candidate Setup plan's own 30-minute TTL. A changed,
+expired, already claimed or cancelled candidate cannot consume it. The original
+UNKNOWN, claims, reservations and assignment remain unchanged. Maintenance-only
+review cannot authorize this execution, and queue review cannot authorize backup
+or deployment. A real domain login is still required for user-home components.
+
+Cancel an unstarted queued job, including an expired plan, using its admitted SHA:
+
+```bash
+sudo -u altserver workstationctl --json setup jobs cancel QUEUED_JOB --confirm-plan-sha256 ADMITTED_PLAN_SHA
+```
+
+The result is `failed`, stage/error `operator_cancelled_before_execution`, with
+`target_changes_started: false`. Repeating that exact cancellation returns the
+same receipt. Running, waiting and UNKNOWN jobs are rejected. The used plan claim
+and history remain; create a fresh plan for a later attempt. If cancellation was
+interrupted after claim, inspect the retained ambiguous evidence instead of retrying.
+
 ## Functional acceptance
 
 Perform the real document/token/signature or desktop workflow first. Installation

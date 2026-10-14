@@ -302,3 +302,33 @@ No manual group synchronization or generated manifest edits were performed.
 The same independent reviewer accepted the narrow post-CI CLI sequencing fix:
 legacy malformed-job errors remain compatible and V2 claim/admission checks
 remain mandatory. Production ownership and recovery safeguards were not relaxed.
+
+## Closed UNKNOWN queue correction (implementation evidence)
+
+A new disposable target alone does not bypass the serialized worker's global
+unresolved-execution guard. An admitted but unclaimed candidate was therefore
+cancelled through the existing typed claim/transition APIs before target changes.
+Its consumed plan/history and the original UNKNOWN and nested leases were kept.
+Fresh native closure inspection still proved the original failed protected
+results, both leases, current domain trust, SSSD and safe selected-user runtime.
+
+Implementation adds SHA-confirmed queued cancellation and a separate
+`queued_other_machine_only` review tied to one exact candidate. Native POSIX
+regression: `python3 -m pytest -q tests/alt_linux/test_setup_queue_review.py
+tests/alt_linux/test_setup_maintenance_review.py tests/alt_linux/test_setup_worker.py
+tests/alt_linux/test_setup_jobs_cli.py tests/alt_linux/test_setup_backup_compatibility.py
+tests/alt_linux/test_or3p3_backup_installer.py` — **100 passed, 95.65s, exit 0**.
+The cancellation task also passed its 39-test native regression. The new queue
+API had 19 failing baseline tests; retained candidate-reference validation had
+four RED tests before the exact protected-reference checks were implemented.
+
+These are synthetic/native implementation checks, including real differing-UID
+DAC proof for the shared validator. They do not establish new controller
+deployment or positive full/component acceptance on the disposable machine.
+Full regression, branch review, guarded deployment and remaining real-VM
+acceptance must be recorded separately when actually performed.
+
+GitNexus identifies four upstream symbols for the committed MaintenanceReview
+baseline (one direct). Its empty worker impact result was not treated as absence
+of dependencies: dynamic CLI/worker/lease/backup paths were verified in source
+and native tests. No cross-repository HTTP contract is changed.
