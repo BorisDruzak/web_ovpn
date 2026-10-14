@@ -19,11 +19,11 @@ Completed controller deployment and incomplete workstation acceptance are separa
 | CLI/continuity/backup compatibility | Final isolated snapshot: 143 passing operator/jobs/continuity/native recovery/restore/collector checks; two additional missing-directory corruption cases pass. Earlier broader 241 and 32 checks overlap and are not a combined unique total. |
 | Integrated synthetic flow | Full Setup -> reboot -> first-login -> independent component -> child worker termination -> UNKNOWN -> fresh noop successor passes. No live AD/SSH/Ansible call in this fixture. |
 | Independent review | One whole-change review satisfied after fixing physical DMI lookup, exact reserved recovery snapshot admission, successor-lineage and reservation bindings. |
-| Complete regression | Latest successful source CI at `76b5d1334e17d43eec2b65c8582010c9d851892d`: 5646 passed, 89 skipped, 3315 warnings in 1507.11s, exit 0 ([run 38521286521](https://github.com/BorisDruzak/web_ovpn/actions/runs/38521286521)). CI installs controller-compatible Ansible 2.18.6. Subsequent corrections require their own exact-SHA CI. |
-| Controller-native pre-install checks | Isolated full ALT subset: 2962 passed, 82 skipped, one host-dependent unit-fixture failure in 930.89s. The cache metadata fixture was corrected; both affected test files then passed all 39 checks in 24.57s. Installed production sources were unchanged. |
-| Exact-SHA main publication | Revision `76b5d1334e17d43eec2b65c8582010c9d851892d` is published through normal main fast-forward. The subsequent shortcuts-selection correction awaits exact-SHA CI and main integration. |
-| Controller deployment | Guarded deployment of approved `76b5d1334e17d43eec2b65c8582010c9d851892d` completed: native root regression 3045 passed, 1 skipped in 948.81s, installer exit 0, all 246 published installed files matched, protected identities unchanged, rollout complete, worker active/enabled, controller ready with no active jobs at the post-deployment checkpoint. The subsequent shortcuts-selection correction is not deployed and requires separate authorization. |
-| Live Setup/component/noop/interruption/reboot/login | One approved full-Setup attempt partially changed the disposable VM and ended in immutable UNKNOWN; full live acceptance is incomplete. Independent component/noop/interruption, authorized reboot and real first login remain pending. |
+| Complete regression | Production revision `ecaeffb9bd1770227c705b195acc4fd407c8d7b4`: 5684 passed, 90 skipped, 3315 warnings in 1471.14s, exit 0 ([run 38545045725](https://github.com/BorisDruzak/web_ovpn/actions/runs/38545045725)). CI uses controller-compatible Ansible 2.18.6. |
+| Controller-native pre-install checks | Native guarded installer at the same production revision: 3084 passed, 1 skipped in 991.98s. |
+| Exact-SHA main publication | Production revision `ecaeffb9bd1770227c705b195acc4fd407c8d7b4`, including shortcuts/GPO corrections and limited maintenance review, is published on main. |
+| Controller deployment | Authorized guarded deployment of the same production revision completed: installer exit 0, 259/259 installed files matched, protected inputs and original history unchanged, rollout complete, worker active/enabled, scoped readiness passed. Ordinary target admission retains UNKNOWN gates. |
+| Live Setup/component/noop/interruption/reboot/login | The approved full-Setup attempt remains immutable UNKNOWN. Authorized reboot and independent domain/software verification now pass. Independent component planning still rejects this failed protected predecessor; component/noop/interruption and real first-login acceptance remain pending. |
 
 Milestones through Task 9 include 341 passing package/worker/resilience checks
 and 228 passing verification/role checks. These overlap and are not a unique
@@ -204,9 +204,68 @@ worker/jobs/full dispatch, readiness, backup/control installers and CLI passed
 160 tests with one expected non-root-boundary skip in 118.18s. One additional
 native-observer composition test passed in 1.19s with fixed read-only collectors.
 
-Final whole regression/publication and live metadata confirmation/deployment are
-separate pending gates. No live maintenance receipt, new installed source,
-reboot, first login or complete VM acceptance is claimed by these tests.
+Those focused tests did not establish publication, live confirmation, deployment
+or VM acceptance. The subsequent live results are recorded below.
+
+## Published maintenance deployment and post-reboot verification
+
+Published production revision `ecaeffb9bd1770227c705b195acc4fd407c8d7b4`
+passed full CI: **5684 passed, 90 skipped, 3315 warnings in 1471.14s**,
+retained pytest exit 0
+([run 38545045725](https://github.com/BorisDruzak/web_ovpn/actions/runs/38545045725)).
+The final bounded review accepted the shared-validator packaging and resolved
+SSS-user evidence corrections. Main and the GitNexus committed index matched
+this revision before the live deployment.
+
+The operator confirmed a fresh exact-SHA maintenance review and authorized native
+backup creation, verification and isolated rehearsal. All six components were
+captured; verification and all eleven rehearsal checks passed. A separately
+authorized native deletion of one unreferenced older generation restored the
+required free space. Native restore-capacity checks passed without overrides.
+Protected inputs and original execution evidence remained unchanged.
+
+The operator then authorized the guarded controller deployment, including the
+backup-tool update from the same source. The native installer ran
+`python3 -m pytest -q tests/alt_linux` as root: **3084 passed, 1 skipped in
+991.98s**. It completed with exit 0. All 259 installed files matched the published
+source, the worker was active/enabled, rollout completed and the marker was absent.
+Scoped active-job count was zero and scoped readiness passed. These checks used
+the explicit controller-maintenance review; ordinary target admission was not
+exempted. Retained history fingerprints and protected input identities matched.
+No actual controller restore or original UNKNOWN reclassification occurred.
+
+Independent installed `setup verify` initially reported `waiting_reboot` for the
+approved disposable VM. Under the operator's authorization for necessary work,
+one native VM reboot was performed after confirming the existing snapshot and
+absence of pending hypervisor configuration changes. There was no force, replay,
+AD account reset or OS reinstall. Fresh verification then reported no remaining
+reboot requirement: system/domain-GPO, browser, ONLYOFFICE and Nextcloud were
+technically compliant. Directum was technically installed and still required
+functional verification. Trust, SSSD and selected-user lookup passed; a local
+duplicate user was absent. The real selected-user home was still absent, leaving
+Plasma, government certificates and shortcuts blocked on first domain login.
+The independent overall component result was `degraded`; the original failed
+Setup result and its UNKNOWN job remained unchanged.
+
+Installed component planning with `--after-job` was actually attempted and
+rejected with `setup_retry_not_permitted`: this failed full predecessor lacks the
+intact completed protected Setup required by the existing component retry gate.
+No new component plan or target apply resulted. Maintenance evidence therefore
+does not establish successful full Setup or independent component acceptance.
+The maintenance receipt bound to the earlier boot snapshot also grants no fresh
+admission after the authorized VM reboot.
+
+## Functional CLI coverage audit
+
+The existing command is `setup component accept`, and its dispatcher already
+calls the canonical component acceptance service. The additional CLI regression
+uses that real service with synthetic machine/user facts: a fresh compliant plan
+and explicit human confirmation produce the protected receipt, while mismatched
+SHA, expired plans and changed facts produce the native guard errors without a
+receipt. The parser rejects a missing `--confirm-functional`. This adds coverage
+to the already implemented route; no production behavior changed and no real
+Directum workflow was attested. The acceptance/component/execution/jobs/Setup
+native subset passed 77 tests before publication of these test/document updates.
 
 ## Design rulings
 
@@ -224,11 +283,15 @@ reboot, first login or complete VM acceptance is claimed by these tests.
 
 ## Evidence still required
 
-Record final source/main and deployed SHAs, full regression command/count/skips,
-whole-change review findings, guarded deployment backup/rollback/readiness and
-actual workstation commands/job IDs. Prove full Setup, independent component,
-verify/noop, interruption/status recovery, changed reboot boot ID and real first
-login separately. Keep unperformed document/token checks as functional pending.
+The production source/deployed revision, regressions, bounded review, guarded
+deployment and independent post-reboot verification are recorded above. Private
+target/job identifiers, native command receipts and protected logs remain outside
+tracked documentation. Full successful Setup, permitted independent component
+apply/verify/noop, controlled interruption/status recovery and real first-login
+user-file acceptance still need live evidence. The current failed predecessor
+continues to block ordinary component retry. Unperformed document/token checks
+remain functional pending; the selected office profile does not include the
+signing suite or KRFB.
 
 GitNexus final committed-baseline checks identify SetupService consumers in CLI
 and recovery and JobRepository upstream impact of 28 symbols (10 direct).

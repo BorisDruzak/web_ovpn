@@ -98,6 +98,9 @@ existing 30-minute TTL. They freeze profile/component declarations, AD and SSH
 public identities, source SHA and relevant actual observations. Changed identities,
 source/catalog or relevant evidence invalidate an older plan; observation time
 alone does not. An active job is allowed only as the exact current plan's own
-verified reservation. Healthy components plan noop without reading an installation
-payload or decrypting a software license. No component apply command exists at
-this milestone; durable execution follows in Milestone 2.
+verified reservation or an explicitly reviewed permitted predecessor. Healthy
+components plan noop without reading an installation payload or decrypting a
+software license. `setup component apply PLAN_ID --confirm-sha256 SHA256` submits
+the immutable plan to the durable worker and returns its job ID. Functional
+attestation uses `setup component accept` only after a real completed user
+workflow and fresh technical verification; it does not install software.
