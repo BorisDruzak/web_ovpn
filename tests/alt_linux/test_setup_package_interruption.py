@@ -217,6 +217,10 @@ def test_production_apt_probe_drops_all_privileges(monkeypatch):
     from alt_deploy import component_probe_script
     calls = []
     monkeypatch.setattr(component_probe_script.pwd, 'getpwnam', lambda name: SimpleNamespace(pw_uid=65534, pw_gid=65534))
+    # This unit test supplies cache metadata instead of inspecting its host.
+    monkeypatch.setattr(component_probe_script, 'Path', lambda value: SimpleNamespace(
+        exists=lambda: True, is_symlink=lambda: False,
+        lstat=lambda: SimpleNamespace(st_uid=0, st_mode=0o755)))
     def run(command, **kwargs):
         calls.append((command, kwargs))
         return SimpleNamespace(returncode=0, stdout='healthy', stderr='')

@@ -4,6 +4,10 @@ Approved baseline: `3935bad3ab728c886f8f7dca2f93e5baa3ed16f9`.
 Scope: component catalog, independent lifecycle, durable jobs, verification,
 operator CLI and reusable backend contracts.
 
+This ledger records the pre-publication acceptance checkpoint. Subsequent
+exact-SHA publication evidence is the Git commit and GitHub workflow metadata;
+controller and workstation acceptance still require the separate live gates.
+
 ## Gates and evidence
 
 | Gate | Current evidence |
@@ -15,8 +19,9 @@ operator CLI and reusable backend contracts.
 | CLI/continuity/backup compatibility | Final isolated snapshot: 143 passing operator/jobs/continuity/native recovery/restore/collector checks; two additional missing-directory corruption cases pass. Earlier broader 241 and 32 checks overlap and are not a combined unique total. |
 | Integrated synthetic flow | Full Setup -> reboot -> first-login -> independent component -> child worker termination -> UNKNOWN -> fresh noop successor passes. No live AD/SSH/Ansible call in this fixture. |
 | Independent review | One whole-change review satisfied after fixing physical DMI lookup, exact reserved recovery snapshot admission, successor-lineage and reservation bindings. |
-| Complete regression | First V2 full Linux CI at `2babea4b45ef1d5e87a7f19480b9698319def324`: 5590 passed, 47 failed, 89 skipped, exit 1. Legacy error sequencing and outdated recovery/readiness/UID fixtures corrected; 94 focused checks pass. CI now explicitly installs controller-compatible Ansible 2.18.6 instead of relying on the hosted runner's pipx runtime. Final exact-SHA full CI remains pending. Earlier baseline CI is not V2 proof. |
-| Exact-SHA main publication | Pending final regression, review and exact-SHA CI. |
+| Complete regression | Full Linux CI at `6c999dfe4a2da19ad342034c83ff0ef199300933`: 5645 passed, 89 skipped, 3315 warnings in 933.80s, exit 0 ([run 38485906695](https://github.com/BorisDruzak/web_ovpn/actions/runs/38485906695)). CI explicitly installs controller-compatible Ansible 2.18.6. This is implementation regression evidence; the final pre-install fixture correction requires its own exact-SHA publication CI. |
+| Controller-native pre-install checks | Isolated full ALT subset: 2962 passed, 82 skipped, one host-dependent unit-fixture failure in 930.89s. The cache metadata fixture was corrected; both affected test files then passed all 39 checks in 24.57s. Installed production sources were unchanged. |
+| Exact-SHA main publication | Requires successful final fixture-revision CI, clean tree and normal main fast-forward. Actual publication receipt is recorded in Git/GitHub metadata. |
 | Controller deployment | Not performed; separate guarded deployment approval required. |
 | Live Setup/component/noop/interruption/reboot/login | Not performed; separately confirmed exact plans required. |
 
@@ -61,12 +66,22 @@ the bounded parser fix passes 63 collector/planning/retry/CLI checks, including
 negative extra-component cases. The same independent reviewer accepted the fix.
 Actual VM probe now reports `approved_p11`, all package-health predicates true,
 and a Nextcloud simulation of two installs and zero removals. It does not install
-Nextcloud or demonstrate installed V2 CLI/live Setup acceptance. A full regression
-for the final source revision remains required because of this real target finding.
+Nextcloud or demonstrate installed V2 CLI/live Setup acceptance. The source-guard
+correction subsequently passed the full Linux CI cited above.
 
 The standard source form is documented in the
 [official ALT 11.1 manual](https://docs.altlinux.org/ru-RU/alt-server/11.1/pdf/alt-server/alt-server-11.1-alt-server-ru-RU.pdf)
 and the [official p11 component registry](https://packages.altlinux.org/ru/p11/about/).
+
+An isolated source archive was also tested using the controller's native Python
+3.12.7, pytest 8.3.5, PyYAML 6.0.1, cryptography 42.0.5 and Ansible 2.18.6.
+The initial real-Ansible fixture could import the old installed runtime because
+its temporary playbook tree lacked the adjacent controller source directory.
+Matching the checkout layout corrected that fixture; all ten checks passed.
+The full native ALT subset then exposed one unit fixture that mocked APT but
+still read the host's cache permissions. Supplying synthetic protected metadata
+fixed that dependency; 39 focused tests passed. Neither correction changes the
+production filter or collector, and these tests do not constitute deployment.
 
 ## Design rulings
 

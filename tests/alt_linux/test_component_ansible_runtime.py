@@ -26,6 +26,8 @@ def ansible_runtime(project):
         found = shutil.which('ansible-playbook')
         if not found: pytest.skip('Real Ansible runtime is unavailable')
         executable = Path(found)
+    # Match checkout layout so a pre-install fixture cannot import old runtime.
+    shutil.copytree(SOURCE.parent/'control', project.parent/'control')
     for name in ('playbooks', 'filter_plugins', 'callback_plugins'):
         shutil.copytree(SOURCE/name, project/name)
     shutil.copyfile(SOURCE/'group_vars/all.yml', project/'group_vars/all.yml')
