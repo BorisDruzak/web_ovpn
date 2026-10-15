@@ -81,6 +81,19 @@ def test_collects_multiple_records_and_counts_unsupported_types():
     assert 'dn' not in result['records'][0]
 
 
+@pytest.mark.parametrize('owner', ['*', '*.services'])
+def test_valid_wildcard_owner_is_dns_evidence_and_does_not_abort_generation(owner):
+    result = collect(node(owner))
+    assert result['complete'] is True
+    assert result['records'][0]['name'] == owner + '.example.invalid'
+    assert result['records'][0]['type'] == 'A'
+
+
+def test_unsupported_wildcard_record_is_counted_before_supported_owner_rules():
+    result = collect(node('*', [record(16, b'synthetic TXT')]))
+    assert result['complete'] is True and result['unsupported_records'] == 1 and result['records'] == []
+
+
 def test_alias_loop_is_a_finding():
     raw = node('first', [record(5, counted('second.example.invalid'))]) + node('second', [record(5, counted('first.example.invalid'))])
     result = collect(raw)

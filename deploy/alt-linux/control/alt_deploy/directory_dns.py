@@ -24,6 +24,16 @@ def dns_name(value):
     return '.'.join(labels)
 
 
+def dns_owner_name(value):
+    """A wildcard owner is DNS evidence, never a physical host identity."""
+    if isinstance(value, str) and value.startswith('*.'):
+        normalized = '*.' + dns_name(value[2:])
+        if len(normalized) > 253:
+            raise ValueError
+        return normalized
+    return dns_name(value)
+
+
 def _counted_name(data):
     if len(data) < 3 or data[0] != len(data) - 2 or data[-1] != 0:
         raise ValueError
@@ -51,11 +61,11 @@ def decode_dns_record(value: bytes, *, owner: str, zone: str) -> dict | None:
         reserved, timestamp = struct.unpack('<II', value[16:24])
         if size != len(value) - 24 or version != 5 or flags != 0 or reserved != 0:
             raise ValueError
-        zone = dns_name(zone)
-        name = zone if owner == '@' else dns_name(owner + '.' + zone)
-        data = value[24:]
         if kind not in (1, 5, 12, 28):
             return None
+        zone = dns_name(zone)
+        name = zone if owner == '@' else dns_owner_name(owner + '.' + zone)
+        data = value[24:]
         if kind in (1, 28):
             if len(data) != (4 if kind == 1 else 16):
                 raise ValueError
