@@ -79,11 +79,11 @@ configuration. Repository source remains `mcp/openvpn_mcp_server.py`.
 
 **Interfaces:** `decode_dns_record(value: bytes, *, owner: str, zone: str) -> dict | None`; `DirectoryDNS.collect(*, deadline: float) -> dict`. Output distinguishes A/AAAA/CNAME/PTR, tombstones, unsupported record counts, complete generation and source error. No record-write API.
 
-- [ ] Write tests `test_decode_a_aaaa_cname_ptr`, `test_reject_short_length_or_wrong_version`, `test_tombstone_is_not_live_dns`, `test_alias_loop_is_a_finding`, `test_partition_failure_preserves_previous_complete_snapshot`. Assert directory-record header endian/length rules against Microsoft's format.
-- [ ] Run `python -m pytest tests/alt_linux/test_directory_dns.py -q`; confirm failure before code.
-- [ ] Implement bounded parsing and fixed-zone enumeration; use the existing dnspython version for optional bounded resolution verification, with explicit NXDOMAIN/timeout/no-answer classifications. Share the observer's total collection deadline/budget instead of multiplying it per zone.
-- [ ] Run both observer/DNS suites and `python -m pytest tests/test_netctl_cli.py -q` for existing resolver/CLI behavior.
-- [ ] Inspect/stage the exact diff and commit `feat(workstations): collect read-only directory DNS evidence`.
+- [x] Write tests `test_decode_a_aaaa_cname_ptr`, `test_reject_short_length_or_wrong_version`, `test_tombstone_is_not_live_dns`, `test_alias_loop_is_a_finding`, `test_partition_failure_preserves_previous_complete_snapshot`. Assert directory-record header endian/length rules against Microsoft's format.
+- [x] Run `python -m pytest tests/alt_linux/test_directory_dns.py -q`; confirm failure before code.
+- [x] Implement bounded parsing and fixed-zone enumeration; use the existing dnspython version for optional bounded resolution verification, with explicit NXDOMAIN/timeout/no-answer classifications. Share the observer's total collection deadline/budget instead of multiplying it per zone.
+- [x] Run both observer/DNS suites and `python -m pytest tests/test_netctl_cli.py -q` for existing resolver/CLI behavior.
+- [x] Inspect/stage the exact diff and commit `feat(workstations): collect read-only directory DNS evidence`.
 
 ## Task 3: Fixed-operation controller gateway and durable receipts
 

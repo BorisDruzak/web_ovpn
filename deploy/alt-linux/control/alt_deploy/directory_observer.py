@@ -32,6 +32,8 @@ class DirectoryObserverConfig:
     domain_base: str = BASE_DN
     user_bases: tuple[str, ...] = (BASE_DN,)
     computer_bases: tuple[str, ...] = (BASE_DN,)
+    dns_bases: tuple[str, ...] = ()
+    dns_zones: tuple[str, ...] = ()
     credential_source: str = 'readonly-vault'
     auth: str = 'gssapi'
     ca_file: str | None = None
@@ -43,8 +45,8 @@ class DirectoryObserverConfig:
             self.directory_config()
             if not re.fullmatch(r'DC=[a-zA-Z0-9-]+(?:,DC=[a-zA-Z0-9-]+)+', self.domain_base):
                 raise ValueError
-            for bases in (self.user_bases, self.computer_bases):
-                if not isinstance(bases, tuple) or not 1 <= len(bases) <= 32:
+            for bases, required in ((self.user_bases, True), (self.computer_bases, True), (self.dns_bases, False)):
+                if not isinstance(bases, tuple) or not int(required) <= len(bases) <= 32:
                     raise ValueError
                 known = []
                 for base in bases:
@@ -57,6 +59,13 @@ class DirectoryObserverConfig:
                     if any(folded == old or folded.endswith(',' + old) or old.endswith(',' + folded) for old in known):
                         raise ValueError
                     known.append(folded)
+            if (not isinstance(self.dns_zones, tuple) or len(self.dns_zones) > 32
+                    or bool(self.dns_bases) != bool(self.dns_zones)
+                    or len(set(zone.casefold() for zone in self.dns_zones)) != len(self.dns_zones)):
+                raise ValueError
+            for zone in self.dns_zones:
+                if not isinstance(zone, str) or len(zone) > 253 or not re.fullmatch(r'[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)+', zone):
+                    raise ValueError
         except (ValueError, TypeError, AttributeError, ControlError) as exc:
             raise fail('directory_observer_config_invalid', 'Read-only directory observer configuration is invalid') from exc
 
@@ -74,7 +83,7 @@ class DirectoryObserverConfig:
             document = json.loads(path.read_text(encoding='utf-8'))
             if not isinstance(document, dict) or set(document) - set(cls.__dataclass_fields__):
                 raise ValueError
-            for key in ('user_bases', 'computer_bases'):
+            for key in ('user_bases', 'computer_bases', 'dns_bases', 'dns_zones'):
                 if key in document:
                     if not isinstance(document[key], list):
                         raise ValueError
@@ -123,15 +132,23 @@ class PagedLDAPTransport(LDAPTransport):
             elif self.config.auth == 'starttls':
                 command += ['-ZZ']
             with self._credentials(environment) as (environment, authentication):
-                rc, raw, _ = self.runner(command + authentication + [ldap_filter, *attributes],
+                rc, raw, diagnostic = self.runner(command + authentication + [ldap_filter, *attributes],
                                          environment=environment, timeout=self._remaining())
             self._remaining()
             if rc and not (rc == 4 and allow_truncated):
-                code = 'directory_observer_limit' if rc == 4 else 'directory_observer_query_failed'
+                suffix = {3: 'timeout', 4: 'limit', 49: 'authentication_failed',
+                          50: 'permission_denied', 81: 'dc_unavailable', 91: 'dc_unavailable'}.get(rc, 'query_failed')
+                if 'tls' in diagnostic.lower() or 'certificate' in diagnostic.lower():
+                    suffix = 'tls_failed'
+                code = 'directory_observer_' + suffix
                 raise fail(code, 'Directory read failed; the source is incomplete')
             if not isinstance(raw, str) or len(raw.encode('utf-8')) > MAX_SOURCE_BYTES:
                 raise fail('directory_observer_limit', 'Directory response exceeds the collection budget')
             return {'ldif': raw, 'truncated': rc == 4}
+        except ControlError as exc:
+            if exc.code.startswith('ad_'):
+                raise fail('directory_observer_' + exc.code[3:], 'Directory authentication or transport is unavailable') from exc
+            raise
         finally:
             self._deadline.reset(token)
 
@@ -181,7 +198,7 @@ class DirectoryObserver:
         self.transport = transport or PagedLDAPTransport(config, settings=settings, monotonic=monotonic)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def _query(self, *, base, ldap_filter, attributes, deadline, size_limit=MAX_OBJECTS + 1, search=False):
+    def _query(self, *, base, ldap_filter, attributes, deadline, size_limit=MAX_OBJECTS + 1, search=False, multivalued=frozenset()):
         if self.monotonic() >= deadline:
             raise fail('directory_observer_timeout', 'Directory collection deadline exceeded')
         try:
@@ -195,7 +212,7 @@ class DirectoryObserver:
             if result['truncated'] and not search:
                 raise ValueError
             raw = result['ldif']
-            entries = _parse_ldif(raw, multivalued=frozenset({'objectclass'}),
+            entries = _parse_ldif(raw, multivalued=frozenset({'objectclass'}) | multivalued,
                                  max_bytes=MAX_SOURCE_BYTES, max_results=MAX_OBJECTS + 1)
             return entries, len(raw.encode('utf-8')), result['truncated']
         except (ControlError, ValueError, UnicodeError) as exc:
