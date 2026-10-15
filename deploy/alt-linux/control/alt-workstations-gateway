@@ -1,0 +1,8 @@
+#!/usr/bin/python3
+"""Root-owned fixed SSH gateway entry point; ignores SSH_ORIGINAL_COMMAND."""
+import sys
+
+sys.path.insert(0, '/opt/alt-deploy-control')
+from alt_deploy.workstations_gateway import main
+
+raise SystemExit(main())

@@ -115,12 +115,20 @@ def bounded_run(command, *, environment, input_text=None, timeout=20, max_bytes=
             process.kill()
             process.wait()
             raise fail('ad_timeout', 'AD operation timed out') from exc
+        except BaseException:
+            # Gateway deadlines/disconnect signals are not TimeoutExpired.
+            # Reap the read subprocess before removing its private credentials.
+            process.kill()
+            process.wait()
+            raise
         finally:
             for reader in readers:
                 reader.join(timeout=2)
         if excessive:
             raise fail('ad_results_limit', 'AD response exceeds the size limit')
         return process.returncode, captured[0].decode('utf-8', errors='strict'), captured[1].decode('utf-8', errors='replace')
+    except TimeoutError as exc:
+        raise fail('ad_timeout', 'AD operation timed out') from exc
     except (OSError, UnicodeError) as exc:
         raise fail('ad_transport_unavailable', 'AD transport is unavailable') from exc
 
