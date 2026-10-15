@@ -11,9 +11,9 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from ..inventory.models import InventoryAsset, InventoryNetworkProjectionVersion
 from ..inventory.network_projection import projection_epoch
 from .client import WorkstationsClient
-from .models import DirectoryLink, SourceRun, SourceSnapshot
-from .projection import fingerprint
-from .sources import MAX_AGE, valid_uuid
+from .models import DirectoryLink, SourceSnapshot
+from .projection import fingerprint, device_aliases
+from .sources import MAX_AGE, valid_uuid, coherence_reasons
 
 
 class LinkConflict(Exception):
@@ -34,12 +34,7 @@ def _reason(actor, reason):
 
 
 def _aliases(device):
-    result = {device['device_key'], *device.get('network_keys', [])}
-    if device.get('inventory_asset_id'):
-        result.add('inventory:' + device['inventory_asset_id'])
-    if device.get('machine_uuid'):
-        result.add('machine:' + device['machine_uuid'])
-    return result
+    return device_aliases(device)
 
 
 def _context(db, device_key, source_revision, now):
@@ -47,17 +42,13 @@ def _context(db, device_key, source_revision, now):
     if (snapshot is None or snapshot.generation != source_revision or not timedelta(0) <= now - snapshot.observed_at <= MAX_AGE
             or snapshot.inventory_revision != projection_epoch(db)):
         raise LinkConflict('workstations_link_source_changed')
+    reasons = coherence_reasons(db, snapshot, now)
+    if reasons:
+        raise LinkConflict('workstations_link_source_unavailable' if any(code in reasons for code in
+            ('source_unavailable', 'refresh_in_progress')) else 'workstations_link_source_changed')
     sources = {}
     for name, generation in snapshot.data_json['generations'].items():
         source = db.get(SourceSnapshot, name, populate_existing=True)
-        if (source is None or source.generation != generation or source.batch_id != snapshot.batch_id
-                or not timedelta(0) <= now - source.observed_at <= MAX_AGE):
-            raise LinkConflict('workstations_link_source_changed')
-        unsuccessful = db.scalar(select(SourceRun.id).where(SourceRun.source == name,
-            SourceRun.batch_id != snapshot.batch_id, SourceRun.started_at >= snapshot.captured_at,
-            SourceRun.status.in_(('error', 'running'))).limit(1))
-        if unsuccessful:
-            raise LinkConflict('workstations_link_source_unavailable')
         sources[name] = source.data_json
     device = next((row for row in snapshot.data_json['devices'] if row['device_key'] == device_key), None)
     if device is None or device.get('identity_state') == 'ambiguous' or device.get('employee_binding_state') == 'ambiguous':

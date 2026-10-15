@@ -93,6 +93,7 @@ module.exports = async (page, output) => {
     await page.getByLabel('Задание',{exact:true}).fill('job-20261015T000000Z-12345678');
     await page.getByRole('button',{name:'Показать журнал',exact:true}).click();
     await page.waitForFunction(()=>document.querySelectorAll('[data-journal] li').length===100);
+    check((await page.locator('[data-journal-evidence]').textContent()).includes('прочитана полностью'),'Journal completeness evidence missing');
     await page.getByRole('button',{name:'Ещё события',exact:true}).click();
     await page.waitForFunction(()=>document.querySelectorAll('[data-journal] li').length===200);
     const exportUrl=await page.locator('[data-journal-export]').getAttribute('href');

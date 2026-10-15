@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import bisect
 import json
 import re
 import time
@@ -9,7 +10,7 @@ import uuid
 
 from sqlalchemy import select
 
-from .models import DirectoryLink, SourceRun, WorkstationRequest
+from .models import DirectoryLink, SourceRun, SourceSnapshot, WorkstationRequest
 from .sources import SourceError, timestamp
 
 MAX_EVENTS = 10000
@@ -78,91 +79,171 @@ class JournalService:
     def list(self, db, *, filters, cursor=None, limit=100):
         if type(limit) is not int or not 1 <= limit <= 1000 or not set(filters) <= {'device_key', 'job_id', 'component', 'stage', 'severity'}:
             raise SourceError('workstations_journal_query_invalid')
-        events, after_cursor, deadline = [], _cursor(cursor), time.monotonic() + 50
-        def emit(row):
+        events, keys, after_cursor, deadline = [], [], _cursor(cursor), time.monotonic() + 50
+        def check():
             if time.monotonic() >= deadline:
                 raise SourceError('workstations_journal_timeout')
+        def emit(row):
+            check()
             row['timestamp'] = timestamp(row['timestamp']).isoformat()
-            if after_cursor and (row['timestamp'], row['id']) <= after_cursor:
-                return
+            key = (row['timestamp'], row['id'])
+            if after_cursor and key <= after_cursor:
+                return False
             if any(filters.get(name) and row.get(field) != filters[name]
                    for name, field in (('component', 'component_id'), ('stage', 'stage'), ('severity', 'severity'))):
-                return
-            events.append(row)
-        job_id, device_key = filters.get('job_id'), filters.get('device_key')
+                return False
+            position = bisect.bisect_right(keys, key)
+            keys.insert(position, key); events.insert(position, row)
+            if len(events) > limit + 1:
+                keys.pop(); events.pop()
+            return True
+
+        job_id, device_key, component = filters.get('job_id'), filters.get('device_key'), filters.get('component')
+        aliases, machine = {device_key}, device_key[8:] if device_key and device_key.startswith('machine:') else None
+        if device_key:
+            from .projection import device_aliases
+            snapshot = db.get(SourceSnapshot, 'reconciliation')
+            matches = [row for row in snapshot.data_json.get('devices', []) if device_key in device_aliases(row)] if snapshot else []
+            if len(matches) == 1:
+                aliases = device_aliases(matches[0]); machine = matches[0].get('machine_uuid') or machine
+        native, native_errors, native_complete, published = {}, [], self.client is not None, 0
+        if self.client is not None:
+            from .client import WorkstationsClient
+            client = self.client.with_deadline(deadline) if isinstance(self.client, WorkstationsClient) else self.client
+            def call(operation, parameters):
+                check()
+                return client.call(operation, parameters, request_id=str(uuid.uuid4()))
+            try:
+                if device_key and not machine:
+                    raise SourceError('workstations_journal_device_identity_unavailable')
+                identifiers = [job_id] if job_id else []
+                if not job_id:
+                    offset, expected_total, seen = 0, None, set()
+                    while True:
+                        page = call('jobs.list', dict(offset=offset, limit=100, **({'machine_uuid': machine} if machine else {})))
+                        rows, total, next_offset = page.get('jobs'), page.get('total'), page.get('next_offset')
+                        if (not isinstance(rows, list) or len(rows) > 100 or type(total) is not int or not 0 <= total <= MAX_EVENTS
+                                or expected_total is not None and total != expected_total
+                                or type(next_offset) is not int or next_offset != offset + len(rows) or next_offset > total
+                                or not rows and offset < total):
+                            raise SourceError('workstations_journal_evidence_invalid')
+                        expected_total = total
+                        for item in rows:
+                            identity = item.get('job_id')
+                            if not isinstance(identity, str) or not re.fullmatch(r'job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}', identity) or identity in seen:
+                                raise SourceError('workstations_journal_evidence_invalid')
+                            seen.add(identity); identifiers.append(identity)
+                        offset = next_offset
+                        if offset == total:
+                            break
+                for identity in identifiers:
+                    status = call('jobs.status', {'job_id': identity}).get('job', {})
+                    if machine and status.get('machine_uuid') != machine:
+                        continue
+                    if component and component not in status.get('components', {}):
+                        continue
+                    native[identity] = status
+                    history = status.get('history')
+                    if not isinstance(history, list) or len(history) > 1024:
+                        raise SourceError('workstations_journal_evidence_invalid')
+                    for sequence, item in enumerate(history, 1):
+                        emit({'id': 'stage:' + identity + ':' + str(sequence), 'timestamp': item['at'], 'job_id': identity,
+                            'device_key': 'machine:' + status['machine_uuid'] if status.get('machine_uuid') else None,
+                            'component_id': component, 'source': 'controller', 'action': 'job.stage',
+                            'stage': _code(item['stage']), 'status': _code(item['state']),
+                            'severity': 'error' if item['state'] in ('failed', 'unknown_requires_review') else 'info'})
+                    after, expected_total = 0, None
+                    while True:
+                        page = call('jobs.events', {'job_id': identity, 'after': after, 'limit': 1000})
+                        rows, total, next_sequence = page.get('events'), page.get('total'), page.get('next_sequence')
+                        if (not isinstance(rows, list) or len(rows) > 1000 or type(total) is not int or not 0 <= total <= MAX_EVENTS
+                                or expected_total is not None and total != expected_total
+                                or type(next_sequence) is not int or not after <= next_sequence <= total
+                                or not rows and next_sequence < total):
+                            raise SourceError('workstations_journal_evidence_invalid')
+                        expected_total = total
+                        for item in rows:
+                            if type(item.get('sequence')) is not int or item['sequence'] != after + 1:
+                                raise SourceError('workstations_journal_evidence_gap')
+                            after += 1
+                            value = {key: item[key] for key in ('sequence', 'timestamp', 'component_id', 'component_version',
+                                'task_id', 'stage', 'type', 'changed', 'code') if key in item}
+                            value.update(id='event:' + identity + ':' + str(after), job_id=identity,
+                                device_key='machine:' + status['machine_uuid'] if status.get('machine_uuid') else None,
+                                source='controller', action='job.event',
+                                severity='error' if item.get('type') in ('task_failed', 'task_unreachable') else 'info')
+                            emit(value)
+                        if next_sequence != after:
+                            raise SourceError('workstations_journal_evidence_gap')
+                        if after == total:
+                            published += total
+                            break
+            except Exception as exc:
+                native_complete = False
+                native_errors.append({'code': safe_code(getattr(exc, 'code', 'workstations_journal_source_unavailable'))})
+
+        def association(params, data):
+            linked_job = data.get('job_id') or params.get('job_id')
+            plan_id = params.get('plan_id') or data.get('plan_id')
+            related = [data] + [row for key, row in native.items() if key == linked_job or plan_id and row.get('plan_id') == plan_id]
+            if plan_id and (device_key or component):
+                planning = db.scalar(select(WorkstationRequest).where(
+                    WorkstationRequest.action.in_(('plans.create', 'component_plans.create')),
+                    WorkstationRequest.status == 'succeeded', WorkstationRequest.data_json['plan_id'].as_string() == plan_id).limit(1))
+                if planning:
+                    related.append(planning.data_json or {})
+            machines, components, related_jobs = {str(params.get('machine_uuid'))}, {params.get('component_id')}, {linked_job}
+            for item in related:
+                machines.add(str(item.get('machine_uuid') or (item.get('machine') or {}).get('uuid')))
+                selected = item.get('components') or {}
+                components.update(selected if isinstance(selected, dict) else (entry.get('id') for entry in selected if isinstance(entry, dict)))
+            related_jobs.update(key for key, row in native.items() if plan_id and row.get('plan_id') == plan_id)
+            return related_jobs, machines, components
+
+        matched = 0
         for row in db.scalars(select(WorkstationRequest).order_by(WorkstationRequest.created_at, WorkstationRequest.id).execution_options(yield_per=250)):
-            data, params = row.data_json or {}, row.parameters_json
-            if job_id and data.get('job_id') != job_id and params.get('job_id') != job_id:
+            check()
+            data, params = row.data_json or {}, row.parameters_json or {}
+            related_jobs, machines, components = association(params, data)
+            if job_id and job_id not in related_jobs:
                 continue
-            if device_key and params.get('device_key') != device_key and 'machine:' + str(params.get('machine_uuid')) != device_key:
+            if device_key and params.get('device_key') not in aliases and machine not in machines:
+                continue
+            if component and component not in components:
                 continue
             phase = row.phases_json[-1] if row.phases_json else {}
-            emit({'id': 'request:' + row.id, 'request_id': row.id, 'operation_id': row.panel_operation_id,
-                'job_id': _code(data.get('job_id') or params.get('job_id')), 'device_key': device_key,
+            matched += emit({'id': 'request:' + row.id, 'request_id': row.id, 'operation_id': row.panel_operation_id,
+                'job_id': _code(data.get('job_id') or params.get('job_id')), 'device_key': device_key, 'component_id': component,
                 'timestamp': row.created_at.isoformat(), 'actor': row.actor, 'action': row.action,
                 'stage': _code(phase.get('stage')), 'status': row.status, 'code': safe_code(row.error_code) if row.error_code else None,
                 'severity': 'error' if row.status in ('unknown', 'failed') else 'info', 'source': 'panel'})
-            if len(events) > limit:
+            if matched > limit:
                 break
-        if not job_id and not device_key:
-            start = len(events)
+        if not job_id and not device_key and not component:
+            matched = 0
             for row in db.scalars(select(SourceRun).order_by(SourceRun.started_at, SourceRun.id).execution_options(yield_per=250)):
-                emit({'id': 'source:' + row.id, 'timestamp': row.started_at.isoformat(), 'source': row.source,
+                matched += emit({'id': 'source:' + row.id, 'timestamp': row.started_at.isoformat(), 'source': row.source,
                     'action': 'source.collect', 'status': row.status, 'code': safe_code(row.error_code) if row.error_code else None,
                     'severity': 'error' if row.status == 'error' else 'info', 'run_id': row.batch_id})
-                if len(events) - start > limit:
+                if matched > limit:
                     break
-        if not job_id:
+        if not job_id and not component:
             statement = select(DirectoryLink).where(DirectoryLink.status.in_(('confirmed', 'ended')))
             if device_key:
-                statement = statement.where(DirectoryLink.device_key == device_key)
+                statement = statement.where(DirectoryLink.device_key.in_(aliases))
             for state, moment in (('confirmed', DirectoryLink.confirmed_at), ('ended', DirectoryLink.ended_at)):
-                start = len(events)
+                matched = 0
                 for row in db.scalars(statement.where(moment.is_not(None)).order_by(moment, DirectoryLink.id).execution_options(yield_per=250)):
                     observed = row.confirmed_at if state == 'confirmed' else row.ended_at
-                    emit({'id': 'link:' + row.id + ':' + state, 'timestamp': observed.isoformat(),
+                    matched += emit({'id': 'link:' + row.id + ':' + state, 'timestamp': observed.isoformat(),
                         'source': 'panel', 'action': 'link.' + state, 'actor': row.created_by if state == 'confirmed' else row.ended_by,
                         'device_key': row.device_key, 'status': state, 'revision': row.revision, 'severity': 'info'})
-                    if len(events) - start > limit:
+                    if matched > limit:
                         break
-        evidence = 'local_history'
-        if job_id and self.client is not None:
-            from .client import WorkstationsClient
-            client = self.client.with_deadline(deadline) if isinstance(self.client, WorkstationsClient) else self.client
-            status = client.call('jobs.status', {'job_id': job_id}, request_id=str(uuid.uuid4()))
-            history = status.get('job', {}).get('history')
-            if not isinstance(history, list) or len(history) > 1024:
-                raise SourceError('workstations_journal_evidence_invalid')
-            for sequence, item in enumerate(history, 1):
-                emit({'id': 'stage:' + job_id + ':' + str(sequence), 'timestamp': item['at'], 'job_id': job_id,
-                    'source': 'controller', 'action': 'job.stage', 'stage': _code(item['stage']), 'status': _code(item['state']),
-                    'severity': 'error' if item['state'] in ('failed', 'unknown_requires_review') else 'info'})
-            after, evidence = 0, 'complete'
-            while True:
-                page = client.call('jobs.events', {'job_id': job_id, 'after': after, 'limit': 1000}, request_id=str(uuid.uuid4()))
-                rows, total, next_sequence = page.get('events'), page.get('total'), page.get('next_sequence')
-                if (not isinstance(rows, list) or type(total) is not int or not 0 <= total <= MAX_EVENTS
-                        or type(next_sequence) is not int or not after <= next_sequence <= total or not rows and next_sequence < total):
-                    raise SourceError('workstations_journal_evidence_invalid')
-                for item in rows:
-                    if type(item.get('sequence')) is not int or item['sequence'] != after + 1:
-                        raise SourceError('workstations_journal_evidence_gap')
-                    after += 1
-                    value = {key: item[key] for key in ('sequence', 'timestamp', 'job_id', 'component_id', 'component_version',
-                        'task_id', 'stage', 'type', 'changed', 'code') if key in item}
-                    value.update(id='event:' + job_id + ':' + str(after), source='controller', action='job.event',
-                        severity='error' if item.get('type') in ('task_failed', 'task_unreachable') else 'info')
-                    emit(value)
-                if next_sequence != after:
-                    raise SourceError('workstations_journal_evidence_gap')
-                if after == total:
-                    break
-            if total == 0:
-                evidence = 'no_published_events'
-        events.sort(key=lambda row: (row['timestamp'], row['id']))
+        evidence = ('complete' if published else 'no_published_events') if native_complete else ('unavailable' if self.client else 'local_history')
         page = events[:limit]
         return {'events': page, 'next_cursor': _encoded([page[-1]['timestamp'], page[-1]['id']]) if len(events) > limit else None,
-                'evidence': evidence, 'limit': limit}
+                'evidence': evidence, 'native_complete': native_complete, 'native_errors': native_errors, 'limit': limit}
 
     def export(self, db, *, filters, cursor=None, limit=1000):
         return self.list(db, filters=filters, cursor=cursor, limit=limit)

@@ -44,6 +44,12 @@ def public_plan(plan):
     rows = verification.get('components', verification)
     value['verification'] = {key: fields(row, ('version', 'status', 'installation_status', 'acceptance_status', 'operator_action'))
                              for key, row in rows.items() if re.fullmatch(r'[a-z][a-z0-9_.-]{0,127}', key) and isinstance(row, dict)}
+    preflight = payload.get('preflight')
+    if isinstance(preflight, dict):
+        value['preflight'] = {key: preflight[key] for key in ('ready', 'required') if type(preflight.get(key)) is bool}
+        code = preflight.get('error_code')
+        if isinstance(code, str) and re.fullmatch(r'[a-z][a-z0-9_]{0,127}', code):
+            value['preflight']['error_code'] = code
     if 'computer_ou' in payload:
         value['ou_id'] = digest(payload['computer_ou'])
     return value

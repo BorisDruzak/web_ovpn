@@ -73,7 +73,40 @@ def test_uncertain_apply_does_not_become_failed_or_retry_after_restart(database)
     with database() as db:
         assert db.get(PanelOperation, value['operation_id']).status == 'unknown'
     assert service.start('plans.apply', parameters, actor='service:synthetic', request_id=request_id)['operation_id'] == value['operation_id']
-    assert calls == ['plans.apply']
+    assert calls.count('plans.apply') == 1 and set(calls) <= {'plans.apply', 'receipts.status'}
+
+
+@pytest.mark.parametrize('proof', ['valid', 'missing', 'other_request', 'other_plan'])
+def test_uncertain_apply_reads_original_native_receipt_without_replaying(database, proof):
+    from app.workstations.service import WorkstationsService
+    from app.workstations.client import WorkstationsTransportError
+    from app.panel_operations import execution_future
+    from app.workstations.models import WorkstationRequest
+    request_id, machine_id = str(uuid.uuid4()), str(uuid.uuid4())
+    job_id, sha = 'job-20261015T000000Z-12345678', 'a' * 64
+    calls = []
+    class Controller:
+        def call(self, action, parameters, **kwargs):
+            calls.append((action, parameters))
+            if action == 'plans.apply': raise WorkstationsTransportError('workstations_transport_timeout', request_id, uncertain=True)
+            assert action == 'receipts.status' and parameters == {'request_id': request_id} and kwargs['scope'] == 'read'
+            data = {'job_id': job_id, 'machine_uuid': machine_id, 'plan_id': 'setup-' + sha, 'plan_sha256': sha, 'state': 'unknown_requires_review'}
+            if proof == 'other_plan': data['plan_id'] = 'setup-' + 'b' * 64
+            return {'request_id': str(uuid.uuid4()) if proof == 'other_request' else request_id,
+                'state': 'not_found' if proof == 'missing' else 'successful', 'data': data}
+    service = WorkstationsService(client=Controller(), session_factory=database)
+    result = service.start('plans.apply', {'plan_id': 'setup-' + sha, 'sha256': sha, 'kind': 'full_setup'}, actor='user:synthetic', request_id=request_id)
+    execution_future(result['operation_id']).result(timeout=5)
+    observed = service.operation(request_id, actor='user:synthetic')
+    if proof == 'valid':
+        assert observed['status'] == 'succeeded' and observed['data']['job_id'] == job_id
+        assert observed['data']['state'] == 'unknown_requires_review'  # admission proof does not turn the job green
+        assert any(phase['status'] == 'unknown' for phase in observed['phases'])
+        assert observed['phases'][-1]['stage'] == 'native_receipt'
+        with database() as db: assert db.get(WorkstationRequest, request_id).data_json['job_id'] == job_id
+    else:
+        assert observed['status'] == 'unknown' and not observed['data']
+    assert [call[0] for call in calls] == ['plans.apply', 'receipts.status']
 
 
 def test_lost_initial_reply_can_be_read_by_original_request_id_without_resubmission(database):
@@ -115,6 +148,57 @@ def test_request_lookup_during_registration_does_not_erase_pending_dispatch(data
     with database() as db:
         db.get(WorkstationRequest, request_id).created_at = datetime.now(timezone.utc) - timedelta(hours=1); db.commit()
     assert service.operation(request_id, actor='user:synthetic')['status'] == 'unknown'
+
+
+@pytest.mark.parametrize('ambiguous', [False, True])
+def test_device_detail_keeps_mac_link_after_registration_only_for_verified_alias(database, tmp_path, ambiguous):
+    import copy
+    from starlette.requests import Request
+    from app.workstations import api
+    from app.workstations.models import DirectoryLink, SourceSnapshot
+    from test_workstations_reconcile import run, MACHINE, USER, MAC
+    with database() as db:
+        link = DirectoryLink(device_key='mac:' + MAC, user_guid=USER, user_sid='S-1-5-21-1', user_login='synthetic',
+            source_revision='a' * 64, status='confirmed', evidence_json={'user': {'object_guid': USER, 'login': 'synthetic'}})
+        db.add(link); db.commit(); link_id = link.id
+    assert run(database, tmp_path)['status'] == 'success'
+    with database() as db:
+        snapshot = db.get(SourceSnapshot, 'reconciliation')
+        value = copy.deepcopy(snapshot.data_json)
+        row = next(row for row in value['devices'] if row['machine_uuid'] == MACHINE)
+        assert row['employee_binding_state'] == 'confirmed'
+        if ambiguous:
+            row['identity_state'] = 'ambiguous'; snapshot.data_json = value; db.commit()
+        result = api.device(Request({'type': 'http', 'query_string': b''}), 'machine:' + MACHINE, owner='user:synthetic', db=db)['data']
+        assert [row['id'] for row in result['links']] == ([] if ambiguous else [link_id])
+
+
+@pytest.mark.parametrize('change', ['failed', 'running', 'generation'])
+def test_retained_comparison_is_marked_unavailable_when_source_attempt_changes(database, tmp_path, monkeypatch, change):
+    from app.workstations import api
+    from app.workstations.models import SourceRun, SourceSnapshot
+    from test_workstations_reconcile import run, Client, NOW
+    from datetime import datetime, timedelta
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None): return NOW + timedelta(seconds=3)
+    monkeypatch.setattr(api, 'datetime', Clock)
+    assert run(database, tmp_path)['status'] == 'success'
+    with database() as db:
+        assert api.snapshot_state(db, db.get(SourceSnapshot, 'reconciliation'))['stale'] is False
+    if change == 'failed':
+        controller = Client(); controller.failure = 'dns'
+        assert run(database, tmp_path, client=controller, clock=lambda: NOW + timedelta(seconds=1))['status'] == 'degraded'
+    else:
+        with database() as db:
+            if change == 'running':
+                db.add(SourceRun(batch_id=str(uuid.uuid4()), source='dns', status='running', started_at=NOW + timedelta(seconds=1)))
+            else: db.get(SourceSnapshot, 'dns').generation = 'changed'
+            db.commit()
+    with database() as db:
+        result = api.snapshot_state(db, db.get(SourceSnapshot, 'reconciliation'))
+        assert result['stale'] is True
+        assert {'failed': 'source_unavailable', 'running': 'refresh_in_progress', 'generation': 'source_changed'}[change] in result['stale_reasons']
 
 
 def test_running_operation_publishes_its_current_phase_before_remote_reply(database):

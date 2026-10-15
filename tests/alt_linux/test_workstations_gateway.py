@@ -141,6 +141,16 @@ def test_matching_apply_requests_return_one_backend_job(tmp_path):
     assert first['data']['job_id'] == 'job-20261015T000000Z-12345678'
 
 
+def test_component_preflight_exposes_only_safe_blocker_evidence():
+    from alt_deploy.workstations_projection import public_plan
+    projected = public_plan({'payload': {'action': 'blocked',
+        'preflight': {'ready': False, 'error_code': 'component_package_source_unverified', 'stdout': 'private-marker'},
+        'verification': {'software.onlyoffice': {'status': 'unknown', 'raw': 'private-marker'}}}})
+    assert projected['preflight'] == {'ready': False, 'error_code': 'component_package_source_unverified'}
+    assert projected['verification']['software.onlyoffice']['status'] == 'unknown'
+    assert 'private-marker' not in json.dumps(projected)
+
+
 def test_invalid_schema_or_typed_identity_is_rejected(tmp_path):
     for request in (dict(envelope(), schema_version=True), dict(envelope(), extra='bad'),
                     envelope('machines.show', {'machine_uuid': '192.0.2.1'}),

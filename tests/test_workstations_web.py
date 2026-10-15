@@ -35,6 +35,9 @@ def test_job_source_reconciliation_pages_use_stable_typed_identifiers(tmp_path, 
         response = client.get('/workstations/' + path)
         assert response.status_code == 200 and 'data-workstations' in response.text
     assert client.get('/workstations/jobs/192.0.2.1').status_code in (404, 422)
+    sources = client.get('/workstations/sources').text
+    assert 'name="device_key"' in sources and 'name="component"' in sources
+    assert 'data-journal-evidence' in sources
 
 
 def test_plan_view_is_owned_escapes_directory_text_and_requires_current_permission(tmp_path, monkeypatch):
@@ -82,3 +85,26 @@ def test_apply_receipt_cannot_be_used_as_a_plan_page(tmp_path, monkeypatch):
         db.commit()
     response = client.get('/workstations/plans/' + plan_id)
     assert response.status_code == 200 and 'Actual plan machine' in response.text
+
+
+def test_blocked_component_plan_shows_reason_and_disables_confirmation(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    from app.db import get_sessionmaker
+    from app.models import WebUser
+    from app.workstations.models import WorkstationRequest
+    from sqlalchemy import select
+    plan_id = 'setup-component-' + 'c' * 64
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(WebUser).where(WebUser.username == 'admin'))
+        db.add(WorkstationRequest(actor='user:' + str(user.id), action='component_plans.create',
+            permission='workstations:plan', intent_sha256='b' * 64, status='succeeded',
+            data_json={'plan_id': plan_id, 'sha256': 'c' * 64, 'machine': {}, 'user': {}, 'components': [],
+                'expires_at': '2099-01-01T00:00:00Z', 'action': 'blocked',
+                'preflight': {'ready': False, 'error_code': 'component_package_source_unverified'},
+                'verification': {'software.onlyoffice': {'status': 'unknown', 'acceptance_status': 'pending'}}}))
+        db.commit()
+    page = client.get('/workstations/plans/' + plan_id)
+    assert page.status_code == 200 and 'Установка заблокирована' in page.text
+    assert 'component_package_source_unverified' in page.text and 'unknown' in page.text and 'pending' in page.text
+    assert re.search(r'<input[^>]*name="confirmed"[^>]*disabled', page.text)
+    assert re.search(r'<button[^>]*type="submit"[^>]*disabled', page.text)

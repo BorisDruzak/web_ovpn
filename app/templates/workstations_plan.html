@@ -2,12 +2,18 @@
 {% block workstation_attributes %}data-plan-id="{{ plan.plan_id }}" data-submitted="{{ 'true' if submitted else 'false' }}"{% if previous_operation %} data-existing-operation="{{ previous_operation }}"{% endif %}{% endblock %}
 {% block workstation_content %}
 {% set profile = plan.get('profile') or {} %}
+{% set preflight = plan.get('preflight') or {} %}
+{% set component_plan = plan.plan_id.startswith('setup-component-') %}
+{% set blocked = plan.get('action') == 'blocked' or preflight.get('ready') == false or (component_plan and plan.get('action') not in ['noop', 'install', 'repair']) %}
 <section class="panel"><a href="/workstations">← К рабочим местам</a><h2>План изменений</h2>
   <dl class="details"><dt>Компьютер</dt><dd>{{ plan.machine.hostname or plan.machine.uuid }}</dd>
     <dt>Сотрудник</dt><dd>{{ plan.user.display_name or plan.user.login or 'Существующее назначение' }}{% if plan.user.login %} · {{ plan.user.login }}{% endif %}</dd>
     <dt>Профиль</dt><dd>{{ profile.name or profile.id or 'Отдельный компонент' }}</dd>
     <dt>Действует до</dt><dd><time>{{ plan.expires_at }}</time></dd></dl>
   <h3>Компоненты</h3><ul>{% for component in plan.components %}<li>{{ component.id }} · версия {{ component.version }}</li>{% else %}<li>Нет опубликованных сведений о компонентах.</li>{% endfor %}</ul>
+  {% if component_plan %}<p>Действие: {{ {'noop': 'Изменения не требуются', 'install': 'Установка', 'repair': 'Исправление'}.get(plan.get('action'), 'Установка заблокирована') }}</p>{% endif %}
+  {% if blocked %}<div class="alert warn"><h3>Установка заблокирована</h3><p>Устраните причину предварительной проверки и подготовьте новый план.</p>{% if preflight.get('error_code') %}<p class="mono">{{ preflight.error_code }}</p>{% endif %}</div>{% endif %}
+  {% if plan.get('verification') %}<h3>Проверки компонентов</h3><dl>{% for component, state in plan.verification.items() %}<dt>{{ component }}</dt><dd>Техническая проверка: {{ state.get('status') or state.get('installation_status') or 'Нет сведений' }} · Приёмка: {{ state.get('acceptance_status') or 'Нет сведений' }}{% if state.get('operator_action') %} · {{ state.operator_action }}{% endif %}</dd>{% endfor %}</dl>{% endif %}
   {% if plan.changes %}<h3>Планируемые изменения</h3><ul>{% for change in plan.changes %}<li>{{ change }}</li>{% endfor %}</ul>{% endif %}
   {% if plan.warnings %}<div class="alert warn"><h3>Условия и предупреждения</h3><ul>{% for warning in plan.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div>{% endif %}
   {% if plan.deferred_actions %}<h3>Действия после установки</h3><ul>{% for action in plan.deferred_actions %}<li>{{ action }}</li>{% endfor %}</ul>{% endif %}
@@ -16,8 +22,8 @@
     {% if previous_apply.job_id %}<a href="/workstations/jobs/{{ previous_apply.job_id|urlencode }}">Открыть исходное задание</a>
     {% elif previous_status == 'unknown' %}<p>UNKNOWN: исход не подтверждён. Проверьте исходную квитанцию и историю контроллера.</p>
     {% else %}<p>Состояние исходного запроса: {{ previous_status }}</p>{% endif %}</div>{% endif %}
-  <form data-apply-plan class="ws-confirm"><label class="checkbox"><input type="checkbox" name="confirmed" required {% if submitted %}disabled{% endif %}>Подтверждаю показанный план</label>
-    <button type="submit" class="button primary" {% if not capabilities.apply or submitted %}disabled{% endif %}>Поставить в очередь</button><p data-plan-expiry role="status"></p></form>
+  <form data-apply-plan class="ws-confirm"><label class="checkbox"><input type="checkbox" name="confirmed" required {% if submitted or blocked %}disabled{% endif %}>Подтверждаю показанный план</label>
+    <button type="submit" class="button primary" {% if not capabilities.apply or submitted or blocked %}disabled{% endif %}>Поставить в очередь</button><p data-plan-expiry role="status"></p></form>
   {% if not capabilities.apply %}<p class="muted">Для запуска требуется разрешение «Запуск настройки рабочих мест».</p>{% endif %}
   <script type="application/json" data-plan>{{ plan|tojson }}</script>
 </section>

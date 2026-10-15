@@ -20,6 +20,31 @@ class SourceError(Exception):
         super().__init__(code)
 
 
+def coherence_reasons(db, snapshot, now):
+    """Last complete data can remain visible while its sources are unavailable."""
+    from sqlalchemy import select
+    from .models import SourceRun, SourceSnapshot
+    generations = snapshot.data_json.get('generations', {})
+    names = ('controller', 'ad', 'dns', 'netctl')
+    if not isinstance(generations, dict) or set(generations) != set(names):
+        return ['source_incomplete']
+    reasons = []
+    for name, generation in generations.items():
+        source = db.get(SourceSnapshot, name, populate_existing=True)
+        if source is None or source.generation != generation or source.batch_id != snapshot.batch_id:
+            reasons.append('source_changed')
+        if source is None or not timedelta(0) <= now - source.observed_at <= MAX_AGE:
+            reasons.append('source_stale')
+    attempts = set(db.scalars(select(SourceRun.status).where(SourceRun.source.in_((*names, 'reconciliation')),
+        SourceRun.batch_id != snapshot.batch_id, SourceRun.started_at >= snapshot.captured_at,
+        SourceRun.status.in_(('error', 'running'))).distinct()))
+    if 'error' in attempts:
+        reasons.append('source_unavailable')
+    if 'running' in attempts:
+        reasons.append('refresh_in_progress')
+    return list(dict.fromkeys(reasons))
+
+
 def timestamp(value):
     try:
         result = datetime.fromisoformat(value.replace('Z', '+00:00'))

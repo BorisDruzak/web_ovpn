@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -168,4 +169,37 @@ class WorkstationsService:
                     row.finished_at = datetime.now(timezone.utc)
                     db.commit()
                     result = self._public(row)
+        if result['status'] == 'unknown' and result['action'] == 'plans.apply':
+            result = self._native_receipt(result, actor=actor)
         return result
+
+    def _native_receipt(self, result, *, actor):
+        """Resolve admission only from the original read-only native receipt.
+
+        Historical UNKNOWN phases and the generic panel ledger remain intact.
+        Native job UNKNOWN is independent from proof that this request admitted it.
+        """
+        try:
+            receipt = self.client.call('receipts.status', {'request_id': result['request_id']},
+                request_id=str(uuid.uuid4()), scope='read')
+            if receipt.get('request_id') != result['request_id'] or receipt.get('state') != 'successful':
+                return result
+            data = receipt['data']
+            if not isinstance(data, dict) or not re.fullmatch(r'job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}', data.get('job_id', '')):
+                return result
+            valid_uuid(data.get('machine_uuid'))
+            with self.factory() as db:
+                row = db.get(WorkstationRequest, result['request_id'])
+                if row.actor != actor or row.action != 'plans.apply' or row.status != 'unknown':
+                    return self._public(row)
+                if data.get('plan_id') != row.parameters_json['plan_id'] or data.get('plan_sha256') != row.parameters_json['sha256']:
+                    return result
+                row.data_json = public_payload({key: data[key] for key in
+                    ('job_id', 'machine_uuid', 'state', 'plan_id', 'plan_sha256') if key in data})
+                row.status, row.error_code = 'succeeded', None
+                row.phases_json = list(row.phases_json) + [{'stage': 'native_receipt', 'status': 'succeeded',
+                    'timestamp': datetime.now(timezone.utc).isoformat()}]
+                db.commit()
+                return self._public(row)
+        except Exception:
+            return result

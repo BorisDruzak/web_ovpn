@@ -32,6 +32,8 @@
   }
   function canApply(plan,{confirmed=false,allowed=false,submitted=false}={},now=Date.now()){
     return !!(allowed && confirmed && !submitted && plan && /^[0-9a-f]{64}$/.test(plan.sha256)
+      && plan.action !== 'blocked' && (!plan.preflight || plan.preflight.ready !== false)
+      && (!String(plan.plan_id).startsWith('setup-component-') || ['noop','install','repair'].includes(plan.action))
       && [ 'setup-' + plan.sha256, 'setup-component-' + plan.sha256 ].includes(plan.plan_id)
       && Number.isFinite(Date.parse(plan.expires_at)) && Date.parse(plan.expires_at) > now);
   }
@@ -250,7 +252,8 @@
     on(one('[data-more-findings]'),'click',()=>findings(false));on(one('[data-reconcile]'),'click',async()=>{await action('/reconcile',{});await findings();});
     let journalCursor=null,journalFilters={};
     async function journal(reset=true){if(reset){journalCursor=null;one('[data-journal]').replaceChildren();}const params=new URLSearchParams(journalFilters);params.set('limit','100');if(journalCursor)params.set('cursor',journalCursor);
-      const data=await request('/journal?'+params);data.events.forEach(event=>appendEvent(one('[data-journal]'),event));journalCursor=data.next_cursor;one('[data-more-journal]').hidden=!journalCursor;one('[data-journal-export]').href='/api/v1/workstations/journal/export?'+params;}
+      const data=await request('/journal?'+params);data.events.forEach(event=>appendEvent(one('[data-journal]'),event));journalCursor=data.next_cursor;one('[data-more-journal]').hidden=!journalCursor;one('[data-journal-export]').href='/api/v1/workstations/journal/export?'+params;
+      notice('[data-journal-evidence]',data.native_complete ? 'Опубликованная история контроллера прочитана полностью. Выборка отображается по страницам.' : 'История контроллера недоступна или неполна. Показанные события нельзя считать полной историей.' + (data.native_errors||[]).map(error=>' '+error.code).join(''));}
     on(one('[data-journal-filter]'),'submit',async evt=>{journalFilters=Object.fromEntries(Array.from(new FormData(evt.currentTarget)).filter(([,value])=>value));await journal();});on(one('[data-more-journal]'),'click',()=>journal(false));
     if(!root.dataset.jobId)summary().catch(error);
     if(permissions.read){if(one('[data-device-list]'))devices().catch(error);if(one('[data-setup-form]'))catalog().catch(error);if(one('[data-jobs]'))jobs().catch(error);if(root.dataset.deviceKey)detail().catch(error);if(one('[data-sources]'))sources().catch(error);if(one('[data-findings]'))findings().catch(error);}

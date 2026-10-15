@@ -69,3 +69,66 @@ def test_ended_link_keeps_both_confirmation_and_ending_events(database):
         db.commit()
         rows = JournalService().list(db, filters={}, cursor=None, limit=100)['events']
         assert [row['action'] for row in rows] == ['link.confirmed', 'link.ended']
+
+
+@pytest.mark.parametrize('filter_name', ['device_key', 'component'])
+def test_filtered_journal_includes_native_history_and_apply_plan_association(database, filter_name):
+    from app.workstations.journal import JournalService
+    from app.workstations.models import WorkstationRequest
+    machine, other = str(uuid.uuid4()), str(uuid.uuid4())
+    jobs = ['job-20261015T000000Z-12345678', 'job-20261015T000001Z-12345679']
+    plan_id = 'setup-component-' + 'a' * 64
+    class Client:
+        def __init__(self): self.calls = []
+        def call(self, operation, parameters, **kwargs):
+            self.calls.append((operation, parameters))
+            if operation == 'jobs.list':
+                offset = parameters.get('offset', 0)
+                return {'jobs': [{'job_id': jobs[offset], 'machine_uuid': machine if offset == 0 else other}],
+                    'total': 2, 'next_offset': offset + 1}
+            if operation == 'jobs.status':
+                first = parameters['job_id'] == jobs[0]
+                return {'job': {'job_id': parameters['job_id'], 'machine_uuid': machine if first else other,
+                    'plan_id': plan_id if first else 'setup-component-' + 'b' * 64,
+                    'components': {'software.onlyoffice' if first else 'system.base': {}},
+                    'history': [{'state': 'running', 'stage': 'apply', 'at': NOW.isoformat()}]}}
+            assert operation == 'jobs.events'
+            assert parameters['job_id'] == jobs[0]
+            return {'events': [{'sequence': 1, 'timestamp': NOW.isoformat(), 'stage': 'apply',
+                'component_id': 'software.onlyoffice', 'type': 'task_failed', 'code': 'task_failed'}], 'total': 1, 'next_sequence': 1}
+    client = Client()
+    with database() as db:
+        receipt = WorkstationRequest(actor='synthetic', action='plans.apply', permission='workstations:apply',
+            intent_sha256='a' * 64, status='unknown', parameters_json={'plan_id': plan_id}, created_at=NOW)
+        db.add(receipt); db.commit()
+        filters = {filter_name: 'machine:' + machine if filter_name == 'device_key' else 'software.onlyoffice'}
+        value = JournalService(client=client).list(db, filters=filters, limit=100)
+        assert {row['action'] for row in value['events']} == {'plans.apply', 'job.stage', 'job.event'}
+        assert any(row.get('request_id') == receipt.id for row in value['events'])
+        assert value['evidence'] == 'complete' and value['native_complete'] is True
+        assert len([call for call in client.calls if call[0] == 'jobs.list']) == 2
+        assert all(row.get('job_id') in (None, jobs[0]) for row in value['events'])
+
+
+def test_native_list_failure_is_explicit_in_filtered_journal(database):
+    from app.workstations.journal import JournalService
+    from app.workstations.sources import SourceError
+    class Client:
+        def call(self, *args, **kwargs): raise SourceError('workstations_transport_timeout')
+    with database() as db:
+        value = JournalService(client=Client()).list(db, filters={'component': 'software.onlyoffice'}, limit=2)
+        assert value['native_complete'] is False and value['evidence'] == 'unavailable'
+        assert value['native_errors'] == [{'code': 'workstations_transport_timeout'}]
+
+
+def test_component_stages_are_not_attributed_to_unproven_component(database):
+    from app.workstations.journal import JournalService
+    class Client:
+        def call(self, operation, parameters, **kwargs):
+            if operation == 'jobs.list':
+                return {'jobs': [{'job_id': 'job-20261015T000000Z-12345678'}], 'total': 1, 'next_offset': 1}
+            if operation == 'jobs.status': return {'job': {'components': {'system.base': {}}, 'history': []}}
+            raise AssertionError('Unrelated job events must not be read')
+    with database() as db:
+        value = JournalService(client=Client()).list(db, filters={'component': 'software.onlyoffice'})
+        assert value['events'] == [] and value['native_complete'] is True

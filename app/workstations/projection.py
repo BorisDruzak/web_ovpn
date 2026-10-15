@@ -34,6 +34,19 @@ def relationship_revision(db):
     return fingerprint([count, revision])
 
 
+def device_aliases(device):
+    """Fold only physically unambiguous aliases from the current projection."""
+    result = {device['device_key']}
+    if device.get('identity_state') == 'ambiguous':
+        return result
+    result.update(device.get('network_keys', []))
+    if device.get('inventory_asset_id'):
+        result.add('inventory:' + device['inventory_asset_id'])
+    if device.get('machine_uuid'):
+        result.add('machine:' + device['machine_uuid'])
+    return result
+
+
 def build_projection(db, sources, now):
     findings = []
     def finding(code, key, **evidence):
@@ -166,9 +179,7 @@ def build_projection(db, sources, now):
                         finding('dns_reverse_mismatch', key, address=address)
         else:
             finding('network_only', key)
-        aliases = {key, *row['network_keys']}
-        if row['inventory_asset_id']:
-            aliases.add('inventory:' + row['inventory_asset_id'])
+        aliases = device_aliases(row)
         active = list({link.id: link for alias in aliases for link in explicit_by_device[alias]}.values())
         identities = {(link.user_guid, link.user_sid) for link in active}
         native = row.get('native_assignment')

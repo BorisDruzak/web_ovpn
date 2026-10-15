@@ -60,3 +60,11 @@ test('only a current exact plan with explicit checkbox can be applied once', () 
   assert.equal(canApply({...plan, sha256: 'b'.repeat(64)}, {confirmed: true, allowed: true}), false);
   assert.equal(canApply(plan, {confirmed: true, allowed: true, submitted: true}), false);
 });
+
+test('component blockers and incomplete action evidence disable submission', () => {
+  const plan={plan_id:'setup-component-'+'a'.repeat(64),sha256:'a'.repeat(64),expires_at:'2099-01-01T00:00:00Z'};
+  const consent={confirmed:true,allowed:true};
+  for(const action of ['blocked','unknown',undefined]) assert.equal(canApply({...plan,action},consent),false);
+  assert.equal(canApply({...plan,action:'install',preflight:{ready:false}},consent),false);
+  for(const action of ['noop','install','repair']) assert.equal(canApply({...plan,action,preflight:{ready:true}},consent),true);
+});

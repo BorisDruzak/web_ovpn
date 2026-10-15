@@ -24,8 +24,8 @@ from .client import WorkstationsClient
 from .journal import JournalService, error_details, public_payload, safe_code
 from .models import DirectoryLink, Finding, SourceRun, SourceSnapshot
 from .service import WorkstationsService
-from .sources import MAX_AGE, SourceError, valid_uuid
-from .projection import relationship_revision
+from .sources import MAX_AGE, SourceError, valid_uuid, coherence_reasons
+from .projection import relationship_revision, device_aliases
 from ..inventory.network_projection import projection_epoch
 
 controller_client = WorkstationsClient
@@ -101,6 +101,8 @@ def snapshot_state(db, snapshot):
         reasons.append('inventory_changed')
     if snapshot.data_json.get('link_revision') != relationship_revision(db):
         reasons.append('links_changed')
+    reasons.extend(coherence_reasons(db, snapshot, datetime.now(timezone.utc)))
+    reasons = list(dict.fromkeys(reasons))
     return {'stale': bool(reasons), 'stale_reasons': reasons, 'observed_at': snapshot.observed_at.isoformat()}
 
 
@@ -206,7 +208,8 @@ def device(request: Request, device_key: DeviceKey, owner=Depends(actor), db: Se
     if row is None:
         raise HTTPException(404)
     from .links import public_link
-    links = [public_link(link) for link in db.scalars(select(DirectoryLink).where(DirectoryLink.device_key == device_key).order_by(DirectoryLink.created_at.desc()).limit(100))]
+    aliases = device_aliases(row) if 'device_key' in row else {device_key}
+    links = [public_link(link) for link in db.scalars(select(DirectoryLink).where(DirectoryLink.device_key.in_(aliases)).order_by(DirectoryLink.created_at.desc()).limit(100))]
     return response({'device': row, 'links': links, 'source_revision': snapshot.generation if snapshot else None,
                      **(snapshot_state(db, snapshot) if snapshot else {})})
 
