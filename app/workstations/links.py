@@ -75,6 +75,12 @@ def _active(db, device):
         DirectoryLink.status == 'confirmed', DirectoryLink.ended_at.is_(None)).execution_options(populate_existing=True)))
 
 
+def _relationship_revision(db, device):
+    rows = db.execute(select(DirectoryLink.id, DirectoryLink.revision, DirectoryLink.status).where(
+        DirectoryLink.device_key.in_(_aliases(device)), DirectoryLink.status.in_(('confirmed', 'ended'))).order_by(DirectoryLink.id))
+    return fingerprint([list(row) for row in rows])
+
+
 def _identity(rows, guid, *, usable=False):
     matches = [row for row in rows if row['object_guid'] == guid]
     if len(matches) != 1 or usable and matches[0]['state'] != 'enabled':
@@ -116,7 +122,8 @@ def preview_link(db, *, device_key, user_guid, computer_guid, source_revision, c
         source_revision=source_revision, expected_inventory_revision=device.get('inventory_revision'),
         created_by=actor, created_at=_now(clock), expires_at=_now(clock) + timedelta(minutes=5),
         evidence_json={'user': user, 'computer': computer, 'device': device,
-                       'inventory_epoch': snapshot.inventory_revision, 'native': device.get('native_assignment')})
+                       'inventory_epoch': snapshot.inventory_revision, 'native': device.get('native_assignment'),
+                       'relationship_revision': _relationship_revision(db, device)})
     db.add(row); db.flush()
     return public_link(row)
 
@@ -152,6 +159,8 @@ def confirm_link(db, *, preview_id, expected_revision, actor, reason, client=Non
             raise LinkConflict('workstations_link_preview_changed')
         snapshot, device, sources = _context(db, row.device_key, row.source_revision, _now(clock))
         if fingerprint(device) != fingerprint(row.evidence_json['device']) or _active(db, device):
+            raise LinkConflict('workstations_link_preview_changed')
+        if row.evidence_json.get('relationship_revision') != _relationship_revision(db, device):
             raise LinkConflict('workstations_link_preview_changed')
         if row.computer_guid and db.scalar(select(DirectoryLink.id).where(DirectoryLink.computer_guid == row.computer_guid,
                 DirectoryLink.status == 'confirmed', DirectoryLink.ended_at.is_(None)).limit(1)):

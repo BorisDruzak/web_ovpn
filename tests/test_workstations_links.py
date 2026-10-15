@@ -192,3 +192,13 @@ def test_deleted_inventory_card_refuses_pending_confirmation(database, tmp_path)
         db.get(InventoryAsset, card_id).deleted_at = NOW
         db.commit()
     with pytest.raises(LinkConflict): confirm((database, revision), value)
+
+
+def test_preview_cannot_survive_an_intervening_confirmation_and_end(ready):
+    from app.workstations.links import end_link, LinkConflict
+    first, old_preview = preview(ready), preview(ready)
+    confirm(ready, first)
+    with ready[0]() as db:
+        end_link(db, link_id=first['id'], expected_revision=2, actor='synthetic', reason='Compared again', clock=lambda: NOW)
+        db.commit()
+    with pytest.raises(LinkConflict): confirm(ready, old_preview)

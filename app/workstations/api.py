@@ -25,6 +25,8 @@ from .journal import JournalService, error_details, public_payload, safe_code
 from .models import DirectoryLink, Finding, SourceRun, SourceSnapshot
 from .service import WorkstationsService
 from .sources import MAX_AGE, SourceError, valid_uuid
+from .projection import relationship_revision
+from ..inventory.network_projection import projection_epoch
 
 controller_client = WorkstationsClient
 UUIDText = Annotated[str, Field(pattern=r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')]
@@ -89,6 +91,17 @@ def query(request, keys):
 
 def _call(operation, parameters):
     return controller_client().call(operation, parameters, request_id=str(uuid.uuid4()))
+
+
+def snapshot_state(db, snapshot):
+    reasons = []
+    if not timedelta(0) <= datetime.now(timezone.utc) - snapshot.observed_at <= MAX_AGE:
+        reasons.append('source_stale')
+    if snapshot.inventory_revision != projection_epoch(db):
+        reasons.append('inventory_changed')
+    if snapshot.data_json.get('link_revision') != relationship_revision(db):
+        reasons.append('links_changed')
+    return {'stale': bool(reasons), 'stale_reasons': reasons, 'observed_at': snapshot.observed_at.isoformat()}
 
 
 class Body(BaseModel):
@@ -180,8 +193,7 @@ def devices(request: Request, offset: int = Query(0, ge=0, le=10000), limit: int
         return response(dict(native, devices=[dict(row, device_key='machine:' + row['uuid'], machine_uuid=row['uuid']) for row in native['machines']], evidence='registry_only'))
     rows = snapshot.data_json['devices']
     return response({'devices': rows[offset:offset + limit], 'total': len(rows), 'next_offset': min(len(rows), offset + limit),
-                     'source_revision': snapshot.generation, 'observed_at': snapshot.observed_at.isoformat(),
-                     'stale': datetime.now(timezone.utc) - snapshot.observed_at > MAX_AGE})
+                     'source_revision': snapshot.generation, **snapshot_state(db, snapshot)})
 
 
 @router.get('/devices/{device_key}')
@@ -195,7 +207,8 @@ def device(request: Request, device_key: DeviceKey, owner=Depends(actor), db: Se
         raise HTTPException(404)
     from .links import public_link
     links = [public_link(link) for link in db.scalars(select(DirectoryLink).where(DirectoryLink.device_key == device_key).order_by(DirectoryLink.created_at.desc()).limit(100))]
-    return response({'device': row, 'links': links, 'source_revision': snapshot.generation if snapshot else None})
+    return response({'device': row, 'links': links, 'source_revision': snapshot.generation if snapshot else None,
+                     **(snapshot_state(db, snapshot) if snapshot else {})})
 
 
 @router.get('/catalog')

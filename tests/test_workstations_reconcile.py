@@ -154,6 +154,18 @@ def test_inventory_revision_race_discards_coherent_publication(database, tmp_pat
         assert db.get(SourceSnapshot, 'reconciliation') is None
 
 
+def test_link_revision_race_discards_coherent_publication(database, tmp_path):
+    from app.workstations.models import DirectoryLink, SourceSnapshot
+    def change():
+        with database() as db:
+            db.add(DirectoryLink(device_key='machine:' + MACHINE, user_guid=USER, user_sid='S-1-5-21-1', user_login='synthetic',
+                status='confirmed', revision=2, source_revision='a' * 64, confirmed_at=NOW))
+            db.commit()
+    assert run(database, tmp_path, before_publish=change)['status'] == 'degraded'
+    with database() as db:
+        assert db.get(SourceSnapshot, 'reconciliation') is None
+
+
 def test_worker_lock_prevents_overlapping_run(database, tmp_path):
     from app.workstations.reconcile import reconciliation_lock
     lock = tmp_path / 'worker' / 'reconcile.lock'

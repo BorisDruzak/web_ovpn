@@ -6,7 +6,7 @@ import ipaddress
 import json
 from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from ..inventory.lookup import normalize_mac, InventoryLookupError
 from ..inventory.models import InventoryAsset, InventoryNetctlBinding, InventoryExternalBindingStatus as Status
@@ -26,6 +26,12 @@ def mac_key(value):
         return 'mac:' + normalized
     except (InventoryLookupError, ValueError, TypeError, AttributeError):
         return None
+
+
+def relationship_revision(db):
+    count, revision = db.execute(select(func.count(DirectoryLink.id), func.coalesce(func.sum(DirectoryLink.revision), 0))
+        .where(DirectoryLink.status.in_(('confirmed', 'ended')))).one()
+    return fingerprint([count, revision])
 
 
 def build_projection(db, sources, now):
@@ -206,4 +212,5 @@ def build_projection(db, sources, now):
         item['id'] = fingerprint([item['device_key'], item['code'], item['evidence']])
     return {'devices': sorted(grouped.values(), key=lambda row: (str(row['hostname']).casefold(), row['device_key'])),
             'findings': list({row['id']: row for row in findings}.values()),
+            'link_revision': relationship_revision(db),
             'generations': {key: value['generation'] for key, value in sources.items()}}

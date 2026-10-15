@@ -20,7 +20,7 @@ from ..inventory.network_projection import projection_epoch
 from ..netctl_client import run_netctl
 from .client import WorkstationsClient
 from .models import Finding, SourceRun, SourceSnapshot
-from .projection import build_projection, fingerprint
+from .projection import build_projection, fingerprint, relationship_revision
 from .schema import check_schema
 from .sources import SourceError, collect_source, timestamp
 
@@ -125,6 +125,7 @@ def reconcile_once(*, client=None, netctl_call=run_netctl, session_factory=None,
             try:
                 with factory() as db:
                     epoch = projection_epoch(db)
+                    links_epoch = relationship_revision(db)
                     payload = build_projection(db, sources, clock())
                     if before_publish is not None:
                         before_publish()
@@ -135,8 +136,10 @@ def reconcile_once(*, client=None, netctl_call=run_netctl, session_factory=None,
                         .values(version=epoch)).rowcount
                     if changed != 1:
                         raise SourceError('workstations_inventory_revision_changed')
+                    if links_epoch != payload['link_revision'] or links_epoch != relationship_revision(db):
+                        raise SourceError('workstations_link_revision_changed')
                     payload.update(schema_version=1, complete=True, generated_at=clock().isoformat(), inventory_revision=epoch)
-                    payload['generation'] = fingerprint([payload['generations'], epoch, payload['devices'], payload['findings']])
+                    payload['generation'] = fingerprint([payload['generations'], epoch, payload['link_revision'], payload['devices'], payload['findings']])
                     _snapshot(db, 'reconciliation', payload, batch_id, clock(), inventory_revision=epoch)
                     current = {item['id']: item for item in payload['findings']}
                     old = {row.id: row for row in db.scalars(select(Finding))}
