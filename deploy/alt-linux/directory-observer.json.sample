@@ -1,0 +1,10 @@
+{
+  "uri": "ldap://directory.example.invalid",
+  "domain_base": "DC=example,DC=invalid",
+  "user_bases": ["OU=Employees,DC=example,DC=invalid"],
+  "computer_bases": ["OU=Workstations,DC=example,DC=invalid"],
+  "dns_bases": ["CN=MicrosoftDNS,DC=DomainDnsZones,DC=example,DC=invalid"],
+  "dns_zones": ["example.invalid", "2.0.192.in-addr.arpa"],
+  "auth": "gssapi",
+  "credential_source": "readonly-vault"
+}

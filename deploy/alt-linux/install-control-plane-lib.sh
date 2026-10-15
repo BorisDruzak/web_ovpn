@@ -174,6 +174,8 @@ validate_source_layout() {
         "${ALT_ROOT}/install-control-plane-args.sh"
         "${ALT_ROOT}/install-control-plane-lib.sh"
         "${ALT_ROOT}/install-workstations-gateway.sh"
+        "${ALT_ROOT}/provision-directory-observer.ps1"
+        "${ALT_ROOT}/directory-observer.json.sample"
     )
 
     local required_file

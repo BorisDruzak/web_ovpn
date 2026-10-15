@@ -82,11 +82,13 @@ validate_netctl_directory() {
 
 SRC="${SRC:-/tmp/openvpn-web-src}"
 APP="${APP:-/opt/openvpn-web}"
+source "$SRC/deploy/install-workstations-web-lib.sh"
 
 # Quiesce an existing installation before replacing code or dependencies.
 # An early or late installer failure must never restart an unverified worker.
-trap 'installer_status=$?; if [[ "$installer_status" -ne 0 ]]; then endpoint_platform_quiesce || true; fi' EXIT
+trap 'installer_status=$?; if [[ "$installer_status" -ne 0 ]]; then endpoint_platform_quiesce || true; workstations_quiesce || true; fi' EXIT
 endpoint_platform_quiesce
+workstations_quiesce
 
 if [[ ! -d "$SRC/app" ]]; then
   echo "missing source: $SRC" >&2
@@ -336,6 +338,8 @@ sudo_cmd -u netctl env PYTHONPATH="$APP" "$APP/.venv/bin/python" -c \
   'from netctl.config import DEFAULT_DB_URL; from netctl.db import connect; connection = connect(DEFAULT_DB_URL); connection.close()'
 
 sudo_cmd install -m 0644 "$SRC/deploy/openvpn-web.service" /etc/systemd/system/openvpn-web.service
+sudo_cmd install -m 0644 "$SRC/deploy/workstations-reconcile.service" /etc/systemd/system/workstations-reconcile.service
+sudo_cmd install -m 0644 "$SRC/deploy/workstations-reconcile.timer" /etc/systemd/system/workstations-reconcile.timer
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.service" /etc/systemd/system/netctl-collect.service
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-collect.timer" /etc/systemd/system/netctl-collect.timer
 sudo_cmd install -m 0644 "$SRC/deploy/netctl-reconcile.service" /etc/systemd/system/netctl-reconcile.service
@@ -366,6 +370,7 @@ else
   fi
 fi
 endpoint_platform_gate
+workstations_gate
 sudo_cmd systemctl enable openvpn-web.service
 sudo_cmd systemctl enable --now netctl-collect.timer
 sudo_cmd systemctl enable --now netctl-reconcile.timer

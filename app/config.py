@@ -88,11 +88,11 @@ class Settings:
     workstations_enabled: bool = False
     workstations_host: str = ''
     workstations_ssh_user: str = 'altserver'
-    workstations_read_key: Path = Path('/etc/openvpn-web/credentials/workstations_read')
-    workstations_execute_key: Path = Path('/etc/openvpn-web/credentials/workstations_execute')
+    workstations_read_key: Path = Path('/etc/openvpn-web/workstations/read_key')
+    workstations_execute_key: Path = Path('/etc/openvpn-web/workstations/execute_key')
     workstations_known_hosts: Path = Path('/etc/openvpn-web/workstations_known_hosts')
     workstations_reconcile_lock: Path = Path('/var/lib/openvpn-web/workstations/reconcile.lock')
-    workstations_api_credentials_file: Path = Path('/etc/openvpn-web/credentials/workstations-api.json')
+    workstations_api_credentials_file: Path = Path('/etc/openvpn-web/workstations/api-credentials.json')
 
     @property
     def allowed_download_roots(self) -> tuple[Path, ...]:
@@ -169,11 +169,11 @@ def get_settings() -> Settings:
         workstations_enabled=_bool_env('WORKSTATIONS_ENABLED', False),
         workstations_host=os.environ.get('WORKSTATIONS_HOST', ''),
         workstations_ssh_user=os.environ.get('WORKSTATIONS_SSH_USER', 'altserver'),
-        workstations_read_key=_path_env('WORKSTATIONS_READ_KEY', '/etc/openvpn-web/credentials/workstations_read'),
-        workstations_execute_key=_path_env('WORKSTATIONS_EXECUTE_KEY', '/etc/openvpn-web/credentials/workstations_execute'),
+        workstations_read_key=_path_env('WORKSTATIONS_READ_KEY', '/etc/openvpn-web/workstations/read_key'),
+        workstations_execute_key=_path_env('WORKSTATIONS_EXECUTE_KEY', '/etc/openvpn-web/workstations/execute_key'),
         workstations_known_hosts=_path_env('WORKSTATIONS_KNOWN_HOSTS', '/etc/openvpn-web/workstations_known_hosts'),
         workstations_reconcile_lock=_path_env('WORKSTATIONS_RECONCILE_LOCK', '/var/lib/openvpn-web/workstations/reconcile.lock'),
-        workstations_api_credentials_file=_path_env('WORKSTATIONS_API_CREDENTIALS_FILE', '/etc/openvpn-web/credentials/workstations-api.json'),
+        workstations_api_credentials_file=_path_env('WORKSTATIONS_API_CREDENTIALS_FILE', '/etc/openvpn-web/workstations/api-credentials.json'),
     )
 
 
