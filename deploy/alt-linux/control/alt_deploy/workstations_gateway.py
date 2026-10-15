@@ -32,6 +32,7 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 OPERATIONS = {
     'status': ((), ()), 'machines.list': ((), ('offset', 'limit')), 'machines.show': (('machine_uuid',), ()),
     'catalog.list': ((), ()), 'directory.search': (('query',), ('limit',)),
+    'directory.identity': (('kind', 'object_guid'), ()),
     'directory.snapshot': (('source',), ()), 'assignments.show': (('machine_uuid',), ()),
     'plans.create': (('machine_uuid', 'user_login', 'user_guid', 'user_sid', 'ou_id', 'software_profile'), ('remote_access_profile',)),
     'component_plans.create': (('machine_uuid', 'component_id'), ()),
@@ -74,7 +75,7 @@ def validate(operation, parameters):
             continue
         if not isinstance(value, str) or not value or len(value) > 1024 or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise fail('workstations_parameters_invalid', 'Operation value is invalid')
-        if name in ('machine_uuid', 'user_guid', 'request_id'):
+        if name in ('machine_uuid', 'user_guid', 'object_guid', 'request_id'):
             request_uuid(value)
         elif name == 'job_id' and not JOB_ID_RE.fullmatch(value):
             raise fail('workstations_parameters_invalid', 'Job identifier is invalid')
@@ -92,6 +93,8 @@ def validate(operation, parameters):
         raise fail('workstations_parameters_invalid', 'Employee search bound is invalid')
     if operation == 'directory.snapshot' and parameters['source'] not in ('ad', 'dns'):
         raise fail('workstations_parameters_invalid', 'Directory source is invalid')
+    if operation == 'directory.identity' and parameters['kind'] not in ('user', 'computer'):
+        raise fail('workstations_parameters_invalid', 'Directory identity kind is invalid')
     if operation == 'plans.apply':
         prefix = {'full_setup': 'setup-', 'component': 'setup-component-'}.get(parameters['kind'])
         if prefix is None or parameters['plan_id'] != prefix + parameters['sha256']:
@@ -163,6 +166,8 @@ class ControllerBackend:
             config = DirectoryObserverConfig.load(self.observer_path)
             if operation == 'directory.search':
                 return DirectoryObserver(config, settings=settings).search_users(p['query'], limit=p.get('limit', 50))
+            if operation == 'directory.identity':
+                return {'identity': DirectoryObserver(config, settings=settings).identity(p['kind'], p['object_guid'])}
             observer = DirectoryDNS if p['source'] == 'dns' else DirectoryObserver
             return dict(observer(config, settings=settings).collect(deadline=time.monotonic() + 120), source=p['source'])
         if operation == 'assignments.show':

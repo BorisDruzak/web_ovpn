@@ -118,10 +118,10 @@ Allowed operations: `status`, `machines.list`, `machines.show`, `catalog.list`, 
 
 Tables: `workstation_source_runs` (attempt/success/complete/generation/time/error/counts), `workstation_source_snapshots` (last complete bounded normalized source payload), `workstation_directory_links` (stable employee/computer/device references, revision, actor/reason/history), `workstation_findings` (typed evidence/revision/state), `workstation_requests` (actor/action/intent digest/request ID/receipt/outcome). Add database uniqueness for active per-device employee binding and request identity; keep schema transactions targeted.
 
-- [ ] Test idempotent migration, exact schema readiness, no unrelated repair, five-minute singleton behavior, fifteen-minute freshness, partial source failure, last-page truncation, duplicate MACs, future/naive timestamps, inventory revision changed mid-run, two interfaces mapped to one card and no automatic ownership mutation.
-- [ ] Run `python -m pytest tests/test_workstations_schema.py tests/test_workstations_reconcile.py -q`; confirm RED.
-- [ ] Build sources through Task 4 and existing `inventory.netctl_sync.read_current_snapshot`, inventory bindings and projection revision. Read Endpoint facts only from the existing local inventory projection. Publish only coherent complete generations; independently retain source failures/last success. Prune routine runs older than thirty days without removing binding audit or Setup jobs.
-- [ ] Run new suites and `python -m pytest tests/test_inventory_netctl_sync.py tests/test_inventory_network_projection.py tests/test_inventory_netctl_bindings.py -q`; commit `feat(workstations): reconcile directory DNS and inventory evidence`.
+- [x] Test idempotent migration, exact schema readiness, no unrelated repair, five-minute singleton behavior, fifteen-minute freshness, partial source failure, last-page truncation, duplicate MACs, future/naive timestamps, inventory revision changed mid-run, two interfaces mapped to one card and no automatic ownership mutation.
+- [x] Run `python -m pytest tests/test_workstations_schema.py tests/test_workstations_reconcile.py -q`; confirm RED.
+- [x] Build sources through Task 4 and existing `inventory.netctl_sync.read_current_snapshot`, inventory bindings and projection revision. Read Endpoint facts only from the existing local inventory projection. Publish only coherent complete generations; independently retain source failures/last success. Prune routine runs older than thirty days without removing binding audit or Setup jobs.
+- [x] Run new suites and `python -m pytest tests/test_inventory_netctl_sync.py tests/test_inventory_network_projection.py tests/test_inventory_netctl_bindings.py -q`; commit `feat(workstations): reconcile directory DNS and inventory evidence`.
 
 ## Task 6: Explicit employee/device links and conflict history
 
@@ -129,10 +129,10 @@ Tables: `workstation_source_runs` (attempt/success/complete/generation/time/erro
 
 **Interfaces:** `preview_link(db: Session, *, device_key: str, user_guid: str, computer_guid: str | None, source_revision: str) -> dict`; `confirm_link(db, *, preview_id: str, expected_revision: int, actor: str, reason: str) -> dict`; `end_link(db, *, link_id: str, expected_revision: int, actor: str, reason: str) -> dict`.
 
-- [ ] Write tests for homonymous employees, changed GUID/SID, one employee/several PCs, existing different protected assignment, existing employee replacement, disabled/deleted user, stale source preview, duplicated network identity, deleted card and optimistic revision races. Assert automatic refresh leaves the previous employee intact and records a discrepancy.
-- [ ] Run `python -m pytest tests/test_workstations_links.py -q`; observe failures.
-- [ ] Implement short-lived server-owned previews bound to all source and relationship revisions, explicit confirmation/reason and ended history. Use existing inventory confirmation service when a relation needs confirmation; require its expected manual revision. Portal links cannot manufacture a controller domain assignment or bypass native reconfiguration gates.
-- [ ] Re-run link and inventory revision/link suites; commit `feat(workstations): confirm employee device links with evidence`.
+- [x] Write tests for homonymous employees, changed GUID/SID, one employee/several PCs, existing different protected assignment, existing employee replacement, disabled/deleted user, stale source preview, duplicated network identity, deleted card and optimistic revision races. Assert automatic refresh leaves the previous employee intact and records a discrepancy.
+- [x] Run `python -m pytest tests/test_workstations_links.py -q`; observe failures.
+- [x] Implement short-lived server-owned previews bound to all source and relationship revisions, explicit confirmation/reason and ended history. Use existing inventory confirmation service when a relation needs confirmation; require its expected manual revision. Portal links cannot manufacture a controller domain assignment or bypass native reconfiguration gates.
+- [x] Re-run link and inventory revision/link suites; commit `feat(workstations): confirm employee device links with evidence`.
 
 ## Task 7: Permission-scoped API, async operations and safe journal
 

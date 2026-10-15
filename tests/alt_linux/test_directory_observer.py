@@ -52,6 +52,16 @@ class Source:
         return {'ldif': self.raw, 'truncated': self.truncated}
 
 
+def test_exact_identity_lookup_uses_binary_guid_and_rejects_contradictory_result():
+    source = Source(entry())
+    observer = api().DirectoryObserver(configuration(), transport=source)
+    result = observer.identity('user', str(uuid.UUID(int=1)))
+    assert result['object_guid'] == str(uuid.UUID(int=1))
+    assert '(objectGUID=' in source.calls[0]['ldap_filter'] and source.calls[0]['size_limit'] == 2
+    source.raw = entry(2)
+    with pytest.raises(ControlError): observer.identity('user', str(uuid.UUID(int=1)))
+
+
 def test_name_search_escapes_filter_and_disambiguates_homonyms():
     source = Source(entry() + entry(2))
     result = api().DirectoryObserver(configuration(), transport=source).search_users('Syn*)(x=*)')

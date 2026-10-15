@@ -198,6 +198,29 @@ class DirectoryObserver:
         self.transport = transport or PagedLDAPTransport(config, settings=settings, monotonic=monotonic)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
+    def identity(self, kind, object_guid):
+        import uuid
+        try:
+            parsed = uuid.UUID(object_guid)
+            if str(parsed) != object_guid or not parsed.int or kind not in ('user', 'computer'):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError):
+            raise fail('directory_observer_identity_invalid', 'Select a stable directory identity') from None
+        encoded = ''.join('\\' + format(byte, '02x') for byte in parsed.bytes_le)
+        category = '(&(objectCategory=person)(objectClass=user)' if kind == 'user' else '(&(objectClass=computer)'
+        bases = self.config.user_bases if kind == 'user' else self.config.computer_bases
+        attributes = USER_ATTRIBUTES if kind == 'user' else COMPUTER_ATTRIBUTES + ('userAccountControl', 'msDS-User-Account-Control-Computed', 'accountExpires')
+        deadline, found = self.monotonic() + 25, []
+        for base in bases:
+            entries, _, _ = self._query(base=base, ldap_filter=category + '(objectGUID=' + encoded + '))',
+                                       attributes=attributes, deadline=deadline, size_limit=2)
+            found.extend(project_entry(entry, kind=kind, now=self.clock()) for entry in entries)
+        if not found:
+            return None
+        if len(found) != 1 or found[0]['object_guid'] != object_guid:
+            raise fail('directory_observer_identity_invalid', 'Directory identity changed or is ambiguous')
+        return found[0]
+
     def _query(self, *, base, ldap_filter, attributes, deadline, size_limit=MAX_OBJECTS + 1, search=False, multivalued=frozenset()):
         if self.monotonic() >= deadline:
             raise fail('directory_observer_timeout', 'Directory collection deadline exceeded')
