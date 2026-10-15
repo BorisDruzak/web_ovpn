@@ -83,6 +83,41 @@ function Test-ObserverDenyProof($Row, [Security.Principal.SecurityIdentifier]$Si
     }).Count
 }
 
+function Test-ObserverProtectedReadProof($Row, [Security.Principal.SecurityIdentifier]$Sid, [string[]]$TokenSids, [DirectoryServices.ActiveDirectoryRights]$Rights) {
+    # SDProp replaces protected objects' ACLs. Never change AdminSDHolder or
+    # repeatedly stamp managed denies onto those objects. Prove no observer
+    # write/ownership grant in the restored DACL instead. MS-ADTS unicodePwd:
+    # Everyone's specific Change Password right requires the target's current
+    # password; it is not the client's Force Change Password/reset authority.
+    try {
+        $p = $Row.Properties
+        foreach ($name in @('ntsecuritydescriptor','objectsid','admincount','objectclass')) {
+            if (-not $p.Contains($name) -or -not $p[$name].Count) { return $false }
+        }
+        if ($p['admincount'].Count -ne 1 -or [int]$p['admincount'][0] -ne 1 -or
+            -not (@($p['objectclass']) -contains 'user' -or @($p['objectclass']) -contains 'group')) { return $false }
+        $objectSid = [Security.Principal.SecurityIdentifier]::new([byte[]]$p['objectsid'][0],0)
+        if ($objectSid.Value -eq $Sid.Value) { return $false }
+        $raw = [Security.AccessControl.RawSecurityDescriptor]::new([byte[]]$p['ntsecuritydescriptor'][0],0)
+        if (-not $raw.Owner -or -not $raw.DiscretionaryAcl -or
+            -not ($raw.ControlFlags -band [Security.AccessControl.ControlFlags]::DiscretionaryAclPresent)) { return $false }
+        $applicable = @($Sid.Value,'S-1-1-0','S-1-5-11','S-1-5-2','S-1-18-1') + $TokenSids
+        if ($raw.Owner.Value -in $applicable) { return $false }
+        $acl = [DirectoryServices.ActiveDirectorySecurity]::new()
+        $acl.SetSecurityDescriptorBinaryForm([byte[]]$p['ntsecuritydescriptor'][0])
+        if (-not $acl.AreAccessRulesProtected -or -not $acl.AreAccessRulesCanonical) { return $false }
+        foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                $rule.IdentityReference.Value -notin $applicable -or
+                -not (($rule.ActiveDirectoryRights -band $Rights) -or ([long]$rule.ActiveDirectoryRights -band 0x50000000))) { continue }
+            if ($rule.IdentityReference.Value -ne 'S-1-1-0' -or
+                $rule.ActiveDirectoryRights -ne [DirectoryServices.ActiveDirectoryRights]::ExtendedRight -or
+                $rule.ObjectType -ne [Guid]'ab721a53-1e2f-11d0-9819-00aa0040529b') { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Get-ObserverMachineJoinAssignees([string]$Server) {
     # Read-only LSA policy query under the current protected administrator session.
     # No domain policy or privilege assignment is changed.
@@ -137,7 +172,7 @@ function Read-ObserverRows([string]$Base, [string]$Filter, [string[]]$Attributes
         $search.ServerTimeLimit = [TimeSpan]::FromSeconds(120)
         $search.ClientTimeout = [TimeSpan]::FromSeconds(130)
         $search.ReferralChasing = [DirectoryServices.ReferralChasingOption]::None
-        $search.SecurityMasks = [DirectoryServices.SecurityMasks]::Dacl
+        $search.SecurityMasks = [DirectoryServices.SecurityMasks]::Dacl -bor [DirectoryServices.SecurityMasks]::Owner
         $search.SearchScope = if ($BaseOnly) { [DirectoryServices.SearchScope]::Base } else { [DirectoryServices.SearchScope]::Subtree }
         foreach ($name in $Attributes) { [void]$search.PropertiesToLoad.Add($name) }
         $result = $search.FindAll()
@@ -293,7 +328,7 @@ try {
         $managedAccount.Properties['userAccountControl'].Value = 1049088
         $managedAccount.CommitChanges()
     }
-    $effectiveAttributes = @('allowedAttributesEffective', 'allowedChildClassesEffective', 'sDRightsEffective', 'distinguishedName', 'nTSecurityDescriptor', 'objectSid')
+    $effectiveAttributes = @('allowedAttributesEffective', 'allowedChildClassesEffective', 'sDRightsEffective', 'distinguishedName', 'nTSecurityDescriptor', 'objectSid', 'adminCount', 'objectClass')
     $checked = 0
     foreach ($dn in @($script:Config.domain_base) + $scopes | Select-Object -Unique) {
         $facts = @(Read-ObserverRows $dn '(objectClass=*)' $effectiveAttributes $observer -BaseOnly)
@@ -302,7 +337,7 @@ try {
     foreach ($dn in $scopes | Select-Object -Unique) {
         $facts = @(Read-ObserverRows $dn '(objectClass=*)' $effectiveAttributes $observer)
         foreach ($fact in $facts) {
-            if (-not (Test-ObserverDenyProof $fact $sid $groups $write)) {
+            if (-not (Test-ObserverDenyProof $fact $sid $groups $write) -and -not (Test-ObserverProtectedReadProof $fact $sid $groups $write)) {
                 if ($Check) { throw 'observer_effective_rights_unknown' }
                 # Only add this principal's deny on a conflicting object in an
                 # approved scope; preserve every unrelated principal's ACEs.
@@ -310,7 +345,7 @@ try {
             }
         }
         if (-not $Check) { $facts = @(Read-ObserverRows $dn '(objectClass=*)' $effectiveAttributes $observer) }
-        foreach ($fact in $facts) { if (-not (Test-ObserverDenyProof $fact $sid $groups $write)) { throw 'observer_effective_rights_unknown' } }
+        foreach ($fact in $facts) { if (-not (Test-ObserverDenyProof $fact $sid $groups $write) -and -not (Test-ObserverProtectedReadProof $fact $sid $groups $write)) { throw 'observer_effective_rights_unknown' } }
         Assert-ObserverEffectiveRows $facts; $checked += $facts.Count
         if ($checked -gt 10000) { throw 'observer_collection_limit' }
     }

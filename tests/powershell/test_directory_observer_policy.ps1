@@ -44,6 +44,45 @@ $inherited=[DirectoryServices.ActiveDirectorySecurity]::new()
 $inherited.SetSecurityDescriptorSddlForm("D:AI(A;;GA;;;AU)(D;CIID;WPCR;;;$sid)")
 $inheritedRow=[pscustomobject]@{Properties=@{ntsecuritydescriptor=@(,$inherited.GetSecurityDescriptorBinaryForm())}}
 if (Test-ObserverDenyProof $inheritedRow $identity @($domainUsers) $write) { throw 'test_explicit_allow_override_ignored' }; $checks++
+
+# SDProp restores protected-object ACLs. Only the standard target-password
+# change right may remain; it requires that target's current password and is
+# not the observer's administrative reset authority (MS-ADTS 3.1.1.3.1.5.1).
+function Protected-Row([string]$Sddl) {
+ $security=[DirectoryServices.ActiveDirectorySecurity]::new();$security.SetSecurityDescriptorSddlForm($Sddl)
+ $objectSid=[Security.Principal.SecurityIdentifier]::new($other.Value);$bytes=New-Object byte[] $objectSid.BinaryLength;$objectSid.GetBinaryForm($bytes,0)
+ [pscustomobject]@{Properties=@{ntsecuritydescriptor=@(,$security.GetSecurityDescriptorBinaryForm());objectsid=@(,$bytes);admincount=@(1);objectclass=@('top','person','organizationalPerson','user')}}
+}
+$protectedSddl='O:BAG:BAD:P(A;;RPLCRC;;;AU)(OA;;CR;ab721a53-1e2f-11d0-9819-00aa0040529b;;WD)'
+$protectedRow=Protected-Row $protectedSddl
+if (-not (Test-ObserverProtectedReadProof $protectedRow $identity @($domainUsers) $write)) {throw 'test_sdprop_readonly_rejected'};$checks++
+foreach($unsafeSddl in @(
+ 'O:BAG:BAD:P(A;;RPLCRC;;;AU)(OA;;CR;00299570-246d-11d0-a768-00aa006e0529;;WD)',
+ 'O:BAG:BAD:P(A;;GA;;;AU)',
+ 'O:BAG:BAD:P(A;;WP;;;AU)',
+ 'O:BAG:BAD:P(A;;CR;;;WD)',
+ "O:BAG:BAD:P(A;;WP;;;$sid)",
+ "O:BAG:BAD:P(A;;WP;;;$domainUsers)",
+ "O:$sid`G:BAD:P(A;;RPLCRC;;;AU)",
+ "O:$domainUsers`G:BAD:P(A;;RPLCRC;;;AU)",
+ 'O:BAG:BAD:(A;;RPLCRC;;;AU)',
+ 'O:BAG:BAD:NO_ACCESS_CONTROL',
+ 'D:P(A;;RPLCRC;;;AU)'
+)) {
+ $unsafe=Protected-Row $unsafeSddl
+ if(Test-ObserverProtectedReadProof $unsafe $identity @($domainUsers) $write){throw 'test_unsafe_protected_acl_accepted'};$checks++
+}
+foreach($missing in @('objectsid','admincount','objectclass','ntsecuritydescriptor')) {
+ $unsafe=Protected-Row $protectedSddl;$unsafe.Properties.Remove($missing)
+ if(Test-ObserverProtectedReadProof $unsafe $identity @($domainUsers) $write){throw 'test_missing_protected_fact_accepted'};$checks++
+}
+$unsafe=Protected-Row $protectedSddl;$unsafe.Properties['admincount']=@(0)
+if(Test-ObserverProtectedReadProof $unsafe $identity @($domainUsers) $write){throw 'test_unprotected_object_accepted'};$checks++
+$unsafe=Protected-Row $protectedSddl
+# The observer itself can never use this proof path.
+$bytes=New-Object byte[] $identity.BinaryLength;$identity.GetBinaryForm($bytes,0);$unsafe.Properties['objectsid']=@(,$bytes)
+if(Test-ObserverProtectedReadProof $unsafe $identity @($domainUsers) $write){throw 'test_observer_password_change_exempted'};$checks++
+
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../deploy/alt-linux/provision-directory-observer.ps1'),[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'test_powershell_parse_failed' }; $checks++
