@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import threading
+import time
 import uuid
 
 from ..config import get_settings
@@ -73,9 +74,13 @@ def _credential(path, *, private):
 
 
 class WorkstationsClient:
-    def __init__(self, settings=None, *, runner=None):
+    def __init__(self, settings=None, *, runner=None, deadline=None):
         self.settings = settings or get_settings()
         self.runner = runner or run_ssh
+        self.deadline = deadline
+
+    def with_deadline(self, deadline):
+        return type(self)(self.settings, runner=self.runner, deadline=deadline)
 
     def call(self, operation, parameters, *, request_id, scope='read'):
         uncertain = operation in ('plans.apply', 'jobs.cancel')
@@ -116,6 +121,10 @@ class WorkstationsClient:
                    '-o', 'PermitLocalCommand=no', '-o', 'ProxyCommand=none', '-l', user, '--', host, 'gateway']
         timeout = (310 if operation in ('plans.create', 'component_plans.create', 'jobs.verify') else
                    130 if operation == 'directory.snapshot' else 30 if operation in ('directory.search', 'plans.apply', 'jobs.cancel') else 15)
+        if self.deadline is not None:
+            timeout = min(timeout, self.deadline - time.monotonic())
+            if timeout <= 0:
+                raise error('workstations_transport_timeout')
         try:
             submitted = True
             rc, output, diagnostic = self.runner(command, input_data=raw, timeout=timeout)

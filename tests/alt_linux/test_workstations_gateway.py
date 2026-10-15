@@ -68,6 +68,31 @@ def test_machine_projection_drops_private_fields(tmp_path):
     assert 'password' not in raw and 'record_path' not in raw and 'not-public' not in raw
 
 
+def test_registry_generation_covers_other_pages_and_safe_assignments(tmp_path, monkeypatch):
+    from alt_deploy import workstations_gateway as module
+    from alt_deploy.workstations_projection import project
+    identifiers = [str(uuid.UUID(int=n)) for n in (1, 2)]
+    rows = [{'uuid': value, 'hostname': 'synthetic', 'mac': '02:00:00:00:00:01'} for value in identifiers]
+    assignment = {'object_guid': str(uuid.UUID(int=3)), 'object_sid': 'S-1-5-21-3', 'login': 'synthetic',
+                  'result': 'successful', 'revision': 1, 'computer_ou': 'private'}
+    class Machines:
+        def __init__(self, settings): pass
+        def list(self): return [SimpleNamespace(uuid=row['uuid'], to_public_dict=lambda row=row: row.copy()) for row in rows]
+    class Assignments:
+        def __init__(self, root): pass
+        def get(self, identity): return assignment.copy() if identity == identifiers[1] else None
+    monkeypatch.setattr(module, 'MachineRepository', Machines)
+    monkeypatch.setattr(module, 'DomainAssignmentStore', Assignments)
+    backend = module.ControllerBackend(SimpleNamespace(state_root=tmp_path))
+    first = project('machines.list', backend.call('machines.list', {'limit': 1}))
+    assignment['revision'] += 1
+    second = project('machines.list', backend.call('machines.list', {'limit': 1}))
+    assert first['generation'] != second['generation']
+    page = project('machines.list', backend.call('machines.list', {'offset': 1, 'limit': 1}))
+    assert page['machines'][0]['domain_assignment']['object_guid'] == assignment['object_guid']
+    assert 'private' not in json.dumps(page)
+
+
 def test_plan_projection_drops_request_paths_and_raw_observations(tmp_path):
     from alt_deploy.workstations_projection import public_plan
     plan = {'plan_id': 'setup-' + 'a' * 64, 'sha256': 'a' * 64, 'created_at': 'now', 'expires_at': 'later', 'payload': {

@@ -24,7 +24,7 @@ from .setup_assignments import DomainAssignmentStore
 from .setup_jobs import SetupJobRepository, service_uid, unresolved_legacy_reservations
 from .setup_jobs_view import SetupJobsService
 from .setup_plans import canonical, digest
-from .workstations_projection import fields, project
+from .workstations_projection import fields, project, public_machine
 from .workstations_receipts import GatewayReceiptStore, request_uuid
 
 MAX_REQUEST_BYTES = 32768
@@ -143,11 +143,14 @@ class ControllerBackend:
                     'observer_configured': self.observer_path.is_file()}
         if operation.startswith('machines.'):
             machines = MachineRepository(settings)
+            assignments = DomainAssignmentStore(settings.state_root)
+            def row(machine):
+                return public_machine(dict(machine.to_public_dict(), domain_assignment=assignments.get(machine.uuid)))
             if operation == 'machines.show':
-                return {'machine': machines.get(p['machine_uuid']).to_public_dict()}
-            rows = machines.list()
+                return {'machine': row(machines.get(p['machine_uuid']))}
+            rows = [row(machine) for machine in machines.list()]
             offset, limit = p.get('offset', 0), p.get('limit', 100)
-            return {'machines': [row.to_public_dict() for row in rows[offset:offset + limit]],
+            return {'machines': rows[offset:offset + limit], 'generation': digest(rows),
                     'total': len(rows), 'next_offset': min(len(rows), offset + limit)}
         if operation == 'catalog.list':
             catalog = ComponentCatalog.load(settings.ansible_project_dir)

@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh workstation directory reconciliation every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+Unit=workstations-reconcile.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -58,6 +58,11 @@ def reset_engine_cache() -> None:
     reset_settings_cache()
 
 
+def init_workstations_schema() -> None:
+    from .workstations.schema import ensure_schema
+    ensure_schema(get_engine())
+
+
 _TRANSFER_ASSET_NOTES = text(
     """
     UPDATE inventory_assets

@@ -1,0 +1,22 @@
+[Unit]
+Description=Reconcile workstation directory DNS network and inventory evidence
+After=network-online.target openvpn-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openvpn-web
+Group=openvpn-web
+WorkingDirectory=/opt/openvpn-web
+EnvironmentFile=/etc/openvpn-web/openvpn-web.env
+ExecStart=/opt/openvpn-web/.venv/bin/python -m app.workstations.reconcile
+TimeoutStartSec=5min
+UMask=0077
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openvpn-web
+
+[Install]
+WantedBy=multi-user.target

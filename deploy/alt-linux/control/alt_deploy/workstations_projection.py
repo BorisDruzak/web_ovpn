@@ -23,6 +23,13 @@ def fields(value, allowed):
     return {name: copy.deepcopy(value[name]) for name in allowed if name in value}
 
 
+def public_machine(value):
+    result = fields(value, MACHINE_FIELDS)
+    assignment = value.get('domain_assignment')
+    result['domain_assignment'] = fields(assignment, ASSIGNMENT_FIELDS) if assignment is not None else None
+    return result
+
+
 def public_plan(plan):
     payload = plan['payload']
     components = [payload['component']] if 'component' in payload else payload.get('components', [])
@@ -44,10 +51,10 @@ def public_plan(plan):
 
 def project(operation, data):
     if operation == 'machines.list':
-        return {'machines': [fields(row, MACHINE_FIELDS) for row in data['machines']],
-                'total': data['total'], 'next_offset': data.get('next_offset')}
+        return {'machines': [public_machine(row) for row in data['machines']],
+                'total': data['total'], 'next_offset': data.get('next_offset'), 'generation': data.get('generation')}
     if operation == 'machines.show':
-        return {'machine': fields(data['machine'], MACHINE_FIELDS)}
+        return {'machine': public_machine(data['machine'])}
     if operation == 'directory.search':
         return {'schema_version': 1, 'users': [fields(row, USER_FIELDS) for row in data['users']], 'truncated': data['truncated']}
     if operation in ('plans.create', 'component_plans.create'):

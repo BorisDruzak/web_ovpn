@@ -39,6 +39,24 @@ def test_transport_uses_strict_scoped_key_and_fixed_command(tmp_path):
     assert options['timeout'] <= 20
 
 
+def test_shared_deadline_clamps_requests_and_prevents_late_submission(tmp_path, monkeypatch):
+    from app.workstations import client as module
+    current, calls = [100.0], []
+    monkeypatch.setattr(module.time, 'monotonic', lambda: current[0])
+    def runner(command, **options):
+        calls.append(options['timeout'])
+        request = json.loads(options['input_data'])
+        return 0, json.dumps(dict(schema_version=1, request_id=request['request_id'], status='ok', data={}, error_code=None)).encode(), b''
+    client = module.WorkstationsClient(configured(tmp_path), runner=runner).with_deadline(110)
+    client.call('directory.snapshot', {}, request_id=str(uuid.uuid4()))
+    assert calls == [10]
+    current[0] = 111
+    with pytest.raises(module.WorkstationsTransportError) as exc:
+        client.call('plans.apply', {}, request_id=str(uuid.uuid4()), scope='execute')
+    assert exc.value.code == 'workstations_transport_timeout' and not exc.value.uncertain
+    assert calls == [10]
+
+
 def test_execute_credential_is_never_used_by_default(tmp_path):
     from app.workstations.client import WorkstationsClient
     calls = []
