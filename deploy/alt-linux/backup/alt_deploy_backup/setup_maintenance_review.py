@@ -1,14 +1,19 @@
 """Additive controller-only review of a closed UNKNOWN; never a target admission."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import errno
 import fcntl
 import hashlib
 import os
 from pathlib import Path
 import re
 import stat
+import time
 
 from .setup_compat import control_module, history_fingerprint, validate_job
+
+
+_LOCK_WAIT_SECONDS = 5.0
 
 
 def denied():
@@ -76,8 +81,28 @@ def maintenance_lock(settings):
                   and parts[5] == token for line in Path('/proc/locks').read_text().splitlines()
                   if len(parts := line.split()) >= 8)
         if not own:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
+            # An idle worker briefly owns the same lifecycle lock. Wait only
+            # for ownership, then run every admission check on fresh evidence.
+            deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+            while True:
+                if time.monotonic() >= deadline: raise denied()
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN): raise
+                    remaining = deadline-time.monotonic()
+                    if remaining <= 0: raise denied() from None
+                    time.sleep(min(.05, remaining))
+                else:
+                    acquired = True
+                    break
+        # A restore/replacement while waiting must not authorize an old inode.
+        for parent in path.parents:
+            if not stat.S_ISDIR(parent.lstat().st_mode): raise denied()
+        current = path.lstat()
+        if ((current.st_dev, current.st_ino) != (actual.st_dev, actual.st_ino)
+                or not stat.S_ISREG(current.st_mode) or current.st_uid not in (0, uid)
+                or stat.S_IMODE(current.st_mode) != 0o600): raise denied()
         yield
     finally:
         if acquired: fcntl.flock(fd, fcntl.LOCK_UN)

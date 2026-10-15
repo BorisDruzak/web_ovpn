@@ -120,6 +120,19 @@ unreviewed UNKNOWN remain blockers, and the explicit closed-full maintenance
 receipt is still required. Neither path rewrites a predecessor or authorizes
 workstation replay.
 
+Idle lifecycle-lock polling leaves an already-private state directory and lock
+file unchanged; redundant chmod calls must not create false backup inventory
+drift before the waiter owns the lock. Missing paths and incorrect modes still
+receive the existing `0700`/`0600` permissions. Backup source comparison remains
+strict for actual data or metadata changes.
+
+Protected maintenance/queue review waits up to five monotonic seconds for a brief
+lifecycle holder inside the same request. After acquisition it revalidates the
+named inode, owner, mode and directory ancestry before observing any evidence.
+History, active work, identity, health and SHA/TTL are then checked fresh under
+that lock. A persistent holder or replaced/unsafe lock denies; this handoff does
+not rerun a backup, deployment, job or workstation operation.
+
 The existing protected recovery flow has one narrow snapshot exception:
 `create-recovery` accepts only private SHA-keyed admission for an exact reserved
 attempt, fresh sealed credential/intent, unexpired recovery plan, original closed

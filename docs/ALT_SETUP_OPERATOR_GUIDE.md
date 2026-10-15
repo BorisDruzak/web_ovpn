@@ -130,6 +130,14 @@ predicates and original history under the lifecycle lock. A home may be absent
 before first login. The finished job's idle worker daemon may remain alive.
 Unrelated work, unsafe state, drift, busy execution or expiry denies admission.
 
+A brief idle-worker lifecycle lock is awaited for at most five seconds within
+the current maintenance/queue-review request. This avoids restarting the whole
+operation for a short lock handoff. Lock identity and permissions are checked
+again after waiting, followed by all fresh admission checks. A long-held lock,
+active work, history drift or expired permission still denies; do not delete the
+lock or rewrite retained jobs to proceed. Idle lock polling does not rewrite
+already-correct directory/file permissions or invalidate a quiescent backup.
+
 Maintenance recognizes the same validated native `--after-job` predecessor links
 as ordinary backup admission. An interrupted component remains UNKNOWN in history
 after a permitted successor finishes; that reviewed predecessor alone does not
