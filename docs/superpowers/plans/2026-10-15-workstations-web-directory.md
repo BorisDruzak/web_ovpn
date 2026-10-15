@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python, FastAPI 0.115.6, SQLAlchemy 2.0.36, Jinja2 3.1.5, existing OpenLDAP CLI/Kerberos transport, dnspython 2.8.0, OpenSSH and systemd. No new application framework or LDAP dependency.
 
-**Spec:** [Approved design](../specs/2026-10-15-workstations-web-directory-design.md), approved by the user on 2026-10-15. This implementation plan still awaits its required review.
+**Spec:** [Approved design](../specs/2026-10-15-workstations-web-directory-design.md), approved by the user on 2026-10-15. Implementation plan approved by the user in this chat; inline execution is in progress.
 
 ## Global Constraints
 
@@ -67,11 +67,11 @@ configuration. Repository source remains `mcp/openvpn_mcp_server.py`.
 
 **Interfaces:** `DirectoryObserverConfig.load(path: Path) -> DirectoryObserverConfig` requires `readonly-vault`; `DirectoryObserver.search_users(query: str, *, limit: int = 50) -> dict`; `DirectoryObserver.collect(*, deadline: float) -> dict` returns schema version, complete flag, source generation/time and normalized users/computers. Use GUID/SID as stable keys; collection includes only necessary employee fields.
 
-- [ ] Write tests `test_name_search_escapes_filter_and_disambiguates_homonyms`, `test_readonly_observer_rejects_join_vault`, `test_search_rejects_over_160_chars`, `test_search_reports_51st_result_as_truncated`, `test_last_page_failure_never_returns_complete`, `test_collection_enforces_10000_objects_16mib_and_120_seconds`. Assert no raw credentials/diagnostics in failures.
-- [ ] Run `python -m pytest tests/alt_linux/test_directory_observer.py -q` on Linux; confirm the new interfaces fail before implementation.
-- [ ] Implement the interfaces with fixed bases/attribute allowlists, private Kerberos caches and explicit paged-result validation. Keep existing exact `ADDirectory.user()` and Setup's usability checks unchanged. Preserve per-process request deadlines across pages and discard partial generations.
-- [ ] Run new tests plus `python -m pytest tests/alt_linux/test_ad_directory.py -q`; inspect exact results.
-- [ ] Review full diff, `git diff --check`, stage only these files and commit `feat(workstations): add restricted paged directory observer`.
+- [x] Write tests `test_name_search_escapes_filter_and_disambiguates_homonyms`, `test_readonly_observer_rejects_join_vault`, `test_search_rejects_over_160_chars`, `test_search_reports_51st_result_as_truncated`, `test_last_page_failure_never_returns_complete`, `test_collection_enforces_10000_objects_16mib_and_120_seconds`. Assert no raw credentials/diagnostics in failures.
+- [x] Run `python -m pytest tests/alt_linux/test_directory_observer.py -q` on Linux; confirm the new interfaces fail before implementation.
+- [x] Implement the interfaces with fixed bases/attribute allowlists, private Kerberos caches and explicit paged-result validation. Keep existing exact `ADDirectory.user()` and Setup's usability checks unchanged. Preserve per-process request deadlines across pages and discard partial generations.
+- [x] Run new tests plus `python -m pytest tests/alt_linux/test_ad_directory.py -q`; inspect exact results.
+- [x] Review full diff, `git diff --check`, stage only these files and commit `feat(workstations): add restricted paged directory observer`.
 
 ## Task 2: AD-integrated DNS collection and decoding
 

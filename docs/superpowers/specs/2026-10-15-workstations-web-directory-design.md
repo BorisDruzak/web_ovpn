@@ -1,7 +1,7 @@
 # Workstations: web setup, AD/DNS reconciliation and MCP
 
-Status: approved by the operator on 2026-10-15. Product implementation and rollout
-have not started; implementation-plan review is the next required stage.
+Status: specification and implementation plan approved by the operator on
+2026-10-15. Implementation is in progress; deployed acceptance remains pending.
 
 ## 1. Outcome and scope
 

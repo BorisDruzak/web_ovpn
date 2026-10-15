@@ -46,9 +46,9 @@ def parse_ldif(raw: str) -> list[dict[str, list[bytes]]]:
     return _parse_ldif(raw, multivalued=frozenset({'objectclass'}))
 
 
-def _parse_ldif(raw: str, *, multivalued: frozenset[str]) -> list[dict[str, list[bytes]]]:
+def _parse_ldif(raw: str, *, multivalued: frozenset[str], max_bytes=None, max_results=None) -> list[dict[str, list[bytes]]]:
     try:
-        if len(raw.encode('utf-8')) > MAX_BYTES:
+        if len(raw.encode('utf-8')) > (MAX_BYTES if max_bytes is None else max_bytes):
             raise ValueError
         unfolded: list[str] = []
         for line in raw.splitlines():
@@ -63,7 +63,7 @@ def _parse_ldif(raw: str, *, multivalued: frozenset[str]) -> list[dict[str, list
         for line in [*unfolded, '']:
             if not line:
                 if current:
-                    if 'dn' not in current or len(entries) >= MAX_RESULTS:
+                    if 'dn' not in current or len(entries) >= (MAX_RESULTS if max_results is None else max_results):
                         raise ValueError
                     entries.append(current)
                     current = {}

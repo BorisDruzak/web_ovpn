@@ -82,7 +82,7 @@ class DirectoryConfig:
             raise fail('ad_directory_config_invalid', 'AD directory configuration cannot be read safely') from exc
 
 
-def bounded_run(command, *, environment, input_text=None, timeout=20):
+def bounded_run(command, *, environment, input_text=None, timeout=20, max_bytes=None):
     """Read at most MAX_BYTES+1 from each pipe; kill excessive producers."""
     try:
         process = subprocess.Popen(command, shell=False, env=environment,
@@ -92,8 +92,9 @@ def bounded_run(command, *, environment, input_text=None, timeout=20):
         excessive = []
 
         def read_pipe(index, stream):
-            captured[index] = stream.read(MAX_BYTES + 1)
-            if len(captured[index]) > MAX_BYTES:
+            limit = MAX_BYTES if max_bytes is None else max_bytes
+            captured[index] = stream.read(limit + 1)
+            if len(captured[index]) > limit:
                 excessive.append(True)
                 process.kill()
             stream.close()
