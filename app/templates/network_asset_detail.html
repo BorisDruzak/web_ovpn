@@ -12,6 +12,7 @@
 <section class="toolbar">
   <a class="button secondary" href="{{ return_link(request) }}">Назад к списку</a>
   <a class="button secondary" href="/inventory/network-links?network_key={{ asset_key|urlencode }}">Сравнить с инвентаризацией</a>
+  <a class="button secondary" href="/workstations?network_key={{ asset_key|urlencode }}">Рабочее место и AD</a>
 </section>
 {% if error %}
 <div class="alert bad">Не удалось загрузить карточку устройства.</div>

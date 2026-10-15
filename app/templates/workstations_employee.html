@@ -1,0 +1,11 @@
+<div class="ws-employee-picker" data-employee-picker>
+  <form data-employee-search class="ws-search" autocomplete="off">
+    <label>Сотрудник AD: ФИО или логин<input name="query" type="search" minlength="2" maxlength="160" required placeholder="Введите минимум 2 символа"></label>
+    <button class="button secondary" type="submit">Найти сотрудника</button>
+  </form>
+  <p class="muted">Выберите нужную запись по логину и отделу. Однофамильцы показаны отдельно.</p>
+  <div data-search-results role="group" aria-label="Найденные сотрудники"></div>
+  <p data-search-status role="status" aria-live="polite"></p>
+  <button id="employee-create" class="button secondary" type="button" disabled aria-describedby="employee-create-explanation">Создать пользователя</button>
+  <p id="employee-create-explanation" class="muted">Создание пользователей пока недоступно</p>
+</div>

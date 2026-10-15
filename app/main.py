@@ -74,6 +74,8 @@ app.include_router(inventory_network_links_router)
 app.include_router(user_admin_router)
 from .workstations.api import router as workstations_api_router
 app.include_router(workstations_api_router)
+from .workstations.web import router as workstations_web_router
+app.include_router(workstations_web_router)
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 dashboard_snapshot_cache = SnapshotCache()

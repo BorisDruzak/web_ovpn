@@ -1,0 +1,13 @@
+{% extends "workstations_base.html" %}
+{% block workstation_attributes %}data-device-key="{{ device_key }}"{% endblock %}
+{% block workstation_content %}
+<section class="panel"><a href="/workstations">← К устройствам</a><h2>Устройство и подтверждённые связи</h2><div data-device-detail></div><div data-device-links></div></section>
+{% if capabilities.link %}<section class="panel"><h2>Связать с сотрудником AD</h2>{% include "workstations_employee.html" %}
+  <form data-link-preview class="ws-grid"><label>Объект компьютера AD<select name="computer_guid"><option value="">Оставить без привязки объекта компьютера</option></select></label>
+    <button type="submit" class="button secondary">Подготовить привязку</button></form>
+  <div data-link-result></div>
+  <form data-link-confirm class="ws-grid" hidden><label>Основание сравнения<input name="reason" maxlength="2000" required placeholder="Как проверены устройство и сотрудник"></label>
+    <button class="button primary" type="submit">Подтвердить привязку</button></form>
+  <p class="muted">Привязка хранится в панели. Сотрудник AD, владелец карточки инвентаризации и защищённое назначение Setup автоматически не меняются.</p>
+</section>{% endif %}
+{% endblock %}

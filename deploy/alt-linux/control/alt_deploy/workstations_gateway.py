@@ -196,6 +196,10 @@ class ControllerBackend:
             # exposes the entire validated (maximum 1024) stage chronology.
             job = SetupJobRepository(settings).get(p['job_id'])
             result['job']['history'] = [fields(row, ('state', 'stage', 'at')) for row in job.status['stage_history']]
+            if result['job'].get('state') == 'queued':
+                queued = sorted((item for item in SetupJobRepository(settings).list() if item.state == 'queued'),
+                                key=lambda item: item.status['admission_sequence'])
+                result['job']['queue_position'] = next((index for index, item in enumerate(queued, 1) if item.job_id == p['job_id']), None)
             return result
         if operation == 'jobs.events':
             return service.events_for(p['job_id'], after=p.get('after', 0), limit=p.get('limit', 100))

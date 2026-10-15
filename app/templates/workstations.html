@@ -1,0 +1,38 @@
+{% extends "workstations_base.html" %}
+{% block workstation_attributes %}data-inventory-filter="{{ inventory_asset_id }}" data-network-filter="{{ network_key }}"{% endblock %}
+{% block workstation_content %}
+{% if not capabilities.read %}
+<section class="panel"><h2>Общая сводка</h2><p>Для просмотра устройств, каталога сотрудников и назначений требуется отдельное разрешение «Просмотр рабочих мест».</p></section>
+{% elif view == 'jobs' %}
+<section class="panel"><div class="toolbar"><h2>Задания</h2><button class="button secondary" type="button" data-refresh-jobs>Обновить список</button></div><div data-jobs></div><button data-more-jobs class="button secondary" type="button" hidden>Ещё задания</button></section>
+{% else %}
+<section class="panel"><div class="toolbar"><h2>Устройства</h2><button class="button secondary" type="button" data-refresh-devices>Обновить список</button></div>
+  <p class="muted">Имена и IP служат подсказками. Подтверждённые связи показаны отдельно от наблюдений.</p>
+  <div data-device-list></div><button data-more-devices class="button secondary" type="button" hidden>Ещё устройства</button>
+</section>
+{% if capabilities.plan %}
+<section class="panel ws-wizard" aria-labelledby="setup-heading">
+  <h2 id="setup-heading">Подготовить рабочее место</h2>
+  <ol class="ws-steps" aria-label="Этапы настройки">
+    <li data-step="device" aria-current="step">1. Компьютер</li><li data-step="employee">2. Сотрудник</li>
+    <li data-step="options">3. Параметры</li><li data-step="plan">4. План изменений</li>
+    <li data-step="confirm">5. Подтверждение</li><li data-step="watch">6. Выполнение</li>
+  </ol>
+  <form data-setup-form id="ws-setup-form" class="ws-grid">
+    <label>Зарегистрированный компьютер<select name="machine_uuid" required><option value="">Выберите готовый ПК</option></select></label>
+    <label>Действие<select name="kind"><option value="full_setup">Полная настройка рабочего места</option><option value="component">Добавить отдельный компонент</option></select></label>
+  </form>
+  <div data-full-option>{% include "workstations_employee.html" %}</div>
+  <p data-component-option class="muted" hidden>Добавление компонента использует существующее назначение компьютера и не меняет сотрудника.</p>
+  <div class="ws-grid" aria-label="Параметры настройки">
+    <label data-full-option>Подразделение компьютеров (OU)<select name="ou_id" form="ws-setup-form"><option value="">Загрузка согласованных OU…</option></select></label>
+    <label data-full-option>Комплект программ<select name="software_profile" form="ws-setup-form"><option value="">Загрузка профилей…</option></select></label>
+    <label data-full-option>Удалённый доступ<select name="remote_access_profile" form="ws-setup-form"><option value="none">Без удалённого доступа</option><option value="krfb">KRFB — при выполнении штатных условий</option></select></label>
+    <label data-component-option hidden>Компонент<select name="component_id" form="ws-setup-form"><option value="">Выберите компонент</option></select></label>
+  </div>
+  <div class="toolbar"><button class="button primary" type="submit" form="ws-setup-form">Подготовить план</button><p class="muted">Подготовка плана проверяет состояние ПК. Установка начнётся после подтверждения готового плана.</p></div>
+  <div data-plan-result></div>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -21,6 +21,7 @@
     {% macro nav_item(url, label, active) %}<a href="{{ url }}"{% if active %} class="active" aria-current="page"{% endif %}>{{ label }}</a>{% endmacro %}
     <nav aria-label="Основная навигация">
       {{ nav_item('/', 'Главная панель', nav_path == '/') }}
+      {{ nav_item('/workstations', 'Рабочие места', nav_path.startswith('/workstations')) }}
       <details class="nav-group" {% if nav_path.startswith('/clients') or nav_path in ['/connections','/networks','/vipnet-nets','/network-templates'] %}open{% endif %}>
         <summary>VPN</summary>
         {{ nav_item('/clients', 'Профили VPN', nav_path.startswith('/clients') and nav_path != '/clients/new') }}

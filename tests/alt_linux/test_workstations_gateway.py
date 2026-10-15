@@ -108,6 +108,17 @@ def test_detail_preserves_full_safe_stage_history_beyond_legacy_summary_limit(tm
     assert len(result['job']['history']) == 105 and 'private' not in json.dumps(result)
 
 
+def test_native_queued_job_detail_has_queue_position_without_target_checks(component_service):
+    from alt_deploy.workstations_gateway import ControllerBackend
+    service, setup, machine, *_ = component_service
+    setup.settings.jobs_dir = setup.settings.state_root / 'jobs'
+    setup.settings.service_user = setup.settings.service_group = 'altserver'
+    plan = service.plan(machine.uuid, 'software.onlyoffice')
+    job = service.apply(plan['plan_id'], plan['sha256'])
+    data = ControllerBackend(setup.settings).call('jobs.status', {'job_id': job['job_id']})
+    assert data['job']['queue_position'] == 1
+
+
 def test_plan_projection_drops_request_paths_and_raw_observations(tmp_path):
     from alt_deploy.workstations_projection import public_plan
     plan = {'plan_id': 'setup-' + 'a' * 64, 'sha256': 'a' * 64, 'created_at': 'now', 'expires_at': 'later', 'payload': {

@@ -1,0 +1,11 @@
+{% extends "workstations_base.html" %}
+{% block workstation_content %}
+<section class="panel"><div class="toolbar"><h2>Источники и ошибки</h2><button data-refresh-sources class="button secondary" type="button">Обновить состояние</button></div><div data-sources></div></section>
+{% if capabilities.diagnose %}<section class="panel"><h2>Безопасный журнал</h2>
+  <form data-journal-filter class="ws-grid"><label>Задание<input name="job_id" placeholder="Идентификатор задания"></label><label>Этап<input name="stage" maxlength="64"></label>
+    <label>Уровень<select name="severity"><option value="">Все события</option><option value="error">Ошибки</option><option value="info">Информация</option></select></label><button class="button secondary" type="submit">Показать журнал</button></form>
+  <ol data-journal class="ws-events"></ol><button data-more-journal class="button secondary" type="button" hidden>Ещё события</button>
+  <a data-journal-export class="button secondary" href="/api/v1/workstations/journal/export">Скачать эту выборку по страницам</a>
+  <p class="muted">Показана полная опубликованная безопасная история. Исходные журналы Ansible и закрытые параметры остаются на контроллере.</p>
+</section>{% endif %}
+{% endblock %}

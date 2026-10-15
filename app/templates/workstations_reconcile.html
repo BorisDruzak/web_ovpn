@@ -1,0 +1,8 @@
+{% extends "workstations_base.html" %}
+{% block workstation_content %}
+<section class="panel"><div class="toolbar"><h2>Сверка AD, DNS, сети и инвентаризации</h2>{% if capabilities.diagnose %}<button data-reconcile class="button secondary" type="button">Сверить сейчас</button>{% endif %}</div>
+  <p>Автоматическая сверка выполняется каждые пять минут после настройки источников. Наблюдения старше пятнадцати минут считаются устаревшими.</p>
+  <p class="muted">При ошибке источника сохраняется последняя полная сверка. Подтверждение замечания не устраняет конфликт и не подтверждает привязку.</p>
+  <div data-findings></div><button data-more-findings class="button secondary" type="button" hidden>Ещё замечания</button>
+</section>
+{% endblock %}

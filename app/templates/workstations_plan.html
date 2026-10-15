@@ -1,0 +1,24 @@
+{% extends "workstations_base.html" %}
+{% block workstation_attributes %}data-plan-id="{{ plan.plan_id }}" data-submitted="{{ 'true' if submitted else 'false' }}"{% if previous_operation %} data-existing-operation="{{ previous_operation }}"{% endif %}{% endblock %}
+{% block workstation_content %}
+{% set profile = plan.get('profile') or {} %}
+<section class="panel"><a href="/workstations">← К рабочим местам</a><h2>План изменений</h2>
+  <dl class="details"><dt>Компьютер</dt><dd>{{ plan.machine.hostname or plan.machine.uuid }}</dd>
+    <dt>Сотрудник</dt><dd>{{ plan.user.display_name or plan.user.login or 'Существующее назначение' }}{% if plan.user.login %} · {{ plan.user.login }}{% endif %}</dd>
+    <dt>Профиль</dt><dd>{{ profile.name or profile.id or 'Отдельный компонент' }}</dd>
+    <dt>Действует до</dt><dd><time>{{ plan.expires_at }}</time></dd></dl>
+  <h3>Компоненты</h3><ul>{% for component in plan.components %}<li>{{ component.id }} · версия {{ component.version }}</li>{% else %}<li>Нет опубликованных сведений о компонентах.</li>{% endfor %}</ul>
+  {% if plan.changes %}<h3>Планируемые изменения</h3><ul>{% for change in plan.changes %}<li>{{ change }}</li>{% endfor %}</ul>{% endif %}
+  {% if plan.warnings %}<div class="alert warn"><h3>Условия и предупреждения</h3><ul>{% for warning in plan.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div>{% endif %}
+  {% if plan.deferred_actions %}<h3>Действия после установки</h3><ul>{% for action in plan.deferred_actions %}<li>{{ action }}</li>{% endfor %}</ul>{% endif %}
+  <details><summary>Идентификаторы подтверждённого плана</summary><p class="mono ws-wrap">{{ plan.plan_id }}</p><p class="mono ws-wrap">SHA256 {{ plan.sha256 }}</p></details>
+  {% if submitted %}<div data-existing-apply class="alert warn"><p>Запрос по этому плану уже отправлен. Повторная отправка недоступна.</p>
+    {% if previous_apply.job_id %}<a href="/workstations/jobs/{{ previous_apply.job_id|urlencode }}">Открыть исходное задание</a>
+    {% elif previous_status == 'unknown' %}<p>UNKNOWN: исход не подтверждён. Проверьте исходную квитанцию и историю контроллера.</p>
+    {% else %}<p>Состояние исходного запроса: {{ previous_status }}</p>{% endif %}</div>{% endif %}
+  <form data-apply-plan class="ws-confirm"><label class="checkbox"><input type="checkbox" name="confirmed" required {% if submitted %}disabled{% endif %}>Подтверждаю показанный план</label>
+    <button type="submit" class="button primary" {% if not capabilities.apply or submitted %}disabled{% endif %}>Поставить в очередь</button><p data-plan-expiry role="status"></p></form>
+  {% if not capabilities.apply %}<p class="muted">Для запуска требуется разрешение «Запуск настройки рабочих мест».</p>{% endif %}
+  <script type="application/json" data-plan>{{ plan|tojson }}</script>
+</section>
+{% endblock %}

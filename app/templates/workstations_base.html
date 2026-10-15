@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Рабочие места · OpenVPN Web{% endblock %}
+{% block page_title %}Рабочие места{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="{{ url_for('static', path='workstations.css') }}?v=1">
+<div data-workstations data-view="{{ view }}" data-capabilities='{{ capabilities|tojson }}'
+     data-csrf="{{ csrf_token(request) }}" {% block workstation_attributes %}{% endblock %}>
+  <nav class="ws-tabs" aria-label="Рабочие места">
+    <a href="/workstations" {% if view in ['devices','device','plan'] %}aria-current="page"{% endif %}>Устройства</a>
+    {% if capabilities.read %}
+    <a href="/workstations?view=jobs" {% if view in ['jobs','job'] %}aria-current="page"{% endif %}>Задания</a>
+    <a href="/workstations/reconcile" {% if view == 'reconcile' %}aria-current="page"{% endif %}>Сверка AD/DNS</a>
+    <a href="/workstations/sources" {% if view == 'sources' %}aria-current="page"{% endif %}>Источники и ошибки</a>
+    {% endif %}
+  </nav>
+  <section class="ws-summary panel" aria-label="Общая сводка">
+    <div><strong>Настройка рабочих мест</strong><p class="muted">Задания выполняются последовательно. Пока один ПК настраивается, следующие ожидают в очереди.</p></div>
+    <p data-summary role="status">Проверяем доступность контроллера…</p>
+  </section>
+  <div data-error class="alert bad ws-message" role="alert" hidden></div>
+  <div data-operation class="alert ws-message" role="status" aria-live="polite" hidden></div>
+  {% block workstation_content %}{% endblock %}
+</div>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', path='workstations.js') }}?v=1" defer></script>{% endblock %}

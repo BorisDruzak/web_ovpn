@@ -14,7 +14,7 @@ ASSIGNMENT_FIELDS = ('machine_uuid', 'object_guid', 'object_sid', 'login', 'soft
 JOB_FIELDS = ('job_id', 'operation', 'machine_uuid', 'state', 'recorded_state', 'stage', 'plan_id', 'plan_sha256',
               'created_at', 'updated_at', 'claimed', 'catalog_version', 'profile', 'catalog_sha256', 'source_sha256',
               'components', 'error_code', 'reboot_required', 'operator_action_required', 'recommended_action',
-              'history', 'history_total')
+              'history', 'history_total', 'queue_position')
 
 
 def fields(value, allowed):

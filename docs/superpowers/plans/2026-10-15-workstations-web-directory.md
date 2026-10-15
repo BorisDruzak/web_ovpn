@@ -154,11 +154,11 @@ Scoped credential configuration is `WORKSTATIONS_API_CREDENTIALS_FILE`, a protec
 
 **Interfaces:** Web routes `/workstations`, `/workstations/devices/{id}`, `/workstations/plans/{id}`, `/workstations/jobs/{id}`, `/workstations/reconcile`, `/workstations/sources`. Browser uses the authenticated Task 7 API and CSRF, never controller SSH. JS consumes canonical status/events with monotonic sequence cursors and typed error envelopes.
 
-- [ ] Test separate navigation item, all six wizard stages, homonym selection, approved OU/profile choices, exact-plan confirmation/expiry, inactive `Создать пользователя` with exact explanatory copy, read-only observer rendering and no request from disabled creation controls.
-- [ ] Test queue blocker/position, running stage, first-login/reboot human action, failure/UNKNOWN, technical versus functional verification, pagination beyond one event page, reconnect deduplication, missing evidence and backoff. Use fake timers for two-second visible polling and hidden-tab pause; GET polling must not invoke verification.
-- [ ] Run `python -m pytest tests/test_workstations_web.py -q` and `node --test tests/workstations.test.js`; verify failing assertions before implementation.
-- [ ] Implement existing visual patterns, accessible stage list and error panel, coherent-source comparison and links to existing inventory relation confirmation. Escape directory/log fields in HTML/DOM; no raw `innerHTML` for external values. Preserve in-progress selection through recoverable failures.
-- [ ] Run suites and isolated browser journey at desktop/mobile widths, capture screenshots and console/network errors. Commit `feat(workstations): add setup and reconciliation web interface`.
+- [x] Test separate navigation item, all six wizard stages, homonym selection, approved OU/profile choices, exact-plan confirmation/expiry, inactive `Создать пользователя` with exact explanatory copy, read-only observer rendering and no request from disabled creation controls.
+- [x] Test queue blocker/position, running stage, first-login/reboot human action, failure/UNKNOWN, technical versus functional verification, pagination beyond one event page, reconnect deduplication, missing evidence and backoff. Use fake timers for two-second visible polling and hidden-tab pause; GET polling must not invoke verification.
+- [x] Run `python -m pytest tests/test_workstations_web.py -q` and `node --test tests/workstations.test.js`; verify failing assertions before implementation.
+- [x] Implement existing visual patterns, accessible stage list and error panel, coherent-source comparison and links to existing inventory relation confirmation. Escape directory/log fields in HTML/DOM; no raw `innerHTML` for external values. Preserve in-progress selection through recoverable failures.
+- [x] Run suites and isolated browser journey at desktop/mobile widths, capture screenshots and console/network errors. Commit `feat(workstations): add setup and reconciliation web interface`.
 
 ## Task 9: Existing MCP tools and OpenVPN Control skill
 
