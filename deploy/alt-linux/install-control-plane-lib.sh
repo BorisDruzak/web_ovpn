@@ -150,6 +150,7 @@ validate_source_layout() {
         "${ALT_ROOT}/control/workstationctl"
         "${ALT_ROOT}/control/alt-provision-worker"
         "${ALT_ROOT}/control/alt-setup-worker"
+        "${ALT_ROOT}/control/alt-workstations-gateway"
         "${ALT_ROOT}/control/alt-job-stage"
         "${ALT_ROOT}/api/static_server.py"
         "${ALT_ROOT}/api/register_api.py"
@@ -172,6 +173,7 @@ validate_source_layout() {
         "${ALT_ROOT}/install-control-plane.sh"
         "${ALT_ROOT}/install-control-plane-args.sh"
         "${ALT_ROOT}/install-control-plane-lib.sh"
+        "${ALT_ROOT}/install-workstations-gateway.sh"
     )
 
     local required_file
@@ -329,12 +331,14 @@ run_repository_verification() {
         "${ALT_ROOT}/api/process_pending.py" \
         "${ALT_ROOT}/control/alt-job-stage" \
         "${ALT_ROOT}/control/alt-setup-worker" \
+        "${ALT_ROOT}/control/alt-workstations-gateway" \
         "${ALT_ROOT}/ansible/callback_plugins"/*.py \
         "${ALT_ROOT}/ansible/filter_plugins"/*.py
 
     bash -n "${ALT_ROOT}/install-control-plane.sh"
     bash -n "${ALT_ROOT}/install-control-plane-args.sh"
     bash -n "${ALT_ROOT}/install-control-plane-lib.sh"
+    sh -n "${ALT_ROOT}/install-workstations-gateway.sh"
     bash -n "${ALT_ROOT}/bootstrap/bootstrap.sh"
     bash -n "${ALT_ROOT}/bootstrap/alt-bootstrap-register"
 
@@ -447,6 +451,10 @@ install_controller_package() {
     install -o root -g root -m 0755 \
         "${ALT_ROOT}/control/alt-setup-worker" \
         "$(install_destination "${root_prefix}" /usr/local/libexec/alt-setup-worker)"
+    # Keep the additional launcher inside the existing backed-up runtime root.
+    install -o root -g root -m 0755 \
+        "${ALT_ROOT}/control/alt-workstations-gateway" \
+        "${control_root}/alt-workstations-gateway"
 }
 
 ensure_private_state_directories() {

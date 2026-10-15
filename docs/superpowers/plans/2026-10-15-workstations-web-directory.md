@@ -101,14 +101,14 @@ Allowed operations: `status`, `machines.list`, `machines.show`, `catalog.list`, 
 
 ## Task 4: Restricted SSH provisioning and panel transport
 
-**Files:** Create `app/workstations/__init__.py`, `client.py`; modify `app/config.py`; create `deploy/alt-linux/install-workstations-gateway.sh`, restricted sudoers/authorized-key templates, `tests/test_workstations_client.py`, `tests/alt_linux/test_workstations_gateway_install.py`; integrate artifacts in `install-control-plane-lib.sh` and installer source validation.
+**Files:** Create `app/workstations/__init__.py`, `client.py`; modify `app/config.py`; create `deploy/alt-linux/install-workstations-gateway.sh`, root-managed per-key forced-command enrollment, `tests/test_workstations_client.py`, `tests/alt_linux/test_workstations_gateway_install.py`; integrate artifacts in `install-control-plane-lib.sh` and installer source validation.
 
 **Interfaces:** `WorkstationsClient.call(operation: str, parameters: dict, *, request_id: str, scope: str = 'read') -> dict`. `WorkstationsTransportError` carries an allowlisted code, request ID and uncertain-outcome boolean, never stderr. Fixed admin-configured host/user/key/known-hosts paths cannot be overridden in HTTP parameters.
 
-- [ ] Test strict host-key checking, no shell command interpolation, scope-specific credentials, output/input bounds, timeout and malformed JSON. Installer tests assert root-owned forced commands, locked password authentication, disabled forwarding/TTY/user RC and exact service-user gateway sudo commands; no unrestricted controller SSH key is copied.
-- [ ] Run `python -m pytest tests/test_workstations_client.py tests/alt_linux/test_workstations_gateway_install.py -q`; prove failures.
-- [ ] Implement `subprocess` argv plus JSON stdin, finite connect/operation deadlines and credential-file ownership/mode validation. Add optional disabled-by-default settings so an unconfigured feature renders a clear unavailable state without breaking existing startup.
-- [ ] Run transport/install tests plus existing controller installer tests selected from actual touched-file coverage. Commit `feat(workstations): add restricted controller transport`.
+- [x] Test strict host-key checking, no shell command interpolation, scope-specific credentials, output/input bounds, timeout and malformed JSON. Installer tests assert root-owned forced commands, key-only source-bound gateway credentials, disabled forwarding/TTY/user RC and exact service-user forced commands; no unrestricted controller SSH key is copied.
+- [x] Run `python -m pytest tests/test_workstations_client.py tests/alt_linux/test_workstations_gateway_install.py -q`; prove failures.
+- [x] Implement `subprocess` argv plus JSON stdin, finite connect/operation deadlines and credential-file ownership/mode validation. Add optional disabled-by-default settings so an unconfigured feature renders a clear unavailable state without breaking existing startup.
+- [x] Run transport/install tests plus existing controller installer tests selected from actual touched-file coverage. Commit `feat(workstations): add restricted controller transport`.
 
 ## Task 5: Additive schema and coherent reconciliation worker
 

@@ -85,6 +85,12 @@ class Settings:
     session_cookie_name: str
     session_cookie_secure: bool
     api_permissions: str
+    workstations_enabled: bool = False
+    workstations_host: str = ''
+    workstations_ssh_user: str = 'altserver'
+    workstations_read_key: Path = Path('/etc/openvpn-web/credentials/workstations_read')
+    workstations_execute_key: Path = Path('/etc/openvpn-web/credentials/workstations_execute')
+    workstations_known_hosts: Path = Path('/etc/openvpn-web/workstations_known_hosts')
 
     @property
     def allowed_download_roots(self) -> tuple[Path, ...]:
@@ -158,6 +164,12 @@ def get_settings() -> Settings:
         session_cookie_name=os.environ.get("SESSION_COOKIE_NAME", "openvpn_web_session"),
         session_cookie_secure=environment == "production",
         api_permissions=os.environ.get("OPENVPN_WEB_API_PERMISSIONS", LEGACY_SERVICE_PERMISSIONS),
+        workstations_enabled=_bool_env('WORKSTATIONS_ENABLED', False),
+        workstations_host=os.environ.get('WORKSTATIONS_HOST', ''),
+        workstations_ssh_user=os.environ.get('WORKSTATIONS_SSH_USER', 'altserver'),
+        workstations_read_key=_path_env('WORKSTATIONS_READ_KEY', '/etc/openvpn-web/credentials/workstations_read'),
+        workstations_execute_key=_path_env('WORKSTATIONS_EXECUTE_KEY', '/etc/openvpn-web/credentials/workstations_execute'),
+        workstations_known_hosts=_path_env('WORKSTATIONS_KNOWN_HOSTS', '/etc/openvpn-web/workstations_known_hosts'),
     )
 
 
