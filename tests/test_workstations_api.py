@@ -76,6 +76,47 @@ def test_uncertain_apply_does_not_become_failed_or_retry_after_restart(database)
     assert calls == ['plans.apply']
 
 
+def test_lost_initial_reply_can_be_read_by_original_request_id_without_resubmission(database):
+    import threading
+    from app.workstations.service import WorkstationsService
+    from app.panel_operations import execution_future
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    class Controller:
+        def call(self, *args, **kwargs):
+            calls.append(kwargs['request_id']); entered.set()
+            assert release.wait(5)
+            return {'job_id': 'job-20261015T000000Z-12345678'}
+    service = WorkstationsService(client=Controller(), session_factory=database)
+    request_id = str(uuid.uuid4())
+    value = service.start('plans.apply', {}, actor='user:synthetic', request_id=request_id)
+    try:
+        assert entered.wait(5)
+        observed = service.operation(request_id, actor='user:synthetic')
+        assert observed['status'] == 'running' and observed['operation_id'] == value['operation_id']
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException): service.operation(request_id, actor='user:other')
+    finally:
+        release.set(); execution_future(value['operation_id']).result(timeout=5)
+    assert service.operation(request_id, actor='user:synthetic')['data']['job_id'].startswith('job-')
+    assert calls == [request_id]
+
+
+def test_request_lookup_during_registration_does_not_erase_pending_dispatch(database):
+    from app.workstations.models import WorkstationRequest
+    from app.workstations.service import WorkstationsService
+    from datetime import datetime, timedelta, timezone
+    request_id = str(uuid.uuid4())
+    with database() as db:
+        db.add(WorkstationRequest(id=request_id, actor='user:synthetic', action='plans.apply', permission='workstations:apply',
+            intent_sha256='a' * 64, status='registered', parameters_json={}, phases_json=[])); db.commit()
+    service = WorkstationsService(session_factory=database)
+    assert service.operation(request_id, actor='user:synthetic')['status'] == 'registered'
+    with database() as db:
+        db.get(WorkstationRequest, request_id).created_at = datetime.now(timezone.utc) - timedelta(hours=1); db.commit()
+    assert service.operation(request_id, actor='user:synthetic')['status'] == 'unknown'
+
+
 def test_running_operation_publishes_its_current_phase_before_remote_reply(database):
     import threading
     from app.workstations.service import WorkstationsService

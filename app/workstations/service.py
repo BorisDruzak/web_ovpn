@@ -145,16 +145,22 @@ class WorkstationsService:
     def record(self, operation_id, *, actor):
         valid_uuid(operation_id)
         with self.factory() as db:
-            row = db.scalar(select(WorkstationRequest).where(WorkstationRequest.panel_operation_id == operation_id))
-            if row is None or row.actor != actor:
+            rows = list(db.scalars(select(WorkstationRequest).where(
+                (WorkstationRequest.panel_operation_id == operation_id) | (WorkstationRequest.id == operation_id)).limit(2)))
+            if len(rows) != 1 or rows[0].actor != actor:
                 raise HTTPException(404, 'workstations_operation_not_found')
+            row = rows[0]
             return self._public(row)
 
     def operation(self, operation_id, *, actor):
         result = self.record(operation_id, actor=actor)
         if result['status'] in ('registered', 'running'):
             with self.factory() as db:
-                operation = db.get(PanelOperation, operation_id)
+                operation = db.get(PanelOperation, result['operation_id']) if result['operation_id'] else None
+                if result['operation_id'] is None:
+                    pending = db.get(WorkstationRequest, result['request_id'])
+                    if (datetime.now(timezone.utc) - pending.created_at).total_seconds() < panel_operations.LEASE_SECONDS:
+                        return result
                 expired = operation is None or operation.lease_until.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
                 if expired:
                     row = db.get(WorkstationRequest, result['request_id'])

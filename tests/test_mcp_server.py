@@ -1,4 +1,161 @@
 import json
+import uuid
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+
+def workstation_cases():
+    identity = str(uuid.UUID(int=1001))
+    request = {'request_id': str(uuid.UUID(int=1002))}
+    job = 'job-20261015T000000Z-12345678'
+    return [
+        ('status', {}, 'GET', '/status', None),
+        ('devices', {'offset': 0, 'limit': 50}, 'GET', '/devices?offset=0&limit=50', None),
+        ('catalog', {}, 'GET', '/catalog', None),
+        ('search_users', {'query': 'Synthetic', 'limit': 10}, 'POST', '/directory/search', {'query': 'Synthetic', 'limit': 10}),
+        ('link_preview', dict(request, device_key='machine:' + identity, user_guid=identity, computer_guid=None, source_revision='a' * 64),
+         'POST', '/links/preview', dict(request, device_key='machine:' + identity, user_guid=identity, computer_guid=None, source_revision='a' * 64)),
+        ('link_confirm', dict(request, preview_id=identity, expected_revision=1, reason='Compared'), 'POST', '/links/confirm', dict(request, preview_id=identity, expected_revision=1, reason='Compared')),
+        ('link_end', dict(request, link_id=identity, expected_revision=2, reason='Retired'), 'POST', '/links/' + identity + '/end', dict(request, expected_revision=2, reason='Retired')),
+        ('plan', dict(request, machine_uuid=identity, user_login='synthetic', user_guid=identity, user_sid='S-1-5-21-1', ou_id='a' * 64, software_profile='office-standard-v1'), 'POST', '/plans', None),
+        ('component_plan', dict(request, machine_uuid=identity, component_id='software.onlyoffice'), 'POST', '/component-plans', dict(request, machine_uuid=identity, component_id='software.onlyoffice')),
+        ('apply', dict(request, plan_id='setup-' + 'a' * 64, sha256='a' * 64, kind='full_setup'), 'POST', '/plans/setup-' + 'a' * 64 + '/apply', dict(request, sha256='a' * 64, kind='full_setup')),
+        ('operation', {'operation_id': identity}, 'GET', '/operations/' + identity, None),
+        ('jobs', {'machine_uuid': identity}, 'GET', '/jobs?machine_uuid=' + identity, None),
+        ('job_status', {'job_id': job}, 'GET', '/jobs/' + job, None),
+        ('job_events', {'job_id': job, 'after': 100, 'limit': 100}, 'GET', '/jobs/' + job + '/events?after=100&limit=100', None),
+        ('verify', dict(request, job_id=job), 'POST', '/jobs/' + job + '/verify', request),
+        ('cancel', dict(request, job_id=job, sha256='a' * 64), 'POST', '/jobs/' + job + '/cancel', dict(request, sha256='a' * 64)),
+        ('reconcile', request, 'POST', '/reconcile', request),
+        ('reconcile_status', {'operation_id': identity}, 'GET', '/reconcile/' + identity, None),
+        ('findings', {'limit': 50}, 'GET', '/findings?limit=50', None),
+        ('sources', {}, 'GET', '/sources', None),
+        ('journal', {'job_id': job, 'limit': 100}, 'GET', '/journal?job_id=' + job + '&limit=100', None),
+    ]
+
+
+def test_workstation_tools_have_bounded_schemas_and_no_employee_creation_or_arbitrary_command():
+    from mcp.openvpn_mcp_server import TOOLS
+    expected = {'openvpn_workstations_' + row[0] for row in workstation_cases()}
+    assert {name for name in TOOLS if name.startswith('openvpn_workstations_')} == expected
+    assert all(TOOLS[name]['inputSchema']['additionalProperties'] is False for name in expected)
+    assert 'request_id' in TOOLS['openvpn_workstations_apply']['inputSchema']['required']
+    assert 'sha256' in TOOLS['openvpn_workstations_apply']['inputSchema']['required']
+    assert 'expected_revision' in TOOLS['openvpn_workstations_link_confirm']['inputSchema']['required']
+    assert not any('users_create' in name or 'command' in TOOLS[name]['inputSchema']['properties'] for name in expected)
+
+
+@pytest.mark.parametrize('name,arguments,method,path,payload', workstation_cases())
+def test_workstation_tools_use_exact_existing_api_contract(monkeypatch, name, arguments, method, path, payload):
+    import mcp.openvpn_mcp_server as server
+    calls = []
+    monkeypatch.setattr(server, 'api_request', lambda method, path, payload=None: calls.append((method, path, payload)) or {'status': 'ok', 'data': {}})
+    server.call_tool('openvpn_workstations_' + name, arguments)
+    assert calls[0][:2] == (method, '/api/v1/workstations' + path)
+    if name == 'plan':
+        assert calls[0][2] == arguments
+    else:
+        assert calls[0][2] == payload
+
+
+@pytest.mark.parametrize('name,arguments,method,path,payload', workstation_cases())
+def test_every_workstation_tool_hides_unexpected_transport_details(monkeypatch, name, arguments, method, path, payload):
+    import mcp.openvpn_mcp_server as server
+    def fail(*args, **kwargs): raise RuntimeError('private-marker token=synthetic-sensitive-output')
+    monkeypatch.setattr(server, 'api_request', fail)
+    response = server.handle_message({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {'name': 'openvpn_workstations_' + name, 'arguments': arguments}})
+    assert 'private-marker' not in json.dumps(response) and 'synthetic-sensitive-output' not in json.dumps(response)
+    assert response['error']['message'] == 'workstations_api_unavailable'
+
+
+@pytest.mark.parametrize('name,arguments', [
+    ('devices', {'limit': True}), ('devices', {'limit': 101}), ('job_status', {'job_id': '../private'}),
+    ('apply', {'plan_id': 'setup-' + 'a' * 64, 'sha256': 'b' * 64, 'kind': 'full_setup', 'request_id': str(uuid.UUID(int=1))}),
+    ('sources', {'command': 'private'}), ('link_confirm', {'preview_id': str(uuid.UUID(int=1)), 'expected_revision': 1, 'reason': 'Compared'}),
+])
+def test_invalid_workstation_arguments_never_reach_transport(monkeypatch, name, arguments):
+    import mcp.openvpn_mcp_server as server
+    monkeypatch.setattr(server, 'api_request', lambda *args, **kwargs: pytest.fail('invalid arguments reached transport'))
+    with pytest.raises(ValueError): server.call_tool('openvpn_workstations_' + name, arguments)
+
+
+def test_new_workstation_tools_never_fall_back_to_the_legacy_secret(monkeypatch):
+    import mcp.openvpn_mcp_server as server
+    monkeypatch.setenv(server.TOKEN_ENV, 'legacy-secret-must-not-be-sent')
+    monkeypatch.delenv('OPENVPN_WORKSTATIONS_API_TOKEN_FILE', raising=False)
+    with pytest.raises(RuntimeError) as exc:
+        server.api_request('GET', '/api/v1/workstations/status')
+    assert 'legacy-secret' not in str(exc.value)
+    assert str(exc.value) == 'workstations_credentials_unavailable'
+
+
+def test_workstation_stdio_tools_obey_readonly_credential_and_hide_http_errors(monkeypatch, tmp_path):
+    import mcp.openvpn_mcp_server as server
+    calls = []
+    class API(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_GET(self): self.reply()
+        def do_POST(self): self.reply()
+        def reply(self):
+            assert self.headers['Authorization'] == 'Bearer synthetic-readonly-token'
+            calls.append((self.command, self.path))
+            allowed = self.command == 'GET' or self.path.endswith('/directory/search')
+            self.send_response(200 if allowed else 403)
+            self.send_header('Content-Type', 'application/json'); self.end_headers()
+            self.wfile.write(json.dumps({'status': 'ok', 'data': {}} if allowed else {'detail': 'private-marker synthetic-sensitive-output'}).encode())
+    api = ThreadingHTTPServer(('127.0.0.1', 0), API)
+    thread = threading.Thread(target=api.serve_forever, daemon=True); thread.start()
+    token = tmp_path / 'token'; token.write_text('synthetic-readonly-token'); token.chmod(0o600)
+    monkeypatch.setenv(server.WORKSTATIONS_TOKEN_FILE_ENV, str(token))
+    monkeypatch.setenv(server.BASE_URL_ENV, 'http://127.0.0.1:' + str(api.server_port))
+    messages = [{'id': 0, 'method': 'initialize'}, {'id': 1, 'method': 'tools/list'}]
+    messages.extend({'id': index + 2, 'method': 'tools/call', 'params': {'name': 'openvpn_workstations_' + case[0], 'arguments': case[1]}} for index, case in enumerate(workstation_cases()))
+    try:
+        result = subprocess.run([sys.executable, str(Path(server.__file__))], input=''.join(json.dumps(row) + '\n' for row in messages), text=True, capture_output=True, timeout=30, check=True)
+    finally:
+        api.shutdown(); api.server_close(); thread.join(2)
+    assert result.stderr == ''
+    responses = [json.loads(line) for line in result.stdout.splitlines()]
+    assert len(responses) == 23 and len(calls) == 21
+    assert responses[0]['result']['serverInfo']['version'] == '0.2.0'
+    assert len([row for row in responses[1]['result']['tools'] if row['name'].startswith(server.WORKSTATIONS_PREFIX)]) == 21
+    for case, response in zip(workstation_cases(), responses[2:]):
+        if case[2] == 'POST' and case[0] != 'search_users':
+            assert response['error']['message'] == 'workstations_permission_denied'
+        else:
+            assert response['result']['content']
+    assert 'private-marker' not in result.stdout and 'synthetic-sensitive-output' not in result.stdout
+
+
+def test_workstation_transport_refuses_redirect_and_unsafe_token(monkeypatch, tmp_path):
+    import mcp.openvpn_mcp_server as server
+    received = []
+    class API(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_GET(self):
+            received.append(self.path)
+            self.send_response(302); self.send_header('Location', '/must-not-follow'); self.end_headers()
+    api = ThreadingHTTPServer(('127.0.0.1', 0), API)
+    thread = threading.Thread(target=api.serve_forever, daemon=True); thread.start()
+    token = tmp_path / 'token'; token.write_text('synthetic-readonly-token'); token.chmod(0o600)
+    monkeypatch.setenv(server.WORKSTATIONS_TOKEN_FILE_ENV, str(token))
+    monkeypatch.setenv(server.BASE_URL_ENV, 'http://127.0.0.1:' + str(api.server_port))
+    try:
+        with pytest.raises(RuntimeError, match='^workstations_api_unavailable$'):
+            server.api_request('GET', server.WORKSTATIONS_API + '/status')
+        assert received == [server.WORKSTATIONS_API + '/status']
+        token.write_text('synthetic-token\nAuthorization: bad')
+        with pytest.raises(RuntimeError, match='^workstations_credentials_unavailable$'):
+            server.api_request('GET', server.WORKSTATIONS_API + '/status')
+        assert len(received) == 1
+    finally:
+        api.shutdown(); api.server_close(); thread.join(2)
 
 
 def test_mcp_tools_list_has_no_delete_tool():

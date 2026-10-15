@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import stat
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Callable
 
 BASE_URL_ENV = "OPENVPN_WEB_BASE_URL"
 TOKEN_ENV = "OPENVPN_WEB_API_TOKEN"
 TOKEN_FILE_ENV = "OPENVPN_WEB_API_TOKEN_FILE"
+WORKSTATIONS_TOKEN_FILE_ENV = "OPENVPN_WORKSTATIONS_API_TOKEN_FILE"
+WORKSTATIONS_PREFIX = "openvpn_workstations_"
+WORKSTATIONS_API = "/api/v1/workstations"
 
 
 def configure_stdio() -> None:
@@ -223,7 +230,177 @@ TOOLS: dict[str, dict[str, Any]] = {
 }
 
 
+def _string(pattern=None, minimum=1, maximum=192, nullable=False):
+    value = {"type": ["string", "null"] if nullable else "string", "minLength": minimum, "maxLength": maximum}
+    if pattern:
+        value["pattern"] = pattern
+    return value
+
+
+_UUID = _string(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", maximum=36)
+_SHA = _string(r"[0-9a-f]{64}", maximum=64)
+_JOB = _string(r"job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", maximum=40)
+_DEVICE = _string(r"(?:(?:machine|inventory|ad):[0-9a-f-]{36}|mac:(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})", maximum=50)
+_CATALOG = _string(r"[a-z][a-z0-9_.-]{0,127}", maximum=128)
+_REASON = _string(maximum=2000)
+_REVISION = {"type": "integer", "minimum": 1}
+_PAGE = {"offset": {"type": "integer", "minimum": 0, "maximum": 10000}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}
+
+
+def _workstation_tool(suffix, description, properties=None, required=None, mutation=False):
+    fields = dict(properties or {})
+    mandatory = list(required or [])
+    if mutation:
+        fields = {"request_id": _UUID, **fields}
+        mandatory.insert(0, "request_id")
+    TOOLS[WORKSTATIONS_PREFIX + suffix] = tool_schema(description, fields, mandatory)
+
+
+_workstation_tool("status", "Read coarse workstation availability and globally sequential queue status.")
+_workstation_tool("devices", "List reconciled devices, source revision/freshness, or inspect one device and explicit links.", {"device_key": _DEVICE, **_PAGE})
+_workstation_tool("catalog", "Read approved OU IDs, software profiles and component catalog.")
+_workstation_tool("search_users", "Read AD employee matches. Explicitly select GUID/SID; homonyms are never auto-selected.", {"query": _string(minimum=2, maximum=160), "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, ["query"])
+_workstation_tool("link_preview", "Preview an explicit device/AD relationship using a fresh complete source revision.", {"device_key": _DEVICE, "user_guid": _UUID, "computer_guid": {**_UUID, "type": ["string", "null"]}, "source_revision": _SHA}, ["device_key", "user_guid", "source_revision"], True)
+_workstation_tool("link_confirm", "Confirm a reviewed relationship with exact preview revision and reason; preserve inventory ownership.", {"preview_id": _UUID, "expected_revision": _REVISION, "reason": _REASON}, ["preview_id", "expected_revision", "reason"], True)
+_workstation_tool("link_end", "End an explicit link with exact revision and reason; retain its audit history.", {"link_id": _UUID, "expected_revision": _REVISION, "reason": _REASON}, ["link_id", "expected_revision", "reason"], True)
+_workstation_tool("plan", "Create a protected Setup plan for an explicitly selected existing AD employee. Does not apply it.", {"machine_uuid": _UUID, "user_login": _string(r"[a-zA-Z0-9][a-zA-Z0-9._@-]{0,191}"), "user_guid": _UUID, "user_sid": _string(r"S-1-[0-9]+(?:-[0-9]+)+", maximum=192), "ou_id": _SHA, "software_profile": _CATALOG, "remote_access_profile": {"type": "string", "enum": ["none", "krfb"]}}, ["machine_uuid", "user_login", "user_guid", "user_sid", "ou_id", "software_profile"], True)
+_workstation_tool("component_plan", "Plan one approved component using the existing native assignment.", {"machine_uuid": _UUID, "component_id": _CATALOG}, ["machine_uuid", "component_id"], True)
+_workstation_tool("apply", "Apply the reviewed exact plan SHA/kind within native TTL. Keep this request ID; UNKNOWN forbids resubmission.", {"plan_id": _string(r"setup-(?:component-)?[0-9a-f]{64}", maximum=80), "sha256": _SHA, "kind": {"type": "string", "enum": ["full_setup", "component"]}}, ["plan_id", "sha256", "kind"], True)
+_workstation_tool("operation", "Read the original operation receipt after a lost reply; never create a replacement apply.", {"operation_id": _UUID}, ["operation_id"])
+_workstation_tool("jobs", "Read native workstation jobs with bounded pagination.", {"machine_uuid": _UUID, **_PAGE})
+_workstation_tool("job_status", "Read native stage history, sequential queue position and technical/functional outcome.", {"job_id": _JOB}, ["job_id"])
+_workstation_tool("job_events", "Read sanitized native events after the last sequence. Preserve cursors and report gaps.", {"job_id": _JOB, "after": {"type": "integer", "minimum": 0, "maximum": 10000}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, ["job_id"])
+_workstation_tool("verify", "Explicitly verify an existing job; GET status never starts verification.", {"job_id": _JOB}, ["job_id"], True)
+_workstation_tool("cancel", "Request native guarded cancellation with its exact SHA; cannot release UNKNOWN.", {"job_id": _JOB, "sha256": _SHA}, ["job_id", "sha256"], True)
+_workstation_tool("reconcile", "Collect a fresh read-only AD/DNS/network/inventory comparison; never changes DNS, AD or owners.", mutation=True)
+_workstation_tool("reconcile_status", "Read the original reconciliation operation.", {"operation_id": _UUID}, ["operation_id"])
+_workstation_tool("findings", "Read comparison conflicts; acknowledgement is not conflict resolution.", _PAGE)
+_workstation_tool("sources", "Read attempts, last complete generations and freshness independently.")
+_workstation_tool("journal", "Read or export the same authorized sanitized journal with bounded cursor pagination.", {"device_key": _DEVICE, "job_id": _JOB, "component": _CATALOG, "stage": _string(r"[a-z0-9_]+", maximum=64), "severity": {"type": "string", "enum": ["info", "error"]}, "cursor": _string(maximum=1024), "limit": {"type": "integer", "minimum": 1, "maximum": 1000}, "export": {"type": "boolean"}})
+
+
+class WorkstationsAPIError(RuntimeError):
+    """Only fixed public error codes may cross the MCP boundary."""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _workstations_token():
+    try:
+        path = os.environ[WORKSTATIONS_TOKEN_FILE_ENV]
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4096 or info.st_size < 16:
+            raise ValueError()
+        if os.name != "nt" and (info.st_uid not in (0, os.getuid()) or info.st_mode & 0o077):
+            raise ValueError()
+        with open(path, "r", encoding="utf-8") as stream:
+            actual = os.fstat(stream.fileno())
+            if (actual.st_ino, actual.st_dev) != (info.st_ino, info.st_dev):
+                raise ValueError()
+            token = stream.read(4097).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.~-]{16,4096}", token):
+            raise ValueError()
+        return token
+    except (OSError, KeyError, ValueError):
+        raise WorkstationsAPIError("workstations_credentials_unavailable") from None
+
+
+def _workstations_request(method, path, payload):
+    token = _workstations_token()
+    base_url = os.environ.get(BASE_URL_ENV, "http://192.168.100.30:8088").rstrip("/")
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path:
+        raise WorkstationsAPIError("workstations_configuration_invalid")
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    body = None
+    if payload is not None:
+        body = json.dumps(payload, allow_nan=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(base_url + path, data=body, headers=headers, method=method)
+    deadline = time.monotonic() + 60
+    try:
+        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=60) as response:
+            chunks, size = [], 0
+            while True:
+                if time.monotonic() >= deadline:
+                    raise WorkstationsAPIError("workstations_api_timeout")
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > 20 * 1024 * 1024:
+                    raise WorkstationsAPIError("workstations_response_limit")
+                chunks.append(chunk)
+        value = json.loads(b"".join(chunks))
+        if not isinstance(value, dict) or value.get("status") not in ("ok", "error"):
+            raise ValueError()
+        return value
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        code = {401: "workstations_auth_required", 403: "workstations_permission_denied", 409: "workstations_conflict", 422: "workstations_validation_invalid"}.get(exc.code, "workstations_api_unavailable")
+        raise WorkstationsAPIError(code) from None
+    except WorkstationsAPIError:
+        raise
+    except Exception:
+        raise WorkstationsAPIError("workstations_api_unavailable") from None
+
+
+def _workstations_call(name, arguments):
+    schema = TOOLS.get(name, {}).get("inputSchema")
+    if not schema or not isinstance(arguments, dict) or set(arguments) - set(schema["properties"]) or set(schema["required"]) - set(arguments):
+        raise ValueError("workstations_arguments_invalid")
+    for key, value in arguments.items():
+        rule = schema["properties"][key]
+        allowed = rule["type"] if isinstance(rule["type"], list) else [rule["type"]]
+        if value is None and "null" in allowed:
+            continue
+        valid = (("string" in allowed and isinstance(value, str)) or ("integer" in allowed and type(value) is int) or ("boolean" in allowed and type(value) is bool))
+        if not valid or ("enum" in rule and value not in rule["enum"]):
+            raise ValueError("workstations_arguments_invalid")
+        if isinstance(value, str):
+            if not rule.get("minLength", 0) <= len(value) <= rule.get("maxLength", 4096) or ("pattern" in rule and not re.fullmatch(rule["pattern"], value)):
+                raise ValueError("workstations_arguments_invalid")
+            if rule.get("pattern") == _UUID["pattern"] and not uuid.UUID(value).int:
+                raise ValueError("workstations_arguments_invalid")
+        if type(value) is int and not rule.get("minimum", 0) <= value <= rule.get("maximum", 2**63 - 1):
+            raise ValueError("workstations_arguments_invalid")
+    suffix = name.removeprefix(WORKSTATIONS_PREFIX)
+    values = dict(arguments)
+    method, path, body = "GET", "", None
+    if suffix == "devices" and "device_key" in values:
+        if set(values) != {"device_key"}:
+            raise ValueError("workstations_arguments_invalid")
+        path = "/devices/" + urllib.parse.quote(values.pop("device_key"), safe="")
+    elif suffix in ("operation", "reconcile_status"):
+        path = ("/operations/" if suffix == "operation" else "/reconcile/") + values.pop("operation_id")
+    elif suffix in ("job_status", "job_events", "verify", "cancel"):
+        path = "/jobs/" + values.pop("job_id")
+        if suffix != "job_status":
+            path += {"job_events": "/events", "verify": "/verify", "cancel": "/cancel"}[suffix]
+    elif suffix == "link_end":
+        path = "/links/" + values.pop("link_id") + "/end"
+    elif suffix == "apply":
+        plan_id = values.pop("plan_id")
+        if plan_id != ("setup-" if values["kind"] == "full_setup" else "setup-component-") + values["sha256"]:
+            raise ValueError("workstations_arguments_invalid")
+        path = "/plans/" + plan_id + "/apply"
+    elif suffix == "journal":
+        path = "/journal/export" if values.pop("export", False) else "/journal"
+    else:
+        path = {"search_users": "/directory/search", "link_preview": "/links/preview", "link_confirm": "/links/confirm", "plan": "/plans", "component_plan": "/component-plans"}.get(suffix, "/" + suffix)
+    if suffix in ("search_users", "link_preview", "link_confirm", "link_end", "plan", "component_plan", "apply", "verify", "cancel", "reconcile"):
+        method, body = "POST", values
+    else:
+        path = _query_path(path, list(values.items()))
+    return api_request(method, WORKSTATIONS_API + path, body)
+
+
 def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if path == WORKSTATIONS_API or path.startswith(WORKSTATIONS_API + "/"):
+        return _workstations_request(method, path, payload)
     base_url = os.environ.get(BASE_URL_ENV, "http://192.168.100.30:8088").rstrip("/")
     token = os.environ.get(TOKEN_ENV, "")
     token_file = os.environ.get(TOKEN_FILE_ENV, "")
@@ -267,6 +444,8 @@ def _snapshot_section(tool_name: str, arguments: dict[str, Any] | None = None) -
 
 
 def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name.startswith(WORKSTATIONS_PREFIX):
+        return _workstations_call(name, arguments)
     if name == "openvpn_status":
         return api_request("GET", "/api/v1/status")
     if name == "openvpn_server_config":
@@ -470,7 +649,7 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
                 {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "openvpn-control", "version": "0.1.0"},
+                    "serverInfo": {"name": "openvpn-control", "version": "0.2.0"},
                 },
             )
         if method == "notifications/initialized":
@@ -489,6 +668,9 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
             )
         return error_response(message_id, -32601, f"method not found: {method}")
     except Exception as exc:
+        if method == "tools/call" and str((message.get("params") or {}).get("name", "")).startswith(WORKSTATIONS_PREFIX):
+            code = str(exc) if isinstance(exc, WorkstationsAPIError) else ("workstations_arguments_invalid" if isinstance(exc, ValueError) else "workstations_api_unavailable")
+            return error_response(message_id, -32000, code)
         return error_response(message_id, -32000, str(exc))
 
 
