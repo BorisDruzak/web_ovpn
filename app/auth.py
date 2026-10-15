@@ -4,6 +4,9 @@ import hmac
 import hashlib
 import json
 import secrets
+import os
+import re
+import stat
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request, status
@@ -106,6 +109,65 @@ def verify_api_csrf(request: Request, csrf_token_header: str | None) -> None:
     sent = str(csrf_token_header or "")
     if not expected or not hmac.compare_digest(sent, expected):
         raise HTTPException(status_code=400, detail="CSRF token mismatch")
+
+
+WORKSTATIONS_GRANTS = frozenset('workstations:' + value for value in ('read', 'plan', 'apply', 'link', 'diagnose'))
+
+
+def _workstations_credentials():
+    """Only administrator-owned, bounded hash records; malformed input grants nothing."""
+    path = get_settings().workstations_api_credentials_file
+    try:
+        if any(parent.is_symlink() for parent in path.parents):
+            return ()
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 65536
+                or os.name != 'nt' and (info.st_uid not in (0, os.geteuid()) or stat.S_IMODE(info.st_mode) & 0o077)):
+            return ()
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        if not isinstance(raw, list) or len(raw) > 100:
+            return ()
+        hashes, actors = set(), set()
+        for record in raw:
+            if (not isinstance(record, dict) or set(record) != {'token_hash', 'actor', 'grants'}
+                    or not isinstance(record['token_hash'], str) or not re.fullmatch('[0-9a-f]{64}', record['token_hash'])
+                    or not isinstance(record['actor'], str) or not re.fullmatch('[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}', record['actor'])
+                    or not isinstance(record['grants'], list) or not all(isinstance(v, str) for v in record['grants'])
+                    or not set(record['grants']) <= WORKSTATIONS_GRANTS or record['token_hash'] in hashes or record['actor'] in actors):
+                return ()
+            hashes.add(record['token_hash']); actors.add(record['actor'])
+        return tuple(raw)
+    except (OSError, ValueError, TypeError, RecursionError):
+        return ()
+
+
+def authorize_workstations(request: Request, db: Session, permission: str | None) -> str:
+    authorization = request.headers.get('Authorization')
+    if authorization is not None:
+        if not authorization.startswith('Bearer ') or len(authorization) > 2048:
+            raise HTTPException(401, 'workstations_auth_required')
+        digest = hashlib.sha256(authorization[7:].strip().encode()).hexdigest()
+        settings = get_settings()
+        selected = next((record for record in _workstations_credentials() if hmac.compare_digest(record['token_hash'], digest)), None)
+        if selected is not None:
+            request.state.workstations_actor = 'service:workstations:' + selected['actor']
+            if permission and permission not in selected['grants']:
+                raise HTTPException(403, 'workstations_permission_denied')
+            return 'service:workstations:' + selected['actor']
+        if settings.api_token_hash and hmac.compare_digest(digest, settings.api_token_hash):
+            from .permissions import check_service_permission
+            request.state.workstations_actor = 'service:legacy:' + settings.api_actor
+            check_service_permission(settings.api_permissions, permission)
+            return 'service:legacy:' + settings.api_actor
+        raise HTTPException(401, 'workstations_auth_required')
+    user = current_user(request, db)
+    if user is None:
+        raise HTTPException(401, 'workstations_auth_required')
+    request.state.workstations_actor = 'user:' + str(user.id)
+    check_user_permission(user, permission)
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        verify_api_csrf(request, request.headers.get('X-CSRF-Token'))
+    return 'user:' + str(user.id)
 
 
 def _network_change_tokens() -> tuple[dict[str, object], ...]:

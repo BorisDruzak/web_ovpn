@@ -191,7 +191,12 @@ class ControllerBackend:
         if operation == 'jobs.list':
             return service.list(p.get('machine_uuid'), offset=p.get('offset', 0), limit=p.get('limit', 100))
         if operation == 'jobs.status':
-            return service.status(p['job_id'])
+            result = service.status(p['job_id'])
+            # Native list/status CLI keeps a 100-entry summary. The web detail
+            # exposes the entire validated (maximum 1024) stage chronology.
+            job = SetupJobRepository(settings).get(p['job_id'])
+            result['job']['history'] = [fields(row, ('state', 'stage', 'at')) for row in job.status['stage_history']]
+            return result
         if operation == 'jobs.events':
             return service.events_for(p['job_id'], after=p.get('after', 0), limit=p.get('limit', 100))
         if operation == 'jobs.verify':

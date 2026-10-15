@@ -92,6 +92,7 @@ class Settings:
     workstations_execute_key: Path = Path('/etc/openvpn-web/credentials/workstations_execute')
     workstations_known_hosts: Path = Path('/etc/openvpn-web/workstations_known_hosts')
     workstations_reconcile_lock: Path = Path('/var/lib/openvpn-web/workstations/reconcile.lock')
+    workstations_api_credentials_file: Path = Path('/etc/openvpn-web/credentials/workstations-api.json')
 
     @property
     def allowed_download_roots(self) -> tuple[Path, ...]:
@@ -172,6 +173,7 @@ def get_settings() -> Settings:
         workstations_execute_key=_path_env('WORKSTATIONS_EXECUTE_KEY', '/etc/openvpn-web/credentials/workstations_execute'),
         workstations_known_hosts=_path_env('WORKSTATIONS_KNOWN_HOSTS', '/etc/openvpn-web/workstations_known_hosts'),
         workstations_reconcile_lock=_path_env('WORKSTATIONS_RECONCILE_LOCK', '/var/lib/openvpn-web/workstations/reconcile.lock'),
+        workstations_api_credentials_file=_path_env('WORKSTATIONS_API_CREDENTIALS_FILE', '/etc/openvpn-web/credentials/workstations-api.json'),
     )
 
 

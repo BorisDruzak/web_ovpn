@@ -93,6 +93,21 @@ def test_registry_generation_covers_other_pages_and_safe_assignments(tmp_path, m
     assert 'private' not in json.dumps(page)
 
 
+def test_detail_preserves_full_safe_stage_history_beyond_legacy_summary_limit(tmp_path, monkeypatch):
+    from alt_deploy import workstations_gateway as module
+    history = [{'state': 'running', 'stage': 'configuration', 'at': '2026-10-15T12:00:00+00:00', 'raw': 'private'} for _ in range(105)]
+    class View:
+        def __init__(self, settings): pass
+        def status(self, job_id): return {'job': {'history': history[-100:], 'history_total': len(history)}}
+    class Jobs:
+        def __init__(self, settings): pass
+        def get(self, job_id): return SimpleNamespace(status={'stage_history': history})
+    monkeypatch.setattr(module, 'SetupJobsService', View)
+    monkeypatch.setattr(module, 'SetupJobRepository', Jobs)
+    result = module.ControllerBackend(SimpleNamespace(state_root=tmp_path)).call('jobs.status', {'job_id': 'job-20261015T000000Z-12345678'})
+    assert len(result['job']['history']) == 105 and 'private' not in json.dumps(result)
+
+
 def test_plan_projection_drops_request_paths_and_raw_observations(tmp_path):
     from alt_deploy.workstations_projection import public_plan
     plan = {'plan_id': 'setup-' + 'a' * 64, 'sha256': 'a' * 64, 'created_at': 'now', 'expires_at': 'later', 'payload': {

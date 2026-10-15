@@ -406,7 +406,9 @@ def init_db() -> None:
 
     engine = get_engine()
     _prepare_inventory_sync_claim_index(engine)
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=engine, tables=[table for table in Base.metadata.tables.values()
+        if not table.name.startswith('workstation_')])
+    init_workstations_schema()
     # create_all skips indexes on an already existing ledger. Install the
     # stronger unresolved-intent guard when upgrading the initial T01 table.
     # Existing conflicting unresolved history fails closed for operator review.

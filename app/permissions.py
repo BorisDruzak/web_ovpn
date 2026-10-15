@@ -10,9 +10,13 @@ from fastapi import HTTPException
 
 PERMISSIONS = frozenset({"inventory:read", "inventory:write", "inventory:delete", "inventory:export",
     "network:read", "network:diagnose", "network:manage", "network:export",
-    "vpn:read", "vpn:manage", "vpn:download", "admin:users"})
+    "vpn:read", "vpn:manage", "vpn:download", "admin:users",
+    "workstations:read", "workstations:plan", "workstations:apply", "workstations:link", "workstations:diagnose"})
 LEGACY_SERVICE_PERMISSIONS = "inventory:read,inventory:write,network:read,network:diagnose,vpn:read,vpn:manage,vpn:download"
 PERMISSION_LABELS = {
+    "workstations:read": "Просмотр рабочих мест и каталога сотрудников",
+    "workstations:plan": "Подготовка планов рабочих мест", "workstations:apply": "Запуск настройки рабочих мест",
+    "workstations:link": "Привязка сотрудников к устройствам", "workstations:diagnose": "Сверка и журнал рабочих мест",
     "inventory:read": "Просмотр инвентаризации", "inventory:write": "Изменение карточек",
     "inventory:delete": "Удаление и восстановление карточек", "inventory:export": "Экспорт инвентаризации",
     "network:read": "Просмотр сети", "network:diagnose": "Диагностика и сбор данных",
@@ -26,6 +30,18 @@ def required_permission(path: str, method: str) -> str | None:
     write = method not in {"GET", "HEAD", "OPTIONS"}
     if path in {"/login", "/logout"} or path.startswith("/static/"):
         return None
+    if path.startswith('/workstations'):
+        if path == '/workstations' or path == '/workstations/status' or path.startswith(('/workstations/operations/', '/workstations/reconcile/')):
+            return None
+        if '/journal' in path or path.endswith('/verify') or path == '/workstations/reconcile' and write or '/findings/' in path and write:
+            return 'workstations:diagnose'
+        if '/links/' in path:
+            return 'workstations:link'
+        if path.endswith(('/apply', '/cancel')):
+            return 'workstations:apply'
+        if path in ('/workstations/plans', '/workstations/component-plans') and write:
+            return 'workstations:plan'
+        return 'workstations:read'
     if path.startswith("/operations"):
         return None  # Owner and original capability are checked by each operation route.
     if path.startswith("/admin/users"):
@@ -58,7 +74,7 @@ def required_permission(path: str, method: str) -> str | None:
 def user_has_permission(user, permission: str | None) -> bool:
     if user is None or not user.is_active:
         return False
-    if permission is None or user.is_admin or permission.endswith(":read"):
+    if permission is None or user.is_admin or permission.endswith(":read") and not permission.startswith('workstations:'):
         return True
     if user.is_network_admin and permission in {"network:diagnose", "network:manage"}:
         return True
