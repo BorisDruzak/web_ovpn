@@ -1,7 +1,7 @@
 # Workstations: web setup, AD/DNS reconciliation and MCP
 
-Status: proposed design, awaiting written-spec review. Product implementation
-and rollout have not started. Requested by the operator on 2026-10-15.
+Status: approved by the operator on 2026-10-15. Product implementation and rollout
+have not started; implementation-plan review is the next required stage.
 
 ## 1. Outcome and scope
 
@@ -309,6 +309,7 @@ The adapter API prefix is `/api/v1/workstations`. Operation families are:
 - `POST /directory/search` for bounded employee search with no-store responses;
 - `POST /links/preview`, `/links/confirm`, `/links/{id}/end` with revisions;
 - `POST /plans`, `/component-plans`, `/plans/{id}/apply` using protected IDs/SHA;
+- `GET /operations/{id}` for a durable planning/verification operation result;
 - `GET /jobs`, `/jobs/{id}`, `/jobs/{id}/events` with bounded pagination;
 - `POST /jobs/{id}/verify`, `/jobs/{id}/cancel` with native limitations;
 - `POST /reconcile` to request one bounded collection run, and
