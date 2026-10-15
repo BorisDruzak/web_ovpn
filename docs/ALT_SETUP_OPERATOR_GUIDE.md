@@ -1,5 +1,14 @@
 # ALT Setup operator guide
 
+The existing panel also exposes `/workstations` as a separate **Рабочие места**
+section with employee search/explicit selection, protected plan confirmation,
+sequential queue and full paged job events. It uses the same native Setup
+contracts below. Read the [web/directory runbook](runbooks/workstations.md) and
+[MCP guide](runbooks/workstations-mcp.md) for restricted integration credentials,
+source freshness, explicit links and original-receipt lookup after a lost reply.
+Employee creation is disabled; UNKNOWN and human login/reboot stages remain
+explicit. Code publication is separate from installed directory acceptance.
+
 Use installed `workstationctl` through the existing controller sudo policy.
 Examples use `sudo -u altserver`. Replace uppercase placeholders with returned
 IDs. Global `--json` precedes `setup`. Direct Ansible commands are unnecessary.

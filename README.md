@@ -14,6 +14,14 @@ manual/Netctl data and last saved Endpoint context usable during an outage.
 
 ALT Linux workstation deployment context: [docs/ALT_LINUX_AUTOINSTALL.md](docs/ALT_LINUX_AUTOINSTALL.md).
 
+The separate **Рабочие места** section at `/workstations` provides protected
+Setup planning, explicit existing-employee/device links, AD/DNS/network/inventory
+comparison, step-by-step job progress and sanitized journals. Setup retains the
+native sequential queue. Employee creation remains unavailable. Integration is
+disabled until its separate directory identity and restricted gateway pass
+deployment checks. See the [workstation runbook](docs/runbooks/workstations.md)
+and [existing MCP extension](docs/runbooks/workstations-mcp.md).
+
 ## Security Model
 
 - The web app does not edit OpenVPN PKI, CRL, CCD, `.ovpn`, iptables, RouterOS, or systemd directly.

@@ -166,10 +166,10 @@ Scoped credential configuration is `WORKSTATIONS_API_CREDENTIALS_FILE`, a protec
 
 **Interfaces:** Add `openvpn_workstations_status`, `openvpn_workstations_devices`, `openvpn_workstations_catalog`, `openvpn_workstations_search_users`, `openvpn_workstations_link_preview`, `openvpn_workstations_link_confirm`, `openvpn_workstations_link_end`, `openvpn_workstations_plan`, `openvpn_workstations_component_plan`, `openvpn_workstations_apply`, `openvpn_workstations_operation`, `openvpn_workstations_jobs`, `openvpn_workstations_job_status`, `openvpn_workstations_job_events`, `openvpn_workstations_verify`, `openvpn_workstations_cancel`, `openvpn_workstations_reconcile`, `openvpn_workstations_reconcile_status`, `openvpn_workstations_findings`, `openvpn_workstations_sources`, `openvpn_workstations_journal`. Parameter schemas match Task 7 routes and reject extra fields.
 
-- [ ] Add MCP schema/API mapping tests, exact-confirmation/revision requirements, forbidden employee creation/arbitrary command absence, readonly credential denial and safe errors on every new tool. Assert all old tools still map unchanged.
-- [ ] Run `python -m pytest tests/test_mcp_server.py -q`; confirm new assertions fail.
-- [ ] Extend API dispatch using the existing HTTP client, with bounded pagination and the same operation/job receipts. Read `skill-creator` and `writing-skills` instructions before the actual skill edit; document search/select/preview/confirm/watch, source freshness, identity ambiguity and UNKNOWN stop conditions without adding new approval flows.
-- [ ] Run all MCP tests and an isolated stdio initialize/tools-list/tools-call session against the test API. Compare repository/plugin script hashes, update plugin through its supported source/install workflow and check actual new server tool discovery separately from tools already loaded in this chat. Commit repository files as `feat(mcp): expose workstation setup and directory reconciliation`.
+- [x] Add MCP schema/API mapping tests, exact-confirmation/revision requirements, forbidden employee creation/arbitrary command absence, readonly credential denial and safe errors on every new tool. Assert all old tools still map unchanged.
+- [x] Run `python -m pytest tests/test_mcp_server.py -q`; confirm new assertions fail.
+- [x] Extend API dispatch using the existing HTTP client, with bounded pagination and the same operation/job receipts. Read `skill-creator` and `writing-skills` instructions before the actual skill edit; document search/select/preview/confirm/watch, source freshness, identity ambiguity and UNKNOWN stop conditions without adding new approval flows.
+- [x] Run all MCP tests and an isolated stdio initialize/tools-list/tools-call session against the test API. Compare repository/plugin script hashes, update plugin through its supported source/install workflow and check actual new server tool discovery separately from tools already loaded in this chat. Commit repository files as `feat(mcp): expose workstation setup and directory reconciliation`. Canonical plugin source is updated; cached-skill/current-chat refresh remains a Task 12 installed acceptance gate.
 
 ## Task 10: Restricted AD account and deployment packaging
 
@@ -177,19 +177,19 @@ Scoped credential configuration is `WORKSTATIONS_API_CREDENTIALS_FILE`, a protec
 
 **Interfaces:** Bootstrap script takes configuration/credential input through protected files or a secure administrator session; it creates one integration identity, records its stable SID, and applies only account-specific scoped grants/restrictions. It never accepts employee bulk creation or writes DNS records. Its check mode emits only safe membership/ACL/readiness booleans and counts.
 
-- [ ] Test dedicated readonly source, absence of administrative/DNS management membership, inherited write-right detection, protected secret handoff, no raw secret/password argv/logging, exact scoped ACL change, idempotent recheck of the same SID, collision refusal and no unrelated ACL/policy edits. Account creation/ACL bootstrap is a deployment operation, not an HTTP/MCP tool.
-- [ ] Run provisioning/deployment tests and validate shell/PowerShell syntax on their actual platforms; do not claim static string checks prove effective AD rights.
-- [ ] Implement source validation and native guarded-install coverage for every new controller executable/config; require a verified rollback backup and a fresh native maintenance review where historical UNKNOWN requires it. Gate reconciliation timer activation on schema/gateway/readonly credential readiness. Existing unconfigured installs remain usable.
-- [ ] Implement scoped API credential provisioning for new MCP capabilities without silently adding permissions to old token defaults. Register explicit owned keys/paths in the protected deployment receipt, not tracked config. Document backup/rollback and evidence commands without production addresses.
-- [ ] Re-run packaging and relevant installer/service tests; commit `feat(workstations): package restricted integration deployment`.
+- [x] Test dedicated readonly source, absence of administrative/DNS management membership, inherited write-right detection, protected secret handoff, no raw secret/password argv/logging, exact scoped ACL change, idempotent recheck of the same SID, collision refusal and no unrelated ACL/policy edits. Account creation/ACL bootstrap is a deployment operation, not an HTTP/MCP tool.
+- [x] Run provisioning/deployment tests and validate shell/PowerShell syntax on their actual platforms; do not claim static string checks prove effective AD rights.
+- [x] Implement source validation and native guarded-install coverage for every new controller executable/config; require a verified rollback backup and a fresh native maintenance review where historical UNKNOWN requires it. Gate reconciliation timer activation on schema/gateway/readonly credential readiness. Existing unconfigured installs remain usable.
+- [x] Implement scoped API credential provisioning for new MCP capabilities without silently adding permissions to old token defaults. Register explicit owned keys/paths in the protected deployment receipt, not tracked config. Document backup/rollback and evidence commands without production addresses.
+- [x] Re-run packaging and relevant installer/service tests; commit `feat(workstations): package restricted integration deployment`.
 
 ## Task 11: Integration verification, review and publication
 
 **Files:** Add `docs/verification/WORKSTATIONS_WEB_DIRECTORY_2026-10-15.md`; update `README.md` and canonical ALT/operator guides where entry points change. Keep environment evidence private.
 
 - [ ] Read both approved documents and execute all new boundary suites plus full Linux CI: `python -m pytest tests -q`. Run `node --test tests/workstations.test.js`, JS syntax checks and actual browser journey. Record exact commands/results rather than reusing historical counts.
-- [ ] Refresh GitNexus status/context/impact for touched web/controller/MCP boundaries. Confirm no new Endpoint provider/consumer contract was introduced; verify dynamic gateway/service paths directly in source/tests. Do not trigger manual central synchronization.
-- [ ] Obtain independent whole-change review using the applicable review skill, resolve actionable findings with fresh targeted verification, inspect full diff and run `git diff --check`. Scan staged/tracked new files for credentials, private identifiers and environment evidence.
+- [x] Refresh GitNexus status/context/impact for touched web/controller/MCP boundaries. Confirm no new Endpoint provider/consumer contract was introduced; verify dynamic gateway/service paths directly in source/tests. Do not trigger manual central synchronization.
+- [x] Obtain independent whole-change review using the applicable review skill, resolve actionable findings with fresh targeted verification, inspect full diff and run `git diff --check`. Scan staged/tracked new files for credentials, private identifiers and environment evidence.
 - [ ] Safely integrate the feature branch into fresh main, run exact-source CI, and publish main according to repository rules. Record full commit SHAs, messages, included files and actual checks for each logical commit. Do not publish known failing/incomplete behavior as finished.
 
 ## Task 12: Guarded rollout and live acceptance

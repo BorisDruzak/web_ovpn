@@ -2,6 +2,13 @@
 
 ## ALT Setup Engine V2
 
+The existing panel's separate **Рабочие места** section and current OpenVPN
+Control MCP can use this controller through a restricted read/execute gateway.
+See [workstation deployment](../../docs/runbooks/workstations.md) for the
+dedicated AD/DNS observer, principal-specific privilege checks, explicit
+directory/device links, guarded rollout and activation gates. Employee creation
+is unavailable; native SHA/TTL, queue and UNKNOWN contracts remain binding.
+
 The published component catalog, durable systemd Setup worker and independent
 verification are documented in [ALT_SETUP_ENGINE_V2.md](../../docs/ALT_SETUP_ENGINE_V2.md).
 Use the [operator guide](../../docs/ALT_SETUP_OPERATOR_GUIDE.md) for catalog/profile
