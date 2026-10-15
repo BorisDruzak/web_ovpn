@@ -190,6 +190,9 @@ class MaintenanceReview:
                        or r['state'] != 'unknown_requires_review' or r['supersedes'] for r in leases)):
             raise denied()
         allowed = {job_id}
+        # Match ordinary backup admission: validated predecessor links make the
+        # old UNKNOWN historical. Any active successor still blocks below.
+        allowed.update(control_module('setup_retry').reviewed_jobs(self.settings))
         if candidate_job_id is not None:
             candidate = repository.get(candidate_job_id)
             if (candidate.state != 'queued' or candidate.status['claimed']
@@ -197,9 +200,6 @@ class MaintenanceReview:
                     or candidate.request['identities']['hostname'] == job.request['identities']['hostname']):
                 raise denied()
             allowed.add(candidate_job_id)
-            # Native reviewed predecessors are historical, not unexplained work.
-            # Their exact successor links are revalidated by the existing gate.
-            allowed.update(control_module('setup_retry').reviewed_jobs(self.settings))
         if any(j.job_id not in allowed and j.state in self.jobs.ACTIVE_SETUP_STATES for j in repository.jobs.list()):
             raise denied()
         history = history_fingerprint(root)

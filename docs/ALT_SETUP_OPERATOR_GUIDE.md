@@ -130,6 +130,14 @@ predicates and original history under the lifecycle lock. A home may be absent
 before first login. The finished job's idle worker daemon may remain alive.
 Unrelated work, unsafe state, drift, busy execution or expiry denies admission.
 
+Maintenance recognizes the same validated native `--after-job` predecessor links
+as ordinary backup admission. An interrupted component remains UNKNOWN in history
+after a permitted successor finishes; that reviewed predecessor alone does not
+block a fresh maintenance review. A queued/running/UNKNOWN successor, a missing or
+changed review link, or another unreviewed UNKNOWN still blocks. The receipt
+continues to exclude only the explicitly inspected closed full job and its two
+correlated legacy reservations; it grants no target replay permission.
+
 The published native backup tool must contain the validator before scoped
 backup. Install it through its normal procedure within separately approved
 controller deployment preparation. Source CLI uses the trusted sibling backup

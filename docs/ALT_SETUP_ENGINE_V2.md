@@ -113,6 +113,13 @@ retained execution ledger or functional receipts differ from current history,
 before production paths move. Use a current matching backup: old restore must
 not erase consumed claims or revive operations. This is an intentional limit.
 
+Scoped maintenance revalidates native component-predecessor review links just as
+ordinary backup admission does. Reviewed historical UNKNOWN does not become an
+extra maintenance blocker after its successor finishes. Active successors and
+unreviewed UNKNOWN remain blockers, and the explicit closed-full maintenance
+receipt is still required. Neither path rewrites a predecessor or authorizes
+workstation replay.
+
 The existing protected recovery flow has one narrow snapshot exception:
 `create-recovery` accepts only private SHA-keyed admission for an exact reserved
 attempt, fresh sealed credential/intent, unexpired recovery plan, original closed
