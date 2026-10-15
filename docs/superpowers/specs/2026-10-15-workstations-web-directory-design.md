@@ -104,6 +104,13 @@ browser disconnects do not stop or restart a job.
 
 ## 4. Restricted AD/DNS integration
 
+Operator-approved exception, 2026-10-15: retain the domain's standard inherited
+Authenticated Users machine-join privilege for the dedicated integration
+identity. Provisioning must explicitly opt in, verify actual quota/LSA evidence,
+record the exception, and report that the identity is not fully read-only.
+Unknown evidence, direct/other-group grants and directory/DNS write rights remain
+blocked. Do not change global policy or expose this privilege in web/MCP.
+
 Provision a dedicated service account with a generated secret stored only in the
 protected controller Vault. Runtime uses `readonly-vault` with Kerberos GSSAPI
 sealing or the existing certificate-verified TLS modes. Keep join credentials

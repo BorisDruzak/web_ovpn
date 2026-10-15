@@ -16,8 +16,11 @@ DPAPI-protected `PSCredential` CLIXML files created in the same Windows security
 context. Only the current owner, SYSTEM and Administrators may access them.
 Do not run a transcript around secret preparation or expose the files in chat.
 
-Its protected JSON configuration has exactly these keys: `server`,
+Its protected JSON configuration requires these keys: `server`,
 `domain_base`, `account_path`, `account_name`, `upn`, `read_bases`, `dns_bases`.
+The only optional key is the boolean `allow_inherited_machine_join`, false by
+default. Use true only for an explicitly approved exception described below;
+the exact choice is bound into the protected configuration hash/receipt.
 Supply actual approved containers and discovered DNS partitions/zones outside
 Git. The observer credential username must equal `upn`. The script creates
 exactly one managed integration identity, initially disabled, persists its SID
@@ -51,10 +54,20 @@ proof for control/validated-write/delete rights. It also inspects domain machine
 quota: when nonzero, a read-only remote LSA policy query under the current
 administrator session must prove the observer's effective principals lack
 `SeMachineAccountPrivilege`. LDAP administrator credentials alone do not provide
-that LSA session. Unknown/assigned privilege blocks readiness; do not claim ACL
+that LSA session. Unknown/assigned privilege blocks strict readiness; do not claim ACL
 child checks alone remove the separate machine-quota privilege. This script does
 not change global policy to get past that gate. Never attempt real record/user
 changes as a write-permission test.
+
+On 2026-10-15 the operator explicitly accepted the existing Authenticated Users
+machine-join privilege as a narrow exception for this integration identity.
+`allow_inherited_machine_join=true` accepts only that effective assignee after a
+successful LSA read; direct/other-group grants and unknown evidence still fail.
+The protected receipt records quota and actual effective assignees. Output
+reports `effective_readonly=false`, `directory_dns_readonly=true` and
+`inherited_machine_join_exception=true` when this exception is used. Directory
+and DNS write restrictions still have to pass. Domain policy/quota are unchanged;
+web/MCP never expose the inherited join privilege through the observer.
 
 Microsoft documents [effective modifiable attributes](https://learn.microsoft.com/en-us/windows/win32/adschema/a-allowedattributeseffective),
 [security-descriptor write rights](https://learn.microsoft.com/en-us/windows/win32/adschema/a-sdrightseffective),

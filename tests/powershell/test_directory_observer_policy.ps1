@@ -9,6 +9,14 @@ function Must-Reject([scriptblock]$Action, [string]$Code) {
     try { & $Action; throw 'test_expected_rejection' } catch { if ($_.Exception.Message -ne $Code) { throw } }
     $script:checks++
 }
+Must-Reject { Test-ObserverMachineJoinReview $true @('S-1-5-11') @($sid,'S-1-5-11') $false } 'observer_machine_join_right_present'
+$joinReview=Test-ObserverMachineJoinReview $true @('S-1-5-11') @($sid,'S-1-5-11') $true
+if (-not $joinReview.exception_accepted -or -not $joinReview.inherited_machine_join -or $joinReview.assignee_sids[0] -ne 'S-1-5-11') { throw 'test_machine_join_exception_missing' }; $checks++
+Must-Reject { Test-ObserverMachineJoinReview $true @($sid) @($sid,'S-1-5-11') $true } 'observer_machine_join_right_present'
+$joinReview=Test-ObserverMachineJoinReview $true @('S-1-5-32-544') @($sid,'S-1-5-11') $false
+if ($joinReview.exception_accepted -or $joinReview.inherited_machine_join) { throw 'test_unrelated_right_attributed' }; $checks++
+$joinReview=Test-ObserverMachineJoinReview $false @('S-1-5-11') @($sid,'S-1-5-11') $false
+if ($joinReview.exception_accepted -or $joinReview.inherited_machine_join) { throw 'test_zero_quota_exception_invented' }; $checks++
 Assert-ObserverIdentity $sid $sid @($domainUsers) 513 $marker; $checks++
 Must-Reject { Assert-ObserverIdentity $sid 'S-1-5-21-101-202-303-1002' @($domainUsers) 513 $marker } 'observer_identity_collision'
 Must-Reject { Assert-ObserverIdentity $sid '' @($domainUsers) 513 $marker } 'observer_identity_collision'

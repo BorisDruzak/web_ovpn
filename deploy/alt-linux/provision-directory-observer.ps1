@@ -189,6 +189,17 @@ function Read-ObserverIdentity([string]$DomainBase, [string]$AccountName, [strin
     Read-ObserverRows $dn '(objectClass=*)' $Attributes $Credential -BaseOnly
 }
 
+function Test-ObserverMachineJoinReview([bool]$QuotaNonzero, [string[]]$Assignees, [string[]]$EffectiveSids, [bool]$AllowInherited) {
+    $matches = @($Assignees | Where-Object { $QuotaNonzero -and $_ -in $EffectiveSids } | Select-Object -Unique)
+    # The explicit exception covers only the standard Authenticated Users right.
+    # Unknown LSA evidence and direct/other-group grants are never exempted.
+    if ($matches.Count -and (-not $AllowInherited -or $matches.Count -ne 1 -or $matches[0] -ne 'S-1-5-11')) {
+        throw 'observer_machine_join_right_present'
+    }
+    @{quota_nonzero=$QuotaNonzero; inherited_machine_join=($matches.Count -gt 0);
+        exception_accepted=($matches.Count -gt 0 -and $AllowInherited); assignee_sids=$matches}
+}
+
 if ($FunctionsOnly) { return }
 $managedAccount = $null
 try {
@@ -202,7 +213,13 @@ try {
     $hash = [Security.Cryptography.SHA256]::Create()
     try { $configSha = [BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($script:Config | ConvertTo-Json -Depth 8 -Compress)))).Replace('-', '').ToLowerInvariant() } finally { $hash.Dispose() }
     $required = @('server', 'domain_base', 'account_path', 'account_name', 'upn', 'read_bases', 'dns_bases')
-    if (@($script:Config.PSObject.Properties.Name).Count -ne $required.Count -or @($required | Where-Object { $_ -notin $script:Config.PSObject.Properties.Name }).Count) { throw 'observer_config_invalid' }
+    $names = @($script:Config.PSObject.Properties.Name)
+    if (@($names | Where-Object { $_ -notin ($required + @('allow_inherited_machine_join')) }).Count -or @($required | Where-Object { $_ -notin $names }).Count) { throw 'observer_config_invalid' }
+    $allowInherited = $false
+    if ('allow_inherited_machine_join' -in $names) {
+        if ($script:Config.allow_inherited_machine_join -isnot [bool]) { throw 'observer_config_invalid' }
+        $allowInherited = $script:Config.allow_inherited_machine_join
+    }
     if ($script:Config.server -notmatch '^[a-zA-Z0-9.-]{1,253}$' -or $script:Config.account_name -notmatch '^[a-zA-Z][a-zA-Z0-9_.-]{2,19}$' -or
         $script:Config.domain_base -notmatch '^DC=[a-zA-Z0-9-]+(?:,DC=[a-zA-Z0-9-]+)+$' -or
         $observer.UserName -cne $script:Config.upn -or $script:Config.upn -notmatch '^[a-zA-Z0-9_.-]+@[a-zA-Z0-9.-]+$') { throw 'observer_config_invalid' }
@@ -252,11 +269,12 @@ try {
     $domain = @(Read-ObserverRows $script:Config.domain_base '(objectClass=*)' @('ms-DS-MachineAccountQuota') $script:Admin -BaseOnly)
     if ($domain.Count -ne 1 -or -not $domain[0].Properties.Contains('ms-ds-machineaccountquota')) { throw 'observer_quota_unknown' }
     $quotaNonzero = [int]$domain[0].Properties['ms-ds-machineaccountquota'][0] -gt 0
+    $assignees = @()
     if ($quotaNonzero) {
         $assignees = @(Get-ObserverMachineJoinAssignees $script:Config.server)
-        $effectiveSids = @($sid.Value, 'S-1-1-0', 'S-1-5-11', 'S-1-5-2', 'S-1-18-1') + $groups
-        if (@($assignees | Where-Object { $_ -in $effectiveSids }).Count) { throw 'observer_machine_join_right_present' }
     }
+    $effectiveSids = @($sid.Value, 'S-1-1-0', 'S-1-5-11', 'S-1-5-2', 'S-1-18-1') + $groups
+    $joinReview = Test-ObserverMachineJoinReview $quotaNonzero $assignees $effectiveSids $allowInherited
     $write = [DirectoryServices.ActiveDirectoryRights]::CreateChild -bor [DirectoryServices.ActiveDirectoryRights]::DeleteChild -bor
         [DirectoryServices.ActiveDirectoryRights]::Delete -bor [DirectoryServices.ActiveDirectoryRights]::DeleteTree -bor
         [DirectoryServices.ActiveDirectoryRights]::WriteProperty -bor [DirectoryServices.ActiveDirectoryRights]::Self -bor
@@ -291,8 +309,10 @@ try {
         if ($checked -gt 10000) { throw 'observer_collection_limit' }
     }
     if (-not $Check) { Write-ObserverReceipt @{schema_version=1; status='ready'; sid=$sid.Value; account_dn=$accountDn; owned_scopes=$scopes; config_sha256=$configSha;
-        owned_acl_changes=@($script:OwnedAclChanges.ToArray()); checked_objects=$checked; quota_nonzero=$quotaNonzero; checked_at=[DateTime]::UtcNow.ToString('o')} }
-    @{status='ready'; identity_verified=$true; effective_readonly=$true; checked_objects=$checked; quota_reviewed=$true; quota_nonzero=$quotaNonzero} | ConvertTo-Json -Compress
+        owned_acl_changes=@($script:OwnedAclChanges.ToArray()); checked_objects=$checked; quota_nonzero=$quotaNonzero;
+        machine_join_review=$joinReview; checked_at=[DateTime]::UtcNow.ToString('o')} }
+    @{status='ready'; identity_verified=$true; effective_readonly=(-not $joinReview.inherited_machine_join); directory_dns_readonly=$true;
+        inherited_machine_join_exception=$joinReview.exception_accepted; checked_objects=$checked; quota_reviewed=$true; quota_nonzero=$quotaNonzero} | ConvertTo-Json -Compress
     exit 0
 } catch {
     # Never print ADSI, credential, DN or server exception details. Existing SID
