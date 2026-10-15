@@ -13,7 +13,10 @@ from .jsonio import ensure_private_dir
 
 @contextmanager
 def exclusive_lock(path: Path) -> Iterator[None]:
-    ensure_private_dir(path.parent)
+    # An idle waiter must not alter a generation already held for backup.
+    # chmod of an unchanged mode still updates ctime before flock is acquired.
+    if not path.parent.is_dir() or stat.S_IMODE(path.parent.stat().st_mode) != 0o700:
+        ensure_private_dir(path.parent)
 
     flags = os.O_RDWR | os.O_CREAT
     if hasattr(os, "O_NOFOLLOW"):
@@ -41,7 +44,8 @@ def exclusive_lock(path: Path) -> Iterator[None]:
                 exit_code=6,
             )
 
-        os.fchmod(descriptor, 0o600)
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            os.fchmod(descriptor, 0o600)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
 
         try:
