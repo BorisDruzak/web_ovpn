@@ -81,6 +81,16 @@ join credentials unchanged. Install a root-managed observer JSON based on
 Use only `readonly-vault` with GSSAPI sealing or certificate-verified TLS. No
 anonymous/join fallback exists. Keep the SID/bootstrap receipt private.
 
+DNS names support Windows UTF-8 labels with byte limits. Dot-terminated owners
+are absolute and must remain in their approved zone. A malformed record is
+excluded from device matching and retained as a separate finding with its zone,
+owner and opaque record ID; no DNS data is changed. A complete DNS generation
+means every approved zone/page was enumerated, and does not certify the health
+of every record. LDAP/page, zone-identity and collection-budget failures still
+make the source unavailable and preserve its previous complete generation.
+See Microsoft's [Unicode DNS behavior](https://learn.microsoft.com/en-us/windows-server/networking/dns/dns-architecture)
+and [absolute/relative node names](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dnsp/d0251c9b-9e3e-4eec-bcc5-eb6b995b6108).
+
 ## Controller rollout
 
 Use the exact published source and existing native maintenance/backup commands.

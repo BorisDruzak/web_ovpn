@@ -8,19 +8,28 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
-import re
 import struct
+import unicodedata
 
 from .ad_directory import escape_filter, fail, text
 from .directory_observer import DirectoryObserver, COLLECTION_SECONDS, MAX_OBJECTS, MAX_SOURCE_BYTES
+from .errors import ControlError
 
 
 def dns_name(value):
     if not isinstance(value, str) or not value or len(value) > 253:
         raise ValueError
-    labels = value.rstrip('.').lower().split('.')
-    if any(not re.fullmatch(r'[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?', label) for label in labels):
+    value = (value[:-1] if value.endswith('.') else value).lower()
+    if len(value.encode('utf-8')) > 253:
         raise ValueError
+    labels = value.split('.')
+    for label in labels:
+        # Windows DNS supports UTF-8 labels; limits apply to octets, not chars.
+        if (not label or len(label.encode('utf-8')) > 63
+                or not (label[0] == '_' or unicodedata.category(label[0])[0] in 'LN')
+                or label[-1] == '-'
+                or any(c not in '_-' and unicodedata.category(c)[0] not in 'LMN' for c in label)):
+            raise ValueError
     return '.'.join(labels)
 
 
@@ -28,7 +37,7 @@ def dns_owner_name(value):
     """A wildcard owner is DNS evidence, never a physical host identity."""
     if isinstance(value, str) and value.startswith('*.'):
         normalized = '*.' + dns_name(value[2:])
-        if len(normalized) > 253:
+        if len(normalized.encode('utf-8')) > 253:
             raise ValueError
         return normalized
     return dns_name(value)
@@ -45,7 +54,7 @@ def _counted_name(data):
         offset += 1
         if not 1 <= length <= 63 or offset + length > len(data) - 1:
             raise ValueError
-        labels.append(data[offset:offset + length].decode('ascii'))
+        labels.append(data[offset:offset + length].decode('utf-8'))
         offset += length
     if offset != len(data) - 1:
         raise ValueError
@@ -64,7 +73,9 @@ def decode_dns_record(value: bytes, *, owner: str, zone: str) -> dict | None:
         if kind not in (1, 5, 12, 28):
             return None
         zone = dns_name(zone)
-        name = zone if owner == '@' else dns_owner_name(owner + '.' + zone)
+        name = zone if owner == '@' else dns_owner_name(owner if owner.endswith('.') else owner + '.' + zone)
+        if name != zone and not name.endswith('.' + zone):
+            raise ValueError
         data = value[24:]
         if kind in (1, 28):
             if len(data) != (4 if kind == 1 else 16):
@@ -110,7 +121,7 @@ class DirectoryDNS(DirectoryObserver):
         deadline = self.monotonic() + COLLECTION_SECONDS if deadline is None else deadline
         approved = {dns_name(zone) for zone in self.config.dns_zones}
         zones, objects, byte_count, record_count = {}, 0, 0, 0
-        records, unsupported, tombstones = [], 0, 0
+        records, unsupported, tombstones, malformed = [], 0, 0, []
 
         def query(**parameters):
             nonlocal objects, byte_count
@@ -153,7 +164,17 @@ class DirectoryDNS(DirectoryObserver):
                         record_count += 1
                         if record_count > MAX_OBJECTS:
                             raise fail('directory_dns_limit', 'Directory DNS record budget exceeded')
-                        row = decode_dns_record(raw, owner=owner, zone=name)
+                        try:
+                            row = decode_dns_record(raw, owner=owner, zone=name)
+                        except ControlError as exc:
+                            if exc.code != 'directory_dns_record_invalid':
+                                raise
+                            # Enumeration is complete, but this record is not
+                            # usable identity evidence. Preserve its finding;
+                            # never hide it as an unsupported type or infer loss.
+                            malformed.append({'code': 'dns_record_malformed', 'name': owner[:253], 'zone': name,
+                                              'record_id': hashlib.sha256(raw).hexdigest()})
+                            continue
                         if row is None:
                             unsupported += 1
                         else:
@@ -164,7 +185,8 @@ class DirectoryDNS(DirectoryObserver):
             raise fail('directory_observer_timeout', 'Directory collection deadline exceeded')
         result = {'schema_version': 1, 'complete': True, 'generated_at': self.clock().isoformat(),
                   'records': records, 'zones': sorted(zones), 'object_count': objects,
-                  'unsupported_records': unsupported, 'tombstones': tombstones, 'findings': alias_findings(records)}
+                  'unsupported_records': unsupported, 'tombstones': tombstones,
+                  'malformed_records': len(malformed), 'findings': alias_findings(records) + malformed}
         result['generation'] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
         return result
 

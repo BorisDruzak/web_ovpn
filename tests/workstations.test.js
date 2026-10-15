@@ -1,7 +1,13 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {EventCursor, Poller, jobMessage, verificationLabel, canApply} = require('../app/static/workstations.js');
+const {EventCursor, Poller, jobMessage, verificationLabel, canApply, findingDetails} = require('../app/static/workstations.js');
+
+test('malformed DNS evidence names the source zone without claiming device identity', () => {
+  const text=findingDetails({code:'dns_record_malformed',evidence:{name:'foreign.other.invalid.',zone:'example.invalid'}});
+  assert.match(text,/foreign\.other\.invalid\./);assert.match(text,/example\.invalid/);assert.match(text,/исключена/);
+  assert.equal(findingDetails({code:'network_only',evidence:{name:'unrelated'}}),'');
+});
 
 test('cursor drains pages, deduplicates reconnect and reports gaps without inventing evidence', () => {
   const cursor = new EventCursor();

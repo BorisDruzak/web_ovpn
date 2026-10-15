@@ -84,6 +84,22 @@ def test_coherent_reconciliation_retains_candidates_without_inventing_employee_a
         assert device['inventory_asset_id'] is None
 
 
+def test_malformed_dns_record_finding_survives_reconciliation_without_confirming_identity(database, tmp_path):
+    from app.workstations.models import SourceSnapshot
+    client = Client()
+    client.dns['findings'] = [{'code': 'dns_record_malformed', 'name': 'foreign.other.invalid.',
+                               'zone': 'example.invalid', 'record_id': 'a' * 64}]
+    client.dns['malformed_records'] = 1
+    assert run(database, tmp_path, client=client)['status'] == 'success'
+    with database() as db:
+        snapshot = db.get(SourceSnapshot, 'reconciliation').data_json
+        finding = next(row for row in snapshot['findings'] if row['code'] == 'dns_record_malformed')
+        assert finding['device_key'] == 'source:dns'
+        assert finding['evidence']['name'] == 'foreign.other.invalid.'
+        assert finding['evidence']['zone'] == 'example.invalid'
+        assert snapshot['devices'][0]['assigned_user'] is None
+
+
 def test_partial_source_failure_retains_last_complete_view_and_logs_safe_code(database, tmp_path):
     from app.workstations.models import SourceRun, SourceSnapshot
     assert run(database, tmp_path)['status'] == 'success'

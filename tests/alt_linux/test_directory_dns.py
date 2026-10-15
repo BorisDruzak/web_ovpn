@@ -19,8 +19,8 @@ def record(kind, data, *, version=5, ttl=3600, timestamp=123):
 
 
 def counted(name):
-    labels = name.split('.')
-    raw = b''.join(bytes([len(label)]) + label.encode('ascii') for label in labels) + b'\x00'
+    labels = [label.encode('utf-8') for label in name.split('.')]
+    raw = b''.join(bytes([len(label)]) + label for label in labels) + b'\x00'
     return bytes([len(raw), len(labels)]) + raw
 
 
@@ -92,6 +92,40 @@ def test_valid_wildcard_owner_is_dns_evidence_and_does_not_abort_generation(owne
 def test_unsupported_wildcard_record_is_counted_before_supported_owner_rules():
     result = collect(node('*', [record(16, b'synthetic TXT')]))
     assert result['complete'] is True and result['unsupported_records'] == 1 and result['records'] == []
+
+
+def test_utf8_dns_owner_and_counted_target_are_retained_with_octet_limits():
+    row = api().decode_dns_record(record(5, counted('сервер.example.invalid')),
+                                  owner='тестовый-пк', zone='example.invalid')
+    assert row['name'] == 'тестовый-пк.example.invalid'
+    assert row['value'] == 'сервер.example.invalid'
+    with pytest.raises(ControlError):
+        api().decode_dns_record(record(1, b'1234'), owner='я' * 32, zone='example.invalid')
+
+
+def test_dot_terminated_owner_is_absolute_and_must_remain_in_approved_zone():
+    row = api().decode_dns_record(record(1, b'1234'), owner='PC.EXAMPLE.INVALID.', zone='example.invalid')
+    assert row['name'] == 'pc.example.invalid'
+    with pytest.raises(ControlError):
+        api().decode_dns_record(record(1, b'1234'), owner='pc.other.invalid.', zone='example.invalid')
+
+
+def test_malformed_record_is_reported_and_excluded_without_losing_valid_evidence():
+    result = collect(node('valid') + node('bad', [record(1, b'123')])
+                     + node('foreign.other.invalid.'))
+    assert result['complete'] is True
+    assert [row['name'] for row in result['records']] == ['valid.example.invalid']
+    assert result['malformed_records'] == 2
+    findings = [row for row in result['findings'] if row['code'] == 'dns_record_malformed']
+    assert len(findings) == 2 and all(row['zone'] == 'example.invalid' for row in findings)
+    assert {row['name'] for row in findings} == {'bad', 'foreign.other.invalid.'}
+    assert all(len(row['record_id']) == 64 and 'raw' not in row for row in findings)
+
+
+@pytest.mark.parametrize('owner', ['pc..', 'pc\u202e', 'pc name', '\u0301pc'])
+def test_unsafe_owner_name_is_never_identity_evidence(owner):
+    with pytest.raises(ControlError):
+        api().decode_dns_record(record(1, b'1234'), owner=owner, zone='example.invalid')
 
 
 def test_alias_loop_is_a_finding():

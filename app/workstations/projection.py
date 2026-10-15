@@ -217,8 +217,9 @@ def build_projection(db, sources, now):
                        ad_computer_state='only_directory', ad_computer_candidates=[computer], identity_state='directory_only')
             finding('ad_only', key)
     for item in sources['dns'].get('findings', []):
-        if isinstance(item, dict) and item.get('code') in ('dns_alias_loop', 'dns_alias_ambiguous', 'dns_alias_depth'):
-            finding(item['code'], 'source:dns', name=item.get('name'))
+        if isinstance(item, dict) and item.get('code') in ('dns_alias_loop', 'dns_alias_ambiguous', 'dns_alias_depth', 'dns_record_malformed'):
+            evidence = {key: item[key] for key in ('name', 'zone', 'record_id') if isinstance(item.get(key), str)}
+            finding(item['code'], 'source:dns', **evidence)
     for item in findings:
         item['id'] = fingerprint([item['device_key'], item['code'], item['evidence']])
     return {'devices': sorted(grouped.values(), key=lambda row: (str(row['hostname']).casefold(), row['device_key'])),

@@ -14,7 +14,12 @@
     employee_unusable:'Учётная запись сотрудника недоступна для настройки',employee_identity_changed:'Идентичность сотрудника изменилась',
     dns_forward_missing:'Нет прямой записи DNS',dns_forward_mismatch:'DNS и сетевой IP различаются',dns_reverse_missing:'Нет обратной записи DNS',
     dns_reverse_mismatch:'Обратная запись DNS указывает на другое имя',dns_reverse_zone_unavailable:'Обратная зона не подключена к сверке',
-    dns_alias_loop:'Цикл псевдонимов DNS',dns_alias_ambiguous:'Неоднозначный псевдоним DNS',inventory_deleted:'Карточка инвентаризации удалена'};
+    dns_alias_loop:'Цикл псевдонимов DNS',dns_alias_ambiguous:'Неоднозначный псевдоним DNS',dns_record_malformed:'Некорректная запись DNS',inventory_deleted:'Карточка инвентаризации удалена'};
+  function findingDetails(item){
+    if(item.code!=='dns_record_malformed')return '';
+    const evidence=item.evidence||{};
+    return 'Зона: '+(typeof evidence.zone==='string'?evidence.zone:'нет сведений')+' · Имя: '+(typeof evidence.name==='string'?evidence.name:'нет сведений')+'. Запись исключена из сопоставления устройств.';
+  }
   const EVENT = {task_start:'Задача начата',task_ok:'Задача выполнена',task_failed:'Ошибка задачи',task_unreachable:'ПК недоступен',task_skipped:'Задача пропущена',component_start:'Компонент начат',component_completed:'Компонент завершён'};
   const ACTION = {'plans.create':'Подготовка плана','component_plans.create':'План отдельного компонента','plans.apply':'Постановка в очередь','jobs.verify':'Проверка результата','jobs.cancel':'Отмена задания',
     'links.preview':'Сравнение привязки','links.confirm':'Подтверждение привязки','links.end':'Завершение привязки','link.confirmed':'Привязка подтверждена','link.ended':'Привязка завершена','source.collect':'Чтение источника','reconcile':'Сверка источников','job.stage':'Этап задания'};
@@ -247,6 +252,7 @@
     async function findings(reset=true){if(reset){findingOffset=0;one('[data-findings]').replaceChildren();}const data=await request('/findings?offset='+findingOffset+'&limit=100');data.findings.forEach(item=>{
       const card=el('article',null,'ws-card');card.append(el('h3',FINDING[item.code]||item.code),el('p',item.status==='acknowledged'?'Замечание просмотрено; причина конфликта сохраняется':'Требуется сравнение'),
         anchor(item.device_key.startsWith('source:')?'Открыть источники':'Открыть устройство',item.device_key.startsWith('source:')?'/workstations/sources':'/workstations/devices/'+encodeURIComponent(item.device_key)));
+      const details=findingDetails(item);if(details)card.append(el('p',details));
       if(permissions.diagnose){const form=el('form',null,'ws-grid'),input=el('input'),button=el('button','Отметить просмотренным','button secondary');input.required=true;input.maxLength=2000;input.placeholder='Основание отметки';input.setAttribute('aria-label','Основание отметки замечания');button.type='submit';form.append(input,button);on(form,'submit',async()=>{await action('/findings/'+item.id+'/acknowledge',{expected_revision:item.revision,reason:input.value});await findings();});card.append(form);}one('[data-findings]').append(card);});
       findingOffset=data.next_offset;one('[data-more-findings]').hidden=findingOffset===null;if(!data.findings.length&&reset)one('[data-findings]').append(el('p','Замечаний в последней полной сверке нет. Проверьте свежесть источников.'));}
     on(one('[data-more-findings]'),'click',()=>findings(false));on(one('[data-reconcile]'),'click',async()=>{await action('/reconcile',{});await findings();});
@@ -260,5 +266,5 @@
     document.addEventListener('visibilitychange',()=>pollers.forEach(value=>value.wake()));window.addEventListener('pagehide',()=>pollers.forEach(value=>value.stop()),{once:true});
   }
   if(typeof document!=='undefined'){const boot=()=>document.querySelectorAll('[data-workstations]').forEach(mount);if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();}
-  return {EventCursor,Poller,jobMessage,verificationLabel,canApply,mount};
+  return {EventCursor,Poller,jobMessage,verificationLabel,canApply,findingDetails,mount};
 });
