@@ -3,21 +3,25 @@
 ## Acceptance states
 
 Implementation and the independent whole-branch correction pass are complete.
-Code under verification: `6e63ef02c662b1ca68d9e5b3207783fed2ccc0c6`.
+Published runtime source: `5cbc0795dd1c17b8366c0bce12c49cc4d7acf419`.
 Full Linux regression, publication CI and guarded installed acceptance are
 separate gates; results below are updated only after the corresponding command.
 No real workstation join, reboot or employee creation is part of this rollout.
 
 ## Verification performed
 
-- Combined corrected boundary suites: **158 passed**, 171 warnings, 26.92s.
+- Latest combined boundary suites: **166 passed**, 171 warnings, 28.27s.
   Command: `python -m pytest tests/test_workstations_api.py tests/test_workstations_permissions.py tests/test_workstations_journal.py tests/test_workstations_web.py tests/test_workstations_links.py tests/test_workstations_reconcile.py tests/alt_linux/test_workstations_gateway.py tests/alt_linux/test_directory_dns.py tests/alt_linux/test_directory_observer.py -q`.
-- `node --test tests/workstations.test.js`: **7 passed**.
+- `node --test tests/workstations.test.js`: **8 passed**.
 - `node --check app/static/workstations.js` and
   `node --check tests/browser/workstations_journey.js`: passed.
 - `powershell.exe -NoProfile -NonInteractive -File tests/powershell/test_directory_observer_policy.ps1`:
-  **27 passed synthetic checks**, zero infrastructure calls; actual Windows
-  PowerShell parser and native C# compilation executed. This is not live ACL proof.
+  **46 passed checks** (28 before the later protected-DACL regression), zero
+  infrastructure calls; actual Windows PowerShell
+  parser, native C# compilation and real unbound ADSI adapter executed. The live
+  bootstrap separately verified the same protected identity and 830 objects.
+  The adapter regression reproduced shadowing of the CLR `Options` property by
+  PowerShell's ADSI attribute adapter; selecting `psbase.Options` fixed it.
 - Final corrected-source real Chromium journey: **passed**, desktop 1360×900 and
   mobile 390×844; one explicit apply and one explicit verification against the
   synthetic loopback controller; 205 events over pages 0/100/200; 200 journal rows;
@@ -37,11 +41,22 @@ was `test_management_kill_command`: the executor basetemp made its AF_UNIX path
 122 bytes (Linux limit 107), so its synthetic server could not bind. The private
 harness now uses a shorter basetemp; the entire `tests/test_vpnctl_management.py`
 file then passed **9/9** on the same immutable source. No product change was
-needed. Do not relabel the original run as wholly passing. Fresh full CI on the
-publication commit is required before installation; consult that commit’s
-GitHub Actions checks for the exact-source result. The subsequently authorized
-bootstrap-only privilege exception passed 27 actual Windows policy checks and
-14 Linux provisioning/deployment tests (one expected platform skip).
+needed. Do not relabel the original run as wholly passing. Exact publication CI
+subsequently passed **6020/90 skipped** for both `71b129d` and `c446029`.
+Latest [full CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38777106454)
+on `5cbc0795dd1c17b8366c0bce12c49cc4d7acf419` passed **6028 tests, 90 skipped**,
+3478 warnings, 1597.27s. The retained full output and exit-code artifact were
+downloaded and checked against that exact commit before dispatching installation.
+Focused runtime-identity and ISO-contract checks also passed. Windows bootstrap
+checks above and Linux provisioning/deployment **14 passed, 1 platform skip**
+cover the separately authorized inherited privilege exception and adapter fix.
+
+Live DNS exposed a valid UTF-8 owner and two absolute owners outside their zones.
+New parser/reconciliation cases reproduced four failures before the fix; the new
+UI diagnostic test also failed first. The passing suites above cover UTF-8 octet
+limits, absolute-owner authority, explicit malformed-record findings and exclusion
+from device identity. Complete page enumeration remains mandatory; query, zone
+identity and budget failures still make a source unavailable.
 
 ## Independent review and architectural checks
 
@@ -59,6 +74,10 @@ snapshot consumption, SetupService and API CSRF. Dynamic source/tests confirm th
 panel invokes the existing controller services and local inventory/Endpoint
 projection. No new Endpoint SDK method or provider contract was added. No manual
 central reindex or group synchronization was performed.
+The final automatic index matched published `5cbc079` (2026-10-15 17:29 UTC).
+DNS-name impact identified five direct call sites, including collection,
+counted-name decoding and resolver diagnostics. Dynamic gateway dispatch and
+panel projection were checked against source and the 166-test boundary run.
 
 ## Recorded implementation rulings
 
@@ -99,33 +118,99 @@ Each row gives the chosen rule and its practical cost if wrong.
 | Explicit inherited machine-join exception | Operator authorized the measured standard Authenticated Users privilege; identity retains this ability and is reported as not fully read-only. |
 | Shorten the private AF_UNIX test harness path and require exact-source full CI | Original full run stays recorded as failed; an order-dependent regression would block deployment in CI. |
 | Retain the baseline MCP panel URL default | Added-line scan matched existing behavior, not a new topology declaration; explicit base URL remains configurable. |
+| Discover current employee/computer read containers independently of Setup OUs | Reconciliation covers the directory without broadening Setup admission; new root-level objects can require an explicit read-base addition. |
+| Exclude reserved root-hints/trust-anchor containers from device-name zones | They are outside device DNS comparison; service records there remain unmodified and unexamined. |
+| Honor the operator's deferred Codex plugin refresh | Canonical server/skill/config and live stdio proof remain required; the current chat retains its old tool inventory until the operator reconnects it. |
+| Use root-managed controller staging and test its source CLI before full installation | Native validator ancestry checks rejected `/tmp` before any rollout transaction; a wrong staging path fails closed and costs verification time. |
+| Retain malformed DNS records as findings, not device identity | Section 4 requires distinct malformed-record findings; unresolved records stay visible and excluded while valid UTF-8 evidence remains usable. |
 
-## Installed rollout gates
+## Installed rollout acceptance
 
-Read-only preflight confirmed the existing web service is active and controller
-permissions/runtime/API/static/systemd/Ansible syntax checks pass. Ordinary
-controller readiness still reports retained unresolved history. The existing
-panel database was read without modification: 34 tables, zero workstation tables;
-the integration is disabled before deployment. A fresh native
-maintenance plan was prepared; its exact-SHA confirmation succeeded within TTL. Fresh backup create and verify
-succeeded; rehearsal/guarded installation remain separately measured gates. No historical UNKNOWN or lease was erased.
+The panel is installed and accepted at its existing `/workstations` entrance.
+The guarded controller installer completed with **3265 passed, 2 skipped** in
+1067.38 seconds. **216 mapped controller/Ansible files** and **1390 panel source
+files** were compared against published release `5cbc079`; all matched. The later
+`a207670` changes only the administrator Windows bootstrap and its synthetic
+policy test; controller, application, JS, Ansible and runtime contracts are
+byte-identical to that fully tested installed runtime. Its actual Windows suite
+passed 46 checks and focused Linux packaging tests passed 14/1. The broader
+[additional a207670 CI run](https://github.com/BorisDruzak/web_ovpn/actions/runs/38788840631)
+was still running when this acceptance report was prepared; it is not reported
+as passed. The accepted complete runtime CI is
+[5cbc079, 6028 passed/90 skipped](https://github.com/BorisDruzak/web_ovpn/actions/runs/38777106454).
 
-A protected administrative bootstrap was found and verified without directory
-writes. Domain machine quota plus an inherited machine-join privilege were found;
-the operator explicitly accepted that standard inherited privilege as an exception.
-The protected bootstrap opts in and records actual effective assignees; strict
-mode still rejects it, as do direct/other-group grants or unknown evidence.
-No observer account/ACL or DNS mutation has been made. Strict readiness remains
-blocked until actual effective-right/read checks succeed.
-No privileged runtime fallback is configured.
+Native guard returned `control_plane_allowed`. Fresh controller backup creation,
+verification and rehearsal passed all 11 rehearsal checks under the confirmed
+review. A protected panel source/units/environment/SQLite backup was also verified.
+Original UNKNOWN records, leases and all registered machines' active markers are
+unchanged; the plan-preview machine's existing employee assignment is unchanged.
+No actual workstation apply, domain join, recovery or reboot ran for this rollout.
 
-Controller/panel installation, active reconciliation, actual scoped MCP access,
-plugin cache refresh and production browser acceptance remain pending. The new
-server/skill source is reproducible; currently loaded chat tools are a separate
-capability inventory. Do not treat isolated stdio discovery as a chat refresh.
+The integration identity passed a final read-only same-SID check across **830
+object checks**. The operator-approved standard inherited machine-join exception
+remains explicit: `effective_readonly=false`, `directory_dns_readonly=true`.
+There is no administrative runtime credential fallback. Observer secrets/config
+are separate in the protected Vault; unrelated values, including join credentials,
+were preserved. No employee or DNS records were created/modified by the rollout.
 
-Private logs, receipts, source snapshots, credential metadata and screenshots
-remain outside Git. They are not included in this report.
+A late repeated check exposed 18 protected-object DACLs restored to the standard
+AdminSDHolder permissions (11 users, 7 groups). The previous proof incorrectly
+required its own explicit deny even when the observer had no delegated write
+right. The corrected Windows-only bootstrap requires a complete canonical,
+protected DACL, adminCount=1, known non-observer owner/object SID, zero effective
+write attributes/children/security rights, and no applicable write/reset grant.
+Only the standard Everyone User-Change-Password ACE is classified by its actual
+protocol semantics: changing a target password requires that target's current
+password; administrative reset is a separate right and remains rejected. It never
+accepts this proof for the observer itself. AdminSDHolder/domain policy and all
+ACLs remained unchanged during this final check. Synthetic regression failed
+first, then **46 Windows checks** and **14 Linux tests (1 platform skip)** passed.
+See [Microsoft protected objects](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory)
+and [MS-ADTS password semantics](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/6e803168-f140-4d23-b2d3-c3a8ab5917d2).
+
+All four latest installed collections are complete and successful: **11 controller
+registrations, 368 AD objects (209 users/159 computers), 220 valid DNS records and
+470 current network observations**. The latest reconciliation contains **394
+devices** and **2 malformed DNS findings**, visibly excluded from identity matching.
+Network observations changed during acceptance (initially 192 observations/327
+reconciled devices); these are sampled counts, not fixed catalog sizes.
+
+The five-minute reconciliation timer and web service are enabled and active;
+the last reconciliation oneshot exited successfully. In the inspected 45-minute
+bounded journal there was **one upstream Netctl command failure**, correctly
+published as a degraded source, followed by **six complete scheduled runs**.
+Its exact upstream cause was not proven; no collector change or hidden retry was
+introduced. Retained data stays visibly stale/unavailable and cannot confirm a
+fresh binding while a source is incomplete. No unhandled application traceback
+was found. Existing network-service failures were already present in the
+pre-deployment baseline; this report does not declare that collector repaired.
+
+SQLite changed from **34 to 40 tables**, exactly the six workstation tables.
+All **255 manual inventory assignment rows** retain their original digest.
+All 13 existing archived systemd unit files/enablement states, unrelated
+configuration keys, environment ownership/mode and the VPN daemon PID/start time
+were preserved. Actual forced-command SSH checks confirmed source-bound keys,
+pinned host identity, read/execute separation and no arbitrary shell. HTTP tests
+confirmed operator/reader reads, reader write denial (403) and anonymous denial
+(401), without a target mutation.
+
+The real installed-browser journey passed existing operator login, login and
+full-name search, explicit employee selection, disabled employee creation, a real
+immutable component-plan preview on an already assigned idle test machine,
+retained UNKNOWN status/four stages/**448 native events**, desktop/mobile layout,
+all four sources, both malformed-DNS cards and inventory/network links. **Zero
+apply calls, browser errors or HTTP errors** occurred in the successful journey.
+The original UNKNOWN VM correctly rejected a new component plan; it was not
+cleared or recovered for the UI demonstration. Private screenshots were inspected.
+A minor remains: the mobile component-verification table wraps evidence text
+heavily at 390px; there is no horizontal overflow or lost data.
+
+The canonical existing OpenVPN Control server/skill is version **0.2.0**. Actual
+stdio discovery exposed **21 workstation tools** and **10 real scoped API calls**
+passed, including all 448 retained events. The operator explicitly deferred the
+Codex plugin update/reconnect; current-chat tool inventory is therefore still
+old. Source/server acceptance does not imply the app cache was refreshed.
+Private credentials, raw receipts/logs and screenshots remain outside Git.
 
 ## Source commit registry
 
@@ -151,3 +236,9 @@ execution ledger; these entries are source publication evidence only.
 - `6e63ef02c662b1ca68d9e5b3207783fed2ccc0c6` — `fix(workstations): preserve execution evidence and plan blockers`. Files: `app/static/workstations.js`, `app/templates/workstations_plan.html`, `app/templates/workstations_sources.html`, `app/workstations/api.py`, `app/workstations/journal.py`, `app/workstations/links.py`, `app/workstations/projection.py`, `app/workstations/service.py`, `app/workstations/sources.py`, `deploy/alt-linux/control/alt_deploy/workstations_projection.py`, `tests/alt_linux/test_workstations_gateway.py`, `tests/browser/workstations_journey.js`, `tests/test_workstations_api.py`, `tests/test_workstations_journal.py`, `tests/test_workstations_web.py`, `tests/workstations.test.js`.
 
 - `e292af68b6b2fa653df91a0eb2740a13366f906b` — `feat(workstations): record approved inherited join exception`. Files: `deploy/alt-linux/provision-directory-observer.ps1`, `docs/runbooks/workstations.md`, `docs/superpowers/specs/2026-10-15-workstations-web-directory-design.md`, `tests/powershell/test_directory_observer_policy.ps1`.
+
+- `71b129d23071cf7cca10f0b9aa0a36aae41cfcd2` — `docs(workstations): record integration verification and rollout gates`. Files: `README.md`, `deploy/alt-linux/README.md`, `docs/ALT_SETUP_OPERATOR_GUIDE.md`, `docs/superpowers/plans/2026-10-15-workstations-web-directory.md`, `docs/verification/WORKSTATIONS_WEB_DIRECTORY_2026-10-15.md`.
+- `c446029bc8fd568170a1436afa3d0780f64128ea` — `fix(workstations): select CLR options for directory ACL writes`. Files: `deploy/alt-linux/provision-directory-observer.ps1`, `tests/powershell/test_directory_observer_policy.ps1`.
+- `5cbc0795dd1c17b8366c0bce12c49cc4d7acf419` — `fix(workstations): retain malformed DNS findings and UTF-8 names`. Files: `app/static/workstations.js`, `app/workstations/projection.py`, `deploy/alt-linux/control/alt_deploy/directory_dns.py`, `docs/runbooks/workstations.md`, `tests/alt_linux/test_directory_dns.py`, `tests/test_workstations_reconcile.py`, `tests/workstations.test.js`.
+
+- `a207670ce5b82e39f2ae651b3adc09a248b7f44c` — `fix(workstations): verify SDProp-restored observer permissions`. Files: `deploy/alt-linux/provision-directory-observer.ps1`, `tests/powershell/test_directory_observer_policy.ps1`. Verification: actual Windows policy 46 passed; Linux provisioning/deployment 14 passed, 1 platform skip; read-only live same-SID check 830 objects passed. No runtime byte changes.

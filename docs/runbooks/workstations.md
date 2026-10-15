@@ -94,6 +94,11 @@ and [absolute/relative node names](https://learn.microsoft.com/en-us/openspecs/w
 ## Controller rollout
 
 Use the exact published source and existing native maintenance/backup commands.
+Stage controller source below a root-managed directory such as `/opt`; every
+ancestor of the source maintenance module must be root-owned and not group/world
+writable. `/tmp` is unsuitable for this source-validator path, even when the
+release directory itself is protected. Check the exact staged source CLI under
+the confirmed maintenance review before starting the installer's full tests.
 Create, verify and rehearse a fresh controller backup. Where retained UNKNOWN
 history requires maintenance review, obtain a current exact review SHA/TTL and
 pass it through the existing protected maintenance contract. Do not erase
@@ -137,7 +142,11 @@ Use separate actors/tokens for explicitly authorized additional grants. Existing
 legacy API token defaults gain no permissions. Transfer the chosen token to an
 owner-only local MCP file without logging it; see [MCP guide](workstations-mcp.md).
 
-Deploy through the existing `deploy/install-openvpn-web.sh`. It first stops the
+Deploy through the existing `deploy/install-openvpn-web.sh`. Invoke it as
+root through the established protected sudo workflow: its host path checks need
+access to the protected application and existing virtualenv. Preserve an existing
+virtualenv symlink; do not widen application access for the SSH login or recreate
+the shared environment to get past a caller-permission failure. It first stops the
 workstation timer and running reconciliation service, even if unit files were
 removed. It installs the additive units and runs the readiness helper as the
 actual panel service user. Only the six workstation tables are initialized;
@@ -172,3 +181,16 @@ Never replace a whole DACL from the saved SDDL over newer unrelated changes;
 compare first and remove/restore only the recorded change. Keep original receipts,
 binding history, completed jobs, genuine AD/DNS objects and manual inventory
 records. No rollback path clears UNKNOWN or repeats a domain join.
+
+### Protected AD objects during observer rechecks
+
+AD periodically restores protected accounts/groups from AdminSDHolder. Do not
+reapply per-object denies repeatedly or modify that template for this observer.
+The Windows bootstrap can prove those restored objects read-only from their
+complete protected/canonical DACL, owner, object identity and server effective
+rights. Any applicable property/security/reset grant still blocks readiness.
+The standard Everyone Change Password ACE requires the target's current password
+and is distinct from administrative reset; the observer's own object is excluded
+from this alternate proof. Missing facts fail closed. See
+[Microsoft protected accounts](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory)
+and [MS-ADTS unicodePwd](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/6e803168-f140-4d23-b2d3-c3a8ab5917d2).
