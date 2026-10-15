@@ -553,3 +553,13 @@ scope, SHA/TTL, quiescence, source/identity checks and eligible backup. This res
 does not convert historical UNKNOWN into success or grant general target/fleet
 permission. Root-private receipts and hash-verified local evidence retain the
 operational details; this report includes no credentials or private identities.
+
+### Controller maintenance stability follow-up — 2026-10-15
+
+The two intermediate refusal classes above now have reproduced lock mechanisms
+and installed-code acceptance recorded in the
+[maintenance stability report](ALT_MAINTENANCE_STABILITY_2026-10-15.md). It
+distinguishes the retained initial old-code capture refusal and diagnostic
+transition from the single-attempt guarded installer and postinstallation backup
+on fixed code. Exact historical actors remain unproven; native refusal guards and
+UNKNOWN history remain intact.
