@@ -50,6 +50,14 @@ if ($errors.Count) { throw 'test_powershell_parse_failed' }; $checks++
 $native=$ast.Find({param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Value.Contains('public static class ObserverLsaPolicy')},$true)
 if (-not $native) { throw 'test_native_reader_missing' }
 Add-Type -TypeDefinition $native.Value; $checks++
+# Exercise the real PowerShell ADSI adapter without binding to a server.
+# Its adapted LDAP attribute named Options hides the CLR configuration property.
+$unbound=[DirectoryServices.DirectoryEntry]::new()
+try {
+    $options=Get-ObserverEntryOptions $unbound
+    if ($options -isnot [DirectoryServices.DirectoryEntryConfiguration]) { throw 'test_adsi_options_shadowed' }
+    $checks++
+} finally { $unbound.Dispose() }
 # Exercise ACL addition against an in-memory entry and receipt recorder.
 $script:trace=[Collections.Generic.List[string]]::new()
 $script:Admin=$null
@@ -57,9 +65,18 @@ $script:OwnedAclChanges=[Collections.Generic.List[object]]::new()
 $script:ObserverSid=$sid; $script:AccountDn='CN=observer,DC=example,DC=invalid'; $script:ConfigSha='synthetic'; $script:Scopes=@('OU=Workstations,DC=example,DC=invalid')
 $entryAcl=[DirectoryServices.ActiveDirectorySecurity]::new()
 [void]$entryAcl.AddAccessRule([DirectoryServices.ActiveDirectoryAccessRule]::new($other,[DirectoryServices.ActiveDirectoryRights]::ReadProperty,[Security.AccessControl.AccessControlType]::Allow))
-$script:fake=[pscustomobject]@{Options=[pscustomobject]@{SecurityMasks=0};ObjectSecurity=$entryAcl}
-$script:fake | Add-Member ScriptMethod CommitChanges { $script:trace.Add('commit') }
-$script:fake | Add-Member ScriptMethod Dispose {}
+Add-Type -TypeDefinition @'
+public class ObserverEntryDouble {
+ public object Options {get;set;}
+ public object ObjectSecurity {get;set;}
+ public System.Collections.Generic.List<string> Trace {get;set;}
+ public void CommitChanges() {Trace.Add("commit");}
+ public void Dispose() {}
+}
+'@
+$script:fake=[ObserverEntryDouble]::new()
+$script:fake.Options=[pscustomobject]@{SecurityMasks=0}
+$script:fake.ObjectSecurity=$entryAcl; $script:fake.Trace=$script:trace
 function New-ObserverEntry { return $script:fake }
 function Write-ObserverReceipt { param($Value) if (-not $Value.owned_acl_changes.Count) {throw 'test_missing_owned_ace'}; $script:trace.Add('receipt') }
 Add-ObserverRule 'OU=Workstations,DC=example,DC=invalid' $identity $write ([Security.AccessControl.AccessControlType]::Deny)

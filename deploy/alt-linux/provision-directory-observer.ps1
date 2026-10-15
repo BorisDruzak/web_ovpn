@@ -153,10 +153,16 @@ function Read-ObserverRows([string]$Base, [string]$Filter, [string[]]$Attributes
     } finally { $search.Dispose(); $entry.Dispose() }
 }
 
+function Get-ObserverEntryOptions($Entry) {
+    # ADSI's PowerShell adapter exposes an LDAP attribute named Options;
+    # explicitly select the underlying CLR configuration property.
+    return $Entry.psbase.Options
+}
+
 function Add-ObserverRule([string]$Dn, [Security.Principal.SecurityIdentifier]$Sid, [DirectoryServices.ActiveDirectoryRights]$Rights, [Security.AccessControl.AccessControlType]$Type) {
     $entry = New-ObserverEntry $Dn $script:Admin
     try {
-        $entry.Options.SecurityMasks = [DirectoryServices.SecurityMasks]::Dacl
+        (Get-ObserverEntryOptions $entry).SecurityMasks = [DirectoryServices.SecurityMasks]::Dacl
         $acl = $entry.ObjectSecurity
         $oldOther = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -ne $Sid.Value } | ForEach-Object { $_.IdentityReference.Value + ':' + $_.ActiveDirectoryRights + ':' + $_.AccessControlType + ':' + $_.ObjectType + ':' + $_.InheritanceType + ':' + $_.InheritedObjectType + ':' + $_.IsInherited })
         $existing = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object {
