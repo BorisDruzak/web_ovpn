@@ -460,9 +460,96 @@ The browser role does not automatically normalize this side effect. See the
 operator guide before a later mutation plan; do not weaken source checks.
 
 Historical UNKNOWN is preserved even after a healthy successor. Queue review
-recognizes validated native predecessor links. The narrow controller-maintenance
-review retains its original scope and rejects additional UNKNOWN jobs; this live
-test does not claim current general backup/deployment clearance. A later
-maintenance operation must satisfy its actual current guards and approved scope.
-The pre-deployment backup/review cannot be reused to erase the newer execution
-history. Reboot and first login always remain explicit operator/user actions.
+recognizes validated native predecessor links. At this preceding live milestone,
+the narrow controller-maintenance review still rejected the additional historical
+UNKNOWN; controller backup/deployment clearance was not claimed. The maintenance
+follow-up below records its subsequent correction and actual guarded deployment.
+The older backup/review cannot erase newer execution history. Reboot and first
+login remain explicit operator/user actions.
+
+### Controller-maintenance follow-up — 2026-10-15
+
+Controller maintenance is restored through the existing protected review flow.
+Runtime source is **`c2f8e42eee18ef656dc28dd6a5c307565b156934`**, commit
+`fix(alt-setup): admit reviewed predecessors during maintenance`, published to
+`main` and installed through the native procedures.
+
+The defect was inconsistent admission: ordinary backup and queue review already
+validated native component-predecessor links, while maintenance included those
+links only when inspecting a queued candidate. After a permitted component
+successor finished, its retained UNKNOWN predecessor therefore blocked a fresh
+controller-maintenance review. Maintenance now reuses the same `reviewed_jobs`
+validation outside the candidate-only branch. Active successors, unreviewed
+UNKNOWN, missing/tampered links, changed history and expired SHA/TTL still deny.
+The review excludes only the explicitly inspected closed full job and its two
+correlated legacy reservations. It never authorizes target replay.
+
+Changed implementation files are the backup validator
+`deploy/alt-linux/backup/alt_deploy_backup/setup_maintenance_review.py`, its new
+`tests/alt_linux/test_setup_maintenance_review_retry.py`, and the backend/operator
+guides. No dependency, API, state schema, Ansible role or workstation executor
+changed. Only the installed private/public copies of that validator differ from
+the preceding runtime. Independent review found no Critical/Important/Minor
+issues; live guards remained separate acceptance requirements.
+
+Verification:
+
+- TDD observed 2 failing maintenance cases and 6 passing controls before the fix;
+  the new eight-case suite then passed natively in 12.02s.
+- Seven-file native regression: **118 passed in 130.45s**, exit 0, including
+  maintenance/queue/worker/CLI/backup compatibility and the stock installer.
+- Exact-source `python -m pytest -q`: **5741 passed, 90 skipped, 3315 warnings,
+  1277.50s**, exit 0 ([retained CI](https://github.com/BorisDruzak/web_ovpn/actions/runs/38706738598)).
+  The automatic `main` runtime and ISO-contract checks also passed for this SHA
+  ([runtime](https://github.com/BorisDruzak/web_ovpn/actions/runs/38709421997),
+  [ISO](https://github.com/BorisDruzak/web_ovpn/actions/runs/38709422000)).
+- The unchanged stock controller installer ran its mandatory
+  `python -m pytest -q tests/alt_linux`: **3141 passed, 1 skipped in 1080.26s (0:18:00)**.
+  Overlapping runs are not added into a larger unique test count.
+
+The published backup-tool installer first updated the matching private/public
+validator copies. All 39 previous tool destinations were preserved privately for
+code rollback, and the existing valid fingerprint key was loaded and preserved.
+All 261 installed file hashes matched the published release. No retained Setup
+history or protected input changed. Fresh native maintenance-plan/confirm then
+passed, followed by a new six-component backup, verification, **11/11** rehearsal
+checks, native rehearsal eligibility and restore-capacity checks.
+
+The first backup capture correctly refused `controller_sources_changed`. A
+bounded native repeat observed the actual before/after inventory return values
+without changing a validator or comparison; it succeeded with zero changes.
+Verification/rehearsal continued on that same newly created bundle. Its creation
+reduced free space below the native restore-capacity requirement. One obsolete,
+verified but unrehearsed backup was deleted through native `delete` only after
+checking that no active restore/current permit referenced it, preserving the
+latest prior rehearsed backup and the new backup. Approximately 2.15 GiB was
+reclaimed and capacity then passed. The initial capture cause was not reproduced
+or declared fixed; the source-change check remains mandatory.
+
+The first stock controller attempt passed all 3141 native tests but refused the
+subsequent active-jobs check before rollout began. Fresh diagnostics proved
+unchanged history, no snapshot differences, valid exclusions, and zero scoped
+active jobs through both installed CLI and the exact stock source CLI. That
+refusal's original cause was not established. A bounded retry stopped only the
+idle worker after native quiescence, under the existing exclusive admission and
+lifecycle locks. It reran the complete unchanged stock installer and all its
+mandatory tests, then completed guarded installation, activation, readiness and
+rollout completion. Earlier failure logs remain retained.
+
+Final independent installed checks passed: **261** file hashes match the runtime
+SHA, scoped active jobs are **0**, controller readiness is true, worker is
+active/enabled, rollback backup remains verified/rehearsed, protected inputs match
+and native restore capacity passes. Final free space was
+**3.33 GiB on `/`** and **10.08 GiB on `/var`**.
+Every pre-existing ledger digest remains unchanged; the only additions are the
+new native maintenance plan and confirmation. Both UNKNOWN records and the
+validated link to the successful component successor remain intact. No workstation,
+AD object, claim or legacy reservation was reset or replayed.
+
+New approved components can use the existing
+[catalog extension workflow](../ALT_COMPONENT_CATALOG.md) and protected controller
+deployment. Each later maintenance operation still needs its own current native
+scope, SHA/TTL, quiescence, source/identity checks and eligible backup. This result
+does not convert historical UNKNOWN into success or grant general target/fleet
+permission. Root-private receipts and hash-verified local evidence retain the
+operational details; this report includes no credentials or private identities.
