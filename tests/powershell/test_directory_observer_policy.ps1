@@ -60,4 +60,22 @@ Add-ObserverRule 'OU=Workstations,DC=example,DC=invalid' $identity $write ([Secu
 if ($script:trace.Count -ne 2) { throw 'test_ace_not_idempotent' }; $checks++
 $otherRules=@($script:fake.ObjectSecurity.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object {$_.IdentityReference.Value -eq $other.Value})
 if ($otherRules.Count -ne 1 -or $otherRules[0].ActiveDirectoryRights -ne [DirectoryServices.ActiveDirectoryRights]::ReadProperty) { throw 'test_unrelated_ace_changed' }; $checks++
+$script:identityQueries=[Collections.Generic.List[string]]::new()
+function Read-ObserverRows {
+    param($Base,$Filter,$Attributes,$Credential,[switch]$BaseOnly)
+    if (-not $BaseOnly) {
+        if ('tokenGroups' -in $Attributes) { throw 'test_tokengroups_requested_in_subtree' }
+        $script:identityQueries.Add('resolve')
+        return [pscustomobject]@{Properties=@{distinguishedname=@('CN=observer,DC=example,DC=invalid')}}
+    }
+    if ('tokenGroups' -notin $Attributes) { throw 'test_membership_not_requested_in_base' }
+    $script:identityQueries.Add('base')
+    return [pscustomobject]@{Properties=@{distinguishedname=@($Base);tokengroups=@($domainUsers)}}
+}
+foreach($attempt in 1..2) {
+    $rows=@(Read-ObserverIdentity 'DC=example,DC=invalid' 'observer' @('distinguishedName','tokenGroups') $null)
+    if ($rows.Count -ne 1 -or -not $rows[0].Properties.Contains('tokengroups')) { throw 'test_repeat_identity_missing' }
+    $checks++
+}
+if (($script:identityQueries -join ',') -ne 'resolve,base,resolve,base') { throw 'test_identity_query_scope_wrong' }; $checks++
 @{status='passed';checks=$checks;infrastructure_calls=0} | ConvertTo-Json -Compress

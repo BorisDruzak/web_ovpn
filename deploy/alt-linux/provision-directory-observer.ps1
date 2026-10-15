@@ -179,6 +179,16 @@ function Add-ObserverRule([string]$Dn, [Security.Principal.SecurityIdentifier]$S
     } finally { $entry.Dispose() }
 }
 
+function Read-ObserverIdentity([string]$DomainBase, [string]$AccountName, [string[]]$Attributes, [Management.Automation.PSCredential]$Credential) {
+    # tokenGroups is constructed by a BASE search, never a subtree projection.
+    $matches = @(Read-ObserverRows $DomainBase "(&(objectClass=user)(sAMAccountName=$AccountName))" @('distinguishedName') $Credential)
+    if ($matches.Count -gt 1) { throw 'observer_identity_collision' }
+    if (-not $matches.Count) { return }
+    if (-not $matches[0].Properties.Contains('distinguishedname')) { throw 'observer_identity_unknown' }
+    $dn = [string]$matches[0].Properties['distinguishedname'][0]
+    Read-ObserverRows $dn '(objectClass=*)' $Attributes $Credential -BaseOnly
+}
+
 if ($FunctionsOnly) { return }
 $managedAccount = $null
 try {
@@ -207,7 +217,7 @@ try {
         if ($saved.config_sha256 -cne $configSha) { throw 'observer_scope_changed' }
     }
     $identityAttributes = @('objectSid', 'distinguishedName', 'description', 'tokenGroups', 'primaryGroupID', 'userAccountControl', 'userPrincipalName', 'sIDHistory')
-    $rows = @(Read-ObserverRows $script:Config.domain_base "(&(objectClass=user)(sAMAccountName=$($script:Config.account_name)))" $identityAttributes $script:Admin)
+    $rows = @(Read-ObserverIdentity $script:Config.domain_base $script:Config.account_name $identityAttributes $script:Admin)
     if ($rows.Count -gt 1) { throw 'observer_identity_collision' }
     if (-not $rows.Count) {
         if ($Check -or $saved -or $ExpectedSid) { throw 'observer_identity_missing' }
@@ -224,7 +234,7 @@ try {
             Write-ObserverReceipt @{schema_version=1; status='created_disabled'; sid=$saved.sid; account_dn=$saved.account_dn; owned_scopes=$scopes; config_sha256=$configSha}
             [void]$managedAccount.Invoke('SetPassword', @($observer.GetNetworkCredential().Password))
         } finally { $parent.Dispose() }
-        $rows = @(Read-ObserverRows $saved.account_dn '(objectClass=*)' $identityAttributes $script:Admin -BaseOnly)
+        $rows = @(Read-ObserverIdentity $script:Config.domain_base $script:Config.account_name $identityAttributes $script:Admin)
     }
     if (-not $saved -or $rows.Count -ne 1) { throw 'observer_identity_collision' }
     $p = $rows[0].Properties
