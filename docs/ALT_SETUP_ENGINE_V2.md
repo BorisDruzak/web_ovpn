@@ -70,7 +70,12 @@ assertion does not change firewall rules.
 
 Read-only package checks inspect processes, existing locks, RPM database and APT
 dependencies/simulation. ALT APT simulations run unprivileged to avoid cache
-writes. Unavailable simulation stays explicit. A controller timeout does not
+writes. The stock root-owned `root:rpm` cache directory mode `2770` is
+accepted only when the isolated probe group differs, other permission bits are
+zero and absence of an access ACL is proven. The probe cannot traverse that
+directory; regular cache files still reject group/world write. No cache
+permissions are changed. Unknown ACL evidence fails closed.
+Unavailable simulation stays explicit. A controller timeout does not
 prove remote APT/RPM or Ansible stopped. Interrupted jobs preserve the originating
 stage and actual post-error package facts, including after rescue tasks.
 

@@ -240,3 +240,62 @@ def test_installed_versions_do_not_hide_an_active_post_transaction(component_ser
         return {'status': 'applied', 'changed': True, 'reboot_required': False}
     engine, _ = engine_for(component_service, jobs, settings, action)
     assert engine.execute(job.job_id)['state'] == 'unknown_requires_review'
+
+
+def _apt_cache_guard_fixture(monkeypatch, *, directory_mode=0o2770, directory_gid=16,
+                             directory_uid=0, directory_kind=None, acl=None, acl_error=None,
+                             file_mode=0o644):
+    import errno
+    import stat
+    from types import SimpleNamespace
+    from alt_deploy import component_probe_script as probe
+    calls = []
+    monkeypatch.setattr(probe.pwd, 'getpwnam', lambda name: SimpleNamespace(pw_uid=65534, pw_gid=65534))
+    def metadata(value):
+        directory = value == '/var/cache/apt'
+        kind = (stat.S_IFDIR if directory_kind is None else directory_kind) if directory else stat.S_IFREG
+        return SimpleNamespace(exists=lambda: True, is_symlink=lambda: False,
+            lstat=lambda: SimpleNamespace(st_uid=directory_uid if directory else 0,
+                st_gid=directory_gid if directory else 16,
+                st_mode=kind | (directory_mode if directory else file_mode)))
+    monkeypatch.setattr(probe, 'Path', metadata)
+    def getxattr(path, attribute, **kwargs):
+        assert attribute == 'system.posix_acl_access' and kwargs == {'follow_symlinks': False}
+        if acl_error is not None:
+            raise OSError(acl_error, 'fixture unavailable')
+        if acl is None:
+            raise OSError(errno.ENODATA, 'fixture no ACL')
+        return acl
+    monkeypatch.setattr(probe.os, 'getxattr', getxattr)
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='healthy', stderr='')
+    monkeypatch.setattr(probe.subprocess, 'run', run)
+    return probe, calls
+
+
+def test_apt_probe_accepts_stock_alt_root_group_cache_without_nobody_write(monkeypatch):
+    probe, calls = _apt_cache_guard_fixture(monkeypatch)
+    assert probe.run(['apt-get', '--simulate', 'check']) == (0, 'healthy')
+    assert len(calls) == 1
+    options = calls[0][1]
+    assert options['user'] == options['group'] == 65534 and options['extra_groups'] == []
+    assert options['env']['HOME'] == '/'
+
+
+@pytest.mark.parametrize('settings', [
+    {'directory_mode': 0o2777},
+    {'directory_mode': 0o2775},
+    {'directory_gid': 65534},
+    {'directory_uid': 1},
+    {'directory_kind': 0o100000},
+    {'file_mode': 0o664},
+    {'acl': b'named ACL remains unverified'},
+    {'acl_error': 13},
+    {'acl_error': 95},
+])
+def test_apt_group_cache_never_admits_writable_or_unverified_probe_state(monkeypatch, settings):
+    probe, calls = _apt_cache_guard_fixture(monkeypatch, **settings)
+    with pytest.raises(ValueError, match='package cache'):
+        probe.run(['apt-get', '--simulate', 'check'])
+    assert calls == []

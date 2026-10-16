@@ -1,6 +1,7 @@
 """Fixed read-only target program. Receives validated declarations over stdin."""
 from datetime import datetime, timezone
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -27,8 +28,23 @@ def run(argv):
             target = Path(value)
             if target.exists() or target.is_symlink():
                 info = target.lstat()
-                if target.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+                if target.is_symlink() or info.st_uid != 0:
                     raise ValueError('package cache is not protected')
+                if info.st_mode & 0o022:
+                    # Stock ALT uses root:rpm 2770 for this directory. With
+                    # supplementary groups cleared, nobody cannot even traverse
+                    # it; APT can build its simulation in memory. Do not chmod
+                    # the cache or admit traversable/group-shared probe access.
+                    if (value != '/var/cache/apt' or not stat.S_ISDIR(info.st_mode)
+                            or info.st_mode & 0o007 or info.st_gid == account.pw_gid):
+                        raise ValueError('package cache is not protected')
+                    try:
+                        os.getxattr(target, 'system.posix_acl_access', follow_symlinks=False)
+                    except OSError as exc:
+                        if exc.errno != errno.ENODATA:
+                            raise ValueError('package cache ACL is unavailable') from exc
+                    else:
+                        raise ValueError('package cache ACL is not verified')
         options = {'user': account.pw_uid, 'group': account.pw_gid, 'extra_groups': []}
     environment = dict(os.environ, LC_ALL='C')
     if argv[0] == 'apt-get':
