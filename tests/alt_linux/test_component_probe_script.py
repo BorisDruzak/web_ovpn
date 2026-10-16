@@ -138,7 +138,13 @@ def test_current_desktop_keyboard_drift_is_detected(tmp_path):
     assert desktop_ready(tmp_path, query, home, os.getuid()) is False
 
 
-def test_shortcuts_compare_autostart_and_launchers_for_selected_office_profile(tmp_path):
+@pytest.mark.parametrize('launcher_mode,autostart_mode,expected', [
+    (0o755, 0o644, True), (0o700, 0o600, True), (0o750, 0o640, True),
+    (0o775, 0o644, False), (0o755, 0o664, False), (0o4755, 0o644, False),
+    (0o600, 0o644, False), (0o755, 0o400, False),
+])
+def test_shortcuts_compare_autostart_and_launchers_for_selected_office_profile(
+        tmp_path, launcher_mode, autostart_mode, expected):
     query, call, _ = fixture(tmp_path, 'desktop.shortcuts')
     catalog = ComponentCatalog.load(CATALOG)
     query['components'] = desired_queries(CATALOG, catalog, [catalog.component('desktop.shortcuts')], profile_id='office-standard-v1')
@@ -154,18 +160,23 @@ def test_shortcuts_compare_autostart_and_launchers_for_selected_office_profile(t
         (applications/entry).write_text(payload)
         target = desktop/entry
         target.write_text(payload)
-        target.chmod(0o755)
+        target.chmod(launcher_mode)
     autostart = home/'.config/autostart'/defaults['desktop_shortcuts_nextcloud_entry']
     autostart.parent.mkdir(parents=True)
     autostart.write_bytes((applications/defaults['desktop_shortcuts_nextcloud_entry']).read_bytes())
-    autostart.chmod(0o644)
+    autostart.chmod(autostart_mode)
     for link in defaults['desktop_shortcuts_relative_links']:
         (desktop/link['name']).symlink_to(link['src'])
     # Match the positive synthetic SSS identity when pytest runs as root.
     if os.getuid() == 0:
         for target in (home, *home.rglob('*')):
             os.chown(target, max(1, os.getuid()), max(1, os.getgid()), follow_symlinks=False)
-    assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is True
+    # chown clears setuid on Linux; apply requested metadata after ownership.
+    for entry in recipe['entries']:
+        (desktop/entry).chmod(launcher_mode)
+    autostart.chmod(autostart_mode)
+    assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is expected
+    autostart.chmod(0o600)
     autostart.write_text('[Desktop Entry]\nExec=false\n')
     assert collect(query, root=tmp_path, call=call)['components']['desktop.shortcuts']['checks']['ready'] is False
     assert not (desktop/'cptools.desktop').exists()

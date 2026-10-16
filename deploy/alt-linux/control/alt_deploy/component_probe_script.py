@@ -74,6 +74,14 @@ def safe_file(target, *, uid=None, mode=None):
         return False
 
 
+def safe_user_copy(target, *, uid, mode):
+    """PAM may mask skel permissions; retain owner access and forbid extra bits."""
+    if not safe_file(target, uid=uid):
+        return False
+    actual = stat.S_IMODE(target.stat().st_mode)
+    return actual & 0o700 == mode & 0o700 and actual & ~mode == 0
+
+
 def text(target):
     if not safe_file(target):
         raise ValueError('probe file unavailable')
@@ -400,8 +408,8 @@ def inspect_component(root, recipe, user, home, name, call):
             targets = [path(root, home+'/'+defaults['desktop_shortcuts_user_desktop_name']+'/'+e) for e in entries]
             autostart = path(root, home+'/.config/autostart/'+defaults['desktop_shortcuts_nextcloud_entry'])
             original_autostart = path(root, defaults['desktop_shortcuts_applications_dir']+'/'+defaults['desktop_shortcuts_nextcloud_entry'])
-            fact['checks']['ready'] = (all(safe_file(p, uid=uid, mode=0o755) for p in targets)
-                and safe_file(autostart, uid=uid, mode=0o644) and safe_file(original_autostart)
+            fact['checks']['ready'] = (all(safe_user_copy(p, uid=uid, mode=0o755) for p in targets)
+                and safe_user_copy(autostart, uid=uid, mode=0o644) and safe_file(original_autostart)
                 and autostart.read_bytes() == original_autostart.read_bytes())
             for entry in entries:
                 original = path(root, defaults['desktop_shortcuts_applications_dir']+'/'+entry)

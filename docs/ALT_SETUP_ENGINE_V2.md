@@ -68,6 +68,12 @@ shortcut/autostart bytes and ownership. KRFB is opt-in and requires an existing
 safe home, secret readiness and explicit restricted-network assertion. The
 assertion does not change firewall rules.
 
+First-login PAM copies may mask user shortcut permissions to `0700` and
+autostart permissions to `0600`. Verification accepts those stricter modes
+while requiring full owner access, the selected user's ownership, regular files,
+safe ancestry and identical published bytes. Extra write, execute or special
+bits remain drift; exact-mode checks for other files are unchanged.
+
 Read-only package checks inspect processes, existing locks, RPM database and APT
 dependencies/simulation. ALT APT simulations run unprivileged to avoid cache
 writes. The stock root-owned `root:rpm` cache directory mode `2770` is
