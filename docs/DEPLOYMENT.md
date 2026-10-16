@@ -1069,7 +1069,12 @@ the observer validates the CA before stopping its timer when `acti` is configure
 the optional read-only systemd bind leaves other roles usable without that CA.
 The installer does not install trust or create credentials.
 
-For `acti_backup`, clone only the existing FILESERVER role's transport details.
+For `acti_backup`, identify the actual host containing the ACTI backup repository
+and verify its machine identity and `ACTIBackup` provider before configuring a
+target. An existing `file_server` role can point to a different machine; never
+copy its transport details without that verification. Use a dedicated confined
+reader and a separately verified SSH host pin; preserve the existing SFTP backup
+account and all earlier role definitions.
 The fixed PowerShell probe reads only the newest `ACTIBackup` Application event;
 it never changes a Windows task, script, account, ACL or backup file. The exact
 `acti-backup-watchdog-v1` receipt must have compatible event/status fields,
