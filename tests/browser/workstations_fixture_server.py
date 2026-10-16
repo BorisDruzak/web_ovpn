@@ -115,9 +115,11 @@ def main():
         db.commit()
     controller = Controller()
     def network(args, timeout=None):
+        unrelated = [{'device_key': 'mac:02:00:00:01:00:' + format(n, '02x'), 'mac': '02:00:00:01:00:' + format(n, '02x'),
+            'hostname': 'unrelated-' + str(n), 'ip': '198.51.100.' + str(n + 1)} for n in range(200)]
         return {'snapshot': {'snapshot_id': 1, 'generated_at': now().isoformat(), 'stale': False},
-            'hosts': [{'device_key': 'mac:' + MAC, 'mac': MAC, 'hostname': 'synthetic-pc', 'ip': '192.0.2.17'}],
-            'pagination': {'page': 1, 'pages': 1, 'limit': 250, 'total': 1}}
+            'hosts': unrelated + [{'device_key': 'mac:' + MAC, 'mac': MAC, 'hostname': 'synthetic-pc', 'ip': '192.0.2.17'}],
+            'pagination': {'page': 1, 'pages': 1, 'limit': 250, 'total': 201}}
     import app.workstations.reconcile as worker
     original = worker.reconcile_once
     def reconcile(**kwargs):

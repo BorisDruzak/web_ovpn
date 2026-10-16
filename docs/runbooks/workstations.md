@@ -6,6 +6,11 @@ Operators can read concurrently. Setup retains the native global one-PC queue;
 reconciliation has a separate singleton and runs every five minutes when ready.
 Employee creation is a disabled UI control and has no API/MCP implementation.
 
+The Setup machine selector reads all pages of one coherent device generation,
+independently of the paginated device table. Only ready registered machines are
+offered. Loading more table rows preserves the selected PC. Incomplete, changed,
+duplicate or oversized evidence leaves the selector empty and requests a refresh.
+
 ## Protected integration account
 
 Use `deploy/alt-linux/provision-directory-observer.ps1` from a protected Windows

@@ -42,6 +42,26 @@
       && [ 'setup-' + plan.sha256, 'setup-component-' + plan.sha256 ].includes(plan.plan_id)
       && Number.isFinite(Date.parse(plan.expires_at)) && Date.parse(plan.expires_at) > now);
   }
+  async function readReadyMachines(readPage){
+    const machines=new Map();let offset=0,total=null,revision=null;
+    const invalid=()=>new Error('Список ПК неполон или источник изменился. Обновите список.');
+    for(let page=0;page<100;page++){
+      const data=await readPage(offset),current=data?.source_revision??data?.generation;
+      if(!Array.isArray(data?.devices)||data.devices.length>100||!Number.isInteger(data.total)||data.total<0||data.total>10000
+        ||!Number.isInteger(data.next_offset)||data.next_offset!==offset+data.devices.length||data.next_offset>data.total
+        ||typeof current!=='string'||!current||(total!==null&&(data.total!==total||current!==revision)))throw invalid();
+      total=data.total;revision=current;
+      for(const row of data.devices){
+        if(!row||typeof row.machine_uuid!=='string'||!row.machine_uuid||row.registration_state!=='ready')continue;
+        if(machines.has(row.machine_uuid))throw invalid();
+        machines.set(row.machine_uuid,row);
+      }
+      if(data.next_offset===total)return Array.from(machines.values());
+      if(!data.devices.length)throw invalid();
+      offset=data.next_offset;
+    }
+    throw invalid();
+  }
   class EventCursor {
     constructor({after=0}={}){this.after=Number.isInteger(after)&&after>=0?after:0;}
     consume(page){
@@ -150,12 +170,19 @@
         row.assigned_user?.display_name||row.domain_assignment?.login||'Не подтверждён',row.inventory_name||'Связь не подтверждена',({confirmed:'Подтверждено',candidate:'Нужно сравнение',ambiguous:'Конфликт',only_directory:'Только AD'})[row.ad_computer_state]||'Нет сведений']));
       if(data.stale)one('[data-device-list]')?.prepend(el('p','Показана последняя полная сверка. Источники устарели либо связи или инвентаризация изменились после неё. Запросите свежую сверку.','alert warn'));
       if(one('[data-more-devices]'))one('[data-more-devices]').hidden=!moreDevices;
-      const select=one('[name=machine_uuid]'),old=select?.value;
-      options(select,deviceRows.filter(row=>row.machine_uuid&&row.registration_state==='ready').map(row=>({id:row.machine_uuid,...row})),row=>row.hostname||row.id);
-      if(select&&old)select.value=old;
       if((filter||network)&&!rows.length&&moreDevices)await devices(false);
     }
-    on(one('[data-refresh-devices]'),'click',()=>devices());on(one('[data-more-devices]'),'click',()=>devices(false));
+    let machineRead=null;
+    function selectableMachines(){
+      const select=one('[name=machine_uuid]');if(!select)return Promise.resolve();if(machineRead)return machineRead;
+      const previous=select.value;select.disabled=true;options(select,[],()=>{});
+      machineRead=readReadyMachines(offset=>request('/devices?offset='+offset+'&limit=100')).then(rows=>{
+        options(select,rows.map(row=>({...row,id:row.machine_uuid})),row=>row.hostname||row.id);
+        if(rows.some(row=>row.machine_uuid===previous))select.value=previous;
+      }).finally(()=>{select.disabled=false;machineRead=null;});
+      return machineRead;
+    }
+    on(one('[data-refresh-devices]'),'click',()=>Promise.all([devices(),selectableMachines()]));on(one('[data-more-devices]'),'click',()=>devices(false));
     async function catalog(){const value=await request('/catalog');options(one('[name=ou_id]'),value.ous,row=>row.name);options(one('[name=software_profile]'),value.profiles,row=>row.name||row.id);options(one('[name=component_id]'),value.components,row=>row.name||row.id);}
     on(one('[name=kind]'),'change',()=>{const component=one('[name=kind]').value==='component';all('[data-full-option]').forEach(node=>node.hidden=component);all('[data-component-option]').forEach(node=>node.hidden=!component);});
     function setupRequirements(){const component=one('[name=kind]')?.value==='component';
@@ -262,9 +289,9 @@
       notice('[data-journal-evidence]',data.native_complete ? 'Опубликованная история контроллера прочитана полностью. Выборка отображается по страницам.' : 'История контроллера недоступна или неполна. Показанные события нельзя считать полной историей.' + (data.native_errors||[]).map(error=>' '+error.code).join(''));}
     on(one('[data-journal-filter]'),'submit',async evt=>{journalFilters=Object.fromEntries(Array.from(new FormData(evt.currentTarget)).filter(([,value])=>value));await journal();});on(one('[data-more-journal]'),'click',()=>journal(false));
     if(!root.dataset.jobId)summary().catch(error);
-    if(permissions.read){if(one('[data-device-list]'))devices().catch(error);if(one('[data-setup-form]'))catalog().catch(error);if(one('[data-jobs]'))jobs().catch(error);if(root.dataset.deviceKey)detail().catch(error);if(one('[data-sources]'))sources().catch(error);if(one('[data-findings]'))findings().catch(error);}
+    if(permissions.read){if(one('[data-device-list]'))devices().catch(error);if(one('[data-setup-form]')){catalog().catch(error);selectableMachines().catch(error);}if(one('[data-jobs]'))jobs().catch(error);if(root.dataset.deviceKey)detail().catch(error);if(one('[data-sources]'))sources().catch(error);if(one('[data-findings]'))findings().catch(error);}
     document.addEventListener('visibilitychange',()=>pollers.forEach(value=>value.wake()));window.addEventListener('pagehide',()=>pollers.forEach(value=>value.stop()),{once:true});
   }
   if(typeof document!=='undefined'){const boot=()=>document.querySelectorAll('[data-workstations]').forEach(mount);if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();}
-  return {EventCursor,Poller,jobMessage,verificationLabel,canApply,findingDetails,mount};
+  return {EventCursor,Poller,jobMessage,verificationLabel,canApply,findingDetails,readReadyMachines,mount};
 });

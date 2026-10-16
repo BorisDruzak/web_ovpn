@@ -1,7 +1,35 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {EventCursor, Poller, jobMessage, verificationLabel, canApply, findingDetails} = require('../app/static/workstations.js');
+const {EventCursor, Poller, jobMessage, verificationLabel, canApply, findingDetails, readReadyMachines} = require('../app/static/workstations.js');
+
+test('ready machine selection reads beyond unrelated device pages', async () => {
+  const rows=Array.from({length:200},(_,i)=>({device_key:'network:'+i}));
+  rows.push({machine_uuid:'ready-machine',registration_state:'ready',hostname:'Ready PC'},
+    {machine_uuid:'pending-machine',registration_state:'pending'});
+  const offsets=[];
+  const found=await readReadyMachines(async offset=>{
+    offsets.push(offset);return {devices:rows.slice(offset,offset+100),total:rows.length,
+      next_offset:Math.min(offset+100,rows.length),source_revision:'stable'};
+  });
+  assert.deepEqual(offsets,[0,100,200]);assert.deepEqual(found,[rows[200]]);
+});
+
+test('ready machine selection supports the complete registry-only fallback', async () => {
+  const row={machine_uuid:'registered',registration_state:'ready'};
+  assert.deepEqual(await readReadyMachines(async()=>({devices:[row],total:1,next_offset:1,generation:'registry'})),[row]);
+});
+
+for(const change of ['generation','total','offset','empty','limit','duplicate']){
+  test('ready machine selection rejects incomplete or changed pages: '+change, async () => {
+    await assert.rejects(readReadyMachines(async offset=>{
+      const devices=Array.from({length:100},(_,i)=>({device_key:'network:'+(offset+i)}));
+      if(change==='duplicate')devices[0]={machine_uuid:'repeated',registration_state:'ready'};
+      return {devices:offset&&change==='empty'?[]:devices,total:change==='limit'?10001:offset&&change==='total'?201:200,
+        next_offset:offset&&change==='offset'?offset:offset+100,source_revision:offset&&change==='generation'?'changed':'stable'};
+    }),/список|источник/i);
+  });
+}
 
 test('malformed DNS evidence names the source zone without claiming device identity', () => {
   const text=findingDetails({code:'dns_record_malformed',evidence:{name:'foreign.other.invalid.',zone:'example.invalid'}});

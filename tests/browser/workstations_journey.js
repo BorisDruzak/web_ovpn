@@ -20,8 +20,17 @@ module.exports = async (page, output) => {
     }
     check(page.url()===base+'/workstations','Wrong fixture page');
     await page.evaluate(()=>sessionStorage.clear());
-    await page.getByRole('link',{name:'Тестовый ПК',exact:true}).waitFor();
+    await page.locator('[name=machine_uuid] option[value="00000000-0000-0000-0000-0000000003e9"]').waitFor({state:'attached'});
+    await page.locator('[data-device-list] tbody tr').nth(99).waitFor();
+    check(await page.locator('[data-device-list] tbody tr').count()===100,'Device table pagination changed');
+    check(await page.getByRole('link',{name:'Тестовый ПК',exact:true}).count()===0,'Fixture target must lie beyond the first device page');
     await page.getByLabel('Зарегистрированный компьютер').selectOption({label:'Тестовый ПК'});
+    while(await page.getByRole('link',{name:'Тестовый ПК',exact:true}).count()===0){
+      const count=await page.locator('[data-device-list] tbody tr').count();
+      await page.locator('[data-more-devices]').click();
+      await page.waitForFunction(n=>document.querySelectorAll('[data-device-list] tbody tr').length>n,count);
+      check(await page.getByLabel('Зарегистрированный компьютер').inputValue()==='00000000-0000-0000-0000-0000000003e9','Loading table pages cleared the selected PC');
+    }
     await page.getByLabel('Подразделение компьютеров (OU)').selectOption({label:'Тестовые компьютеры'});
     await page.getByLabel('Комплект программ').selectOption({label:'Офисный комплект без электронной подписи'});
     await page.getByRole('searchbox').fill('Тестовый');
@@ -71,6 +80,11 @@ module.exports = async (page, output) => {
     check((await counts()).apply_count===before.apply_count+1,'Watching or reopening replayed apply');
     await page.setViewportSize({width:1360,height:900});
     await page.goto(base+'/workstations');
+    while(await page.getByRole('link',{name:'Тестовый ПК',exact:true}).count()===0){
+      await page.locator('[data-device-list] tbody tr').first().waitFor();
+      const count=await page.locator('[data-device-list] tbody tr').count();await page.locator('[data-more-devices]').click();
+      await page.waitForFunction(n=>document.querySelectorAll('[data-device-list] tbody tr').length>n,count);
+    }
     await page.getByRole('link',{name:'Тестовый ПК',exact:true}).click();
     await page.getByRole('searchbox').fill('Тестовый');await page.getByRole('button',{name:'Найти сотрудника',exact:true}).click();
     await page.getByRole('radio').first().check();
