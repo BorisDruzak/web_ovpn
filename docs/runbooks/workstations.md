@@ -108,6 +108,14 @@ and [absolute/relative node names](https://learn.microsoft.com/en-us/openspecs/w
 ## Controller rollout
 
 Use the exact published source and existing native maintenance/backup commands.
+When the native maintenance validator changes, install the compatible backup
+tool first while the real Setup queue is empty. Create and confirm a fresh
+maintenance review with that installed validator, then create/verify/rehearse
+the matching rollback backup before the controller rollout. Source preflight
+and installed runtime must use the same validator revision; a review bound to
+older validator bytes cannot authorize the new source. The backup validator
+accepts an older controller only while optional queue-diagnostic records are
+absent; present records require a compatible validator and otherwise deny.
 Stage controller source below a root-managed directory such as `/opt`; every
 ancestor of the source maintenance module must be root-owned and not group/world
 writable. `/tmp` is unsuitable for this source-validator path, even when the

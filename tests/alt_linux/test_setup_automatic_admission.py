@@ -106,3 +106,17 @@ def test_diagnostic_record_never_grants_permission(queued, monkeypatch):
     with pytest.raises(ControlError): worker.run_once()
     with pytest.raises((ControlError, ValueError)): validate_ledger(settings.state_root)
     assert calls == [] and not jobs.get(candidate.job_id).status['claimed']
+
+
+@pytest.mark.parametrize('diagnostic', [False, True])
+def test_backup_validator_handles_older_controller_explicitly(queued, monkeypatch, diagnostic):
+    from alt_deploy import setup_jobs
+    from alt_deploy_backup.setup_compat import validate_ledger
+    settings, old, candidate, facts, date, jobs = queued
+    if diagnostic:
+        setup_jobs.record_queue_check(settings, candidate, code=None, checked_at=date[0].isoformat())
+    monkeypatch.delattr(setup_jobs, 'queue_check')
+    if diagnostic:
+        with pytest.raises(ValueError): validate_ledger(settings.state_root)
+    else:
+        validate_ledger(settings.state_root)

@@ -80,7 +80,12 @@ def validate_ledger(root):
     settings = setup_settings(root)
     module.SetupJobRepository(settings)._check_admissions()
     for job in module.SetupJobRepository(settings).list():
-        module.queue_check(settings, job)
+        diagnostic = job.job_dir/'admission-check.json'
+        if diagnostic.exists() or diagnostic.is_symlink():
+            validator = getattr(module, 'queue_check', None)
+            if not callable(validator):
+                raise ValueError('Queue diagnostics require a compatible controller validator')
+            validator(settings, job)
     module.legacy_execution_reservations(settings)
     from .setup_maintenance_review import validate_artifacts
     validate_artifacts(root)
