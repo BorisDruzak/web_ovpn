@@ -81,6 +81,10 @@ accepted only when the isolated probe group differs, other permission bits are
 zero and absence of an access ACL is proven. The probe cannot traverse that
 directory; regular cache files still reject group/world write. No cache
 permissions are changed. Unknown ACL evidence fails closed.
+The approved standalone browser RPM's exact vendor repository entry is disabled
+after installation. Its file and ancestry must be safe and root-owned; unexpected
+content is rejected without replacement. Other package sources are unchanged,
+and subsequent component plans retain the strict ALT p11 source policy.
 Unavailable simulation stays explicit. A controller timeout does not
 prove remote APT/RPM or Ansible stopped. Interrupted jobs preserve the originating
 stage and actual post-error package facts, including after rescue tasks.

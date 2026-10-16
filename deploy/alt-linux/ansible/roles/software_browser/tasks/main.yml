@@ -124,6 +124,13 @@
       changed_when: false
       register: software_browser_installed_metadata
 
+    - name: Disable only the known vendor repository added by the browser RPM
+      ansible.builtin.script:
+        cmd: disable_vendor_repository.py
+        executable: /usr/bin/python3
+      register: software_browser_repository_policy
+      changed_when: (software_browser_repository_policy.stdout | from_json).changed
+
     - name: Inspect the installed browser executable
       ansible.builtin.stat:
         path: "/usr/bin/yandex-browser-stable"
