@@ -116,7 +116,7 @@ def test_crashed_legacy_configuration_blocks_worker_and_preserves_evidence(compo
     assert prior[0]['state'] == 'unknown_requires_review'
     calls = []
     worker = SetupWorker(settings, engine=engine(jobs, calls), clock=jobs.clock)
-    assert worker.run_once()['code'] == 'legacy_execution_unresolved'
+    assert worker.run_once()['code'] == 'setup_queue_admission_unverified'
     assert legacy_execution_reservations(settings) == prior
     assert calls == [] and jobs.get(job.job_id).status['claimed'] is False
     from alt_deploy.controller_readiness import ControllerReadinessChecker

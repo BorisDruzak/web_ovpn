@@ -37,6 +37,9 @@ class QueueAdmissionReview(MaintenanceReview):
         repository._check_admissions()
         job = repository.get(job_id)
         if job.state != 'queued' or job.status['claimed']: raise denied()
+        queued = sorted((j for j in repository.list() if j.state == 'queued' and not j.status['claimed']),
+                        key=lambda j: j.status['admission_sequence'])
+        if not queued or queued[0].job_id != job_id: raise denied()
         plan = job.request['plan']
         created, expires = (datetime.fromisoformat(plan[k]) for k in ('created_at', 'expires_at'))
         if not created <= self.clock() < expires: raise denied()
@@ -145,6 +148,26 @@ class QueueAdmissionReview(MaintenanceReview):
                 if (payload['candidate']['job_id'] != candidate_job_id
                         or self._plan_snapshot(payload) != payload): raise denied()
                 return {'job_ids': {payload['job_id']}, 'lease_ids': set(payload['lease_ids'])}
+        except Exception: raise denied() from None
+
+    def admit_candidate(self, candidate_job_id):
+        """Worker-owned technical admission after the operator approved Setup.
+
+        Only the unclaimed FIFO head can get a new receipt. Existing receipts
+        remain immutable and must pass their original freshness checks.
+        """
+        try:
+            with maintenance_lock(self.settings):
+                self._candidate(candidate_job_id)
+                path = self.reviews/(candidate_job_id+'.json')
+                if not path.exists() and not path.is_symlink():
+                    reviewed = control_module('setup_retry').reviewed_jobs(self.settings)
+                    blocked = [job for job in self.jobs.SetupJobRepository(self.settings).list()
+                               if job.state == 'unknown_requires_review' and job.job_id not in reviewed]
+                    if len(blocked) != 1: raise denied()
+                    plan = self.plan(blocked[0].job_id, candidate_job_id)
+                    self.confirm(plan['plan_id'], plan['sha256'])
+                return self.for_candidate(candidate_job_id)
         except Exception: raise denied() from None
 
 

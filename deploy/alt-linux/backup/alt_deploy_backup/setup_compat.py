@@ -25,10 +25,10 @@ def validate_job(request, status, job_dir):
     control_module('setup_jobs').validate_setup_record(request, status, job_id=job_dir.name)
     event_module = control_module('setup_events')
     store = event_module.SetupEventStore.__new__(event_module.SetupEventStore)
-    job = SimpleNamespace(job_id=job_dir.name, request=request, status=status)
+    job = SimpleNamespace(job_id=job_dir.name, job_dir=job_dir, request=request, status=status)
     scope = store._scope(job)
     allowed = {'request.json', 'status.json', 'execution.json', 'component-vars.json',
-               'component-result.json', 'ansible.log', 'events.lock', 'events'}
+               'component-result.json', 'ansible.log', 'events.lock', 'events', 'admission-check.json'}
     for path in job_dir.iterdir():
         if path.name not in allowed:
             raise ValueError('Unexpected Setup job object')
@@ -53,6 +53,8 @@ def validate_job(request, status, job_dir):
                     raise ValueError('Invalid event identity')
         elif not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
             raise ValueError('Unsafe Setup job file')
+        elif path.name == 'admission-check.json':
+            control_module('setup_jobs').queue_check(setup_settings(job_dir.parent.parent), job)
 
 
 def setup_settings(root):
@@ -77,6 +79,8 @@ def validate_ledger(root):
     module = control_module('setup_jobs')
     settings = setup_settings(root)
     module.SetupJobRepository(settings)._check_admissions()
+    for job in module.SetupJobRepository(settings).list():
+        module.queue_check(settings, job)
     module.legacy_execution_reservations(settings)
     from .setup_maintenance_review import validate_artifacts
     validate_artifacts(root)

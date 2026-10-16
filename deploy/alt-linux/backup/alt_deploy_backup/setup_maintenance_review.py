@@ -225,6 +225,11 @@ class MaintenanceReview:
                     or candidate.request['identities']['hostname'] == job.request['identities']['hostname']):
                 raise denied()
             allowed.add(candidate_job_id)
+            # Queue reviews authorize the FIFO head only. Later unclaimed work
+            # remains pending; it neither runs nor invalidates this admission.
+            allowed.update(j.job_id for j in repository.list()
+                           if j.state == 'queued' and not j.status['claimed']
+                           and j.status['admission_sequence'] > candidate.status['admission_sequence'])
         if any(j.job_id not in allowed and j.state in self.jobs.ACTIVE_SETUP_STATES for j in repository.jobs.list()):
             raise denied()
         history = history_fingerprint(root)

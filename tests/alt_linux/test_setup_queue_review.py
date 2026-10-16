@@ -141,7 +141,8 @@ def test_confirmed_review_dispatches_only_candidate_without_rewriting_unknown(qu
     from alt_deploy import setup_maintenance_review_bridge
     monkeypatch.setattr(setup_maintenance_review_bridge, 'queue_review_service', lambda settings: review)
     worker = SetupWorker(settings, engine=SimpleNamespace(execute=execute), clock=lambda: date[0])
-    assert worker.run_once()['status'] == 'blocked' and calls == []
+    with pytest.raises(ControlError): review.for_candidate(candidate.job_id)
+    assert calls == []
     plan = review.plan(old.job_id, candidate.job_id)
     assert plan['purpose'] == 'queued_other_machine_only'
     receipt = review.confirm(plan['plan_id'], plan['sha256'])
@@ -236,8 +237,8 @@ def test_review_never_skips_another_queued_job_or_excludes_it(queued):
     plan=SetupPlanStore(settings.state_root,clock=lambda:date[0]).create(payload)
     other=jobs.submit(plan,operation='full_setup')
     review=review_for(queued)
-    for target in (candidate,other):
-        with pytest.raises(ControlError):review.plan(old.job_id,target.job_id)
+    review.plan(old.job_id,candidate.job_id)
+    with pytest.raises(ControlError):review.plan(old.job_id,other.job_id)
     assert not jobs.get(candidate.job_id).status['claimed']
     assert not jobs.get(other.job_id).status['claimed']
 

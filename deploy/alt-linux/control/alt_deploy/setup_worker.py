@@ -13,7 +13,7 @@ from .config import Settings
 from .errors import ControlError
 from .jobs import JobRepository, ACTIVE_STATES
 from .locks import exclusive_lock
-from .setup_jobs import SetupJobRepository, service_uid, valid_process, unresolved_legacy_reservations
+from .setup_jobs import SetupJobRepository, service_uid, valid_process, unresolved_legacy_reservations, record_queue_check
 
 EXECUTING = {'preflight', 'running', 'verifying'}
 
@@ -91,12 +91,18 @@ class SetupWorker:
                 exclusion = {'job_ids': set(), 'lease_ids': set()}
                 if queued:
                     from .setup_maintenance_review_bridge import queue_review_service
-                    try: exclusion = queue_review_service(self.settings).for_candidate(queued[0].job_id)
-                    except Exception: pass  # Default denial never changes a claim or target.
+                    try:
+                        exclusion = queue_review_service(self.settings).admit_candidate(queued[0].job_id)
+                    except Exception:
+                        record_queue_check(self.settings, queued[0], code='setup_queue_admission_unverified',
+                                           checked_at=self.clock().isoformat())
+                        return {'status': 'blocked', 'code': 'setup_queue_admission_unverified'}
                 if any(r['reservation_id'] not in exclusion['lease_ids'] for r in leases):
                     return {'status': 'blocked', 'code': 'legacy_execution_unresolved'}
                 if any(job.job_id not in exclusion['job_ids'] for job in blocked):
                     return {'status': 'blocked', 'code': 'setup_job_unresolved'}
+                if queued:
+                    record_queue_check(self.settings, queued[0], code=None, checked_at=self.clock().isoformat())
             if not queued:
                 return {'status': 'idle'}
             job = self.jobs.claim(queued[0].job_id, process_identity(self.settings))

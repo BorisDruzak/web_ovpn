@@ -6,6 +6,15 @@ Operators can read concurrently. Setup retains the native global one-PC queue;
 reconciliation has a separate singleton and runs every five minutes when ready.
 Employee creation is a disabled UI control and has no API/MCP implementation.
 
+After the operator confirms a fresh Setup plan, the controller worker performs
+technical queue admission automatically, including candidate-specific closed
+UNKNOWN checks where applicable. No per-job SSH confirmation is needed. The
+original UNKNOWN jobs, claims and identity reservations remain intact and are
+never replayed. FIFO and one-time claims remain mandatory. Incomplete, busy,
+conflicting or expired evidence leaves the new job unclaimed; its web card shows
+`setup_queue_admission_unverified`. Inspect the controller evidence and retain
+the original request/job ID rather than submitting another apply.
+
 The Setup machine selector reads all pages of one coherent device generation,
 independently of the paginated device table. Only ready registered machines are
 offered. Loading more table rows preserves the selected PC. Incomplete, changed,

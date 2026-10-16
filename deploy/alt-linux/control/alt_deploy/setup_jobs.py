@@ -390,6 +390,31 @@ def read_setup_record(settings, job_dir):
         raise fail('setup_job_invalid', 'Setup job directory is unsafe') from exc
 
 
+def queue_check(settings, job):
+    """Read diagnostic evidence only; this record never grants execution."""
+    path = job.job_dir/'admission-check.json'
+    if not path.exists() and not path.is_symlink():
+        return None
+    value = private_read(path, owner_uid=service_uid(settings))
+    if (set(value) != {'schema_version', 'job_id', 'request_sha256', 'code', 'checked_at'}
+            or type(value['schema_version']) is not int or value['schema_version'] != 1
+            or value['job_id'] != job.job_id or value['request_sha256'] != digest(job.request)
+            or value['code'] not in (None, 'setup_queue_admission_unverified')):
+        raise fail('setup_state_invalid', 'Queue diagnostic evidence is invalid')
+    timestamp(value['checked_at'])
+    return value
+
+
+def record_queue_check(settings, job, *, code, checked_at):
+    previous = queue_check(settings, job)
+    if code not in (None, 'setup_queue_admission_unverified'):
+        raise fail('setup_state_invalid', 'Queue diagnostic code is invalid')
+    if previous is not None and previous['code'] == code:
+        return
+    publish(job.job_dir/'admission-check.json', {'schema_version': 1, 'job_id': job.job_id,
+        'request_sha256': digest(job.request), 'code': code, 'checked_at': checked_at})
+
+
 class SetupJobRepository:
     def __init__(self, settings, *, clock=None):
         self.settings = settings

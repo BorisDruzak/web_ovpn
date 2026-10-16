@@ -142,7 +142,7 @@ class ControllerBackend:
             return {'execution_mode': 'sequential', 'queued_count': len(queued), 'queue': [j.job_id for j in queued[:100]],
                     'executing': [j.job_id for j in jobs if j.state in ('preflight', 'running', 'verifying')][:100],
                     'historical_unknown_count': len(unknown), 'unresolved_legacy_count': len(leases),
-                    'admission_status': 'native_worker_review_required' if unknown or leases else 'native_worker_checks',
+                    'admission_status': 'native_worker_checks',
                     'observer_configured': self.observer_path.is_file()}
         if operation.startswith('machines.'):
             machines = MachineRepository(settings)

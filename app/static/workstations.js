@@ -32,7 +32,10 @@
     if(job.state === 'waiting_first_login') return text + '. Нужен вход выбранного сотрудника на ПК.';
     if(job.state === 'unknown_requires_review') return text + '. Повторный запуск запрещён до штатной проверки.';
     if(job.state === 'failed') return text + '. Изучите этап ошибки и журнал.';
-    if(job.state === 'queued') return text + (job.queue_position ? ' · место ' + job.queue_position : '') + '. Ожидаются проверки контроллера.';
+    if(job.state === 'queued') return text + (job.queue_position ? ' · место ' + job.queue_position : '') +
+      (job.error_code === 'setup_queue_admission_unverified'
+        ? '. Допуск не подтверждён: завершённость старых операций или изоляция нового ПК не доказана. Запуск не начат. Проверьте журнал контроллера; повторно отправлять задание не нужно.'
+        : '. Ожидаются автоматические проверки контроллера.');
     return text;
   }
   function canApply(plan,{confirmed=false,allowed=false,submitted=false}={},now=Date.now()){

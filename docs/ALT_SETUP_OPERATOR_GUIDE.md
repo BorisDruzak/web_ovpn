@@ -182,6 +182,14 @@ continuation/recovery contract.
 
 ## A different queued machine after a closed UNKNOWN
 
+The persistent worker now performs candidate-specific technical admission
+automatically after the operator confirms the actual Setup plan in the web UI
+or CLI. No separate SSH queue-review confirmation is needed for each new job.
+It creates an immutable receipt through the same native positive closure checks,
+then revalidates it under the lifecycle lock immediately before the single claim.
+Only the oldest unclaimed queued job is eligible; later queued jobs remain in
+FIFO order. A closed UNKNOWN is never requeued, reclassified or executed again.
+
 If normal dispatch is blocked by a closed failed full Setup on another machine,
 read its protected status and the candidate's status first. The candidate must be
 unclaimed `queued`, have an unexpired source-bound Setup plan, and differ in UUID,
@@ -189,6 +197,9 @@ hostname and existing AD computer GUID. Other active or unexplained work must be
 resolved through its own existing contract; the review cannot exclude it.
 Historical component UNKNOWNs already linked through a valid native idempotent
 review are recognized as reviewed; unreviewed UNKNOWNs remain blockers.
+
+The following native review commands remain available for inspection and
+compatibility; they are not required for ordinary new web submissions:
 
 ```bash
 sudo -u altserver workstationctl --json setup jobs queue-review-plan UNKNOWN_JOB --candidate QUEUED_JOB
@@ -200,6 +211,14 @@ Review the exact plan before confirmation. Planning and confirming do not instal
 roles; confirmation allows the persistent worker to claim that exact candidate
 after another fresh closure check. The worker retains its lifecycle lock and FIFO
 ordering. Its ordinary source/SSH/AD/registration/SHA/TTL preflight still runs.
+
+Busy, uncertain, conflicting, expired or unsafe evidence still blocks before
+claim. The queued job exposes `setup_queue_admission_unverified` and explains
+that execution has not started. Do not resubmit it: the worker checks the same
+unclaimed job again after the condition clears. Its protected
+`admission-check.json` is diagnostic only, never an execution permission, and
+is retained and validated in backup history. Existing candidate receipts cannot
+be overwritten or have their TTL extended automatically.
 
 The review plan expires in 30 minutes; the confirmed receipt lasts at most six
 hours and never extends the candidate Setup plan's own 30-minute TTL. A changed,

@@ -79,6 +79,12 @@ test('waiting reboot, first login, failed and unknown states show a concrete hum
   assert.match(jobMessage({state: 'queued'}), /очеред/i);
 });
 
+test('an unclaimed admission blocker explains why the queued PC has not started', () => {
+  const message=jobMessage({state:'queued',queue_position:1,error_code:'setup_queue_admission_unverified'});
+  assert.match(message,/допуск/i);
+  assert.match(message,/не начат/i);
+});
+
 test('technical verification remains distinct from functional acceptance', () => {
   assert.notEqual(verificationLabel('technical_verified'), verificationLabel('functional_verification_required'));
   assert.match(verificationLabel('functional_verification_required'), /пользовател/i);

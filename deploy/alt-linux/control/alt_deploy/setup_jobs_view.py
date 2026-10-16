@@ -3,7 +3,7 @@ import copy
 import re
 
 from .ad_directory import fail
-from .setup_jobs import SetupJobRepository, UUID, service_uid, publish, timestamp
+from .setup_jobs import SetupJobRepository, UUID, service_uid, publish, timestamp, queue_check
 from .setup_events import SetupEventStore
 from .setup_plans import private_read
 
@@ -87,6 +87,10 @@ class SetupJobsService:
             raise _invalid()
         components = {c['id']: {'version': c['version'], 'changed': None, 'verification': None} for c in selected}
         code, reboot, action = None, False, job.state != 'successful'
+        if job.state == 'queued':
+            check = queue_check(self.settings, job)
+            if check is not None:
+                code = check['code']
         projected_state = job.state
         path = job.job_dir/'execution.json'
         if path.exists() or path.is_symlink():
