@@ -1037,3 +1037,52 @@ For `router_site_to_site` clients, `vpnctl` writes an `iroute` into the CCD and 
 - Do not expose a delete-client API or MCP tool. Disable clients instead.
 - Require `confirm_client` and `reason` for client-impacting API/MCP actions.
 - Keep bearer tokens, password files, generated configs and private keys out of git.
+
+## ACTI in the existing Server Observer
+
+The `acti` and `acti_backup` roles extend `server-observer.timer`; no additional
+daemon or notification destination is introduced. Keep the six existing role
+definitions unchanged. Configuration remains the exact local-only
+`{role, host, user, checks}` target shape. Browser/API reads never collect data.
+The authenticated page is `/network/server-health`; the existing API-token
+boundary protects `/api/v1/network/server-health`.
+
+For `acti`, `host` must match the ACTI certificate SAN and published OIDC issuer.
+The only SSH command is `/usr/bin/sudo -n /usr/local/sbin/acti-v3-observe`.
+Its `acti-observer-v1` JSON has exactly `format`, six boolean `services`
+(`frontend`, `api`, `postgres`, `redis`, `worker`, `keycloak`) and the boolean
+fields `worker_heartbeat`, `mounts_verified`, `storage_capacity`,
+`outbox_healthy`, `backup_fresh`, `backup_check_fresh`. Missing, extra or
+incorrectly typed fields fail closed. The source helper, forced SSH key,
+source-address restriction, sudo rule and pinned host key require separately
+verified operational preparation. Never copy an operator's private key.
+
+Three independent gateway-origin HTTPS GETs check `/api/v1/health/live`,
+`/api/v1/health/ready` and `/idp/realms/acti/.well-known/openid-configuration`,
+even when SSH fails. They require the fixed public CA file
+`/etc/openvpn-web/acti-ca.crt`, root-owned mode 0644, normal certificate/hostname
+verification, JSON bodies no larger than 16 KiB, three seconds per request and
+a ten-second total budget. Proxy variables, cookies and redirects are ignored.
+Readiness requires database/Redis/storage to be true; discovery requires the
+exact issuer and HTTPS endpoints within the same origin and realm. Installing
+the observer validates the CA before stopping its timer when `acti` is configured;
+the optional read-only systemd bind leaves other roles usable without that CA.
+The installer does not install trust or create credentials.
+
+For `acti_backup`, clone only the existing FILESERVER role's transport details.
+The fixed PowerShell probe reads only the newest `ACTIBackup` Application event;
+it never changes a Windows task, script, account, ACL or backup file. The exact
+`acti-backup-watchdog-v1` receipt must have compatible event/status fields,
+nonnegative finite metrics, fresh UTC report/event timestamps (30 hours, up to
+five minutes clock skew), and no unknown/duplicate fields. Snapshot freshness
+uses the snapshot timestamp at collection time, rather than trusting an old
+reported age. Capacity requires at least 100 GiB free and at most 300 GiB in the
+repository. Only `acti-backup-observer-v1`, empty `services`, and booleans
+`watchdog_fresh`, `backup_snapshot_fresh`, `repository_capacity` leave the probe.
+Unavailable providers or malformed evidence remain visible as failure/unknown.
+
+Acceptance must verify healthy and controlled failure fixtures, strict TLS,
+both roles in the ordinary read-only page/API, existing role preservation,
+and timer freshness. Source-code tests do not establish live acceptance or
+delivery of an external notification; notification delivery is a separate
+existing-channel contract.

@@ -33,7 +33,7 @@
     <tbody>
       {% for target in server_health.targets %}
       <tr>
-        <td>{{ target.role }}</td>
+        <td>{% if target.role == 'acti' %}ACTI{% elif target.role == 'acti_backup' %}ACTI — резервные копии{% else %}{{ target.role }}{% endif %}</td>
         <td><span class="badge {{ target.status|status_class }}">{{ target.status }}</span></td>
         <td>{{ target.problem_count }}</td>
         <td>{{ target.observed_at or "-" }}</td>

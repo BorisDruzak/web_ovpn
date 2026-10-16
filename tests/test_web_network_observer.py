@@ -408,6 +408,25 @@ def test_server_health_stale_and_collector_failure_banners_and_navigation(tmp_pa
     assert "Health data is stale or unavailable" in dashboard.text
 
 
+def test_acti_and_backup_roles_render_in_canonical_read_only_server_health(tmp_path, monkeypatch):
+    write_server_health_snapshot(tmp_path, monkeypatch)
+    path = Path(os.environ["SERVER_OBSERVER_SNAPSHOT_PATH"])
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot["targets"] = [
+        {"role": "acti", "checks": [{"name": "https_live", "source": "gateway", "status": "ok"}]},
+        {"role": "acti_backup", "checks": [{"name": "backup_snapshot_fresh", "source": "gateway", "status": "critical"}]},
+    ]
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    client, headers = make_client(tmp_path, monkeypatch)
+    login(client)
+    page = client.get("/network/server-health")
+    api = client.get("/api/v1/network/server-health", headers=headers)
+    assert page.status_code == api.status_code == 200
+    assert "ACTI" in page.text and "ACTI — резервные копии" in page.text
+    assert "https_live" in page.text and "backup_snapshot_fresh" in page.text
+    assert [target["role"] for target in api.json()["data"]["server_health"]["targets"]] == ["acti", "acti_backup"]
+
+
 def test_network_paths_require_login_and_show_existing_server_roles(tmp_path, monkeypatch):
     write_path_evidence(tmp_path, monkeypatch)
     client, headers = make_client(tmp_path, monkeypatch)

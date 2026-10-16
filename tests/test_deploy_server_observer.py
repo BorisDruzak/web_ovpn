@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 import shutil
 import subprocess
@@ -204,7 +204,7 @@ def test_scoped_observer_backup_and_rollback_cover_every_mutated_asset():
     first_mutation = rollback.rindex("stop_observer")
     assert rollback.index('validate_manifest_asset server-observer ') < first_mutation
     assert rollback.index('reject_nested_symlinks "$BACKUP_ROOT/server-observer-runtime"') < first_mutation
-    assert f"backup_asset server-observer-key" not in backup
+    assert "backup_asset server-observer-key" not in backup
     assert f'cp -a -- "{OBSERVER_KEY}"' not in backup
     assert OBSERVER_KEY not in rollback
     assert RUNTIME_CONFIG not in backup
@@ -377,3 +377,14 @@ def test_classify_collection_failure_uses_only_the_five_stable_classes():
 
     for exception, expected in cases:
         assert server_observer_cli.classify_collection_failure(exception) == expected
+
+
+def test_acti_ca_is_optional_for_existing_roles_and_validated_before_timer_stop():
+    service = Path("deploy/server-observer.service").read_text(encoding="utf-8")
+    assert "BindReadOnlyPaths=-/etc/openvpn-web/acti-ca.crt" in service
+    installer = Path(OBSERVER_INSTALLER).read_text(encoding="utf-8")
+    assert "validate_acti_ca" in installer
+    assert installer.index("validate_acti_ca\n") < installer.index('timer_load_state=')
+    assert "ssl.create_default_context" in installer
+    assert 'target.get("role") == "acti"' in installer
+    assert "acti-ca.crt" in installer

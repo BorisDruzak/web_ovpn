@@ -244,6 +244,34 @@ validate_observer_runtime "$OBSERVER_RUNTIME"
 validate_private_file /etc/openvpn-web/server-observer.json
 validate_private_file /etc/openvpn-web/server-observer.key
 validate_private_file /etc/openvpn-web/server-observer.known_hosts
+validate_acti_ca() {
+  # No CA is required for the six established roles or the Event Log-only role.
+  # Validate before stopping the current timer; this function never installs trust.
+  local program
+  program="$(cat <<'PY'
+import json
+import ssl
+import stat
+import sys
+from pathlib import Path
+try:
+    config = json.loads(Path('/etc/openvpn-web/server-observer.json').read_text())
+    if any(target.get("role") == "acti" for target in config['targets']):
+        ca = Path('/etc/openvpn-web/acti-ca.crt')
+        info = ca.stat()
+        if ca.resolve(strict=True) != ca or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o644 or not stat.S_ISREG(info.st_mode):
+            raise ValueError('unsafe CA')
+        context = ssl.create_default_context(cafile=str(ca))
+        if not context.check_hostname or context.verify_mode != ssl.CERT_REQUIRED:
+            raise ValueError('unsafe trust')
+except Exception:
+    print('ACTI observer CA validation failed', file=sys.stderr)
+    sys.exit(2)
+PY
+)"
+  sudo_cmd /usr/bin/python3 -I -c "$program"
+}
+validate_acti_ca
 validate_state_parent
 validate_state_dir
 

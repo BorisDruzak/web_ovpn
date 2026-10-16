@@ -32,6 +32,7 @@ CapabilityBoundingSet=
 BindReadOnlyPaths=/etc/openvpn-web/server-observer.json
 BindReadOnlyPaths=/etc/openvpn-web/server-observer.key
 BindReadOnlyPaths=/etc/openvpn-web/server-observer.known_hosts
+BindReadOnlyPaths=-/etc/openvpn-web/acti-ca.crt
 InaccessiblePaths=/etc/openvpn-web/openvpn-web.env
 InaccessiblePaths=/etc/openvpn/client-generator
 InaccessiblePaths=-/mnt/antares_soft/vpn_config
