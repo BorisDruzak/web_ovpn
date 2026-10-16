@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 import shutil
 import subprocess
@@ -204,7 +204,7 @@ def test_scoped_observer_backup_and_rollback_cover_every_mutated_asset():
     first_mutation = rollback.rindex("stop_observer")
     assert rollback.index('validate_manifest_asset server-observer ') < first_mutation
     assert rollback.index('reject_nested_symlinks "$BACKUP_ROOT/server-observer-runtime"') < first_mutation
-    assert f"backup_asset server-observer-key" not in backup
+    assert "backup_asset server-observer-key" not in backup
     assert f'cp -a -- "{OBSERVER_KEY}"' not in backup
     assert OBSERVER_KEY not in rollback
     assert RUNTIME_CONFIG not in backup
@@ -323,9 +323,10 @@ def test_cli_writes_snapshot_and_prints_only_role_status_summary(tmp_path, monke
     ],
 )
 def test_cli_sanitizes_collector_exceptions_and_returns_nonzero(exception, tmp_path, monkeypatch, capsys):
+    snapshot_path = tmp_path / "latest.json"
     monkeypatch.setattr(server_observer_cli, "load_runtime_config", lambda path: (_ for _ in ()).throw(exception))
 
-    assert server_observer_cli.main(["--config", str(tmp_path / "config.json"), "--snapshot", str(tmp_path / "latest.json")]) == 1
+    assert server_observer_cli.main(["--config", str(tmp_path / "config.json"), "--snapshot", str(snapshot_path)]) == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -333,3 +334,57 @@ def test_cli_sanitizes_collector_exceptions_and_returns_nonzero(exception, tmp_p
     assert "host" not in captured.err
     assert "ssh" not in captured.err
     assert "key" not in captured.err
+    persisted = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert persisted["collector"] == {
+        "status": "error",
+        "failure_class": "config" if isinstance(exception, ValueError) else "internal",
+        "message": "Collector configuration is invalid" if isinstance(exception, ValueError) else "Collector failed",
+    }
+
+
+def test_cli_does_not_retry_when_snapshot_persistence_fails(tmp_path, monkeypatch, capsys):
+    calls = []
+
+    monkeypatch.setattr(server_observer_cli, "load_runtime_config", lambda path: {"safe": True})
+    monkeypatch.setattr(
+        server_observer_cli,
+        "collect",
+        lambda config, runner, now: {"collected_at": "2026-07-27T12:00:00Z", "overall": "ok", "targets": []},
+    )
+    monkeypatch.setattr(
+        server_observer_cli,
+        "write_snapshot",
+        lambda path, snapshot: calls.append(snapshot) or (_ for _ in ()).throw(OSError("private path")),
+    )
+
+    assert server_observer_cli.main(["--snapshot", str(tmp_path / "latest.json")]) == 1
+
+    assert len(calls) == 1
+    assert capsys.readouterr().err == '{"status": "error", "message": "collector failed"}\n'
+
+
+def test_classify_collection_failure_uses_only_the_five_stable_classes():
+    cases = [
+        (ValueError("invalid config"), ("config", "Collector configuration is invalid")),
+        (subprocess.TimeoutExpired("ssh", 1), ("ssh", "SSH connection failed")),
+        (server_observer_cli._ProbeFailure("parse"), ("probe", "Server health probe failed")),
+        (
+            server_observer_cli._SnapshotWriteFailure(),
+            ("snapshot_write", "Server health snapshot could not be saved"),
+        ),
+        (RuntimeError("private diagnostic"), ("internal", "Collector failed")),
+    ]
+
+    for exception, expected in cases:
+        assert server_observer_cli.classify_collection_failure(exception) == expected
+
+
+def test_acti_ca_is_optional_for_existing_roles_and_validated_before_timer_stop():
+    service = Path("deploy/server-observer.service").read_text(encoding="utf-8")
+    assert "BindReadOnlyPaths=-/etc/openvpn-web/acti-ca.crt" in service
+    installer = Path(OBSERVER_INSTALLER).read_text(encoding="utf-8")
+    assert "validate_acti_ca" in installer
+    assert installer.index("validate_acti_ca\n") < installer.index('timer_load_state=')
+    assert "ssl.create_default_context" in installer
+    assert 'target.get("role") == "acti"' in installer
+    assert "acti-ca.crt" in installer

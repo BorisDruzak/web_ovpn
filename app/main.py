@@ -6,7 +6,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -49,6 +49,7 @@ from .endpoint_agent_network import (
 from .network_observer import CATEGORY_LABELS, DEVICE_TYPE_LABELS, HOST_STATUS_FILTERS, NETWORK_FILTERS, SOURCE_LABELS, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
+from .server_health_view import build_server_health_view
 from .server_drafts import create_draft_request, make_draft_request, observer_public_key, read_public_result
 from .ui_snapshot_cache import SnapshotCache
 from .vpnctl_client import VpnctlError, run_vpnctl
@@ -1695,6 +1696,10 @@ def network_dashboard(request: Request, db: Session = Depends(get_db)):
     connected_data, connected_error = cli_call(request, ["connected", "--source", "auto"])
     summary = dashboard_data.get("summary", {})
     summary["vpn_connected"] = len(list_from(connected_data, "connected"))
+    server_health = build_server_health_view(
+        get_settings().server_observer_snapshot_path,
+        datetime.now(timezone.utc),
+    )
     return render(
         request,
         "network_dashboard.html",
@@ -1703,6 +1708,7 @@ def network_dashboard(request: Request, db: Session = Depends(get_db)):
             "sources": dashboard_data.get("sources", []),
             "availability": dashboard_data.get("availability", {}),
             "error": dashboard_error or connected_error,
+            "server_health": server_health,
         },
         db,
     )
@@ -1807,6 +1813,16 @@ async def network_monitoring_update(
         error or "Настройки доступности сохранены",
     )
     return redirect("/network/monitoring")
+
+
+@app.get("/network/server-health", response_class=HTMLResponse)
+def network_server_health(request: Request, db: Session = Depends(get_db)):
+    require_user(request, db)
+    server_health = build_server_health_view(
+        get_settings().server_observer_snapshot_path,
+        datetime.now(timezone.utc),
+    )
+    return render(request, "network_server_health.html", {"server_health": server_health}, db)
 
 
 @app.get("/network/paths", response_class=HTMLResponse)

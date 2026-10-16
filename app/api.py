@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -33,6 +34,7 @@ from .models import NetworkChangeIdempotency, utcnow
 from .network_observer import list_from as network_list_from, merge_unified_hosts, normalize_netctl_host
 from .network_paths_adapter import get_network_path, list_network_paths
 from .routeros_backups import list_routeros_backups
+from .server_health_view import build_server_health_view
 from .vpnctl_client import VpnctlError, run_vpnctl
 
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -1225,6 +1227,14 @@ def api_context_user_retire_binding(
 @router.get("/network/paths")
 def api_network_paths(actor: str = Depends(require_api_actor)):
     return api_response({"paths": list_network_paths()})
+
+
+@router.get("/network/server-health")
+def api_network_server_health(actor: str = Depends(require_api_actor)):
+    settings = get_settings()
+    return api_response(
+        {"server_health": build_server_health_view(settings.server_observer_snapshot_path, datetime.now(timezone.utc))}
+    )
 
 
 @router.get("/network/paths/{role}")

@@ -15,10 +15,12 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from time import perf_counter
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 
 ALLOWED_ROLES = frozenset(
@@ -29,6 +31,8 @@ ALLOWED_ROLES = frozenset(
         "nextcloud",
         "onlyoffice",
         "opnsense_dns",
+        "acti",
+        "acti_backup",
     }
 )
 ALLOWED_SOURCES = frozenset({"gateway", "vpn_path", "target"})
@@ -64,6 +68,43 @@ _SAFE_VALUE_STRINGS = frozenset(
 _SAFE_ERROR_CATEGORIES = frozenset(
     {"timeout", "transport", "parse", "unexpected_response"}
 )
+COLLECTOR_FAILURE_CLASSES = frozenset(
+    {"config", "ssh", "probe", "snapshot_write", "internal"}
+)
+COLLECTOR_FAILURE_MESSAGES = {
+    "config": "Collector configuration is invalid",
+    "ssh": "SSH connection failed",
+    "probe": "Server health probe failed",
+    "snapshot_write": "Server health snapshot could not be saved",
+    "internal": "Collector failed",
+}
+ACTI_CA_PATH = "/etc/openvpn-web/acti-ca.crt"
+ACTI_SERVICES = ("frontend", "api", "postgres", "redis", "worker", "keycloak")
+ACTI_FLAGS = ("worker_heartbeat", "mounts_verified", "storage_capacity", "outbox_healthy", "backup_fresh", "backup_check_fresh")
+ACTI_BACKUP_FLAGS = ("watchdog_fresh", "backup_snapshot_fresh", "repository_capacity")
+ACTI_HTTPS_CHECKS = (
+    ("https_live", "/api/v1/health/live"),
+    ("https_ready", "/api/v1/health/ready"),
+    ("oidc_discovery", "/idp/realms/acti/.well-known/openid-configuration"),
+)
+# A child process enforces a wall-clock deadline even during DNS/header reads.
+# http.client never follows redirects or ambient proxy/cookie configuration.
+_ACTI_HTTPS_PROBE = r'''import http.client,ssl,sys
+connection=None
+try:
+ context=ssl.create_default_context(cafile=sys.argv[4])
+ connection=http.client.HTTPSConnection(sys.argv[1],int(sys.argv[2]),timeout=2.5,context=context)
+ connection.request('GET',sys.argv[3],headers={'Accept':'application/json'})
+ response=connection.getresponse()
+ if response.status!=200 or response.getheader('Content-Type','').split(';')[0].strip().lower()!='application/json':sys.exit(3)
+ body=response.read(16385)
+ if len(body)>16384:sys.exit(3)
+ sys.stdout.buffer.write(body)
+except TimeoutError:sys.exit(2)
+except Exception:sys.exit(4)
+finally:
+ if connection is not None:connection.close()
+'''
 
 # These are fixed, read-only remote probes.  Runtime configuration may select a
 # target and route, but can never supply a remote command.
@@ -73,7 +114,30 @@ def _powershell_probe(body: str, role: str) -> str:
     return f"powershell.exe -NoProfile -NonInteractive -EncodedCommand {encoded}"
 
 
+_ACTI_BACKUP_BODY = " ".join(line.strip() for line in r'''
+$ErrorActionPreference='Stop';$e=Get-EventLog -LogName Application -Source ACTIBackup -Newest 1;
+$r=@{format='acti-backup-observer-v1';services=@{};watchdog_fresh=$false;backup_snapshot_fresh=$false;repository_capacity=$false};
+try{
+function N($v){$null-ne$v-and$v-isnot[bool]-and($v-is[int]-or$v-is[long]-or$v-is[double]-or$v-is[decimal])-and![double]::IsNaN($v)-and![double]::IsInfinity($v)-and$v-ge 0};
+function T($v){if($v-is[string]-and$v-match'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,7})?Z$'){try{[datetimeoffset]::Parse($v,[cultureinfo]::InvariantCulture)}catch{}}};
+$p=$e.Message|ConvertFrom-Json;$k='format,checked_utc,check_only,status,event_id,snapshot_count,newest_snapshot_utc,snapshot_age_hours,repository_bytes,repository_entries,free_gib,maximum_age_hours,minimum_free_gib,maximum_repository_gib,issues'.Split(',');
+$ok=@(Compare-Object $k @($p.PSObject.Properties.Name)).Count-eq 0-and[regex]::Matches($e.Message,'"[^"\\]+"\s*:').Count-eq$k.Count;
+foreach($n in 'event_id','snapshot_count','repository_bytes','repository_entries','free_gib','maximum_age_hours','minimum_free_gib','maximum_repository_gib'){$ok=$ok-and(N $p.$n)};
+$ok=$ok-and$p.format-eq'acti-backup-watchdog-v1'-and$p.check_only-is[bool]-and!$p.check_only-and$p.issues-is[array]-and$e.EventID-eq$p.event_id;
+$ok=$ok-and(($p.event_id-eq 1000-and$p.status-eq'healthy'-and$p.issues.Count-eq 0)-or($p.event_id-in 1002,1003,1004-and$p.status-eq'unhealthy'-and$p.issues.Count-gt 0));
+$ok=$ok-and@($p.issues|Where-Object{$_-notin'free_space_limit','repository_size_limit','snapshot_missing','snapshot_timestamp_invalid','snapshot_stale'}).Count-eq 0;
+$ok=$ok-and$p.snapshot_count-eq[math]::Floor($p.snapshot_count)-and$p.repository_entries-eq[math]::Floor($p.repository_entries)-and$p.repository_bytes-eq[math]::Floor($p.repository_bytes);
+$a=T $p.checked_utc;$z=[datetimeoffset]::UtcNow;$t=[datetimeoffset]$e.TimeGenerated.ToUniversalTime();
+$fresh=$ok-and$null-ne$a-and($z-$a).TotalHours-le 30-and($z-$a).TotalMinutes-ge -5-and($z-$t).TotalHours-le 30-and($z-$t).TotalMinutes-ge -5-and[math]::Abs(($a-$t).TotalMinutes)-le 5;
+if($fresh){$r.watchdog_fresh=$true;$r.repository_capacity=$p.free_gib-ge 100-and$p.repository_bytes-le 322122547200;
+$s=T $p.newest_snapshot_utc;$r.backup_snapshot_fresh=$p.snapshot_count-gt 0-and(N $p.snapshot_age_hours)-and$p.snapshot_age_hours-le 30-and$null-ne$s-and($z-$s).TotalHours-ge 0-and($z-$s).TotalHours-le 30-and[math]::Abs(($a-$s).TotalHours-$p.snapshot_age_hours)-le(1.0/12)}
+}catch{};$r|ConvertTo-Json -Compress
+'''.splitlines())
+
+
 _ROLE_PROBES = {
+    "acti": "/usr/bin/sudo -n /usr/local/sbin/acti-v3-observe",
+    "acti_backup": _powershell_probe(_ACTI_BACKUP_BODY, "acti_backup"),
     "file_server": _powershell_probe(
         "$running={param([string]$n)"
         "$s=Get-Service -Name $n -ErrorAction SilentlyContinue;[bool]($s -and $s.Status -eq 'Running')};"
@@ -140,6 +204,8 @@ _ROLE_PROBES = {
 }
 
 _ROLE_CHECK_NAMES = {
+    "acti": tuple(service + "_active" for service in ACTI_SERVICES) + ACTI_FLAGS,
+    "acti_backup": ACTI_BACKUP_FLAGS,
     "file_server": ("sshd_active", "smb_active", "data_disk_free"),
     "directum": (
         "c_disk_free", "rxdata_log_bytes", "directumrx_active", "mongo_active",
@@ -282,7 +348,7 @@ def collect(
             latency_ms = round((perf_counter() - started) * 1000, 3)
             if not isinstance(completed, subprocess.CompletedProcess) or completed.returncode != 0:
                 raise _ProbeFailure("transport")
-            payload = _parse_probe_payload(completed.stdout)
+            payload = _parse_probe_payload(completed.stdout, strict=role in {"acti", "acti_backup"})
             checks = _checks_from_payload(role, source, payload, latency_ms)
         except subprocess.TimeoutExpired:
             checks = _failure_checks(role, source, "timeout")
@@ -292,6 +358,8 @@ def collect(
             checks = _failure_checks(role, source, "transport")
         except Exception:
             checks = _failure_checks(role, source, "transport")
+        if role == "acti":
+            checks.extend(_acti_https_checks(configured_target["host"]))
         collected_targets.append({"role": role, "checks": checks})
 
     timestamp = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -344,7 +412,158 @@ def _ssh_command(
     return command
 
 
-def _parse_probe_payload(stdout: Any) -> dict[str, Any]:
+def _strict_json(stdout: Any) -> dict[str, Any]:
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate field")
+            result[key] = value
+        return result
+
+    def reject_constant(value):
+        raise ValueError("non-finite JSON number")
+
+    try:
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8")
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 16384:
+            raise _ProbeFailure("unexpected_response")
+        value = json.loads(
+            stdout, object_pairs_hook=unique_pairs, parse_constant=reject_constant
+        )
+    except (ValueError, UnicodeError) as exc:
+        raise _ProbeFailure("parse") from exc
+    if not isinstance(value, dict):
+        raise _ProbeFailure("unexpected_response")
+    return value
+
+
+def _acti_https_checks(host: str) -> list[dict[str, Any]]:
+    checks = []
+    deadline = perf_counter() + 10
+    for name, path in ACTI_HTTPS_CHECKS:
+        started = perf_counter()
+        try:
+            timeout = min(3, deadline - started)
+            if timeout <= 0:
+                raise _ProbeFailure("timeout")
+            command = [
+                sys.executable,
+                "-I",
+                "-c",
+                _ACTI_HTTPS_PROBE,
+                host,
+                "443",
+                path,
+                ACTI_CA_PATH,
+            ]
+            completed = subprocess.run(
+                command,
+                shell=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise _ProbeFailure(
+                    {2: "timeout", 3: "unexpected_response"}.get(
+                        completed.returncode, "transport"
+                    )
+                )
+            payload = _strict_json(completed.stdout)
+            _validate_acti_https(name, payload, host)
+            _append_boolean_value(
+                checks,
+                "gateway",
+                name,
+                True,
+                round((perf_counter() - started) * 1000, 3),
+            )
+        except subprocess.TimeoutExpired:
+            checks.append(
+                {
+                    "name": name,
+                    "source": "gateway",
+                    "status": "error",
+                    "error": "timeout",
+                }
+            )
+        except _ProbeFailure as exc:
+            checks.append(
+                {
+                    "name": name,
+                    "source": "gateway",
+                    "status": "error",
+                    "error": exc.category,
+                }
+            )
+        except Exception:
+            checks.append(
+                {
+                    "name": name,
+                    "source": "gateway",
+                    "status": "error",
+                    "error": "transport",
+                }
+            )
+    return checks
+
+
+def _validate_acti_https(name: str, payload: dict[str, Any], host: str) -> None:
+    valid = False
+    if name == "https_live":
+        valid = payload == {"status": "live"}
+    elif name == "https_ready":
+        fields = {"database", "redis", "storage"}
+        checks = payload.get("checks")
+        valid = (
+            set(payload) == {"status", "checks"}
+            and payload["status"] == "ready"
+            and isinstance(checks, dict)
+            and set(checks) == fields
+            and all(value is True for value in checks.values())
+        )
+    elif name == "oidc_discovery":
+        realm = "https://" + host + "/idp/realms/acti"
+        required = {"authorization_endpoint", "token_endpoint", "jwks_uri"}
+        valid = payload.get("issuer") == realm and required <= set(payload)
+        endpoints = [
+            value
+            for key, value in payload.items()
+            if key.endswith("_endpoint") or key in {"jwks_uri", "check_session_iframe"}
+        ]
+        if "mtls_endpoint_aliases" in payload:
+            aliases = payload["mtls_endpoint_aliases"]
+            if not isinstance(aliases, dict) or any(
+                not key.endswith("_endpoint") for key in aliases
+            ):
+                raise _ProbeFailure("unexpected_response")
+            endpoints.extend(aliases.values())
+        for value in endpoints:
+            if not isinstance(value, str):
+                valid = False
+                break
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme != "https"
+                or parsed.netloc != host
+                or not parsed.path.startswith("/idp/realms/acti/")
+                or parsed.query
+                or parsed.fragment
+                or "%" in parsed.path
+                or any(part in {".", ".."} for part in parsed.path.split("/"))
+            ):
+                valid = False
+                break
+    if not valid:
+        raise _ProbeFailure("unexpected_response")
+
+
+def _parse_probe_payload(stdout: Any, *, strict: bool = False) -> dict[str, Any]:
+    if strict:
+        return _strict_json(stdout)
     if not isinstance(stdout, str):
         raise _ProbeFailure("parse")
     try:
@@ -361,7 +580,15 @@ def _checks_from_payload(
 ) -> list[dict[str, Any]]:
     _require_role_payload(role, payload)
     checks: list[dict[str, Any]] = []
-    if role == "file_server":
+    if role == "acti_backup":
+        for name in ACTI_BACKUP_FLAGS:
+            _append_boolean_check(checks, source, payload, name, name, latency_ms)
+    elif role == "acti":
+        for service in ACTI_SERVICES:
+            _append_service_check(checks, source, payload, service, service + "_active", latency_ms)
+        for name in ACTI_FLAGS:
+            _append_boolean_check(checks, source, payload, name, name, latency_ms)
+    elif role == "file_server":
         _append_service_check(checks, source, payload, "sshd", "sshd_active", latency_ms)
         _append_service_check(checks, source, payload, "smb", "smb_active", latency_ms)
         _append_disk_check(checks, source, payload, "data_free_percent", "data_disk_free", latency_ms)
@@ -406,6 +633,21 @@ def _checks_from_payload(
 
 
 def _require_role_payload(role: str, payload: dict[str, Any]) -> None:
+    if role == "acti_backup":
+        if (set(payload) != {"format", "services", *ACTI_BACKUP_FLAGS}
+            or payload.get("format") != "acti-backup-observer-v1"
+            or payload.get("services") != {}
+            or any(type(payload.get(field)) is not bool for field in ACTI_BACKUP_FLAGS)):
+            raise _ProbeFailure("unexpected_response")
+        return
+    if role == "acti":
+        services = payload.get("services")
+        if (set(payload) != {"format", "services", *ACTI_FLAGS} or payload.get("format") != "acti-observer-v1"
+            or not isinstance(services, dict) or set(services) != set(ACTI_SERVICES)
+            or any(type(value) is not bool for value in services.values())
+            or any(type(payload.get(field)) is not bool for field in ACTI_FLAGS)):
+            raise _ProbeFailure("unexpected_response")
+        return
     number_fields = {
         "file_server": ("data_free_percent",),
         "directum": ("free_percent", "log_bytes"),
@@ -606,9 +848,24 @@ def public_target(target: dict[str, Any]) -> dict[str, Any]:
     return {"role": role, "checks": checks, "status": status}
 
 
+def public_collector(collector: dict[str, Any]) -> dict[str, str]:
+    """Return the fixed, non-diagnostic collector failure record."""
+    if set(collector) != {"status", "failure_class", "message"}:
+        raise ValueError("collector fields are not allowed")
+    if collector.get("status") != "error":
+        raise ValueError("collector status is not allowed")
+    failure_class = collector.get("failure_class")
+    if failure_class not in COLLECTOR_FAILURE_CLASSES:
+        raise ValueError("collector failure class is not allowed")
+    message = collector.get("message")
+    if message != COLLECTOR_FAILURE_MESSAGES[failure_class]:
+        raise ValueError("collector message is not allowed")
+    return {"status": "error", "failure_class": failure_class, "message": message}
+
+
 def public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Return the complete persisted/API snapshot with no topology or raw output."""
-    if not set(snapshot) <= {"collected_at", "targets", "overall"}:
+    if not set(snapshot) <= {"collected_at", "targets", "overall", "collector"}:
         raise ValueError("snapshot fields are not allowed")
     collected_at = snapshot.get("collected_at")
     parse_utc(collected_at)
@@ -621,7 +878,10 @@ def public_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
     if overall not in _STATUS_PRIORITY:
         raise ValueError("overall status is not allowed")
-    return {"collected_at": collected_at, "overall": overall, "targets": targets}
+    public = {"collected_at": collected_at, "overall": overall, "targets": targets}
+    if "collector" in snapshot:
+        public["collector"] = public_collector(_require_mapping(snapshot["collector"], "collector"))
+    return public
 
 
 def snapshot_status(snapshot: dict[str, Any], now: datetime) -> str:
@@ -671,13 +931,22 @@ def write_snapshot(path: Path, snapshot: dict[str, Any]) -> None:
         raise
 
 
-def load_snapshot(path: Path, now: datetime) -> dict[str, Any]:
-    """Load a public snapshot, returning generic status for absent or invalid files."""
+def load_snapshot_result(path: Path, now: datetime) -> dict[str, Any]:
+    """Load a public snapshot together with its safe freshness state."""
     try:
         snapshot = public_snapshot(json.loads(path.read_text(encoding="utf-8")))
     except FileNotFoundError:
-        return {"overall": "stale", "targets": []}
+        return {"snapshot": {"overall": "stale", "targets": []}, "freshness": "missing"}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
-        return {"overall": "error", "targets": []}
-    snapshot["overall"] = snapshot_status(snapshot, now)
+        return {"snapshot": {"overall": "error", "targets": []}, "freshness": "invalid"}
+    freshness = "stale" if snapshot_status(snapshot, now) == "stale" else "current"
+    return {"snapshot": snapshot, "freshness": freshness}
+
+
+def load_snapshot(path: Path, now: datetime) -> dict[str, Any]:
+    """Load a public snapshot with the established overall-status compatibility behavior."""
+    result = load_snapshot_result(path, now)
+    snapshot = dict(result["snapshot"])
+    if result["freshness"] == "stale":
+        snapshot["overall"] = "stale"
     return snapshot

@@ -310,6 +310,123 @@ def write_path_evidence(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SERVER_OBSERVER_SNAPSHOT_PATH", str(snapshot))
 
 
+def write_server_health_snapshot(tmp_path: Path, monkeypatch, *, age_seconds: int = 0, collector=None) -> None:
+    collected_at = datetime.now(timezone.utc).timestamp() - age_seconds
+    snapshot = tmp_path / "server-health.json"
+    snapshot.write_text(
+        json.dumps(
+            {
+                "collected_at": datetime.fromtimestamp(collected_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+                "targets": [
+                    {
+                        "role": "directum",
+                        "checks": [
+                            {"name": "service_state", "source": "target", "status": "ok", "observed": "active", "expected": "active"},
+                        ],
+                    },
+                    {
+                        "role": "nextcloud",
+                        "checks": [
+                            {"name": "https_healthcheck", "source": "vpn_path", "status": "critical", "error": "timeout"},
+                        ],
+                    },
+                    {
+                        "role": "file_server",
+                        "checks": [
+                            {"name": "disk_capacity", "source": "target", "status": "error", "error": "transport"},
+                        ],
+                    },
+                ],
+                **({"collector": collector} if collector is not None else {}),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SERVER_OBSERVER_SNAPSHOT_PATH", str(snapshot))
+
+
+def test_server_health_requires_login_and_api_token_renders_redacted_snapshot(tmp_path, monkeypatch):
+    """Breaks if either route bypasses auth or exposes anything beyond the view model."""
+    write_server_health_snapshot(tmp_path, monkeypatch)
+    marker = tmp_path / "collect-invoked"
+    monkeypatch.setenv("NETCTL_COLLECT_MARKER", str(marker))
+    client, headers = make_client(tmp_path, monkeypatch)
+
+    assert client.get("/network/server-health", follow_redirects=False).status_code == 303
+    assert client.get("/api/v1/network/server-health").status_code == 401
+
+    login(client)
+    page = client.get("/network/server-health")
+    dashboard = client.get("/network/dashboard")
+    response = client.get("/api/v1/network/server-health", headers=headers)
+
+    assert page.status_code == dashboard.status_code == response.status_code == 200
+    view = response.json()["data"]["server_health"]
+    assert view["freshness"] == "current"
+    assert view["summary"] == {"ok": 1, "warn": 0, "critical": 1, "error": 1}
+    assert view["targets"][1]["problem_count"] == 1
+    assert "<details>" in page.text
+    assert "<summary>Checks</summary>" in page.text
+    assert 'href="/network/server-health" class="active"' in page.text
+    assert 'href="/network/server-health"' in dashboard.text
+    assert "2 roles need attention" in dashboard.text
+    assert not marker.exists()
+    for forbidden in (
+        "192.168.",
+        "ssh_user",
+        "server-observer.key",
+        "netctl collect",
+        "Traceback",
+        "stdout",
+        "stderr",
+    ):
+        assert forbidden not in page.text
+        assert forbidden not in response.text
+
+
+def test_server_health_stale_and_collector_failure_banners_and_navigation(tmp_path, monkeypatch):
+    """Breaks if stale/failure snapshot state is hidden or dashboard navigation loses its count."""
+    write_server_health_snapshot(
+        tmp_path,
+        monkeypatch,
+        age_seconds=16 * 60,
+        collector={"status": "error", "failure_class": "ssh", "message": "SSH connection failed"},
+    )
+    client, headers = make_client(tmp_path, monkeypatch)
+    login(client)
+
+    page = client.get("/network/server-health")
+    dashboard = client.get("/network/dashboard")
+    response = client.get("/api/v1/network/server-health", headers=headers)
+
+    assert page.status_code == dashboard.status_code == response.status_code == 200
+    assert response.json()["data"]["server_health"]["freshness"] == "stale"
+    assert "Health data is stale" in page.text
+    assert "Collector failed: SSH connection failed" in page.text
+    assert 'href="/network/server-health"' in page.text
+    assert 'href="/network/server-health"' in dashboard.text
+    assert "Health data is stale or unavailable" in dashboard.text
+
+
+def test_acti_and_backup_roles_render_in_canonical_read_only_server_health(tmp_path, monkeypatch):
+    write_server_health_snapshot(tmp_path, monkeypatch)
+    path = Path(os.environ["SERVER_OBSERVER_SNAPSHOT_PATH"])
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    snapshot["targets"] = [
+        {"role": "acti", "checks": [{"name": "https_live", "source": "gateway", "status": "ok"}]},
+        {"role": "acti_backup", "checks": [{"name": "backup_snapshot_fresh", "source": "gateway", "status": "critical"}]},
+    ]
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    client, headers = make_client(tmp_path, monkeypatch)
+    login(client)
+    page = client.get("/network/server-health")
+    api = client.get("/api/v1/network/server-health", headers=headers)
+    assert page.status_code == api.status_code == 200
+    assert "ACTI" in page.text and "ACTI — резервные копии" in page.text
+    assert "https_live" in page.text and "backup_snapshot_fresh" in page.text
+    assert [target["role"] for target in api.json()["data"]["server_health"]["targets"]] == ["acti", "acti_backup"]
+
+
 def test_network_paths_require_login_and_show_existing_server_roles(tmp_path, monkeypatch):
     write_path_evidence(tmp_path, monkeypatch)
     client, headers = make_client(tmp_path, monkeypatch)
