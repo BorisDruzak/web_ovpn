@@ -250,6 +250,26 @@ entry; clean-VM policy regression passed after the required RED. These source
 changes await the complete-workflow controller release. Installed controller
 source was not replaced by the one-host policy adjustment.
 
+## Public CA trust completed after later CSP installation
+
+A fresh operator-requested inspection found all six pinned public certificate
+payloads, three system roots and the three NSS-compatible certificates, but no
+matching government CAs in the CSP machine/user stores. The original office setup
+and first graphical login preceded the separately authorized CSP installation.
+Its earlier successful result therefore did not prove the later CSP stores.
+
+A fresh native certificate-only repair plan was applied once through MCP. The
+original new job completed successfully with exact technical verification; all
+84 events were read with contiguous sequence numbers. An independent read-only
+check then found all six expected thumbprints in both machine and selected-user
+CSP stores, with roots and intermediates in their corresponding stores. No
+reboot, Setup/domain replay, browser closure or personal signing-key import was
+performed. Distribution-owned trust anchors were preserved.
+
+The complete-workflow plan now explicitly requires CA finalization after CSP
+installation and real login, with fresh store evidence before success. That
+future controller behavior still awaits implementation and guarded release.
+
 ## Temporary remote support
 
 The operator separately authorized temporary XRDP through an SSH tunnel. This
