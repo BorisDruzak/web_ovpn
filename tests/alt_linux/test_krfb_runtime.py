@@ -5,9 +5,81 @@ import struct
 import sys
 from pathlib import Path
 import threading
+import hashlib
 from types import SimpleNamespace
 
 import pytest
+
+
+def policy_observation():
+    value={'schema_version':1,'machine_uuid':'11111111-2222-3333-4444-555555555555',
+        'hostname':'alt-test-pc1','boot_id':'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        'source_sha256':'a'*64,'policy_sha256':hashlib.sha256(json.dumps(
+            {'port':5900,'scope':'direct','authentication':'password_required'},sort_keys=True,
+            separators=(',',':')).encode()).hexdigest(),
+        'legacy':{'owned_legacy':False,'legacy_table_present':False,'retirement_required':False,
+                  'service_disabled':True,'external_policy_clear':True},
+        'listener_present':False,'external_policy_sha256':'b'*64,'marker_sha256':None,'ready':False}
+    value['snapshot_sha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    return value
+
+
+@pytest.mark.parametrize('case',['clean','listener','identity','digest','bool','extra','duplicate',
+                                 'helper','source_drift','ssh_drift','boot_drift','auth_failure'])
+def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_path,monkeypatch,case):
+    from alt_deploy import krfb_runtime as module
+    from alt_deploy import component_probe,setup_runtime
+    from alt_deploy.errors import ControlError
+    project=tmp_path/'ansible';template=project/'roles/remote_access_policy/templates/alt-vnc-access-policy.py.j2'
+    template.parent.mkdir(parents=True);template.write_text('# fixed published observer\n')
+    settings=SimpleNamespace(ansible_project_dir=project,known_hosts_file=tmp_path/'known',private_key_file=tmp_path/'key')
+    machine=SimpleNamespace(ip='192.0.2.4',uuid=policy_observation()['machine_uuid'],hostname='alt-test-pc1')
+    fingerprints=iter(['a'*64,'b'*64] if case=='source_drift' else ['a'*64]*4)
+    monkeypatch.setattr(setup_runtime,'source_fingerprint',lambda *a:next(fingerprints))
+    bindings=iter([{'host_public_sha256':'c'*64,'controller_public_sha256':'d'*64},
+                  {'host_public_sha256':('e' if case=='ssh_drift' else 'c')*64,'controller_public_sha256':'d'*64}])
+    monkeypatch.setattr(component_probe,'ssh_binding',lambda *a,**k:next(bindings))
+    proofs=[];transports=[]
+    monkeypatch.setattr(module,'_protected_password',lambda settings:b'PRIVATE-SECRET-SENTINEL')
+    def authenticate(*args,**kwargs):
+        proofs.append(args)
+        if case=='auth_failure':raise module._ProbeError('krfb_authentication_failed')
+        kwargs['connector']((machine.ip,5900),timeout=3)
+        return {'authenticated':True,'server_init':True,'framebuffer_update':True,'width':1600,'height':900}
+    monkeypatch.setattr(module,'_probe_rfb',authenticate)
+    calls=[]
+    def run(argv,**options):
+        calls.append(argv);payload=json.loads(options['input_text'])
+        value=policy_observation()
+        value['listener_present']=case in ('listener','boot_drift','auth_failure')
+        value['snapshot_sha256']=hashlib.sha256(json.dumps({k:v for k,v in value.items() if k!='snapshot_sha256'},
+                                    sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if case=='identity':value['hostname']='another-host'
+        elif case=='digest':value['snapshot_sha256']='e'*64
+        elif case=='bool':value['legacy']['external_policy_clear']=1
+        elif case=='extra':value['password']='PRIVATE-SECRET-SENTINEL'
+        elif case=='boot_drift' and len(calls)>1:value['boot_id']='bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'
+        envelope={'schema_version':1,'status':'ok','operation':'observe',
+                  'helper_sha256':payload['helper_sha256'],'observation':value}
+        if case=='helper':envelope['helper_sha256']='e'*64
+        raw=json.dumps(envelope)
+        if case=='duplicate':raw=raw[:-1]+',"status":"PRIVATE-SECRET-SENTINEL"}'
+        return 0,raw,''
+    def connector(address,**kwargs):
+        transports.append(address);return Connection(server_wire())
+    # The production administrative connector must use its own pinned SSH child.
+    monkeypatch.setattr(module,'_SSHChannel',lambda command,*,timeout: connector(command,timeout=timeout))
+    policy={'port':5900,'scope':'direct','authentication':'password_required'}
+    if case in ('clean','listener'):
+        result=module.observe_vnc_policy(settings,machine,policy,runner=run)
+        assert result['observation']['ready'] is False
+        assert result['listener_authenticated'] is (case=='listener')
+        assert bool(proofs) is (case=='listener')
+        assert 'SENTINEL' not in json.dumps(result)
+    else:
+        with pytest.raises(ControlError) as caught:module.observe_vnc_policy(settings,machine,policy,runner=run)
+        assert 'SENTINEL' not in str(caught.value)
+    assert all('PRIVATE-SECRET-SENTINEL' not in str(argv) for argv in calls)
 
 
 def server_wire(*, security=b'\x02', auth=0, name=b'PRIVATE-DESKTOP-SENTINEL',

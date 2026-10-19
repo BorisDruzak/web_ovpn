@@ -1,0 +1,535 @@
+"""Fixed owned VNC policy inspection; never flush or rewrite another table."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import tempfile
+import uuid
+import fcntl
+import sys
+
+TABLE = 'alt_vnc_restrict'
+UNIT = '/etc/systemd/system/alt-vnc-network-restrict.service'
+HELPER = '/usr/local/libexec/alt-vnc-network-restrict'
+UNIT_SHA256 = '0d9eb149a8a765cb8d115b94a77b5a6bcb5c856dbf202032ad7697aa0dd8bf86'
+HELPER_SHA256 = '560b6a6b3f5aeaba2e2408e7db0783e6a9ad0eaf393161b03336caa719946a78'
+POLICY = {'port':5900,'scope':'direct','authentication':'password_required'}
+STATE = '/var/lib/alt-vnc-access-policy'
+ROOT = Path('/')
+
+
+def _bytes(value):
+    return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+
+
+def _digest(value):
+    return hashlib.sha256(_bytes(value)).hexdigest()
+
+
+POLICY_SHA256 = _digest(POLICY)
+
+
+class PolicyError(Exception):
+    pass
+
+
+def _invalid():
+    return PolicyError('vnc_policy_ownership_unverified')
+
+
+def _owned_file(root, absolute, expected, modes):
+    target = root/absolute.lstrip('/')
+    parent = target
+    while parent!=root:
+        if parent.is_symlink():
+            raise _invalid()
+        parent = parent.parent
+    if not target.exists():
+        return False
+    before = target.stat()
+    uid = 0 if root==Path('/') else os.getuid()
+    if (not stat.S_ISREG(before.st_mode) or before.st_uid!=uid
+            or stat.S_IMODE(before.st_mode) not in modes or before.st_size>65536 or before.st_nlink!=1):
+        raise _invalid()
+    descriptor = os.open(target,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+    with os.fdopen(descriptor,'rb') as stream:
+        opened = os.fstat(stream.fileno())
+        if (before.st_dev,before.st_ino,before.st_mtime_ns,before.st_size)!=(
+                opened.st_dev,opened.st_ino,opened.st_mtime_ns,opened.st_size):
+            raise _invalid()
+        data = stream.read(65537)
+        after = os.fstat(stream.fileno())
+    if (hashlib.sha256(data).hexdigest()!=expected
+            or (after.st_mtime_ns,after.st_size)!=(before.st_mtime_ns,before.st_size)):
+        raise _invalid()
+    return True
+
+
+def _objects(document):
+    if (not isinstance(document,dict) or set(document)!={'nftables'}
+            or not isinstance(document['nftables'],list) or len(document['nftables'])>10000
+            or len(json.dumps(document,allow_nan=False))>2097152):
+        raise _invalid()
+    result = []
+    for entry in document['nftables']:
+        if not isinstance(entry,dict) or len(entry)!=1:
+            raise _invalid()
+        kind,value = next(iter(entry.items()))
+        if not isinstance(value,dict):
+            raise _invalid()
+        if kind!='metainfo':
+            result.append((kind,value))
+    return result
+
+
+def _legacy_object(kind,value):
+    return (value.get('table')==TABLE or kind=='table' and value.get('name')==TABLE)
+
+
+def _normalize(kind,value):
+    result = {k:v for k,v in value.items() if k!='handle'}
+    if kind=='rule':
+        result['expr'] = []
+        for expression in value.get('expr',[]):
+            if isinstance(expression,dict) and set(expression)=={'counter'}:
+                counter = expression['counter']
+                if (not isinstance(counter,dict) or set(counter)!={'packets','bytes'}
+                        or any(type(n) is not int or n<0 for n in counter.values())):
+                    raise _invalid()
+                result['expr'].append({'counter':{}})
+            else:
+                result['expr'].append(expression)
+    return {kind:result}
+
+
+def _expected_legacy():
+    return [
+        {'table':{'family':'inet','name':TABLE}},
+        {'chain':{'family':'inet','table':TABLE,'name':'input','type':'filter',
+                  'hook':'input','prio':-10,'policy':'accept'}},
+        {'rule':{'family':'inet','table':TABLE,'chain':'input','comment':'VNC only through local SSH tunnel',
+                 'expr':[{'match':{'op':'!=','left':{'meta':{'key':'iifname'}},'right':'lo'}},
+                         {'match':{'op':'==','left':{'payload':{'protocol':'tcp','field':'dport'}},'right':5900}},
+                         {'counter':{}},{'reject':{'type':'tcp reset'}}]}}]
+
+
+def _not_vnc(expressions):
+    for expression in expressions:
+        if not isinstance(expression,dict):
+            continue
+        match = expression.get('match',{})
+        if not isinstance(match,dict) or match.get('op')!='==':
+            continue
+        left,right = match.get('left'),match.get('right')
+        if left=={'meta':{'key':'l4proto'}} and right=='udp':
+            return True
+        if (left=={'payload':{'protocol':'tcp','field':'dport'}}
+                and type(right) is int and right!=5900):
+            return True
+        if isinstance(left,dict) and left.get('payload',{}).get('protocol')=='udp':
+            return True
+    return False
+
+
+def _external_clear(objects):
+    chains = {}; rules = {}
+    for kind,value in objects:
+        if kind=='chain':
+            key = (value.get('family'),value.get('table'),value.get('name'))
+            if key in chains:
+                return False
+            chains[key] = value
+        elif kind=='rule':
+            key = (value.get('family'),value.get('table'),value.get('chain'))
+            rules.setdefault(key,[]).append(value)
+
+    def clear(key, ancestry):
+        if key in ancestry or key not in chains:
+            return False
+        for rule in rules.get(key,[]):
+            expressions = rule.get('expr')
+            if not isinstance(expressions,list):
+                return False
+            if _not_vnc(expressions):
+                continue
+            for expression in expressions:
+                if not isinstance(expression,dict) or len(expression)!=1:
+                    return False
+                operation,value = next(iter(expression.items()))
+                if operation in ('drop','reject'):
+                    return False
+                if operation in ('jump','goto'):
+                    if not isinstance(value,dict) or set(value)!={'target'}:
+                        return False
+                    destination = (*key[:2],value['target'])
+                    if not clear(destination,ancestry|{key}):
+                        return False
+                elif operation not in ('match','counter','log','accept','return','continue'):
+                    return False
+        return True
+
+    for key,chain in chains.items():
+        if chain.get('hook')=='input':
+            if chain.get('policy')!='accept' or not clear(key,set()):
+                return False
+    return True
+
+
+def inspect_legacy(root, document, service):
+    """Read-only ownership and conservative blocking-policy evidence."""
+    try:
+        root = Path(root)
+        unit = _owned_file(root,UNIT,UNIT_SHA256,{0o644,0o444})
+        helper = _owned_file(root,HELPER,HELPER_SHA256,{0o700,0o755,0o500,0o555})
+        if (unit!=helper or not isinstance(service,dict)
+                or set(service)!={'load_state','active_state','sub_state','unit_file_state','main_pid','drop_ins','fragment_path'}
+                or service['drop_ins']!=[] or type(service['main_pid']) is not int or service['main_pid']!=0):
+            raise _invalid()
+        if unit:
+            if (service['load_state']!='loaded' or service['fragment_path']!=UNIT
+                    or service['unit_file_state'] not in ('enabled','disabled')
+                    or (service['active_state'],service['sub_state']) not in (('inactive','dead'),('active','exited'))):
+                raise _invalid()
+        elif (service['load_state']!='not-found' or service['fragment_path']!=''
+                or service['unit_file_state']!='' or service['active_state']!='inactive'):
+            raise _invalid()
+        objects = _objects(document)
+        owned,others = [],[]
+        for kind,value in objects:
+            if _legacy_object(kind,value):
+                if value.get('family')!='inet':
+                    raise _invalid()
+                owned.append(_normalize(kind,value))
+            else:
+                others.append((kind,value))
+        if owned and (not unit or owned!=_expected_legacy()):
+            raise _invalid()
+        disabled = not unit or (service['unit_file_state']=='disabled' and service['active_state']=='inactive')
+        return {'owned_legacy':unit,'legacy_table_present':bool(owned),
+                'retirement_required':bool(owned) or not disabled,'service_disabled':disabled,
+                'external_policy_clear':_external_clear(others)}
+    except PolicyError:
+        raise
+    except (OSError,ValueError,TypeError,KeyError,AttributeError):
+        raise _invalid() from None
+
+
+def _run(argv):
+    result = subprocess.run(argv,capture_output=True,text=True,timeout=15,
+        env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'})
+    if len(result.stdout.encode())>2097152 or len(result.stderr.encode())>65536:
+        raise PolicyError('vnc_policy_observation_unverified')
+    return result.returncode,result.stdout
+
+
+def _path(root, absolute):
+    target = root/absolute.lstrip('/')
+    parent = target
+    while parent!=root:
+        if parent.is_symlink():
+            raise _invalid()
+        parent = parent.parent
+    return target
+
+
+def _private(root, target, limit=65536):
+    info = target.stat()
+    uid = 0 if root==Path('/') else os.getuid()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid!=uid or stat.S_IMODE(info.st_mode)!=0o600
+            or info.st_nlink!=1 or info.st_size>limit):
+        raise _invalid()
+    descriptor = os.open(target,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
+    with os.fdopen(descriptor,'rb') as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev,opened.st_ino)!=(info.st_dev,info.st_ino):
+            raise _invalid()
+        data = stream.read(limit+1)
+    if len(data)>limit:
+        raise _invalid()
+    return data
+
+
+def _state_dir(root, *, create=False):
+    target = _path(root,STATE)
+    if not target.exists():
+        if create:
+            target.mkdir(mode=0o700)
+        else:
+            return target
+    info = target.stat()
+    uid = 0 if root==Path('/') else os.getuid()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=uid or stat.S_IMODE(info.st_mode)!=0o700:
+        raise _invalid()
+    return target
+
+
+def _marker(root, machine_uuid):
+    target = _state_dir(root)/'prepared.json'
+    _path(root,STATE+'/prepared.json')
+    if not target.exists():
+        return None,None
+    data = _private(root,target)
+    value = json.loads(data)
+    if (not isinstance(value,dict) or set(value)!={'schema_version','kind','machine_uuid',
+            'policy_sha256','source_sha256','applied_boot_id'}
+            or type(value['schema_version']) is not int or value['schema_version']!=1
+            or value['kind']!='complete_workstation_direct_vnc'
+            or value['machine_uuid']!=machine_uuid or value['policy_sha256']!=POLICY_SHA256
+            or not re.fullmatch('[0-9a-f]{64}',value['source_sha256'])
+            or not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value['applied_boot_id'])):
+        raise _invalid()
+    return value,hashlib.sha256(data).hexdigest()
+
+
+def _collect(root, machine_uuid, hostname, source_sha256, run):
+    root = Path(root)
+    pattern = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}'
+    if (not isinstance(machine_uuid,str) or not re.fullmatch(pattern,machine_uuid)
+            or not isinstance(hostname,str) or not re.fullmatch('[a-z][a-z0-9-]{0,62}',hostname)
+            or not isinstance(source_sha256,str) or not re.fullmatch('[0-9a-f]{64}',source_sha256)):
+        raise _invalid()
+    actual_uuid = (root/'sys/class/dmi/id/product_uuid').read_text().strip().lower()
+    boot = (root/'proc/sys/kernel/random/boot_id').read_text().strip()
+    rc, actual_hostname = run(['hostname','-s'])
+    if rc or actual_uuid!=machine_uuid or actual_hostname.strip()!=hostname or not re.fullmatch(pattern,boot):
+        raise PolicyError('vnc_policy_machine_unverified')
+    rc, output = run(['/sbin/nft','-j','list','ruleset'])
+    if rc:
+        raise PolicyError('vnc_policy_observation_unverified')
+    document = json.loads(output)
+    rc, output = run(['systemctl','show','alt-vnc-network-restrict.service','--no-pager',
+        '-p','LoadState','-p','ActiveState','-p','SubState','-p','UnitFileState',
+        '-p','MainPID','-p','DropInPaths','-p','FragmentPath'])
+    properties = dict(line.split('=',1) for line in output.splitlines() if '=' in line)
+    if rc and properties.get('LoadState')!='not-found':
+        raise PolicyError('vnc_policy_observation_unverified')
+    service = {'load_state':properties['LoadState'],'active_state':properties['ActiveState'],
+        'sub_state':properties['SubState'],'unit_file_state':properties.get('UnitFileState',''),
+        'main_pid':int(properties['MainPID']),'drop_ins':properties.get('DropInPaths','').split(),
+        'fragment_path':properties.get('FragmentPath','')}
+    legacy = inspect_legacy(root,document,service)
+    rc, listeners = run(['ss','-H','-ltn','sport = :5900'])
+    if rc or len(listeners)>16384:
+        raise PolicyError('vnc_policy_observation_unverified')
+    rows = [line.split() for line in listeners.splitlines() if line.strip()]
+    if len(rows)>32 or any(len(row)<5 or row[0]!='LISTEN' or not row[3].endswith(':5900') for row in rows):
+        raise PolicyError('vnc_policy_observation_unverified')
+    others = [_normalize(kind,value) for kind,value in _objects(document) if not _legacy_object(kind,value)]
+    marker, marker_sha = _marker(root,machine_uuid)
+    ready = (not legacy['retirement_required'] and legacy['external_policy_clear']
+             and marker is not None and marker['source_sha256']==source_sha256)
+    safe = {'schema_version':1,'machine_uuid':machine_uuid,'hostname':hostname,'boot_id':boot,
+            'source_sha256':source_sha256,'policy_sha256':POLICY_SHA256,
+            'legacy':legacy,'listener_present':bool(rows),'external_policy_sha256':_digest(others),
+            'marker_sha256':marker_sha,'ready':ready}
+    safe['snapshot_sha256'] = _digest(safe)
+    return safe,document,service
+
+
+def observe_policy(root, machine_uuid, hostname, source_sha256, *, run=_run):
+    try:
+        return _collect(root,machine_uuid,hostname,source_sha256,run)[0]
+    except PolicyError:
+        raise
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,subprocess.SubprocessError):
+        raise PolicyError('vnc_policy_observation_unverified') from None
+
+
+def _write_private(path, data):
+    descriptor = os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,'O_NOFOLLOW',0),0o600)
+    with os.fdopen(descriptor,'wb') as stream:
+        stream.write(data);stream.flush();os.fsync(stream.fileno())
+
+
+def _sync_directories(paths):
+    for directory in paths:
+        descriptor = os.open(directory,os.O_RDONLY|os.O_DIRECTORY|getattr(os,'O_NOFOLLOW',0))
+        try:os.fsync(descriptor)
+        finally:os.close(descriptor)
+
+
+def _backup(root, safe, document, service, context):
+    directory = _state_dir(root,create=True)/('backup-'+uuid.uuid4().hex)
+    directory.mkdir(mode=0o700)
+    contents = {'snapshot.json':_bytes(safe),'rules-before.json':_bytes(document),
+                'service-before.json':_bytes(service)}
+    if safe['legacy']['owned_legacy']:
+        contents['unit.service'] = _path(root,UNIT).read_bytes()
+        contents['helper.sh'] = _path(root,HELPER).read_bytes()
+    if safe['marker_sha256'] is not None:
+        data = _private(root,_path(root,STATE+'/prepared.json'))
+        if hashlib.sha256(data).hexdigest()!=safe['marker_sha256']:
+            raise PolicyError('vnc_policy_snapshot_changed')
+        contents['marker-before.json'] = data
+    for name,data in contents.items():
+        _write_private(directory/name,data)
+    manifest = {'schema_version':1,'machine_uuid':safe['machine_uuid'],'context':context,
+                'snapshot_sha256':safe['snapshot_sha256'],
+                'files':{name:hashlib.sha256(data).hexdigest() for name,data in contents.items()}}
+    _write_private(directory/'manifest.json',_bytes(manifest))
+    if _private(root,directory/'manifest.json')!=_bytes(manifest):
+        raise PolicyError('vnc_policy_backup_unverified')
+    for name,expected in manifest['files'].items():
+        if hashlib.sha256(_private(root,directory/name,limit=2097152)).hexdigest()!=expected:
+            raise PolicyError('vnc_policy_backup_unverified')
+    _sync_directories((directory,directory.parent,directory.parent.parent))
+
+
+def _save_marker(root, before):
+    _,current_sha = _marker(root,before['machine_uuid'])
+    if current_sha!=before['marker_sha256']:
+        raise PolicyError('vnc_policy_outcome_unverified')
+    value = {'schema_version':1,'kind':'complete_workstation_direct_vnc',
+             'machine_uuid':before['machine_uuid'],'policy_sha256':POLICY_SHA256,
+             'source_sha256':before['source_sha256'],'applied_boot_id':before['boot_id']}
+    directory = _state_dir(root,create=True)
+    descriptor,temporary = tempfile.mkstemp(prefix='.prepared-',dir=directory)
+    try:
+        with os.fdopen(descriptor,'wb') as stream:
+            stream.write(_bytes(value));stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,directory/'prepared.json')
+        _sync_directories((directory,directory.parent))
+    finally:
+        if Path(temporary).exists():Path(temporary).unlink()
+
+
+def apply_policy(root, request, *, run=_run):
+    root = Path(root)
+    mutated = False
+    descriptor = None
+    try:
+        if (not isinstance(request,dict) or set(request)!={'machine_uuid','hostname','source_sha256',
+                'expected_snapshot_sha256','listener_authenticated','context'}):
+            raise _invalid()
+        context = request['context']
+        if (not isinstance(context,dict) or set(context)!={'schema_version','kind','phase','job_id','claim_sha256',
+                'plan_sha256','workflow_policy_sha256','machine_uuid','source_sha256','policy_sha256'}
+                or type(context['schema_version']) is not int or context['schema_version']!=1
+                or context['kind']!='complete_workstation'
+                or context['phase']!='system' or context['machine_uuid']!=request['machine_uuid']
+                or context['source_sha256']!=request['source_sha256'] or context['policy_sha256']!=POLICY_SHA256
+                or not re.fullmatch('job-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}',context['job_id'])
+                or not re.fullmatch('[0-9a-f]{64}',context['claim_sha256'])
+                or not re.fullmatch('[0-9a-f]{64}',context['plan_sha256'])
+                or not re.fullmatch('[0-9a-f]{64}',context['workflow_policy_sha256'])
+                or type(request['listener_authenticated']) is not bool):
+            raise _invalid()
+        lock = _path(root,'/run/alt-vnc-access-policy.lock')
+        descriptor = os.open(lock,os.O_RDWR|os.O_CREAT|getattr(os,'O_NOFOLLOW',0),0o600)
+        info = os.fstat(descriptor)
+        uid = 0 if root==Path('/') else os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid!=uid
+                or stat.S_IMODE(info.st_mode)!=0o600 or info.st_nlink!=1):
+            raise _invalid()
+        fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        safe,document,service = _collect(root,request['machine_uuid'],request['hostname'],request['source_sha256'],run)
+        if safe['snapshot_sha256']!=request['expected_snapshot_sha256']:
+            raise PolicyError('vnc_policy_snapshot_changed')
+        if not safe['legacy']['external_policy_clear']:
+            raise PolicyError('vnc_policy_external_blocker')
+        if safe['ready']:
+            return {'changed':False,'ready':True,'policy_sha256':POLICY_SHA256}
+        if safe['legacy']['retirement_required'] and safe['listener_present'] and request['listener_authenticated'] is not True:
+            raise PolicyError('vnc_policy_listener_authentication_unverified')
+        if safe['legacy']['retirement_required'] or safe['marker_sha256'] is not None:
+            _backup(root,safe,document,service,context)
+            if _collect(root,request['machine_uuid'],request['hostname'],request['source_sha256'],run)[0]!=safe:
+                raise PolicyError('vnc_policy_snapshot_changed')
+        if safe['legacy']['retirement_required']:
+            if not safe['legacy']['service_disabled']:
+                mutated = True
+                rc,_ = run(['systemctl','disable','--now','alt-vnc-network-restrict.service'])
+                if rc:raise PolicyError('vnc_policy_outcome_unverified')
+            if safe['legacy']['legacy_table_present']:
+                mutated = True
+                rc,_ = run(['/sbin/nft','delete','table','inet',TABLE])
+                if rc:raise PolicyError('vnc_policy_outcome_unverified')
+        after,_,_ = _collect(root,request['machine_uuid'],request['hostname'],request['source_sha256'],run)
+        if (after['boot_id']!=safe['boot_id'] or after['legacy']['retirement_required']
+                or not after['legacy']['external_policy_clear']
+                or after['external_policy_sha256']!=safe['external_policy_sha256']):
+            raise PolicyError('vnc_policy_outcome_unverified')
+        mutated = True
+        _save_marker(root,safe)
+        final = observe_policy(root,request['machine_uuid'],request['hostname'],request['source_sha256'],run=run)
+        if (not final['ready'] or final['boot_id']!=safe['boot_id']
+                or final['external_policy_sha256']!=safe['external_policy_sha256']):
+            raise PolicyError('vnc_policy_outcome_unverified')
+        return {'changed':True,'ready':True,'policy_sha256':POLICY_SHA256}
+    except PolicyError:
+        if mutated:raise PolicyError('vnc_policy_outcome_unverified') from None
+        raise
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,subprocess.SubprocessError):
+        raise PolicyError('vnc_policy_outcome_unverified' if mutated else 'vnc_policy_observation_unverified') from None
+    finally:
+        if descriptor is not None:os.close(descriptor)
+
+
+def _unique_object(pairs):
+    value = {}
+    for key,item in pairs:
+        if key in value:
+            raise _invalid()
+        value[key] = item
+    return value
+
+
+def main(argv=None):
+    """Only the published stdin protocol is accepted; diagnostics never echo input."""
+    operation = None
+    try:
+        args = sys.argv[1:] if argv is None else argv
+        if args not in (['--observe'],['--apply']):
+            raise _invalid()
+        operation = args[0][2:]
+        if os.geteuid()!=(0 if ROOT==Path('/') else os.getuid()):
+            raise _invalid()
+        raw = sys.stdin.read(65537)
+        if len(raw.encode('utf-8'))>65536:
+            raise _invalid()
+        request = json.loads(raw,object_pairs_hook=_unique_object)
+        keys = {'schema_version','machine_uuid','hostname','source_sha256','helper_sha256'}
+        if operation=='apply':
+            keys |= {'expected_snapshot_sha256','listener_authenticated','context'}
+        if (not isinstance(request,dict) or set(request)!=keys
+                or type(request['schema_version']) is not int or request['schema_version']!=1
+                or not isinstance(request['helper_sha256'],str)
+                or not re.fullmatch('[0-9a-f]{64}',request['helper_sha256'])):
+            raise _invalid()
+        if operation=='apply':
+            installed = _path(ROOT,'/usr/local/libexec/alt-vnc-access-policy')
+            if (globals().get('__file__')!=str(installed)
+                    or not _owned_file(ROOT,'/usr/local/libexec/alt-vnc-access-policy',
+                                       request['helper_sha256'],{0o700})):
+                raise _invalid()
+            payload = {key:value for key,value in request.items()
+                       if key not in ('schema_version','helper_sha256')}
+            result = {'result':apply_policy(ROOT,payload)}
+        else:
+            result = {'observation':observe_policy(ROOT,request['machine_uuid'],
+                       request['hostname'],request['source_sha256'])}
+        print(json.dumps({'schema_version':1,'status':'ok','operation':operation,
+                          'helper_sha256':request['helper_sha256'],**result},sort_keys=True))
+        return 0
+    except (PolicyError,OSError,ValueError,TypeError,KeyError,AttributeError,UnicodeError):
+        error = sys.exc_info()[1]
+        allowed = {'vnc_policy_ownership_unverified','vnc_policy_machine_unverified',
+                   'vnc_policy_observation_unverified','vnc_policy_snapshot_changed',
+                   'vnc_policy_external_blocker','vnc_policy_listener_authentication_unverified',
+                   'vnc_policy_backup_unverified','vnc_policy_outcome_unverified'}
+        code = str(error) if isinstance(error,PolicyError) else ''
+        if code not in allowed:
+            code = 'vnc_policy_observation_unverified'
+        uncertain = code=='vnc_policy_outcome_unverified'
+        print(json.dumps({'schema_version':1,'status':'unknown_requires_review' if uncertain else 'blocked',
+                          'operation':operation,'code':code},sort_keys=True))
+        return 5 if uncertain else 4
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

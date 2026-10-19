@@ -24,8 +24,8 @@ ID_RE = re.compile(r'^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$')
 ROLE_RE = re.compile(r'^[a-z][a-z0-9_]{0,95}$')
 PACKAGE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9+_.-]{0,127}$')
 EVR_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9+_.:~%-]{0,127}$')
-RECIPES = frozenset({'package', 'system_base', 'domain', 'plasma', 'government_ca', 'shortcuts', 'krfb'})
-PREFLIGHTS = frozenset({'artifact', 'system', 'identity', 'government_ca', 'user_home', 'krfb'})
+RECIPES = frozenset({'package', 'system_base', 'domain', 'plasma', 'government_ca', 'shortcuts', 'krfb', 'vnc_policy'})
+PREFLIGHTS = frozenset({'artifact', 'system', 'identity', 'government_ca', 'user_home', 'krfb', 'vnc_policy'})
 
 
 def invalid():

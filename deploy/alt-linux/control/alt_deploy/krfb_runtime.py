@@ -6,13 +6,114 @@ No system crypto policy is changed if the existing backend cannot provide it.
 from __future__ import annotations
 
 import ipaddress
+import hashlib
+import json
 import os
+from pathlib import Path
+import re
 import selectors
 import shlex
 import socket
 import struct
 import subprocess
 import time
+
+
+DIRECT_POLICY = {'port':5900,'scope':'direct','authentication':'password_required'}
+
+
+def _canonical(value):
+    return json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+
+
+def _unique_object(pairs):
+    value = {}
+    for key,item in pairs:
+        if key in value:raise ValueError
+        value[key] = item
+    return value
+
+
+def _policy_read(settings, machine, source, helper, runner):
+    request = {'schema_version':1,'machine_uuid':machine.uuid,'hostname':machine.hostname,
+               'source_sha256':source,'helper_sha256':hashlib.sha256(helper.encode()).hexdigest()}
+    command = _admin_command(settings,machine)[:-1]+[
+        'sudo -n /usr/bin/python3 -I -B -c '+shlex.quote(helper)+' --observe']
+    rc,raw,_ = runner(command,environment={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'},
+                      input_text=json.dumps(request),timeout=60,max_bytes=65536)
+    if not isinstance(raw,str) or len(raw.encode())>65536:raise ValueError
+    document = json.loads(raw,object_pairs_hook=_unique_object)
+    if (rc or not isinstance(document,dict)
+            or set(document)!={'schema_version','status','operation','helper_sha256','observation'}
+            or type(document['schema_version']) is not int or document['schema_version']!=1
+            or document['status']!='ok' or document['operation']!='observe'
+            or document['helper_sha256']!=request['helper_sha256']):raise ValueError
+    value = document['observation']
+    if (not isinstance(value,dict) or set(value)!={'schema_version','machine_uuid','hostname','boot_id',
+            'source_sha256','policy_sha256','legacy','listener_present','external_policy_sha256',
+            'marker_sha256','ready','snapshot_sha256'}
+            or type(value['schema_version']) is not int or value['schema_version']!=1
+            or value['machine_uuid']!=machine.uuid or value['hostname']!=machine.hostname
+            or value['source_sha256']!=source
+            or value['policy_sha256']!=hashlib.sha256(_canonical(DIRECT_POLICY)).hexdigest()
+            or not isinstance(value['boot_id'],str)
+            or not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value['boot_id'])
+            or any(type(value[k]) is not bool for k in ('listener_present','ready'))):raise ValueError
+    legacy = value['legacy']
+    if (not isinstance(legacy,dict) or set(legacy)!={'owned_legacy','legacy_table_present',
+            'retirement_required','service_disabled','external_policy_clear'}
+            or any(type(item) is not bool for item in legacy.values())):raise ValueError
+    for key in ('external_policy_sha256','snapshot_sha256','marker_sha256'):
+        if key=='marker_sha256' and value[key] is None:continue
+        if not isinstance(value[key],str) or not re.fullmatch('[0-9a-f]{64}',value[key]):raise ValueError
+    if value['snapshot_sha256']!=hashlib.sha256(_canonical(
+            {key:item for key,item in value.items() if key!='snapshot_sha256'})).hexdigest():raise ValueError
+    if value['ready'] and (legacy['retirement_required'] or not legacy['service_disabled']
+            or not legacy['external_policy_clear'] or value['marker_sha256'] is None):raise ValueError
+    return value
+
+
+def observe_vnc_policy(settings, machine, policy, *, runner=None):
+    """Read current policy and independently authenticate any existing listener."""
+    from .ad_transport import bounded_run
+    from .ad_directory import fail
+    from .component_catalog import _regular
+    from .component_probe import ssh_binding
+    from .setup_runtime import source_fingerprint
+    runner = runner or bounded_run
+    try:
+        if (not isinstance(policy,dict) or set(policy)!=set(DIRECT_POLICY)
+                or type(policy['port']) is not int or policy!=DIRECT_POLICY):raise ValueError
+        path = settings.ansible_project_dir/'roles/remote_access_policy/templates/alt-vnc-access-policy.py.j2'
+        _regular(path)
+        helper = path.read_text(encoding='utf-8')
+        if not 0<len(helper.encode())<=65536:raise ValueError
+        source = source_fingerprint(settings.ansible_project_dir,Path(__file__).parent)
+        binding = ssh_binding(settings,machine,runner=runner)
+        before = _policy_read(settings,machine,source,helper,runner)
+        if not before['legacy']['external_policy_clear']:
+            raise _ProbeError('vnc_policy_external_blocker')
+        authenticated = False
+        if before['listener_present']:
+            password = _protected_password(settings)
+            _probe_rfb(str(ipaddress.ip_address(machine.ip)),password,
+                       connector=lambda *a,**k:_SSHChannel(_admin_command(settings,machine),timeout=k['timeout']))
+            authenticated = True
+            if _policy_read(settings,machine,source,helper,runner)!=before:
+                raise _ProbeError('vnc_policy_snapshot_changed')
+        if (source_fingerprint(settings.ansible_project_dir,Path(__file__).parent)!=source
+                or ssh_binding(settings,machine,runner=runner)!=binding):
+            raise _ProbeError('vnc_policy_snapshot_changed')
+        return {'schema_version':1,'helper_sha256':hashlib.sha256(helper.encode()).hexdigest(),
+                'ssh_binding':binding,'observation':before,
+                'listener_authenticated':authenticated}
+    except Exception as error:
+        allowed = {'vnc_policy_external_blocker','vnc_policy_snapshot_changed',
+                   'krfb_password_unavailable','krfb_authentication_failed','krfb_transport_blocked',
+                   'krfb_timeout','krfb_protocol_unverified','krfb_authentication_required'}
+        code = str(error) if isinstance(error,_ProbeError) else ''
+        if code not in allowed:code = 'vnc_policy_observation_unverified'
+        raise fail(code,'Direct VNC policy evidence cannot be verified') from None
 
 
 # A fixed loopback-only binary bridge avoids requiring SSH port-forwarding or

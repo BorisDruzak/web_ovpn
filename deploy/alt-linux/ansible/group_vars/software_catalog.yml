@@ -249,6 +249,15 @@ setup_catalog:
       execution: {role: remote_access_krfb, operation: configure, scope: user, requires_domain: true, requires_user_home: true, requires_reboot: false, retry_policy: guarded}
       preflight: {recipe: krfb}
       verification: {recipe: krfb, functional_verification_required: true}
+    - id: remote.vnc_policy
+      version: 1
+      name: Direct authenticated VNC policy
+      category: remote_access
+      supported_os: [alt-kworkstation-11]
+      dependencies: []
+      execution: {role: remote_access_policy, operation: configure, scope: system, requires_domain: false, requires_user_home: false, requires_reboot: false, retry_policy: guarded}
+      preflight: {recipe: vnc_policy}
+      verification: {recipe: vnc_policy, functional_verification_required: false}
   profiles:
     - id: base
       version: 1

@@ -393,6 +393,17 @@ def inspect_component(root, recipe, user, home, name, call):
                 # Space evidence is relevant only before an installation, never
                 # turn an otherwise compliant installed package into drift.
                 fact['storage'] = None
+    elif kind == 'vnc_policy':
+        namespace = {'__name__':'_published_vnc_policy_observer'}
+        source = recipe['helper_source']
+        if not isinstance(source,str) or not 0<len(source.encode())<=65536:
+            raise ValueError('unsupported policy source')
+        exec(compile(source,'<published-vnc-policy-observer>','exec'),namespace)
+        machine_uuid = (root/'sys/class/dmi/id/product_uuid').read_text().strip().lower()
+        rc, hostname = call(['hostname','-s'])
+        if rc:raise ValueError('policy identity unverified')
+        observation = namespace['observe_policy'](root,machine_uuid,hostname.strip(),recipe['source_sha256'],run=call)
+        fact['checks']['ready'] = observation['ready']
     elif kind == 'system_base':
         session = recipe['session']
         fact['checks']['ready'] = (all(package(p, call) is not None for p in recipe['packages'])

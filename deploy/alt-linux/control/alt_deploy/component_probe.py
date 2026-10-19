@@ -138,6 +138,12 @@ def desired_queries(project, catalog, components, *, profile_id='base'):
             selected_ids = set(catalog.profile(profile_id)['components']) | {c['id'] for c in components}
             query['entries'] = [entry for identifier, entry in query['defaults']['desktop_shortcuts_component_entries'].items()
                                 if identifier in selected_ids]
+        elif recipe == 'vnc_policy':
+            from .setup_runtime import source_fingerprint
+            helper = roles/'remote_access_policy/templates/alt-vnc-access-policy.py.j2'
+            _regular(helper)
+            query.update(helper_source=helper.read_text(encoding='utf-8'),
+                         source_sha256=source_fingerprint(project,Path(__file__).parent))
         elif recipe == 'krfb':
             template = (roles/'remote_access_krfb/templates/krfbrc.j2').read_text(encoding='utf-8')
             template = template.replace("{{ 'xcb' if workstation_desktop_session | default('x11') == 'x11' else 'pw' }}",
