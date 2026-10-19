@@ -95,6 +95,51 @@ inside the adapter. Unknown messages remain explicitly unclassified with a
 digest/size and phase instead of being misreported as DNS or password failure.
 No error or diagnostic receipt authorizes an automatic join retry.
 
+## Confirmed empty-name KWallet repair
+
+The operator additionally approved a fixed idempotent repair playbook, included
+in the selected employee's user phase only when the defect is confirmed. Publish
+component `desktop.kwallet_repair` with an explicit selected-user parameter and
+validated new wallet name (default `recovered-wallet`). Its registry dependencies
+include Plasma and the browser; the complete preset now contains 17 components.
+Keep a separate fixed playbook available for this same bounded repair.
+
+Require all three regular, correctly owned empty-name files `.kwl`, `.salt` and
+`_attributes.json`, plus the empty `Default Wallet` and `First Use=false` in the
+Wallet section. A healthy/already-repaired profile is an unchanged no-op; partial
+evidence, unsafe paths, ambiguous sessions or any destination-name collision
+must not overwrite files. Package version alone does not admit repair. The
+reported installed version and measured 1.25-second copied-profile startup are
+operator-provided evidence, not a new executor measurement.
+
+Create a closed backup of the wallet directory and kwalletrc, with a private
+manifest for content/owner/mode verification and rollback. Stop only verified
+`kwalletd6`/`ksecretd` processes belonging to the selected user, using SIGTERM,
+and prove their exit before renaming. Never close user applications, kill the
+desktop, delete wallets, change their passwords or select a basic password store.
+Rename bytes unchanged, update only the selected default-wallet setting, retain
+closed permissions and owner, verify hashes and reactivate services. Rollback
+must refuse unrelated concurrent edits and report uncertainty honestly.
+
+Run bounded D-Bus checks in the actual graphical session. Preserve its complete
+in-memory environment, including KDE_SESSION_VERSION, and normal process limits;
+do not construct a minimal SSH environment or log environment/credential data.
+Prove KWallet responds, not merely that a daemon exists. Any optional browser
+timing uses only an explicitly prepared copied profile, preserving the working
+profile, open tabs and apps. Include conflict, interrupted rename/rollback,
+session/UID mismatch and a second unchanged execution in verification.
+The upstream [KDE report](https://bugs.kde.org/show_bug.cgi?id=504656) documents
+the analogous empty-name/D-Bus failure; actual defect signs govern this repair.
+
+## Browser extension policy amendment
+
+The operator selected removal of only the forced CryptoPro extension ID
+`pfhgbfnnjiafkhfdkmpiflachepdcjod`. Preserve the GosPlugin force-install entry
+`jabjbhgjaidecageckilhonbggakppme`, unrelated policy and installed extensions.
+This does not remove CSP/CAdES packages or uninstall a user's browser extensions.
+Update the existing role's generated policy and its independent verification;
+do not allow a later new installation to restore the removed line.
+
 ## Approved VK WorkSpace artifact
 
 Register an immutable RPM artifact and normal idempotent software component:
@@ -255,3 +300,16 @@ The implementation plan and its execution method are reviewed after this written
 design is approved. No source implementation or new-profile deployment is claimed
 by this document. The operator approved the written implementation plan with
 the direct-VNC and pre-join AD/diagnostic amendments on 2026-10-20.
+
+## Certificate finalization evidence
+
+Fresh pilot inspection after later CSP installation found the six approved public
+CA payloads and three NSS-compatible certificates, but none of the six expected
+certificates in the CSP machine/user stores. The original office setup ran before
+CSP was installed, so its installation-time result does not prove later CSP trust.
+The complete workflow must apply system CA trust after CSP and finalize the user
+stores after real login; fresh exact fingerprints and root/intermediate store
+selection are required before success. Preserve distribution-owned trust files;
+package-provided intermediate anchors must not be mistaken for files this role
+created or removed. No personal signing certificate or private key is provisioned
+by this public CA bundle.
