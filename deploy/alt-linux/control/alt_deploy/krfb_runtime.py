@@ -17,12 +17,17 @@ import socket
 import struct
 import subprocess
 import time
+import uuid
 
 
 DIRECT_POLICY = {'port':5900,'scope':'direct','authentication':'password_required'}
 RFB_CODES = frozenset('krfb_'+code for code in ('authentication_failed','authentication_unverified',
     'crypto_unavailable','framebuffer_unverified','network_policy_or_transport_blocked',
     'password_unavailable','probe_timeout','probe_unverified','protocol_unverified','target_unverified'))
+GUI_CODES = frozenset({'graphical_session_unavailable','graphical_session_ambiguous',
+    'krfb_graphical_session_unverified','krfb_machine_unverified','krfb_user_identity_unverified',
+    'krfb_configuration_unverified','krfb_listener_unverified','krfb_process_unverified',
+    'krfb_session_observation_unverified'})
 
 
 def _require_rfb(result):
@@ -47,6 +52,126 @@ def _unique_object(pairs):
         if key in value:raise ValueError
         value[key] = item
     return value
+
+
+def _session_program():
+    from .component_catalog import _regular
+    program = "import sys,types,json\np=types.ModuleType('alt_deploy');p.__path__=[];sys.modules['alt_deploy']=p\n"
+    for name in ('user_session','krfb_user_session'):
+        source = Path(__file__).with_name(name+'.py')
+        _regular(source)
+        program += ("m=types.ModuleType('alt_deploy."+name+"');sys.modules[m.__name__]=m;exec(compile("
+                    +repr(source.read_text(encoding='utf-8'))+",'<published-"+name+">','exec'),m.__dict__)\n")
+    program += '''
+def unique(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:raise ValueError
+        result[key]=value
+    return result
+try:
+    raw=sys.stdin.read(8193)
+    if len(raw.encode())>8192:raise ValueError
+    value=m.observe_session(json.loads(raw,object_pairs_hook=unique))
+    print(json.dumps({'schema_version':1,'status':'ok','observation':value}))
+except Exception as error:
+    code=str(error) if isinstance(error,m.KRFBSessionError) else ''
+    if code not in '''+repr(tuple(sorted(GUI_CODES)))+''':code='krfb_session_observation_unverified'
+    print(json.dumps({'schema_version':1,'status':'blocked','code':code}))
+    raise SystemExit(4)
+'''
+    return program
+
+
+def _session_read(settings, machine, user, runner):
+    request = {'machine_uuid':machine.uuid,'hostname':machine.hostname,'login':user['login']}
+    command = _admin_command(settings,machine)[:-1]+[
+        'sudo -n /usr/bin/python3 -I -B -c '+shlex.quote(_session_program())]
+    rc,raw,_ = runner(command,environment={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LC_ALL':'C'},
+                      input_text=json.dumps(request),timeout=90,max_bytes=65536)
+    if not isinstance(raw,str) or len(raw.encode())>65536:raise ValueError
+    document = json.loads(raw,object_pairs_hook=_unique_object)
+    if (isinstance(document,dict) and set(document)=={'schema_version','status','code'} and rc==4
+            and type(document['schema_version']) is int and document['schema_version']==1
+            and document['status']=='blocked' and isinstance(document['code'],str) and document['code'] in GUI_CODES):
+        raise _ProbeError(document['code'])
+    if (rc or not isinstance(document,dict) or set(document)!={'schema_version','status','observation'}
+            or type(document['schema_version']) is not int or document['schema_version']!=1
+            or document['status']!='ok'):raise ValueError
+    value = document['observation']
+    if (not isinstance(value,dict) or set(value)!={'schema_version','machine_uuid','hostname','boot_id','login',
+            'uid','gid','session_id','session_sha256','krfb_pid','krfb_start_ticks','listener_present',
+            'connected_clients','configuration_safe','autostart_safe','configuration_sha256','autostart_sha256','snapshot_sha256'}
+            or type(value['schema_version']) is not int or value['schema_version']!=1
+            or any(value[key]!=request[key] for key in ('machine_uuid','hostname','login'))
+            or not isinstance(value['boot_id'],str)
+            or not re.fullmatch('[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',value['boot_id'])
+            or not isinstance(value['session_id'],str) or not re.fullmatch('[a-zA-Z0-9_-]{1,32}',value['session_id'])
+            or any(type(value[key]) is not int or not 0<value[key]<2**32 for key in ('uid','gid'))
+            or type(value['connected_clients']) is not int or not 0<=value['connected_clients']<=1024
+            or any(type(value[key]) is not bool for key in ('listener_present','configuration_safe','autostart_safe'))):raise ValueError
+    if ((value['krfb_pid'] is None)!=(value['krfb_start_ticks'] is None)
+            or any(type(value[key]) is not int or value[key]<=0 for key in ('krfb_pid','krfb_start_ticks')
+                   if value[key] is not None)
+            or value['listener_present'] and value['krfb_pid'] is None):raise ValueError
+    for key in ('session_sha256','snapshot_sha256','configuration_sha256','autostart_sha256'):
+        if key in ('configuration_sha256','autostart_sha256') and value[key] is None:continue
+        if not isinstance(value[key],str) or not re.fullmatch('[0-9a-f]{64}',value[key]):raise ValueError
+    if value['snapshot_sha256']!=hashlib.sha256(_canonical(
+            {key:item for key,item in value.items() if key!='snapshot_sha256'})).hexdigest():raise ValueError
+    return value
+
+
+def probe_krfb(settings, machine, user, policy, *, runner=None):
+    """Prove one selected user's live direct service without sending input."""
+    from .ad_transport import bounded_run
+    from .ad_directory import fail,normalize_login,DOMAIN
+    from .component_probe import ssh_binding
+    from .setup_runtime import source_fingerprint
+    from .component_catalog import _regular
+    runner = runner or bounded_run
+    try:
+        login = normalize_login(user['login'])
+        if (user['login']!=login or user['upn']!=login+'@'+DOMAIN
+                or str(uuid.UUID(user['object_guid']))!=user['object_guid'] or not uuid.UUID(user['object_guid']).int
+                or not re.fullmatch(r'S-1-[0-9]+(?:-[0-9]+){1,15}',user['object_sid'])):raise ValueError
+        evidence = observe_vnc_policy(settings,machine,policy,runner=runner)
+        before = _session_read(settings,machine,user,runner)
+        if before['boot_id']!=evidence['observation']['boot_id']:
+            raise _ProbeError('vnc_policy_snapshot_changed')
+        if not before['listener_present'] or before['krfb_pid'] is None:
+            raise _ProbeError('krfb_listener_unverified')
+        proof = _require_rfb(_probe_rfb(str(ipaddress.ip_address(machine.ip)),_protected_password(settings)))
+        after = _session_read(settings,machine,user,runner)
+        # Human clients may connect/disconnect while this read-only shared
+        # connection runs. All identity/session/configuration evidence is fixed.
+        stable = lambda value:{key:item for key,item in value.items() if key not in ('connected_clients','snapshot_sha256')}
+        helper = settings.ansible_project_dir/'roles/remote_access_policy/templates/alt-vnc-access-policy.py.j2'
+        _regular(helper)
+        helper_source = helper.read_text(encoding='utf-8')
+        if hashlib.sha256(helper_source.encode()).hexdigest()!=evidence['helper_sha256']:
+            raise _ProbeError('vnc_policy_snapshot_changed')
+        if (stable(before)!=stable(after)
+                or _policy_read(settings,machine,evidence['observation']['source_sha256'],
+                                helper_source,runner)!=evidence['observation']
+                or source_fingerprint(settings.ansible_project_dir,Path(__file__).parent)!=evidence['observation']['source_sha256']
+                or ssh_binding(settings,machine,runner=runner)!=evidence['ssh_binding']):
+            raise _ProbeError('vnc_policy_snapshot_changed')
+        checks = {'policy_prepared':evidence['observation']['ready'],
+                  'configuration_safe':after['configuration_safe'],'autostart_safe':after['autostart_safe'],
+                  'selected_user_graphical_session':True,'selected_user_listener':True,
+                  'password_authenticated':True,'server_init_verified':True,'pixel_update_verified':True}
+        identity = {key:user[key] for key in ('login','upn','object_guid','object_sid')}
+        return {'schema_version':1,'machine_uuid':machine.uuid,'boot_id':before['boot_id'],
+            'source_sha256':evidence['observation']['source_sha256'],'policy_sha256':evidence['observation']['policy_sha256'],
+            'ssh_binding':evidence['ssh_binding'],'session_sha256':before['session_sha256'],
+            'selected_user_sha256':hashlib.sha256(_canonical(identity)).hexdigest(),
+            'checks':checks,'ready':all(checks.values()),'width':proof['width'],'height':proof['height']}
+    except Exception as error:
+        allowed = GUI_CODES | RFB_CODES | {'vnc_policy_snapshot_changed','vnc_policy_external_blocker'}
+        code = str(error) if isinstance(error,_ProbeError) else getattr(error,'code','')
+        if code not in allowed:code = 'krfb_probe_unverified'
+        raise fail(code,'Selected employee direct VNC evidence cannot be verified') from None
 
 
 def _policy_read(settings, machine, source, helper, runner):

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 import threading
 import hashlib
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -88,6 +89,110 @@ def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_
         with pytest.raises(ControlError) as caught:module.observe_vnc_policy(settings,machine,policy,runner=run)
         assert 'SENTINEL' not in str(caught.value)
     assert all('PRIVATE-SECRET-SENTINEL' not in str(argv) for argv in calls)
+
+
+@pytest.mark.parametrize('case',['ready','policy_unprepared','source_drift','ssh_drift','boot_drift',
+    'config_drift','pid_drift','no_graphical_session','auth_failure','invalid_user'])
+def test_direct_public_probe_requires_selected_graphical_identity_and_fresh_rfb_evidence(tmp_path,monkeypatch,case):
+    from alt_deploy import krfb_runtime as module
+    from alt_deploy import component_probe,setup_runtime
+    from alt_deploy.errors import ControlError
+    machine=SimpleNamespace(ip='192.0.2.4',uuid=policy_observation()['machine_uuid'],hostname='alt-test-pc1')
+    settings=SimpleNamespace(ansible_project_dir=tmp_path)
+    helper=tmp_path/'roles/remote_access_policy/templates/alt-vnc-access-policy.py.j2'
+    helper.parent.mkdir(parents=True);helper.write_text('# fixed published helper\n')
+    user={'login':'synthetic.user','upn':'synthetic.user@sosnadmin.local',
+          'object_guid':'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa','object_sid':'S-1-5-21-1-2-3-1001'}
+    if case=='invalid_user':user['upn']='other.user@sosnadmin.local'
+    binding={'host_public_sha256':'c'*64,'controller_public_sha256':'d'*64}
+    before=policy_observation();before['ready']=case!='policy_unprepared'
+    evidence={'schema_version':1,'ssh_binding':binding,'helper_sha256':hashlib.sha256(helper.read_bytes()).hexdigest(),
+              'observation':before,'listener_authenticated':True}
+    monkeypatch.setattr(module,'observe_vnc_policy',lambda *a,**k:evidence)
+    monkeypatch.setattr(module,'_policy_read',lambda *a,**k:before)
+    monkeypatch.setattr(module,'_protected_password',lambda *a:b'PRIVATE-SECRET-SENTINEL')
+    source_calls=[]
+    def fingerprint(*a):
+        source_calls.append(a);return ('b' if case=='source_drift' else 'a')*64
+    monkeypatch.setattr(setup_runtime,'source_fingerprint',fingerprint)
+    monkeypatch.setattr(component_probe,'ssh_binding',lambda *a,**k:
+        dict(binding,host_public_sha256='e'*64) if case=='ssh_drift' else binding)
+    session={'machine_uuid':machine.uuid,'hostname':machine.hostname,'boot_id':before['boot_id'],
+        'login':user['login'],'uid':1001,'gid':1001,'session_id':'40','session_sha256':'7'*64,
+        'krfb_pid':102,'krfb_start_ticks':10200,'listener_present':True,'connected_clients':0,
+        'configuration_safe':True,'autostart_safe':True,'configuration_sha256':'8'*64,
+        'autostart_sha256':'9'*64,'schema_version':1,'snapshot_sha256':'6'*64}
+    reads=[];probes=[]
+    def session_read(*a,**k):
+        reads.append(a)
+        if case=='no_graphical_session':raise module._ProbeError('graphical_session_unavailable')
+        result=dict(session)
+        if len(reads)>1:
+            if case=='boot_drift':result['boot_id']='bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'
+            elif case=='config_drift':result['configuration_sha256']='4'*64
+            elif case=='pid_drift':result['krfb_pid']=103
+        return result
+    monkeypatch.setattr(module,'_session_read',session_read,raising=False)
+    def direct(address,password,**options):
+        probes.append(address);assert address==machine.ip and password==b'PRIVATE-SECRET-SENTINEL'
+        if case=='auth_failure':return {'status':'blocked','code':'krfb_authentication_failed'}
+        return {'status':'ok','code':None,'password_authenticated':True,'server_init_verified':True,
+                'pixel_update_verified':True,'width':1600,'height':900}
+    monkeypatch.setattr(module,'_probe_rfb',direct)
+    if case in ('ready','policy_unprepared'):
+        result=module.probe_krfb(settings,machine,user,module.DIRECT_POLICY)
+        assert result['ready'] is (case=='ready')
+        assert result['checks']['password_authenticated'] is True and result['width']==1600
+        assert len(probes)==1 and len(reads)==2
+        assert 'SENTINEL' not in json.dumps(result)
+    else:
+        with pytest.raises(ControlError) as caught:module.probe_krfb(settings,machine,user,module.DIRECT_POLICY)
+        assert 'SENTINEL' not in str(caught.value)
+        if case in ('no_graphical_session','invalid_user'):assert probes==[]
+
+
+@pytest.mark.parametrize('payload',['{','{"login":"PRIVATE-SECRET-SENTINEL"}',
+    '{"login":"a","login":"PRIVATE-SECRET-SENTINEL"}','PRIVATE-SECRET-SENTINEL'*500])
+def test_fixed_graphical_program_rejects_untrusted_stdin_without_a_traceback(payload):
+    from alt_deploy.krfb_runtime import _session_program
+    result=subprocess.run([sys.executable,'-I','-B','-c',_session_program()],input=payload,
+                          capture_output=True,text=True,timeout=10)
+    assert result.returncode==4
+    assert json.loads(result.stdout)['status']=='blocked'
+    assert 'SENTINEL' not in result.stdout+result.stderr and result.stderr==''
+
+
+@pytest.mark.parametrize('case',['ok','extra','identity','bool','digest','duplicate','blocked','unknown_error'])
+def test_graphical_wire_envelope_is_strict_and_bound(tmp_path,case):
+    from alt_deploy.krfb_runtime import _session_read,_ProbeError
+    settings=SimpleNamespace(known_hosts_file=tmp_path/'known',private_key_file=tmp_path/'key')
+    machine=SimpleNamespace(ip='192.0.2.4',uuid=policy_observation()['machine_uuid'],hostname='alt-test-pc1')
+    user={'login':'synthetic.user'}
+    value={'machine_uuid':machine.uuid,'hostname':machine.hostname,'boot_id':policy_observation()['boot_id'],
+        'login':user['login'],'uid':1001,'gid':1001,'session_id':'40','session_sha256':'7'*64,
+        'krfb_pid':102,'krfb_start_ticks':10200,'listener_present':True,'connected_clients':0,
+        'configuration_safe':True,'autostart_safe':True,'configuration_sha256':'8'*64,
+        'autostart_sha256':'9'*64,'schema_version':1}
+    value['snapshot_sha256']=hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    if case=='extra':value['password']='PRIVATE-SECRET-SENTINEL'
+    elif case=='identity':value['login']='another.user'
+    elif case=='bool':value['uid']=True
+    elif case=='digest':value['snapshot_sha256']='0'*64
+    def runner(argv,**options):
+        assert '-F' in argv and '/dev/null' in argv
+        assert json.loads(options['input_text'])==dict(machine_uuid=machine.uuid,hostname=machine.hostname,login=user['login'])
+        assert 'PRIVATE-SECRET-SENTINEL' not in str(argv)
+        document={'schema_version':1,'status':'ok','observation':value};rc=0
+        if case in ('blocked','unknown_error'):
+            document={'schema_version':1,'status':'blocked','code':
+                      'graphical_session_unavailable' if case=='blocked' else 'PRIVATE-SECRET-SENTINEL'};rc=4
+        raw=json.dumps(document)
+        if case=='duplicate':raw=raw[:-1]+',"status":"PRIVATE-SECRET-SENTINEL"}'
+        return rc,raw,''
+    if case=='ok':assert _session_read(settings,machine,user,runner)==value
+    else:
+        with pytest.raises((_ProbeError,ValueError)) as caught:_session_read(settings,machine,user,runner)
+        assert 'SENTINEL' not in str(caught.value)
 
 
 def server_wire(*, security=b'\x02', auth=0, name=b'PRIVATE-DESKTOP-SENTINEL',
