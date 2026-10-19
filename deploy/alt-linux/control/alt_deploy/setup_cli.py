@@ -97,6 +97,13 @@ def add_parsers(commands):
     verify.add_argument('--machine', required=True)
     recovery = actions.add_parser('recovery', allow_abbrev=False, help='Exact reviewed recovery plans, one confirmed attempt and fresh Setup continuation')
     recovery_actions = recovery.add_subparsers(dest='recovery_action', required=True)
+    partial = recovery_actions.add_parser('partial-local', allow_abbrev=False,
+        help='One exact local-authentication recovery after a closed first join; never replay')
+    partial_actions = partial.add_subparsers(dest='partial_local_action', required=True)
+    for name in ('plan', 'apply', 'status'):
+        command = partial_actions.add_parser(name, allow_abbrev=False)
+        command.add_argument('job_id' if name == 'plan' else 'plan_id')
+        if name == 'apply': command.add_argument('--confirm-sha256', required=True)
     recovery_plan = recovery_actions.add_parser('plan', allow_abbrev=False, help='Read current identities and preserve a non-executable recovery plan')
     recovery_plan.add_argument('--failed-run', required=True, help='Original initial failed Setup run; machine/user/OU come from its protected history')
     recovery_plan.add_argument('--computer-guid', required=True, help='Exact existing computer GUID to inspect; listing or planning does not approve a reset')
@@ -136,6 +143,12 @@ def directory_for_settings(settings):
 
 
 def handle(parsed, settings):
+    if parsed.command == 'setup' and parsed.setup_action == 'recovery' and parsed.recovery_action == 'partial-local':
+        from .setup_partial_local import PartialLocalService
+        service = PartialLocalService(settings)
+        if parsed.partial_local_action == 'plan': return service.plan(parsed.job_id)
+        if parsed.partial_local_action == 'apply': return service.apply(parsed.plan_id, parsed.confirm_sha256)
+        return service.status(parsed.plan_id)
     if parsed.command == 'setup' and parsed.setup_action == 'jobs':
         if parsed.setup_job_action in ('queue-review-plan', 'queue-review-confirm'):
             from .setup_maintenance_review_bridge import queue_review_service
