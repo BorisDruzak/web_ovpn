@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 import re
 import stat
 
@@ -14,6 +15,12 @@ from .setup_plans import canonical, private_directory, private_read
 
 TYPES = {'task_start', 'task_ok', 'task_failed', 'task_unreachable', 'task_skipped', 'component_start', 'component_completed'}
 CODES = {'started', 'ok', 'task_failed', 'unreachable', 'skipped', 'component_preflight_failed', 'completed'}
+FIRST_JOIN_CODES = {'first_join_' + value for value in (
+    'request_invalid', 'native_interface_invalid', 'local_state_conflict', 'directory_unavailable',
+    'native_arguments_invalid', 'native_failed', 'native_access_denied', 'native_kerberos_failed',
+    'native_name_collision', 'native_cache_unavailable', 'keytab_create_failed', 'keytab_bind_failed',
+    'trust_failed', 'machine_as_failed', 'timeout', 'output_limit', 'internal_error', 'ok')}
+CODES |= FIRST_JOIN_CODES
 INPUT_FIELDS = {'schema_version', 'component_id', 'component_version', 'stage', 'task_id', 'type', 'changed', 'code'}
 STAGE_PRIORITY = ('transaction', 'download', 'verify', 'preflight', 'domain_join',
                   'domain_core_verify', 'upgrade', 'identity', 'network', 'configuration', 'apply', 'complete')
@@ -21,7 +28,45 @@ STAGES = set(STAGE_PRIORITY)
 MAX_EVENTS = 10000
 
 
-def safe_task_event(result, *, component, event_type):
+def _diagnostic_code(result, component, expected):
+    task, raw = result._task, result._result
+    if (component['id'] != 'domain.ready' or 'alt_setup_first_join_diagnostic' not in getattr(task, 'tags', ())
+            or getattr(task, 'no_log', False) or raw.get('_ansible_no_log') or not isinstance(expected, dict)):
+        return None
+    fields = {'schema_version', 'configuration_run_id', 'invocation_id', 'identity_sha256'}
+    try:
+        if (set(expected) != fields or type(expected['schema_version']) is not int or expected['schema_version'] != 1
+                or any(not isinstance(expected[k], str) or not re.fullmatch('[0-9a-f]{'+str(n)+'}', expected[k])
+                       for k, n in (('configuration_run_id', 32), ('invocation_id', 32), ('identity_sha256', 64)))):
+            return None
+        cmd = raw.get('cmd')
+        if (not isinstance(cmd, list) or len(cmd) != 5 or cmd[:4] != ['/usr/bin/python3', '-I',
+                '/usr/local/libexec/alt-first-join.py', '--read-diagnostic']
+                or not isinstance(cmd[4], str) or len(cmd[4]) > 4096 or json.loads(cmd[4]) != expected):
+            return None
+        text = raw.get('stdout')
+        if not isinstance(text, str) or len(text.encode('utf-8')) > 4096:
+            return None
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value: raise ValueError
+                value[key] = item
+            return value
+        value = json.loads(text, object_pairs_hook=unique)
+        if (not isinstance(value, dict) or set(value) != fields | {'phase', 'code', 'directory_effect'}
+                or any(value.get(k) != v or type(value.get(k)) is not type(v) for k, v in expected.items())
+                or value.get('phase') not in ('request', 'native_interface', 'preconditions', 'directory_observation',
+                    'native_arguments', 'native_execution', 'offline_keytab', 'keytab_bind', 'trust_verify', 'machine_as')
+                or value.get('directory_effect') not in ('not_dispatched', 'dispatch_entered', 'returned_success', 'returned_failure', 'uncertain')
+                or value.get('code') not in FIRST_JOIN_CODES):
+            return None
+        return value['code']
+    except (ValueError, KeyError, TypeError, UnicodeError):
+        return None
+
+
+def safe_task_event(result, *, component, event_type, diagnostic_binding=None):
     task = result._task
     path = task.get_path()
     task_id = 'task-'+hashlib.sha256(path.encode('utf-8')).hexdigest()[:16]
@@ -34,6 +79,12 @@ def safe_task_event(result, *, component, event_type):
             'task_skipped': 'skipped', 'task_start': 'started'}[event_type]
     if event_type == 'task_failed' and stage == 'preflight':
         code = 'component_preflight_failed'
+    if event_type in ('task_ok', 'task_failed'):
+        diagnostic = _diagnostic_code(result, component, diagnostic_binding)
+        if diagnostic is not None:
+            code = diagnostic
+            if diagnostic != 'first_join_ok':
+                event_type = 'task_failed'
     return {'schema_version': 1, 'component_id': component['id'], 'component_version': component['version'],
             'stage': stage, 'task_id': task_id, 'type': event_type,
             'changed': result._result.get('changed') is True, 'code': code}

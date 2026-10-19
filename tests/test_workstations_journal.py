@@ -26,7 +26,8 @@ def test_journal_exports_only_reviewed_fields_with_matching_cursor(database):
         assert {row['id'] for row in first['events']}.isdisjoint({row['id'] for row in last['events']})
 
 
-def test_native_event_cursor_and_error_classification_are_safe(database):
+@pytest.mark.parametrize('native_code', ['task_failed', 'first_join_native_access_denied'])
+def test_native_event_cursor_and_error_classification_are_safe(database, native_code):
     from app.workstations.journal import JournalService, error_details
     class Client:
         def call(self, operation, parameters, **kwargs):
@@ -34,11 +35,12 @@ def test_native_event_cursor_and_error_classification_are_safe(database):
                 return {'job': {'history': [{'state': 'queued', 'stage': 'created', 'at': NOW.isoformat(), 'raw': 'private-marker'}]}}
             assert operation == 'jobs.events'
             return {'events': [{'sequence': 1, 'timestamp': NOW.isoformat(), 'job_id': parameters['job_id'],
-                'component_id': 'system.base', 'task_id': 'component', 'stage': 'apply', 'type': 'task_failed', 'code': 'task_failed', 'stdout': 'private-marker'}],
+                'component_id': 'system.base', 'task_id': 'component', 'stage': 'apply', 'type': 'task_failed', 'code': native_code, 'stdout': 'private-marker'}],
                 'next_sequence': 1, 'total': 1}
     with database() as db:
         value = JournalService(client=Client()).list(db, filters={'job_id': 'job-20261015T000000Z-12345678'}, cursor=None, limit=100)
-        assert value['events'][0]['code'] == 'task_failed' and 'private-marker' not in json.dumps(value)
+        assert value['events'][0]['code'] == native_code and 'private-marker' not in json.dumps(value)
+        assert value['events'][0]['severity'] == 'error'
         assert len(value['events']) == 2 and any(row.get('stage') == 'created' for row in value['events'])
     assert error_details('workstations_transport_timeout', uncertain=True)['category'] == 'uncertain_outcome'
     assert error_details('ad_user_disabled')['category'] == 'validation'

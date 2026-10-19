@@ -81,6 +81,15 @@
     mode: "0600"
   when: not domain_join_already_joined
 
+- name: Install the fixed safe first-join diagnostic receipt helper
+  ansible.builtin.copy:
+    src: first_join_diagnostics.py
+    dest: /usr/local/libexec/alt-first-join-diagnostics.py
+    owner: root
+    group: root
+    mode: "0600"
+  when: not domain_join_already_joined
+
 - name: Join workstation to Active Directory with Kerberos credentials
   block:
     - name: Acquire temporary Kerberos ticket
@@ -158,6 +167,8 @@
       # before deciding whether another join is safe.
       failed_when: false
       changed_when: domain_join_command.rc == 0
+      environment:
+        ALT_FIRST_JOIN_BINDING: "{{ first_join_diagnostic_binding | default({}) | to_json }}"
       when:
         - domain_join_computer_lookup.rc == 0
         - not domain_join_computer_exists
@@ -306,6 +317,19 @@
           or (domain_join_retry_reconcile | default({})).get('rc', 1) == 0
         fail_msg: ALT_PREFLIGHT_FAILURE:domain_join_failed Samba trust could not be verified
   always:
+    - name: Read the bound safe first-join diagnostic receipt
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - /usr/local/libexec/alt-first-join.py
+          - --read-diagnostic
+          - "{{ first_join_diagnostic_binding | default({}) | to_json }}"
+      changed_when: false
+      failed_when: false
+      no_log: false
+      tags: [alt_setup_domain_join, alt_setup_first_join_diagnostic]
+      when: domain_join_command is defined and not (domain_join_command.skipped | default(false))
     - name: Destroy temporary Kerberos ticket
       ansible.builtin.command:
         argv: [kdestroy]

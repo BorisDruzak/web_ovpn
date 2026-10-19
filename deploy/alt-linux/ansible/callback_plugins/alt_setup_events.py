@@ -1,5 +1,6 @@
 """Safe stdout callback; raw results and Ansible task names are never displayed."""
 import os
+import json
 from types import SimpleNamespace
 
 from ansible.plugins.callback import CallbackBase
@@ -30,6 +31,13 @@ class CallbackModule(CallbackBase):
         self.full = os.environ.get('ALT_SETUP_FULL_SETUP') == 'true'
         self.started = {}
         self.role_components = {}
+        self.diagnostic_binding = None
+        try:
+            raw = os.environ.get('ALT_SETUP_FIRST_JOIN_BINDING', '')
+            if raw and len(raw) <= 4096:
+                self.diagnostic_binding = json.loads(raw)
+        except (ValueError, TypeError):
+            pass
         if self.full:
             job = self.store.jobs.get(self.job_id)
             self.role_components = {c['execution']['role']: {'id': c['id'], 'version': c['version']}
@@ -55,7 +63,8 @@ class CallbackModule(CallbackBase):
             if role is not None:
                 component = self.role_components.get(role.get_name(), self.component)
         self._start(component)
-        self.store.append(self.job_id, safe_task_event(result, component=component, event_type=event_type))
+        self.store.append(self.job_id, safe_task_event(result, component=component, event_type=event_type,
+            diagnostic_binding=self.diagnostic_binding))
 
     def v2_playbook_on_task_start(self, task, is_conditional):
         self._event(SimpleNamespace(_task=task, _result={}), 'task_start')

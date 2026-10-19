@@ -184,3 +184,49 @@ def test_real_full_callback_attributes_changes_to_catalog_role(ansible_runtime, 
     assert any(e['component_id'] == 'software.onlyoffice' and e['changed'] for e in events)
     assert events[-1]['type'] == 'component_completed'
     assert sentinel not in result.stdout+result.stderr+json.dumps(events)
+
+
+def test_real_callback_exports_bound_diagnostic_outside_secret_block(ansible_runtime, component_service, monkeypatch):
+    from test_setup_detach import full_fixture
+    executable, project, env = ansible_runtime
+    _, setup, *_ = component_service
+    setup.settings.ansible_project_dir = project
+    setup.settings.service_user = pwd.getpwuid(os.getuid()).pw_name
+    setup, jobs, _, _, _ = full_fixture(component_service, monkeypatch)
+    plan = setup.plan(component_service[2].uuid, component_service[3]['login'], setup.approved_ous[0], 'core-apps')
+    job = jobs.submit(plan, operation='full_setup')
+    binding = {'schema_version': 1, 'configuration_run_id': 'a'*32,
+               'invocation_id': 'b'*32, 'identity_sha256': 'c'*64}
+    public = {**binding, 'phase': 'native_execution', 'code': 'first_join_native_access_denied',
+              'directory_effect': 'returned_failure'}
+    argv = ['/usr/bin/python3', '-I', '/usr/local/libexec/alt-first-join.py', '--read-diagnostic', json.dumps(binding)]
+    library = project/'library'
+    library.mkdir()
+    # Model only the remote reader result; run the real Ansible callback/store.
+    (library/'fixture_diagnostic.py').write_text(
+        'from ansible.module_utils.basic import AnsibleModule\n'
+        'm=AnsibleModule(argument_spec={})\n'
+        'm.exit_json(changed=False, stdout='+repr(json.dumps(public))+', cmd='+repr(argv)+')\n')
+    sentinel = 'SENTINEL-SECRET-NATIVE-FAILURE'
+    (project/'roles/domain_join/tasks/main.yml').write_text(yaml.safe_dump([{
+        'block': [{'ansible.builtin.fail': {'msg': sentinel}}],
+        'always': [{'fixture_diagnostic': {}, 'no_log': False,
+                    'tags': ['alt_setup_domain_join', 'alt_setup_first_join_diagnostic']}],
+        'no_log': True}]))
+    play = project/'synthetic-first-join-callback.yml'
+    play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'gather_facts': False,
+        'tasks': [{'ansible.builtin.include_role': {'name': 'domain_join'}}]}]))
+    env.update(ANSIBLE_STDOUT_CALLBACK='alt_setup_events', ANSIBLE_LIBRARY=str(library),
+        ANSIBLE_CALLBACK_PLUGINS=str(project/'callback_plugins'), ALT_DEPLOY_STATE_ROOT=str(setup.settings.state_root),
+        ALT_DEPLOY_SERVICE_USER=setup.settings.service_user, ALT_SETUP_JOB_ID=job.job_id,
+        ALT_SETUP_COMPONENT_ID='domain.ready', ALT_SETUP_COMPONENT_VERSION='1', ALT_SETUP_FULL_SETUP='true',
+        ALT_SETUP_FIRST_JOIN_BINDING=json.dumps(binding))
+    result = subprocess.run([str(executable), '-i', 'localhost,', '-e', json.dumps({
+        'ansible_connection': 'local', 'ansible_python_interpreter': sys.executable}), str(play)],
+        cwd=project, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 2, result.stdout+result.stderr
+    events = SetupEventStore(setup.settings).read(job.job_id, limit=1000)['events']
+    specific = [e for e in events if e['code'] == 'first_join_native_access_denied']
+    assert len(specific) == 1 and specific[0]['type'] == 'task_failed'
+    assert specific[0]['component_id'] == 'domain.ready'
+    assert sentinel not in result.stdout+result.stderr+json.dumps(events)

@@ -501,6 +501,10 @@ class ConfigurePlanner:
                 "-e", f"@{request_path}",
                 "-e", f"configure_result_file={result_path}",
             ]
+            from .setup_plans import digest
+            diagnostic_binding = {'schema_version': 1, 'configuration_run_id': run_id,
+                'invocation_id': uuid.uuid4().hex, 'identity_sha256': digest(request.to_dict())}
+            command.extend(['-e', json.dumps({'first_join_diagnostic_binding': diagnostic_binding}, separators=(',', ':'))])
             if krfb_network_restriction_confirmed:
                 command.extend(
                     [
@@ -515,6 +519,7 @@ class ConfigurePlanner:
                 command.extend(['-e', json.dumps({'ad_ldap_uri': setup_directory_uri}, separators=(',', ':'))])
             command.append(str(self.configure_playbook))
             environment = os.environ.copy()
+            environment['ALT_SETUP_FIRST_JOIN_BINDING'] = json.dumps(diagnostic_binding, sort_keys=True)
             environment.pop(KRFB_NETWORK_CONFIRMATION_VARIABLE, None)
             environment["ANSIBLE_CONFIG"] = str(
                 self.settings.ansible_project_dir / "ansible.cfg"

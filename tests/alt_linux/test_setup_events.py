@@ -55,3 +55,29 @@ def test_event_pagination_corruption_and_missing_completion(component_service):
     path = job.job_dir/'events'/'000000000002.json'
     path.write_text('{}')
     with pytest.raises(ControlError): store.read(job.job_id)
+
+
+@pytest.mark.parametrize('no_log,foreign,tagged,expected', [
+    (False, False, True, 'first_join_native_access_denied'),
+    (True, False, True, 'task_failed'),
+    (False, True, True, 'task_failed'),
+    (False, False, False, 'task_failed'),
+])
+def test_foreign_binding_and_no_log_never_export(no_log, foreign, tagged, expected):
+    binding = {'schema_version': 1, 'configuration_run_id': 'a'*32,
+               'invocation_id': 'b'*32, 'identity_sha256': 'c'*64}
+    value = {**binding, 'phase': 'native_execution',
+             'code': 'first_join_native_access_denied', 'directory_effect': 'returned_failure'}
+    if foreign:
+        value['invocation_id'] = 'd'*32
+    task = SimpleNamespace(get_path=lambda: '/approved/roles/domain_join/tasks/main.yml:1',
+        tags=['alt_setup_domain_join', 'alt_setup_first_join_diagnostic'] if tagged else [],
+        no_log=no_log, args={'argv': ['/usr/bin/python3', '-I', '/usr/local/libexec/alt-first-join.py',
+                                  '--read-diagnostic', json.dumps(binding, sort_keys=True)]})
+    event = safe_task_event(SimpleNamespace(_task=task, _result={
+        'stdout': json.dumps(value), 'cmd': task.args['argv'],
+        'stderr': 'SENTINEL-private', '_ansible_no_log': no_log}),
+        component={'id': 'domain.ready', 'version': 1}, event_type='task_failed',
+        diagnostic_binding=binding)
+    assert event['code'] == expected
+    assert 'SENTINEL' not in json.dumps(event)
