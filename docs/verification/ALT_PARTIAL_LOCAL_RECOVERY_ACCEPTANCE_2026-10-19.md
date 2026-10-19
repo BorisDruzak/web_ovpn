@@ -169,6 +169,40 @@ and all 3776 historical baseline files. UNKNOWN records and consumed recovery
 receipts remained unchanged. The controller's profile-selection correction is a
 separate pending change; these workstation results do not claim that it is deployed.
 
+## Subsequent application and final resolver request
+
+The operator separately requested installation of the selected VK WorkSpace RPM
+and a final workstation DNS change. The RPM's SHA-256 matched a fresh stream from
+the vendor's official download link. Native transaction simulation passed;
+inspection of the main binary and bundled Qt libraries found all 108 referenced
+libraries in the bundle or system cache. This inspection did not execute the
+application or vendor installation scripts.
+
+The actual authorized installation then added VK WorkSpace 26.4.0.141207-1.el8
+without upgrading or removing other packages. Installed RPM files verified. The
+application started in the existing selected employee X11 session, its helper
+processes remained alive and a mapped application window was detected. A desktop
+launcher was added without replacing existing user files. Authentication to a
+workspace and application business workflows were not tested. This explicitly
+requested package operation is distinct from a published catalog component;
+controller integration remains pending.
+
+The first DNS update attempt exposed a read-only NetworkManager/Etcnet settings
+backend: it refused connection modification despite sufficient root permissions.
+The active resolver remained unchanged. A backend-specific correction updated
+the persistent interface resolver, reloaded connection profiles and reapplied
+only the active device. Addressing, routes, DHCP options, network connection and
+employee desktop were preserved. Persistent and active DNS then matched the
+operator-selected final resolver. Fresh AD discovery, external-name resolution,
+selected domain identity and machine-keytab Kerberos authentication passed after
+the change. Protected backups were retained; ephemeral ticket caches were removed.
+Persistence across a further actual reboot has not been claimed.
+
+Post-application/final-DNS comparison again matched all 283 installed controller
+source files and 3776 historical baseline files. Old UNKNOWN and recovery records
+were not changed. The full future workflow, including automatic first-login KRFB
+and final DNS, requires a separate reviewed controller implementation.
+
 ## Temporary remote support
 
 The operator separately authorized temporary XRDP through an SSH tunnel. This
