@@ -1,5 +1,7 @@
 # ALT Setup operator guide
 
+For everyday web operation, use the Russian [workstation auto-installation guide](WORKSTATIONS_WEB_GUIDE.md). This document covers native CLI commands and controller maintenance.
+
 The existing panel also exposes `/workstations` as a separate **Рабочие места**
 section with employee search/explicit selection, protected plan confirmation,
 sequential queue and full paged job events. It uses the same native Setup

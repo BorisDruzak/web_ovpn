@@ -31,6 +31,12 @@
 - Use direct SSH, Winbox, manual `vpnctl`, or manual `netctl` only as a fallback when MCP/API output is unavailable, stale, contradictory, or the user explicitly asks for low-level server/router work.
 - Do not store access passwords, API tokens, private keys, or other secrets in this repository or in `AGENTS.md`.
 
+## Workstation auto-installation guide
+
+- Before operating or changing workstation Setup, read the [web operator guide](docs/WORKSTATIONS_WEB_GUIDE.md).
+- Local document copy: [C:\Users\admin-2\Documents\ui_vpn\docs\WORKSTATIONS_WEB_GUIDE.md](C:/Users/admin-2/Documents/ui_vpn/docs/WORKSTATIONS_WEB_GUIDE.md).
+- Keep this guide aligned with the actual web flow, queue, verification and diagnostics. Preserve UNKNOWN history and never replay old jobs to bypass a guard; use the linked native operator/maintenance runbooks for recovery.
+
 ## Git publishing
 
 - For this project, publish completed and verified work to `main` by default.

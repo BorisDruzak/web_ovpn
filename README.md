@@ -14,6 +14,8 @@ manual/Netctl data and last saved Endpoint context usable during an outage.
 
 ALT Linux workstation deployment context: [docs/ALT_LINUX_AUTOINSTALL.md](docs/ALT_LINUX_AUTOINSTALL.md).
 
+Руководство по автоустановке через веб: [Рабочие места — гайд оператора](docs/WORKSTATIONS_WEB_GUIDE.md).
+
 The separate **Рабочие места** section at `/workstations` provides protected
 Setup planning, explicit existing-employee/device links, AD/DNS/network/inventory
 comparison, step-by-step job progress and sanitized journals. Setup retains the
