@@ -40,8 +40,7 @@ def test_signature_suite_configures_browser_extension_and_native_host():
     import json
     settings = json.loads(policy['content'])
     assert settings['ExtensionInstallForcelist'] == [
-        'jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx',
-        'pfhgbfnnjiafkhfdkmpiflachepdcjod;https://clients2.google.com/service/update2/crx']
+        'jabjbhgjaidecageckilhonbggakppme;https://clients2.google.com/service/update2/crx']
     hosts = next(item for item in copies if item.get('dest') == '/etc/chromium/native-messaging-hosts/{{ item }}')
     assert hosts['remote_src'] is True
 

@@ -230,6 +230,26 @@ The specification, implementation plan and operator guide now describe direct
 password-authenticated VNC for the new preset. This live support change does not
 claim implementation or deployment of that future controller workflow.
 
+## Selected extension policy amendment on 2026-10-20
+
+The operator selected removal of only forced extension
+`pfhgbfnnjiafkhfdkmpiflachepdcjod`, retaining GosPlugin. Fresh target inspection
+found the owned signature policy file was already zero bytes; other inspected
+managed/recommended policy files contained empty JSON objects. These observed
+files supersede earlier installation-time evidence about the current policy.
+
+A root-private before-copy and metadata/other-policy manifest were retained.
+The selected owned file was atomically replaced with valid JSON containing only
+GosPlugin `jabjbhgjaidecageckilhonbggakppme`. Exact JSON verification passed and
+other policy-file hashes remained unchanged. No browser restart, application
+closure, extension uninstall or profile edit was performed. Browser-cache reload
+and human policy-page acceptance are separate from this file verification.
+
+The source role and its independent assertion now emit/check only that retained
+entry; clean-VM policy regression passed after the required RED. These source
+changes await the complete-workflow controller release. Installed controller
+source was not replaced by the one-host policy adjustment.
+
 ## Temporary remote support
 
 The operator separately authorized temporary XRDP through an SSH tunnel. This
