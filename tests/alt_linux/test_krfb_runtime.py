@@ -25,7 +25,8 @@ def policy_observation():
 
 
 @pytest.mark.parametrize('case',['clean','listener','identity','digest','bool','extra','duplicate',
-                                 'helper','source_drift','ssh_drift','boot_drift','auth_failure'])
+                                 'helper','source_drift','ssh_drift','boot_drift','auth_failure',
+                                 'returned_auth_failure','missing_pixel','boolean_auth','unknown_failure'])
 def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_path,monkeypatch,case):
     from alt_deploy import krfb_runtime as module
     from alt_deploy import component_probe,setup_runtime
@@ -45,13 +46,20 @@ def test_published_policy_observer_binds_identity_source_and_password_proof(tmp_
         proofs.append(args)
         if case=='auth_failure':raise module._ProbeError('krfb_authentication_failed')
         kwargs['connector']((machine.ip,5900),timeout=3)
-        return {'authenticated':True,'server_init':True,'framebuffer_update':True,'width':1600,'height':900}
+        result={'status':'ok','code':None,'password_authenticated':True,'server_init_verified':True,
+                'pixel_update_verified':True,'width':1600,'height':900}
+        if case=='returned_auth_failure':result.update(status='blocked',code='krfb_authentication_failed',password_authenticated=False)
+        elif case=='missing_pixel':result['pixel_update_verified']=False
+        elif case=='boolean_auth':result['password_authenticated']=1
+        elif case=='unknown_failure':result.update(status='blocked',code='PRIVATE-SECRET-SENTINEL')
+        return result
     monkeypatch.setattr(module,'_probe_rfb',authenticate)
     calls=[]
     def run(argv,**options):
         calls.append(argv);payload=json.loads(options['input_text'])
         value=policy_observation()
-        value['listener_present']=case in ('listener','boot_drift','auth_failure')
+        value['listener_present']=case in ('listener','boot_drift','auth_failure','returned_auth_failure',
+                                           'missing_pixel','boolean_auth','unknown_failure')
         value['snapshot_sha256']=hashlib.sha256(json.dumps({k:v for k,v in value.items() if k!='snapshot_sha256'},
                                     sort_keys=True,separators=(',',':')).encode()).hexdigest()
         if case=='identity':value['hostname']='another-host'

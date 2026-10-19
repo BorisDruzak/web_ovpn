@@ -20,6 +20,21 @@ import time
 
 
 DIRECT_POLICY = {'port':5900,'scope':'direct','authentication':'password_required'}
+RFB_CODES = frozenset('krfb_'+code for code in ('authentication_failed','authentication_unverified',
+    'crypto_unavailable','framebuffer_unverified','network_policy_or_transport_blocked',
+    'password_unavailable','probe_timeout','probe_unverified','protocol_unverified','target_unverified'))
+
+
+def _require_rfb(result):
+    if (isinstance(result,dict) and set(result)=={'status','code','password_authenticated',
+            'server_init_verified','pixel_update_verified','width','height'}
+            and result['status']=='ok' and result['code'] is None
+            and all(result[key] is True for key in
+                    ('password_authenticated','server_init_verified','pixel_update_verified'))
+            and all(type(result[key]) is int and 1<=result[key]<=16384 for key in ('width','height'))):
+        return result
+    code = result.get('code') if isinstance(result,dict) else None
+    raise _ProbeError(code if isinstance(code,str) and code in RFB_CODES else 'krfb_probe_unverified')
 
 
 def _canonical(value):
@@ -96,8 +111,8 @@ def observe_vnc_policy(settings, machine, policy, *, runner=None):
         authenticated = False
         if before['listener_present']:
             password = _protected_password(settings)
-            _probe_rfb(str(ipaddress.ip_address(machine.ip)),password,
-                       connector=lambda *a,**k:_SSHChannel(_admin_command(settings,machine),timeout=k['timeout']))
+            _require_rfb(_probe_rfb(str(ipaddress.ip_address(machine.ip)),password,
+                       connector=lambda *a,**k:_SSHChannel(_admin_command(settings,machine),timeout=k['timeout'])))
             authenticated = True
             if _policy_read(settings,machine,source,helper,runner)!=before:
                 raise _ProbeError('vnc_policy_snapshot_changed')
@@ -108,9 +123,7 @@ def observe_vnc_policy(settings, machine, policy, *, runner=None):
                 'ssh_binding':binding,'observation':before,
                 'listener_authenticated':authenticated}
     except Exception as error:
-        allowed = {'vnc_policy_external_blocker','vnc_policy_snapshot_changed',
-                   'krfb_password_unavailable','krfb_authentication_failed','krfb_transport_blocked',
-                   'krfb_timeout','krfb_protocol_unverified','krfb_authentication_required'}
+        allowed = {'vnc_policy_external_blocker','vnc_policy_snapshot_changed'} | RFB_CODES
         code = str(error) if isinstance(error,_ProbeError) else ''
         if code not in allowed:code = 'vnc_policy_observation_unverified'
         raise fail(code,'Direct VNC policy evidence cannot be verified') from None
