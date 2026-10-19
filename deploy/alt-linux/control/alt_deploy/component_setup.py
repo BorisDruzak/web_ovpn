@@ -148,6 +148,13 @@ class ComponentSetupService:
         state = verification['components'][component_id]['status']
         action = {'compliant': 'noop', 'missing': 'install', 'drifted': 'repair'}.get(state, 'blocked')
         preflight = self.preflight(component) if action != 'noop' and not read_only else {'ready': True, 'required': False}
+        if action != 'noop' and not read_only and component['verification']['recipe'] == 'package':
+            from .component_storage import installation_budget
+            fact = observed['components'].get(component_id)
+            budget = installation_budget(catalog.artifact(component_id),
+                                         fact.get('storage') if isinstance(fact, dict) else None)
+            if budget['ready'] is not True:
+                preflight = budget
         network_confirmed = None
         if component_id == 'remote.krfb':
             from .configure import KRFB_NETWORK_CONFIRMATION_VARIABLE
@@ -164,6 +171,12 @@ class ComponentSetupService:
             raise fail('setup_retry_requires_fresh_health', 'Package health and absence of remote execution are not verified')
         projection = {k: copy.deepcopy(v) for k, v in observed.items() if k != 'observed_at'}
         projection['components'] = {c['id']: projection['components'].get(c['id']) for c in selected}
+        from .component_storage import bind_budget_evidence
+        for current_component in selected:
+            if current_component['verification']['recipe'] == 'package':
+                key = current_component['id']
+                projection['components'][key] = bind_budget_evidence(
+                    catalog.artifact(key), projection['components'].get(key))
         payload = {'operation': 'component', 'machine': {'uuid': machine.uuid, 'hostname': machine.hostname,
                 'ip': machine.ip, 'registration_sha256': digest(machine.raw)},
                 'user': {'login': user['login'], 'upn': user['upn'], 'object_guid': user['object_guid'], 'object_sid': user['object_sid']},

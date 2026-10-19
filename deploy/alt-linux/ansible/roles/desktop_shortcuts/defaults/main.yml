@@ -6,6 +6,7 @@ desktop_shortcuts_component_entries:
   software.browser: yandex-browser.desktop
   software.onlyoffice: onlyoffice-desktopeditors.desktop
   software.nextcloud: nextcloud-client.desktop
+  software.vkworkspace: vkworkspace.desktop
 desktop_shortcuts_application_entries: "{{ desktop_shortcuts_component_entries.values() | list }}"
 desktop_shortcuts_relative_links:
   - name: "Сетевая папка"

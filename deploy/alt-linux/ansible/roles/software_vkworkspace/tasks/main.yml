@@ -1,0 +1,250 @@
+---
+# Never uninstall or roll back the vendor RPM: its script may remove user data.
+- name: Initialize vkworkspace verification and safe failure record
+  ansible.builtin.set_fact:
+    software_vkworkspace_verified: false
+    configure_result: |-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'vkworkspace': {'status': 'failed', 'verified': false}
+        }),
+        'verification': configure_result.verification | combine({'software_vkworkspace': false})
+      }) }}
+- name: Install and verify the approved vkworkspace RPM
+  no_log: true
+  block:
+  - name: Revalidate the fixed vkworkspace catalog contract
+    ansible.builtin.assert:
+      that:
+      - configure_component_preflight_passed | default(false) | bool
+      - '''vkworkspace'' in selected_software_components'
+      - software_catalog.vkworkspace.enabled is boolean
+      - software_catalog.vkworkspace.enabled
+      - software_catalog.vkworkspace.source == 'rpm'
+      - software_catalog.vkworkspace.artifact_path == '/opt/alt-deploy-control/artifacts/vkworkspace/vkworkspace.rpm'
+      - software_catalog.vkworkspace.sha256 is match('^[0-9a-f]{64}$')
+      - software_catalog.vkworkspace.package_name == 'vkworkspace'
+      - software_catalog.vkworkspace.package_evr is string
+      - software_catalog.vkworkspace.package_evr | trim | length > 0
+      - software_catalog.vkworkspace.package_evr == '26.4.0.141207-1.el8'
+      - software_catalog.vkworkspace.architecture == 'x86_64'
+      - software_catalog.vkworkspace.executable == '/opt/vkworkspace/vkworkspace'
+      - software_catalog.vkworkspace.sha256 == '386b314d8a31ec06330e60ea842268304c98e39be343fb95ea5907a8d896cdc9'
+      - software_catalog.vkworkspace.download_size_bytes == 377133320
+      - software_catalog.vkworkspace.installed_size_bytes == 1164975020
+      - software_catalog.vkworkspace.desktop_entry == '/usr/share/applications/vkworkspace.desktop'
+      fail_msg: Approved software catalog validation failed
+  - name: Read software_vkworkspace_before VK package identity
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -q
+      - --queryformat
+      - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+      - vkworkspace
+    register: software_vkworkspace_before_metadata
+    changed_when: false
+    failed_when: false
+  - name: Inspect software_vkworkspace_before VK executable
+    ansible.builtin.stat:
+      path: /opt/vkworkspace/vkworkspace
+      follow: false
+    register: software_vkworkspace_before_exe
+  - name: Inspect software_vkworkspace_before package-owned VK launcher
+    ansible.builtin.stat:
+      path: /usr/share/applications/vkworkspace.desktop
+      follow: false
+    register: software_vkworkspace_before_launcher
+  - name: Read software_vkworkspace_before VK launcher package owner
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -qf
+      - --queryformat
+      - '%{NAME}'
+      - /usr/share/applications/vkworkspace.desktop
+    register: software_vkworkspace_before_launcher_owner
+    changed_when: false
+    failed_when: false
+  - name: Determine verified VK no-op
+    ansible.builtin.set_fact:
+      software_vkworkspace_noop: '{{ (software_vkworkspace_before_metadata.rc == 0) and (software_vkworkspace_before_metadata.stdout
+        == ''vkworkspace|26.4.0.141207-1.el8|x86_64|(none)'') and (software_vkworkspace_before_exe.stat.isreg |
+        default(false)) and (software_vkworkspace_before_exe.stat.executable | default(false)) and (not (software_vkworkspace_before_exe.stat.islnk
+        | default(false))) and (software_vkworkspace_before_launcher.stat.isreg | default(false)) and (not (software_vkworkspace_before_launcher.stat.islnk
+        | default(false))) and (software_vkworkspace_before_launcher_owner.rc == 0) and (software_vkworkspace_before_launcher_owner.stdout
+        == ''vkworkspace'') }}'
+  - name: Mutate VK only when fresh target proof requires installation
+    when: not software_vkworkspace_noop
+    block:
+    - name: Recheck the controller vkworkspace artifact checksum
+      ansible.builtin.stat:
+        path: '{{ software_catalog.vkworkspace.artifact_path }}'
+        checksum_algorithm: sha256
+        follow: false
+      delegate_to: localhost
+      become: false
+      register: software_vkworkspace_controller_artifact
+    - name: Require the regular checksum-valid controller vkworkspace artifact
+      ansible.builtin.assert:
+        that:
+        - software_vkworkspace_controller_artifact.stat.exists
+        - software_vkworkspace_controller_artifact.stat.isreg
+        - software_vkworkspace_controller_artifact.stat.checksum == software_catalog.vkworkspace.sha256
+        fail_msg: Approved software artifact verification failed
+    - name: Read the controller vkworkspace RPM identity
+      ansible.builtin.command:
+        argv:
+        - rpm
+        - -qp
+        - --queryformat
+        - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+        - '{{ software_catalog.vkworkspace.artifact_path }}'
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: software_vkworkspace_controller_metadata
+    - name: Require the exact controller vkworkspace RPM identity
+      ansible.builtin.assert:
+        that:
+        - |-
+          software_vkworkspace_controller_metadata.stdout ==
+            software_catalog.vkworkspace.package_name ~ '|' ~ software_catalog.vkworkspace.package_evr ~ '|' ~ software_catalog.vkworkspace.architecture ~ '|' ~ '(none)'
+        fail_msg: Approved software RPM metadata verification failed
+    - name: Observe bounded installation filesystems
+      ansible.builtin.command:
+        argv:
+        - /usr/bin/python3
+        - -c
+        - import json,os,pathlib; paths=['/opt','/var/tmp']; assert all(pathlib.Path(p).is_dir() and not pathlib.Path(p).is_symlink()
+          for p in paths); print(json.dumps([{'device':os.stat(p).st_dev,'free':os.statvfs(p).f_bavail*os.statvfs(p).f_frsize}
+          for p in paths]))
+      register: software_vkworkspace_space
+      changed_when: false
+    - name: Require installation and staging reserve
+      ansible.builtin.assert:
+        that:
+        - (software_vkworkspace_space.stdout | from_json)[0].free | int >= 1164975020 + 536870912 + (377133320 if
+          (software_vkworkspace_space.stdout | from_json)[0].device == (software_vkworkspace_space.stdout | from_json)[1].device
+          else 0)
+        - (software_vkworkspace_space.stdout | from_json)[1].free | int >= 377133320 + 536870912 + (1164975020 if
+          (software_vkworkspace_space.stdout | from_json)[0].device == (software_vkworkspace_space.stdout | from_json)[1].device
+          else 0)
+        fail_msg: ALT_PREFLIGHT_FAILURE:component_install_space_insufficient
+    - name: Create a private temporary vkworkspace RPM path
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .rpm
+        prefix: alt-vkworkspace-
+        path: /var/tmp
+      register: software_vkworkspace_temporary
+    - name: Copy the approved vkworkspace RPM into the private temporary path
+      tags:
+      - alt_setup_download
+      ansible.builtin.copy:
+        src: '{{ software_catalog.vkworkspace.artifact_path }}'
+        dest: '{{ software_vkworkspace_temporary.path }}'
+        owner: root
+        group: root
+        mode: '0600'
+    - name: Verify the transferred vkworkspace RPM checksum
+      ansible.builtin.stat:
+        path: '{{ software_vkworkspace_temporary.path }}'
+        checksum_algorithm: sha256
+        follow: false
+      register: software_vkworkspace_target_artifact
+    - name: Require the exact transferred vkworkspace RPM bytes
+      ansible.builtin.assert:
+        that:
+        - software_vkworkspace_target_artifact.stat.exists
+        - software_vkworkspace_target_artifact.stat.isreg
+        - software_vkworkspace_target_artifact.stat.mode == '0600'
+        - software_vkworkspace_target_artifact.stat.checksum == software_catalog.vkworkspace.sha256
+        fail_msg: Transferred software artifact verification failed
+    - name: Read the transferred vkworkspace RPM identity
+      ansible.builtin.command:
+        argv:
+        - rpm
+        - -qp
+        - --queryformat
+        - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+        - '{{ software_vkworkspace_temporary.path }}'
+      changed_when: false
+      register: software_vkworkspace_target_metadata
+    - name: Require the exact transferred vkworkspace RPM identity
+      ansible.builtin.assert:
+        that:
+        - software_vkworkspace_target_metadata.stdout == software_vkworkspace_controller_metadata.stdout
+        fail_msg: Transferred software RPM metadata verification failed
+    - name: Install exactly the verified temporary vkworkspace RPM
+      tags:
+      - alt_setup_transaction
+      ansible.builtin.command:
+        argv:
+        - apt-get
+        - -y
+        - install
+        - '{{ software_vkworkspace_temporary.path }}'
+    always:
+    - name: Remove the private temporary vkworkspace RPM
+      ansible.builtin.file:
+        path: '{{ software_vkworkspace_temporary.path }}'
+        state: absent
+      when: software_vkworkspace_temporary.path is defined
+  - name: Read software_vkworkspace_after VK package identity
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -q
+      - --queryformat
+      - '%{NAME}|%{VERSION}-%{RELEASE}|%{ARCH}|%{EPOCH}'
+      - vkworkspace
+    register: software_vkworkspace_after_metadata
+    changed_when: false
+    failed_when: false
+  - name: Inspect software_vkworkspace_after VK executable
+    ansible.builtin.stat:
+      path: /opt/vkworkspace/vkworkspace
+      follow: false
+    register: software_vkworkspace_after_exe
+  - name: Inspect software_vkworkspace_after package-owned VK launcher
+    ansible.builtin.stat:
+      path: /usr/share/applications/vkworkspace.desktop
+      follow: false
+    register: software_vkworkspace_after_launcher
+  - name: Read software_vkworkspace_after VK launcher package owner
+    ansible.builtin.command:
+      argv:
+      - rpm
+      - -qf
+      - --queryformat
+      - '%{NAME}'
+      - /usr/share/applications/vkworkspace.desktop
+    register: software_vkworkspace_after_launcher_owner
+    changed_when: false
+    failed_when: false
+  - name: Require exact installed VK package executable and launcher ownership
+    tags:
+    - alt_setup_verify
+    ansible.builtin.assert:
+      that:
+      - software_vkworkspace_after_metadata.rc == 0
+      - software_vkworkspace_after_metadata.stdout == 'vkworkspace|26.4.0.141207-1.el8|x86_64|(none)'
+      - software_vkworkspace_after_exe.stat.isreg | default(false)
+      - software_vkworkspace_after_exe.stat.executable | default(false)
+      - not (software_vkworkspace_after_exe.stat.islnk | default(false))
+      - software_vkworkspace_after_launcher.stat.isreg | default(false)
+      - not (software_vkworkspace_after_launcher.stat.islnk | default(false))
+      - software_vkworkspace_after_launcher_owner.rc == 0
+      - software_vkworkspace_after_launcher_owner.stdout == 'vkworkspace'
+      fail_msg: Installed VK software verification failed
+- name: Record verified vkworkspace success
+  ansible.builtin.set_fact:
+    software_vkworkspace_verified: true
+    configure_result: |-
+      {{ configure_result | combine({
+        'components': configure_result.components | combine({
+          'vkworkspace': {'status': 'ok', 'verified': true}
+        }),
+        'verification': configure_result.verification | combine({'software_vkworkspace': true})
+      }) }}

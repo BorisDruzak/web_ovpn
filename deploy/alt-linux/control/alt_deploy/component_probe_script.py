@@ -373,6 +373,26 @@ def inspect_component(root, recipe, user, home, name, call):
         executable = path(root, artifact['executable'])
         fact['executable'] = executable.is_file() and os.access(executable, os.X_OK)
         fact['checks']['ready'] = all(active(s, call) for s in recipe['services'])
+        if 'desktop_entry' in artifact:
+            launcher = path(root, artifact['desktop_entry'])
+            rc, owner = call(['rpm', '-qf', '--queryformat', '%{NAME}', str(launcher)])
+            fact['checks']['ready'] = (fact['checks']['ready'] and launcher.is_file()
+                                      and not launcher.is_symlink()
+                                      and rc == 0 and owner == artifact['package_name'])
+        if 'download_size_bytes' in artifact:
+            fact['storage'] = {}
+            try:
+                for key, destination in (('opt', '/opt'), ('staging', '/var/tmp')):
+                    destination = path(root, destination)
+                    if destination.is_symlink() or not destination.is_dir():
+                        raise ValueError('storage path unsafe')
+                    fs = os.statvfs(destination)
+                    fact['storage'][key] = {'device': destination.stat().st_dev,
+                        'available_bytes': fs.f_bavail * fs.f_frsize}
+            except (OSError, ValueError):
+                # Space evidence is relevant only before an installation, never
+                # turn an otherwise compliant installed package into drift.
+                fact['storage'] = None
     elif kind == 'system_base':
         session = recipe['session']
         fact['checks']['ready'] = (all(package(p, call) is not None for p in recipe['packages'])

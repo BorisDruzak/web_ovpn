@@ -86,10 +86,21 @@ def _artifact(entry):
     _keys(entry, {'enabled', 'source', 'executable'}, {
         'artifact_path', 'sha256', 'package_name', 'package_evr', 'architecture',
         'package_epoch', 'packages', 'installer_filename', 'payload_filename',
+        'download_size_bytes', 'installed_size_bytes', 'desktop_entry',
     })
     require(type(entry['enabled']) is bool and entry['enabled'])
     require(entry['source'] in ('rpm', 'alt-repository', 'archive', 'zip'))
     _absolute(entry['executable'])
+    if 'desktop_entry' in entry:
+        require(entry['source'] == 'rpm')
+        _absolute(entry['desktop_entry'])
+        require(entry['desktop_entry'].startswith('/usr/share/applications/')
+                and entry['desktop_entry'].endswith('.desktop'))
+    sizes = {'download_size_bytes', 'installed_size_bytes'}
+    if sizes & entry.keys():
+        require(sizes <= entry.keys() and entry['source'] == 'rpm')
+        for key in sizes:
+            require(type(entry[key]) is int and 0 < entry[key] <= 2**50)
     if entry['source'] != 'alt-repository':
         require({'artifact_path', 'sha256', 'package_evr'} <= entry.keys())
         _absolute(entry['artifact_path'])

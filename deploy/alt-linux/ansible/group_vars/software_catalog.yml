@@ -20,6 +20,18 @@ software_catalog:
     package_evr: 9.4.0-epm1.repacked.130
     architecture: x86_64
     executable: /usr/bin/onlyoffice-desktopeditors
+  vkworkspace:
+    enabled: true
+    source: rpm
+    artifact_path: /opt/alt-deploy-control/artifacts/vkworkspace/vkworkspace.rpm
+    sha256: 386b314d8a31ec06330e60ea842268304c98e39be343fb95ea5907a8d896cdc9
+    package_name: vkworkspace
+    package_evr: 26.4.0.141207-1.el8
+    architecture: x86_64
+    executable: /opt/vkworkspace/vkworkspace
+    desktop_entry: /usr/share/applications/vkworkspace.desktop
+    download_size_bytes: 377133320
+    installed_size_bytes: 1164975020
   nextcloud_desktop:
     enabled: true
     source: alt-repository
@@ -200,6 +212,15 @@ setup_catalog:
       dependencies: [system.base, domain.ready]
       execution: {role: software_gosuslugi_plugin, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
       preflight: {recipe: artifact, artifact_key: gosuslugi_plugin}
+      verification: {recipe: package, functional_verification_required: true}
+    - id: software.vkworkspace
+      version: 1
+      name: VK WorkSpace
+      category: applications
+      supported_os: [alt-kworkstation-11]
+      dependencies: [system.base, domain.ready]
+      execution: {role: software_vkworkspace, operation: software, scope: system, requires_domain: true, requires_user_home: false, requires_reboot: false, retry_policy: idempotent}
+      preflight: {recipe: artifact, artifact_key: vkworkspace}
       verification: {recipe: package, functional_verification_required: true}
     - id: certificates.government
       version: 1

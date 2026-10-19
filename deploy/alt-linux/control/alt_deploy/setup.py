@@ -224,6 +224,26 @@ class SetupService:
                 raise fail('setup_probe_invalid', 'Full Setup component preflight cannot verify machine or package activity')
             from .setup_runtime import source_fingerprint
             from pathlib import Path
+            from .component_storage import installation_budget, bind_budget_evidence
+            from .component_verification import _package_status
+            for selected_component in components:
+                if selected_component['verification']['recipe'] != 'package':
+                    continue
+                artifact = catalog.artifact(selected_component['id'])
+                if 'download_size_bytes' not in artifact:
+                    continue
+                fact = facts['components'].get(selected_component['id'], {})
+                if not isinstance(fact, dict):
+                    raise fail('component_install_space_unverified', 'Selected package evidence is unavailable')
+                checks = fact.get('checks', {})
+                installed = (_package_status(artifact, fact) == 'compliant'
+                             and fact.get('error_code') is None and isinstance(checks, dict) and bool(checks)
+                             and all(value is True for value in checks.values()))
+                if not installed:
+                    budget = installation_budget(artifact, fact.get('storage'))
+                    if budget['ready'] is not True:
+                        raise fail(budget['error_code'], 'Selected component installation space is not verified')
+                facts['components'][selected_component['id']] = bind_budget_evidence(artifact, fact)
             payload.update(engine_schema_version=2, catalog_version=catalog.version,
                            catalog_sha256=catalog.fingerprint, profile=profile, components=components,
                            component_observed={k: v for k, v in facts.items() if k != 'observed_at'},
