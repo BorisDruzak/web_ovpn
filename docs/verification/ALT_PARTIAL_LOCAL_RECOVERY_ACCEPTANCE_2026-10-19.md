@@ -203,6 +203,33 @@ source files and 3776 historical baseline files. Old UNKNOWN and recovery record
 were not changed. The full future workflow, including automatic first-login KRFB
 and final DNS, requires a separate reviewed controller implementation.
 
+## Direct VNC amendment verified on 2026-10-20
+
+After the SSH-only acceptance, the operator explicitly requested direct VNC on
+the completed pilot and in the future workflow. Fresh identity and protected
+configuration checks confirmed the same machine and active KRFB instance. The
+only installed nftables table was the known dedicated `alt_vnc_restrict` table;
+its non-loopback reject rule explained the refused direct connection.
+
+The owned service, helper and current rules were backed up privately. With the
+target helper lock held, its startup service was disabled and stopped, and only
+the exact verified reject table was removed. No unrelated firewall policy,
+desktop, KRFB process, domain state or Setup job was changed. The old restriction
+service is disabled/inactive; no workstation reboot was performed.
+
+Independent controller-to-workstation TCP/5900 testing then negotiated RFB 3.8,
+required password authentication with no unauthenticated security type,
+authenticated successfully and received a discarded minimal framebuffer update
+from the existing 1600 by 900 desktop. No input was sent and no pixels or password
+were retained in output. A separate direct connection from the Windows operator
+computer also received the RFB banner. A human Remmina connection after this
+amendment has not yet been reported; persistence across an actual reboot has not
+been tested. The previous SSH-only result remains historical evidence.
+
+The specification, implementation plan and operator guide now describe direct
+password-authenticated VNC for the new preset. This live support change does not
+claim implementation or deployment of that future controller workflow.
+
 ## Temporary remote support
 
 The operator separately authorized temporary XRDP through an SSH tunnel. This

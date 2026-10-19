@@ -1,12 +1,15 @@
 # Complete workstation workflow
 
 Status: approved by the operator on 2026-10-20; product changes are not implemented.
+VNC amendment: direct password-authenticated TCP/5900 access requested by the
+operator on 2026-10-20, replacing the earlier SSH-only restriction.
 
 ## Agreed outcome
 
 The ordinary web wizard offers one complete workstation set. It includes every
 currently approved office/signature component, KRFB and VK WorkSpace. KRFB is
-included automatically, rather than offered as a second profile choice. After
+included automatically, with direct VNC access by workstation address and a
+required KRFB password, rather than offered as a second profile choice. After
 installation and the selected employee's first graphical login, the workstation
 switches to the operator-selected final DNS resolver. The existing explicit
 employee/OU selection, concrete plan confirmation and background job remain.
@@ -47,7 +50,7 @@ new-profile installation.
 The new profile contains the existing system, domain, Plasma, browser, office,
 Nextcloud, web-access agent, CSP, CAdES, GosPlugin, certificates, shortcuts and
 KRFB components. It additionally contains `software.vkworkspace`, a managed VNC
-network-guard stage and final-DNS stage. Component declarations, dependencies,
+access-policy stage and final-DNS stage. Component declarations, dependencies,
 role mapping and verification remain in the existing published registry. Fixed
 supported recipes may be extended; operators cannot supply arbitrary roles,
 commands, artifact paths or YAML.
@@ -81,26 +84,39 @@ corporate workspace or application business acceptance. RPM signature-verifier
 incompatibility on the pilot is recorded separately from valid payload digests
 and the independent official-source hash comparison.
 
-## Managed VNC restriction
+## Managed direct VNC access
 
-The new profile explicitly authorizes a host-only VNC restriction before KRFB can
-listen. Establish it before the first employee login, then independently verify
-the actual kernel rules immediately before configuring/starting KRFB.
+The new profile configures direct VNC at the workstation address on TCP/5900,
+with mandatory password authentication from the existing protected Vault. An
+SSH tunnel is optional, rather than a connection prerequisite. The concrete
+direct-access policy and listening port appear in the original plan.
 
-The policy rejects non-loopback TCP port 5900 for IPv4 and IPv6, allowing access
-through SSH. It owns one dedicated table/chain and persistent startup service.
-It must not flush the ruleset, edit unrelated firewall tables, open LAN access,
-change routing or modify network infrastructure. Refuse an ownership collision
-with an existing table/service. The firewall remains effective across reboot and
-before graphical applications start. Unsupported or conflicting firewall
-management blocks this stage with a concrete error.
+Replace `remote.vnc_guard` in the unimplemented design with
+`remote.vnc_policy`. This system-stage component prepares the explicit direct
+policy and retires only the proven controller-owned SSH-only restriction. If
+the dedicated `alt_vnc_restrict` table and its startup service match their known
+ownership and rule contract, disable the service persistently and remove that
+table. If a listener already exists, prove its password-only authentication
+through the administrative transport before removing that restriction. An
+unproven or unauthenticated server remains blocked. An ownership collision or
+unexpected rule stops this migration before mutation. Never flush the ruleset,
+disable the firewall, change routing or
+modify network infrastructure. An unrelated policy blocking direct VNC produces
+a concrete diagnosis; it is not silently relaxed.
 
-The concrete restriction and its installation are included in the original
-plan. Intent to install the guard is distinct from proof that it is effective.
-Replace the new profile's dependence on a global environment flag with fresh
-per-target evidence bound to machine identity, boot, source and approved policy.
-Never manufacture the old confirmation flag or treat its presence as kernel
-evidence. Preserve the legacy opt-in contract for old API/profile requests.
+Immediately before KRFB startup, verify approved configuration, selected real
+user/session, ownership and current firewall evidence. Configure the password
+before opening the listener. Independent acceptance requires a real direct
+connection from the controller, rejection of unauthenticated RFB security type
+and successful password authentication/framebuffer delivery. Bind per-target
+evidence to machine identity, boot, source and approved policy. Do not manufacture
+the legacy environment flag; old profile/API opt-in meanings stay unchanged.
+
+On the current completed workstation, the operator separately authorized direct
+access. The owned reject table was removed and its service disabled; the same
+KRFB process continued running. Direct password authentication and a discarded
+minimal framebuffer update passed without an SSH tunnel. The previous
+SSH-only acceptance remains historical evidence, superseded by this request.
 
 ## Worker-owned first-login phase
 
@@ -132,8 +148,8 @@ passwords and package-owned launchers. If an earlier KRFB process predates the
 new configuration, distinguish it from an active VNC session: preserve connected
 clients, report a waiting/operator action if necessary, and reload only a proven
 safe instance. Never terminate the KDE, RDP or employee session to reload KRFB.
-Verify actual SSH-tunnel authentication/framebuffer delivery and rejection of
-direct network access without logging passwords or retaining desktop images.
+Verify actual direct TCP/5900 password authentication and framebuffer delivery,
+with no unauthenticated RFB mode, without logging passwords or retaining images.
 Pre-login remote control and temporary XRDP are outside this new profile.
 
 ## Final DNS stage
@@ -169,7 +185,7 @@ installation.
 
 ## UI, MCP, logs and acceptance
 
-Show the canonical full set, network restriction, first-login user phase and
+Show the canonical full set, direct VNC policy, first-login user phase and
 final DNS stage in the plan and progress view. Include their exact failures and
 sanitized complete event stream. Preserve cursor/gap reporting, immutable
 historical events and the distinction between installation, technical checks and
@@ -184,7 +200,7 @@ computer accounts or release consumed recovery claims.
 ## Verification and deployment boundary
 
 Use meaningful RED/GREEN tests for canonical profile selection, artifact
-validation, backend-specific DNS, guard ownership, per-target proof, real-login
+validation, backend-specific DNS, access-policy ownership, per-target proof, real-login
 eligibility, phase claims, crash/lost-reply handling, queue isolation and legacy
 compatibility. Exercise the real browser plan/progress flow.
 
@@ -203,4 +219,5 @@ policy is implied by this design.
 
 The implementation plan and its execution method are reviewed after this written
 design is approved. No source implementation or new-profile deployment is claimed
-by this proposed document.
+by this document. The implementation plan must include the operator's direct
+VNC amendment before its written review.
