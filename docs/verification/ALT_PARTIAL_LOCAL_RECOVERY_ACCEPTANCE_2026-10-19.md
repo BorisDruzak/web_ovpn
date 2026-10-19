@@ -7,10 +7,12 @@ Implementation and guarded controller deployment are verified at
 in progress: two distinct local recoveries succeeded once each. The first
 recovery's separately confirmed Setup closed UNKNOWN. After the environment and
 source fixes, a separately confirmed new ordinary Setup passed automatic
-admission, completed application and reached `waiting_reboot`. Native verification
-confirms domain trust, SSSD and lookup of the selected employee. Reboot, first
-graphical employee login and functional acceptance remain pending. No original
-job or consumed claim was replayed.
+admission and completed application. One separately authorized reboot was
+performed and proved by a changed boot ID with unchanged machine identity and
+fresh pinned SSH/sudo access. Explicit continuation verification of the same job
+now reports `waiting_first_login`. Domain trust, SSSD and selected-employee lookup
+pass. First graphical employee login and functional acceptance remain pending.
+No original job or consumed claim was replayed.
 
 ## Source and release
 
@@ -39,6 +41,7 @@ preserved pre-existing user files.
 | Immutable historical baseline at deployment | All 3558 files unchanged. |
 | Installed native controller readiness | ready=true; all 15 checks passed; failed_checks empty. |
 | Native controller backup | Six components created and verified; eleven restore-rehearsal checks passed. Fresh native eligibility recheck passed after the aborted precheck-only install. |
+| Actual post-reboot continuation through MCP | Original operation succeeded; same job advanced to `waiting_first_login`, reboot_required=false. Base, domain and four office application components are compliant and installed_verified. |
 
 Exact original logs, backup/review receipts, target identities and authentication
 manifests remain in protected operational evidence, outside this repository.
@@ -97,16 +100,21 @@ new job and its progress. Independent post-application checks matched all 283
 installed source files and all 3776 pre-application historical files, including
 both old UNKNOWN jobs and consumed recovery receipts.
 
-The new job now waits for reboot. Native verification reports trust, SSSD and
-selected-user lookup true, with no local duplicate and no employee home yet. The
-domain component's separate recipe remains `drifted`: policy is enabled with the
-expected backend and policy, but the policy service has no start timestamp in the
-current boot. Application receipts verify the office programs; dependency and
-user-home component acceptance remains unverified. No overall success or working
-employee session is claimed. A separately scoped reboot request is pending;
-after an actual reboot, verify continuation of this same job and then perform the
-real employee login and functional checks. Reboot and real employee login retain their
-separate authorization boundary; no synthetic home directory is used.
+Before reboot, the domain component's separate recipe reported `drifted`: policy
+was enabled with the expected backend and policy, but the policy service had no
+start timestamp in that boot. After the single authorized reboot, the service
+reported a successful execution with a nonzero start timestamp. The ordinary
+continuation verifier then marked the domain component compliant without any new
+Setup, join or policy repair.
+
+The same job now waits for the real selected employee's first graphical login.
+Base, domain, browser, office editor, sync client and enterprise web-access agent
+are compliant and installed_verified. The web-access agent still requires its
+functional acceptance; desktop, certificate and shortcut user checks wait for
+the real employee home. The authenticated web page shows `waiting_first_login`
+and all 524 events. Post-reboot comparison again matched all 283 installed files
+and 3776 historical files. No overall success or working employee session is
+claimed; no synthetic home directory is used.
 
 ## Review and limits
 
