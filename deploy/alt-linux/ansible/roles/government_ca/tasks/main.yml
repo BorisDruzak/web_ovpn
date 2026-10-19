@@ -70,9 +70,34 @@
   register: government_ca_system_sources
   when: government_cert.kind == 'root'
 
+- name: Inspect only managed intermediate anchor paths before cleanup
+  ansible.builtin.stat:
+    path: "/etc/pki/ca-trust/source/anchors/{{ government_cert.filename }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop: "{{ government_ca_certificates | selectattr('kind', 'equalto', 'intermediate') | list }}"
+  loop_control:
+    loop_var: government_cert
+  register: government_ca_intermediate_candidates
+
+- name: Require exact ownership and bytes before intermediate anchor cleanup
+  ansible.builtin.assert:
+    that:
+      - >-
+        not government_anchor.stat.exists or
+        (government_anchor.stat.isreg | default(false) and
+         not (government_anchor.stat.islnk | default(false)) and
+         government_anchor.stat.uid == 0 and
+         government_anchor.stat.mode in ['0644', '0444'] and
+         government_anchor.stat.checksum == government_anchor.government_cert.sha256)
+    fail_msg: Managed intermediate anchor identity is not verified
+  loop: "{{ government_ca_intermediate_candidates.results }}"
+  loop_control:
+    loop_var: government_anchor
+
 - name: Keep managed intermediate certificates outside system trust anchors
   ansible.builtin.file:
-    path: "/etc/pki/ca-trust/source/{{ government_cert.filename }}"
+    path: "/etc/pki/ca-trust/source/anchors/{{ government_cert.filename }}"
     state: absent
   loop: "{{ government_ca_certificates }}"
   loop_control:

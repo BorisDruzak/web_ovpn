@@ -120,6 +120,22 @@ def test_root_and_intermediate_certificates_keep_distinct_trust():
     assert "'uRoot' if entry['kind'] == 'root' else 'uCA'" in helper
 
 
+def test_intermediate_cleanup_targets_only_verified_managed_anchor_files():
+    tasks = yaml.safe_load((ROOT/'roles/government_ca/tasks/main.yml').read_text())
+    cleanup = next(t for t in tasks if t.get('name') == 'Keep managed intermediate certificates outside system trust anchors')
+    assert cleanup['ansible.builtin.file']['path'] == '/etc/pki/ca-trust/source/anchors/{{ government_cert.filename }}'
+    assert cleanup['when'] == "government_cert.kind == 'intermediate'"
+    assert cleanup['ansible.builtin.file']['state'] == 'absent'
+    index = tasks.index(cleanup)
+    assert any(t.get('ansible.builtin.stat', {}).get('path') == cleanup['ansible.builtin.file']['path']
+               and t['ansible.builtin.stat']['follow'] is False
+               and t['ansible.builtin.stat']['checksum_algorithm'] == 'sha256' for t in tasks[:index])
+    guard = next(t for t in tasks[:index] if t.get('name') == 'Require exact ownership and bytes before intermediate anchor cleanup')
+    guard_text = str(guard['ansible.builtin.assert'])
+    assert 'checksum' in guard_text and 'sha256' in guard_text and 'uid' in guard_text and 'isreg' in guard_text
+    assert '/usr/share/pki' not in str(tasks)
+
+
 def test_future_and_existing_users_receive_browser_certificates():
     source = (ROOT / 'roles/government_ca/tasks/main.yml').read_text()
     assert '/etc/xdg/autostart/alt-government-ca.desktop' in source

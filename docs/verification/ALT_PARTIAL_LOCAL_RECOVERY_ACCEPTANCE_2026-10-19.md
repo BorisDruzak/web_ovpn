@@ -270,6 +270,20 @@ The complete-workflow plan now explicitly requires CA finalization after CSP
 installation and real login, with fresh store evidence before success. That
 future controller behavior still awaits implementation and guarded release.
 
+The subsequently supplied `guc2022.crt` was parsed as a 1365-byte DER CA certificate.
+Its SHA-256 is `4bb37cc7c0ff4bf2aa893e95076ebb3565c69237ee1b61635beee4c1966495c7`,
+identical to the already pinned `guc2022_pem.crt`; it is already included once as
+a root. The operator then confirmed the applications work. No duplicate CA or
+additional target mutation was introduced for the supplied file.
+
+Source inspection also found the managed intermediate-anchor cleanup used the
+non-anchor source directory. The fixed role checks the actual managed anchor
+path, exact pinned bytes, regular-file type and root ownership before removal;
+unknown bytes or links stop cleanup. Ordinary non-anchor files and distribution
+trust files are preserved. Focused tests include real Ansible against isolated
+fixture paths. This preventive source correction awaits the guarded release;
+the live pilot has no intermediate files at those managed local anchor paths.
+
 ## Temporary remote support
 
 The operator separately authorized temporary XRDP through an SSH tunnel. This
