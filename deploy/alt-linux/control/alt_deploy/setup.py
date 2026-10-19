@@ -362,7 +362,9 @@ class SetupService:
             predecessors = [failed_id, self.status(failed_id)['configuration_run_id']]
         elif current.get('partial_local_resolution'):
             proof = current['partial_local_resolution']
-            predecessors = [proof['failed_run_id'], proof['configuration_run_id']]
+            from .setup_retry import reviewed_legacy_runs
+            predecessors = sorted({proof['failed_run_id'], proof['configuration_run_id'],
+                                   *reviewed_legacy_runs(self.settings)})
         with legacy_setup_execution(self.settings, request.machine_uuid, request.final_hostname,
                                     operation='full_setup', run_id=run_id, reviewed_predecessor_runs=predecessors):
             date = self.clock().isoformat()

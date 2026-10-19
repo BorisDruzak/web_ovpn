@@ -124,6 +124,13 @@ class PartialLocalStore:
             from .setup_jobs import SetupJobRepository
             job = SetupJobRepository(self.settings).get(closed['job_id'])
             if job.request['plan']['payload'] != closed['original'] or closed['machine'] != closed['original']['machine']: raise denied()
+            if closed['original'].get('partial_local_resolution'):
+                from .setup_retry import validate_predecessor
+                predecessor = validate_predecessor(self.settings, job.request['plan'])
+                review_path = 'setup-job-reviews/'+predecessor+'.json'
+                if decode_state_bytes(files[review_path]) != {'schema_version': 1,
+                        **closed['original']['predecessor_job'], 'successor_job_id': job.job_id,
+                        'successor_plan_sha256': job.status['plan_sha256']}: raise denied()
             run = decode_state_bytes(files['setup-runs/'+closed['failed_run_id']+'.json'])
             result = decode_state_bytes(files['configure-runs/'+closed['configuration_run_id']+'/result.json'])
             if (run != closed['run'] or run['configuration_run_id'] != closed['configuration_run_id']

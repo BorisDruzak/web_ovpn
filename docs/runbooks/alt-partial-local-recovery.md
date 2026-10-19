@@ -93,7 +93,7 @@ After successful local recovery and fresh verification:
 workstationctl --json setup recovery partial-local continue-plan RECOVERY_PLAN_ID
 workstationctl --json setup apply NEW_SETUP_PLAN_ID --confirm-sha256 NEW_SHA256 --detach
 workstationctl --json setup jobs status NEW_JOB_ID
-workstationctl --json setup verify MACHINE_UUID
+workstationctl --json setup verify --machine MACHINE_UUID
 ```
 
 Confirm new Setup SHA separately. It retains employee, OU and profiles, uses the
@@ -101,6 +101,24 @@ existing sequential worker and consumes this predecessor once. The old UNKNOWN,
 requests and events stay unchanged. A later new join failure with a real computer
 remains inspectable by GUID recovery. A foreign healthy closed UNKNOWN can still
 require the existing candidate-bound queue review; maintenance does not supply it.
+
+If a distinct newly confirmed Setup closes with another absent-object join
+failure, investigate and correct its environment before considering another
+operation. The closed-successor validator retains its exact current reservation
+pair and accepts only the complete, natively validated ancestor reservation set.
+Its own pair does not become an ancestor merely because a new successor was
+queued. An immutable predecessor review is sealed in the new capsule and its
+original recovery proof is revalidated on archival reads. Every distinct failed
+job/run still needs its own fresh recovery plan and one execution claim, then a
+separately confirmed new Setup. No earlier claim or successful receipt can be
+reused. Foreign, missing, mixed or unreviewed ancestry remains blocked.
+
+For a native join failure, check the join account's current computer-creation
+quota usage and effective CreateChild(computer) delegation on the approved OU.
+An enabled account and a nonzero domain quota do not prove remaining capacity.
+Any permission change needs authorization for its concrete directory scope;
+do not delete existing computers or increase the domain-wide quota as a retry.
+The bounded diagnostic code alone does not establish the original LDAP error.
 
 Inspect the actual new job and every event page in web/MCP. Technical completion,
 employee login and application functionality are separate checks. Reboot and real

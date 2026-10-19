@@ -82,12 +82,16 @@ def test_restore_cannot_erase_an_entered_original_failure_claim(partial_failure,
     assert error.value.code == 'setup_history_restore_conflict'
 
 
-def test_completed_successor_can_be_backed_up_verified_and_rehearsed(partial_failure, tmp_path):
+@pytest.mark.parametrize('two_failures', [False, True])
+def test_completed_successor_can_be_backed_up_verified_and_rehearsed(partial_failure, tmp_path, two_failures):
     import shutil
     from support.backup_restore_sandbox import BackupSandbox
-    from test_setup_partial_local_continuation import dispatch_followup
+    from test_setup_partial_local_continuation import dispatch_followup, dispatch_after_two_failures
     from alt_deploy_backup.setup_compat import history_fingerprint
-    plan, job, outcome, before, computer = dispatch_followup(partial_failure)
+    if two_failures:
+        plan, job, outcome = dispatch_after_two_failures(partial_failure)
+    else:
+        plan, job, outcome, before, computer = dispatch_followup(partial_failure)
     assert outcome['status'] == 'successful'
     sandbox = BackupSandbox.create(tmp_path)
     sandbox.seed_complete_controller()

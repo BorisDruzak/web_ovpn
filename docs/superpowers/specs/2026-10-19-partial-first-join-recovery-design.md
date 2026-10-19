@@ -41,6 +41,16 @@ never happened, or identify the historical exception. The adapter collapses
 exceptions to one marker; the managed callback retained only generic task codes.
 Do not invent a historical cause or replay a join to recover lost output.
 
+Operational correction during acceptance: a later direct directory query found
+the join account's quota fully used and no effective OU computer-create
+delegation. The earlier statement that usage did not exhaust quota was not
+established by that complete creator-SID count. Operator-authorized delegation
+is a separate directory action; it does not prove the lost historical native
+exception or permit replay. A distinct failed successor with intact original
+recovery proof must retain its own current reservation pair while validating
+the exact ancestor set; the one-claim-per-job/run and one-successor-per-receipt
+contracts remain unchanged.
+
 The original GUID-based recovery requires an existing computer object. The
 prejoin-timeout continuation requires that domain join was never entered.
 Neither contract admits this case. Current maintenance review also requires

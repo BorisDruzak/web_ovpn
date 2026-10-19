@@ -74,17 +74,39 @@ class ClosedFailureEvidence:
         index = root/'setup-plan-runs'/(run['plan_id']+'.json')
         if self._read(index) != {'run_id': run_id}:
             raise denied()
-        leases = [r for r in self.jobs.unresolved_legacy_reservations(self.settings)
-                  if r['machine_uuid'] == job.machine_uuid or r['hostname'] == job.request['identities']['hostname']]
+        identity_leases = [r for r in self.jobs.unresolved_legacy_reservations(self.settings)
+                           if r['machine_uuid'] == job.machine_uuid or r['hostname'] == job.request['identities']['hostname']]
+        ancestor_ids = set()
+        review_path = None
+        if original.get('partial_local_resolution'):
+            retry = control_module('setup_retry')
+            # A queued successor may already review this closed job. Its own
+            # pair is still the evidence being inspected, never an ancestor.
+            reviewed_runs = retry.reviewed_legacy_runs(self.settings) - {run_id, config_id}
+            ancestors = [r for r in identity_leases if r['run_id'] in reviewed_runs]
+            if any(r['machine_uuid'] != job.machine_uuid or r['hostname'] != job.request['identities']['hostname']
+                   or r['state'] != 'unknown_requires_review' for r in ancestors): raise denied()
+            ancestor_ids = {r['reservation_id'] for r in ancestors}
+            document = control_module('setup_partial_local_continuation').load_resolution(
+                self.settings, original['partial_local_resolution'], archival=True)
+            if not set(document['closed']['lease_ids']).issubset(ancestor_ids): raise denied()
+            predecessor = retry.validate_predecessor(self.settings, job.request['plan'])
+            review_path = root/'setup-job-reviews'/(predecessor+'.json')
+            if self._read(review_path) != {'schema_version': 1, **original['predecessor_job'],
+                    'successor_job_id': job.job_id, 'successor_plan_sha256': job.status['plan_sha256']}: raise denied()
+            leases = [r for r in identity_leases if r['run_id'] not in reviewed_runs]
+        else:
+            leases = identity_leases
         if (len(leases) != 2 or {(r['operation'], r['run_id']) for r in leases} != {('full_setup', run_id), ('configure', config_id)}
                 or any(r['machine_uuid'] != job.machine_uuid or r['hostname'] != job.request['identities']['hostname']
-                       or r['state'] != 'unknown_requires_review' or r['supersedes'] for r in leases)):
+                       or r['state'] != 'unknown_requires_review' or set(r['supersedes']) != ancestor_ids for r in leases)):
             raise denied()
         paths = [root/'setup-runs'/(run_id+'.json'), configure/'request.json', configure/'result.json',
                  root/'setup-plans'/(plan['plan_id']+'.json'), index,
                  root/'domain-assignments'/(job.machine_uuid+'.json')]
         log = configure/'ansible.log'
         if log.exists() or log.is_symlink(): paths.append(log)
+        if review_path is not None: paths.append(review_path)
         paths += [root/'legacy-setup-reservations'/(r['reservation_id']+'.json') for r in leases]
         paths += [p for p in job.job_dir.iterdir() if p.name != 'events']
         events = job.job_dir/'events'

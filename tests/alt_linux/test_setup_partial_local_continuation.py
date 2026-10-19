@@ -84,12 +84,12 @@ def test_partial_proof_cannot_be_combined_with_another_continuation(partial_fail
     with pytest.raises((ControlError, ValueError)): validate_plan(changed, 'full_setup')
 
 
-def dispatch_followup(partial_failure, *, fail=False):
+def dispatch_followup(partial_failure, *, fail=False, absent=False, prepared=None, configuration_id='e'*32):
     from alt_deploy.setup_jobs import legacy_setup_execution
     from alt_deploy.setup_plans import private_create
     from alt_deploy.setup_execution import SetupExecutionEngine
     from alt_deploy.setup_worker import SetupWorker
-    follow, recovery, result, service, calls = continuation(partial_failure)
+    follow, recovery, result, service, calls = prepared or continuation(partial_failure)
     setup, old, machine, user, state, current, date = partial_failure
     plan = follow.plan(recovery['plan_id'])
     before = retained(old.job_dir)
@@ -97,19 +97,27 @@ def dispatch_followup(partial_failure, *, fail=False):
     computer = {'object_guid': 'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa', 'object_sid': 'S-1-5-21-1-2-3-2001',
                 'dn': 'CN='+machine.hostname+','+plan['payload']['computer_ou'], 'dns_hostname': machine.hostname+'.sosnadmin.local'}
     def configure(identifier, request, **kwargs):
-        config_id = 'e'*32
+        config_id = configuration_id
         with legacy_setup_execution(setup.settings, machine.uuid, machine.hostname, operation='configure', run_id=config_id):
             private_create(setup.settings.state_root/'configure-runs'/config_id/'request.json', request.to_dict())
             current.update(domain='sosnadmin.local', trust=not fail, sssd=not fail, user_lookup=not fail,
                 home_exists=not fail, computer_identity=None if fail else dict(computer, sam_account_name=machine.hostname+'$'))
-            setup.directory.computer = lambda hostname: {'hostname': hostname, 'exists': True, 'objects': [copy.deepcopy(computer)]}
+            setup.directory.computer = lambda hostname: {'hostname': hostname, 'exists': not absent,
+                'objects': [] if absent else [copy.deepcopy(computer)]}
             result = {'schema_version':1,'machine_uuid':machine.uuid,'hostname':machine.hostname,'profile':request.profile,
                 'status':'failed' if fail else 'successful','phase':'domain_join' if fail else 'complete',
                 'retryable':False,'recovered':False,'reboot_required':False,
                 'error':{'code':'configure_critical_phase_failed','class':'fatal-invariant','safe_message':'Synthetic new join failure'} if fail else None,
                 'components':{},'verification':{'group_policy_flag_preserved':True}}
             private_create(setup.settings.state_root/'configure-runs'/config_id/'result.json', result)
-            if fail: raise ControlError('domain_join_failed','Synthetic new failure',7,{'run_id':config_id,'phase':'domain_join'})
+            if fail:
+                from alt_deploy.setup_events import SetupEventStore
+                store = SetupEventStore(setup.settings, clock=setup.clock)
+                for kind, code in [('task_start', 'started'), ('task_failed', 'first_join_native_failed')]:
+                    store.append(submitted['job_id'], {'schema_version': 1, 'component_id': 'domain.ready',
+                        'component_version': 1, 'stage': 'domain_join', 'task_id': 'task-'+'1'*16,
+                        'type': kind, 'changed': False, 'code': code})
+                raise ControlError('domain_join_failed','Synthetic new failure',7,{'run_id':config_id,'phase':'domain_join'})
             state['user'].update(uid=10001,gid=10001,home_exists=True,home_safe=True)
             state['components']['domain.ready']['checks']['ready'] = True
             return dict(result, run_id=config_id, verification={'domain_join':True,'sssd':True,'domain_user_lookup':True,'group_policy':True})
@@ -117,6 +125,110 @@ def dispatch_followup(partial_failure, *, fail=False):
     jobs = SetupJobRepository(setup.settings, clock=lambda:date[0])
     outcome = SetupWorker(setup.settings, engine=SetupExecutionEngine(setup.settings,setup=setup,jobs=jobs), clock=lambda:date[0]).run_once()
     return plan, jobs.get(submitted['job_id']), outcome, before, computer
+
+
+def test_closed_absent_object_successor_can_be_sealed_without_replaying_ancestor(partial_failure):
+    from alt_deploy_backup.setup_closed_failure import ClosedFailureEvidence
+    plan, job, outcome, old_bytes, _ = dispatch_followup(partial_failure, fail=True, absent=True)
+    setup, old, *_ = partial_failure
+    assert outcome['status'] == 'unknown_requires_review'
+    before = retained(setup.settings.state_root)
+    closed = ClosedFailureEvidence(setup.settings).load(job.job_id)
+    assert closed['job_id'] == job.job_id and len(closed['lease_ids']) == 2
+    assert closed['binding']['revision'] == 2
+    assert closed['original']['partial_local_resolution']['job_id'] == old.job_id
+    assert retained(old.job_dir) == old_bytes
+    assert retained(setup.settings.state_root) == before
+
+
+def dispatch_after_two_failures(partial_failure):
+    plan, failed, outcome, old_bytes, _ = dispatch_followup(partial_failure, fail=True, absent=True)
+    setup, old, machine, user, state, current, date = partial_failure
+    assert outcome['status'] == 'unknown_requires_review'
+    original_claims = retained(setup.settings.state_root/'setup-partial-local-claims')
+    next_fixture = setup, failed, machine, user, state, current, date
+    service, runtime, calls, native = service_for(next_fixture)
+    recovery = service.plan(failed.job_id)
+    restored = service.apply(recovery['plan_id'], recovery['sha256'])
+    assert restored['status'] == 'successful' and len(calls) == 1
+    with pytest.raises(ControlError): service.apply(recovery['plan_id'], recovery['sha256'])
+    follow = control('setup_partial_local_continuation').PartialLocalContinuation(
+        setup.settings, setup=setup, runtime=runtime, clock=setup.clock)
+    third_plan, third, final, failed_bytes, _ = dispatch_followup(next_fixture,
+        prepared=(follow, recovery, restored, service, calls), configuration_id='d'*32)
+    assert final['status'] == 'successful', private_read(third.job_dir/'execution.json')
+    assert len({old.job_id, failed.job_id, third.job_id}) == 3
+    assert setup.assignments.get(machine.uuid)['revision'] == 3
+    assert retained(old.job_dir) == old_bytes and retained(failed.job_dir) == failed_bytes
+    for name, raw in original_claims.items():
+        assert (setup.settings.state_root/'setup-partial-local-claims'/name).read_bytes() == raw
+    assert len(list((setup.settings.state_root/'setup-partial-local-claims').glob('*.json'))) == 2
+    return third_plan, third, final
+
+
+def test_distinct_failed_successor_gets_one_local_claim_and_one_fresh_setup(partial_failure):
+    dispatch_after_two_failures(partial_failure)
+
+
+@pytest.mark.parametrize('fault', ['missing_review', 'missing_claim', 'unknown_result',
+                                  'foreign_supersedes', 'missing_supersedes', 'unreviewed_lease'])
+def test_failed_successor_requires_complete_verified_ancestor_closure(partial_failure, fault):
+    from alt_deploy_backup.setup_closed_failure import ClosedFailureEvidence
+    from alt_deploy.setup_jobs import legacy_execution_reservations
+    from alt_deploy.setup_plans import private_create, private_replace
+    _, job, _, _, _ = dispatch_followup(partial_failure, fail=True, absent=True)
+    setup, old, *_ = partial_failure
+    root = setup.settings.state_root
+    if fault == 'missing_review':
+        (root/'setup-job-reviews'/(old.job_id+'.json')).unlink()
+    elif fault == 'missing_claim':
+        next((root/'setup-partial-local-claims').glob('*.json')).unlink()
+    elif fault == 'unknown_result':
+        path = next((root/'setup-partial-local-results').glob('*.json'))
+        private_replace(path, dict(private_read(path), status='unknown_requires_review'))
+    else:
+        run_id = private_read(job.job_dir/'execution.json')['legacy_error_run_id']
+        records = legacy_execution_reservations(setup.settings)
+        lease = next(r for r in records if r['run_id'] == run_id)
+        if fault == 'unreviewed_lease':
+            value = dict(lease, reservation_id='b'*32, run_id='setup-run-'+'b'*32, supersedes=[])
+            private_create(root/'legacy-setup-reservations'/('b'*32+'.json'), value)
+        else:
+            references = lease['supersedes']+['b'*32] if fault == 'foreign_supersedes' else lease['supersedes'][:-1]
+            private_replace(root/'legacy-setup-reservations'/(lease['reservation_id']+'.json'),
+                            dict(lease, supersedes=references))
+    with pytest.raises(ControlError): ClosedFailureEvidence(setup.settings).load(job.job_id)
+
+
+def test_archived_successor_capsule_rechecks_original_recovery_claim(partial_failure):
+    from alt_deploy_backup.setup_closed_failure import ClosedFailureEvidence
+    from alt_deploy.setup_partial_local_state import PartialLocalStore
+    _, job, _, _, _ = dispatch_followup(partial_failure, fail=True, absent=True)
+    setup = partial_failure[0]
+    closed = ClosedFailureEvidence(setup.settings).load(job.job_id)
+    store = PartialLocalStore(setup.settings)
+    store.retain_closed(closed)
+    assert store.load_closed(closed['history_sha256']) == closed
+    next((setup.settings.state_root/'setup-partial-local-claims').glob('*.json')).unlink()
+    with pytest.raises(ControlError): store.load_closed(closed['history_sha256'])
+
+
+def test_maintenance_covers_only_distinct_failed_successor_and_its_pair(partial_failure):
+    from alt_deploy_backup.setup_closed_failure import ClosedFailureEvidence
+    from alt_deploy_backup.setup_maintenance_coverage import MaintenanceCoverage
+    from test_setup_partial_observation import observer
+    _, job, _, _, _ = dispatch_followup(partial_failure, fail=True, absent=True)
+    setup, old, machine, user, state, current, date = partial_failure
+    fresh, *_ = observer((setup, job, machine, user, state, current, date))
+    def observe(selected):
+        assert selected.job_id == job.job_id
+        return fresh.observe(ClosedFailureEvidence(setup.settings).load(job.job_id), mode='partial_ad')
+    service = MaintenanceCoverage(setup.settings, observer=observe, clock=setup.clock)
+    plan = service.plan()
+    service.confirm(plan['plan_id'], plan['sha256'])
+    result = service.exclusions(plan['sha256'])
+    assert result['job_ids'] == {job.job_id} and len(result['lease_ids']) == 2
+    assert SetupJobRepository(setup.settings).get(old.job_id).state == 'unknown_requires_review'
 
 
 def test_ordinary_new_job_advances_assignment_and_preserves_predecessor_bytes(partial_failure):

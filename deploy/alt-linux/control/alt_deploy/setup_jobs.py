@@ -485,6 +485,9 @@ class SetupJobRepository:
             prior = validate_predecessor(self.settings, plan)
             prior_runs = reviewed_full_runs(self.settings, plan['payload']) if operation == 'full_setup' and prior else set()
             reviewed = reviewed_jobs(self.settings)
+            if plan['payload'].get('partial_local_resolution'):
+                from .setup_retry import reviewed_legacy_runs
+                prior_runs.update(reviewed_legacy_runs(self.settings))
             if prior in reviewed:
                 raise fail('setup_retry_already_reviewed', 'This predecessor already has a confirmed successor')
             if any(r['state'] in ('running', 'unknown_requires_review') and
