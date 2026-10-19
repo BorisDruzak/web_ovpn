@@ -216,3 +216,7 @@ and is distinct from administrative reset; the observer's own object is excluded
 from this alternate proof. Missing facts fail closed. See
 [Microsoft protected accounts](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-c--protected-accounts-and-groups-in-active-directory)
 and [MS-ADTS unicodePwd](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-adts/6e803168-f140-4d23-b2d3-c3a8ab5917d2).
+
+## Partial first join without a computer object
+
+Use [operator partial-local recovery](alt-partial-local-recovery.md) for the separately confirmed fixed local transition and one ordinary successor. Keep old UNKNOWN records intact. Maintenance coverage grants no target or queue permission; unresolved partial-local claims block both execution and maintenance.

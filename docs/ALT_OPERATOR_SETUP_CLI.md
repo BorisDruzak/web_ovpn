@@ -270,3 +270,7 @@ Samba; отдельная offline-генерация keytab остаётся т�
 Заполнение OS-атрибутов компьютера в AD не является частью Setup.
 Существующие объекты по-прежнему не допускаются
 к автоматическому сбросу или повторному join.
+
+## First join without an AD computer
+
+Use the operator-only [partial-local recovery runbook](runbooks/alt-partial-local-recovery.md). It preserves the old UNKNOWN and requires separate exact recovery and new Setup confirmations.

@@ -201,3 +201,7 @@ Queued cancellation consumes the existing single-use worker claim, records zero
 target changes and transitions preflight to failed with
 `operator_cancelled_before_execution`. Interrupted cancellation remains ambiguous
 and cannot be replayed. Cancellation never applies to an executing or UNKNOWN job.
+
+## Closed first join without a computer object
+
+[Partial-local recovery](runbooks/alt-partial-local-recovery.md) uses a verified private authentication snapshot, one fixed native local transition, and a separately confirmed ordinary Setup successor. Mixed closed UNKNOWN maintenance uses complete schema-2 coverage. Entered unresolved local claims block execution and maintenance; backup/restore preserves all new evidence and claims.
