@@ -1,6 +1,7 @@
 """Bind the RFB listener to the selected employee's actual Plasma session."""
 import json
 import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -93,3 +94,85 @@ def test_absent_server_is_a_valid_unready_observation(desktop):
     f=desktop;(f['krfb']/'exe').unlink();(f['root']/'proc/net/tcp').write_text('header\n')
     result=inspect(f)
     assert result['krfb_pid'] is None and result['listener_present'] is False
+
+
+def test_absent_employee_home_waits_for_a_real_first_login(desktop):
+    from alt_deploy.krfb_user_session import KRFBSessionError
+    f=desktop;home=f['root']/f['home'].lstrip('/')
+    home.rename(home.with_name('not-yet-created-employee-home'))
+    with pytest.raises(KRFBSessionError) as caught:inspect(f)
+    assert str(caught.value)=='graphical_session_unavailable'
+
+
+@pytest.mark.parametrize('case',['security','autostart'])
+def test_kconfig_has_no_configparser_default_inheritance(desktop,case):
+    f=desktop
+    if case=='security':
+        f['config'].write_text(f['config'].read_text().replace('[Security]','[DEFAULT]')+'\n[Security]\n')
+        assert inspect(f)['configuration_safe'] is False
+    else:
+        f['autostart'].write_text(f['autostart'].read_text().replace('[Desktop Entry]','[DEFAULT]')+'\n[Desktop Entry]\n')
+        assert inspect(f)['autostart_safe'] is False
+
+
+@pytest.mark.parametrize('case',['graceful','clients','birth_changed','timeout','session_changed'])
+def test_only_proven_client_free_krfb_may_receive_one_graceful_pidfd_signal(desktop,monkeypatch,case):
+    from alt_deploy import krfb_user_session as module
+    from alt_deploy.user_session import _process
+    f=desktop;context=discover(f)
+    record=_process(f['root'],f['krfb'],f['uid'],f['gid'],{'/usr/bin/krfb'})
+    sent=[];closed=[];opened=[];selected=[]
+    def revalidate(value):
+        assert value==context
+        if case=='session_changed':raise module.SessionError('graphical_session_unverified')
+    monkeypatch.setattr(module,'_revalidate',revalidate,raising=False)
+    monkeypatch.setattr(os,'pidfd_open',lambda pid,flags:opened.append((pid,flags)) or 999)
+    monkeypatch.setattr(os,'close',lambda fd:closed.append(fd))
+    monkeypatch.setattr(os,'kill',lambda *a:pytest.fail('Never select an existing process by PID alone'))
+    def send(fd,sig,*args):
+        sent.append((fd,sig));assert (fd,sig)==(999,signal.SIGTERM)
+        if case!='timeout':(f['krfb']/'exe').unlink()
+    monkeypatch.setattr(signal,'pidfd_send_signal',send)
+    def wait(read,write,error,timeout):
+        selected.append(timeout)
+        return ((read if sent and case!='timeout' else []),[],[])
+    import select
+    monkeypatch.setattr(select,'select',wait)
+    if case=='clients':
+        (f['krfb']/'fd/8').symlink_to('socket:[2000]')
+        (f['root']/'proc/net/tcp').write_text('header\n'+f['row']()+f['row'](inode=2000,state='01'))
+    elif case=='birth_changed':record['start_ticks']+=1
+    before=f['config'].read_bytes()
+    if case=='graceful':module.stop_krfb(context,record,root=f['root'])
+    else:
+        with pytest.raises(module.KRFBSessionError):module.stop_krfb(context,record,root=f['root'])
+    assert f['config'].read_bytes()==before
+    assert len(sent)==(1 if case in ('graceful','timeout') else 0)
+    assert len(closed)==len(opened)
+    assert all(0<=timeout<=10 for timeout in selected)
+
+
+def test_long_lived_launcher_preserves_gui_limits_and_drops_privilege_before_exec(desktop,monkeypatch):
+    from alt_deploy import krfb_user_session as module
+    f=desktop;context=discover(f);operations=[];started=[]
+    monkeypatch.setattr(module,'_revalidate',lambda value:None,raising=False)
+    monkeypatch.setattr(module,'_trusted_program',lambda argv:argv[0],raising=False)
+    monkeypatch.setattr(os,'geteuid',lambda:0)
+    for name in ('setgroups','setgid','setuid','umask'):
+        monkeypatch.setattr(os,name,lambda value,name=name:operations.append((name,value)))
+    import resource,subprocess
+    monkeypatch.setattr(resource,'setrlimit',lambda key,value:operations.append(('limit',(key,value))))
+    class Process:
+        pid=999
+        def poll(self):return None
+    def start(argv,**options):
+        started.append((argv,options));options['preexec_fn']();return Process()
+    monkeypatch.setattr(subprocess,'Popen',start)
+    assert module.launch_krfb(context)==999
+    argv,options=started[0]
+    assert argv==['/usr/bin/krfb'] and options['env']==context.environment
+    assert options['stdin']==options['stdout']==options['stderr']==subprocess.DEVNULL
+    assert options['start_new_session'] is True and options['close_fds'] is True
+    assert options['cwd']==context.home
+    assert [entry for entry in operations if entry[0]=='limit']==[('limit',item) for item in context.limits.items()]
+    assert operations[-3:]==[('setgroups',context.groups),('setgid',context.gid),('setuid',context.uid)]

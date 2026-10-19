@@ -8,9 +8,13 @@ import os
 from pathlib import Path
 import re
 import resource
+import select
+import signal
 import stat
+import subprocess
+import threading
 
-from .user_session import SessionError, _call, _inside, _process, _read, discover_session
+from .user_session import SessionError, _call, _inside, _process, _read, _revalidate, _trusted_program, discover_session
 
 
 class KRFBSessionError(Exception):
@@ -41,7 +45,10 @@ def _owned(root, absolute, uid, gid, mode):
 
 def _ini(data):
     if data is None:return None
-    parser = configparser.ConfigParser(interpolation=None,strict=True)
+    if b'\0' in data:raise KRFBSessionError('krfb_configuration_unverified')
+    # KDE treats [DEFAULT] as an ordinary group; Python's default inheritance
+    # would otherwise accept security values that KRFB does not actually read.
+    parser = configparser.ConfigParser(interpolation=None,strict=True,default_section='\0')
     parser.optionxform = str
     parser.read_string(data.decode('utf-8'))
     return parser
@@ -123,6 +130,8 @@ def _collect(request, *, root, call, limits_reader):
             or not fields[2].isdigit() or not fields[3].isdigit()):
         raise KRFBSessionError('krfb_user_identity_unverified')
     uid,gid,home = int(fields[2]),int(fields[3]),fields[5]
+    if not _inside(root,home).exists():
+        raise KRFBSessionError('graphical_session_unavailable')
     context = discover_session(uid,gid,home,root=root,call=call,limits_reader=limits_reader)
     configuration = _owned(root,home+'/.config/krfbrc',uid,gid,0o600)
     autostart = _owned(root,home+'/.config/autostart/org.sosn.krfb.desktop',uid,gid,0o644)
@@ -176,3 +185,73 @@ def observe_session(request, *, root=Path('/'),call=_call,limits_reader=resource
         raise KRFBSessionError(code) from None
     except (OSError,ValueError,TypeError,KeyError,AttributeError,configparser.Error):
         raise KRFBSessionError('krfb_session_observation_unverified') from None
+
+
+def stop_krfb(context, record, *, root=Path('/')):
+    """One SIGTERM to an immutable pidfd, after fresh GUI/client checks.
+
+    This internal operation is called only inside the claimed target helper's
+    lock, after its private backup and approved configuration are durable.
+    Existing desktop, RDP and other application processes are never selected.
+    """
+    descriptor = None
+    dispatched = False
+    try:
+        root = Path(root)
+        _revalidate(context)
+        if (not isinstance(record,dict) or record.get('executable')!='/usr/bin/krfb'
+                or type(record.get('pid')) is not int or record['pid']<=0):
+            raise KRFBSessionError('krfb_process_unverified')
+        descriptor = os.pidfd_open(record['pid'],0)
+        current = _process(root,root/'proc'/str(record['pid']),context.uid,context.gid,{'/usr/bin/krfb'})
+        if current!=record or select.select([descriptor],[],[],0)[0]:
+            raise KRFBSessionError('krfb_process_unverified')
+        _revalidate(context)
+        if _sockets(root,record,context.uid)[1]:
+            raise KRFBSessionError('krfb_clients_connected')
+        dispatched = True
+        signal.pidfd_send_signal(descriptor,signal.SIGTERM,None,0)
+        if (not select.select([descriptor],[],[],10)[0]
+                or _process(root,root/'proc'/str(record['pid']),context.uid,context.gid,{'/usr/bin/krfb'}) is not None):
+            raise KRFBSessionError('krfb_runtime_outcome_unverified')
+    except KRFBSessionError:
+        raise
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,SessionError):
+        raise KRFBSessionError('krfb_runtime_outcome_unverified' if dispatched else 'krfb_process_unverified') from None
+    finally:
+        if descriptor is not None:os.close(descriptor)
+
+
+def launch_krfb(context):
+    """Start only the fixed package program with the real user's GUI context.
+
+    Called by a single-threaded one-shot target helper, after password/policy
+    preparation. It leaves its own long-lived child running. The caller proves
+    its selected session/listener and direct RFB result separately; a lost
+    launch result must never cause an automatic second launch.
+    """
+    try:
+        if threading.active_count()!=1:raise ValueError
+        _revalidate(context)
+        program = _trusted_program(['/usr/bin/krfb'])
+        if os.geteuid()!=0 and (os.geteuid()!=context.uid or os.getegid()!=context.gid
+                               or tuple(os.getgroups())!=context.groups):raise ValueError
+
+        def prepare_child():
+            os.umask(0o077)
+            for key,values in context.limits.items():resource.setrlimit(key,values)
+            if os.geteuid()==0:
+                os.setgroups(context.groups)
+                os.setgid(context.gid)
+                os.setuid(context.uid)
+
+        process = subprocess.Popen([program],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,env=dict(context.environment),cwd=context.home,close_fds=True,
+            start_new_session=True,preexec_fn=prepare_child)
+        if process.poll() is not None:
+            raise KRFBSessionError('krfb_runtime_outcome_unverified')
+        return process.pid
+    except KRFBSessionError:
+        raise
+    except (OSError,ValueError,TypeError,KeyError,AttributeError,SessionError,subprocess.SubprocessError):
+        raise KRFBSessionError('krfb_runtime_launch_unverified') from None
