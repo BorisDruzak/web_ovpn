@@ -301,6 +301,9 @@ def desktop_ready(root, recipe, home, uid):
 
 def certificates_ready(root, recipe, home, name, uid, call):
     entries = recipe['certificates']
+    manager = path(root, '/opt/cprocsp/bin/amd64/certmgr')
+    if recipe.get('require_cryptopro') is True and not manager.is_file():
+        return False
     directory = path(root, '/usr/local/share/alt-government-ca')
     # Read the already extracted public system bundle; do not create a probe file.
     bundle = path(root, '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem')
@@ -308,7 +311,6 @@ def certificates_ready(root, recipe, home, name, uid, call):
         raise ValueError('system trust evidence unavailable')
     anchors = {hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
                for pem in re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', bundle.read_text(), re.S)}
-    manager = path(root, '/opt/cprocsp/bin/amd64/certmgr')
     database = path(root, home+'/.pki/nssdb/cert9.db')
     if not safe_file(database, uid=uid):
         return False

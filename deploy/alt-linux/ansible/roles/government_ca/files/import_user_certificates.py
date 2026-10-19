@@ -7,10 +7,14 @@ import re
 import ssl
 import sqlite3
 import subprocess
+import sys
+
+
+CRYPTOPRO_CERTMGR = Path('/opt/cprocsp/bin/amd64/certmgr')
 
 
 def call(argv):
-    return subprocess.run(argv, capture_output=True, text=True)
+    return subprocess.run(argv, capture_output=True, text=True, timeout=30)
 
 
 def fingerprint(pem):
@@ -31,7 +35,7 @@ def nss_identity(db, nickname):
     return hashlib.sha256(records[0][0]).hexdigest()
 
 
-def import_certificates(directory, entries, db, run=call):
+def import_certificates(directory, entries, db, run=call, *, require_cryptopro=False):
     # Validate the whole bundle before touching any certificate store.
     for entry in entries:
         path = directory / entry['filename']
@@ -39,6 +43,12 @@ def import_certificates(directory, entries, db, run=call):
             raise ValueError('Government certificate payload mismatch')
         if fingerprint(path.read_text()) != entry['fingerprint_sha256']:
             raise ValueError('Government certificate identity mismatch')
+    manager = CRYPTOPRO_CERTMGR
+    manager_present = manager.is_file()
+    if require_cryptopro and not manager_present:
+        raise RuntimeError('CryptoPro certificate manager is required')
+    entries = [entry for entry in entries if entry['kind']=='root'] + [
+        entry for entry in entries if entry['kind']!='root']
     changed = False
     if not (db / 'cert9.db').exists():
         db.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -72,10 +82,13 @@ def import_certificates(directory, entries, db, run=call):
             if result.returncode:
                 raise RuntimeError('Cannot set approved browser CA trust')
             changed = True
+            verified = run(args + ['-L'])
+            match = re.search(r'^' + re.escape(nickname) + r'\s+(\S+)\s*$', verified.stdout, re.MULTILINE)
+            if verified.returncode or not match or match.group(1) != trust:
+                raise RuntimeError('Browser CA trust verification failed')
         if nss_identity(db, nickname) != entry['fingerprint_sha256']:
             raise RuntimeError('Browser CA certificate verification failed')
-    manager = Path('/opt/cprocsp/bin/amd64/certmgr')
-    if manager.exists():
+    if manager_present:
         for entry in entries:
             store = 'uRoot' if entry['kind'] == 'root' else 'uCA'
             args = [str(manager), '-list', '-store', store, '-thumbprint', entry['thumbprint_sha1']]
@@ -89,13 +102,17 @@ def import_certificates(directory, entries, db, run=call):
             compact = re.sub('[^0-9a-f]', '', existing.stdout.lower())
             if existing.returncode or entry['thumbprint_sha1'] not in compact:
                 raise RuntimeError('CryptoPro user CA verification failed')
+        if not manager.is_file():
+            raise RuntimeError('CryptoPro certificate manager disappeared during verification')
     return {'changed': changed, 'nss_certificates_verified': sum(not e['gost'] for e in entries),
-            'cryptopro_certificates_verified': len(entries) if manager.exists() else 0,
-            'gost_browser_ready': manager.exists()}
+            'cryptopro_certificates_verified': len(entries) if manager_present else 0,
+            'gost_browser_ready': manager_present}
 
 
 def main():
     import pwd
+    if sys.argv[1:] not in ([], ['--require-cryptopro']):
+        raise ValueError('Unsupported certificate import arguments')
     if os.getuid() == 0:
         raise ValueError('Run certificate import as the graphical user')
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -107,7 +124,8 @@ def main():
             raise ValueError('Browser certificate database ownership mismatch')
     directory = Path('/usr/local/share/alt-government-ca')
     entries = json.loads((directory / 'catalog.json').read_text())
-    print(json.dumps(import_certificates(directory, entries, db)))
+    print(json.dumps(import_certificates(directory, entries, db,
+                                       require_cryptopro=sys.argv[1:]==['--require-cryptopro'])))
 
 
 if __name__ == '__main__':

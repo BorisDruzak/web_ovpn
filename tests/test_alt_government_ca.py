@@ -153,3 +153,78 @@ def test_esia_gost_issuer_is_in_the_standard_bundle():
     assert matches[0]['kind'] == 'root'
     assert matches[0]['gost'] is True
     assert matches[0]['fingerprint_sha256'] == '4bb37cc7c0ff4bf2aa893e95076ebb3565c69237ee1b61635beee4c1966495c7'
+
+
+def test_required_cryptopro_is_checked_before_any_user_store_write(tmp_path,monkeypatch):
+    module=helper();operations=[]
+    monkeypatch.setattr(module,'CRYPTOPRO_CERTMGR',tmp_path/'missing-certmgr',raising=False)
+    with pytest.raises(RuntimeError,match='CryptoPro certificate manager is required'):
+        module.import_certificates(ROOT/'files/government_ca',bundle(),tmp_path/'nssdb',
+                                   lambda argv:operations.append(argv),require_cryptopro=True)
+    assert operations==[] and not (tmp_path/'nssdb').exists()
+
+
+def test_user_import_does_not_accept_an_unapplied_nss_trust_change(tmp_path,monkeypatch):
+    module=helper();entries=[e for e in bundle() if not e['gost']];operations=[]
+    db=tmp_path/'nssdb';db.mkdir();(db/'cert9.db').touch()
+    monkeypatch.setattr(module,'nss_identity',lambda db,name:next(
+        e['fingerprint_sha256'] for e in entries if name.endswith(e['filename'])))
+    def run(argv):
+        operations.append(argv)
+        return SimpleNamespace(returncode=0,stdout='\n'.join(
+            'ALT Government CA '+e['filename']+' u,,' for e in entries))
+    with pytest.raises(RuntimeError,match='Browser CA trust verification failed'):
+        module.import_certificates(ROOT/'files/government_ca',entries,db,run)
+    assert any('-M' in argv for argv in operations)
+
+
+def test_certificate_subprocess_has_a_finite_deadline(monkeypatch):
+    module=helper();options=[]
+    monkeypatch.setattr(module.subprocess,'run',lambda *a,**kw:options.append(kw))
+    module.call(['certutil','-L'])
+    assert options[0]['timeout']==30
+
+
+def test_provider_disappearing_during_import_cannot_report_success(tmp_path,monkeypatch):
+    module=helper();db=tmp_path/'nssdb';db.mkdir();(db/'cert9.db').touch()
+    class VanishingManager:
+        checks=0
+        def is_file(self):
+            self.checks+=1
+            return self.checks==1
+        def exists(self):return False
+        def __str__(self):return '/fixed/certmgr'
+    monkeypatch.setattr(module,'CRYPTOPRO_CERTMGR',VanishingManager())
+    entries=[e for e in bundle() if e['gost']]
+    with pytest.raises(RuntimeError,match='CryptoPro'):
+        module.import_certificates(ROOT/'files/government_ca',entries,db,
+            lambda argv:SimpleNamespace(returncode=0,stdout=argv[-1]),require_cryptopro=True)
+
+
+def test_all_user_roots_are_installed_before_intermediates_and_second_run_is_noop(tmp_path,monkeypatch):
+    module=helper();entries=bundle();db=tmp_path/'nssdb';db.mkdir();(db/'cert9.db').touch()
+    manager=tmp_path/'certmgr';manager.touch()
+    monkeypatch.setattr(module,'CRYPTOPRO_CERTMGR',manager)
+    state={'vendor':True};nss={};imports=[]
+    monkeypatch.setattr(module,'nss_identity',lambda db,nickname:nss.get(nickname))
+    def run(argv):
+        if argv[0]=='certutil':
+            if '-A' in argv:
+                filename=Path(argv[argv.index('-i')+1]).name
+                entry=next(e for e in entries if e['filename']==filename)
+                nss[argv[argv.index('-n')+1]]=entry['fingerprint_sha256']
+            return SimpleNamespace(returncode=0,stdout='\n'.join('ALT Government CA '+e['filename']+' '+
+                ('C,,' if e['kind']=='root' else ',,') for e in entries if not e['gost']))
+        store=argv[argv.index('-store')+1]
+        if '-install' in argv:
+            filename=Path(argv[argv.index('-file')+1]).name
+            entry=next(e for e in entries if e['filename']==filename)
+            state[(store,entry['thumbprint_sha1'])]=True;imports.append((store,entry['kind'],filename))
+            return SimpleNamespace(returncode=0,stdout='')
+        thumbprint=argv[argv.index('-thumbprint')+1]
+        return SimpleNamespace(returncode=0 if (store,thumbprint) in state else 44,stdout=thumbprint)
+    assert module.import_certificates(ROOT/'files/government_ca',entries,db,run,require_cryptopro=True)['changed'] is True
+    assert [kind for store,kind,name in imports]==['root']*3+['intermediate']*3
+    assert all(store==('uRoot' if kind=='root' else 'uCA') for store,kind,name in imports)
+    assert module.import_certificates(ROOT/'files/government_ca',entries,db,run,require_cryptopro=True)['changed'] is False
+    assert len(imports)==6 and state['vendor'] is True

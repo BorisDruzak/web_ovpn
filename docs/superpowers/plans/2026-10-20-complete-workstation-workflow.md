@@ -175,6 +175,16 @@ Run controller/native tests in a clean Linux environment as the non-root service
 - [x] Document guc2022 in the operator list without duplicating the existing certificate; retain current live technical and human acceptance separately from the pending controller release.
 - [x] Commit the bounded CA fix; release it with the remaining approved workflow in Task 7, preserving UNKNOWN and native gates.
 
+## Task 11: Prove certificate installation order and finalize late CSP additions
+
+**Operator amendment:** inspect certificate ordering before continuing the full workflow. Keep the existing full critical order (selected software, then government trust), and preserve legacy profiles and immutable jobs. An independently installed `software.cryptopro` must finalize government trust after the provider succeeds, before publishing component completion. A provider failure must not proceed to certificate import. Existing homes receive NSS and CSP user import; absent homes keep the first-login import and the required fresh user-phase proof from Tasks 4–5.
+
+- [x] Bind the government trust probe to whether CSP is required by the selected components/profile. Missing required CSP must fail before user-store writes; optional non-signature profiles remain supported.
+- [x] Require the selected certificate manager before trust changes and pass a fixed `--require-cryptopro` argument to user import. Keep finite subprocess deadlines and re-read NSS trust after changes.
+- [x] Exercise real Ansible ordering for the full flow and a standalone provider addition, including provider failure and a missing required provider. Import all roots before intermediates in machine and user stores; preserve the six pinned public CAs and second-run idempotency.
+- [x] Perform read-only current-PC system/NSS/machine-CSP/user-CSP verification. Do not reapply Setup or close applications.
+- [x] Update the guide and integration acceptance checks. Final focused Linux run: 153 passed, including real Ansible and immutable execution tests. Guarded publication remains part of Task 7; the post-login full-workflow proof is still required in Tasks 4–5.
+
 ## Task 7: Clean ALT/browser acceptance and guarded release
 
 **Files:** Modify `deploy/alt-linux/install-control-plane.sh`, `install-control-plane-lib.sh` and associated installer/backup readiness tests only where needed to ship/validate new fixed assets. Add `docs/verification/ALT_COMPLETE_WORKFLOW_ACCEPTANCE_2026-10-20.md`; keep private manifests, identifiers, logs and artifact copies under the ignored operational evidence directory.

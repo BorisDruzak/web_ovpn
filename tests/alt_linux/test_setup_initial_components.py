@@ -97,13 +97,14 @@ def test_pending_reboot_is_not_hidden_by_installed_components():
     assert VerificationEngine(CATALOG).evaluate(facts, ['software.onlyoffice'], reboot_required=True)['overall_status'] == 'unknown_requires_review'
 
 
-@pytest.mark.parametrize('fault', ['healthy', 'expired', 'trust', 'nss', 'system_anchor', 'import_helper'])
+@pytest.mark.parametrize('fault', ['healthy', 'expired', 'trust', 'nss', 'system_anchor', 'import_helper', 'required_csp_missing'])
 def test_certificates_use_current_system_user_trust_and_pinned_helper(tmp_path, fault):
     import os
     import sqlite3
     import ssl
     from alt_deploy.component_probe_script import certificates_ready
     query = desired_queries(SOURCE, CATALOG, [CATALOG.component('certificates.government')])[0]
+    if fault=='required_csp_missing':query['require_cryptopro']=True
     certs = query['certificates']
     public = tmp_path/'usr/local/share/alt-government-ca'
     public.mkdir(parents=True)

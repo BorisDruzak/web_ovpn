@@ -126,6 +126,8 @@ def desired_queries(project, catalog, components, *, profile_id='base'):
                          keyboard=_ini((path/'templates/kxkbrc.j2').read_text(encoding='utf-8')))
         elif recipe == 'government_ca':
             query['certificates'] = _yaml(roles/'government_ca/defaults/main.yml')['government_ca_certificates']
+            selected_ids = set(catalog.profile(profile_id)['components']) | {c['id'] for c in components}
+            query['require_cryptopro'] = 'software.cryptopro' in selected_ids
             for filename in ('import_user_certificates.py', 'alt-government-ca.desktop'):
                 _regular(roles/'government_ca/files'/filename)
             query['installed_files'] = {

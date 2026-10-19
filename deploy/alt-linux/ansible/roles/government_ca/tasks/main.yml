@@ -1,4 +1,31 @@
 ---
+- name: Determine whether the selected installation requires CryptoPro trust
+  ansible.builtin.set_fact:
+    government_ca_ordered_certificates: >-
+      {{ (government_ca_certificates | selectattr('kind', 'equalto', 'root') | list) +
+         (government_ca_certificates | selectattr('kind', 'equalto', 'intermediate') | list) }}
+    government_ca_requires_csp: >-
+      {{ (government_ca_require_cryptopro | default(false) | bool) or
+         ('software.cryptopro' in (setup_selected_catalog.execution_components | default([]) | map(attribute='id') | list)) or
+         ('software.cryptopro' in (setup_selected_catalog.profile_component_ids | default([]))) }}
+
+- name: Inspect installed CryptoPro certificate manager
+  ansible.builtin.stat:
+    path: /opt/cprocsp/bin/amd64/certmgr
+    follow: false
+  register: government_ca_certmgr
+
+- name: Require the selected provider before changing its certificate stores
+  ansible.builtin.assert:
+    that:
+      - >-
+        not government_ca_requires_csp or
+        (government_ca_certmgr.stat.exists and
+         government_ca_certmgr.stat.isreg | default(false) and
+         not (government_ca_certmgr.stat.islnk | default(false)) and
+         government_ca_certmgr.stat.executable | default(false))
+    fail_msg: The selected CryptoPro certificate manager must be installed before certificate finalization
+
 - name: Inspect the fixed public government certificate bundle on the controller
   ansible.builtin.stat:
     path: "{{ role_path }}/../../files/government_ca/{{ government_cert.filename }}"
@@ -160,11 +187,6 @@
     group: root
     mode: '0644'
 
-- name: Inspect installed CryptoPro certificate manager
-  ansible.builtin.stat:
-    path: /opt/cprocsp/bin/amd64/certmgr
-  register: government_ca_certmgr
-
 - name: Query approved certificates in CryptoPro machine stores
   ansible.builtin.command:
     argv:
@@ -174,7 +196,7 @@
       - "{{ 'mRoot' if government_cert.kind == 'root' else 'mCA' }}"
       - -thumbprint
       - "{{ government_cert.thumbprint_sha1 }}"
-  loop: "{{ government_ca_certificates }}"
+  loop: "{{ government_ca_ordered_certificates }}"
   loop_control:
     loop_var: government_cert
   changed_when: false
@@ -208,7 +230,7 @@
       - "{{ 'mRoot' if government_cert.kind == 'root' else 'mCA' }}"
       - -thumbprint
       - "{{ government_cert.thumbprint_sha1 }}"
-  loop: "{{ government_ca_certificates }}"
+  loop: "{{ government_ca_ordered_certificates }}"
   loop_control:
     loop_var: government_cert
   register: government_ca_machine_verified
@@ -253,13 +275,10 @@
 
 - name: Import browser and CryptoPro user certificates into the existing profile
   ansible.builtin.command:
-    argv:
-      - runuser
-      - -u
-      - "{{ government_ca_assigned_account.stdout.split(':')[0] }}"
-      - --
-      - /usr/bin/python3
-      - /usr/local/libexec/alt-government-ca-user-import.py
+    argv: >-
+      {{ ['runuser', '-u', government_ca_assigned_account.stdout.split(':')[0], '--',
+          '/usr/bin/python3', '/usr/local/libexec/alt-government-ca-user-import.py'] +
+         (['--require-cryptopro'] if government_ca_requires_csp else []) }}
   register: government_ca_user_import
   changed_when: (government_ca_user_import.stdout | from_json).changed | bool
   when: government_ca_assigned_home.stat.exists

@@ -40,6 +40,11 @@
   ansible.builtin.include_role:
     name: "{{ setup_selected_catalog.execution_components[0].execution.role }}"
 
+- name: Finalize certificate stores after an independently installed CryptoPro provider
+  ansible.builtin.include_role:
+    name: government_ca
+  when: setup_component_id == 'software.cryptopro'
+
 - name: Write completion evidence after the selected role and its cleanup
   ansible.builtin.copy:
     dest: "{{ setup_component_result_file }}"
