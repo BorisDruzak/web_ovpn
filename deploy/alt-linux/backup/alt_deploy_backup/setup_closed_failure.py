@@ -53,8 +53,10 @@ class ClosedFailureEvidence:
             raise denied()
         original = job.request['plan']['payload']
         request = control_module('configure').historical_setup_request(original, expected_uuid=job.machine_uuid)
-        plan = self.io.SetupPlanStore(root, clock=lambda: created).load(run['plan_id'], run['plan_sha256'])
-        if plan != job.request['plan']:
+        plan = self._read(root/'setup-plans'/(run['plan_id']+'.json'))
+        self.jobs.validate_plan(plan, 'full_setup')
+        if (plan != job.request['plan'] or plan['sha256'] != run['plan_sha256']
+                or not datetime.fromisoformat(plan['created_at']) <= created < datetime.fromisoformat(plan['expires_at'])):
             raise denied()
         configure = root/'configure-runs'/config_id
         if self._read(configure/'request.json') != request.to_dict():

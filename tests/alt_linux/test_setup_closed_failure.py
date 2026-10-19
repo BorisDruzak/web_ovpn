@@ -2,6 +2,8 @@
 import copy
 import hashlib
 import importlib
+import os
+import pwd
 from pathlib import Path
 
 import pytest
@@ -115,3 +117,13 @@ def test_history_digest_changes_when_even_safe_event_bytes_change(partial_failur
     path.write_bytes(path.read_bytes()+b' ')
     after = service.load(job.job_id)
     assert before['history_sha256'] != after['history_sha256']
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason='Real root reading a differing service UID')
+def test_root_backup_reads_service_owned_closed_plan(partial_failure):
+    setup, job, *_ = partial_failure
+    account = pwd.getpwnam('nobody')
+    for path in [setup.settings.state_root, *setup.settings.state_root.rglob('*')]:
+        os.chown(path, account.pw_uid, account.pw_gid)
+    setup.settings.service_user = 'nobody'
+    assert backend('setup_closed_failure').ClosedFailureEvidence(setup.settings).load(job.job_id)['job_id'] == job.job_id
