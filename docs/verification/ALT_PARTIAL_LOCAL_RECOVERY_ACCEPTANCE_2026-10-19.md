@@ -10,9 +10,12 @@ source fixes, a separately confirmed new ordinary Setup passed automatic
 admission and completed application. One separately authorized reboot was
 performed and proved by a changed boot ID with unchanged machine identity and
 fresh pinned SSH/sudo access. Explicit continuation verification of the same job
-now reports `waiting_first_login`. Domain trust, SSSD and selected-employee lookup
-pass. First graphical employee login and functional acceptance remain pending.
-No original job or consumed claim was replayed.
+advanced through `waiting_first_login` to `successful` after the employee's real
+domain login. All nine selected components are compliant and installed_verified.
+The employee confirmed that the Plasma desktop appeared and input worked after
+a bounded temporary XRDP workaround. The enterprise web-access agent still
+requires its real business-workflow acceptance. No original job or consumed
+claim was replayed.
 
 ## Source and release
 
@@ -42,6 +45,7 @@ preserved pre-existing user files.
 | Installed native controller readiness | ready=true; all 15 checks passed; failed_checks empty. |
 | Native controller backup | Six components created and verified; eleven restore-rehearsal checks passed. Fresh native eligibility recheck passed after the aborted precheck-only install. |
 | Actual post-reboot continuation through MCP | Original operation succeeded; same job advanced to `waiting_first_login`, reboot_required=false. Base, domain and four office application components are compliant and installed_verified. |
+| Actual post-login continuation through MCP | Original operation succeeded; same job advanced to `successful`. All nine selected components are compliant and installed_verified; eight are technical_verified, and the enterprise web-access agent retains functional_verification_required. |
 
 Exact original logs, backup/review receipts, target identities and authentication
 manifests remain in protected operational evidence, outside this repository.
@@ -107,14 +111,39 @@ reported a successful execution with a nonzero start timestamp. The ordinary
 continuation verifier then marked the domain component compliant without any new
 Setup, join or policy repair.
 
-The same job now waits for the real selected employee's first graphical login.
-Base, domain, browser, office editor, sync client and enterprise web-access agent
-are compliant and installed_verified. The web-access agent still requires its
-functional acceptance; desktop, certificate and shortcut user checks wait for
-the real employee home. The authenticated web page shows `waiting_first_login`
-and all 524 events. Post-reboot comparison again matched all 283 installed files
-and 3776 historical files. No overall success or working employee session is
-claimed; no synthetic home directory is used.
+The employee subsequently authenticated through the existing domain PAM/SSSD
+configuration. PAM created the real home and applied user policy, and the X11
+session started Plasma, its window manager and shell. Explicit continuation of
+the same job returned `successful`, with all nine selected components compliant
+and installed_verified. The authenticated web page independently showed
+completion and all 524 events. Post-login comparison again matched all 283
+installed controller files and 3776 historical files. No synthetic home directory
+was used. The employee confirmed a working desktop and input; the web-access
+agent's real business scenario remains functionally unaccepted.
+
+## Temporary remote support
+
+The operator separately authorized temporary XRDP through an SSH tunnel. This
+did not change the confirmed Setup profile or turn remote support into a new
+published catalog component. Four packages were installed from the approved OS
+repository without upgrading or removing existing packages. Services were masked
+before installation, configured for a loopback-only TLS listener and restricted
+to the selected employee before starting. Automatic service startup remains
+disabled. Existing domain PAM, account and NSS files were independently checked
+unchanged. The active support connection remains available for the employee;
+ending it must preserve the employee's home and work.
+
+The first actual remote login exposed a separate packaged XRDP crash: its child
+process received SIGSEGV in the fast-path input stack after successful domain
+authentication. The existing Plasma session survived. A one-setting workaround
+disabled fast-path input for new connections, preserving TLS, loopback binding
+and output acceleration. No service, desktop session or workstation reboot was
+performed for that adjustment. [Version-matched upstream source](https://github.com/neutrinolabs/xrdp/blob/v0.10.6.1/libxrdp/xrdp_rdp.c#L353)
+confirms that connection initialization reads the setting. Reconnection to the existing
+session succeeded, and the employee confirmed the visible desktop and working
+input. This is a verified configuration workaround, not a source-level repair
+of the packaged XRDP binary. A credential-free TLS probe alone had not exercised
+that graphical-login path.
 
 ## Review and limits
 
