@@ -55,7 +55,9 @@ def test_shared_maintenance_validator_is_readable_without_exposing_backup_data(t
     shared = sandbox.destination('/opt/alt-deploy-maintenance')
     assert shared.is_dir()
     files = {p.name for p in (shared/'alt_deploy_backup').glob('*.py')}
-    assert files == {'__init__.py', 'setup_maintenance_review.py', 'setup_queue_review.py', 'setup_compat.py', 'errors.py',
+    assert files == {'__init__.py', 'setup_maintenance_review.py', 'setup_maintenance_coverage.py',
+                     'setup_closed_failure.py', 'setup_partial_observation.py', 'partial_local_probe.py',
+                     'setup_queue_review.py', 'setup_compat.py', 'errors.py',
                      'fs.py', 'state_validation.py', 'manifest.py', 'components.py', 'settings.py',
                      'systemd.py', 'secrets.py'}
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o644 for p in (shared/'alt_deploy_backup').glob('*.py'))

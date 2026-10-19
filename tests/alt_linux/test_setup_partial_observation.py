@@ -105,7 +105,7 @@ def test_collision_transport_failure_never_becomes_absence():
         backend('setup_partial_observation').directory_collisions(ADDirectory(transport), 'alt-a1-pc3')
 
 
-@pytest.mark.parametrize('fault', ['credentials', 'processes', 'uuid', 'native_hash', 'sudo', 'clock', 'goa', 'boot', 'domain', 'pam_hash'])
+@pytest.mark.parametrize('fault', ['credentials', 'processes', 'uuid', 'native_hash', 'sudo', 'clock', 'goa', 'boot', 'domain', 'pam_hash', 'sysv_hook'])
 def test_unexpected_tdb_key_denies_partial_state(partial_failure, fault):
     setup, job, machine, *_ = partial_failure
     closed = backend('setup_closed_failure').ClosedFailureEvidence(setup.settings).load(job.job_id)
@@ -119,5 +119,15 @@ def test_unexpected_tdb_key_denies_partial_state(partial_failure, fault):
     elif fault == 'goa': native['goa']['installed'] = True
     elif fault == 'domain': native['domain'] = 'other.example'
     elif fault == 'pam_hash': native['files']['/etc/pam.d/system-auth-local']['sha256'] = 'e'*64
+    elif fault == 'sysv_hook': native['files']['/etc/rc.d/init.d/sssd'] = {'present': True, 'sha256': 'e'*64}
     else: native['boot_id'] = 'e'*36
     with pytest.raises(ControlError): service.observe(closed, mode='partial_ad')
+
+
+def test_packaged_inactive_sysv_compatibility_hook_is_bound(partial_failure):
+    setup, job, *_ = partial_failure
+    closed = backend('setup_closed_failure').ClosedFailureEvidence(setup.settings).load(job.job_id)
+    service, native, *_ = observer(partial_failure)
+    native['files']['/etc/rc.d/init.d/sssd'] = {'present': True, 'kind': 'file', 'uid': 0, 'gid': 0,
+        'mode': 0o755, 'size': 2355, 'sha256': '2eddd28fdd945c0db4ab0fe6c75d8f615e6c9bc64ad27824f74180a2f27abb85'}
+    assert service.observe(closed, mode='partial_ad')['partial_local']['native']['files']['/etc/rc.d/init.d/sssd'] == native['files']['/etc/rc.d/init.d/sssd']

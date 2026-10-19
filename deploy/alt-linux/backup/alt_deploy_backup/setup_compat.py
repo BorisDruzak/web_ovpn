@@ -9,6 +9,11 @@ from types import SimpleNamespace
 from .errors import BackupError
 from .fs import read_regular_bytes
 
+MAINTENANCE_MODULES = ('__init__.py', 'setup_maintenance_review.py', 'setup_maintenance_coverage.py',
+    'setup_closed_failure.py', 'setup_partial_observation.py', 'partial_local_probe.py',
+    'setup_queue_review.py', 'setup_compat.py', 'errors.py', 'fs.py', 'state_validation.py',
+    'manifest.py', 'components.py', 'settings.py', 'systemd.py', 'secrets.py')
+
 
 def control_module(name):
     if 'alt_deploy' not in sys.modules:

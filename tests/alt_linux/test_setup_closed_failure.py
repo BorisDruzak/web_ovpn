@@ -23,6 +23,10 @@ def backend(name):
 
 @pytest.fixture
 def partial_failure(component_service, monkeypatch):
+    return make_partial_failure(component_service, monkeypatch)
+
+
+def make_partial_failure(component_service, monkeypatch, *, configuration_id='f'*32):
     _, setup, machine, user, state, date, calls = component_service
     (setup.assignments.root/(UUID+'.json')).unlink()
     current = {'uuid': UUID, 'hostname': machine.hostname, 'domain': '', 'trust': False,
@@ -35,7 +39,7 @@ def partial_failure(component_service, monkeypatch):
     setup, jobs, engine, worker, _ = full_fixture(component_service, monkeypatch)
     def fail_configure(identifier, request, **kwargs):
         from alt_deploy.setup_events import SetupEventStore
-        run_id = 'f'*32
+        run_id = configuration_id
         with legacy_setup_execution(setup.settings, UUID, machine.hostname, operation='configure', run_id=run_id):
             private_create(setup.settings.state_root/'configure-runs'/run_id/'request.json', request.to_dict())
             private_create(setup.settings.state_root/'configure-runs'/run_id/'result.json', {

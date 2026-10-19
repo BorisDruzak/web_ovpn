@@ -40,19 +40,23 @@ def validate_artifacts(root):
                         or value.get('plan_id') != path.stem
                         or set(value) != {'schema_version', 'operation', 'created_at', 'expires_at',
                                           'content_sha256', 'payload', 'plan_id', 'sha256'}
-                        or type(value['schema_version']) is not int or value['schema_version'] != 1
+                        or type(value['schema_version']) is not int or value['schema_version'] not in (1, 2)
                         or value['operation'] != 'setup_maintenance_plan'
                         or io.digest({k: v for k, v in value.items() if k not in ('plan_id', 'sha256')}) != sha
                         or io.digest(value['payload']) != value['content_sha256']): raise denied()
                 created, expires = (datetime.fromisoformat(value[k]) for k in ('created_at', 'expires_at'))
                 if created.tzinfo is None or expires.tzinfo is None or expires-created != timedelta(minutes=30): raise denied()
+                if value['schema_version'] == 2:
+                    from .setup_maintenance_coverage import validate_payload
+                    validate_payload(value['payload'])
             else:
                 sha = value.get('review_sha256')
                 if (not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha) or path.name != sha+'.json'
                         or set(value) != {'schema_version', 'purpose', 'review_sha256', 'confirmed_at', 'valid_until'}
-                        or type(value['schema_version']) is not int or value['schema_version'] != 1
+                        or type(value['schema_version']) is not int or value['schema_version'] not in (1, 2)
                         or value['purpose'] != 'controller_maintenance_only'): raise denied()
                 plan = io.private_read(root/'setup-maintenance-plans'/('setup-maintenance-'+sha+'.json'), owner_uid=uid)
+                if plan['schema_version'] != value['schema_version']: raise denied()
                 confirmed, until = (datetime.fromisoformat(value[k]) for k in ('confirmed_at', 'valid_until'))
                 if (confirmed.tzinfo is None or until.tzinfo is None or until-confirmed != timedelta(seconds=21600)
                         or not datetime.fromisoformat(plan['created_at']) <= confirmed < datetime.fromisoformat(plan['expires_at'])):
@@ -130,9 +134,17 @@ def observe(settings, job):
             'user_runtime': facts['user']}
 
 
-def native_observe(settings, job):
+def coverage_observe(settings, job):
+    fresh = observe(settings, job)
+    if fresh['observed'].get('trust') is True: return fresh
+    from .setup_closed_failure import ClosedFailureEvidence
+    from .setup_partial_observation import PartialLocalObserver
+    return PartialLocalObserver(settings).observe(ClosedFailureEvidence(settings).load(job.job_id), mode='partial_ad')
+
+
+def native_observe(settings, job, *, coverage=False):
     uid = control_module('setup_jobs').service_uid(settings)
-    if os.geteuid() == uid: return observe(settings, job)
+    if os.geteuid() == uid: return coverage_observe(settings, job) if coverage else observe(settings, job)
     if os.geteuid() != 0: raise denied()
     # AD transport may refresh its private Kerberos cache. Run it as its owner.
     # Both module roots are trusted root-owned runtime code, never restored code.
@@ -144,8 +156,8 @@ def native_observe(settings, job):
         for path in (directory, *directory.parents):
             info = path.lstat()
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022: raise denied()
-    for name in ('__init__.py', 'setup_maintenance_review.py', 'setup_queue_review.py', 'setup_compat.py', 'errors.py', 'fs.py',
-                 'state_validation.py', 'manifest.py', 'components.py', 'settings.py', 'systemd.py', 'secrets.py'):
+    from .setup_compat import MAINTENANCE_MODULES
+    for name in MAINTENANCE_MODULES:
         path = root/'alt_deploy_backup'/name
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
@@ -158,13 +170,15 @@ def native_observe(settings, job):
         'ALT_DEPLOY_PRIVATE_KEY='+str(settings.private_key_file),
         'ALT_DEPLOY_KNOWN_HOSTS='+str(settings.known_hosts_file),
         'ALT_DEPLOY_SERVICE_USER='+settings.service_user,
-        '/usr/bin/python3', '-m', 'alt_deploy_backup.setup_maintenance_review', job.job_id],
+        '/usr/bin/python3', '-m', 'alt_deploy_backup.setup_maintenance_review', job.job_id,
+        *(['--coverage-observation'] if coverage else [])],
         capture_output=True, timeout=180, check=False, env={'PATH': '/usr/bin:/bin'})
     if result.returncode or len(result.stdout) > 524288: raise denied()
     return control_module('setup_plans').decode_state_bytes(result.stdout)
 
 
 class MaintenanceReview:
+    schema_version = 1
     prefix = 'setup-maintenance-'
     operation = 'setup_maintenance_plan'
     purpose = 'controller_maintenance_only'
@@ -247,10 +261,7 @@ class MaintenanceReview:
                     self.io.private_read_bytes(path, owner_uid=self.jobs.service_uid(self.settings))).hexdigest()
         return job, history, {r['reservation_id'] for r in leases}
 
-    def _snapshot(self, job_id, *, candidate_job_id=None):
-        job, history, leases = self._history(job_id, candidate_job_id=candidate_job_id)
-        fresh = self.observer(job)
-        original = job.request['plan']['payload']
+    def _validate_joined(self, original, fresh):
         module = control_module('setup')
         if (set(fresh) != {'machine', 'user', 'ou_identity', 'computer', 'observed', 'ssh_binding',
                           'package_manager', 'boot_id', 'user_runtime'}
@@ -270,7 +281,7 @@ class MaintenanceReview:
                 or type(runtime['home_exists']) is not bool or runtime['home_safe'] is not True): raise denied()
         objects = fresh['computer'].get('objects', [])
         if (not fresh['computer'].get('exists') or len(objects) != 1
-                or observed.get('uuid') != job.machine_uuid
+                or observed.get('uuid') != original['machine']['uuid']
                 or observed.get('hostname') != original['machine']['hostname']
                 or observed.get('domain') != module.DOMAIN
                 or any(observed.get(k) is not True for k in ('trust', 'sssd', 'user_lookup'))
@@ -280,6 +291,11 @@ class MaintenanceReview:
                 or any(not isinstance(objects[0].get(k), str) for k in ('object_guid', 'object_sid'))): raise denied()
         initial = original['computer'].get('objects', [])
         if initial and any(initial[0].get(k) != objects[0].get(k) for k in ('object_guid', 'object_sid')): raise denied()
+
+    def _snapshot(self, job_id, *, candidate_job_id=None):
+        job, history, leases = self._history(job_id, candidate_job_id=candidate_job_id)
+        fresh = self.observer(job)
+        self._validate_joined(job.request['plan']['payload'], fresh)
         if self._history(job_id, candidate_job_id=candidate_job_id)[1:] != (history, leases): raise denied()
         return {'job_id': job_id, 'history': history, 'lease_ids': sorted(leases), 'evidence': fresh,
                 'validator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -294,7 +310,7 @@ class MaintenanceReview:
         plan = self._read(self.plans/(plan_id+'.json'))
         body = {k: v for k, v in plan.items() if k not in ('plan_id', 'sha256')}
         if (set(plan) != {'schema_version', 'operation', 'created_at', 'expires_at', 'content_sha256',
-                         'payload', 'plan_id', 'sha256'} or plan['schema_version'] != 1
+                         'payload', 'plan_id', 'sha256'} or type(plan['schema_version']) is not int or plan['schema_version'] != self.schema_version
                 or plan['operation'] != self.operation or self.io.digest(body) != sha
                 or plan['sha256'] != sha or plan['plan_id'] != plan_id
                 or self.io.digest(plan['payload']) != plan['content_sha256']): raise denied()
@@ -322,6 +338,9 @@ class MaintenanceReview:
         except Exception: raise denied() from None
 
     def confirm(self, plan_id, sha):
+        if self.schema_version == 1 and self.purpose == 'controller_maintenance_only' and self._is_coverage(plan_id, sha):
+            from .setup_maintenance_coverage import MaintenanceCoverage
+            return MaintenanceCoverage(self.settings, clock=self.clock).confirm(plan_id, sha)
         try:
             with maintenance_lock(self.settings):
                 plan, created, expires = self._protected_plan(plan_id, sha)
@@ -331,7 +350,7 @@ class MaintenanceReview:
                     record = self._receipt(sha)
                 else:
                     now = self.clock().replace(microsecond=0)
-                    record = {'schema_version': 1, 'purpose': self.purpose, 'review_sha256': sha,
+                    record = {'schema_version': self.schema_version, 'purpose': self.purpose, 'review_sha256': sha,
                               'confirmed_at': now.isoformat(), 'valid_until': (now+timedelta(seconds=21600)).isoformat()}
                     self.io.private_create(path, record)
                 return record
@@ -341,7 +360,7 @@ class MaintenanceReview:
         plan, created, expires = self._protected_plan(self.prefix+sha, sha)
         record = self._read(self.reviews/(sha+'.json'))
         if (set(record) != {'schema_version', 'purpose', 'review_sha256', 'confirmed_at', 'valid_until'}
-                or record['schema_version'] != 1 or record['purpose'] != self.purpose
+                or type(record['schema_version']) is not int or record['schema_version'] != self.schema_version or record['purpose'] != self.purpose
                 or record['review_sha256'] != sha): raise denied()
         confirmed, until = (datetime.fromisoformat(record[k]) for k in ('confirmed_at', 'valid_until'))
         if (confirmed.tzinfo is None or until.tzinfo is None or not created <= confirmed < expires
@@ -349,6 +368,9 @@ class MaintenanceReview:
         return record
 
     def exclusions(self, sha):
+        if self.schema_version == 1 and self.purpose == 'controller_maintenance_only' and self._is_coverage(self.prefix+str(sha), sha):
+            from .setup_maintenance_coverage import MaintenanceCoverage
+            return MaintenanceCoverage(self.settings, clock=self.clock).exclusions(sha)
         try:
             with maintenance_lock(self.settings):
                 self._receipt(sha)
@@ -357,9 +379,20 @@ class MaintenanceReview:
                 return {'job_ids': {plan['payload']['job_id']}, 'lease_ids': set(plan['payload']['lease_ids'])}
         except Exception: raise denied() from None
 
+    def _is_coverage(self, plan_id, sha):
+        try:
+            if not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha) or plan_id != self.prefix+sha: raise denied()
+            return self._read(self.plans/(plan_id+'.json')).get('schema_version') == 2
+        except Exception: raise denied() from None
+
+    def plan_all_closed(self):
+        from .setup_maintenance_coverage import MaintenanceCoverage
+        return MaintenanceCoverage(self.settings, clock=self.clock).plan()
+
 
 if __name__ == '__main__':
     import sys
     settings = control_module('config').Settings.from_env()
     job = control_module('setup_jobs').SetupJobRepository(settings).get(sys.argv[1])
-    sys.stdout.buffer.write(control_module('setup_plans').canonical(observe(settings, job)))
+    fresh = coverage_observe(settings, job) if sys.argv[2:] == ['--coverage-observation'] else observe(settings, job)
+    sys.stdout.buffer.write(control_module('setup_plans').canonical(fresh))

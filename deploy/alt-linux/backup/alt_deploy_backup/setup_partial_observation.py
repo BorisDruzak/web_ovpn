@@ -17,6 +17,8 @@ LOCAL_TEMPLATES = {
     'system-auth-local': '962fabef9682f0ba7db5abe7bcc65c280f51514dfb3d8bea54bda3aa1478f7fd',
     'system-auth-use_first_pass-local': '233278bab33b730db765d6788ca3dfce2e3b327b00ca16f8366dc029ad65fcd0',
     'system-policy-local': '642826be8597811a1d6e2c7d6a77601676941df757eb9f8abe1cf13a99dede63'}
+SYSV_HOOKS = {'sssd': '2eddd28fdd945c0db4ab0fe6c75d8f615e6c9bc64ad27824f74180a2f27abb85',
+              'winbind': '8e1865d2b68392d0ce6f03b639e64be12485ea7e56acc7b813f9ddaf093eda64'}
 
 
 def denied():
@@ -89,9 +91,44 @@ def validate_native(native, original, boot_id, mode):
     for name, service in native['services'].items():
         if (service.get('load_state') != 'loaded' or service.get('active_state') != 'inactive'
                 or service.get('unit_file_state') != 'disabled' or service.get('drop_ins') != []): raise denied()
-        # Other native disable_service hooks have not been rehearsed.
+        hook = files.get('/etc/rc.d/init.d/'+name, {'present': False})
+        if hook.get('present') and (hook.get('kind') != 'file' or hook.get('uid') != 0 or hook.get('gid') != 0
+                or hook.get('mode') != 0o755 or hook.get('sha256') != SYSV_HOOKS[name]): raise denied()
+        # Only the packaged compatibility hook with an already disabled,
+        # inactive native service is supported; sockets/timers remain excluded.
         if any(record.get('present') for path, record in files.items()
-               if path.endswith(('/'+name+'.socket', '/'+name+'.timer', '/init.d/'+name))): raise denied()
+               if path.endswith(('/'+name+'.socket', '/'+name+'.timer'))): raise denied()
+
+
+def validate_evidence(closed, fresh, *, mode):
+    original = closed['original']
+    if (fresh['machine'] != original['machine'] or fresh['ssh_binding'] != original['ssh_binding']
+            or fresh['ou_identity'] != original['ou_identity'] or fresh['user'].get('state') != 'enabled'
+            or any(fresh['user'].get(k) != original['user'].get(k) for k in ('object_guid', 'object_sid', 'upn', 'login'))
+            or original['observed']['domain'] != '' or original['observed']['trust'] is not False
+            or original['computer']['objects'] != [] or closed['result']['phase'] != 'domain_join'
+            or fresh['computer'].get('exists') is not False or fresh['computer'].get('objects') != []
+            or not control_module('component_verification').package_health_ready(fresh)
+            or not control_module('setup_jobs').UUID.fullmatch(fresh['boot_id'])): raise denied()
+    observed, partial = fresh['observed'], fresh['partial_local']
+    if (partial['mode'] != mode or partial['directory_uri'] != original['prerequisites']['directory_uri']
+            or observed.get('uuid') != original['machine']['uuid'] or observed.get('hostname') != original['machine']['hostname']
+            or observed.get('domain') != (control_module('ad_directory').DOMAIN if mode == 'partial_ad' else '')
+            or observed.get('trust') is not False or observed.get('local_duplicate') is not False
+            or observed.get('computer_identity') is not None
+            or partial['quiet'] != dict(uuid=original['machine']['uuid'], hostname=original['machine']['hostname'],
+                                       credentials_absent=True, processes_absent=True)
+            or any(partial['quiet'].get(k) is not True for k in ('credentials_absent', 'processes_absent'))
+            or partial['collisions'] != {'complete': True, 'matches': 0}
+            or partial['collisions']['complete'] is not True or type(partial['collisions']['matches']) is not int): raise denied()
+    runtime = fresh['user_runtime']
+    unresolved = (runtime.get('uid') is None and runtime.get('gid') is None
+                  and runtime.get('home_exists') is False and runtime.get('home_safe') is False)
+    if (set(runtime) != {'login', 'uid', 'gid', 'home_exists', 'home_safe'} or runtime['login'] != original['user']['login']
+            or not unresolved and (any(type(runtime[k]) is not int or runtime[k] <= 0 for k in ('uid', 'gid'))
+                                   or type(runtime['home_exists']) is not bool or runtime['home_safe'] is not True)): raise denied()
+    validate_native(partial['native'], original, fresh['boot_id'], mode)
+    return fresh
 
 
 class PartialLocalObserver:
@@ -158,8 +195,9 @@ class PartialLocalObserver:
                    'domain': control_module('ad_directory').DOMAIN, 'workgroup': original['request']['workgroup']}
         native = self.target_probe(machine, request)
         validate_native(native, original, facts['machine']['boot_id'], mode)
-        return {'machine': identity, 'user': user, 'ou_identity': ous[0], 'computer': computer,
+        fresh = {'machine': identity, 'user': user, 'ou_identity': ous[0], 'computer': computer,
             'observed': observed, 'ssh_binding': binding, 'package_manager': facts['package_manager'],
             'boot_id': facts['machine']['boot_id'], 'user_runtime': facts['user'],
             'partial_local': {'mode': mode, 'quiet': quiet, 'native': native, 'collisions': collisions,
                               'directory_uri': self.directory_uri}}
+        return validate_evidence(closed, fresh, mode=mode)
