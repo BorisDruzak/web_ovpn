@@ -81,3 +81,19 @@ def test_foreign_binding_and_no_log_never_export(no_log, foreign, tagged, expect
         diagnostic_binding=binding)
     assert event['code'] == expected
     assert 'SENTINEL' not in json.dumps(event)
+
+
+def test_ad_admission_failure_reaches_the_bound_public_journal():
+    binding = {'schema_version': 1, 'configuration_run_id': 'a'*32,
+               'invocation_id': 'b'*32, 'identity_sha256': 'c'*64}
+    value = {**binding, 'phase': 'admission', 'code': 'first_join_ad_quota_exhausted',
+             'directory_effect': 'not_dispatched'}
+    command = ['/usr/bin/python3', '-I', '/usr/local/libexec/alt-first-join.py',
+               '--read-diagnostic', json.dumps(binding)]
+    task = SimpleNamespace(get_path=lambda: '/approved/roles/domain_join/tasks/main.yml:1',
+        tags=['alt_setup_domain_join', 'alt_setup_first_join_diagnostic'], no_log=False,
+        args={'argv': command})
+    event = safe_task_event(SimpleNamespace(_task=task, _result={'stdout': json.dumps(value),
+        'cmd': command}), component={'id': 'domain.ready', 'version': 1},
+        event_type='task_failed', diagnostic_binding=binding)
+    assert event['code'] == 'first_join_ad_quota_exhausted'

@@ -77,6 +77,7 @@ def test_unaffected_wrapper_keeps_native_keytab_sync_and_omits_os_metadata(tmp_p
 @pytest.mark.parametrize('native_rc,machine_rc', [(0, 0), (0, 1), (1, 0)])
 def test_execution_requires_machine_as_exchange_even_with_valid_trust(tmp_path, monkeypatch, native_rc, machine_rc, version):
     m = helper()
+    monkeypatch.setattr(m, 'check_ad_join', lambda *args: {})
     native_source = tmp_path / 'stock-system-auth'
     native_source.write_text('net_cmd="/usr/bin/net"\n# target-server:\n')
     original_tempdir = tempfile.TemporaryDirectory

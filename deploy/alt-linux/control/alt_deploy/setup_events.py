@@ -19,7 +19,9 @@ FIRST_JOIN_CODES = {'first_join_' + value for value in (
     'request_invalid', 'native_interface_invalid', 'local_state_conflict', 'directory_unavailable',
     'native_arguments_invalid', 'native_failed', 'native_access_denied', 'native_kerberos_failed',
     'native_name_collision', 'native_cache_unavailable', 'keytab_create_failed', 'keytab_bind_failed',
-    'trust_failed', 'machine_as_failed', 'timeout', 'output_limit', 'internal_error', 'ok')}
+    'trust_failed', 'machine_as_failed', 'timeout', 'output_limit', 'internal_error', 'ok',
+    'ad_quota_exhausted', 'ad_rights_unproven', 'ad_principal_unusable',
+    'ad_identity_changed', 'ad_preflight_failed', 'native_quota_exhausted')}
 CODES |= FIRST_JOIN_CODES
 INPUT_FIELDS = {'schema_version', 'component_id', 'component_version', 'stage', 'task_id', 'type', 'changed', 'code'}
 STAGE_PRIORITY = ('transaction', 'download', 'verify', 'preflight', 'domain_join',
@@ -56,7 +58,7 @@ def _diagnostic_code(result, component, expected):
         value = json.loads(text, object_pairs_hook=unique)
         if (not isinstance(value, dict) or set(value) != fields | {'phase', 'code', 'directory_effect'}
                 or any(value.get(k) != v or type(value.get(k)) is not type(v) for k, v in expected.items())
-                or value.get('phase') not in ('request', 'native_interface', 'preconditions', 'directory_observation',
+                or value.get('phase') not in ('request', 'native_interface', 'preconditions', 'directory_observation', 'admission',
                     'native_arguments', 'native_execution', 'offline_keytab', 'keytab_bind', 'trust_verify', 'machine_as')
                 or value.get('directory_effect') not in ('not_dispatched', 'dispatch_entered', 'returned_success', 'returned_failure', 'uncertain')
                 or value.get('code') not in FIRST_JOIN_CODES):

@@ -1,8 +1,10 @@
 # Complete workstation workflow
 
-Status: approved by the operator on 2026-10-20; product changes are not implemented.
+Status: approved by the operator on 2026-10-20; full workflow implementation is in progress and not deployed.
 VNC amendment: direct password-authenticated TCP/5900 access requested by the
 operator on 2026-10-20, replacing the earlier SSH-only restriction.
+Implementation approved in this chat on 2026-10-20, including the following
+pre-join AD quota/permissions and diagnostic amendment requested by the operator.
 
 ## Agreed outcome
 
@@ -60,6 +62,38 @@ changes before confirmation. It removes the ordinary software-profile and
 remote-profile choices for this preset. The individual-component operation
 remains available. Legacy API requests retain their existing meanings and guards.
 MCP and the existing skill document the same canonical preset and waiting stages.
+
+## AD admission before any first-join mutation
+
+Use the actual join principal's protected Kerberos context, not an administrator
+or directory-observer identity, to read effective computer-create permission on
+the selected OU. Query `allowedChildClassesEffective`, letting AD evaluate the
+full effective ACL. Record the exact DC, principal SID/GUID, OU GUID, quota,
+complete creator-SID count, remaining quota and whether creation is delegated.
+An incomplete/denied/timed-out read or unproven delegation blocks first join.
+No positive quota value alone proves the ability to create a computer.
+
+Run this read-only admission at planning and again at execution, before initial
+workstation mutation. Recheck on the target in the real join credential context
+immediately before `system-auth write ad`, so a long upgrade cannot leave stale
+AD admission. Changed principal/OU/policy evidence fails before the local switch.
+No admission test creates a probe computer or modifies an existing AD object.
+
+The operator requested removal of the join quota restriction. Explicit
+CreateChild(computer) delegation is the quota-independent mechanism; do not
+raise a global quota for ordinary domain users or interpret zero as unlimited.
+Fresh checks on both DCs confirm this delegation on all 96 existing OUs with no
+applicable deny; the general domain quota remains unchanged. A newly added OU
+must pass its own fresh admission rather than inheriting a historical assertion.
+
+Extend bound first-join diagnostics to include quota/permission rejection,
+Kerberos/DNS/transport/native status, phase, exit code and directory side-effect
+classification. Preserve a complete bounded protected timeline of safe facts,
+never credential/keytab/ticket bytes or arbitrary raw output. Retain recognized
+native status tokens and sanitized numeric error details, including errors
+inside the adapter. Unknown messages remain explicitly unclassified with a
+digest/size and phase instead of being misreported as DNS or password failure.
+No error or diagnostic receipt authorizes an automatic join retry.
 
 ## Approved VK WorkSpace artifact
 
@@ -219,5 +253,5 @@ policy is implied by this design.
 
 The implementation plan and its execution method are reviewed after this written
 design is approved. No source implementation or new-profile deployment is claimed
-by this document. The implementation plan must include the operator's direct
-VNC amendment before its written review.
+by this document. The operator approved the written implementation plan with
+the direct-VNC and pre-join AD/diagnostic amendments on 2026-10-20.

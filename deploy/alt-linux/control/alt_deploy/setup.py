@@ -36,7 +36,7 @@ def observed_computer_matches(observed, computer, hostname):
 class SetupService:
     def __init__(self, settings, *, directory=None, machines=None, planner=None,
                  approved_ous=None, probe=None, prerequisites=None, clock=None, recovery_terminal_verifier=None, retry_probe=None,
-                 catalog=None, component_probe=None, job_waiter=None):
+                 catalog=None, component_probe=None, job_waiter=None, join_admission=None):
         self.settings = settings
         self.catalog = catalog
         self.component_probe = component_probe
@@ -52,8 +52,10 @@ class SetupService:
             runtime = SetupRuntime(settings)
             probe = probe or runtime.probe
             prerequisites = prerequisites or runtime.prerequisites
+            join_admission = join_admission or runtime.join_admission
         self.probe = probe
         self.prerequisites = prerequisites
+        self.join_admission = join_admission
         self.retry_probe = retry_probe
         self.plans = SetupPlanStore(settings.state_root, clock=self.clock)
         self.assignments = DomainAssignmentStore(settings.state_root)
@@ -157,6 +159,12 @@ class SetupService:
                 raise fail('domain_computer_conflict', 'Joined computer identity or OU differs; no reset or move is allowed')
         elif objects or observed['domain']:
             raise fail('domain_computer_conflict', 'Existing computer account or broken domain binding requires recovery review')
+        admission = None
+        if not observed['trust'] and self.join_admission is not None:
+            from .ad_join_preflight import validate_evidence
+            admission = validate_evidence(self.join_admission(request))
+            if admission['ou_guid'] != ous[0]['object_guid']:
+                raise fail('ad_join_ou_changed', 'AD admission OU identity differs from the selected OU')
         if resolution is not None:
             from .setup_recovery_continuation import validate_continuity
             validate_continuity(resolution, user, ous[0], observed, computer, machine)
@@ -188,6 +196,9 @@ class SetupService:
                 'actions': preview['actions'], 'warnings': ['delegated_computer_creation_right_not_proven'] if not observed['trust'] else [],
                 'deferred_actions': ['user_home_operations_wait_for_first_domain_login'] if not observed['home_exists'] else []}
         payload['execution_budget_seconds'] = 5400 if computer['exists'] else 21600
+        if admission is not None:
+            payload['ad_join_admission'] = admission
+            payload['warnings'] = []
         if recovery_resolution is not None:
             payload['recovery_resolution'] = recovery_resolution
         if partial_local_resolution is not None:
@@ -384,6 +395,8 @@ class SetupService:
                 options = {'setup_directory_uri': endpoint} if endpoint is not None else {}
                 if not current['computer']['exists']:
                     options['setup_fresh_install'] = True
+                if current.get('ad_join_admission') is not None:
+                    options['setup_ad_join_admission'] = current['ad_join_admission']
                 result = self.planner.start(request.machine_uuid, request, _lock_held=True, setup_run_id=run_id, **options)
                 run.update(configuration_run_id=result['run_id'], result=result,
                            reboot_required=result.get('reboot_required', False))

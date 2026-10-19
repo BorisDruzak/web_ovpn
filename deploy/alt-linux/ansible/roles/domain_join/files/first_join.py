@@ -43,6 +43,39 @@ def diagnostic_module():
     return module
 
 
+def check_ad_join(uri, ou, principal):
+    path = trusted_file('/usr/local/libexec/alt-first-join-preflight.py')
+    spec = importlib.util.spec_from_file_location('first_join_preflight', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        result = module.check(uri, ou, principal, module.read_process)
+    except module.PreflightError as exc:
+        code = {'ad_join_quota_exhausted': 'ad_quota_exhausted',
+                'ad_join_create_rights_unproven': 'ad_rights_unproven',
+                'ad_join_read_denied': 'ad_rights_unproven',
+                'ad_join_principal_unusable': 'ad_principal_unusable',
+                'ad_join_ou_changed': 'ad_identity_changed',
+                'ad_join_principal_changed': 'ad_identity_changed'}.get(exc.code, 'ad_preflight_failed')
+        diagnostic_result('admission', 'first_join_' + code)
+        raise ValueError('First-join AD admission blocked: ' + exc.code) from None
+    raw_scope = os.environ.get('ALT_FIRST_JOIN_AD_SCOPE', '{}')
+    try:
+        if len(raw_scope.encode()) > 4096:
+            raise ValueError
+        scope = json.loads(raw_scope)
+        names = {'join_principal_guid', 'join_principal_sid', 'ou_guid', 'dc'}
+        if (not isinstance(scope, dict) or scope and (set(scope) != names or
+                any(not isinstance(scope[k], str) or scope[k] != result[k] for k in names))):
+            raise ValueError
+    except (ValueError, TypeError, KeyError):
+        diagnostic_result('admission', 'first_join_ad_identity_changed')
+        raise ValueError('First-join AD admission identity changed') from None
+    if DIAGNOSTICS is not None:
+        DIAGNOSTICS.admission_result(result)
+    return result
+
+
 def diagnostic_error(exc):
     if DIAGNOSTICS is None:
         return
@@ -57,6 +90,7 @@ def diagnostic_error(exc):
         code = 'first_join_' + {'request': 'request_invalid',
             'native_interface': 'native_interface_invalid', 'preconditions': 'local_state_conflict',
             'directory_observation': 'directory_unavailable', 'native_arguments': 'native_arguments_invalid',
+            'admission': 'ad_preflight_failed',
             'native_execution': 'native_failed', 'offline_keytab': 'keytab_create_failed',
             'keytab_bind': 'keytab_bind_failed', 'trust_verify': 'trust_failed',
             'machine_as': 'machine_as_failed'}[current['phase']]
@@ -173,6 +207,8 @@ def run(argv, **kwargs):
     result = subprocess.run(argv, capture_output=True, text=True, timeout=180, **kwargs)
     if len(result.stdout.encode('utf-8')) + len(result.stderr.encode('utf-8')) > 65536:
         raise NativeOutputLimit('Oversized native result')
+    if DIAGNOSTICS is not None:
+        DIAGNOSTICS.native_result(result)
     return result
 
 
@@ -328,6 +364,8 @@ def first_join(uri, ou, command):
     phase('directory_observation')
     if attributes(ldap(dc.hostname, realm, hostname, 'dn')):
         raise ValueError('Existing computer requires separate recovery')
+    phase('admission')
+    check_ad_join(uri, ou, user)
     # Validate the parser before the only domain write.
     if split_keytab:
         phase('native_interface')

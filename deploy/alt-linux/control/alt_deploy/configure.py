@@ -412,7 +412,7 @@ class ConfigurePlanner:
     def start(self, machine_uuid: str, request: ConfigureRequest, *,
               _lock_held: bool = False, setup_run_id: str | None = None,
               setup_directory_uri: str | None = None,
-              setup_fresh_install: bool = False) -> dict[str, object]:
+              setup_fresh_install: bool = False, setup_ad_join_admission=None) -> dict[str, object]:
         from contextlib import nullcontext
         from .locking import exclusive_lock
         from .setup_assignments import DomainAssignmentStore
@@ -435,20 +435,26 @@ class ConfigurePlanner:
                         or request.software_profile != binding['software_profile']
                         or request.remote_access_profile != binding['remote_access_profile']):
                     raise ControlError('assignment_conflict', 'Configure request differs from reserved domain binding', 4)
+            admission_options = {}
+            if setup_ad_join_admission is not None:
+                from .ad_join_preflight import validate_evidence
+                if binding is None or not _lock_held or setup_run_id is None or not setup_fresh_install:
+                    raise ControlError('ad_join_principal_unproven', 'AD admission requires the active native Setup context', 4)
+                admission_options['setup_ad_join_admission'] = validate_evidence(setup_ad_join_admission)
             if setup_directory_uri is not None:
                 from .ad_transport import DirectoryConfig
                 if (binding is None or setup_run_id is None
                         or DirectoryConfig.load().uri != setup_directory_uri):
                     raise ControlError('setup_plan_drift', 'Confirmed controller directory endpoint changed', 4)
                 options = {'setup_fresh_install': True} if setup_fresh_install else {}
-                return self._start_unlocked(machine_uuid, request, setup_directory_uri=setup_directory_uri, **options)
+                return self._start_unlocked(machine_uuid, request, setup_directory_uri=setup_directory_uri, **options, **admission_options)
             if setup_fresh_install:
-                return self._start_unlocked(machine_uuid, request, setup_fresh_install=True)
+                return self._start_unlocked(machine_uuid, request, setup_fresh_install=True, **admission_options)
             return self._start_unlocked(machine_uuid, request)
 
     def _start_unlocked(self, machine_uuid: str, request: ConfigureRequest, *,
                         setup_directory_uri: str | None = None,
-                        setup_fresh_install: bool = False) -> dict[str, object]:
+                        setup_fresh_install: bool = False, setup_ad_join_admission=None) -> dict[str, object]:
         machine = self.machines.get(machine_uuid)
         if not machine.ip:
             raise ControlError(code="machine_missing_ip", message="Registered machine has no IP address", exit_code=5)
@@ -507,6 +513,10 @@ class ConfigurePlanner:
             diagnostic_binding = {'schema_version': 1, 'configuration_run_id': run_id,
                 'invocation_id': uuid.uuid4().hex, 'identity_sha256': digest(request.to_dict())}
             command.extend(['-e', json.dumps({'first_join_diagnostic_binding': diagnostic_binding}, separators=(',', ':'))])
+            if setup_ad_join_admission is not None:
+                scope = {key: setup_ad_join_admission[key] for key in
+                         ('join_principal_guid', 'join_principal_sid', 'ou_guid', 'dc')}
+                command.extend(['-e', json.dumps({'first_join_ad_scope': scope}, separators=(',', ':'))])
             if krfb_network_restriction_confirmed:
                 command.extend(
                     [

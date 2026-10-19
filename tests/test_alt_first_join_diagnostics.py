@@ -15,6 +15,38 @@ BINDING = {'schema_version': 1, 'configuration_run_id': 'a' * 32,
            'invocation_id': 'b' * 32, 'identity_sha256': 'c' * 64}
 
 
+def test_admission_rejection_precedes_native_local_switch(tmp_path, monkeypatch):
+    m = helper()
+    source = tmp_path / 'system-auth'
+    source.write_text('net_cmd="/usr/bin/net"\n# target-server:\n')
+    monkeypatch.setattr(m, 'trusted_file', lambda path: source)
+    monkeypatch.setattr(m, 'adapt_system_auth', lambda text, wrapper: text)
+    monkeypatch.setattr(m, 'SYSTEM_KEYTAB', str(tmp_path / 'absent'))
+    monkeypatch.setattr(m, 'ldap', lambda *args: '')
+    temporary = m.tempfile.TemporaryDirectory
+    monkeypatch.setattr(m.tempfile, 'TemporaryDirectory',
+                        lambda **kw: temporary(prefix=kw['prefix'], dir=tmp_path))
+    writes = []
+    def native(argv, **kwargs):
+        if argv[0] == '/usr/bin/rpm':
+            return SimpleNamespace(returncode=0, stdout='4.21.10', stderr='')
+        if argv == ['/usr/bin/net', 'ads', 'testjoin']:
+            return SimpleNamespace(returncode=1, stdout='', stderr='')
+        if argv == ['/usr/sbin/system-auth', 'status']:
+            return SimpleNamespace(returncode=0, stdout='local', stderr='')
+        writes.append(argv)
+        raise AssertionError('A write was reached before AD admission')
+    monkeypatch.setattr(m, 'run', native)
+    def rejected(*args):
+        raise ValueError('ad_join_quota_exhausted')
+    monkeypatch.setattr(m, 'check_ad_join', rejected, raising=False)
+    command = ['system-auth', 'write', 'ad', 'example.test', 'vm-test', 'EXAMPLE',
+               'join-user', '--createcomputer=TEST', '--gpo']
+    with pytest.raises(ValueError, match='ad_join_quota_exhausted'):
+        m.first_join('ldap://dc.example.test', 'OU=TEST,DC=example,DC=test', command)
+    assert writes == []
+
+
 def diagnostics():
     path = ASSETS / 'first_join_diagnostics.py'
     assert path.exists(), 'Missing durable safe first-join diagnostic contract'
@@ -22,6 +54,75 @@ def diagnostics():
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize('message', ['WERR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED',
+    'ERROR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED', 'NT_STATUS_QUOTA_EXCEEDED',
+    'The maximum number of computer accounts you are allowed to create has been exceeded'])
+def test_native_quota_failure_has_its_own_code(message):
+    assert diagnostics().native_failure_code(message) == 'first_join_native_quota_exhausted'
+
+
+def test_safe_timeline_retains_every_phase_and_native_status_without_raw_output(tmp_path):
+    m = diagnostics()
+    d = m.Diagnostics(BINDING, root=tmp_path / 'private')
+    assert callable(getattr(d, 'native_result', None)), 'Native failure context is discarded'
+    d.intent('native_execution')
+    d.native_result(subprocess.CompletedProcess(['net'], 255,
+        'PRIVATE_PASSWORD_SENTINEL NT_STATUS_PRIVATE_PASSWORD_SENTINEL',
+        'LDAP error 50 WERR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED PRIVATE_KEYTAB_SENTINEL'))
+    d.result('native_execution', code='first_join_native_quota_exhausted', returncode=255)
+    d.publish()
+    path = d.directory / (BINDING['invocation_id'] + '.timeline.jsonl')
+    raw = path.read_text()
+    assert 'SENTINEL' not in raw
+    records = [json.loads(line) for line in raw.splitlines()]
+    native = next(r for r in records if r['event'] == 'native_result')
+    assert native['phase'] == 'native_execution' and native['returncode'] == 255
+    assert native['observed_at'].endswith('+00:00')
+    assert native['statuses'] == ['WERR_DS_MACHINE_ACCOUNT_QUOTA_EXCEEDED']
+    assert native['ldap_result_codes'] == [50]
+    assert len(native['stderr_sha256']) == 64
+    assert any(r['event'] == 'state' and r['directory_effect'] == 'dispatch_entered' for r in records)
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_confirmed_ad_admission_records_the_quota_exemption(tmp_path):
+    d = diagnostics().Diagnostics(BINDING, root=tmp_path / 'private')
+    assert callable(getattr(d, 'admission_result', None)), 'Fresh AD admission facts are discarded'
+    d.intent('admission')
+    d.admission_result({'domain_quota': 10, 'created_computers': 10, 'quota_remaining': 0,
+                        'quota_applicable': False, 'creation_mode': 'delegated',
+                        'unrelated_secret': 'PRIVATE_SENTINEL'})
+    raw = d.timeline.read_text()
+    assert 'PRIVATE_SENTINEL' not in raw
+    value = json.loads(raw.splitlines()[-1])
+    assert value['event'] == 'ad_admission' and value['creation_mode'] == 'delegated'
+    assert value['quota_applicable'] is False and value['created_computers'] == 10
+
+
+def test_safe_timeline_rejects_a_foreign_symlink(tmp_path):
+    d = diagnostics().Diagnostics(BINDING, root=tmp_path / 'private')
+    assert callable(getattr(d, 'native_result', None)), 'No protected timeline exists'
+    foreign = tmp_path / 'foreign'
+    foreign.write_text('preserve')
+    (d.directory / (BINDING['invocation_id'] + '.timeline.jsonl')).symlink_to(foreign)
+    with pytest.raises((ValueError, OSError)):
+        d.native_result(subprocess.CompletedProcess(['net'], 255, '', 'error'))
+    assert foreign.read_text() == 'preserve'
+
+
+def test_native_admission_rejects_changed_reviewed_identity(tmp_path, monkeypatch):
+    m = helper()
+    actual = {'join_principal_guid': '1'*32, 'join_principal_sid': 'S-1-5-21-1',
+              'ou_guid': '2'*32, 'dc': 'dc.example.test'}
+    reviewed = dict(actual, ou_guid='3'*32)
+    asset = tmp_path / 'admission_fixture.py'
+    asset.write_text('read_process=None\ndef check(*args): return ' + repr(actual) + '\n')
+    monkeypatch.setattr(m, 'trusted_file', lambda path: asset)
+    monkeypatch.setenv('ALT_FIRST_JOIN_AD_SCOPE', json.dumps(reviewed))
+    with pytest.raises(ValueError, match='identity'):
+        m.check_ad_join('ldap://dc.example.test', 'OU=TEST,DC=example,DC=test', 'join-user')
 
 
 def test_wrapper_reply_loss_retains_uncertain_effect(tmp_path):
@@ -217,7 +318,10 @@ def test_bound_native_completion_and_machine_check_can_report_success(tmp_path, 
 @pytest.mark.parametrize('child_status,effect', [
     (None, 'uncertain'), (0, 'returned_success'), (1, 'returned_failure')])
 def test_outer_native_failure_cannot_invent_writer_completion(tmp_path, monkeypatch, child_status, effect):
+    # This test isolates native writer uncertainty; live AD admission is a
+    # separately tested external read boundary.
     m, d = helper(), diagnostics()
+    monkeypatch.setattr(m, 'check_ad_join', lambda *args: {})
     root = tmp_path/'evidence'
     m.DIAGNOSTICS = d.Diagnostics(BINDING, root=root)
     m.DIAGNOSTIC_BINDING = BINDING

@@ -300,6 +300,10 @@ class SetupRuntime:
         except (ValueError, TypeError) as exc:
             raise fail('setup_probe_invalid', 'Read-only SSH probe returned invalid state') from exc
 
+    def join_admission(self, request):
+        from .ad_join_preflight import ADJoinPreflight
+        return ADJoinPreflight(self.settings, runner=self.runner).observe(request)
+
     def prerequisites(self, request):
         settings = self.settings
         fixed = settings.ansible_project_dir / 'playbooks/03-setup-controller-preflight.yml'
