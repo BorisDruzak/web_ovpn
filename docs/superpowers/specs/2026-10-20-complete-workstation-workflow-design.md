@@ -1,6 +1,6 @@
 # Complete workstation workflow
 
-Status: proposed design for operator review; product changes are not implemented.
+Status: approved by the operator on 2026-10-20; product changes are not implemented.
 
 ## Agreed outcome
 
