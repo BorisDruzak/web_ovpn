@@ -91,6 +91,14 @@ def test_completed_successor_can_be_backed_up_verified_and_rehearsed(partial_fai
     assert outcome['status'] == 'successful'
     sandbox = BackupSandbox.create(tmp_path)
     sandbox.seed_complete_controller()
+    from alt_deploy.setup_partial_local_runtime import REHEARSAL_RECORD
+    from alt_deploy_backup.components import component_specs
+    rehearsal_path = sandbox.root/REHEARSAL_RECORD.relative_to('/')
+    assert any(rehearsal_path.is_relative_to(path) for component in component_specs(sandbox.settings)
+               for path in component.paths)
+    rehearsal_path.parent.mkdir(parents=True, exist_ok=True)
+    rehearsal_bytes = b'{"status":"passed","helper_sha256":"synthetic","native_sha256":"synthetic"}'
+    rehearsal_path.write_bytes(rehearsal_bytes)
     root = sandbox.settings.controller_state_root
     shutil.copytree(partial_failure[0].settings.state_root, root, dirs_exist_ok=True)
     fingerprint = history_fingerprint(root)
@@ -99,3 +107,4 @@ def test_completed_successor_can_be_backed_up_verified_and_rehearsed(partial_fai
     sandbox.rehearsal_service().rehearse(backup_id)
     assert sandbox.restore_service().restore(backup_id).phase == 'committed'
     assert history_fingerprint(root) == fingerprint
+    assert rehearsal_path.read_bytes() == rehearsal_bytes

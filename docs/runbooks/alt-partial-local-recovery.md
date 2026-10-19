@@ -40,7 +40,7 @@ Use loopback SSH, pinned keys and throwaway fixture credentials. Prove fresh
 administrator/password and ansible/key access with sudo before and after the
 transition; test uncertain completion without retrying its claim. Retain private
 evidence before deleting only the verified disposable clone.
-Root-managed `/etc/alt-deploy/partial-local-rehearsal.json` must contain actual
+Root-managed `/srv/alt-deploy/metadata/partial-local-rehearsal.json` must contain actual
 passing helper/native fingerprints. Missing or stale evidence denies planning
 and apply. Synthetic pytest results alone cannot produce this record.
 

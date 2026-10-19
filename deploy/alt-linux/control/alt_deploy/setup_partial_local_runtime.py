@@ -13,6 +13,9 @@ from .ad_transport import bounded_run
 from .setup_plans import digest
 from .component_verification import package_health_ready
 
+# Existing root-owned deployment metadata is captured/restored by native backup.
+REHEARSAL_RECORD = Path('/srv/alt-deploy/metadata/partial-local-rehearsal.json')
+
 
 def denied():
     return fail('setup_partial_local_runtime_unverified', 'Fixed local recovery, rehearsal or fresh result cannot be verified')
@@ -95,7 +98,7 @@ class PartialLocalRuntime:
                        'helper': self.helper_fingerprint()})
 
     def rehearsal(self, fresh):
-        path = Path('/etc/alt-deploy/partial-local-rehearsal.json')
+        path = REHEARSAL_RECORD
         try:
             for parent in path.parents:
                 info = parent.lstat()
