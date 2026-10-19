@@ -67,8 +67,12 @@ class SetupService:
         return self.catalog or (ComponentCatalog.load(self.settings.ansible_project_dir)
                                 if hasattr(self.settings, 'ansible_project_dir') else None)
 
-    def _snapshot(self, identifier, login, ou, software, remote, *, recovery_resolution=None,
+    def _snapshot(self, identifier, login, ou, software, remote, *, recovery_resolution=None, partial_local_resolution=None,
                   own_job_id=None, expected_plan=None, legacy=False):
+        from .setup_partial_local_state import assert_no_pending
+        assert_no_pending(self.settings)
+        if recovery_resolution is not None and partial_local_resolution is not None:
+            raise fail('setup_plan_invalid', 'Continuation proof types cannot be combined')
         catalog = None if legacy else self._catalog()
         machine = self.machines.resolve(identifier)
         pending_predecessor = None
@@ -108,8 +112,16 @@ class SetupService:
         }, expected_uuid=machine.uuid, catalog=catalog)
         binding = self.assignments.identity_binding(machine.uuid, user, ou, software, remote)
         resolution = None
+        partial_document = None
         retry_binding = None
-        if recovery_resolution is None:
+        if partial_local_resolution is not None:
+            from .setup_partial_local_continuation import validate_resolution
+            existing = self.assignments.get(machine.uuid)
+            partial_document = validate_resolution(self.settings, partial_local_resolution, existing,
+                                                   runtime=getattr(self, 'partial_runtime', None))
+            if any(existing.get(key) != value for key, value in binding.items()):
+                raise fail('assignment_conflict', 'Partial-local continuation identity differs')
+        elif recovery_resolution is None:
             try:
                 existing = self.assignments.check(binding)
             except ControlError as exc:
@@ -178,6 +190,9 @@ class SetupService:
         payload['execution_budget_seconds'] = 5400 if computer['exists'] else 21600
         if recovery_resolution is not None:
             payload['recovery_resolution'] = recovery_resolution
+        if partial_local_resolution is not None:
+            payload['partial_local_resolution'] = partial_local_resolution
+            changes.append('continue_after_verified_partial_local_recovery')
         if retry is not None:
             payload['prejoin_retry'] = retry
             changes.append('continue_after_proven_prejoin_timeout')
@@ -208,10 +223,14 @@ class SetupService:
                 from .configure import KRFB_NETWORK_CONFIRMATION_VARIABLE
                 import os
                 payload['network_restriction_confirmed'] = os.environ.get(KRFB_NETWORK_CONFIRMATION_VARIABLE) == 'true'
-            prior = pending_predecessor or (expected_plan or {}).get('payload', {}).get('predecessor_job')
+            if partial_document is not None:
+                from .setup_partial_local_continuation import validate_continuity
+                validate_continuity(partial_document, payload)
+            prior = (pending_predecessor or (expected_plan or {}).get('payload', {}).get('predecessor_job')
+                     or (partial_document['closed']['predecessor_job'] if partial_document is not None else None))
             if prior:
                 from .setup_retry import full_predecessor
-                proof = retry or recovery_resolution
+                proof = retry or recovery_resolution or partial_local_resolution
                 if not proof or full_predecessor(self.settings, prior['job_id'], machine.uuid, proof['failed_run_id']) != prior:
                     raise fail('setup_retry_not_permitted', 'Full predecessor requires the original verified continuation gate')
                 payload['predecessor_job'] = prior
@@ -239,7 +258,12 @@ class SetupService:
                 return self._execute_locked(plan_id, confirmed_sha)
         from .setup_jobs import SetupJobRepository
         jobs = SetupJobRepository(self.settings, clock=self.clock)
-        job = jobs.submit(plan, operation='full_setup')
+        if plan['payload'].get('partial_local_resolution'):
+            with exclusive_lock(self.settings.lock_file):
+                self._validate_job_plan(plan, own_job_id=None)
+                job = jobs.submit(plan, operation='full_setup')
+        else:
+            job = jobs.submit(plan, operation='full_setup')
         if detach:
             return {'schema_version': 2, 'operation': 'setup_apply', 'job_id': job.job_id,
                     'machine_uuid': job.machine_uuid, 'state': job.state,
@@ -281,6 +305,7 @@ class SetupService:
         current = self._snapshot(request.machine_uuid, before['user']['login'], request.computer_ou,
                                  request.software_profile, request.remote_access_profile,
                                  recovery_resolution=before.get('recovery_resolution'),
+                                 partial_local_resolution=before.get('partial_local_resolution'),
                                  own_job_id=own_job_id, expected_plan=plan)
         if current != before:
             raise fail('setup_plan_drift', 'Full Setup identity, observed facts or published source changed')
@@ -322,6 +347,7 @@ class SetupService:
         current = self._snapshot(request.machine_uuid, before['user']['login'], request.computer_ou,
                                   request.software_profile, request.remote_access_profile,
                                   recovery_resolution=before.get('recovery_resolution'),
+                                  partial_local_resolution=before.get('partial_local_resolution'),
                                   own_job_id=own_job_id, expected_plan=plan,
                                   legacy=before.get('engine_schema_version') != 2)
         if current != before:
@@ -334,6 +360,9 @@ class SetupService:
         elif current.get('recovery_resolution'):
             failed_id = current['recovery_resolution']['failed_run_id']
             predecessors = [failed_id, self.status(failed_id)['configuration_run_id']]
+        elif current.get('partial_local_resolution'):
+            proof = current['partial_local_resolution']
+            predecessors = [proof['failed_run_id'], proof['configuration_run_id']]
         with legacy_setup_execution(self.settings, request.machine_uuid, request.final_hostname,
                                     operation='full_setup', run_id=run_id, reviewed_predecessor_runs=predecessors):
             date = self.clock().isoformat()

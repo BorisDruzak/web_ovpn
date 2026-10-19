@@ -66,9 +66,11 @@ class RecoveryResolutionStore:
                 created = _timestamp(plan['created_at'])
                 if created > _timestamp(run['created_at']):
                     raise ValueError
-                revision = RecoveryHistoryStore(self.settings.state_root)._prejoin_revision(
-                    plan['payload'], binding, created)
-            elif 'prejoin_retry' in plan['payload']:
+                history = RecoveryHistoryStore(self.settings.state_root)
+                revision = (history._partial_local_revision(plan['payload'], binding, created)
+                            if 'partial_local_resolution' in plan['payload'] else
+                            history._prejoin_revision(plan['payload'], binding, created))
+            elif 'prejoin_retry' in plan['payload'] or 'partial_local_resolution' in plan['payload']:
                 raise ValueError
             if (run.get('run_id') != pair['failed_run_id'] or run.get('status') != 'failed'
                     or run.get('machine_uuid') != document['identity']['machine_uuid']

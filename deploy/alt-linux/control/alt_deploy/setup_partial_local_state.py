@@ -26,6 +26,12 @@ def claim_key(payload):
     return digest({key: payload[key] for key in ('job_id', 'failed_run_id')})
 
 
+def assert_no_pending(settings):
+    if not any((settings.state_root/name).exists() or (settings.state_root/name).is_symlink() for name in DIRECTORIES): return
+    if PartialLocalStore(settings).pending_attempts():
+        raise fail('setup_partial_local_unresolved', 'An entered partial-local recovery has no verified successful result; execution remains blocked')
+
+
 def _write_bytes(path, raw):
     if not isinstance(raw, bytes) or len(raw) > MAX_STATE_BYTES: raise denied()
     private_directory(path.parent)

@@ -47,6 +47,7 @@ def mixed(stopped, tmp_path, project, monkeypatch):
                  'legacy-setup-reservations', 'setup-job-plan-claims', 'setup-job-reservations'):
         shutil.copytree(second_root/name, settings.state_root/name, dirs_exist_ok=True)
     SetupJobRepository(settings)._check_admissions()
+    settings._partial_fixture = partial  # Reuse real retained fixture provenance in successor/queue integration tests.
     facts = {joined.job_id: joined_facts, job.job_id: partial_facts}
     return settings, joined, SetupJobRepository(settings).get(job.job_id), facts, date
 

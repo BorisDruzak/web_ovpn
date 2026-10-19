@@ -152,6 +152,8 @@ class ControllerReadinessChecker:
 
     def active_jobs_empty(self) -> bool:
         try:
+            from .setup_partial_local_state import assert_no_pending
+            assert_no_pending(self.settings)
             jobs = JobRepository(self.settings).list()
             from .setup_jobs import SetupJobRepository, unresolved_legacy_reservations
             SetupJobRepository(self.settings)._check_admissions()

@@ -418,6 +418,8 @@ class ConfigurePlanner:
         from .setup_assignments import DomainAssignmentStore
         context = nullcontext() if _lock_held else exclusive_lock(self.settings.lock_file)
         with context:
+            from .setup_partial_local_state import assert_no_pending
+            assert_no_pending(self.settings)
             binding = DomainAssignmentStore(self.settings.state_root).get(machine_uuid)
             if (type(setup_fresh_install) is not bool or
                     (setup_fresh_install and (binding is None or not _lock_held or

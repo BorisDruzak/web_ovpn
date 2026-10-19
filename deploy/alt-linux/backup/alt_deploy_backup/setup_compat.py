@@ -13,6 +13,18 @@ MAINTENANCE_MODULES = ('__init__.py', 'setup_maintenance_review.py', 'setup_main
     'setup_closed_failure.py', 'setup_partial_observation.py', 'partial_local_probe.py',
     'setup_queue_review.py', 'setup_compat.py', 'errors.py', 'fs.py', 'state_validation.py',
     'manifest.py', 'components.py', 'settings.py', 'systemd.py', 'secrets.py')
+PARTIAL_DIRECTORIES = ('setup-partial-local-evidence', 'setup-partial-local-plans',
+                       'setup-partial-local-claims', 'setup-partial-local-results')
+
+
+def partial_store(root):
+    if not any((root/name).exists() or (root/name).is_symlink() for name in PARTIAL_DIRECTORIES): return None
+    try:
+        factory = getattr(control_module('setup_partial_local_state'), 'PartialLocalStore', None)
+        if not callable(factory): raise ValueError
+        return factory(setup_settings(root))
+    except (ImportError, AttributeError, ValueError):
+        raise ValueError('Partial-local evidence requires a compatible controller validator') from None
 
 
 def control_module(name):
@@ -72,7 +84,7 @@ def ledger_present(root):
     return any((root/name).exists() or (root/name).is_symlink() for name in
                ('setup-job-plan-claims', 'setup-job-reservations', 'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
                 'setup-maintenance-plans', 'setup-maintenance-reviews',
-                'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions'))
+                'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions', *PARTIAL_DIRECTORIES))
 
 
 def validate_ledger(root):
@@ -83,6 +95,8 @@ def validate_ledger(root):
         return
     module = control_module('setup_jobs')
     settings = setup_settings(root)
+    partial = partial_store(root)
+    if partial is not None: partial.validate_artifacts()
     module.SetupJobRepository(settings)._check_admissions()
     for job in module.SetupJobRepository(settings).list():
         diagnostic = job.job_dir/'admission-check.json'
@@ -134,6 +148,8 @@ def unresolved_jobs(root, recovery_admission=None, *, maintenance_review=None, m
     if any(r['run_id'] not in reviewed_runs and r['reservation_id'] not in exclusion['lease_ids']
            for r in module.unresolved_legacy_reservations(settings)):
         jobs.append('legacy_setup_execution_unresolved')
+    partial = partial_store(root)
+    if partial is not None and partial.pending_attempts(): jobs.append('partial_local_execution_unresolved')
     return jobs
 
 
@@ -146,7 +162,8 @@ def history_fingerprint(root):
     paths = [root/name for name in ('setup-job-plan-claims', 'setup-job-reservations',
                                    'setup-job-reviews', 'legacy-setup-reservations', 'setup-functional-acceptance',
                                    'setup-maintenance-plans', 'setup-maintenance-reviews',
-                                   'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions') if (root/name).exists()]
+                                   'setup-queue-review-plans', 'setup-queue-reviews', 'setup-queue-admissions',
+                                   *PARTIAL_DIRECTORIES) if (root/name).exists()]
     jobs_root = root/'jobs'
     if jobs_root.exists():
         from .state_validation import _read_object

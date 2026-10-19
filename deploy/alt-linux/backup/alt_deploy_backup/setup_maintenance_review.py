@@ -222,7 +222,9 @@ class MaintenanceReview:
         if self._read(configure/'request.json') != request.to_dict(): raise denied()
         result = control_module('configure')._read_configure_result(self._read(configure/'result.json'), request)
         if result['status'] != 'failed': raise denied()
-        leases = self.jobs.unresolved_legacy_reservations(self.settings)
+        reviewed_runs = control_module('setup_retry').reviewed_legacy_runs(self.settings)
+        leases = [record for record in self.jobs.unresolved_legacy_reservations(self.settings)
+                  if record['run_id'] not in reviewed_runs]
         expected = {('full_setup', run_id), ('configure', configure_id)}
         if (len(leases) != 2 or {(r['operation'], r['run_id']) for r in leases} != expected
                 or any(r['machine_uuid'] != job.machine_uuid or r['hostname'] != job.request['identities']['hostname']

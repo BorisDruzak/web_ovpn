@@ -44,6 +44,9 @@ class MaintenanceCoverage(MaintenanceReview):
         super().__init__(settings, observer=observer or (lambda job: native_observe(settings, job, coverage=True)), clock=clock)
 
     def _discover(self):
+        from .setup_compat import partial_store
+        partial = partial_store(self.settings.state_root)
+        if partial is not None and partial.pending_attempts(): raise denied()
         repository = self.jobs.SetupJobRepository(self.settings)
         repository._check_admissions()
         retry = control_module('setup_retry')

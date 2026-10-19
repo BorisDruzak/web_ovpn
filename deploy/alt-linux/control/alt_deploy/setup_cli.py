@@ -100,7 +100,7 @@ def add_parsers(commands):
     partial = recovery_actions.add_parser('partial-local', allow_abbrev=False,
         help='One exact local-authentication recovery after a closed first join; never replay')
     partial_actions = partial.add_subparsers(dest='partial_local_action', required=True)
-    for name in ('plan', 'apply', 'status'):
+    for name in ('plan', 'apply', 'status', 'continue-plan'):
         command = partial_actions.add_parser(name, allow_abbrev=False)
         command.add_argument('job_id' if name == 'plan' else 'plan_id')
         if name == 'apply': command.add_argument('--confirm-sha256', required=True)
@@ -144,6 +144,9 @@ def directory_for_settings(settings):
 
 def handle(parsed, settings):
     if parsed.command == 'setup' and parsed.setup_action == 'recovery' and parsed.recovery_action == 'partial-local':
+        if parsed.partial_local_action == 'continue-plan':
+            from .setup_partial_local_continuation import PartialLocalContinuation
+            return PartialLocalContinuation(settings).plan(parsed.plan_id)
         from .setup_partial_local import PartialLocalService
         service = PartialLocalService(settings)
         if parsed.partial_local_action == 'plan': return service.plan(parsed.job_id)

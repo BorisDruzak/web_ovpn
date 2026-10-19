@@ -37,6 +37,33 @@ class RecoveryHistoryStore:
     def __init__(self, state_root: Path):
         self.root = state_root
 
+    def _partial_local_revision(self, payload, binding, plan_created):
+        """Read one separately proven local recovery before this new first join."""
+        import pwd
+        from types import SimpleNamespace
+        from .setup_partial_local_continuation import load_resolution
+        if any(key in payload for key in ('prejoin_retry', 'recovery_resolution')): raise ValueError
+        settings = SimpleNamespace(state_root=self.root, jobs_dir=self.root/'jobs',
+                                   service_user=pwd.getpwuid(self.root.stat().st_uid).pw_name)
+        document = load_resolution(settings, payload['partial_local_resolution'], archival=True)
+        closed = document['closed']
+        prior = payload['existing_assignment']
+        identity = {key: binding.get(key) for key in closed['original']['binding']}
+        metadata = {'schema_version', 'revision', 'run_id', 'date', 'result'}
+        if set(binding) not in (set(identity), set(identity) | metadata): raise ValueError
+        if (prior != closed['binding'] or type(prior.get('schema_version')) is not int or prior['schema_version'] != 1
+                or type(prior.get('revision')) is not int or prior['revision'] != 1
+                or payload['machine'] != closed['machine'] or identity != closed['original']['binding']
+                or payload['ou_identity'] != closed['original']['ou_identity']
+                or any(payload['user'].get(k) != closed['original']['user'].get(k)
+                       for k in ('object_guid', 'object_sid', 'upn', 'login'))
+                or not _timestamp(closed['run']['finished_at']) <= _timestamp(document['result']['finished_at']) <= plan_created):
+            raise ValueError
+        expected = dict(identity, schema_version=1, revision=1, run_id=closed['failed_run_id'],
+                        date=closed['run']['created_at'], result='failed')
+        if prior != expected: raise ValueError
+        return 2
+
     def _prejoin_revision(self, payload, binding, plan_created):
         """Admit exactly one closed initial upgrade timeout before this join.
 
@@ -141,8 +168,9 @@ class RecoveryHistoryStore:
                 raise ValueError
             revision = 1
             if payload['existing_assignment'] is not None:
-                revision = self._prejoin_revision(payload, binding, historical_clock)
-            elif 'prejoin_retry' in payload:
+                revision = (self._partial_local_revision(payload, binding, historical_clock)
+                            if 'partial_local_resolution' in payload else self._prejoin_revision(payload, binding, historical_clock))
+            elif 'prejoin_retry' in payload or 'partial_local_resolution' in payload:
                 raise ValueError
             raw['index'] = private_read_bytes(self.root / 'setup-plan-runs' / (plan_id + '.json'))
             if decode_state_bytes(raw['index']) != {'run_id': failed_run_id}:

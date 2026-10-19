@@ -67,7 +67,7 @@ def closed_full_job_only(settings, machine, failed_run_id):
 
 
 def reviewed_full_runs(settings, payload):
-    proof = payload.get('prejoin_retry') or payload.get('recovery_resolution')
+    proof = payload.get('prejoin_retry') or payload.get('recovery_resolution') or payload.get('partial_local_resolution')
     if not proof:
         return set()
     run_id = proof['failed_run_id']
@@ -93,9 +93,14 @@ def validate_predecessor(settings, plan):
         return None
     try:
         if payload.get('engine_schema_version') == 2:
-            proof = payload.get('prejoin_retry') or payload.get('recovery_resolution')
+            proof = payload.get('prejoin_retry') or payload.get('recovery_resolution') or payload.get('partial_local_resolution')
             if not proof:
                 raise fail('setup_retry_not_permitted', 'Full successor requires the existing prejoin or terminal recovery gate')
+            if payload.get('partial_local_resolution'):
+                from .setup_partial_local_continuation import load_resolution
+                document = load_resolution(settings, proof, archival=True)
+                if payload.get('existing_assignment') != document['closed']['binding']:
+                    raise fail('setup_retry_not_permitted', 'Partial-local predecessor binding differs')
             actual = full_predecessor(settings, reference['job_id'], payload['machine']['uuid'], proof['failed_run_id'])
         else:
             actual = predecessor(settings, reference['job_id'], payload['component'], payload['machine']['uuid'])

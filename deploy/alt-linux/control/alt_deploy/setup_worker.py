@@ -75,6 +75,10 @@ class SetupWorker:
     def run_once(self):
         with exclusive_lock(self.settings.lock_file):
             self._reconcile_unlocked()
+            from .setup_partial_local_state import assert_no_pending
+            try: assert_no_pending(self.settings)
+            except ControlError:
+                return {'status': 'blocked', 'code': 'setup_partial_local_unresolved'}
             if any(job.state in ACTIVE_STATES for job in JobRepository(self.settings).list()
                    if job.status.get('kind') != 'setup'):
                 return {'status': 'blocked', 'code': 'legacy_job_active'}

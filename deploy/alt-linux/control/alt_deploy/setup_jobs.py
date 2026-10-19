@@ -129,6 +129,8 @@ def _setup_queue_lock(settings, *, allow_root=False):
 def legacy_setup_admission(settings, machine_uuid, hostname, *, own_job_id=None):
     """Caller retains lifecycle, then briefly takes queue across reservation."""
     with setup_queue_lock(settings, allow_root=True):
+        from .setup_partial_local_state import assert_no_pending
+        assert_no_pending(settings)
         jobs = SetupJobRepository(settings)
         jobs._check_admissions()
         from .setup_retry import reviewed_jobs
@@ -298,6 +300,11 @@ def validate_plan(plan, operation):
                 if type(prerequisites.get(key)) is bool:
                     prerequisites.pop(key)
     assert_safe_payload(safe)
+    if operation == 'full_setup':
+        payload = plan['payload']
+        proofs = [key for key in ('prejoin_retry', 'recovery_resolution', 'partial_local_resolution') if key in payload]
+        if (len(proofs) > 1 or payload.get('predecessor_job') is not None and len(proofs) != 1
+                or 'partial_local_resolution' in payload and payload.get('predecessor_job') is None): raise ValueError
 
 
 def identities(plan):
@@ -454,6 +461,8 @@ class SetupJobRepository:
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise fail('setup_plan_invalid', 'Setup job requires an intact supported plan') from exc
         with self.locked():
+            from .setup_partial_local_state import assert_no_pending
+            assert_no_pending(self.settings)
             path = self.claims/(plan['sha256']+'.json')
             if path.exists() or path.is_symlink():
                 claim = self._read(path)
