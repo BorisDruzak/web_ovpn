@@ -74,7 +74,9 @@ def test_redirected_or_changed_files_are_refused(tmp_path, unsafe):
     base = tmp_path/'var/lib/alt-deploy-recovery'
     source = tmp_path/'etc/krb5.keytab'
     if unsafe == 'base_symlink': base.symlink_to(tmp_path)
-    elif unsafe == 'base_mode': base.mkdir(mode=0o755)
+    elif unsafe == 'base_mode':
+        base.mkdir(mode=0o755)
+        base.chmod(0o755)  # The deliberately unsafe fixture must ignore umask.
     elif unsafe == 'source_symlink': source.unlink(); source.symlink_to(tmp_path/'etc/krb5.conf')
     elif unsafe == 'source_mode': source.chmod(0o644)
     elif unsafe == 'source_bytes': source.write_bytes(b'CHANGED')
