@@ -31,3 +31,11 @@ def review_service(settings):
 
 def queue_review_service(settings):
     return _service(settings, 'setup_queue_review', 'QueueAdmissionReview')
+
+
+def closed_failure_service(settings):
+    return _service(settings, 'setup_closed_failure', 'ClosedFailureEvidence')
+
+
+def partial_observer_service(settings):
+    return _service(settings, 'setup_partial_observation', 'PartialLocalObserver')
